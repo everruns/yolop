@@ -328,14 +328,15 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bashkit"
-version = "0.6.0"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bec5470c94eddec899a8048070259e6209f04b367c4f05a455ed0a0c9075ceca"
+checksum = "fa7892a1440c479f5b70dfddf760fe9671c5436d4c7b5ba39bb05216e2e3f301"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64",
  "bigdecimal",
+ "bitflags 2.11.1",
  "chrono",
  "clap",
  "fancy-regex 0.18.0",
@@ -351,7 +352,6 @@ dependencies = [
  "num-traits",
  "os_display",
  "regex",
- "schemars",
  "serde",
  "serde_json",
  "sha1 0.11.0",
@@ -970,9 +970,9 @@ dependencies = [
 
 [[package]]
 name = "displaydoc"
-version = "0.2.5"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97369cbbc041bc366949bc74d34658d6cda5621039731c6310521892a3a20ae0"
+checksum = "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1078,9 +1078,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-anthropic"
-version = "0.8.34"
+version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c9aaf7a32396d42f03e3e427b61a36e10d39fb63c88eb8b047451b9a3ae25ee"
+checksum = "3e70e8e2041fe7d54e21b98cb745e68a5b7e495b9518732128ff942e450b1385"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1096,18 +1096,18 @@ dependencies = [
 
 [[package]]
 name = "everruns-config"
-version = "0.8.34"
+version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27b93e70a767f2f32fc349aa5950948f4b135628076270cbcf40ee7ef5d66451"
+checksum = "9e2881eb1428385ff27ee91afa2d900c809d2ecbd021a0c3201e166515cfc6df"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "everruns-core"
-version = "0.8.34"
+version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18b6c0a4d774f7855d3a3938c477b2f94719cd7c802d1f556f6948a09049f008"
+checksum = "7eedfb744efb3ec573f358de6874023fcd61514edd61293d1794e9103cc0ba07"
 dependencies = [
  "a2a-client-lf",
  "a2a-lf",
@@ -1146,9 +1146,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-duckduckgo"
-version = "0.8.34"
+version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aa6799c5e47b4c0a63fb419e3c5e2fc2edffabaea46d6c3990f899a78e546a6"
+checksum = "348b733209e2809b64cb2c1277f1123f910ab7af3b4a2a85be3ce113c521e6e6"
 dependencies = [
  "async-trait",
  "everruns-core",
@@ -1162,9 +1162,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-openai"
-version = "0.8.34"
+version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7691b5e1042a75a0e2731588114a927e3eae5644ab164d7b9256fcdf645f16d6"
+checksum = "f3f5dadc11a5503e1ea708b596e3792a153a13edda0b6b22bfae710c4101ba4a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1183,9 +1183,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-runtime"
-version = "0.8.34"
+version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "267fb2dfb903df04d522dea902d70fbae7fdbbc574c693ea7bf350ebc2d9928b"
+checksum = "4ebecb7ede44ca4572473634e395fb1cfd52ba0e41fab32281e37cade9700c40"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1627,9 +1627,9 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "1.9.0"
+version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6299f016b246a94207e63da54dbe807655bf9e00044f73ded42c3ac5305fbcca"
+checksum = "eb92f162bf56536459fc83c79b974bb12837acfed43d6bc370a7916d0ae15ecc"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2128,9 +2128,9 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libredox"
-version = "0.1.16"
+version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e02f3bb43d335493c96bf3fd3a321600bf6bd07ed34bc64118e9293bdffea46c"
+checksum = "f02ab6bace2054fb888a3c16f990117b579d14a3088e472d63c6011fa185c9d3"
 dependencies = [
  "libc",
 ]
@@ -5340,18 +5340,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.48"
+version = "0.8.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eed437bf9d6692032087e337407a86f04cd8d6a16a37199ed57949d415bd68e9"
+checksum = "bce33a6288fa3f072a8c2c7d0f2fdbb90e28298f0135c1f99b96c3db2efcc60b"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.48"
+version = "0.8.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70e3cd084b1788766f53af483dd21f93881ff30d7320490ec3ef7526d203bad4"
+checksum = "8fd425244944f4ab65ccff928e7323354c5a018c75838362fdce749dfad2ee1e"
 dependencies = [
  "proc-macro2",
  "quote",
