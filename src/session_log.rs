@@ -13,10 +13,14 @@
 // every line so a crash mid-session loses at most the event in flight.
 //
 // Concerns explicitly handled below:
-// * Owner-only on Unix: `events.jsonl` is opened with `0o600` and the
-//   per-session folder is `chmod`-ed to `0o700` on open. Session logs
-//   contain prompts, tool arguments, and tool output, plus the
-//   reasoning artifacts described below.
+// * Owner-only on Unix: `events.jsonl` is created with `0o600` and the
+//   file mode is re-tightened to `0o600` on every open; the per-session
+//   folder is `chmod`-ed to `0o700` on open as well. The re-tightening
+//   matters because `OpenOptionsExt::mode` only applies on create —
+//   without it, a legacy file or one loosened out-of-band would keep
+//   its prior mode on resume. Session logs contain prompts, tool
+//   arguments, and tool output, plus the reasoning artifacts described
+//   below.
 // * Replay keeps event types that (a) round-trip into the conversation
 //   (`input.message`, `output.message.completed`, `tool.completed`) and
 //   (b) the agent needs to restore the live transcript view and provider
@@ -277,6 +281,24 @@ impl JsonlEventEmitter {
         let mut file = opts.open(path).map_err(|e| {
             AgentLoopError::config(format!("open session log {}: {e}", path.display()))
         })?;
+
+        // Re-tighten the file mode on every open. `OpenOptionsExt::mode`
+        // only applies on create, so a legacy `events.jsonl` written
+        // before the owner-only contract — or one whose mode was loosened
+        // out-of-band — would otherwise keep its prior permissions on
+        // resume. Mirrors the directory tightening above.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+                |e| {
+                    AgentLoopError::config(format!(
+                        "tighten session log permissions on {}: {e}",
+                        path.display()
+                    ))
+                },
+            )?;
+        }
 
         // Advisory exclusive flock: prevents two `yolop --session <id>`
         // processes from interleaving writes on the same JSONL file.
@@ -616,6 +638,33 @@ mod tests {
         assert_eq!(
             file_mode, 0o600,
             "events.jsonl must be owner-only on Unix, got {file_mode:o}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_corrects_loose_events_jsonl_permissions_on_resume() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(48224);
+        let session_dir = session_dir_path(dir.path(), session_id);
+        let path = session_log_path(&session_dir);
+
+        std::fs::create_dir_all(&session_dir).expect("pre-create");
+        std::fs::write(&path, "").expect("pre-create file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("loosen for test");
+
+        let _emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+
+        let mode = std::fs::metadata(&path)
+            .expect("events.jsonl exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "resume must re-tighten an existing loose events.jsonl, got {mode:o}"
         );
     }
 
