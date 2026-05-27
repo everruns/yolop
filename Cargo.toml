@@ -28,11 +28,11 @@ tokio = { version = "1.50", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-everruns-anthropic = "0.8.34"
+everruns-anthropic = "0.8.35"
 everruns-core = "0.8.34"
-everruns-openai = "0.8.34"
-everruns-runtime = "0.8.34"
-everruns-integrations-duckduckgo = "0.8.34"
+everruns-openai = "0.8.35"
+everruns-runtime = "0.8.35"
+everruns-integrations-duckduckgo = "0.8.35"
 
 [dev-dependencies]
 tempfile = "3"
