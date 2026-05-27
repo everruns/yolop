@@ -722,6 +722,10 @@ pub struct BuiltRuntime {
 pub struct RuntimeHandles {
     pub runtime: Arc<InProcessRuntime>,
     pub session_id: SessionId,
+    /// Typed handle to the JSONL event emitter. The runtime sees it
+    /// through the `EventBus` trait object; we keep a direct reference
+    /// so the TUI can subscribe to the live broadcast for streaming.
+    pub events: Arc<JsonlEventEmitter>,
 }
 
 pub struct StartupInfo {
@@ -800,14 +804,15 @@ pub async fn build(
     // replay-relevant lines to the per-session JSONL file. `next_sequence`
     // carries the sequence counter across resumes so `Event.sequence`
     // stays monotonic within a session.
-    let event_bus = Arc::new(JsonlEventEmitter::open(&log_path, next_sequence)?);
+    let event_bus_typed = Arc::new(JsonlEventEmitter::open(&log_path, next_sequence)?);
+    let event_bus: Arc<dyn everruns_runtime::EventBus> = event_bus_typed.clone();
     // Seed the in-memory event vec with what we just read off disk so
     // `runtime.events()` after resume returns the full history — not
     // just events emitted during the resumed run. Does not re-persist;
     // these lines are already in the JSONL file. Move (not clone): the
     // replay buffer isn't used again after this and the seeded vec can
     // get large on long-lived sessions.
-    event_bus.seed_replayed(replayed.events).await;
+    event_bus_typed.seed_replayed(replayed.events).await;
 
     // Pre-seed the message store with anything reconstructed from disk
     // so the agent sees prior conversation in its first context assembly.
@@ -950,6 +955,7 @@ pub async fn build(
         handles: RuntimeHandles {
             runtime: Arc::new(runtime),
             session_id,
+            events: event_bus_typed,
         },
         startup: StartupInfo {
             workspace_root: canonical_root,
