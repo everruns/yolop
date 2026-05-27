@@ -775,12 +775,42 @@ impl ModelState {
     }
 }
 
+/// Optional knobs for [`build`]. Lets the streaming integration tests
+/// replace the bundled llmsim config (which is sized for offline demos
+/// — too short and too fast to ever cross the runtime's 100ms delta
+/// batch window) with one that produces real multi-delta streams. All
+/// fields default to "no override" so callers that don't care keep the
+/// existing behavior.
+#[derive(Default)]
+pub struct BuildOptions {
+    pub llmsim_override: Option<LlmSimConfig>,
+}
+
 pub async fn build(
     workspace_root: PathBuf,
     provider: ProviderChoice,
     gate: Arc<ApprovalGate>,
     resume_session_id: Option<SessionId>,
     sessions_dir: PathBuf,
+) -> Result<BuiltRuntime> {
+    build_with_options(
+        workspace_root,
+        provider,
+        gate,
+        resume_session_id,
+        sessions_dir,
+        BuildOptions::default(),
+    )
+    .await
+}
+
+pub async fn build_with_options(
+    workspace_root: PathBuf,
+    provider: ProviderChoice,
+    gate: Arc<ApprovalGate>,
+    resume_session_id: Option<SessionId>,
+    sessions_dir: PathBuf,
+    options: BuildOptions,
 ) -> Result<BuiltRuntime> {
     let canonical_root = std::fs::canonicalize(&workspace_root)
         .with_context(|| format!("canonicalize workspace: {}", workspace_root.display()))?;
@@ -933,13 +963,14 @@ pub async fn build(
         });
     // Always register the llmsim driver so the `/model llmsim` switch works
     // mid-session, even if the user started with anthropic or openai.
-    builder = builder.llm_sim(
+    let llmsim_config = options.llmsim_override.unwrap_or_else(|| {
         LlmSimConfig::fixed(
             "I'm running in offline mode (llmsim — no API key set). \
              Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real responses.",
         )
-        .with_model("llmsim-yolop"),
-    );
+        .with_model("llmsim-yolop")
+    });
+    builder = builder.llm_sim(llmsim_config);
     let runtime = builder.build().await?;
 
     let context = runtime.load_context(session_id).await?;

@@ -10,6 +10,9 @@ mod runtime;
 mod session_log;
 mod tools;
 
+#[cfg(test)]
+mod streaming_tests;
+
 use anyhow::Result;
 use app::{App, COMPOSER_VIEWPORT_HEIGHT};
 use approval::ApprovalGate;

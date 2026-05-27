@@ -181,7 +181,7 @@ pub struct ActivityStatus {
 }
 
 #[derive(Debug)]
-enum TurnEvent {
+pub(crate) enum TurnEvent {
     Lines(Vec<ChatLine>),
     Activity(ActivityStatus),
     /// Replace the live streaming preview shown above the input.
@@ -794,13 +794,13 @@ impl App {
 /// preview as soon as a matching `*.completed` arrives. Per-turn state
 /// — one `DeltaRouter` per `start_turn` invocation.
 #[derive(Default)]
-struct DeltaRouter {
+pub(crate) struct DeltaRouter {
     last_assistant_turn: Option<everruns_core::typed_id::TurnId>,
     last_thinking_turn: Option<everruns_core::typed_id::TurnId>,
     last_tool_call: Option<String>,
 }
 
-fn handle_live_event(
+pub(crate) fn handle_live_event(
     event: &RuntimeEvent,
     emitted_events: &mut HashSet<String>,
     router: &mut DeltaRouter,
