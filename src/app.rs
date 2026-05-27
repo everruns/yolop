@@ -819,11 +819,11 @@ fn handle_live_event(
             })));
             return;
         }
-        EventData::OutputMessageCompleted(_) | EventData::OutputMessageReplaced(_) => {
-            if router.last_assistant_turn.is_some() {
-                router.last_assistant_turn = None;
-                let _ = tx.send(TurnEvent::Stream(None));
-            }
+        EventData::OutputMessageCompleted(_) | EventData::OutputMessageReplaced(_)
+            if router.last_assistant_turn.is_some() =>
+        {
+            router.last_assistant_turn = None;
+            let _ = tx.send(TurnEvent::Stream(None));
         }
         EventData::ReasonThinkingDelta(data) => {
             router.last_thinking_turn = Some(data.turn_id);
@@ -833,11 +833,9 @@ fn handle_live_event(
             })));
             return;
         }
-        EventData::ReasonThinkingCompleted(_) => {
-            if router.last_thinking_turn.is_some() {
-                router.last_thinking_turn = None;
-                let _ = tx.send(TurnEvent::Stream(None));
-            }
+        EventData::ReasonThinkingCompleted(_) if router.last_thinking_turn.is_some() => {
+            router.last_thinking_turn = None;
+            let _ = tx.send(TurnEvent::Stream(None));
         }
         EventData::ToolOutputDelta(data) => {
             router.last_tool_call = Some(data.tool_call_id.clone());
@@ -853,11 +851,11 @@ fn handle_live_event(
             })));
             return;
         }
-        EventData::ToolCompleted(data) => {
-            if router.last_tool_call.as_deref() == Some(data.tool_call_id.as_str()) {
-                router.last_tool_call = None;
-                let _ = tx.send(TurnEvent::Stream(None));
-            }
+        EventData::ToolCompleted(data)
+            if router.last_tool_call.as_deref() == Some(data.tool_call_id.as_str()) =>
+        {
+            router.last_tool_call = None;
+            let _ = tx.send(TurnEvent::Stream(None));
         }
         _ => {}
     }
