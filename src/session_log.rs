@@ -57,7 +57,13 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
+
+/// Capacity of the live event broadcast. Sized to absorb a few hundred
+/// rapid-fire delta events from one LLM turn without the TUI receiver
+/// lagging; on overflow the receiver gets `Lagged` and we fall back to
+/// catch-up via `runtime.events()`.
+const EVENT_BROADCAST_CAPACITY: usize = 1024;
 
 /// Default location for yolop's per-session storage folders. Resolves via
 /// `dirs::data_dir()`, which is the platform-native user data directory
@@ -205,6 +211,10 @@ pub struct JsonlEventEmitter {
     events: Arc<RwLock<Vec<Event>>>,
     sequence: Arc<RwLock<i32>>,
     file: Arc<Mutex<File>>,
+    /// Live fan-out of every emitted event (including deltas) for in-process
+    /// subscribers like the TUI's streaming renderer. Filesystem persistence
+    /// still filters by `is_replay_relevant`; this channel does not.
+    live: broadcast::Sender<Event>,
 }
 
 impl JsonlEventEmitter {
@@ -282,11 +292,20 @@ impl JsonlEventEmitter {
             }
         }
 
+        let (live, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
         Ok(Self {
             events: Arc::new(RwLock::new(Vec::new())),
             sequence: Arc::new(RwLock::new(start_sequence.saturating_sub(1))),
             file: Arc::new(Mutex::new(file)),
+            live,
         })
+    }
+
+    /// Subscribe to live events as they are emitted. Returns a receiver
+    /// that begins delivering events from this point forward — replayed
+    /// history seeded via [`Self::seed_replayed`] is NOT re-broadcast.
+    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
+        self.live.subscribe()
     }
 
     /// Push events read back from disk into the in-memory vec that
@@ -331,6 +350,10 @@ impl EventEmitter for JsonlEventEmitter {
             file.flush()
                 .map_err(|e| AgentLoopError::config(format!("flush session log: {e}")))?;
         }
+
+        // Fan out to live subscribers. `send` errors only when there are
+        // no receivers, which is the common steady state — ignore.
+        let _ = self.live.send(event.clone());
         Ok(event)
     }
 }
@@ -583,6 +606,80 @@ mod tests {
             }
             other => panic!("unexpected event data: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn subscribe_receives_emitted_events_including_deltas() {
+        use everruns_core::events::{
+            OUTPUT_MESSAGE_DELTA, OutputMessageDeltaData, TOOL_OUTPUT_DELTA, ToolOutputDeltaData,
+        };
+        use everruns_core::typed_id::TurnId;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(99);
+        let session_dir = session_dir_path(dir.path(), session_id);
+        let path = session_log_path(&session_dir);
+        let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+
+        let mut rx = emitter.subscribe();
+
+        let turn_id = TurnId::new();
+        let delta_req = EventRequest::new(
+            session_id,
+            EventContext::default(),
+            OutputMessageDeltaData {
+                turn_id,
+                delta: "hello".to_string(),
+                accumulated: "hello".to_string(),
+            },
+        );
+        let _ = emitter.emit(delta_req).await.expect("emit delta");
+
+        let tool_req = EventRequest::new(
+            session_id,
+            EventContext::default(),
+            ToolOutputDeltaData {
+                tool_call_id: "call-1".to_string(),
+                tool_name: "bash".to_string(),
+                delta: "running...\n".to_string(),
+                stream: "stdout".to_string(),
+            },
+        );
+        let _ = emitter.emit(tool_req).await.expect("emit tool delta");
+
+        let first = rx.recv().await.expect("first event");
+        let second = rx.recv().await.expect("second event");
+        assert_eq!(first.event_type, OUTPUT_MESSAGE_DELTA);
+        assert_eq!(second.event_type, TOOL_OUTPUT_DELTA);
+
+        // Streaming events should NOT have hit the JSONL file.
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            on_disk.is_empty(),
+            "delta events must not be persisted: {on_disk:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_does_not_replay_seeded_history() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(101);
+        let session_dir = session_dir_path(dir.path(), session_id);
+        let path = session_log_path(&session_dir);
+        let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+
+        emitter
+            .seed_replayed(vec![input_event(session_id, "old turn")])
+            .await;
+        let mut rx = emitter.subscribe();
+
+        // Without any new emissions, recv() must time out — the broadcast
+        // is post-emission only, never replays seeded history.
+        let drained = tokio::time::timeout(std::time::Duration::from_millis(40), rx.recv()).await;
+        assert!(
+            drained.is_err(),
+            "no event should be delivered, got {drained:?}"
+        );
     }
 
     #[test]

@@ -23,6 +23,7 @@ use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::time::Duration;
+use tokio::sync::broadcast;
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Clone, Debug)]
@@ -131,9 +132,46 @@ pub struct App {
     ctrl_c_exit: bool,
     busy_frame: u64,
     turn_activity: Option<String>,
+    /// Live tail of streaming assistant text (and other delta events).
+    /// Cleared on turn completion; never enters the persistent transcript.
+    stream_preview: Option<StreamPreview>,
     rx: Option<mpsc::UnboundedReceiver<TurnEvent>>,
     approval_rx: ApprovalRx,
     pending: Option<PendingApproval>,
+}
+
+/// What kind of delta is currently being streamed. Only the assistant
+/// output is finalized into the transcript at end-of-turn (via the
+/// message store); thinking and tool output are display-only.
+#[derive(Clone, Debug)]
+pub struct StreamPreview {
+    pub kind: StreamKind,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamKind {
+    Assistant,
+    Thinking,
+    Tool,
+}
+
+impl StreamKind {
+    fn label(self) -> &'static str {
+        match self {
+            StreamKind::Assistant => "agent",
+            StreamKind::Thinking => "thinking",
+            StreamKind::Tool => "tool",
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            StreamKind::Assistant => ACCENT_GOLD,
+            StreamKind::Thinking => TEXT_MUTED,
+            StreamKind::Tool => TEXT_MUTED,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -146,6 +184,9 @@ pub struct ActivityStatus {
 enum TurnEvent {
     Lines(Vec<ChatLine>),
     Activity(ActivityStatus),
+    /// Replace the live streaming preview shown above the input.
+    /// `None` clears the preview.
+    Stream(Option<StreamPreview>),
     Done,
     Failed(String),
 }
@@ -164,6 +205,7 @@ impl App {
             ctrl_c_exit: false,
             busy_frame: 0,
             turn_activity: None,
+            stream_preview: None,
             rx: None,
             approval_rx,
             pending: None,
@@ -245,10 +287,15 @@ impl App {
                         }
                         continue;
                     }
+                    Ok(TurnEvent::Stream(preview)) => {
+                        self.stream_preview = preview;
+                        continue;
+                    }
                     Ok(TurnEvent::Done) => {
                         self.busy = false;
                         self.busy_frame = 0;
                         self.turn_activity = None;
+                        self.stream_preview = None;
                         self.rx = None;
                         continue;
                     }
@@ -256,6 +303,7 @@ impl App {
                         self.busy = false;
                         self.busy_frame = 0;
                         self.turn_activity = None;
+                        self.stream_preview = None;
                         self.rx = None;
                         self.push_system(format!("turn failed: {err}"));
                         continue;
@@ -264,6 +312,7 @@ impl App {
                     Err(mpsc::error::TryRecvError::Disconnected) => {
                         self.busy = false;
                         self.turn_activity = None;
+                        self.stream_preview = None;
                         self.rx = None;
                     }
                 }
@@ -610,6 +659,12 @@ impl App {
         self.rx = Some(rx);
         self.busy = true;
         self.turn_activity = None;
+        self.stream_preview = None;
+
+        // Subscribe BEFORE spawning the turn so we don't miss the first
+        // few events (turn.started, reason.started). The broadcast only
+        // delivers events emitted after subscribe().
+        let mut live = handles.events.subscribe();
 
         tokio::spawn(async move {
             let session_id = handles.session_id;
@@ -629,11 +684,52 @@ impl App {
             let input = model.input_message(prompt);
             let runtime = handles.runtime.clone();
             let turn = tokio::spawn(async move { runtime.run_turn(session_id, input).await });
+
             let mut emitted_events = HashSet::new();
-            while !turn.is_finished() {
-                emit_new_turn_events(&handles, events_before, &mut emitted_events, &tx).await;
-                tokio::time::sleep(Duration::from_millis(120)).await;
+            let mut delta_router = DeltaRouter::default();
+            loop {
+                tokio::select! {
+                    biased;
+                    recv = live.recv() => match recv {
+                        Ok(event) => {
+                            if event.session_id != session_id {
+                                continue;
+                            }
+                            handle_live_event(
+                                &event,
+                                &mut emitted_events,
+                                &mut delta_router,
+                                &tx,
+                            );
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            // Receiver overflow: catch up from the canonical
+                            // event vec so we don't lose persistent events.
+                            // Resubscribe to restart from the current head.
+                            live = handles.events.subscribe();
+                            catch_up_events(
+                                &handles,
+                                events_before,
+                                &mut emitted_events,
+                                &tx,
+                            )
+                            .await;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                        if turn.is_finished() {
+                            break;
+                        }
+                    }
+                }
             }
+
+            // Drain any tail events emitted between the last broadcast
+            // poll and the turn's actual completion.
+            catch_up_events(&handles, events_before, &mut emitted_events, &tx).await;
+            // Clear any in-flight streaming preview before we finalize.
+            let _ = tx.send(TurnEvent::Stream(None));
 
             let result = match turn.await {
                 Ok(result) => result,
@@ -643,7 +739,6 @@ impl App {
                     return;
                 }
             };
-            emit_new_turn_events(&handles, events_before, &mut emitted_events, &tx).await;
             let response = match result {
                 Ok(r) => r,
                 Err(e) => {
@@ -658,19 +753,8 @@ impl App {
                 .messages(session_id)
                 .await
                 .unwrap_or_default();
-            let events = handles.runtime.events().await.unwrap_or_default();
 
             let mut out = Vec::new();
-            // Catch any final tool events missed by the polling loop.
-            for event in events.iter().skip(events_before) {
-                let event_id = event.id.to_string();
-                if emitted_events.insert(event_id) {
-                    if let Some(activity) = status_for_event(event) {
-                        let _ = tx.send(TurnEvent::Activity(activity));
-                    }
-                    out.extend(lines_for_event(event));
-                }
-            }
             // Assistant text from the turn.
             for msg in messages.iter().skip(before) {
                 if msg.role == MessageRole::Agent
@@ -706,7 +790,92 @@ impl App {
     }
 }
 
-async fn emit_new_turn_events(
+/// Tracks the most recently active delta stream so we can drop the
+/// preview as soon as a matching `*.completed` arrives. Per-turn state
+/// — one `DeltaRouter` per `start_turn` invocation.
+#[derive(Default)]
+struct DeltaRouter {
+    last_assistant_turn: Option<everruns_core::typed_id::TurnId>,
+    last_thinking_turn: Option<everruns_core::typed_id::TurnId>,
+    last_tool_call: Option<String>,
+}
+
+fn handle_live_event(
+    event: &RuntimeEvent,
+    emitted_events: &mut HashSet<String>,
+    router: &mut DeltaRouter,
+    tx: &mpsc::UnboundedSender<TurnEvent>,
+) {
+    if !emitted_events.insert(event.id.to_string()) {
+        return;
+    }
+
+    match &event.data {
+        EventData::OutputMessageDelta(data) => {
+            router.last_assistant_turn = Some(data.turn_id);
+            let _ = tx.send(TurnEvent::Stream(Some(StreamPreview {
+                kind: StreamKind::Assistant,
+                text: data.accumulated.clone(),
+            })));
+            return;
+        }
+        EventData::OutputMessageCompleted(_) | EventData::OutputMessageReplaced(_) => {
+            if router.last_assistant_turn.is_some() {
+                router.last_assistant_turn = None;
+                let _ = tx.send(TurnEvent::Stream(None));
+            }
+        }
+        EventData::ReasonThinkingDelta(data) => {
+            router.last_thinking_turn = Some(data.turn_id);
+            let _ = tx.send(TurnEvent::Stream(Some(StreamPreview {
+                kind: StreamKind::Thinking,
+                text: data.accumulated.clone(),
+            })));
+            return;
+        }
+        EventData::ReasonThinkingCompleted(_) => {
+            if router.last_thinking_turn.is_some() {
+                router.last_thinking_turn = None;
+                let _ = tx.send(TurnEvent::Stream(None));
+            }
+        }
+        EventData::ToolOutputDelta(data) => {
+            router.last_tool_call = Some(data.tool_call_id.clone());
+            let text = format!(
+                "{} [{}] {}",
+                data.tool_name,
+                data.stream,
+                data.delta.trim_end()
+            );
+            let _ = tx.send(TurnEvent::Stream(Some(StreamPreview {
+                kind: StreamKind::Tool,
+                text,
+            })));
+            return;
+        }
+        EventData::ToolCompleted(data) => {
+            if router.last_tool_call.as_deref() == Some(data.tool_call_id.as_str()) {
+                router.last_tool_call = None;
+                let _ = tx.send(TurnEvent::Stream(None));
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(activity) = status_for_event(event) {
+        let _ = tx.send(TurnEvent::Activity(activity));
+    }
+    let lines = lines_for_event(event);
+    if !lines.is_empty() {
+        let _ = tx.send(TurnEvent::Lines(lines));
+    }
+}
+
+/// Drain any persisted events (from `runtime.events()`) that the broadcast
+/// receiver may have missed — used after a `Lagged` recv error and once
+/// more at end-of-turn so the transcript is never missing tool/reason
+/// completion lines.
+async fn catch_up_events(
     handles: &RuntimeHandles,
     events_before: usize,
     emitted_events: &mut HashSet<String>,
@@ -716,12 +885,13 @@ async fn emit_new_turn_events(
     let mut lines = Vec::new();
     for event in events.iter().skip(events_before) {
         let event_id = event.id.to_string();
-        if emitted_events.insert(event_id) {
-            if let Some(activity) = status_for_event(event) {
-                let _ = tx.send(TurnEvent::Activity(activity));
-            }
-            lines.extend(lines_for_event(event));
+        if !emitted_events.insert(event_id) {
+            continue;
         }
+        if let Some(activity) = status_for_event(event) {
+            let _ = tx.send(TurnEvent::Activity(activity));
+        }
+        lines.extend(lines_for_event(event));
     }
     if !lines.is_empty() {
         let _ = tx.send(TurnEvent::Lines(lines));
@@ -1214,6 +1384,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         .split(f.area());
 
     let mut idx = 0;
+    draw_stream_preview(f, chunks[idx], &*app);
     idx += 1;
     draw_message_separator(f, chunks[idx], &*app);
     idx += 1;
@@ -1222,6 +1393,58 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     draw_status_separator(f, chunks[idx]);
     idx += 1;
     draw_session_status(f, chunks[idx], &*app);
+}
+
+fn draw_stream_preview(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    if area.height == 0 {
+        return;
+    }
+    let Some(preview) = &app.stream_preview else {
+        return;
+    };
+    let inner_width = area.width as usize;
+    if inner_width == 0 {
+        return;
+    }
+    // Show the most recent line of the accumulated stream so the eye
+    // tracks the live tail rather than the start of a long response.
+    let tail = preview
+        .text
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
+    let label = preview.kind.label();
+    let prefix = format!("{label} › ");
+    let prefix_w = prefix.chars().count();
+    let max_text = inner_width.saturating_sub(prefix_w + 1).max(8);
+    let truncated = truncate_tail_chars(tail, max_text);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                prefix,
+                Style::default()
+                    .fg(preview.kind.color())
+                    .add_modifier(Modifier::DIM),
+            ),
+            Span::styled(truncated, Style::default().fg(TEXT_MUTED)),
+        ])),
+        area,
+    );
+}
+
+/// Keep the last `max_chars` of `text`. Streaming preview reads better
+/// when the cursor (tail of the stream) is what's visible.
+fn truncate_tail_chars(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    let skip = count - max_chars.saturating_sub(1);
+    let mut out = String::with_capacity(max_chars);
+    out.push('…');
+    out.extend(text.chars().skip(skip));
+    out
 }
 
 fn should_insert_chat_gap(current: &Author, next: Option<&Author>) -> bool {
@@ -2154,6 +2377,131 @@ mod tests {
                 .iter()
                 .filter(|line| line.starts_with("○ "))
                 .all(|line| line.ends_with('…'))
+        );
+    }
+
+    #[test]
+    fn handle_live_event_routes_assistant_delta_to_stream_preview() {
+        use everruns_core::events::{OutputMessageDeltaData, ToolOutputDeltaData};
+        use everruns_core::typed_id::TurnId;
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
+        let mut emitted = HashSet::new();
+        let mut router = DeltaRouter::default();
+        let turn_id = TurnId::new();
+
+        let delta_event = RuntimeEvent::new(
+            SessionId::new(),
+            EventContext::empty(),
+            OutputMessageDeltaData {
+                turn_id,
+                delta: "Hel".to_string(),
+                accumulated: "Hel".to_string(),
+            },
+        );
+        handle_live_event(&delta_event, &mut emitted, &mut router, &tx);
+
+        let more = RuntimeEvent::new(
+            SessionId::new(),
+            EventContext::empty(),
+            OutputMessageDeltaData {
+                turn_id,
+                delta: "lo, world".to_string(),
+                accumulated: "Hello, world".to_string(),
+            },
+        );
+        handle_live_event(&more, &mut emitted, &mut router, &tx);
+
+        let completed = RuntimeEvent::new(
+            SessionId::new(),
+            EventContext::empty(),
+            OutputMessageCompletedData::new(Message::assistant("Hello, world")),
+        );
+        handle_live_event(&completed, &mut emitted, &mut router, &tx);
+
+        // Tool delta event surfaces a separate preview kind.
+        let tool_delta = RuntimeEvent::new(
+            SessionId::new(),
+            EventContext::empty(),
+            ToolOutputDeltaData {
+                tool_call_id: "call-99".to_string(),
+                tool_name: "bash".to_string(),
+                delta: "compiling...\n".to_string(),
+                stream: "stdout".to_string(),
+            },
+        );
+        handle_live_event(&tool_delta, &mut emitted, &mut router, &tx);
+
+        let mut previews = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let TurnEvent::Stream(preview) = event {
+                previews.push(preview);
+            }
+        }
+
+        // Expect: first delta → Assistant preview, second delta → Assistant
+        // preview with accumulated text, completed → None, tool delta → Tool preview.
+        assert_eq!(previews.len(), 4);
+        match &previews[0] {
+            Some(p) => {
+                assert_eq!(p.kind, StreamKind::Assistant);
+                assert_eq!(p.text, "Hel");
+            }
+            None => panic!("expected first preview to be Some"),
+        }
+        match &previews[1] {
+            Some(p) => {
+                assert_eq!(p.kind, StreamKind::Assistant);
+                assert_eq!(p.text, "Hello, world");
+            }
+            None => panic!("expected second preview to be Some"),
+        }
+        assert!(previews[2].is_none(), "completed must clear preview");
+        match &previews[3] {
+            Some(p) => {
+                assert_eq!(p.kind, StreamKind::Tool);
+                assert!(
+                    p.text.contains("bash") && p.text.contains("compiling"),
+                    "tool preview text: {:?}",
+                    p.text
+                );
+            }
+            None => panic!("expected tool delta to surface preview"),
+        }
+    }
+
+    #[test]
+    fn handle_live_event_deduplicates_by_event_id() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
+        let mut emitted = HashSet::new();
+        let mut router = DeltaRouter::default();
+
+        let event = RuntimeEvent::new(
+            SessionId::new(),
+            EventContext::empty(),
+            ReasonCompletedData::success("plan", true, 1, None, None),
+        );
+        handle_live_event(&event, &mut emitted, &mut router, &tx);
+        handle_live_event(&event, &mut emitted, &mut router, &tx);
+
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(
+            count, 2,
+            "first dispatch yields Activity + Lines; second is suppressed"
+        );
+    }
+
+    #[test]
+    fn truncate_tail_keeps_visible_cursor() {
+        assert_eq!(truncate_tail_chars("hello", 10), "hello");
+        let out = truncate_tail_chars("0123456789abcdef", 8);
+        assert!(out.starts_with('…'), "expected ellipsis prefix: {out:?}");
+        assert!(
+            out.ends_with("cdef"),
+            "expected tail of the text to survive: {out:?}"
         );
     }
 
