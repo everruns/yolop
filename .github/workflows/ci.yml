@@ -79,7 +79,7 @@ jobs:
         uses: codecov/codecov-action@v4
         with:
           files: lcov.info
-          fail_ci_if_error: false
+          fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload coverage artifact
@@ -88,19 +88,29 @@ jobs:
         with:
           name: lcov-coverage
           path: lcov.info
-          if-no-files-found: warn
+          if-no-files-found: error
 
   live-smoke:
     name: Live OpenAI Smoke (Doppler)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Skip on PRs from forks where the DOPPLER_TOKEN secret is not exposed.
+    # Gate this job out entirely on fork PRs where DOPPLER_TOKEN is not
+    # exposed. When the job does run, it must actually run the test —
+    # silently skipping on a missing secret would let the live-smoke check
+    # report green without exercising anything.
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     needs: [lint, test]
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Verify DOPPLER_TOKEN is set
+        run: |
+          if [ -z "${DOPPLER_TOKEN}" ]; then
+            echo "::error::DOPPLER_TOKEN is required for the live smoke job but is not set. Configure the repo secret or update the job's outer 'if:' to skip this environment."
+            exit 1
+          fi
 
       - name: Install Doppler CLI
         uses: dopplerhq/cli-action@v3
@@ -117,9 +127,4 @@ jobs:
         run: cargo test --no-run --test integration
 
       - name: Live OpenAI smoke test
-        if: env.DOPPLER_TOKEN != ''
         run: doppler run -- cargo test --test integration -- --ignored --nocapture
-
-      - name: Live smoke skipped (no DOPPLER_TOKEN)
-        if: env.DOPPLER_TOKEN == ''
-        run: echo "::warning::DOPPLER_TOKEN is not set; skipping live OpenAI smoke test."
