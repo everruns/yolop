@@ -2,8 +2,8 @@
 // Decision: writes/deletes flow through SessionFileSystem decorators; bash
 // goes through the BashTool directly. Both await an explicit yes from the
 // human via a oneshot channel. Read-only ops (read_file, list_directory,
-// grep) run free. The TUI installs an interactive gate, the `--print`
-// one-shot mode installs auto-approve. `--yes` overrides interactive.
+// grep) run free. The TUI installs an interactive gate when `--ask` is on;
+// otherwise (and always in `--print` mode) the gate is auto-approve.
 
 use async_trait::async_trait;
 use everruns_runtime::FileApprovalGate;

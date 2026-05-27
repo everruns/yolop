@@ -151,9 +151,11 @@ impl Tool for BashTool {
                         Ok(n) => err_buf.extend_from_slice(&e[..n]),
                     },
                 }
-                if out_buf.len() + err_buf.len() > max_bytes * 2 {
-                    // Cap exceeded — kill the child and stop reading. The
-                    // remaining drain below is bounded by max_bytes.
+                if out_buf.len() > max_bytes || err_buf.len() > max_bytes {
+                    // Per-stream cap exceeded — kill the child and stop
+                    // reading. Each stream is also truncated to `max_bytes`
+                    // after the wait below, matching the documented
+                    // per-stream 1 MiB cap.
                     let _ = child.start_kill();
                     break;
                 }

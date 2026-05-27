@@ -1005,9 +1005,7 @@ mod tests {
             model: "gpt-5.5".to_string(),
             reasoning_effort: Some("medium".to_string()),
         };
-        let next = provider
-            .resolve_model_spec("llmsim/llmsim-yolop")
-            .unwrap();
+        let next = provider.resolve_model_spec("llmsim/llmsim-yolop").unwrap();
 
         assert_eq!(next.label(), "llmsim/llmsim-yolop");
     }
