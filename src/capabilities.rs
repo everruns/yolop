@@ -292,6 +292,7 @@ pub(crate) const MODEL_SWITCHER_CAPABILITY_ID: &str = "yolop_model_switcher";
 pub(crate) struct ModelSwitcherCapability {
     pub(crate) provider: Arc<RwLock<ProviderChoice>>,
     pub(crate) provider_store: Arc<dyn RuntimeProviderStore>,
+    pub(crate) settings: Arc<SettingsStore>,
 }
 
 #[async_trait]
@@ -375,7 +376,7 @@ impl Capability for ModelSwitcherCapability {
                 return Ok(failed_result(format!("model change failed: {err}")));
             }
         };
-        let mw = match next.model_with_provider() {
+        let mw = match next.model_with_provider(&self.settings.snapshot()) {
             Ok(m) => m,
             Err(err) => {
                 return Ok(failed_result(format!("model change failed: {err}")));
@@ -509,7 +510,7 @@ impl Capability for ProviderSwitcherCapability {
             Ok(n) => n,
             Err(err) => return Ok(failed_result(format!("provider change failed: {err}"))),
         };
-        let mw = match next.model_with_provider() {
+        let mw = match next.model_with_provider(&self.settings.snapshot()) {
             Ok(m) => m,
             Err(err) => return Ok(failed_result(format!("provider change failed: {err}"))),
         };
@@ -529,6 +530,146 @@ impl Capability for ProviderSwitcherCapability {
             error_code: None,
             error_fields: None,
         })
+    }
+}
+
+// ---------- /token ----------
+//
+// Stores per-provider API tokens in the same settings file as `/provider`.
+// Env vars still win at runtime (see `runtime::resolve_token`) so a
+// per-run override is always possible. Slash commands don't echo their
+// arguments to the transcript or session log, so `/token openai sk-...`
+// is the safest entry point we have — but the resulting settings file
+// sits in plain text on disk (0o600 on Unix).
+
+pub(crate) const TOKEN_CAPABILITY_ID: &str = "yolop_token_manager";
+
+/// Providers that meaningfully consume an API token. `llmsim` is excluded
+/// (no key needed) and `ollama` is included for completeness even though
+/// most local setups don't authenticate.
+const TOKEN_PROVIDERS: &[&str] = &["openai", "anthropic", "google", "openrouter", "ollama"];
+
+pub(crate) struct TokenCapability {
+    pub(crate) settings: Arc<SettingsStore>,
+}
+
+#[async_trait]
+impl Capability for TokenCapability {
+    fn id(&self) -> &str {
+        TOKEN_CAPABILITY_ID
+    }
+    fn name(&self) -> &str {
+        "Coding CLI Token Manager"
+    }
+    fn description(&self) -> &str {
+        "Store provider API tokens in yolop settings so env vars are not required."
+    }
+    fn status(&self) -> CapabilityStatus {
+        CapabilityStatus::Available
+    }
+    fn category(&self) -> Option<&str> {
+        Some("Examples")
+    }
+    fn system_prompt_addition(&self) -> Option<&str> {
+        None
+    }
+    fn commands(&self) -> Vec<CommandDescriptor> {
+        vec![CommandDescriptor {
+            name: "token".to_string(),
+            description: "Show or store API tokens. Env vars still override saved tokens."
+                .to_string(),
+            source: CommandSource::System,
+            args: vec![CommandArg {
+                name: "provider [value | clear]".to_string(),
+                description:
+                    "<provider> <value> to store; <provider> clear to remove; omit to list status."
+                        .to_string(),
+                required: false,
+                suggestions: TOKEN_PROVIDERS.iter().map(|s| (*s).to_string()).collect(),
+            }],
+        }]
+    }
+
+    async fn execute_command(
+        &self,
+        request: &ExecuteCommandRequest,
+        _ctx: &CommandExecutionContext,
+    ) -> everruns_core::Result<CommandResult> {
+        if request.name != "token" {
+            return Err(everruns_core::AgentLoopError::config(format!(
+                "{} cannot execute /{}",
+                self.id(),
+                request.name
+            )));
+        }
+        let raw = request.arguments.as_deref().unwrap_or("").trim();
+        if raw.is_empty() {
+            let snapshot = self.settings.snapshot();
+            let status: Vec<String> = TOKEN_PROVIDERS
+                .iter()
+                .map(|p| {
+                    let marker = if snapshot.has_token(p) { "stored" } else { "-" };
+                    format!("{p}: {marker}")
+                })
+                .collect();
+            return Ok(CommandResult {
+                success: true,
+                message: format!(
+                    "tokens ({}): {}",
+                    self.settings.path().display(),
+                    status.join(", ")
+                ),
+                error_code: None,
+                error_fields: None,
+            });
+        }
+
+        let mut parts = raw.splitn(2, char::is_whitespace);
+        let provider = parts.next().unwrap_or_default().to_ascii_lowercase();
+        let rest = parts.next().unwrap_or_default().trim();
+
+        if !TOKEN_PROVIDERS.contains(&provider.as_str()) {
+            return Ok(failed_result(format!(
+                "unknown provider `{provider}`; expected one of {}",
+                TOKEN_PROVIDERS.join(", ")
+            )));
+        }
+        if rest.is_empty() {
+            return Ok(failed_result(
+                "usage: /token <provider> <value|clear>".to_string(),
+            ));
+        }
+
+        if rest.eq_ignore_ascii_case("clear") {
+            return Ok(match self.settings.clear_token(&provider) {
+                Ok(true) => CommandResult {
+                    success: true,
+                    message: format!("token cleared for {provider}"),
+                    error_code: None,
+                    error_fields: None,
+                },
+                Ok(false) => CommandResult {
+                    success: true,
+                    message: format!("no token was stored for {provider}"),
+                    error_code: None,
+                    error_fields: None,
+                },
+                Err(err) => failed_result(format!("token clear failed: {err}")),
+            });
+        }
+
+        match self.settings.set_token(provider.clone(), rest.to_string()) {
+            Ok(()) => Ok(CommandResult {
+                success: true,
+                message: format!(
+                    "token stored for {provider} (in {})",
+                    self.settings.path().display()
+                ),
+                error_code: None,
+                error_fields: None,
+            }),
+            Err(err) => Ok(failed_result(format!("token save failed: {err}"))),
+        }
     }
 }
 

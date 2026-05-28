@@ -102,19 +102,20 @@ fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
 /// env-var auto-detection. Model and reasoning-effort flags layer on top
 /// of whichever base was chosen.
 fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
+    let snapshot = settings.snapshot();
     let base = if let Some(arg) = cli.provider {
         ProviderChoice::default_for_provider_name(provider_name_for_arg(arg))
             .expect("ProviderArg names are always valid")
-    } else if let Some(saved) = settings.snapshot().provider {
-        match ProviderChoice::default_for_provider_name(&saved) {
+    } else if let Some(saved) = snapshot.provider.as_deref() {
+        match ProviderChoice::default_for_provider_name(saved) {
             Ok(choice) => choice,
             Err(err) => {
                 eprintln!("yolop: ignoring saved provider `{saved}`: {err}");
-                ProviderChoice::from_env()
+                ProviderChoice::from_env_or_settings(&snapshot)
             }
         }
     } else {
-        ProviderChoice::from_env()
+        ProviderChoice::from_env_or_settings(&snapshot)
     };
     let selected = match (base, cli.model.clone()) {
         (ProviderChoice::Anthropic { .. }, Some(m)) => ProviderChoice::Anthropic { model: m },

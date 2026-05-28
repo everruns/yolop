@@ -1,10 +1,19 @@
-// Persistent yolop settings — currently just the preferred provider name.
+// Persistent yolop settings — preferred provider plus optional per-provider
+// API tokens.
 //
 // Stored at `<config_dir>/yolop/settings.toml` (`~/.config/yolop/settings.toml`
-// on Linux). The capability that owns `/provider` writes through
-// `SettingsStore` so the choice survives across runs.
+// on Linux). The capabilities that own `/provider` and `/token` write
+// through `SettingsStore` so user choices survive across runs.
+//
+// Tokens are written with 0o600 on Unix (owner-only) and are still less
+// secure than a real secret manager — they sit in plain text on disk. The
+// `/token <provider> clear` command removes a stored entry. Env vars
+// (OPENAI_API_KEY, ANTHROPIC_API_KEY, …) continue to take precedence so a
+// per-run override is always possible.
 
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use toml::Table;
@@ -13,16 +22,24 @@ use toml::Value;
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
     pub provider: Option<String>,
+    pub tokens: BTreeMap<String, String>,
 }
 
 impl Settings {
     pub fn from_table(table: &Table) -> Self {
-        Self {
-            provider: table
-                .get("provider")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+        let provider = table
+            .get("provider")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let mut tokens = BTreeMap::new();
+        if let Some(t) = table.get("tokens").and_then(Value::as_table) {
+            for (k, v) in t {
+                if let Some(s) = v.as_str() {
+                    tokens.insert(k.clone(), s.to_string());
+                }
+            }
         }
+        Self { provider, tokens }
     }
 
     pub fn to_table(&self) -> Table {
@@ -30,7 +47,22 @@ impl Settings {
         if let Some(p) = &self.provider {
             table.insert("provider".to_string(), Value::String(p.clone()));
         }
+        if !self.tokens.is_empty() {
+            let mut tokens_table = Table::new();
+            for (k, v) in &self.tokens {
+                tokens_table.insert(k.clone(), Value::String(v.clone()));
+            }
+            table.insert("tokens".to_string(), Value::Table(tokens_table));
+        }
         table
+    }
+
+    pub fn token_for(&self, provider: &str) -> Option<&str> {
+        self.tokens.get(provider).map(String::as_str)
+    }
+
+    pub fn has_token(&self, provider: &str) -> bool {
+        self.tokens.contains_key(provider)
     }
 }
 
@@ -46,13 +78,28 @@ pub fn load_from(path: &Path) -> Settings {
     Settings::from_table(&table)
 }
 
+/// Write the settings file atomically-ish: open with `O_TRUNC` and mode
+/// 0o600 on Unix so the file is created owner-only from the first byte —
+/// avoids a brief window where the previous-version contents sit on disk
+/// with default 0o644 permissions while we still hold the tokens.
 fn save_to(path: &Path, settings: &Settings) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("create settings dir {}", dir.display()))?;
     }
     let toml_text = toml::to_string(&settings.to_table()).context("serialize settings")?;
-    std::fs::write(path, toml_text)
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts
+        .open(path)
+        .with_context(|| format!("open settings {}", path.display()))?;
+    file.write_all(toml_text.as_bytes())
         .with_context(|| format!("write settings {}", path.display()))?;
     Ok(())
 }
@@ -87,6 +134,20 @@ impl SettingsStore {
         guard.provider = provider;
         save_to(&self.path, &guard)
     }
+
+    pub fn set_token(&self, provider: String, token: String) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.tokens.insert(provider, token);
+        save_to(&self.path, &guard)
+    }
+
+    /// Returns whether a token was actually present before removal.
+    pub fn clear_token(&self, provider: &str) -> Result<bool> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let existed = guard.tokens.remove(provider).is_some();
+        save_to(&self.path, &guard)?;
+        Ok(existed)
+    }
 }
 
 #[cfg(test)]
@@ -94,7 +155,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn roundtrip_via_disk() {
+    fn provider_roundtrip_via_disk() {
         let tmp = tempfile::tempdir().expect("tmp");
         let path = tmp.path().join("nested").join("settings.toml");
         let store = SettingsStore::open(path.clone());
@@ -114,11 +175,68 @@ mod tests {
     }
 
     #[test]
+    fn token_roundtrip_via_disk() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store
+            .set_token("openai".to_string(), "sk-test-abc".to_string())
+            .expect("save");
+        store
+            .set_token("anthropic".to_string(), "anthropic-key".to_string())
+            .expect("save");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            on_disk.contains("[tokens]") && on_disk.contains("openai = \"sk-test-abc\""),
+            "expected TOML tokens table, got: {on_disk}"
+        );
+
+        let reloaded = SettingsStore::open(path);
+        assert_eq!(reloaded.snapshot().token_for("openai"), Some("sk-test-abc"));
+        assert_eq!(
+            reloaded.snapshot().token_for("anthropic"),
+            Some("anthropic-key")
+        );
+        assert!(reloaded.snapshot().token_for("google").is_none());
+    }
+
+    #[test]
+    fn clearing_token_removes_only_that_entry() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store
+            .set_token("openai".to_string(), "sk-1".to_string())
+            .expect("save");
+        store
+            .set_token("anthropic".to_string(), "anth-1".to_string())
+            .expect("save");
+
+        let removed = store.clear_token("openai").expect("clear");
+        assert!(removed);
+
+        let reloaded = SettingsStore::open(path);
+        assert!(reloaded.snapshot().token_for("openai").is_none());
+        assert_eq!(reloaded.snapshot().token_for("anthropic"), Some("anth-1"));
+    }
+
+    #[test]
+    fn clearing_absent_token_reports_false_but_succeeds() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path);
+        let removed = store.clear_token("openai").expect("clear");
+        assert!(!removed);
+    }
+
+    #[test]
     fn missing_file_yields_default() {
         let tmp = tempfile::tempdir().expect("tmp");
         let path = tmp.path().join("absent.toml");
         let store = SettingsStore::open(path);
         assert!(store.snapshot().provider.is_none());
+        assert!(store.snapshot().tokens.is_empty());
     }
 
     #[test]
@@ -130,16 +248,19 @@ mod tests {
         assert!(store.snapshot().provider.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
-    fn clearing_provider_persists_empty_table() {
+    fn save_writes_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
         let tmp = tempfile::tempdir().expect("tmp");
         let path = tmp.path().join("settings.toml");
         let store = SettingsStore::open(path.clone());
         store
-            .set_provider(Some("openai".to_string()))
+            .set_token("openai".to_string(), "sk-test".to_string())
             .expect("save");
-        store.set_provider(None).expect("save");
-        let reloaded = SettingsStore::open(path);
-        assert!(reloaded.snapshot().provider.is_none());
+
+        let mode = std::fs::metadata(&path).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

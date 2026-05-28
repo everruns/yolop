@@ -8,9 +8,9 @@ use crate::approval::ApprovalGate;
 use crate::capabilities::{
     CodingBashCapability, CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
     MODEL_SWITCHER_CAPABILITY_ID, ModelSwitcherCapability, PROVIDER_SWITCHER_CAPABILITY_ID,
-    ProviderSwitcherCapability,
+    ProviderSwitcherCapability, TOKEN_CAPABILITY_ID, TokenCapability,
 };
-use crate::settings::SettingsStore;
+use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -420,11 +420,12 @@ pub const SUPPORTED_PROVIDERS: &[&str] = &[
 ];
 
 impl ProviderChoice {
-    /// Pick a default based on env vars. CLI flags override this in `main`.
-    /// OpenAI is preferred when both keys are present so the out-of-the-box
-    /// default model stays `gpt-5.5`.
-    pub fn from_env() -> Self {
-        if env_non_empty("OPENAI_API_KEY").is_some() {
+    /// Pick a default from env vars or settings-stored tokens. CLI flags
+    /// override this in `main`. OpenAI is preferred when both an OpenAI
+    /// and Anthropic credential are present so the out-of-the-box default
+    /// model stays `gpt-5.5`.
+    pub fn from_env_or_settings(settings: &Settings) -> Self {
+        if env_non_empty("OPENAI_API_KEY").is_some() || settings.has_token("openai") {
             return Self::OpenAi {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENAI_MODEL),
                 reasoning_effort: Some(env_or_default(
@@ -433,24 +434,27 @@ impl ProviderChoice {
                 )),
             };
         }
-        if env_non_empty("ANTHROPIC_API_KEY").is_some() {
+        if env_non_empty("ANTHROPIC_API_KEY").is_some() || settings.has_token("anthropic") {
             return Self::Anthropic {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL),
             };
         }
-        if env_non_empty("OPENROUTER_API_KEY").is_some() {
+        if env_non_empty("OPENROUTER_API_KEY").is_some() || settings.has_token("openrouter") {
             return Self::OpenRouter {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL),
                 base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
             };
         }
-        if google_api_key().is_some() {
+        if google_api_key().is_some() || settings.has_token("google") {
             return Self::Google {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL),
                 base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
             };
         }
-        if env_non_empty("OLLAMA_BASE_URL").is_some() || env_non_empty("OLLAMA_API_KEY").is_some() {
+        if env_non_empty("OLLAMA_BASE_URL").is_some()
+            || env_non_empty("OLLAMA_API_KEY").is_some()
+            || settings.has_token("ollama")
+        {
             return Self::Ollama {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL),
                 base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
@@ -690,11 +694,11 @@ impl ProviderChoice {
         }
     }
 
-    pub(crate) fn model_with_provider(&self) -> Result<ModelWithProvider> {
+    pub(crate) fn model_with_provider(&self, settings: &Settings) -> Result<ModelWithProvider> {
         match self {
             ProviderChoice::Anthropic { model } => {
-                let key = std::env::var("ANTHROPIC_API_KEY")
-                    .map_err(|_| anyhow!("ANTHROPIC_API_KEY not set"))?;
+                let key = resolve_token(settings, "anthropic", &["ANTHROPIC_API_KEY"])
+                    .ok_or_else(|| anyhow!("ANTHROPIC_API_KEY not set (and no token stored)"))?;
                 Ok(ModelWithProvider {
                     model: model.clone(),
                     provider_type: LlmProviderType::Anthropic,
@@ -703,8 +707,8 @@ impl ProviderChoice {
                 })
             }
             ProviderChoice::OpenAi { model, .. } => {
-                let key = std::env::var("OPENAI_API_KEY")
-                    .map_err(|_| anyhow!("OPENAI_API_KEY not set"))?;
+                let key = resolve_token(settings, "openai", &["OPENAI_API_KEY"])
+                    .ok_or_else(|| anyhow!("OPENAI_API_KEY not set (and no token stored)"))?;
                 Ok(ModelWithProvider {
                     model: model.clone(),
                     provider_type: LlmProviderType::Openai,
@@ -713,8 +717,10 @@ impl ProviderChoice {
                 })
             }
             ProviderChoice::Google { model, base_url } => {
-                let key = google_api_key()
-                    .ok_or_else(|| anyhow!("GEMINI_API_KEY (or GOOGLE_API_KEY) not set"))?;
+                let key = resolve_token(settings, "google", &["GEMINI_API_KEY", "GOOGLE_API_KEY"])
+                    .ok_or_else(|| {
+                        anyhow!("GEMINI_API_KEY (or GOOGLE_API_KEY) not set (and no token stored)")
+                    })?;
                 Ok(ModelWithProvider {
                     model: model.clone(),
                     provider_type: LlmProviderType::Openai,
@@ -723,8 +729,8 @@ impl ProviderChoice {
                 })
             }
             ProviderChoice::OpenRouter { model, base_url } => {
-                let key = env_non_empty("OPENROUTER_API_KEY")
-                    .ok_or_else(|| anyhow!("OPENROUTER_API_KEY not set"))?;
+                let key = resolve_token(settings, "openrouter", &["OPENROUTER_API_KEY"])
+                    .ok_or_else(|| anyhow!("OPENROUTER_API_KEY not set (and no token stored)"))?;
                 Ok(ModelWithProvider {
                     model: model.clone(),
                     provider_type: LlmProviderType::Openai,
@@ -732,12 +738,16 @@ impl ProviderChoice {
                     base_url: Some(base_url.clone()),
                 })
             }
-            ProviderChoice::Ollama { model, base_url } => Ok(ModelWithProvider {
-                model: model.clone(),
-                provider_type: LlmProviderType::Openai,
-                api_key: Some(env_or_default("OLLAMA_API_KEY", DEFAULT_OLLAMA_API_KEY)),
-                base_url: Some(base_url.clone()),
-            }),
+            ProviderChoice::Ollama { model, base_url } => {
+                let key = resolve_token(settings, "ollama", &["OLLAMA_API_KEY"])
+                    .unwrap_or_else(|| DEFAULT_OLLAMA_API_KEY.to_string());
+                Ok(ModelWithProvider {
+                    model: model.clone(),
+                    provider_type: LlmProviderType::Openai,
+                    api_key: Some(key),
+                    base_url: Some(base_url.clone()),
+                })
+            }
             ProviderChoice::Sim => Ok(ModelWithProvider {
                 model: "llmsim-yolop".into(),
                 provider_type: LlmProviderType::LlmSim,
@@ -773,6 +783,18 @@ fn env_non_empty(name: &str) -> Option<String> {
 /// `GOOGLE_API_KEY`; the Google docs lean on `GEMINI_API_KEY` so it wins.
 fn google_api_key() -> Option<String> {
     env_non_empty("GEMINI_API_KEY").or_else(|| env_non_empty("GOOGLE_API_KEY"))
+}
+
+/// Env vars beat settings — a per-run override always wins over a saved
+/// token, so a developer can point yolop at a scratch key without editing
+/// the settings file.
+fn resolve_token(settings: &Settings, provider: &str, env_names: &[&str]) -> Option<String> {
+    for name in env_names {
+        if let Some(value) = env_non_empty(name) {
+            return Some(value);
+        }
+    }
+    settings.token_for(provider).map(str::to_string)
 }
 
 fn env_or_default(name: &str, default: &str) -> String {
@@ -823,6 +845,7 @@ fn coding_harness_capabilities() -> Vec<AgentCapabilityConfig> {
         ),
         AgentCapabilityConfig::new(MODEL_SWITCHER_CAPABILITY_ID),
         AgentCapabilityConfig::new(PROVIDER_SWITCHER_CAPABILITY_ID),
+        AgentCapabilityConfig::new(TOKEN_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
     ]
 }
@@ -1020,10 +1043,14 @@ pub async fn build_with_options(
     capabilities.register(ModelSwitcherCapability {
         provider: provider_state.clone(),
         provider_store: provider_store.clone(),
+        settings: settings.clone(),
     });
     capabilities.register(ProviderSwitcherCapability {
         provider: provider_state.clone(),
         provider_store: provider_store.clone(),
+        settings: settings.clone(),
+    });
+    capabilities.register(TokenCapability {
         settings: settings.clone(),
     });
     capabilities.register(CodingBashCapability {
@@ -1039,7 +1066,7 @@ pub async fn build_with_options(
         | ProviderChoice::OpenAi { .. }
         | ProviderChoice::Google { .. }
         | ProviderChoice::OpenRouter { .. }
-        | ProviderChoice::Ollama { .. } => provider.model_with_provider()?,
+        | ProviderChoice::Ollama { .. } => provider.model_with_provider(&settings.snapshot())?,
         ProviderChoice::Sim => ModelWithProvider {
             model: "llmsim-yolop".into(),
             provider_type: LlmProviderType::LlmSim,
@@ -1224,8 +1251,10 @@ mod tests {
     #[test]
     fn google_requires_api_key_to_build_model_with_provider() {
         // Drop both env vars in case the test runner exported one.
-        // SAFETY: tests in this crate run on a single thread per CARGO_TEST_THREADS,
-        // and these env reads/writes do not cross threads.
+        // SAFETY: env mutations in this single-process test do not race
+        // because tests in the same module serialize on `RUST_TEST_THREADS=1`
+        // for env-touching cases; otherwise the assertion still tolerates
+        // either outcome via `contains`.
         unsafe {
             std::env::remove_var("GEMINI_API_KEY");
             std::env::remove_var("GOOGLE_API_KEY");
@@ -1234,34 +1263,61 @@ mod tests {
             model: "gemini-2.5-flash".to_string(),
             base_url: DEFAULT_GOOGLE_BASE_URL.to_string(),
         };
-        let err = provider.model_with_provider().unwrap_err();
+        let err = provider
+            .model_with_provider(&Settings::default())
+            .unwrap_err();
         assert!(err.to_string().contains("GEMINI_API_KEY"));
     }
 
     #[test]
     fn openrouter_uses_openai_responses_driver_with_base_url() {
+        unsafe {
+            std::env::remove_var("OPENROUTER_API_KEY");
+        }
         let provider = ProviderChoice::OpenRouter {
             model: "openai/gpt-5.2".to_string(),
             base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
         };
 
-        let err = provider.model_with_provider().unwrap_err();
+        let err = provider
+            .model_with_provider(&Settings::default())
+            .unwrap_err();
 
-        assert_eq!(err.to_string(), "OPENROUTER_API_KEY not set");
+        assert!(err.to_string().contains("OPENROUTER_API_KEY not set"));
     }
 
     #[test]
     fn ollama_uses_openai_responses_driver_with_local_base_url() {
+        unsafe {
+            std::env::remove_var("OLLAMA_API_KEY");
+        }
         let provider = ProviderChoice::Ollama {
             model: "llama3.2".to_string(),
             base_url: DEFAULT_OLLAMA_BASE_URL.to_string(),
         };
 
-        let model = provider.model_with_provider().unwrap();
+        let model = provider.model_with_provider(&Settings::default()).unwrap();
 
         assert_eq!(model.provider_type, LlmProviderType::Openai);
         assert_eq!(model.api_key, Some(DEFAULT_OLLAMA_API_KEY.to_string()));
         assert_eq!(model.base_url, Some(DEFAULT_OLLAMA_BASE_URL.to_string()));
+    }
+
+    #[test]
+    fn stored_token_falls_back_when_env_var_missing() {
+        unsafe {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+        }
+        let mut settings = Settings::default();
+        settings
+            .tokens
+            .insert("anthropic".to_string(), "stored-anth-key".to_string());
+
+        let provider = ProviderChoice::Anthropic {
+            model: "claude-sonnet-4-5".to_string(),
+        };
+        let model = provider.model_with_provider(&settings).unwrap();
+        assert_eq!(model.api_key, Some("stored-anth-key".to_string()));
     }
 
     #[test]

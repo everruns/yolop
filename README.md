@@ -64,8 +64,8 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` → Ollama (`llama3.2`)
   - otherwise `llmsim` (offline simulator, no key required)
 - **Slash commands** (TUI): `/help`, `/tools`, `/cwd`,
-  `/provider <name>` (persists across runs), `/model <provider>/<id>`,
-  `/clear`, `/quit`.
+  `/provider <name>`, `/model <provider>/<id>`, `/token <provider> <value>`
+  (all three persist across runs), `/clear`, `/quit`.
 - **`--print`** one-shot mode for CI smoke tests.
 - **Session persistence** — durable per-session JSONL event log under the
   platform-native user data directory, with `--session <id>` to resume.
@@ -177,14 +177,32 @@ OLLAMA_BASE_URL=http://localhost:11434/v1 yolop --provider ollama -m llama3.2 -p
 
 ## Settings
 
-A small TOML settings file persists the preferred provider across runs. It
-lives at `<config_dir>/yolop/settings.toml` — `~/.config/yolop/settings.toml`
-on Linux, `~/Library/Application Support/yolop/settings.toml` on macOS,
+A small TOML settings file persists the preferred provider and (optionally)
+provider API tokens across runs. It lives at `<config_dir>/yolop/settings.toml`
+— `~/.config/yolop/settings.toml` on Linux,
+`~/Library/Application Support/yolop/settings.toml` on macOS,
 `%APPDATA%\yolop\settings.toml` on Windows.
 
 The TUI's `/provider <name>` command writes through this file. Resolution
-order at startup is: `--provider` flag > saved setting > env-var
-auto-detection. `/model <provider>/<id>` still works on top of either.
+order at startup is: `--provider` flag > saved provider setting > env-var
+auto-detection > saved tokens. `/model <provider>/<id>` still works on
+top of either.
+
+### Storing tokens
+
+`/token openai sk-...` stores an API token under `[tokens]` in the
+settings file. The file is written with `0o600` on Unix (owner-only).
+Other commands:
+
+- `/token` — list which providers have a token stored (values are not
+  echoed)
+- `/token <provider> clear` — remove the stored token
+
+Env vars still win at runtime: if both `OPENAI_API_KEY` is set and a token
+is saved, the env var is used. Slash commands are not echoed into the
+transcript or session log, so `/token openai sk-...` is safer than typing
+it at a chat prompt — but the resulting settings file is plain text on
+disk, so treat it the same way you would `~/.aws/credentials`.
 
 ## Session persistence
 
