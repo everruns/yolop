@@ -37,6 +37,12 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - `code_environment_context` — workspace root, shell, local date/timezone,
     Git identity and branch.
   - `agent_instructions` — re-reads `AGENTS.md` every turn.
+  - `your` — global personalization. Maintains a central `MEMORY.md`
+    (`<config_dir>/yolop/MEMORY.md`) of durable, cross-session user
+    preferences, injected every turn under a managed size budget. Edited in
+    natural language ("remember that I prefer terse answers", "what is your
+    config?") via `remember` / `read_memory` / `write_memory`. See
+    [`specs/your.md`](./specs/your.md).
   - `skills` — discovers `SKILL.md` files under `.agents/skills/<name>/`;
     exposes `list_skills` / `activate_skill`.
   - `infinity_context` — trims older history out of the live prompt while
@@ -66,7 +72,7 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
 - **Slash commands** (TUI): `/help`, `/tools`, `/cwd`,
   `/provider <name>` (persists), `/token <provider> <value>` (persists),
   `/model <provider>/<id>` (current session only), `/onboard` (guided
-  setup), `/clear`, `/quit`.
+  setup), `/your` (personalization/memory status), `/clear`, `/quit`.
 - **First-run onboarding**: launching yolop with no env vars and no saved
   settings opens an interactive wizard that walks through provider →
   token → default model. Re-runnable any time via `/onboard`.

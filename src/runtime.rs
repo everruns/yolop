@@ -13,6 +13,7 @@ use crate::capabilities::{
 };
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
+use crate::your::{YOUR_CAPABILITY_ID, YourCapability, YourStore};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use everruns_core::capabilities::{
@@ -848,6 +849,7 @@ fn coding_harness_capabilities() -> Vec<AgentCapabilityConfig> {
         AgentCapabilityConfig::new(PROVIDER_SWITCHER_CAPABILITY_ID),
         AgentCapabilityConfig::new(TOKEN_CAPABILITY_ID),
         AgentCapabilityConfig::new(ONBOARDING_CAPABILITY_ID),
+        AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
     ]
 }
@@ -1063,6 +1065,12 @@ pub async fn build_with_options(
     });
     capabilities.register(OnboardingCapability {
         settings: settings.clone(),
+    });
+    // `your` — global personalization. Its MEMORY.md lives beside
+    // settings.toml in the yolop config dir, so a tempdir settings path in
+    // tests isolates memory automatically.
+    capabilities.register(YourCapability {
+        memory: Arc::new(YourStore::beside_settings(&settings)),
     });
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
