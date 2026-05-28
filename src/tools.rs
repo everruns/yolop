@@ -462,7 +462,9 @@ mod tests {
     }
 
     /// Spawn a background task that auto-responds to every approval
-    /// request with `decision`. Returns the gate to install on the tool.
+    /// request with `decision`. Returns the gate to install on the tool
+    /// along with the responder task's `JoinHandle` so callers can
+    /// `.abort()` it on test shutdown.
     fn auto_decision_gate(decision: bool) -> (Arc<ApprovalGate>, tokio::task::JoinHandle<()>) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
             ApprovalRequest,
@@ -486,9 +488,9 @@ mod tests {
 
         match result {
             ToolExecutionResult::ToolError(msg) => {
-                assert!(
-                    msg.contains("user denied"),
-                    "expected denial error, got: {msg}"
+                assert_eq!(
+                    msg, "user denied bash command",
+                    "denial must return the exact documented error"
                 );
             }
             other => panic!("expected ToolError, got: {other:?}"),
@@ -561,7 +563,10 @@ mod tests {
         let result = tool.execute(json!({ "command": "echo hi" })).await;
         match result {
             ToolExecutionResult::ToolError(msg) => {
-                assert!(msg.contains("user denied"), "got: {msg}");
+                assert_eq!(
+                    msg, "user denied bash command",
+                    "dropped-channel gate must fail closed with the documented error"
+                );
             }
             other => panic!("expected ToolError, got: {other:?}"),
         }
