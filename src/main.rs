@@ -8,6 +8,7 @@ mod capabilities;
 mod diff;
 mod runtime;
 mod session_log;
+mod settings;
 mod tools;
 
 #[cfg(test)]
@@ -22,8 +23,10 @@ use everruns_core::message::MessageRole;
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use runtime::{BuiltRuntime, ProviderChoice};
+use settings::SettingsStore;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -77,47 +80,41 @@ struct Cli {
 enum ProviderArg {
     Anthropic,
     Openai,
+    Google,
     Openrouter,
     Ollama,
     #[value(name = "llmsim", alias = "sim")]
     Sim,
 }
 
-fn pick_provider(cli: &Cli) -> ProviderChoice {
-    let base = match cli.provider {
-        Some(ProviderArg::Anthropic) => ProviderChoice::Anthropic {
-            model: "claude-sonnet-4-5".into(),
-        },
-        Some(ProviderArg::Openai) => ProviderChoice::OpenAi {
-            model: "gpt-5.5".into(),
-            reasoning_effort: Some(
-                cli.reasoning_effort
-                    .clone()
-                    .unwrap_or_else(|| "medium".to_string()),
-            ),
-        },
-        Some(ProviderArg::Openrouter) => ProviderChoice::OpenRouter {
-            model: std::env::var("EVERRUNS_CLI_MODEL")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "openai/gpt-5.2".to_string()),
-            base_url: std::env::var("OPENROUTER_BASE_URL")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
-        },
-        Some(ProviderArg::Ollama) => ProviderChoice::Ollama {
-            model: std::env::var("EVERRUNS_CLI_MODEL")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "llama3.2".to_string()),
-            base_url: std::env::var("OLLAMA_BASE_URL")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "http://localhost:11434/v1".to_string()),
-        },
-        Some(ProviderArg::Sim) => ProviderChoice::Sim,
-        None => ProviderChoice::from_env(),
+fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
+    match arg {
+        ProviderArg::Anthropic => "anthropic",
+        ProviderArg::Openai => "openai",
+        ProviderArg::Google => "google",
+        ProviderArg::Openrouter => "openrouter",
+        ProviderArg::Ollama => "ollama",
+        ProviderArg::Sim => "llmsim",
+    }
+}
+
+/// Resolution order: explicit `--provider` flag > persisted settings >
+/// env-var auto-detection. Model and reasoning-effort flags layer on top
+/// of whichever base was chosen.
+fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
+    let base = if let Some(arg) = cli.provider {
+        ProviderChoice::default_for_provider_name(provider_name_for_arg(arg))
+            .expect("ProviderArg names are always valid")
+    } else if let Some(saved) = settings.snapshot().provider {
+        match ProviderChoice::default_for_provider_name(&saved) {
+            Ok(choice) => choice,
+            Err(err) => {
+                eprintln!("yolop: ignoring saved provider `{saved}`: {err}");
+                ProviderChoice::from_env()
+            }
+        }
+    } else {
+        ProviderChoice::from_env()
     };
     let selected = match (base, cli.model.clone()) {
         (ProviderChoice::Anthropic { .. }, Some(m)) => ProviderChoice::Anthropic { model: m },
@@ -130,6 +127,9 @@ fn pick_provider(cli: &Cli) -> ProviderChoice {
             model: m,
             reasoning_effort: cli.reasoning_effort.clone().or(reasoning_effort),
         },
+        (ProviderChoice::Google { base_url, .. }, Some(m)) => {
+            ProviderChoice::Google { model: m, base_url }
+        }
         (ProviderChoice::OpenRouter { base_url, .. }, Some(m)) => {
             ProviderChoice::OpenRouter { model: m, base_url }
         }
@@ -168,7 +168,14 @@ async fn main() -> Result<()> {
         .cwd
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
-    let provider = pick_provider(&cli);
+    let settings_path = settings::default_settings_path().ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not resolve a platform config directory for yolop settings; \
+             set $XDG_CONFIG_HOME or run from a supported platform"
+        )
+    })?;
+    let settings = Arc::new(SettingsStore::open(settings_path));
+    let provider = pick_provider(&cli, &settings);
 
     let is_print = cli.print.is_some();
     // Approval is opt-in: the agent runs autonomously by default. `--ask` in
@@ -193,7 +200,15 @@ async fn main() -> Result<()> {
         Some(p) => p,
         None => session_log::default_sessions_dir()?,
     };
-    let runtime = runtime::build(cwd, provider, gate, resume_session_id, sessions_dir).await?;
+    let runtime = runtime::build(
+        cwd,
+        provider,
+        gate,
+        resume_session_id,
+        sessions_dir,
+        settings,
+    )
+    .await?;
 
     if let Some(prompt) = cli.print {
         return run_print_mode(runtime, prompt).await;

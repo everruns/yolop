@@ -60,9 +60,11 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - `OPENAI_API_KEY` → OpenAI (`gpt-5.5`)
   - `ANTHROPIC_API_KEY` → Anthropic (`claude-sonnet-4-5`)
   - `OPENROUTER_API_KEY` → OpenRouter (`openai/gpt-5.2` by default)
+  - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) → Google Gemini (`gemini-2.5-flash`)
   - `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` → Ollama (`llama3.2`)
   - otherwise `llmsim` (offline simulator, no key required)
-- **Slash commands** (TUI): `/help`, `/tools`, `/cwd`, `/model <provider>/<id>`,
+- **Slash commands** (TUI): `/help`, `/tools`, `/cwd`,
+  `/provider <name>` (persists across runs), `/model <provider>/<id>`,
   `/clear`, `/quit`.
 - **`--print`** one-shot mode for CI smoke tests.
 - **Session persistence** — durable per-session JSONL event log under the
@@ -148,7 +150,7 @@ OLLAMA_BASE_URL=http://localhost:11434/v1 yolop --provider ollama -m llama3.2 -p
 | Flag                       | Description                                                          |
 | -------------------------- | -------------------------------------------------------------------- |
 | `-C, --cwd <PATH>`         | Workspace root (default: current dir)                                |
-| `--provider <P>`           | Force `anthropic`, `openai`, `openrouter`, `ollama`, or `llmsim`     |
+| `--provider <P>`           | Force `anthropic`, `openai`, `google`, `openrouter`, `ollama`, or `llmsim` |
 | `-m, --model <ID>`         | Override the model id for the chosen provider                        |
 | `-p, --print <PROMPT>`     | Run one prompt non-interactively and print the result                |
 | `--ask`                    | Prompt before every destructive tool call (off by default)           |
@@ -166,10 +168,23 @@ OLLAMA_BASE_URL=http://localhost:11434/v1 yolop --provider ollama -m llama3.2 -p
 | `ANTHROPIC_API_KEY`             | Select Anthropic when OpenAI is not configured               |
 | `OPENROUTER_API_KEY`            | Select OpenRouter when OpenAI/Anthropic are not configured   |
 | `OPENROUTER_BASE_URL`           | Optional, defaults to `https://openrouter.ai/api/v1`         |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Select Google Gemini via its OpenAI-compatible endpoint  |
+| `GOOGLE_BASE_URL`               | Optional, defaults to `https://generativelanguage.googleapis.com/v1beta/openai` |
 | `OLLAMA_BASE_URL`               | Select Ollama, defaults to `http://localhost:11434/v1`       |
 | `OLLAMA_API_KEY`                | Optional, defaults to `ollama` for local Ollama              |
 | `EVERRUNS_CLI_MODEL`            | Override the auto-selected default model                     |
 | `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI-only reasoning effort override                        |
+
+## Settings
+
+A small JSON settings file persists the preferred provider across runs. It
+lives at `<config_dir>/yolop/settings.json` — `~/.config/yolop/settings.json`
+on Linux, `~/Library/Application Support/yolop/settings.json` on macOS,
+`%APPDATA%\yolop\settings.json` on Windows.
+
+The TUI's `/provider <name>` command writes through this file. Resolution
+order at startup is: `--provider` flag > saved setting > env-var
+auto-detection. `/model <provider>/<id>` still works on top of either.
 
 ## Session persistence
 

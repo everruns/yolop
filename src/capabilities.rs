@@ -5,7 +5,8 @@
 // selection.
 
 use crate::approval::ApprovalGate;
-use crate::runtime::ProviderChoice;
+use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS};
+use crate::settings::SettingsStore;
 use crate::tools::{BashTool, Workspace};
 use async_trait::async_trait;
 use chrono::Local;
@@ -400,6 +401,134 @@ fn failed_result(message: String) -> CommandResult {
         message,
         error_code: None,
         error_fields: None,
+    }
+}
+
+// ---------- /provider ----------
+//
+// Companion to `/model`: picks the *provider* (OpenAI, Anthropic, Google,
+// OpenRouter, Ollama, llmsim) using that provider's default model, and
+// persists the choice to `<config_dir>/yolop/settings.json` so the next
+// run starts on the same provider. The model is still mutated via `/model`
+// afterward — both commands share the same provider Arc.
+
+pub(crate) const PROVIDER_SWITCHER_CAPABILITY_ID: &str = "yolop_provider_switcher";
+
+pub(crate) struct ProviderSwitcherCapability {
+    pub(crate) provider: Arc<RwLock<ProviderChoice>>,
+    pub(crate) provider_store: Arc<dyn RuntimeProviderStore>,
+    pub(crate) settings: Arc<SettingsStore>,
+}
+
+#[async_trait]
+impl Capability for ProviderSwitcherCapability {
+    fn id(&self) -> &str {
+        PROVIDER_SWITCHER_CAPABILITY_ID
+    }
+    fn name(&self) -> &str {
+        "Coding CLI Provider Switcher"
+    }
+    fn description(&self) -> &str {
+        "Show or change the active LLM provider, persisted across runs."
+    }
+    fn status(&self) -> CapabilityStatus {
+        CapabilityStatus::Available
+    }
+    fn category(&self) -> Option<&str> {
+        Some("Examples")
+    }
+    fn system_prompt_addition(&self) -> Option<&str> {
+        None
+    }
+    fn commands(&self) -> Vec<CommandDescriptor> {
+        vec![CommandDescriptor {
+            name: "provider".to_string(),
+            description: "Show or change the active provider (saved to yolop settings)."
+                .to_string(),
+            source: CommandSource::System,
+            args: vec![CommandArg {
+                name: "name".to_string(),
+                description: format!(
+                    "{} — omit to print the current provider.",
+                    SUPPORTED_PROVIDERS.join(" | ")
+                ),
+                required: false,
+                suggestions: SUPPORTED_PROVIDERS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+            }],
+        }]
+    }
+
+    async fn execute_command(
+        &self,
+        request: &ExecuteCommandRequest,
+        _ctx: &CommandExecutionContext,
+    ) -> everruns_core::Result<CommandResult> {
+        if request.name != "provider" {
+            return Err(everruns_core::AgentLoopError::config(format!(
+                "{} cannot execute /{}",
+                self.id(),
+                request.name
+            )));
+        }
+        let raw = request.arguments.as_deref().unwrap_or("").trim();
+        if raw.is_empty() {
+            let current = self
+                .provider
+                .read()
+                .expect("provider lock poisoned")
+                .clone();
+            let saved = self
+                .settings
+                .snapshot()
+                .provider
+                .unwrap_or_else(|| "<unset>".to_string());
+            return Ok(CommandResult {
+                success: true,
+                message: format!(
+                    "provider: {} (model: {}); saved: {saved}; options: {}",
+                    current.provider_name(),
+                    current.label(),
+                    SUPPORTED_PROVIDERS.join(", "),
+                ),
+                error_code: None,
+                error_fields: None,
+            });
+        }
+
+        if raw.split_whitespace().count() > 1 {
+            return Ok(failed_result(
+                "usage: /provider <name> — pick a single provider, then use /model to tune the model"
+                    .to_string(),
+            ));
+        }
+
+        let next = match ProviderChoice::default_for_provider_name(raw) {
+            Ok(n) => n,
+            Err(err) => return Ok(failed_result(format!("provider change failed: {err}"))),
+        };
+        let mw = match next.model_with_provider() {
+            Ok(m) => m,
+            Err(err) => return Ok(failed_result(format!("provider change failed: {err}"))),
+        };
+        if let Err(err) = self.provider_store.set_default_model(mw).await {
+            return Ok(failed_result(format!("provider change failed: {err}")));
+        }
+        let provider_name = next.provider_name().to_string();
+        let label = next.label();
+        *self.provider.write().expect("provider lock poisoned") = next;
+        let persist_note = match self.settings.set_provider(Some(provider_name.clone())) {
+            Ok(()) => format!("saved to {}", self.settings.path().display()),
+            Err(err) => format!("warning: settings not saved: {err}"),
+        };
+        Ok(CommandResult {
+            success: true,
+            message: format!("provider changed: {label} ({persist_note})"),
+            error_code: None,
+            error_fields: None,
+        })
     }
 }
 

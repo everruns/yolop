@@ -7,8 +7,10 @@
 use crate::approval::ApprovalGate;
 use crate::capabilities::{
     CodingBashCapability, CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
-    MODEL_SWITCHER_CAPABILITY_ID, ModelSwitcherCapability,
+    MODEL_SWITCHER_CAPABILITY_ID, ModelSwitcherCapability, PROVIDER_SWITCHER_CAPABILITY_ID,
+    ProviderSwitcherCapability,
 };
+use crate::settings::SettingsStore;
 use crate::tools::Workspace;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -372,6 +374,10 @@ impl SessionFileSystem for CodingCliSessionFileStore {
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.5";
 const DEFAULT_OPENAI_REASONING_EFFORT: &str = "medium";
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
+const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
+// Gemini exposes an OpenAI-compatible surface at this base URL — the
+// `everruns_openai` driver targets it the same way it targets OpenRouter.
+const DEFAULT_GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-5.2";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
@@ -387,6 +393,10 @@ pub enum ProviderChoice {
         model: String,
         reasoning_effort: Option<String>,
     },
+    Google {
+        model: String,
+        base_url: String,
+    },
     OpenRouter {
         model: String,
         base_url: String,
@@ -397,6 +407,17 @@ pub enum ProviderChoice {
     },
     Sim,
 }
+
+/// Provider names recognized by `/provider` and persisted settings. The order
+/// is the user-visible suggestion order.
+pub const SUPPORTED_PROVIDERS: &[&str] = &[
+    "openai",
+    "anthropic",
+    "google",
+    "openrouter",
+    "ollama",
+    "llmsim",
+];
 
 impl ProviderChoice {
     /// Pick a default based on env vars. CLI flags override this in `main`.
@@ -423,6 +444,12 @@ impl ProviderChoice {
                 base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
             };
         }
+        if google_api_key().is_some() {
+            return Self::Google {
+                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL),
+                base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
+            };
+        }
         if env_non_empty("OLLAMA_BASE_URL").is_some() || env_non_empty("OLLAMA_API_KEY").is_some() {
             return Self::Ollama {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL),
@@ -442,9 +469,57 @@ impl ProviderChoice {
                 Some(effort) => format!("openai/{model} {effort}"),
                 None => format!("openai/{model}"),
             },
+            Self::Google { model, .. } => format!("google/{model}"),
             Self::OpenRouter { model, .. } => format!("openrouter/{model}"),
             Self::Ollama { model, .. } => format!("ollama/{model}"),
             Self::Sim => "llmsim/llmsim-yolop".to_string(),
+        }
+    }
+
+    /// Short name used in settings and command suggestions.
+    pub fn provider_name(&self) -> &'static str {
+        match self {
+            Self::Anthropic { .. } => "anthropic",
+            Self::OpenAi { .. } => "openai",
+            Self::Google { .. } => "google",
+            Self::OpenRouter { .. } => "openrouter",
+            Self::Ollama { .. } => "ollama",
+            Self::Sim => "llmsim",
+        }
+    }
+
+    /// Build a ProviderChoice from a bare provider name, picking the
+    /// provider's default model. Used by `/provider` and by startup when
+    /// rehydrating the persisted preference.
+    pub fn default_for_provider_name(name: &str) -> Result<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "openai" => Ok(Self::OpenAi {
+                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENAI_MODEL),
+                reasoning_effort: Some(env_or_default(
+                    "EVERRUNS_CLI_REASONING_EFFORT",
+                    DEFAULT_OPENAI_REASONING_EFFORT,
+                )),
+            }),
+            "anthropic" => Ok(Self::Anthropic {
+                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL),
+            }),
+            "google" | "gemini" => Ok(Self::Google {
+                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL),
+                base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
+            }),
+            "openrouter" => Ok(Self::OpenRouter {
+                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL),
+                base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
+            }),
+            "ollama" => Ok(Self::Ollama {
+                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL),
+                base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
+            }),
+            "llmsim" | "sim" => Ok(Self::Sim),
+            other => Err(anyhow!(
+                "unknown provider {other}; expected one of {}",
+                SUPPORTED_PROVIDERS.join(", ")
+            )),
         }
     }
 
@@ -455,6 +530,8 @@ impl ProviderChoice {
             "openai/gpt-5.4-mini",
             "openai/gpt-5.3-codex",
             "openai/gpt-5.2",
+            "google/gemini-2.5-flash",
+            "google/gemini-2.5-pro",
             "openrouter/openai/gpt-5.2",
             "ollama/llama3.2",
             "anthropic/claude-sonnet-4-5",
@@ -499,6 +576,17 @@ impl ProviderChoice {
                 model: model.to_string(),
                 reasoning_effort: normalize_openai_reasoning_effort(reasoning_effort),
             }),
+            "google" | "gemini" => {
+                if reasoning_effort.is_some() {
+                    return Err(anyhow!(
+                        "google model switching does not accept reasoning effort"
+                    ));
+                }
+                Ok(Self::Google {
+                    model: model.to_string(),
+                    base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
+                })
+            }
             "openrouter" => {
                 if reasoning_effort.is_some() {
                     return Err(anyhow!(
@@ -532,7 +620,8 @@ impl ProviderChoice {
                 }
             }
             other => Err(anyhow!(
-                "unknown provider {other}; expected openai, anthropic, or llmsim"
+                "unknown provider {other}; expected one of {}",
+                SUPPORTED_PROVIDERS.join(", ")
             )),
         }
     }
@@ -555,6 +644,17 @@ impl ProviderChoice {
                 model,
                 reasoning_effort: normalize_openai_reasoning_effort(reasoning_effort),
             }),
+            Self::Google { base_url, .. } => {
+                if reasoning_effort.is_some() {
+                    return Err(anyhow!(
+                        "google model switching does not accept reasoning effort"
+                    ));
+                }
+                Ok(Self::Google {
+                    model,
+                    base_url: base_url.clone(),
+                })
+            }
             Self::OpenRouter { base_url, .. } => {
                 if reasoning_effort.is_some() {
                     return Err(anyhow!(
@@ -612,6 +712,16 @@ impl ProviderChoice {
                     base_url: None,
                 })
             }
+            ProviderChoice::Google { model, base_url } => {
+                let key = google_api_key()
+                    .ok_or_else(|| anyhow!("GEMINI_API_KEY (or GOOGLE_API_KEY) not set"))?;
+                Ok(ModelWithProvider {
+                    model: model.clone(),
+                    provider_type: LlmProviderType::Openai,
+                    api_key: Some(key),
+                    base_url: Some(base_url.clone()),
+                })
+            }
             ProviderChoice::OpenRouter { model, base_url } => {
                 let key = env_non_empty("OPENROUTER_API_KEY")
                     .ok_or_else(|| anyhow!("OPENROUTER_API_KEY not set"))?;
@@ -657,6 +767,12 @@ impl ProviderChoice {
 
 fn env_non_empty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+/// Gemini's OpenAI-compatible API accepts either `GEMINI_API_KEY` or
+/// `GOOGLE_API_KEY`; the Google docs lean on `GEMINI_API_KEY` so it wins.
+fn google_api_key() -> Option<String> {
+    env_non_empty("GEMINI_API_KEY").or_else(|| env_non_empty("GOOGLE_API_KEY"))
 }
 
 fn env_or_default(name: &str, default: &str) -> String {
@@ -706,6 +822,7 @@ fn coding_harness_capabilities() -> Vec<AgentCapabilityConfig> {
             serde_json::json!({ "enable_file_download": true }),
         ),
         AgentCapabilityConfig::new(MODEL_SWITCHER_CAPABILITY_ID),
+        AgentCapabilityConfig::new(PROVIDER_SWITCHER_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
     ]
 }
@@ -792,6 +909,7 @@ pub async fn build(
     gate: Arc<ApprovalGate>,
     resume_session_id: Option<SessionId>,
     sessions_dir: PathBuf,
+    settings: Arc<SettingsStore>,
 ) -> Result<BuiltRuntime> {
     build_with_options(
         workspace_root,
@@ -903,6 +1021,11 @@ pub async fn build_with_options(
         provider: provider_state.clone(),
         provider_store: provider_store.clone(),
     });
+    capabilities.register(ProviderSwitcherCapability {
+        provider: provider_state.clone(),
+        provider_store: provider_store.clone(),
+        settings: settings.clone(),
+    });
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
         gate: gate.clone(),
@@ -914,6 +1037,7 @@ pub async fn build_with_options(
     let default_model = match &provider {
         ProviderChoice::Anthropic { .. }
         | ProviderChoice::OpenAi { .. }
+        | ProviderChoice::Google { .. }
         | ProviderChoice::OpenRouter { .. }
         | ProviderChoice::Ollama { .. } => provider.model_with_provider()?,
         ProviderChoice::Sim => ModelWithProvider {
@@ -1063,6 +1187,55 @@ mod tests {
         let next = provider.resolve_model_spec("ollama/llama3.2").unwrap();
 
         assert_eq!(next.label(), "ollama/llama3.2");
+    }
+
+    #[test]
+    fn model_spec_accepts_google_provider_name() {
+        let provider = ProviderChoice::Sim;
+        let next = provider
+            .resolve_model_spec("google/gemini-2.5-pro")
+            .unwrap();
+
+        assert_eq!(next.label(), "google/gemini-2.5-pro");
+        assert_eq!(next.provider_name(), "google");
+    }
+
+    #[test]
+    fn default_for_provider_name_returns_provider_default_model() {
+        let openai = ProviderChoice::default_for_provider_name("openai").unwrap();
+        assert!(openai.label().starts_with("openai/gpt-5.5"));
+
+        let anthropic = ProviderChoice::default_for_provider_name("anthropic").unwrap();
+        assert_eq!(anthropic.label(), "anthropic/claude-sonnet-4-5");
+
+        let google = ProviderChoice::default_for_provider_name("google").unwrap();
+        assert_eq!(google.label(), "google/gemini-2.5-flash");
+
+        let sim = ProviderChoice::default_for_provider_name("llmsim").unwrap();
+        assert_eq!(sim.label(), "llmsim/llmsim-yolop");
+    }
+
+    #[test]
+    fn default_for_provider_name_rejects_unknown() {
+        let err = ProviderChoice::default_for_provider_name("totally-bogus").unwrap_err();
+        assert!(err.to_string().contains("unknown provider"));
+    }
+
+    #[test]
+    fn google_requires_api_key_to_build_model_with_provider() {
+        // Drop both env vars in case the test runner exported one.
+        // SAFETY: tests in this crate run on a single thread per CARGO_TEST_THREADS,
+        // and these env reads/writes do not cross threads.
+        unsafe {
+            std::env::remove_var("GEMINI_API_KEY");
+            std::env::remove_var("GOOGLE_API_KEY");
+        }
+        let provider = ProviderChoice::Google {
+            model: "gemini-2.5-flash".to_string(),
+            base_url: DEFAULT_GOOGLE_BASE_URL.to_string(),
+        };
+        let err = provider.model_with_provider().unwrap_err();
+        assert!(err.to_string().contains("GEMINI_API_KEY"));
     }
 
     #[test]
