@@ -1073,27 +1073,40 @@ mod tests {
     }
 
     #[test]
-    fn replay_binary_garbage_does_not_panic_and_keeps_valid_prefix() {
+    fn replay_binary_garbage_stops_early_and_drops_suffix() {
         // Non-UTF-8 bytes injected into the JSONL file. `BufRead::lines()`
         // will yield Err for non-UTF-8; the documented contract is to stop
-        // replay early on read errors rather than panic.
+        // replay early on read errors rather than panic. A valid event is
+        // sandwiched AFTER the garbage so this test fails if replay ever
+        // starts trying to continue past a read error.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("events.jsonl");
         let session_id = SessionId::from_seed(70008);
 
-        let good = serialize_event(&input_event(session_id, "prefix"));
+        let prefix = serialize_event(&input_event(session_id, "prefix"));
+        let suffix = serialize_event(&input_event(session_id, "would-be-suffix"));
         let mut bytes: Vec<u8> = Vec::new();
-        bytes.extend_from_slice(good.as_bytes());
+        bytes.extend_from_slice(prefix.as_bytes());
         bytes.push(b'\n');
-        // Invalid UTF-8 sequence.
+        // Invalid UTF-8 sequence on its own line.
         bytes.extend_from_slice(&[0xff, 0xfe, 0xfd, b'\n']);
+        bytes.extend_from_slice(suffix.as_bytes());
+        bytes.push(b'\n');
         std::fs::write(&path, &bytes).expect("write");
 
         let out = replay(&path, session_id).expect("replay must not panic");
         assert_eq!(
             out.events.len(),
             1,
-            "the valid prefix line must still be replayed"
+            "only the valid prefix line should survive; replay must stop early on read error"
+        );
+        let kept_text = match &out.events[0].data {
+            EventData::InputMessage(d) => d.message.text().unwrap_or_default().to_string(),
+            other => panic!("expected InputMessage, got {other:?}"),
+        };
+        assert!(
+            kept_text.contains("prefix"),
+            "expected the prefix event to be the one kept, got: {kept_text}"
         );
     }
 
