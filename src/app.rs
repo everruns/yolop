@@ -141,9 +141,10 @@ pub struct App {
 }
 
 /// Owned snapshot of the App fields the pure-render chrome helpers
-/// (stream preview, separators, session status) consume. Extracted from
-/// `App` so those helpers can be exercised by unit tests against
-/// `ratatui::backend::TestBackend` without standing up a full runtime.
+/// (command suggestions, stream preview, separators, session status)
+/// consume. Extracted from `App` so those helpers can be exercised by
+/// unit tests against `ratatui::backend::TestBackend` without standing
+/// up a full runtime.
 ///
 /// Owned rather than borrowed because building it does not need to
 /// borrow `App` for the duration of a draw: `draw_input` needs `&mut
@@ -1458,7 +1459,7 @@ pub(crate) fn draw_chrome(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),            // stream preview
+            Constraint::Length(1),            // suggestions / stream preview
             Constraint::Length(1),            // message separator
             Constraint::Length(input_height), // input (left to the caller)
             Constraint::Length(1),            // status separator
@@ -2781,7 +2782,13 @@ mod tests {
             .collect()
     }
 
-    async fn app_with_llmsim() -> App {
+    struct TestApp {
+        app: App,
+        _workspace: tempfile::TempDir,
+        _sessions: tempfile::TempDir,
+    }
+
+    async fn app_with_llmsim() -> TestApp {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let sessions = tempfile::tempdir().expect("sessions tempdir");
         let runtime = crate::runtime::build_with_options(
@@ -2794,15 +2801,18 @@ mod tests {
         )
         .await
         .expect("build llmsim runtime");
-        std::mem::forget(workspace);
-        std::mem::forget(sessions);
         let (_tx, rx) = mpsc::unbounded_channel();
-        App::new(runtime, rx)
+        TestApp {
+            app: App::new(runtime, rx),
+            _workspace: workspace,
+            _sessions: sessions,
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn app_slash_input_renders_command_suggestions_end_to_end() {
-        let mut app = app_with_llmsim().await;
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
 
         app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()))
             .await;
@@ -2826,7 +2836,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn app_view_state_hides_command_suggestions_when_input_disabled() {
-        let mut app = app_with_llmsim().await;
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
 
         app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()))
             .await;
@@ -2874,6 +2885,44 @@ mod tests {
             "command suggestions should replace the stream preview row: {}",
             rows[0]
         );
+    }
+
+    #[test]
+    fn draw_suggestions_ignores_empty_areas() {
+        let suggestions = vec![CommandSuggestion {
+            completion: "/help".to_string(),
+            label: "/help    show commands".to_string(),
+        }];
+        let backend = TestBackend::new(4, 1);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        terminal
+            .draw(|f| {
+                draw_suggestions(
+                    f,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: 0,
+                        height: 1,
+                    },
+                    &suggestions,
+                );
+                draw_suggestions(
+                    f,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: 4,
+                        height: 0,
+                    },
+                    &suggestions,
+                );
+            })
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
     }
 
     #[test]
