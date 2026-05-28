@@ -22,7 +22,7 @@ use std::sync::{Arc, RwLock};
 
 // ---------- environment context ----------
 
-pub(crate) const ENVIRONMENT_CONTEXT_CAPABILITY_ID: &str = "yolop_environment_context";
+pub(crate) const ENVIRONMENT_CONTEXT_CAPABILITY_ID: &str = "code_environment_context";
 
 pub(crate) struct CodingCliEnvironmentCapability {
     base: EnvironmentContextBase,
