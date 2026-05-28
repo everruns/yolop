@@ -177,10 +177,10 @@ OLLAMA_BASE_URL=http://localhost:11434/v1 yolop --provider ollama -m llama3.2 -p
 
 ## Settings
 
-A small JSON settings file persists the preferred provider across runs. It
-lives at `<config_dir>/yolop/settings.json` — `~/.config/yolop/settings.json`
-on Linux, `~/Library/Application Support/yolop/settings.json` on macOS,
-`%APPDATA%\yolop\settings.json` on Windows.
+A small TOML settings file persists the preferred provider across runs. It
+lives at `<config_dir>/yolop/settings.toml` — `~/.config/yolop/settings.toml`
+on Linux, `~/Library/Application Support/yolop/settings.toml` on macOS,
+`%APPDATA%\yolop\settings.toml` on Windows.
 
 The TUI's `/provider <name>` command writes through this file. Resolution
 order at startup is: `--provider` flag > saved setting > env-var
