@@ -140,6 +140,32 @@ pub struct App {
     pending: Option<PendingApproval>,
 }
 
+/// Owned snapshot of the App fields the pure-render chrome helpers
+/// (stream preview, separators, session status) consume. Extracted from
+/// `App` so those helpers can be exercised by unit tests against
+/// `ratatui::backend::TestBackend` without standing up a full runtime.
+///
+/// Owned rather than borrowed because building it does not need to
+/// borrow `App` for the duration of a draw: `draw_input` needs `&mut
+/// App` for the input field's `Widget` impl, and a borrowed `ViewState`
+/// would block that within a single `draw()`. The per-frame clone cost
+/// is dominated by `String`-sized fields and is negligible compared to
+/// the chrome render itself.
+#[derive(Clone, Debug)]
+pub(crate) struct ViewState {
+    pub stream_preview: Option<StreamPreview>,
+    /// `true` while an approval prompt is waiting on user input. The
+    /// renderer only needs the bit, not the responder channel.
+    pub approval_pending: bool,
+    pub busy: bool,
+    pub busy_frame: u64,
+    pub turn_activity: Option<String>,
+    pub model_label: String,
+    pub workspace_root: std::path::PathBuf,
+    pub session_id: SessionId,
+    pub lines_count: usize,
+}
+
 /// What kind of delta is currently being streamed. Only the assistant
 /// output is finalized into the transcript at end-of-turn (via the
 /// message store); thinking and tool output are display-only.
@@ -220,6 +246,22 @@ impl App {
 
     pub fn session_id(&self) -> SessionId {
         self.handles.session_id
+    }
+
+    /// Snapshot the renderer-relevant fields into a `ViewState`. Called
+    /// once per frame; the clones are dominated by small `String`s.
+    pub(crate) fn view_state(&self) -> ViewState {
+        ViewState {
+            stream_preview: self.stream_preview.clone(),
+            approval_pending: self.pending.is_some(),
+            busy: self.busy,
+            busy_frame: self.busy_frame,
+            turn_activity: self.turn_activity.clone(),
+            model_label: self.model.provider_label(),
+            workspace_root: self.startup.workspace_root.clone(),
+            session_id: self.handles.session_id,
+            lines_count: self.lines.len(),
+        }
     }
 
     fn emit_system_banner(&mut self) {
@@ -1384,34 +1426,53 @@ fn first_line(s: &str, max: usize) -> String {
 
 fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let input_height = app.input_height();
+    let area = f.area();
+    let state = app.view_state();
+
+    // Chrome renders the non-input rows; we then layer the input field
+    // on top into the chrome-reserved input slot.
+    let input_rect = draw_chrome(f, area, input_height, &state);
+    draw_input(f, input_rect, app);
+}
+
+/// Render the non-input chrome (stream preview, message separator,
+/// status separator, session status) into `area` using `state`, and
+/// return the `Rect` where the caller should render the input widget
+/// (which needs `&mut` and so cannot be driven through `ViewState`).
+///
+/// Snapshot tests call this against a `TestBackend` and ignore the
+/// returned input rect — the buffer's other rows are what they assert
+/// against.
+pub(crate) fn draw_chrome(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    input_height: u16,
+    state: &ViewState,
+) -> Rect {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(input_height),
-            Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(1),            // stream preview
+            Constraint::Length(1),            // message separator
+            Constraint::Length(input_height), // input (left to the caller)
+            Constraint::Length(1),            // status separator
+            Constraint::Length(1),            // session status
         ])
-        .split(f.area());
+        .split(area);
 
-    let mut idx = 0;
-    draw_stream_preview(f, chunks[idx], &*app);
-    idx += 1;
-    draw_message_separator(f, chunks[idx], &*app);
-    idx += 1;
-    draw_input(f, chunks[idx], app);
-    idx += 1;
-    draw_status_separator(f, chunks[idx]);
-    idx += 1;
-    draw_session_status(f, chunks[idx], &*app);
+    draw_stream_preview(f, chunks[0], state);
+    draw_message_separator(f, chunks[1], state);
+    draw_status_separator(f, chunks[3]);
+    draw_session_status(f, chunks[4], state);
+
+    chunks[2]
 }
 
-fn draw_stream_preview(f: &mut ratatui::Frame, area: Rect, app: &App) {
+fn draw_stream_preview(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
     if area.height == 0 {
         return;
     }
-    let Some(preview) = &app.stream_preview else {
+    let Some(preview) = state.stream_preview.as_ref() else {
         return;
     };
     let inner_width = area.width as usize;
@@ -1853,8 +1914,8 @@ fn draw_input_cursor(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.set_cursor_position((x, y));
 }
 
-fn message_separator_title(app: &App) -> Line<'static> {
-    if app.pending.is_some() {
+fn message_separator_title(state: &ViewState) -> Line<'static> {
+    if state.approval_pending {
         return Line::from(vec![
             Span::styled("─── ", Style::default().fg(ACCENT_GOLD)),
             Span::styled(
@@ -1865,10 +1926,10 @@ fn message_separator_title(app: &App) -> Line<'static> {
             ),
         ]);
     }
-    if app.busy {
+    if state.busy {
         return thinking_title(
-            app.busy_frame,
-            app.turn_activity.as_deref().unwrap_or("thinking"),
+            state.busy_frame,
+            state.turn_activity.as_deref().unwrap_or("thinking"),
         );
     }
     Line::from(vec![
@@ -1895,11 +1956,11 @@ fn thinking_title(frame: u64, activity: &str) -> Line<'static> {
     Line::from(spans)
 }
 
-fn draw_message_separator(f: &mut ratatui::Frame, area: Rect, app: &App) {
+fn draw_message_separator(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
     draw_separator(
         f,
         area,
-        message_separator_title(app),
+        message_separator_title(state),
         Style::default().fg(ACCENT_BLUE),
     );
 }
@@ -1908,24 +1969,24 @@ fn draw_status_separator(f: &mut ratatui::Frame, area: Rect) {
     draw_separator(f, area, Line::from(""), Style::default().fg(ACCENT_GOLD));
 }
 
-fn draw_session_status(f: &mut ratatui::Frame, area: Rect, app: &App) {
+fn draw_session_status(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(app.model.provider_label(), Style::default().fg(TEXT_MUTED)),
+            Span::styled(state.model_label.clone(), Style::default().fg(TEXT_MUTED)),
             Span::styled("  ·  ", Style::default().fg(TEXT_DIM)),
             Span::styled(
-                display_path(&app.startup.workspace_root),
+                display_path(&state.workspace_root),
                 Style::default().fg(TEXT_MUTED),
             ),
             Span::styled("  ·  ", Style::default().fg(TEXT_DIM)),
             Span::styled(
-                format!("{} msgs", app.lines.len()),
+                format!("{} msgs", state.lines_count),
                 Style::default().fg(TEXT_MUTED),
             ),
             Span::styled("  ·  session ", Style::default().fg(TEXT_DIM)),
             Span::styled(
-                app.handles.session_id.to_string(),
+                state.session_id.to_string(),
                 Style::default().fg(TEXT_MUTED),
             ),
             Span::styled(" ", Style::default().fg(TEXT_MUTED)),
@@ -2567,5 +2628,258 @@ mod tests {
             Some(&Author::Assistant)
         ));
         assert!(!should_insert_chat_gap(&Author::ToolDetail, None));
+    }
+
+    // ====================================================================
+    // ViewState + draw_chrome snapshot tests.
+    //
+    // These render the non-input chrome (stream preview, message
+    // separator, status separator, session status) into a TestBackend
+    // buffer and assert on its textual contents. The point is to lock
+    // down what each UI mode (idle / busy / approval-pending / streaming)
+    // looks like end-to-end on the screen, without spinning up a runtime.
+    // ====================================================================
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn view_state_idle() -> ViewState {
+        ViewState {
+            stream_preview: None,
+            approval_pending: false,
+            busy: false,
+            busy_frame: 0,
+            turn_activity: None,
+            model_label: "openai/gpt-5.5".to_string(),
+            workspace_root: std::path::PathBuf::from("/tmp/ws"),
+            session_id: SessionId::from_seed(770001),
+            lines_count: 3,
+        }
+    }
+
+    /// Render `draw_chrome` into a TestBackend and collect the buffer
+    /// rows as plain strings (style information dropped). Width and
+    /// height are minimums; if the chrome layout would need more space
+    /// it will be silently clipped, which is fine for substring asserts.
+    fn render_chrome_lines(state: &ViewState, width: u16, height: u16) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| {
+                // Production input slot height is 1; tests don't
+                // exercise the input row so the value only matters
+                // because it shifts the status rows by that amount.
+                let _input_rect = draw_chrome(f, f.area(), 1, state);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                let mut row = String::with_capacity(buffer.area.width as usize);
+                for x in 0..buffer.area.width {
+                    let cell = &buffer[(x, y)];
+                    row.push_str(cell.symbol());
+                }
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn chrome_idle_shows_enter_to_send_hint() {
+        let state = view_state_idle();
+        let rows = render_chrome_lines(&state, 80, 5);
+        // Row 1 = message separator. Idle mode shows the keystroke hint.
+        assert!(
+            rows[1].contains("Enter to send"),
+            "idle separator missing Enter hint: rows={rows:?}"
+        );
+        assert!(
+            !rows[1].contains("approval pending"),
+            "idle separator should not mention approval: {}",
+            rows[1]
+        );
+    }
+
+    #[test]
+    fn chrome_approval_pending_overrides_busy_separator() {
+        // Even when `busy` is true, the approval prompt takes priority
+        // — the user must answer y/n before the loop can resume.
+        let state = ViewState {
+            approval_pending: true,
+            busy: true,
+            busy_frame: 12,
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 80, 5);
+        assert!(
+            rows[1].contains("approval pending"),
+            "expected approval separator, got: {}",
+            rows[1]
+        );
+        assert!(
+            rows[1].contains("y / n"),
+            "approval separator must surface the key bindings: {}",
+            rows[1]
+        );
+    }
+
+    #[test]
+    fn chrome_busy_shows_thinking_spinner_and_activity() {
+        let state = ViewState {
+            busy: true,
+            busy_frame: 4,
+            turn_activity: Some("reading files".to_string()),
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 80, 5);
+        assert!(
+            rows[1].contains("reading files"),
+            "busy separator should display turn activity: {}",
+            rows[1]
+        );
+        assert!(
+            rows[1].contains("input disabled"),
+            "busy separator should signal input is disabled: {}",
+            rows[1]
+        );
+    }
+
+    #[test]
+    fn chrome_busy_falls_back_to_thinking_when_activity_unset() {
+        let state = ViewState {
+            busy: true,
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 80, 5);
+        assert!(
+            rows[1].contains("thinking"),
+            "busy separator without activity should show 'thinking': {}",
+            rows[1]
+        );
+    }
+
+    #[test]
+    fn chrome_renders_stream_preview_tail_with_kind_label() {
+        let state = ViewState {
+            stream_preview: Some(StreamPreview {
+                kind: StreamKind::Assistant,
+                text: "first line\nsecond line tail".to_string(),
+            }),
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 80, 5);
+        // The preview shows the latest non-blank tail line of the stream
+        // prefixed by the kind label.
+        assert!(
+            rows[0].contains("agent"),
+            "stream preview should show kind label 'agent': {}",
+            rows[0]
+        );
+        assert!(
+            rows[0].contains("second line tail"),
+            "stream preview should show the tail, not the head: {}",
+            rows[0]
+        );
+        assert!(
+            !rows[0].contains("first line"),
+            "stream preview should not show earlier lines: {}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn chrome_stream_preview_thinking_uses_thinking_label() {
+        let state = ViewState {
+            stream_preview: Some(StreamPreview {
+                kind: StreamKind::Thinking,
+                text: "weighing options".to_string(),
+            }),
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 80, 5);
+        assert!(
+            rows[0].contains("thinking"),
+            "thinking-kind preview should use 'thinking' label: {}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn chrome_session_status_shows_model_workspace_msgs_and_session() {
+        let state = ViewState {
+            model_label: "anthropic/claude-sonnet-4-5".to_string(),
+            workspace_root: std::path::PathBuf::from("/tmp/some-workspace"),
+            session_id: SessionId::from_seed(99887766),
+            lines_count: 42,
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 120, 5);
+        let status = &rows[4];
+        assert!(
+            status.contains("anthropic/claude-sonnet-4-5"),
+            "status should include model label: {status}"
+        );
+        assert!(
+            status.contains("/tmp/some-workspace"),
+            "status should include workspace path: {status}"
+        );
+        assert!(
+            status.contains("42 msgs"),
+            "status should include message count: {status}"
+        );
+        assert!(
+            status.contains("session "),
+            "status should include 'session' label: {status}"
+        );
+        let session_id_str = state.session_id.to_string();
+        assert!(
+            status.contains(&session_id_str),
+            "status should include the session id ({session_id_str}): {status}"
+        );
+    }
+
+    #[test]
+    fn chrome_session_status_collapses_home_prefix_with_tilde() {
+        // `display_path` rewrites $HOME-prefixed paths to start with '~'.
+        // Save / restore the env var so this test doesn't leak.
+        // SAFETY: env mutation in tests is racy across threads. cargo
+        // test by default runs tests in parallel; we accept the tiny
+        // window of cross-test contamination here because the assertion
+        // is on the rendered output of THIS state alone, and a parallel
+        // mutation can only widen the substring we check for, not narrow
+        // it. (`display_path` returns plain `path.display()` if $HOME
+        // doesn't prefix; tilde replacement is opt-in per path.)
+        let prior = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", "/tmp/fake-home");
+        }
+        let state = ViewState {
+            workspace_root: std::path::PathBuf::from("/tmp/fake-home/projects/yolop"),
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 120, 5);
+        let status = &rows[4];
+        assert!(
+            status.contains("~/projects/yolop"),
+            "status should collapse $HOME to ~: {status}"
+        );
+        unsafe {
+            match prior {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn chrome_stream_preview_row_is_empty_when_none() {
+        let state = view_state_idle();
+        let rows = render_chrome_lines(&state, 80, 5);
+        assert!(
+            rows[0].is_empty(),
+            "stream preview row should be empty when no preview is set: {:?}",
+            rows[0]
+        );
     }
 }
