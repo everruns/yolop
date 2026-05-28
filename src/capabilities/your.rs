@@ -191,6 +191,64 @@ fn skill_suggestion(byte_len: usize) -> Option<&'static str> {
     )
 }
 
+/// Render the `<your>` system-prompt block: the framing, the memory file
+/// path, and the (budget-clipped) memory contents with truncation /
+/// skill-suggestion notices. Pure so the branch logic is unit-testable
+/// without constructing a `SystemPromptContext`.
+fn render_memory_block(memory_path: &Path, content: &str) -> String {
+    let mut out = String::new();
+    out.push_str("<your>\n");
+    out.push_str(
+        "yolop's personalization layer. When the user addresses \"you\" or \"yolop\" itself \
+         — e.g. \"what is your config?\", \"update your settings\", \"set yolop blue\", \
+         \"remember that I prefer X\" — treat it as a GLOBAL personalization request about \
+         yolop, NOT a change to the current project. Persist durable user preferences with \
+         the `remember` tool, reorganize with `write_memory`, and read the full set with \
+         `read_memory`. Project-specific guidance belongs in the repo's AGENTS.md, not here.\n",
+    );
+    out.push_str(&format!("memory file: {}\n", memory_path.display()));
+
+    if content.trim().is_empty() {
+        out.push_str("memory is empty.\n");
+    } else {
+        let (shown, clipped) = clip_to_budget(content, MEMORY_INJECT_BUDGET_BYTES);
+        out.push_str("<your_memory>\n");
+        out.push_str(shown);
+        if !shown.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("</your_memory>\n");
+        if clipped {
+            out.push_str(
+                "(memory truncated to fit the prompt budget — call `read_memory` for the full text.)\n",
+            );
+        }
+        if let Some(note) = skill_suggestion(content.len()) {
+            out.push_str(note);
+            out.push('\n');
+        }
+    }
+    out.push_str("</your>");
+    out
+}
+
+/// Render the `/your` status line. Pure for testability.
+fn memory_status(memory_path: &Path, is_empty: bool, byte_len: usize) -> String {
+    let state = if is_empty {
+        "empty".to_string()
+    } else if byte_len > MEMORY_SUGGEST_SKILL_BYTES {
+        format!("{byte_len} bytes — large, consider a skill")
+    } else {
+        format!("{byte_len} bytes")
+    };
+    format!(
+        "your — global personalization. memory: {} ({state}). \
+         Edit by chatting (\"remember that …\", \"what is your config?\") \
+         or with the remember/read_memory/write_memory tools.",
+        memory_path.display()
+    )
+}
+
 // ---------- capability ----------
 
 pub(crate) struct YourCapability {
@@ -216,41 +274,10 @@ impl Capability for YourCapability {
     }
 
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        let mut out = String::new();
-        out.push_str("<your>\n");
-        out.push_str(
-            "yolop's personalization layer. When the user addresses \"you\" or \"yolop\" itself \
-             — e.g. \"what is your config?\", \"update your settings\", \"set yolop blue\", \
-             \"remember that I prefer X\" — treat it as a GLOBAL personalization request about \
-             yolop, NOT a change to the current project. Persist durable user preferences with \
-             the `remember` tool, reorganize with `write_memory`, and read the full set with \
-             `read_memory`. Project-specific guidance belongs in the repo's AGENTS.md, not here.\n",
-        );
-        out.push_str(&format!("memory file: {}\n", self.memory.path().display()));
-
-        let content = self.memory.snapshot();
-        if content.trim().is_empty() {
-            out.push_str("memory is empty.\n");
-        } else {
-            let (shown, clipped) = clip_to_budget(&content, MEMORY_INJECT_BUDGET_BYTES);
-            out.push_str("<your_memory>\n");
-            out.push_str(shown);
-            if !shown.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str("</your_memory>\n");
-            if clipped {
-                out.push_str(
-                    "(memory truncated to fit the prompt budget — call `read_memory` for the full text.)\n",
-                );
-            }
-            if let Some(note) = skill_suggestion(content.len()) {
-                out.push_str(note);
-                out.push('\n');
-            }
-        }
-        out.push_str("</your>");
-        Some(out)
+        Some(render_memory_block(
+            self.memory.path(),
+            &self.memory.snapshot(),
+        ))
     }
 
     fn system_prompt_preview(&self) -> Option<String> {
@@ -302,21 +329,12 @@ yolop's personalization layer (global). Use `remember` / `read_memory` /
                 request.name
             )));
         }
-        let len = self.memory.byte_len();
-        let state = if self.memory.is_empty() {
-            "empty".to_string()
-        } else if len > MEMORY_SUGGEST_SKILL_BYTES {
-            format!("{len} bytes — large, consider a skill")
-        } else {
-            format!("{len} bytes")
-        };
         Ok(CommandResult {
             success: true,
-            message: format!(
-                "your — global personalization. memory: {} ({state}). \
-                 Edit by chatting (\"remember that …\", \"what is your config?\") \
-                 or with the remember/read_memory/write_memory tools.",
-                self.memory.path().display()
+            message: memory_status(
+                self.memory.path(),
+                self.memory.is_empty(),
+                self.memory.byte_len(),
             ),
             error_code: None,
             error_fields: None,
@@ -554,5 +572,80 @@ mod tests {
         };
         let res = tool.execute(json!({})).await;
         assert!(res.is_success());
+    }
+
+    #[tokio::test]
+    async fn write_memory_tool_replaces_and_reports() {
+        let (_tmp, store) = store_in_tmp();
+        let tool = WriteMemoryTool {
+            memory: Arc::new(store),
+        };
+        let res = tool.execute(json!({ "content": "# x\n- one\n" })).await;
+        assert!(res.is_success());
+        assert_eq!(tool.memory.snapshot(), "# x\n- one\n");
+    }
+
+    #[tokio::test]
+    async fn write_memory_tool_requires_content() {
+        let (_tmp, store) = store_in_tmp();
+        let tool = WriteMemoryTool {
+            memory: Arc::new(store),
+        };
+        let res = tool.execute(json!({})).await;
+        assert!(res.is_error());
+    }
+
+    #[tokio::test]
+    async fn remember_tool_suggests_skill_when_large() {
+        let (_tmp, store) = store_in_tmp();
+        // Seed past the soft limit so the next append crosses it.
+        store
+            .write(&format!("# m\n{}", "- x\n".repeat(1200)))
+            .expect("seed");
+        let tool = RememberTool {
+            memory: Arc::new(store),
+        };
+        let res = tool.execute(json!({ "note": "one more" })).await;
+        assert!(res.is_success());
+        let text = format!("{res:?}");
+        assert!(text.contains("Memory is getting large"), "got: {text}");
+    }
+
+    #[test]
+    fn render_block_reports_empty_memory() {
+        let block = render_memory_block(Path::new("/cfg/MEMORY.md"), "   \n");
+        assert!(block.starts_with("<your>\n"));
+        assert!(block.contains("memory file: /cfg/MEMORY.md"));
+        assert!(block.contains("memory is empty."));
+        assert!(!block.contains("<your_memory>"));
+        assert!(block.ends_with("</your>"));
+    }
+
+    #[test]
+    fn render_block_wraps_small_memory_without_notices() {
+        let block = render_memory_block(Path::new("/cfg/MEMORY.md"), "- prefer terse\n");
+        assert!(block.contains("<your_memory>\n- prefer terse\n</your_memory>\n"));
+        assert!(!block.contains("truncated"));
+        assert!(!block.contains("Memory is getting large"));
+    }
+
+    #[test]
+    fn render_block_truncates_and_suggests_when_oversized() {
+        let big = "a".repeat(MEMORY_INJECT_BUDGET_BYTES + 100);
+        let block = render_memory_block(Path::new("/cfg/MEMORY.md"), &big);
+        assert!(block.contains("truncated to fit the prompt budget"));
+        // Over the inject budget is also over the soft limit, so both fire.
+        assert!(block.contains("Memory is getting large"));
+        // The injected slice itself is capped at the budget.
+        assert!(!block.contains(&"a".repeat(MEMORY_INJECT_BUDGET_BYTES + 1)));
+    }
+
+    #[test]
+    fn memory_status_covers_all_states() {
+        let p = Path::new("/cfg/MEMORY.md");
+        assert!(memory_status(p, true, 0).contains("(empty)"));
+        assert!(memory_status(p, false, 100).contains("(100 bytes)"));
+        let large = memory_status(p, false, MEMORY_SUGGEST_SKILL_BYTES + 1);
+        assert!(large.contains("large, consider a skill"));
     }
 }
