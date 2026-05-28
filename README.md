@@ -70,7 +70,19 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
 
 ## Install
 
-From source:
+With Homebrew (macOS arm64/x86_64, Linux x86_64):
+
+```bash
+brew install everruns/tap/yolop
+```
+
+From crates.io:
+
+```bash
+cargo install yolop --locked
+```
+
+From git:
 
 ```bash
 cargo install --git https://github.com/everruns/yolop --locked
@@ -82,7 +94,8 @@ Or, from a local clone:
 cargo install --path . --locked
 ```
 
-That drops the `yolop` binary into `~/.cargo/bin/`.
+That drops the `yolop` binary into `~/.cargo/bin/` (or, for the Homebrew
+install, the Homebrew prefix on your `$PATH`).
 
 ## Run
 
@@ -233,6 +246,21 @@ Development setup, validation commands, and local smoke tests live in
 
 Please report vulnerabilities through [`SECURITY.md`](./SECURITY.md), and follow
 the project [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) when participating.
+
+## Releases
+
+Yolop is released to two registries:
+
+- crates.io as the `yolop` crate (`cargo install yolop --locked`)
+- the `everruns/homebrew-tap` Homebrew tap (`brew install everruns/tap/yolop`)
+
+Releases are prepared by asking an agent ("cut release vX.Y.Z" / `/release`),
+which opens a `chore(release): prepare vX.Y.Z` PR. After a human squash-
+merges, [`.github/workflows/release.yml`](./.github/workflows/release.yml)
+tags the commit, creates the GitHub Release, and dispatches the publish and
+binary-build workflows. See [`specs/release.md`](./specs/release.md) for the
+full procedure and [`CHANGELOG.md`](./CHANGELOG.md) for what shipped in
+each version.
 
 ## License
 

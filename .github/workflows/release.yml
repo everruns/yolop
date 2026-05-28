@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    # Trigger on manual dispatch OR on a `chore(release): prepare v…` commit
+    # landing on main (post-squash-merge of the release PR).
+    # `head_commit` is null for workflow_dispatch; fall back to '' so
+    # `startsWith` doesn't trip on the null in that path.
+    if: "${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message || '', 'chore(release): prepare v') }}"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Extract version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # Manual trigger: read version from Cargo.toml
+            VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          else
+            # Push trigger: extract from the first line of the commit subject
+            FIRST_LINE=$(echo "$COMMIT_MSG" | head -1)
+            VERSION=$(echo "$FIRST_LINE" | sed -n 's/.*prepare v\([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p')
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not determine version"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION"   >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+
+      - name: Verify version matches Cargo.toml
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ "${{ steps.version.outputs.version }}" != "$CARGO_VERSION" ]; then
+            echo "::error::Commit version (${{ steps.version.outputs.version }}) does not match Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+          echo "Version verified: $CARGO_VERSION"
+
+      - name: Extract release notes from CHANGELOG
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Capture content between this version's header and the next version header.
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { found=1; next }
+            found && /^## \[/      { exit }
+            found                  { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "::error::No CHANGELOG section found for [$VERSION]. Add a '## [$VERSION] - YYYY-MM-DD' entry before tagging."
+            exit 1
+          fi
+          echo "Release notes extracted for v$VERSION"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Release ${{ steps.version.outputs.tag }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+
+      # `release: published` does NOT fire for releases created with
+      # GITHUB_TOKEN (anti-recursion). Dispatch the downstream workflows
+      # explicitly so they run against the new tag's ref.
+      - name: Dispatch publish workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          gh workflow run publish.yml --ref "$TAG"
+
+      - name: Dispatch CLI binary builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          gh workflow run cli-binaries.yml --ref "$TAG" -f "tag=$TAG"
