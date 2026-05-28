@@ -2689,6 +2689,13 @@ mod tests {
         );
     }
 
+    #[test]
+    fn truncate_end_handles_tiny_limits() {
+        assert_eq!(truncate_end_chars("hello", 0), "");
+        assert_eq!(truncate_end_chars("hello", 1), "…");
+        assert_eq!(truncate_end_chars("hello", 99), "hello");
+    }
+
     fn line_text(line: &Line<'_>) -> String {
         line.spans
             .iter()
@@ -2814,6 +2821,32 @@ mod tests {
             rows[0].contains("Tab /help"),
             "slash input should render command suggestions in chrome row: {:?}",
             rows
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn app_view_state_hides_command_suggestions_when_input_disabled() {
+        let mut app = app_with_llmsim().await;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()))
+            .await;
+        assert!(
+            !app.view_state().command_suggestions.is_empty(),
+            "slash input should produce suggestions before input is disabled"
+        );
+
+        app.busy = true;
+        assert!(
+            app.view_state().command_suggestions.is_empty(),
+            "busy turns should not render suggestions"
+        );
+
+        app.busy = false;
+        let (responder, _rx) = oneshot::channel();
+        app.pending = Some(PendingApproval { responder });
+        assert!(
+            app.view_state().command_suggestions.is_empty(),
+            "approval prompts should not render suggestions"
         );
     }
 
