@@ -59,7 +59,7 @@ Use this skill when the user asks to:
 7. **The PR is mergeable and merged safely.**
    - Push the branch.
    - Create or update the PR.
-   - Address every review comment — including low-confidence suggestions, nits, and bot comments. For each comment, either apply the fix or post a reply inline on the same thread with a clear explanation, then mark that thread resolved. No comment may be left unanswered or unresolved before merge.
+   - Address every review comment — including low-confidence suggestions, nits, and bot comments. For each comment, post an inline reply on the same thread explaining the resolution (and apply a code change too when one is needed), then mark that thread resolved. An inline reply is required even when the fix is a pure code change; no comment may be left unanswered or unresolved before merge.
    - Wait for CI to go green.
    - Merge with squash only after CI is green and the final review sweep is clean.
    - After merging, monitor main CI for the merge commit. If it fails, fix or revert promptly.
