@@ -34,7 +34,7 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
 - **Host bash tool** — `bash -lc` from the workspace root, with a 120 s
   wall-clock timeout and per-stream 1 MiB output cap.
 - **Curated capabilities** wired beyond the filesystem:
-  - `yolop_environment_context` — workspace root, shell, local date/timezone,
+  - `code_environment_context` — workspace root, shell, local date/timezone,
     Git identity and branch.
   - `agent_instructions` — re-reads `AGENTS.md` every turn.
   - `skills` — discovers `SKILL.md` files under `.agents/skills/<name>/`;
