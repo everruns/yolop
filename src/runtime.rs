@@ -5,6 +5,7 @@
 // instead of running against the VFS.
 
 use crate::approval::ApprovalGate;
+use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability, YourStore};
 use crate::capabilities::{
     CodingBashCapability, CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
     MODEL_SWITCHER_CAPABILITY_ID, ModelSwitcherCapability, ONBOARDING_CAPABILITY_ID,
@@ -13,7 +14,6 @@ use crate::capabilities::{
 };
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
-use crate::your::{YOUR_CAPABILITY_ID, YourCapability, YourStore};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use everruns_core::capabilities::{

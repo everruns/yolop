@@ -80,18 +80,29 @@ isn't driving.
 
 ## Roadmap (not yet implemented)
 
-- **Global skills** — author skills under `<config_dir>/yolop/skills/<name>/`
-  and make them discoverable in every session (likely by mounting them into
-  the session filesystem's `/.agents/skills` so the built-in `skills`
-  capability lists/activates them). This is also where memory that has grown
-  too large gets promoted to.
+The roadmap rides on everruns' existing extension points rather than inventing
+yolop-specific formats.
+
+- **User-defined capabilities** — the central piece. everruns already has a
+  first-class *declarative capability*: a serializable
+  `DeclarativeCapabilityDefinition` (capability id `declarative:<name>`) that
+  contributes a `system_prompt`, mounted `files`, `skills` (name +
+  description + instructions + bundled files), and `mcp_servers` — entirely
+  from data, no compiled code. `your` stores user definitions under the
+  central config dir and registers them into every session, so a user can add
+  global capabilities without rebuilding yolop. Compiled (built-in)
+  capabilities remain the path for behavior that needs real Rust.
+- **Global skills** — fall out of the above: a declarative capability's
+  `skills` are mounted at everruns' `SKILLS_DISCOVERY_PATH`
+  (`/.agents/skills`) so the built-in `skills` capability lists/activates
+  them in every session. This is also where memory that has outgrown a few
+  bullets gets promoted to.
 - **Hooks** — once yolop grows a hook system, `your` configures global hooks
-  from the same central dir.
+  from the same central dir (and, where everruns exposes hook contributions
+  on capabilities, via declarative definitions).
 - **General config** — map natural-language requests ("set yolop blue") onto
   real settings as those settings come to exist. Until a knob exists, the
   preference is recorded in memory and honored on a best-effort basis.
-- **User-defined capabilities** — both built-in (compiled, opt-in) and
-  declarative (data-described) capabilities a user can enable globally.
 
 ## Non-goals
 
