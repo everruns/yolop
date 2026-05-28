@@ -79,7 +79,7 @@ struct CommandSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CommandSuggestion {
+pub(crate) struct CommandSuggestion {
     completion: String,
     label: String,
 }
@@ -154,6 +154,7 @@ pub struct App {
 #[derive(Clone, Debug)]
 pub(crate) struct ViewState {
     pub stream_preview: Option<StreamPreview>,
+    pub command_suggestions: Vec<CommandSuggestion>,
     /// `true` while an approval prompt is waiting on user input. The
     /// renderer only needs the bit, not the responder channel.
     pub approval_pending: bool,
@@ -253,6 +254,11 @@ impl App {
     pub(crate) fn view_state(&self) -> ViewState {
         ViewState {
             stream_preview: self.stream_preview.clone(),
+            command_suggestions: if !self.busy && self.pending.is_none() {
+                self.suggestions()
+            } else {
+                Vec::new()
+            },
             approval_pending: self.pending.is_some(),
             busy: self.busy,
             busy_frame: self.busy_frame,
@@ -1435,8 +1441,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     draw_input(f, input_rect, app);
 }
 
-/// Render the non-input chrome (stream preview, message separator,
-/// status separator, session status) into `area` using `state`, and
+/// Render the non-input chrome (command suggestions / stream preview,
+/// message separator, status separator, session status) into `area` using `state`, and
 /// return the `Rect` where the caller should render the input widget
 /// (which needs `&mut` and so cannot be driven through `ViewState`).
 ///
@@ -1460,12 +1466,50 @@ pub(crate) fn draw_chrome(
         ])
         .split(area);
 
-    draw_stream_preview(f, chunks[0], state);
+    if state.command_suggestions.is_empty() {
+        draw_stream_preview(f, chunks[0], state);
+    } else {
+        draw_suggestions(f, chunks[0], &state.command_suggestions);
+    }
     draw_message_separator(f, chunks[1], state);
     draw_status_separator(f, chunks[3]);
     draw_session_status(f, chunks[4], state);
 
     chunks[2]
+}
+
+fn draw_suggestions(f: &mut ratatui::Frame, area: Rect, suggestions: &[CommandSuggestion]) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    f.render_widget(
+        Paragraph::new(suggestion_preview_line(suggestions, area.width)),
+        area,
+    );
+}
+
+fn suggestion_preview_line(suggestions: &[CommandSuggestion], width: u16) -> Line<'static> {
+    let body = suggestions
+        .iter()
+        .map(|suggestion| suggestion.label.as_str())
+        .collect::<Vec<_>>()
+        .join("  ·  ");
+    let prefix = "Tab ";
+    let max_body = (width as usize)
+        .saturating_sub(prefix.chars().count() + 1)
+        .max(8);
+    Line::from(vec![
+        Span::styled(
+            prefix,
+            Style::default()
+                .fg(ACCENT_BLUE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            truncate_end_chars(&body, max_body),
+            Style::default().fg(TEXT_MUTED),
+        ),
+    ])
 }
 
 fn draw_stream_preview(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
@@ -1517,6 +1561,23 @@ fn truncate_tail_chars(text: &str, max_chars: usize) -> String {
     let mut out = String::with_capacity(max_chars);
     out.push('…');
     out.extend(text.chars().skip(skip));
+    out
+}
+
+fn truncate_end_chars(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+    let mut out = String::with_capacity(max_chars);
+    out.extend(text.chars().take(max_chars - 1));
+    out.push('…');
     out
 }
 
@@ -2054,6 +2115,26 @@ mod tests {
                 .any(|s| s.completion == "/model" || s.completion == "/model "),
             "capability-provided /model should appear in suggestions: {suggestions:?}"
         );
+    }
+
+    #[test]
+    fn suggestion_preview_line_shows_command_dropdown() {
+        let caps = vec![model_capability_command()];
+        let suggestions = command_suggestions("/m", &caps);
+        let rendered = line_text(&suggestion_preview_line(&suggestions, 96));
+
+        assert!(rendered.starts_with("Tab /model [spec]"));
+        assert!(rendered.contains("/model [spec]"));
+    }
+
+    #[test]
+    fn suggestion_preview_line_keeps_first_match_when_truncated() {
+        let caps = vec![model_capability_command()];
+        let suggestions = command_suggestions("/", &caps);
+        let rendered = line_text(&suggestion_preview_line(&suggestions, 18));
+
+        assert!(rendered.starts_with("Tab /help"));
+        assert!(rendered.ends_with('…'));
     }
 
     #[test]
@@ -2608,6 +2689,13 @@ mod tests {
         );
     }
 
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
     #[test]
     fn should_not_insert_chat_gap_inside_tool_blocks() {
         assert!(!should_insert_chat_gap(&Author::Tool, Some(&Author::Tool)));
@@ -2646,6 +2734,7 @@ mod tests {
     fn view_state_idle() -> ViewState {
         ViewState {
             stream_preview: None,
+            command_suggestions: Vec::new(),
             approval_pending: false,
             busy: false,
             busy_frame: 0,
@@ -2683,6 +2772,75 @@ mod tests {
                 row.trim_end().to_string()
             })
             .collect()
+    }
+
+    async fn app_with_llmsim() -> App {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let runtime = crate::runtime::build_with_options(
+            workspace.path().to_path_buf(),
+            crate::runtime::ProviderChoice::Sim,
+            crate::approval::ApprovalGate::auto(),
+            None,
+            sessions.path().to_path_buf(),
+            crate::runtime::BuildOptions::default(),
+        )
+        .await
+        .expect("build llmsim runtime");
+        std::mem::forget(workspace);
+        std::mem::forget(sessions);
+        let (_tx, rx) = mpsc::unbounded_channel();
+        App::new(runtime, rx)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn app_slash_input_renders_command_suggestions_end_to_end() {
+        let mut app = app_with_llmsim().await;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()))
+            .await;
+
+        let state = app.view_state();
+        assert!(
+            state
+                .command_suggestions
+                .iter()
+                .any(|suggestion| suggestion.completion == "/help"),
+            "expected /help suggestion in view state: {:?}",
+            state.command_suggestions
+        );
+        let rows = render_chrome_lines(&state, 80, 5);
+        assert!(
+            rows[0].contains("Tab /help"),
+            "slash input should render command suggestions in chrome row: {:?}",
+            rows
+        );
+    }
+
+    #[test]
+    fn chrome_command_suggestions_override_stream_preview_row() {
+        let state = ViewState {
+            stream_preview: Some(StreamPreview {
+                kind: StreamKind::Assistant,
+                text: "streaming response".to_string(),
+            }),
+            command_suggestions: vec![CommandSuggestion {
+                completion: "/help".to_string(),
+                label: "/help    show commands".to_string(),
+            }],
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 80, 5);
+        assert!(
+            rows[0].contains("Tab /help"),
+            "suggestions should render in the top chrome row: {:?}",
+            rows
+        );
+        assert!(
+            !rows[0].contains("agent"),
+            "command suggestions should replace the stream preview row: {}",
+            rows[0]
+        );
     }
 
     #[test]
