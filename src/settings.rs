@@ -78,18 +78,29 @@ pub fn load_from(path: &Path) -> Settings {
     Settings::from_table(&table)
 }
 
-/// Write the settings file in place, truncating + rewriting. On Unix the
-/// file is forced to mode 0o600 (owner-only) both at create time and
-/// after open, so pre-existing files written with a broader default mode
-/// are tightened on first save. The write is not crash-atomic — a power
-/// loss mid-`write_all` can leave a truncated TOML file; load tolerates
-/// that by falling back to defaults.
+/// Write the settings file atomically: stage into a sibling temp file,
+/// `fsync`, then `rename` over the target. POSIX `rename` is atomic, so
+/// concurrent readers and crashes see either the old contents or the
+/// fully written new contents — never a truncated TOML. The temp file is
+/// created with mode 0o600 on Unix, so the resulting file is owner-only
+/// regardless of any prior file's permissions.
 fn save_to(path: &Path, settings: &Settings) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("create settings dir {}", dir.display()))?;
-    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    std::fs::create_dir_all(&parent)
+        .with_context(|| format!("create settings dir {}", parent.display()))?;
     let toml_text = toml::to_string(&settings.to_table()).context("serialize settings")?;
+
+    let file_name = path
+        .file_name()
+        .with_context(|| format!("settings path has no file name: {}", path.display()))?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(file_name);
+    tmp_name.push(format!(".tmp.{}", std::process::id()));
+    let tmp_path = parent.join(tmp_name);
 
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -98,28 +109,29 @@ fn save_to(path: &Path, settings: &Settings) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let mut file = opts
-        .open(path)
-        .with_context(|| format!("open settings {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // `mode()` on OpenOptions only applies when the file is created.
-        // If the user (or an older yolop) wrote settings.toml with the
-        // default 0o644, tighten it on every save so tokens never sit at
-        // world-readable permissions.
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("tighten settings permissions {}", path.display()))?;
+    let write_result = (|| -> Result<()> {
+        let mut file = opts
+            .open(&tmp_path)
+            .with_context(|| format!("open temp settings {}", tmp_path.display()))?;
+        file.write_all(toml_text.as_bytes())
+            .with_context(|| format!("write temp settings {}", tmp_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("sync temp settings {}", tmp_path.display()))?;
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
     }
-    file.write_all(toml_text.as_bytes())
-        .with_context(|| format!("write settings {}", path.display()))?;
+    std::fs::rename(&tmp_path, path)
+        .with_context(|| format!("rename {} -> {}", tmp_path.display(), path.display()))?;
     Ok(())
 }
 
-/// Thread-safe handle shared across capabilities. The cached `Settings` is
-/// the source of truth in memory; mutations flush to disk synchronously.
-/// The write is not crash-atomic — see `save_to` — but load tolerates a
-/// truncated file by falling back to defaults.
+/// Thread-safe handle shared across capabilities. The cached `Settings`
+/// is the source of truth in memory; mutations flush to disk via an
+/// atomic temp-file + rename (see `save_to`), so readers and crashes
+/// never observe a partially written settings file.
 pub struct SettingsStore {
     path: PathBuf,
     inner: Mutex<Settings>,
