@@ -946,6 +946,7 @@ pub async fn build(
         gate,
         resume_session_id,
         sessions_dir,
+        settings,
         BuildOptions::default(),
     )
     .await
@@ -957,6 +958,7 @@ pub async fn build_with_options(
     gate: Arc<ApprovalGate>,
     resume_session_id: Option<SessionId>,
     sessions_dir: PathBuf,
+    settings: Arc<SettingsStore>,
     options: BuildOptions,
 ) -> Result<BuiltRuntime> {
     let canonical_root = std::fs::canonicalize(&workspace_root)
