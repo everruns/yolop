@@ -2968,12 +2968,16 @@ mod tests {
     async fn app_with_llmsim() -> TestApp {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let settings = std::sync::Arc::new(crate::settings::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
         let runtime = crate::runtime::build_with_options(
             workspace.path().to_path_buf(),
             crate::runtime::ProviderChoice::Sim,
             crate::approval::ApprovalGate::auto(),
             None,
             sessions.path().to_path_buf(),
+            settings,
             crate::runtime::BuildOptions::default(),
         )
         .await
