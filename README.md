@@ -60,10 +60,16 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - `OPENAI_API_KEY` → OpenAI (`gpt-5.5`)
   - `ANTHROPIC_API_KEY` → Anthropic (`claude-sonnet-4-5`)
   - `OPENROUTER_API_KEY` → OpenRouter (`openai/gpt-5.2` by default)
+  - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) → Google Gemini (`gemini-2.5-flash`)
   - `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` → Ollama (`llama3.2`)
   - otherwise `llmsim` (offline simulator, no key required)
-- **Slash commands** (TUI): `/help`, `/tools`, `/cwd`, `/model <provider>/<id>`,
-  `/clear`, `/quit`.
+- **Slash commands** (TUI): `/help`, `/tools`, `/cwd`,
+  `/provider <name>` (persists), `/token <provider> <value>` (persists),
+  `/model <provider>/<id>` (current session only), `/onboard` (guided
+  setup), `/clear`, `/quit`.
+- **First-run onboarding**: launching yolop with no env vars and no saved
+  settings opens an interactive wizard that walks through provider →
+  token → default model. Re-runnable any time via `/onboard`.
 - **`--print`** one-shot mode for CI smoke tests.
 - **Session persistence** — durable per-session JSONL event log under the
   platform-native user data directory, with `--session <id>` to resume.
@@ -148,7 +154,7 @@ OLLAMA_BASE_URL=http://localhost:11434/v1 yolop --provider ollama -m llama3.2 -p
 | Flag                       | Description                                                          |
 | -------------------------- | -------------------------------------------------------------------- |
 | `-C, --cwd <PATH>`         | Workspace root (default: current dir)                                |
-| `--provider <P>`           | Force `anthropic`, `openai`, `openrouter`, `ollama`, or `llmsim`     |
+| `--provider <P>`           | Force `anthropic`, `openai`, `google`, `openrouter`, `ollama`, or `llmsim` |
 | `-m, --model <ID>`         | Override the model id for the chosen provider                        |
 | `-p, --print <PROMPT>`     | Run one prompt non-interactively and print the result                |
 | `--ask`                    | Prompt before every destructive tool call (off by default)           |
@@ -166,10 +172,54 @@ OLLAMA_BASE_URL=http://localhost:11434/v1 yolop --provider ollama -m llama3.2 -p
 | `ANTHROPIC_API_KEY`             | Select Anthropic when OpenAI is not configured               |
 | `OPENROUTER_API_KEY`            | Select OpenRouter when OpenAI/Anthropic are not configured   |
 | `OPENROUTER_BASE_URL`           | Optional, defaults to `https://openrouter.ai/api/v1`         |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Select Google Gemini via its OpenAI-compatible endpoint  |
+| `GOOGLE_BASE_URL`               | Optional, defaults to `https://generativelanguage.googleapis.com/v1beta/openai` |
 | `OLLAMA_BASE_URL`               | Select Ollama, defaults to `http://localhost:11434/v1`       |
 | `OLLAMA_API_KEY`                | Optional, defaults to `ollama` for local Ollama              |
 | `EVERRUNS_CLI_MODEL`            | Override the auto-selected default model                     |
 | `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI-only reasoning effort override                        |
+
+## Settings
+
+A small TOML settings file persists the preferred provider and (optionally)
+provider API tokens across runs. It lives at `<config_dir>/yolop/settings.toml`
+— `~/.config/yolop/settings.toml` on Linux,
+`~/Library/Application Support/yolop/settings.toml` on macOS,
+`%APPDATA%\yolop\settings.toml` on Windows.
+
+The TUI's `/provider <name>` command writes through this file.
+
+Provider resolution at startup:
+
+1. `--provider` flag (always wins)
+2. Saved `provider` setting
+3. Auto-detect: the first provider in the order **OpenAI → Anthropic →
+   OpenRouter → Google → Ollama** for which *either* a matching env var
+   *or* a saved token is present. Env vars and saved tokens are treated
+   as equivalent credential signals here — the provider order decides
+   the tiebreak, not the credential source.
+4. Fall back to `llmsim` (offline) if nothing matches.
+
+At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always
+beats the saved token, so a per-run env override is always possible.
+`/model <provider>/<id>` then layers on top of the chosen provider for
+the current session.
+
+### Storing tokens
+
+`/token openai sk-...` stores an API token under `[tokens]` in the
+settings file. The file is written with `0o600` on Unix (owner-only).
+Other commands:
+
+- `/token` — list which providers have a token stored (values are not
+  echoed)
+- `/token <provider> clear` — remove the stored token
+
+Env vars still win at runtime: if both `OPENAI_API_KEY` is set and a token
+is saved, the env var is used. Slash commands are not echoed into the
+transcript or session log, so `/token openai sk-...` is safer than typing
+it at a chat prompt — but the resulting settings file is plain text on
+disk, so treat it the same way you would `~/.aws/credentials`.
 
 ## Session persistence
 
