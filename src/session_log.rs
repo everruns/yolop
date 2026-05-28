@@ -953,4 +953,201 @@ mod tests {
 
         assert_eq!(result, &serde_json::Value::String("123".to_string()));
     }
+
+    // ====================================================================
+    // replay() edge cases — partial writes, malformed lines, foreign
+    // session ids, binary garbage. The contract is:
+    //   * never panic
+    //   * skip invalid content with a tracing warning
+    //   * preserve every valid Event belonging to `expected`
+    //   * track max_sequence across all valid events
+    // ====================================================================
+
+    fn serialize_event(event: &Event) -> String {
+        serde_json::to_string(event).expect("serialize event")
+    }
+
+    #[test]
+    fn replay_missing_file_returns_empty_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nonexistent.jsonl");
+        let session_id = SessionId::from_seed(70001);
+
+        let out = replay(&path, session_id).expect("replay missing file");
+        assert!(out.events.is_empty());
+        assert!(out.messages.is_empty());
+        assert!(out.max_sequence.is_none());
+    }
+
+    #[test]
+    fn replay_empty_file_returns_empty_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        std::fs::write(&path, b"").expect("write empty file");
+        let session_id = SessionId::from_seed(70002);
+
+        let out = replay(&path, session_id).expect("replay empty file");
+        assert!(out.events.is_empty());
+        assert!(out.messages.is_empty());
+        assert!(out.max_sequence.is_none());
+    }
+
+    #[test]
+    fn replay_blank_lines_in_middle_are_skipped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        let session_id = SessionId::from_seed(70003);
+
+        let first = serialize_event(&input_event(session_id, "first"));
+        let second = serialize_event(&input_event(session_id, "second"));
+        let content = format!("{first}\n\n   \n{second}\n");
+        std::fs::write(&path, content).expect("write");
+
+        let out = replay(&path, session_id).expect("replay");
+        assert_eq!(
+            out.events.len(),
+            2,
+            "blank/whitespace-only lines must not produce events"
+        );
+    }
+
+    #[test]
+    fn replay_malformed_json_line_does_not_stop_replay() {
+        // A single bad line in the middle must be skipped while the surrounding
+        // valid lines still come back. This is the documented graceful-degrade
+        // behaviour for partially-corrupt logs.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        let session_id = SessionId::from_seed(70004);
+
+        let good_a = serialize_event(&input_event(session_id, "alpha"));
+        let good_b = serialize_event(&input_event(session_id, "beta"));
+        let content = format!("{good_a}\n{{not valid json\n{good_b}\n");
+        std::fs::write(&path, content).expect("write");
+
+        let out = replay(&path, session_id).expect("replay");
+        assert_eq!(out.events.len(), 2, "two good lines must survive");
+    }
+
+    #[test]
+    fn replay_skips_events_for_different_session_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        let expected = SessionId::from_seed(70005);
+        let other = SessionId::from_seed(70006);
+
+        let mine = serialize_event(&input_event(expected, "mine"));
+        let theirs = serialize_event(&input_event(other, "theirs"));
+        let content = format!("{theirs}\n{mine}\n{theirs}\n");
+        std::fs::write(&path, content).expect("write");
+
+        let out = replay(&path, expected).expect("replay");
+        assert_eq!(
+            out.events.len(),
+            1,
+            "only the line belonging to `expected` should be kept"
+        );
+        assert_eq!(out.events[0].session_id, expected);
+    }
+
+    #[test]
+    fn replay_truncated_last_line_is_skipped_without_dropping_prior() {
+        // Simulates a crash mid-write: the last line is a partial JSON
+        // object with no trailing newline. Replay must skip it and keep
+        // the prior fully-written events.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        let session_id = SessionId::from_seed(70007);
+
+        let good = serialize_event(&input_event(session_id, "kept"));
+        let partial = "{\"id\":\"evt_\",\"session";
+        let content = format!("{good}\n{partial}");
+        std::fs::write(&path, content).expect("write");
+
+        let out = replay(&path, session_id).expect("replay");
+        assert_eq!(
+            out.events.len(),
+            1,
+            "the partial tail must not corrupt the replay"
+        );
+    }
+
+    #[test]
+    fn replay_binary_garbage_stops_early_and_drops_suffix() {
+        // Non-UTF-8 bytes injected into the JSONL file. `BufRead::lines()`
+        // will yield Err for non-UTF-8; the documented contract is to stop
+        // replay early on read errors rather than panic. A valid event is
+        // sandwiched AFTER the garbage so this test fails if replay ever
+        // starts trying to continue past a read error.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        let session_id = SessionId::from_seed(70008);
+
+        let prefix = serialize_event(&input_event(session_id, "prefix"));
+        let suffix = serialize_event(&input_event(session_id, "would-be-suffix"));
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(prefix.as_bytes());
+        bytes.push(b'\n');
+        // Invalid UTF-8 sequence on its own line.
+        bytes.extend_from_slice(&[0xff, 0xfe, 0xfd, b'\n']);
+        bytes.extend_from_slice(suffix.as_bytes());
+        bytes.push(b'\n');
+        std::fs::write(&path, &bytes).expect("write");
+
+        let out = replay(&path, session_id).expect("replay must not panic");
+        assert_eq!(
+            out.events.len(),
+            1,
+            "only the valid prefix line should survive; replay must stop early on read error"
+        );
+        let kept_text = match &out.events[0].data {
+            EventData::InputMessage(d) => d.message.text().unwrap_or_default().to_string(),
+            other => panic!("expected InputMessage, got {other:?}"),
+        };
+        assert!(
+            kept_text.contains("prefix"),
+            "expected the prefix event to be the one kept, got: {kept_text}"
+        );
+    }
+
+    #[test]
+    fn replay_tracks_highest_sequence_across_all_valid_events() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        let session_id = SessionId::from_seed(70009);
+
+        // Manually construct events with explicit sequence numbers so we
+        // exercise the max-tracking branch even when sequences are not
+        // monotonically written.
+        let mut a = input_event(session_id, "a");
+        a.sequence = Some(7);
+        let mut b = input_event(session_id, "b");
+        b.sequence = Some(3);
+        let mut c = input_event(session_id, "c");
+        c.sequence = Some(12);
+
+        let content = format!(
+            "{}\n{}\n{}\n",
+            serialize_event(&a),
+            serialize_event(&b),
+            serialize_event(&c)
+        );
+        std::fs::write(&path, content).expect("write");
+
+        let out = replay(&path, session_id).expect("replay");
+        assert_eq!(out.events.len(), 3);
+        assert_eq!(out.max_sequence, Some(12));
+    }
+
+    #[test]
+    fn replay_only_blank_lines_returns_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        std::fs::write(&path, "\n\n   \n\t\n").expect("write");
+        let session_id = SessionId::from_seed(70010);
+
+        let out = replay(&path, session_id).expect("replay");
+        assert!(out.events.is_empty());
+        assert!(out.max_sequence.is_none());
+    }
 }
