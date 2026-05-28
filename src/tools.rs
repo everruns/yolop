@@ -461,6 +461,151 @@ mod tests {
         );
     }
 
+    /// Spawn a background task that auto-responds to every approval
+    /// request with `decision`. Returns the gate to install on the tool
+    /// along with the responder task's `JoinHandle` so callers can
+    /// `.abort()` it on test shutdown.
+    fn auto_decision_gate(decision: bool) -> (Arc<ApprovalGate>, tokio::task::JoinHandle<()>) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
+            ApprovalRequest,
+            tokio::sync::oneshot::Sender<bool>,
+        )>();
+        let handle = tokio::spawn(async move {
+            while let Some((_req, responder)) = rx.recv().await {
+                let _ = responder.send(decision);
+            }
+        });
+        (ApprovalGate::channel(tx), handle)
+    }
+
+    #[tokio::test]
+    async fn bash_tool_returns_error_when_user_denies() {
+        let dir = tempfile::tempdir().unwrap();
+        let (gate, approver) = auto_decision_gate(false);
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()), gate);
+
+        let result = tool.execute(json!({ "command": "echo hi" })).await;
+
+        match result {
+            ToolExecutionResult::ToolError(msg) => {
+                assert_eq!(
+                    msg, "user denied bash command",
+                    "denial must return the exact documented error"
+                );
+            }
+            other => panic!("expected ToolError, got: {other:?}"),
+        }
+        drop(tool);
+        approver.abort();
+    }
+
+    #[tokio::test]
+    async fn bash_tool_denial_does_not_execute_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("should-not-exist");
+        let (gate, approver) = auto_decision_gate(false);
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()), gate);
+
+        // If the command runs, the marker file will exist.
+        let cmd = format!("touch {}", marker.display());
+        let _ = tool.execute(json!({ "command": cmd })).await;
+
+        assert!(
+            !marker.exists(),
+            "command must not run after denial, but marker exists at {marker:?}"
+        );
+        approver.abort();
+    }
+
+    #[tokio::test]
+    async fn bash_tool_forwards_command_to_approval_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
+            ApprovalRequest,
+            tokio::sync::oneshot::Sender<bool>,
+        )>();
+        let gate = ApprovalGate::channel(tx);
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()), gate);
+
+        let approver = tokio::spawn(async move {
+            let (req, responder) = rx.recv().await.expect("approval request");
+            match req {
+                ApprovalRequest::Bash { command } => {
+                    assert_eq!(command, "echo captured");
+                }
+                other => panic!("expected Bash variant, got: {other:?}"),
+            }
+            responder.send(true).unwrap();
+        });
+
+        let result = tool.execute(json!({ "command": "echo captured" })).await;
+        approver.await.unwrap();
+
+        let ToolExecutionResult::Success(value) = result else {
+            panic!("expected success after approval");
+        };
+        assert_eq!(value["exit_code"], 0);
+    }
+
+    #[tokio::test]
+    async fn bash_tool_returns_error_when_gate_channel_closed() {
+        // If the TUI tears down its approval channel mid-turn, the gate
+        // should fail closed (deny) rather than hang or panic.
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<(
+            ApprovalRequest,
+            tokio::sync::oneshot::Sender<bool>,
+        )>();
+        drop(rx);
+        let gate = ApprovalGate::channel(tx);
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()), gate);
+
+        let result = tool.execute(json!({ "command": "echo hi" })).await;
+        match result {
+            ToolExecutionResult::ToolError(msg) => {
+                assert_eq!(
+                    msg, "user denied bash command",
+                    "dropped-channel gate must fail closed with the documented error"
+                );
+            }
+            other => panic!("expected ToolError, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn bash_tool_missing_command_argument_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(
+            Workspace::new(dir.path().to_path_buf()),
+            ApprovalGate::auto(),
+        );
+
+        let result = tool.execute(json!({})).await;
+        match result {
+            ToolExecutionResult::ToolError(msg) => {
+                assert!(msg.contains("command"), "got: {msg}");
+            }
+            other => panic!("expected ToolError, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn bash_tool_non_string_command_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(
+            Workspace::new(dir.path().to_path_buf()),
+            ApprovalGate::auto(),
+        );
+
+        let result = tool.execute(json!({ "command": 42 })).await;
+        match result {
+            ToolExecutionResult::ToolError(msg) => {
+                assert!(msg.contains("command"), "got: {msg}");
+            }
+            other => panic!("expected ToolError, got: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn bash_explicit_full_returns_unlimited_inline_output() {
         let dir = tempfile::tempdir().unwrap();
