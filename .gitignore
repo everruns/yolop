@@ -4,6 +4,10 @@
 **/*.rs.bk
 Cargo.lock.bak
 
+# Python (scripts/verify_crates_publish.py is run by CI; local bytecode only)
+__pycache__/
+*.pyc
+
 # IDE
 .idea/
 .vscode/

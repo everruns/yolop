@@ -1,0 +1,220 @@
+# Prebuilt CLI binaries — dispatched by release.yml after the GitHub Release
+# is created. GITHUB_TOKEN-created releases don't fire `release: published`
+# (anti-recursion), so the release workflow dispatches this one explicitly.
+name: Publish CLI Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v0.2.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build CLI (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            archive: yolop-aarch64-apple-darwin.tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            archive: yolop-x86_64-apple-darwin.tar.gz
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive: yolop-x86_64-unknown-linux-gnu.tar.gz
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "cli-${{ matrix.target }}"
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p yolop --locked
+
+      - name: Package binary
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          cd "target/$TARGET/release"
+          tar czf "$GITHUB_WORKSPACE/$ARCHIVE" yolop
+          cd "$GITHUB_WORKSPACE"
+          # macOS ships shasum but not sha256sum by default; Linux is the
+          # opposite. Pick the one that exists so the workflow doesn't break
+          # if a runner image drops the other.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          gh release upload "$TAG" \
+            "$ARCHIVE" \
+            "$ARCHIVE.sha256" \
+            --clobber
+
+  update-homebrew:
+    name: Update Homebrew formula
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download SHA256 checksums from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+            gh release download "$TAG" \
+              --repo "$REPO" \
+              --pattern "yolop-${target}.tar.gz.sha256"
+          done
+
+      - name: Generate Homebrew formula
+        env:
+          TAG: ${{ inputs.tag }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          VERSION="${TAG#v}"
+
+          for f in yolop-aarch64-apple-darwin.tar.gz.sha256 \
+                   yolop-x86_64-apple-darwin.tar.gz.sha256 \
+                   yolop-x86_64-unknown-linux-gnu.tar.gz.sha256; do
+            if [[ ! -s "$f" ]]; then
+              echo "::error::checksum file '$f' is missing or empty"
+              exit 1
+            fi
+          done
+
+          SHA_ARM64=$(awk '{print $1}' yolop-aarch64-apple-darwin.tar.gz.sha256)
+          SHA_X86_64_MACOS=$(awk '{print $1}' yolop-x86_64-apple-darwin.tar.gz.sha256)
+          SHA_LINUX=$(awk '{print $1}' yolop-x86_64-unknown-linux-gnu.tar.gz.sha256)
+
+          for var in SHA_ARM64 SHA_X86_64_MACOS SHA_LINUX; do
+            if [[ -z "${!var}" ]]; then
+              echo "::error::extracted $var is empty"
+              exit 1
+            fi
+          done
+
+          BASE_URL="${SERVER_URL}/${REPO}/releases/download/${TAG}"
+          HOMEPAGE="${SERVER_URL}/${REPO}"
+
+          cat > yolop.rb <<FORMULA
+          # typed: false
+          # frozen_string_literal: true
+
+          class Yolop < Formula
+            desc "Minimal terminal coding agent built on everruns-runtime"
+            homepage "${HOMEPAGE}"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/yolop-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_ARM64}"
+              else
+                url "${BASE_URL}/yolop-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_X86_64_MACOS}"
+              end
+            end
+
+            on_linux do
+              depends_on arch: :x86_64
+              url "${BASE_URL}/yolop-x86_64-unknown-linux-gnu.tar.gz"
+              sha256 "${SHA_LINUX}"
+            end
+
+            def install
+              bin.install "yolop"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/yolop --version")
+            end
+          end
+          FORMULA
+
+          # Strip the leading indentation that heredoc preserved.
+          sed -i 's/^          //' yolop.rb
+
+          echo "Generated formula:"
+          cat yolop.rb
+
+      - name: Install Doppler CLI
+        uses: dopplerhq/cli-action@v3
+
+      - name: Push formula to homebrew-tap
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          VERSION="${TAG#v}"
+
+          # Fetch the homebrew-tap PAT from Doppler. This token is a
+          # fine-grained PAT scoped to `everruns/homebrew-tap` only
+          # (Contents: read+write, Metadata: read), so a leak cannot
+          # touch this repo.
+          # `doppler secrets get --plain` appends a trailing newline; strip
+          # it so the PAT compares cleanly against `git credential` checks
+          # and add-mask sees the actual secret without the line break.
+          GH_PAT=$(doppler secrets get HOMEBREW_TAP_GITHUB_TOKEN --plain | tr -d '\n\r')
+          export GH_PAT
+          echo "::add-mask::$GH_PAT"
+
+          # Use askpass to keep the token out of clone/push URLs and logs.
+          ASKPASS_SCRIPT=$(mktemp)
+          cat > "$ASKPASS_SCRIPT" <<'EOF'
+          #!/usr/bin/env sh
+          case "$1" in
+            *Username*) echo "x-access-token" ;;
+            *Password*) echo "$GH_PAT" ;;
+          esac
+          EOF
+          chmod 700 "$ASKPASS_SCRIPT"
+          export GIT_ASKPASS="$ASKPASS_SCRIPT"
+          export GIT_TERMINAL_PROMPT=0
+          trap 'rm -f "$ASKPASS_SCRIPT"; unset GH_PAT' EXIT
+
+          git clone "https://github.com/everruns/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp yolop.rb tap/Formula/yolop.rb
+
+          cd tap
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/yolop.rb
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "yolop ${VERSION}"
+          git push origin main
