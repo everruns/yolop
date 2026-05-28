@@ -226,112 +226,13 @@ There is no retention policy or rotation. If a session should not be
 persisted, point `--session-dir` at a path you can wipe (e.g. a `tmpfs`) or
 delete the JSONL after the run.
 
-## How it's wired
+## Contributing
 
-- `src/runtime.rs` — registers a platform `SessionFileSystemFactory` that
-  routes normal paths through a `RealDiskFileStore` rooted at the workspace
-  and routes `/outputs/` through the current session folder, then wraps it
-  with `WriteBlocklistFileStore` and `ApprovalGatingFileStore`. Registers all
-  the built-in capabilities listed above plus a tiny custom
-  `CodingBashCapability` for the shell tool. Picks a driver
-  (Anthropic / OpenAI / llmsim).
-- `src/tools.rs` — `BashTool` only. Built-in `virtual_bash` runs against the
-  VFS, not the real workspace, so the shell tool stays custom for yolop.
-- `src/approval.rs` — `ApprovalGate` and the request enum. Implements
-  `everruns_runtime::FileApprovalGate` so it can be plugged into the approval
-  decorator. The gate is shared between the bash tool and the session
-  filesystem approval decorator.
-- `src/app.rs` + `src/main.rs` — ratatui TUI and the one-shot `--print`
-  driver.
-- `src/session_log.rs` — JSONL event log, locking, and platform-aware
-  session directory resolution.
+Development setup, validation commands, and local smoke tests live in
+[`CONTRIBUTION.md`](./CONTRIBUTION.md).
 
-## Development
-
-### Building
-
-```bash
-cargo build
-cargo build --release
-```
-
-### Tests
-
-Unit tests (offline):
-
-```bash
-cargo test
-```
-
-Live integration test against OpenAI through Doppler (needs `OPENAI_API_KEY`
-in your Doppler config):
-
-```bash
-doppler run -- cargo test --test integration -- --ignored
-```
-
-### Lint
-
-```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-```
-
-### Smoke test
-
-Offline:
-
-```bash
-cargo run -- --provider llmsim -p "hi"
-```
-
-Live (OpenAI):
-
-```bash
-doppler run -- cargo run -- --provider openai -p "list the files in this repo"
-```
-
-## Project structure
-
-```
-.
-├── .agents/skills/
-│   ├── ship/SKILL.md        # /ship workflow
-│   └── maintenance/SKILL.md # /maintenance workflow
-├── .github/workflows/
-│   └── ci.yml               # lint + unit tests + offline smoke + live smoke
-├── specs/
-│   ├── shipping.md
-│   └── maintenance.md
-├── src/
-│   ├── main.rs
-│   ├── app.rs               # TUI
-│   ├── approval.rs          # approval gate
-│   ├── capabilities.rs      # yolop-owned capabilities
-│   ├── diff.rs
-│   ├── runtime.rs           # everruns-runtime wiring
-│   ├── session_log.rs       # JSONL session log
-│   └── tools.rs             # bash tool
-├── tests/
-│   └── integration.rs       # offline + live (`--ignored`) integration tests
-├── AGENTS.md                # coding-agent guidance (read live every turn)
-├── Cargo.toml
-└── README.md
-```
-
-## Caveats
-
-- Single-turn rendering: assistant messages appear after the turn completes
-  rather than streaming token-by-token. The runtime emits delta events;
-  wiring them to the UI is a follow-up.
-- Persistence is event-log only. Messages are reconstructed from events on
-  resume. There is no separate snapshot of agent state.
-- Bash has a 120 s timeout and a 1 MiB-per-stream capture cap. Long-running
-  jobs are not yet supported as background tools.
-- The bash approval prompt shows the command string only — sub-commands
-  spawned by it are not pre-listed.
-- The write blocklist matches directory names case-sensitively at any depth;
-  it is intentionally conservative, not exhaustive.
+Please report vulnerabilities through [`SECURITY.md`](./SECURITY.md), and follow
+the project [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) when participating.
 
 ## License
 
