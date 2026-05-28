@@ -19,9 +19,12 @@ use tokio::sync::mpsc;
 
 use everruns_core::llmsim_driver::LlmSimConfig;
 
+use std::sync::Arc;
+
 use crate::app::{DeltaRouter, StreamKind, TurnEvent, handle_live_event};
 use crate::approval::ApprovalGate;
 use crate::runtime::{BuildOptions, ProviderChoice, build_with_options};
+use crate::settings::SettingsStore;
 
 /// Maximum wall time we wait for the llmsim turn to fully drain
 /// through the broadcast. The instant-latency llmsim profile finishes
@@ -46,12 +49,15 @@ async fn build_llmsim_runtime() -> crate::runtime::BuiltRuntime {
     let llmsim = LlmSimConfig::lorem(200)
         .with_latency()
         .with_model("llmsim-yolop");
+    let settings_path = sessions.path().join("settings.toml");
+    let settings = Arc::new(SettingsStore::open(settings_path));
     let runtime = build_with_options(
         workspace.path().to_path_buf(),
         ProviderChoice::Sim,
         ApprovalGate::auto(),
         None,
         sessions.path().to_path_buf(),
+        settings,
         BuildOptions {
             llmsim_override: Some(llmsim),
         },
