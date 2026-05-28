@@ -64,9 +64,9 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` → Ollama (`llama3.2`)
   - otherwise `llmsim` (offline simulator, no key required)
 - **Slash commands** (TUI): `/help`, `/tools`, `/cwd`,
-  `/provider <name>`, `/model <provider>/<id>`, `/token <provider> <value>`
-  (all three persist across runs), `/onboard` (guided setup), `/clear`,
-  `/quit`.
+  `/provider <name>` (persists), `/token <provider> <value>` (persists),
+  `/model <provider>/<id>` (current session only), `/onboard` (guided
+  setup), `/clear`, `/quit`.
 - **First-run onboarding**: launching yolop with no env vars and no saved
   settings opens an interactive wizard that walks through provider →
   token → default model. Re-runnable any time via `/onboard`.
@@ -187,10 +187,23 @@ provider API tokens across runs. It lives at `<config_dir>/yolop/settings.toml`
 `~/Library/Application Support/yolop/settings.toml` on macOS,
 `%APPDATA%\yolop\settings.toml` on Windows.
 
-The TUI's `/provider <name>` command writes through this file. Resolution
-order at startup is: `--provider` flag > saved provider setting > env-var
-auto-detection > saved tokens. `/model <provider>/<id>` still works on
-top of either.
+The TUI's `/provider <name>` command writes through this file.
+
+Provider resolution at startup:
+
+1. `--provider` flag (always wins)
+2. Saved `provider` setting
+3. Auto-detect: the first provider in the order **OpenAI → Anthropic →
+   OpenRouter → Google → Ollama** for which *either* a matching env var
+   *or* a saved token is present. Env vars and saved tokens are treated
+   as equivalent credential signals here — the provider order decides
+   the tiebreak, not the credential source.
+4. Fall back to `llmsim` (offline) if nothing matches.
+
+At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always
+beats the saved token, so a per-run env override is always possible.
+`/model <provider>/<id>` then layers on top of the chosen provider for
+the current session.
 
 ### Storing tokens
 

@@ -409,7 +409,7 @@ fn failed_result(message: String) -> CommandResult {
 //
 // Companion to `/model`: picks the *provider* (OpenAI, Anthropic, Google,
 // OpenRouter, Ollama, llmsim) using that provider's default model, and
-// persists the choice to `<config_dir>/yolop/settings.json` so the next
+// persists the choice to `<config_dir>/yolop/settings.toml` so the next
 // run starts on the same provider. The model is still mutated via `/model`
 // afterward — both commands share the same provider Arc.
 
@@ -793,8 +793,9 @@ mod tests {
 
     #[test]
     fn needs_onboarding_true_for_empty_settings() {
-        // SAFETY: removing env vars for the duration of this test. Other
-        // tests in this module don't read these names.
+        // Serialize against every other env-mutating test in this
+        // binary; cf. `crate::test_env`.
+        let _guard = crate::test_env::lock();
         unsafe {
             std::env::remove_var("OPENAI_API_KEY");
             std::env::remove_var("ANTHROPIC_API_KEY");

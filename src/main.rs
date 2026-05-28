@@ -9,6 +9,8 @@ mod diff;
 mod runtime;
 mod session_log;
 mod settings;
+#[cfg(test)]
+mod test_env;
 mod tools;
 
 #[cfg(test)]
@@ -169,12 +171,17 @@ async fn main() -> Result<()> {
         .cwd
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
-    let settings_path = settings::default_settings_path().ok_or_else(|| {
-        anyhow::anyhow!(
-            "could not resolve a platform config directory for yolop settings; \
-             set $XDG_CONFIG_HOME or run from a supported platform"
-        )
-    })?;
+    // Fall back to an unwritable scratch path when no platform config dir
+    // is resolvable (minimal containers, CI without HOME). `SettingsStore`
+    // loads to defaults when the file does not exist, and writes will
+    // error visibly via `/provider` or `/token` rather than killing
+    // startup — keeps `--print` usable in stripped-down environments.
+    let settings_path = settings::default_settings_path().unwrap_or_else(|| {
+        eprintln!(
+            "yolop: no platform config dir resolvable — settings will not persist across runs"
+        );
+        std::path::PathBuf::from("/dev/null/yolop/settings.toml")
+    });
     let settings = Arc::new(SettingsStore::open(settings_path));
     let provider = pick_provider(&cli, &settings);
 

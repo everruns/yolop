@@ -508,7 +508,7 @@ impl ProviderChoice {
             "anthropic" => Ok(Self::Anthropic {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL),
             }),
-            "google" | "gemini" => Ok(Self::Google {
+            "google" => Ok(Self::Google {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL),
                 base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
             }),
@@ -520,7 +520,7 @@ impl ProviderChoice {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL),
                 base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
             }),
-            "llmsim" | "sim" => Ok(Self::Sim),
+            "llmsim" => Ok(Self::Sim),
             other => Err(anyhow!(
                 "unknown provider {other}; expected one of {}",
                 SUPPORTED_PROVIDERS.join(", ")
@@ -1261,11 +1261,11 @@ mod tests {
 
     #[test]
     fn google_requires_api_key_to_build_model_with_provider() {
-        // Drop both env vars in case the test runner exported one.
-        // SAFETY: env mutations in this single-process test do not race
-        // because tests in the same module serialize on `RUST_TEST_THREADS=1`
-        // for env-touching cases; otherwise the assertion still tolerates
-        // either outcome via `contains`.
+        // Drop both env vars in case the test runner exported one. The
+        // shared `test_env::lock()` serializes against every other
+        // env-mutating test in this binary; concurrent setenv/unsetenv
+        // calls would otherwise race (UB on glibc).
+        let _guard = crate::test_env::lock();
         unsafe {
             std::env::remove_var("GEMINI_API_KEY");
             std::env::remove_var("GOOGLE_API_KEY");
@@ -1282,6 +1282,7 @@ mod tests {
 
     #[test]
     fn openrouter_uses_openai_responses_driver_with_base_url() {
+        let _guard = crate::test_env::lock();
         unsafe {
             std::env::remove_var("OPENROUTER_API_KEY");
         }
@@ -1299,6 +1300,7 @@ mod tests {
 
     #[test]
     fn ollama_uses_openai_responses_driver_with_local_base_url() {
+        let _guard = crate::test_env::lock();
         unsafe {
             std::env::remove_var("OLLAMA_API_KEY");
         }
@@ -1316,6 +1318,7 @@ mod tests {
 
     #[test]
     fn stored_token_falls_back_when_env_var_missing() {
+        let _guard = crate::test_env::lock();
         unsafe {
             std::env::remove_var("ANTHROPIC_API_KEY");
         }

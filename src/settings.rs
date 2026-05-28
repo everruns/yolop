@@ -78,10 +78,12 @@ pub fn load_from(path: &Path) -> Settings {
     Settings::from_table(&table)
 }
 
-/// Write the settings file atomically-ish: open with `O_TRUNC` and mode
-/// 0o600 on Unix so the file is created owner-only from the first byte —
-/// avoids a brief window where the previous-version contents sit on disk
-/// with default 0o644 permissions while we still hold the tokens.
+/// Write the settings file in place, truncating + rewriting. On Unix the
+/// file is forced to mode 0o600 (owner-only) both at create time and
+/// after open, so pre-existing files written with a broader default mode
+/// are tightened on first save. The write is not crash-atomic — a power
+/// loss mid-`write_all` can leave a truncated TOML file; load tolerates
+/// that by falling back to defaults.
 fn save_to(path: &Path, settings: &Settings) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
@@ -99,14 +101,25 @@ fn save_to(path: &Path, settings: &Settings) -> Result<()> {
     let mut file = opts
         .open(path)
         .with_context(|| format!("open settings {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // `mode()` on OpenOptions only applies when the file is created.
+        // If the user (or an older yolop) wrote settings.toml with the
+        // default 0o644, tighten it on every save so tokens never sit at
+        // world-readable permissions.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("tighten settings permissions {}", path.display()))?;
+    }
     file.write_all(toml_text.as_bytes())
         .with_context(|| format!("write settings {}", path.display()))?;
     Ok(())
 }
 
 /// Thread-safe handle shared across capabilities. The cached `Settings` is
-/// the source of truth in memory; mutations flush to disk synchronously so
-/// a crash mid-session leaves the on-disk file consistent.
+/// the source of truth in memory; mutations flush to disk synchronously.
+/// The write is not crash-atomic — see `save_to` — but load tolerates a
+/// truncated file by falling back to defaults.
 pub struct SettingsStore {
     path: PathBuf,
     inner: Mutex<Settings>,
@@ -246,6 +259,27 @@ mod tests {
         std::fs::write(&path, "this = is = not = toml").expect("write");
         let store = SettingsStore::open(path);
         assert!(store.snapshot().provider.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_tightens_permissions_on_preexisting_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        // Simulate a stale file from a previous yolop version that wrote
+        // settings with the default 0o644.
+        std::fs::write(&path, "provider = \"openai\"\n").expect("seed");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+
+        let store = SettingsStore::open(path.clone());
+        store
+            .set_token("openai".to_string(), "sk-new".to_string())
+            .expect("save");
+
+        let mode = std::fs::metadata(&path).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[cfg(unix)]
