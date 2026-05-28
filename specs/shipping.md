@@ -28,7 +28,7 @@ Every shipped change MUST satisfy ALL of these. These are mandatory, not suggest
 4. **Synced artifacts.** Affected artifacts are updated: README, AGENTS.md, specs. No code-duplicating prose.
 5. **Smoke test impacted functionality.** Mandatory unless the change is docs-only or config-only with explicit justification. For runtime changes, run at least one live-provider smoke through Doppler.
 6. **Follow-ups surfaced.** TODOs, partial fixes, declined suggestions, missed edges, and spec/doc drift are explicitly listed under **Follow-ups** in the PR body (or `"No follow-ups."` if none).
-7. **Safe merge.** PR uses the template, CI is green, every review comment is explicitly resolved (code change or written explanation), merge is squash-only after a final clean comment sweep. Async reviewer bots get at least 2 minutes to comment after CI turns green.
+7. **Safe merge.** PR uses the template, CI is green, every review comment is addressed (via a code change when needed), answered inline on its own thread with a written reply, and marked resolved before merge. An inline reply is required even when the resolution is a pure code change. Merge is squash-only after a final clean comment sweep. Async reviewer bots get at least 2 minutes to comment after CI turns green.
 
 ## Constraints
 
@@ -37,7 +37,7 @@ Every shipped change MUST satisfy ALL of these. These are mandatory, not suggest
 - Bug fixes prefer a failing test before the fix when practical.
 - Docs-only or config-only changes may skip code tests if the choice is justified and the relevant lint/build was run.
 - Security review is mandatory for code, configuration, or infrastructure changes. Perceived low risk does not justify skipping it.
-- Every review comment must be explicitly addressed before merge — including low-confidence suggestions, nits, and bot comments.
+- Every review comment must be explicitly addressed, answered inline on its own thread with a written reply (in addition to any code change), and resolved before merge — including low-confidence suggestions, nits, and bot comments.
 - Auto-merge is not used: async reviewer bots can post after the last push or after CI turns green.
 - If a blocker cannot be resolved safely by the agent alone, shipping stops and reports rather than guesses.
 
