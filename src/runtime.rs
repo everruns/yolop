@@ -7,8 +7,9 @@
 use crate::approval::ApprovalGate;
 use crate::capabilities::{
     CodingBashCapability, CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
-    MODEL_SWITCHER_CAPABILITY_ID, ModelSwitcherCapability, PROVIDER_SWITCHER_CAPABILITY_ID,
-    ProviderSwitcherCapability, TOKEN_CAPABILITY_ID, TokenCapability,
+    MODEL_SWITCHER_CAPABILITY_ID, ModelSwitcherCapability, ONBOARDING_CAPABILITY_ID,
+    OnboardingCapability, PROVIDER_SWITCHER_CAPABILITY_ID, ProviderSwitcherCapability,
+    TOKEN_CAPABILITY_ID, TokenCapability,
 };
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
@@ -846,6 +847,7 @@ fn coding_harness_capabilities() -> Vec<AgentCapabilityConfig> {
         AgentCapabilityConfig::new(MODEL_SWITCHER_CAPABILITY_ID),
         AgentCapabilityConfig::new(PROVIDER_SWITCHER_CAPABILITY_ID),
         AgentCapabilityConfig::new(TOKEN_CAPABILITY_ID),
+        AgentCapabilityConfig::new(ONBOARDING_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
     ]
 }
@@ -885,6 +887,10 @@ pub struct StartupInfo {
     /// How many events were replayed from disk into the new session.
     /// Zero for fresh sessions; used by the startup banner.
     pub replayed_events: usize,
+    /// True when neither env vars nor saved settings provide a credential
+    /// for any real provider. The TUI auto-opens its onboarding wizard
+    /// in this case; `--print` mode ignores it.
+    pub onboarding_recommended: bool,
 }
 
 #[derive(Clone)]
@@ -1053,6 +1059,9 @@ pub async fn build_with_options(
     capabilities.register(TokenCapability {
         settings: settings.clone(),
     });
+    capabilities.register(OnboardingCapability {
+        settings: settings.clone(),
+    });
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
         gate: gate.clone(),
@@ -1146,6 +1155,8 @@ pub async fn build_with_options(
             session_log_path: log_path,
             session_dir,
             replayed_events: replayed_events_count,
+            onboarding_recommended: OnboardingCapability::needs_onboarding(&settings.snapshot())
+                && matches!(provider, ProviderChoice::Sim),
         },
         model: ModelState::new(provider_state),
     })

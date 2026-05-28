@@ -65,7 +65,11 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - otherwise `llmsim` (offline simulator, no key required)
 - **Slash commands** (TUI): `/help`, `/tools`, `/cwd`,
   `/provider <name>`, `/model <provider>/<id>`, `/token <provider> <value>`
-  (all three persist across runs), `/clear`, `/quit`.
+  (all three persist across runs), `/onboard` (guided setup), `/clear`,
+  `/quit`.
+- **First-run onboarding**: launching yolop with no env vars and no saved
+  settings opens an interactive wizard that walks through provider →
+  token → default model. Re-runnable any time via `/onboard`.
 - **`--print`** one-shot mode for CI smoke tests.
 - **Session persistence** — durable per-session JSONL event log under the
   platform-native user data directory, with `--session <id>` to resume.

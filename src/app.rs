@@ -138,6 +138,24 @@ pub struct App {
     rx: Option<mpsc::UnboundedReceiver<TurnEvent>>,
     approval_rx: ApprovalRx,
     pending: Option<PendingApproval>,
+    /// Active onboarding step, if any. The wizard drives the existing
+    /// `/provider`, `/token`, and `/model` capabilities under the hood;
+    /// it captures plain-text input from the composer and dispatches the
+    /// matching slash command at each step.
+    onboarding: Option<OnboardingStep>,
+}
+
+#[derive(Clone, Debug)]
+enum OnboardingStep {
+    PickProvider,
+    EnterToken {
+        provider: String,
+        default_model: String,
+    },
+    PickModel {
+        provider: String,
+        default_model: String,
+    },
 }
 
 /// Owned snapshot of the App fields the pure-render chrome helpers
@@ -219,6 +237,7 @@ pub(crate) enum TurnEvent {
 
 impl App {
     pub fn new(runtime: BuiltRuntime, approval_rx: ApprovalRx) -> Self {
+        let should_onboard = runtime.startup.onboarding_recommended;
         let mut app = Self {
             handles: runtime.handles,
             startup: runtime.startup,
@@ -235,8 +254,12 @@ impl App {
             rx: None,
             approval_rx,
             pending: None,
+            onboarding: None,
         };
         app.emit_system_banner();
+        if should_onboard {
+            app.start_onboarding();
+        }
         app
     }
 
@@ -554,14 +577,20 @@ impl App {
     }
 
     async fn submit_input(&mut self) {
-        let text = self.input_text();
+        let raw = self.input_text();
         self.reset_input();
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            return;
-        }
+        let text = raw.trim().to_string();
         if let Some(rest) = text.strip_prefix('/') {
             self.handle_command(rest).await;
+            return;
+        }
+        // While onboarding, plain-text input is the wizard answer (empty
+        // included — "skip" for token/model steps).
+        if self.onboarding.is_some() {
+            self.advance_onboarding(&text).await;
+            return;
+        }
+        if text.is_empty() {
             return;
         }
         self.push_user(text.clone());
@@ -681,6 +710,11 @@ impl App {
                     }
                     Err(err) => self.push_system(format!("/{} failed: {err}", descriptor.name)),
                 }
+                // `/onboard` flips the TUI into wizard mode after the
+                // capability has reported its status line.
+                if descriptor.name == "onboard" {
+                    self.start_onboarding();
+                }
             }
             CommandSource::Skill => {
                 let text = if trimmed.is_empty() {
@@ -690,6 +724,149 @@ impl App {
                 };
                 self.push_user(text.clone());
                 self.start_turn(text);
+            }
+        }
+    }
+
+    fn start_onboarding(&mut self) {
+        self.onboarding = Some(OnboardingStep::PickProvider);
+        self.push_system(
+            "welcome to yolop — let's get a provider configured (type /onboard any time to redo)"
+                .into(),
+        );
+        self.push_system(format!(
+            "step 1/3: pick a provider — {}",
+            crate::runtime::SUPPORTED_PROVIDERS.join(" / ")
+        ));
+    }
+
+    /// Drive the wizard one step forward. The actual mutations go through
+    /// the existing `/provider`, `/token`, and `/model` capabilities so
+    /// onboarding never knows about settings paths or runtime stores
+    /// directly.
+    async fn advance_onboarding(&mut self, input: &str) {
+        let Some(step) = self.onboarding.clone() else {
+            return;
+        };
+        match step {
+            OnboardingStep::PickProvider => {
+                let name = input.trim().to_ascii_lowercase();
+                if name.is_empty() {
+                    self.push_system(format!(
+                        "type one of: {}",
+                        crate::runtime::SUPPORTED_PROVIDERS.join(", ")
+                    ));
+                    return;
+                }
+                if !crate::runtime::SUPPORTED_PROVIDERS.contains(&name.as_str()) {
+                    self.push_system(format!(
+                        "unknown provider `{name}` — options: {}",
+                        crate::runtime::SUPPORTED_PROVIDERS.join(", ")
+                    ));
+                    return;
+                }
+                if name == "llmsim" {
+                    // Offline simulator: no token, no model picker.
+                    let _ = self.run_system_command("provider", Some("llmsim")).await;
+                    self.push_system(
+                        "onboarding complete — using offline llmsim. switch any time with /provider"
+                            .into(),
+                    );
+                    self.onboarding = None;
+                    return;
+                }
+                let default_model =
+                    crate::runtime::ProviderChoice::default_for_provider_name(&name)
+                        .map(|p| p.label())
+                        .unwrap_or_else(|_| name.clone());
+                self.push_system(format!(
+                    "step 2/3: paste your API token for {name} (press Enter to skip and use env vars)"
+                ));
+                self.onboarding = Some(OnboardingStep::EnterToken {
+                    provider: name,
+                    default_model,
+                });
+            }
+            OnboardingStep::EnterToken {
+                provider,
+                default_model,
+            } => {
+                let token = input.trim();
+                if !token.is_empty() {
+                    // Don't echo the token; the capability response is the
+                    // only line that lands in the transcript.
+                    let arg = format!("{provider} {token}");
+                    let _ = self.run_system_command("token", Some(&arg)).await;
+                } else {
+                    self.push_system(format!(
+                        "no token entered — relying on env vars for {provider}"
+                    ));
+                }
+                // Now flip the runtime to the chosen provider. With the
+                // token just saved (or env var present), this picks up the
+                // credential transparently.
+                let switched = self.run_system_command("provider", Some(&provider)).await;
+                if !switched {
+                    self.push_system(format!(
+                        "couldn't activate {provider} — re-run /token {provider} <key> or set the env var, then /provider {provider}"
+                    ));
+                }
+                self.push_system(format!(
+                    "step 3/3: model id (Enter to keep default `{default_model}`, or paste e.g. `gpt-5.4-mini`)"
+                ));
+                self.onboarding = Some(OnboardingStep::PickModel {
+                    provider,
+                    default_model,
+                });
+            }
+            OnboardingStep::PickModel {
+                provider,
+                default_model,
+            } => {
+                let model = input.trim();
+                if !model.is_empty() {
+                    let spec = if model.contains('/') {
+                        model.to_string()
+                    } else {
+                        format!("{provider}/{model}")
+                    };
+                    let _ = self.run_system_command("model", Some(&spec)).await;
+                }
+                self.push_system(format!(
+                    "onboarding complete — provider {provider}, model {}. /provider · /token · /model to revisit",
+                    if model.is_empty() {
+                        default_model.as_str()
+                    } else {
+                        model
+                    }
+                ));
+                self.onboarding = None;
+            }
+        }
+    }
+
+    /// Execute a System slash command end to end. Returns whether the
+    /// capability reported success. Status line is always pushed.
+    async fn run_system_command(&mut self, name: &str, arg: Option<&str>) -> bool {
+        let request = everruns_core::command::ExecuteCommandRequest {
+            name: name.to_string(),
+            arguments: arg.map(str::to_string),
+            controls: None,
+        };
+        match self
+            .handles
+            .runtime
+            .execute_command(self.handles.session_id, request)
+            .await
+        {
+            Ok(result) => {
+                let prefix = if result.success { "" } else { "error: " };
+                self.push_system(format!("{prefix}{}", result.message));
+                result.success
+            }
+            Err(err) => {
+                self.push_system(format!("/{name} failed: {err}"));
+                false
             }
         }
     }

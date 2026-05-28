@@ -673,9 +673,160 @@ impl Capability for TokenCapability {
     }
 }
 
+// ---------- /onboard ----------
+//
+// First-run setup helper. The capability itself only registers the
+// `/onboard` slash command and reports the current setup state — the
+// actual interactive wizard lives in the TUI because capabilities are
+// stateless command handlers and can't pause for user input.
+//
+// The TUI matches `descriptor.name == "onboard"` after dispatching the
+// command and enters wizard mode, which then drives `/provider`,
+// `/token`, and `/model` against the same capabilities.
+
+pub(crate) const ONBOARDING_CAPABILITY_ID: &str = "yolop_onboarding";
+
+pub(crate) struct OnboardingCapability {
+    pub(crate) settings: Arc<SettingsStore>,
+}
+
+impl OnboardingCapability {
+    /// True when no provider preference is saved and no API token is set —
+    /// either via env var or in the settings file. Used by the TUI at
+    /// startup to auto-open the wizard on a fresh install.
+    pub(crate) fn needs_onboarding(settings: &crate::settings::Settings) -> bool {
+        if settings.provider.is_some() {
+            return false;
+        }
+        if env_credential_present() {
+            return false;
+        }
+        settings.tokens.is_empty()
+    }
+}
+
+fn env_credential_present() -> bool {
+    const VARS: &[&str] = &[
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OLLAMA_BASE_URL",
+        "OLLAMA_API_KEY",
+    ];
+    VARS.iter()
+        .any(|var| std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false))
+}
+
+#[async_trait]
+impl Capability for OnboardingCapability {
+    fn id(&self) -> &str {
+        ONBOARDING_CAPABILITY_ID
+    }
+    fn name(&self) -> &str {
+        "Coding CLI Onboarding"
+    }
+    fn description(&self) -> &str {
+        "Guided first-run setup for provider, token, and default model."
+    }
+    fn status(&self) -> CapabilityStatus {
+        CapabilityStatus::Available
+    }
+    fn category(&self) -> Option<&str> {
+        Some("Examples")
+    }
+    fn system_prompt_addition(&self) -> Option<&str> {
+        None
+    }
+    fn commands(&self) -> Vec<CommandDescriptor> {
+        vec![CommandDescriptor {
+            name: "onboard".to_string(),
+            description: "Walk through provider/token/model setup.".to_string(),
+            source: CommandSource::System,
+            args: vec![],
+        }]
+    }
+
+    async fn execute_command(
+        &self,
+        request: &ExecuteCommandRequest,
+        _ctx: &CommandExecutionContext,
+    ) -> everruns_core::Result<CommandResult> {
+        if request.name != "onboard" {
+            return Err(everruns_core::AgentLoopError::config(format!(
+                "{} cannot execute /{}",
+                self.id(),
+                request.name
+            )));
+        }
+        // The TUI starts the actual wizard after dispatch (see
+        // `App::invoke_capability_command`). Reporting current state here
+        // makes the command useful in `--print` mode too, where the wizard
+        // can't run.
+        let snapshot = self.settings.snapshot();
+        let provider = snapshot
+            .provider
+            .clone()
+            .unwrap_or_else(|| "<unset>".to_string());
+        let stored: Vec<&str> = snapshot.tokens.keys().map(String::as_str).collect();
+        let stored_label = if stored.is_empty() {
+            "none".to_string()
+        } else {
+            stored.join(", ")
+        };
+        Ok(CommandResult {
+            success: true,
+            message: format!(
+                "onboarding: provider={provider}, stored tokens={stored_label}, env keys present={}",
+                env_credential_present()
+            ),
+            error_code: None,
+            error_fields: None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn needs_onboarding_true_for_empty_settings() {
+        // SAFETY: removing env vars for the duration of this test. Other
+        // tests in this module don't read these names.
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("OPENROUTER_API_KEY");
+            std::env::remove_var("GEMINI_API_KEY");
+            std::env::remove_var("GOOGLE_API_KEY");
+            std::env::remove_var("OLLAMA_BASE_URL");
+            std::env::remove_var("OLLAMA_API_KEY");
+        }
+        let settings = crate::settings::Settings::default();
+        assert!(OnboardingCapability::needs_onboarding(&settings));
+    }
+
+    #[test]
+    fn needs_onboarding_false_when_provider_is_saved() {
+        let settings = crate::settings::Settings {
+            provider: Some("anthropic".to_string()),
+            ..Default::default()
+        };
+        assert!(!OnboardingCapability::needs_onboarding(&settings));
+    }
+
+    #[test]
+    fn needs_onboarding_false_when_token_is_saved() {
+        let mut tokens = std::collections::BTreeMap::new();
+        tokens.insert("openai".to_string(), "sk-test".to_string());
+        let settings = crate::settings::Settings {
+            provider: None,
+            tokens,
+        };
+        assert!(!OnboardingCapability::needs_onboarding(&settings));
+    }
 
     #[test]
     fn environment_context_renders_requested_fields() {
