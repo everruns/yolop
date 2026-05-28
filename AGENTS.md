@@ -87,7 +87,7 @@ agent-like, stop and ask before committing.
 - Never merge red CI.
 - Before merge, prefer rebasing onto latest `origin/main`.
 
-## Shipping and maintenance
+## Shipping, maintenance, and releases
 
 - "Ship" means implement, gather evidence, perform a security review, open a
   mergeable PR, address every review comment, and merge only after CI is green.
@@ -96,6 +96,10 @@ agent-like, stop and ask before committing.
 - When asked for maintenance or release readiness, follow
   [`.agents/skills/maintenance/SKILL.md`](.agents/skills/maintenance/SKILL.md)
   and [`specs/maintenance.md`](specs/maintenance.md).
+- When asked to release, cut a version, or publish to crates.io / Homebrew,
+  follow [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md)
+  and [`specs/release.md`](specs/release.md). Releases publish to both
+  crates.io and the `everruns/homebrew-tap` Homebrew tap.
 
 ## Upstream relationship
 
