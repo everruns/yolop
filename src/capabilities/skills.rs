@@ -765,4 +765,67 @@ mod tests {
         unsafe { std::env::remove_var(GLOBAL_SKILLS_DIR_ENV) };
         assert_eq!(resolved.as_deref(), Some(tmp.path()));
     }
+
+    #[tokio::test]
+    async fn list_skills_reports_scope_and_error_entries() {
+        let ws = tempfile::tempdir().unwrap();
+        let gl = tempfile::tempdir().unwrap();
+        write_skill(ws.path(), "good", "good", "a fine skill");
+        // A directory with a SKILL.md that fails to parse (missing frontmatter
+        // fields) is surfaced as an error entry, not silently dropped.
+        let broken = gl.path().join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("SKILL.md"), "no frontmatter here").unwrap();
+
+        let tool = ListSkillsTool {
+            sources: Arc::new(SkillSources::from_dirs(
+                Some(ws.path().into()),
+                Some(gl.path().into()),
+                None,
+            )),
+        };
+        let ToolExecutionResult::Success(v) = tool.execute(json!({})).await else {
+            panic!("expected success");
+        };
+        assert_eq!(v["count"], 2);
+        let skills = v["skills"].as_array().unwrap();
+
+        let good = skills.iter().find(|s| s["name"] == "good").unwrap();
+        assert_eq!(good["scope"], "workspace");
+        assert_eq!(good["description"], "a fine skill");
+        assert!(good.get("error").is_none());
+
+        let broken = skills.iter().find(|s| s["name"] == "broken").unwrap();
+        assert_eq!(broken["scope"], "global");
+        assert!(
+            broken["error"]
+                .as_str()
+                .unwrap()
+                .contains("Invalid SKILL.md")
+        );
+    }
+
+    #[tokio::test]
+    async fn system_prompt_lists_visible_skills_and_filters_opted_out() {
+        let ws = tempfile::tempdir().unwrap();
+        write_skill(ws.path(), "shown", "shown", "appears in the prompt");
+        // disable-model-invocation skills are reachable via the tool but kept
+        // out of the model-facing prompt listing.
+        let hidden = ws.path().join("hidden");
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(
+            hidden.join("SKILL.md"),
+            "---\nname: hidden\ndescription: not auto-listed\ndisable-model-invocation: true\n---\n\nbody\n",
+        )
+        .unwrap();
+
+        let cap =
+            YolopSkillsCapability::new(SkillSources::from_dirs(Some(ws.path().into()), None, None));
+        let ctx =
+            SystemPromptContext::without_file_store(everruns_core::typed_id::SessionId::new());
+        let prompt = cap.system_prompt_contribution(&ctx).await.unwrap();
+
+        assert!(prompt.contains("**shown** [workspace]"));
+        assert!(!prompt.contains("hidden"));
+    }
 }
