@@ -44,8 +44,11 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
     config?") via `remember_your_memory` / `read_your_memory` /
     `write_your_memory`. See
     [`specs/your.md`](./specs/your.md).
-  - `skills` — discovers `SKILL.md` files under `.agents/skills/<name>/`;
-    exposes `list_skills` / `activate_skill`.
+  - `skills` — discovers `SKILL.md` files and exposes `list_skills` /
+    `activate_skill`. Three scopes are merged (most-specific wins):
+    **workspace** (`<workspace>/.agents/skills/<name>/`), **global**
+    (`<config_dir>/yolop/skills/<name>/`, installed once per user), and
+    **system** (pre-packed with the binary). See [`specs/skills.md`](specs/skills.md).
   - `infinity_context` — trims older history out of the live prompt while
     keeping it queryable via `query_history`.
   - `stateless_todo_list` — `write_todos` for multi-step tasks.

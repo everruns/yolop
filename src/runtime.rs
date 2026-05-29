@@ -20,7 +20,7 @@ use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, COMPACTION_CAPABILITY_ID,
     CompactionCapability, FileSystemCapability, INFINITY_CONTEXT_CAPABILITY_ID,
     InfinityContextCapability, LoopDetectionCapability, PROMPT_CACHING_CAPABILITY_ID,
-    PromptCachingCapability, SKILLS_CAPABILITY_ID, SkillsCapability, StatelessTodoListCapability,
+    PromptCachingCapability, SKILLS_CAPABILITY_ID, StatelessTodoListCapability,
     ToolOutputPersistenceCapability, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
@@ -1055,7 +1055,10 @@ pub async fn build_with_options(
     // they target the real workspace transparently):
     //   * agent_instructions   — re-reads AGENTS.md every turn
     //   * session_file_system  — read/write/edit/list/grep/delete/stat tools
-    //   * skills               — discovers SKILL.md under /.agents/skills/
+    //
+    // Skills (vendored in `crate::capabilities::skills`, reads real folders):
+    //   * skills               — discovers SKILL.md across workspace / global /
+    //                            system scopes; list_skills + activate_skill
     //
     // Non-filesystem, but useful for a coding agent:
     //   * infinity_context     — keeps long sessions usable; adds query_history
@@ -1067,7 +1070,11 @@ pub async fn build_with_options(
     let mut capabilities = CapabilityRegistry::new();
     capabilities.register(AgentInstructionsCapability);
     capabilities.register(FileSystemCapability);
-    capabilities.register(SkillsCapability);
+    // Vendored, multi-scope skills capability: discovers SKILL.md across the
+    // workspace, the user's global config, and skills pre-packed with yolop.
+    capabilities.register(crate::capabilities::skills::YolopSkillsCapability::new(
+        crate::capabilities::skills::SkillSources::resolve(&canonical_root),
+    ));
     capabilities.register(InfinityContextCapability);
     capabilities.register(CompactionCapability);
     capabilities.register(StatelessTodoListCapability);
