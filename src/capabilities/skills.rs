@@ -600,13 +600,20 @@ fn write_if_changed(target: &Path, contents: &[u8]) -> std::io::Result<()> {
         return Ok(());
     }
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    // The temp name must be unique per *call*, not just per process: parallel
+    // materializations in the same process (e.g. concurrent tests) would
+    // otherwise derive the same temp path and clobber each other's rename. A
+    // process-wide counter disambiguates same-pid, same-target writers.
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = parent.join(format!(
-        ".{}.tmp-{}",
+        ".{}.tmp-{}-{}",
         target
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("skill"),
-        std::process::id()
+        std::process::id(),
+        seq
     ));
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, target)
@@ -746,8 +753,13 @@ mod tests {
 
     #[test]
     fn global_skills_dir_respects_env_override() {
+        // Serialize against every other env-mutating test in this binary; the
+        // guard is held for the whole window the var is set (set_var/remove_var
+        // are not thread-safe — see crate::test_env).
+        let _guard = crate::test_env::lock();
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: single-threaded test; no other thread touches this env var here.
+        // SAFETY: the test_env lock guarantees no other thread touches the
+        // process environment for the duration of this test.
         unsafe { std::env::set_var(GLOBAL_SKILLS_DIR_ENV, tmp.path()) };
         let resolved = global_skills_dir();
         unsafe { std::env::remove_var(GLOBAL_SKILLS_DIR_ENV) };
