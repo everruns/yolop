@@ -424,17 +424,11 @@ pub const SUPPORTED_PROVIDERS: &[&str] = &[
 impl ProviderChoice {
     /// Pick a default from env vars or settings-stored tokens. CLI flags
     /// override this in `main`. OpenAI is preferred when both an OpenAI
-    /// and Anthropic credential are present so the out-of-the-box default
-    /// model stays `gpt-5.5`.
+    /// and Anthropic credential are present, and it is also the no-credential
+    /// first-run default so llmsim is only selected explicitly.
     pub fn from_env_or_settings(settings: &Settings) -> Self {
         if env_non_empty("OPENAI_API_KEY").is_some() || settings.has_token("openai") {
-            return Self::OpenAi {
-                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENAI_MODEL),
-                reasoning_effort: Some(env_or_default(
-                    "EVERRUNS_CLI_REASONING_EFFORT",
-                    DEFAULT_OPENAI_REASONING_EFFORT,
-                )),
-            };
+            return Self::default_openai();
         }
         if env_non_empty("ANTHROPIC_API_KEY").is_some() || settings.has_token("anthropic") {
             return Self::Anthropic {
@@ -462,7 +456,17 @@ impl ProviderChoice {
                 base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
             };
         }
-        Self::Sim
+        Self::default_openai()
+    }
+
+    fn default_openai() -> Self {
+        Self::OpenAi {
+            model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENAI_MODEL),
+            reasoning_effort: Some(env_or_default(
+                "EVERRUNS_CLI_REASONING_EFFORT",
+                DEFAULT_OPENAI_REASONING_EFFORT,
+            )),
+        }
     }
 
     pub fn label(&self) -> String {
@@ -499,13 +503,7 @@ impl ProviderChoice {
     /// rehydrating the persisted preference.
     pub fn default_for_provider_name(name: &str) -> Result<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
-            "openai" => Ok(Self::OpenAi {
-                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENAI_MODEL),
-                reasoning_effort: Some(env_or_default(
-                    "EVERRUNS_CLI_REASONING_EFFORT",
-                    DEFAULT_OPENAI_REASONING_EFFORT,
-                )),
-            }),
+            "openai" => Ok(Self::default_openai()),
             "anthropic" => Ok(Self::Anthropic {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL),
             }),
@@ -756,6 +754,42 @@ impl ProviderChoice {
                 api_key: Some("fake-key".into()),
                 base_url: None,
             }),
+        }
+    }
+
+    fn model_without_stored_key(&self) -> ModelWithProvider {
+        match self {
+            ProviderChoice::Anthropic { model } => ModelWithProvider {
+                model: model.clone(),
+                provider_type: LlmProviderType::Anthropic,
+                api_key: None,
+                base_url: None,
+            },
+            ProviderChoice::OpenAi { model, .. } => ModelWithProvider {
+                model: model.clone(),
+                provider_type: LlmProviderType::Openai,
+                api_key: None,
+                base_url: None,
+            },
+            ProviderChoice::Google { model, base_url }
+            | ProviderChoice::OpenRouter { model, base_url } => ModelWithProvider {
+                model: model.clone(),
+                provider_type: LlmProviderType::Openai,
+                api_key: None,
+                base_url: Some(base_url.clone()),
+            },
+            ProviderChoice::Ollama { model, base_url } => ModelWithProvider {
+                model: model.clone(),
+                provider_type: LlmProviderType::Openai,
+                api_key: Some(DEFAULT_OLLAMA_API_KEY.to_string()),
+                base_url: Some(base_url.clone()),
+            },
+            ProviderChoice::Sim => ModelWithProvider {
+                model: "llmsim-yolop".into(),
+                provider_type: LlmProviderType::LlmSim,
+                api_key: Some("fake-key".into()),
+                base_url: None,
+            },
         }
     }
 
@@ -1080,12 +1114,18 @@ pub async fn build_with_options(
     let mut driver_registry = DriverRegistry::new();
     everruns_anthropic::register_driver(&mut driver_registry);
     everruns_openai::register_driver(&mut driver_registry);
+    let settings_snapshot = settings.snapshot();
+    let onboarding_recommended = OnboardingCapability::needs_onboarding(&settings_snapshot);
     let default_model = match &provider {
         ProviderChoice::Anthropic { .. }
         | ProviderChoice::OpenAi { .. }
         | ProviderChoice::Google { .. }
         | ProviderChoice::OpenRouter { .. }
-        | ProviderChoice::Ollama { .. } => provider.model_with_provider(&settings.snapshot())?,
+        | ProviderChoice::Ollama { .. } => match provider.model_with_provider(&settings_snapshot) {
+            Ok(model) => model,
+            Err(_) if onboarding_recommended => provider.model_without_stored_key(),
+            Err(err) => return Err(err),
+        },
         ProviderChoice::Sim => ModelWithProvider {
             model: "llmsim-yolop".into(),
             provider_type: LlmProviderType::LlmSim,
@@ -1165,8 +1205,7 @@ pub async fn build_with_options(
             session_log_path: log_path,
             session_dir,
             replayed_events: replayed_events_count,
-            onboarding_recommended: OnboardingCapability::needs_onboarding(&settings.snapshot())
-                && matches!(provider, ProviderChoice::Sim),
+            onboarding_recommended,
         },
         model: ModelState::new(provider_state),
     })
@@ -1261,6 +1300,24 @@ mod tests {
 
         let sim = ProviderChoice::default_for_provider_name("llmsim").unwrap();
         assert_eq!(sim.label(), "llmsim/llmsim-yolop");
+    }
+
+    #[test]
+    fn from_env_or_settings_defaults_to_openai_without_credentials() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("OPENROUTER_API_KEY");
+            std::env::remove_var("GEMINI_API_KEY");
+            std::env::remove_var("GOOGLE_API_KEY");
+            std::env::remove_var("OLLAMA_BASE_URL");
+            std::env::remove_var("OLLAMA_API_KEY");
+        }
+
+        let provider = ProviderChoice::from_env_or_settings(&Settings::default());
+
+        assert_eq!(provider.provider_name(), "openai");
     }
 
     #[test]

@@ -38,8 +38,9 @@ existing `settings.toml`:
 ```
 
 The capability must always be able to **describe itself** — what it is, where
-its state lives, and what it can currently do — both to the user (`/your`) and
-to the model (a system-prompt block).
+its state lives, and what it can currently do — to the model through the system
+prompt and tools, and to the user through natural-language questions such as
+"what is your config?"
 
 ## v1 — central memory
 
@@ -57,7 +58,7 @@ Unbounded memory would bloat every prompt. So:
 
 - A **byte budget** caps how much is injected. Beyond it, injection is
   truncated at a char boundary with a visible notice — the model is told the
-  memory was clipped and to use `read_memory` for the full text.
+  memory was clipped and to use `read_your_memory` for the full text.
 - A **soft limit** (below the hard budget) triggers a standing suggestion, in
   both the injected block and tool results, to extract stable, topic-specific
   guidance into a **skill** rather than letting memory grow without bound.
@@ -69,14 +70,10 @@ Unbounded memory would bloat every prompt. So:
 The model configures memory through tools, driven by ordinary chat — no slash
 syntax required:
 
-- `remember` — append a durable preference/fact.
-- `read_memory` — read the full file (needed when injection was truncated, or
-  to edit precisely).
-- `write_memory` — replace the whole file, for reorganizing or removing.
-
-`/your` prints the capability's self-description and current memory status
-(path, size, budget state). It also works in `--print` mode where the model
-isn't driving.
+- `remember_your_memory` — append a durable preference/fact.
+- `read_your_memory` — read the full file (needed when injection was truncated,
+  or to edit precisely).
+- `write_your_memory` — replace the whole file, for reorganizing or removing.
 
 ## Roadmap (not yet implemented)
 
