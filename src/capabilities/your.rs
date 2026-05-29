@@ -9,8 +9,8 @@
 // v1 owns a single piece of state: a central MEMORY.md of durable, cross-
 // session user preferences. It is injected into every turn under a managed
 // byte budget, with a soft limit that nudges bulky guidance toward skills.
-// The model edits it through natural-language tools (`remember`,
-// `read_memory`, `write_memory`); the user inspects it via `/your`.
+// The model edits it through natural-language tools (`remember_your_memory`,
+// `read_your_memory`, `write_your_memory`).
 //
 // See specs/your.md for the full vision (global skills, hooks, user-defined
 // capabilities) — all of which hang off the same central config dir.
@@ -19,9 +19,6 @@ use crate::settings::SettingsStore;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
-use everruns_core::command::{
-    CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource, ExecuteCommandRequest,
-};
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::io::Write;
@@ -36,7 +33,7 @@ pub(crate) const MEMORY_FILE_NAME: &str = "MEMORY.md";
 
 /// Hard cap on how many bytes of memory are injected into a turn. Beyond
 /// this the injection is truncated (at a char boundary) with a notice; the
-/// full file is still reachable via `read_memory`.
+/// full file is still reachable via `read_your_memory`.
 const MEMORY_INJECT_BUDGET_BYTES: usize = 8 * 1024;
 
 /// Soft limit: once memory exceeds this, both the injected block and tool
@@ -44,7 +41,7 @@ const MEMORY_INJECT_BUDGET_BYTES: usize = 8 * 1024;
 /// rather than letting memory grow unbounded.
 const MEMORY_SUGGEST_SKILL_BYTES: usize = 4 * 1024;
 
-const MEMORY_HEADER: &str = "# yolop memory\n\nDurable, global user preferences. Edit via the `remember` / `write_memory` tools or by chatting with yolop (\"remember that …\", \"what is your config?\").\n";
+const MEMORY_HEADER: &str = "# yolop memory\n\nDurable, global user preferences. Edit via the `remember_your_memory` / `write_your_memory` tools or by chatting with yolop (\"remember that …\", \"what is your config?\").\n";
 
 /// Thread-safe handle to the central `MEMORY.md`. Mirrors `SettingsStore`:
 /// the cached string is the in-memory source of truth and mutations flush to
@@ -82,18 +79,6 @@ impl YourStore {
 
     pub(crate) fn snapshot(&self) -> String {
         self.inner.lock().expect("memory lock poisoned").clone()
-    }
-
-    pub(crate) fn byte_len(&self) -> usize {
-        self.inner.lock().expect("memory lock poisoned").len()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.inner
-            .lock()
-            .expect("memory lock poisoned")
-            .trim()
-            .is_empty()
     }
 
     /// Append a single durable note as a markdown bullet, seeding the header
@@ -203,8 +188,9 @@ fn render_memory_block(memory_path: &Path, content: &str) -> String {
          — e.g. \"what is your config?\", \"update your settings\", \"set yolop blue\", \
          \"remember that I prefer X\" — treat it as a GLOBAL personalization request about \
          yolop, NOT a change to the current project. Persist durable user preferences with \
-         the `remember` tool, reorganize with `write_memory`, and read the full set with \
-         `read_memory`. Project-specific guidance belongs in the repo's AGENTS.md, not here.\n",
+         the `remember_your_memory` tool, reorganize with `write_your_memory`, and read the \
+         full set with `read_your_memory`. Project-specific guidance belongs in the repo's \
+         AGENTS.md, not here.\n",
     );
     out.push_str(&format!("memory file: {}\n", memory_path.display()));
 
@@ -220,7 +206,7 @@ fn render_memory_block(memory_path: &Path, content: &str) -> String {
         out.push_str("</your_memory>\n");
         if clipped {
             out.push_str(
-                "(memory truncated to fit the prompt budget — call `read_memory` for the full text.)\n",
+                "(memory truncated to fit the prompt budget — call `read_your_memory` for the full text.)\n",
             );
         }
         if let Some(note) = skill_suggestion(content.len()) {
@@ -230,23 +216,6 @@ fn render_memory_block(memory_path: &Path, content: &str) -> String {
     }
     out.push_str("</your>");
     out
-}
-
-/// Render the `/your` status line. Pure for testability.
-fn memory_status(memory_path: &Path, is_empty: bool, byte_len: usize) -> String {
-    let state = if is_empty {
-        "empty".to_string()
-    } else if byte_len > MEMORY_SUGGEST_SKILL_BYTES {
-        format!("{byte_len} bytes — large, consider a skill")
-    } else {
-        format!("{byte_len} bytes")
-    };
-    format!(
-        "your — global personalization. memory: {} ({state}). \
-         Edit by chatting (\"remember that …\", \"what is your config?\") \
-         or with the remember/read_memory/write_memory tools.",
-        memory_path.display()
-    )
 }
 
 // ---------- capability ----------
@@ -284,8 +253,8 @@ impl Capability for YourCapability {
         Some(
             "\
 <your>
-yolop's personalization layer (global). Use `remember` / `read_memory` /
-`write_memory` for durable user preferences.
+yolop's personalization layer (global). Use `remember_your_memory` / `read_your_memory` /
+`write_your_memory` for durable user preferences.
 <your_memory>
 - example: prefer terse answers
 </your_memory>
@@ -307,39 +276,6 @@ yolop's personalization layer (global). Use `remember` / `read_memory` /
             }),
         ]
     }
-
-    fn commands(&self) -> Vec<CommandDescriptor> {
-        vec![CommandDescriptor {
-            name: "your".to_string(),
-            description: "Show yolop's personalization (global memory) status.".to_string(),
-            source: CommandSource::System,
-            args: vec![],
-        }]
-    }
-
-    async fn execute_command(
-        &self,
-        request: &ExecuteCommandRequest,
-        _ctx: &CommandExecutionContext,
-    ) -> everruns_core::Result<CommandResult> {
-        if request.name != "your" {
-            return Err(everruns_core::AgentLoopError::config(format!(
-                "{} cannot execute /{}",
-                self.id(),
-                request.name
-            )));
-        }
-        Ok(CommandResult {
-            success: true,
-            message: memory_status(
-                self.memory.path(),
-                self.memory.is_empty(),
-                self.memory.byte_len(),
-            ),
-            error_code: None,
-            error_fields: None,
-        })
-    }
 }
 
 // ---------- tools ----------
@@ -351,7 +287,7 @@ struct RememberTool {
 #[async_trait]
 impl Tool for RememberTool {
     fn name(&self) -> &str {
-        "remember"
+        "remember_your_memory"
     }
     fn display_name(&self) -> Option<&str> {
         Some("Remember")
@@ -403,14 +339,14 @@ struct ReadMemoryTool {
 #[async_trait]
 impl Tool for ReadMemoryTool {
     fn name(&self) -> &str {
-        "read_memory"
+        "read_your_memory"
     }
     fn display_name(&self) -> Option<&str> {
         Some("Read memory")
     }
     fn description(&self) -> &str {
         "Read the full contents of yolop's central personalization memory. Use this to answer \
-         \"what is your config?\"-style questions, or before `write_memory` when the injected \
+         \"what is your config?\"-style questions, or before `write_your_memory` when the injected \
          copy may have been truncated."
     }
     fn parameters_schema(&self) -> Value {
@@ -433,15 +369,15 @@ struct WriteMemoryTool {
 #[async_trait]
 impl Tool for WriteMemoryTool {
     fn name(&self) -> &str {
-        "write_memory"
+        "write_your_memory"
     }
     fn display_name(&self) -> Option<&str> {
         Some("Write memory")
     }
     fn description(&self) -> &str {
         "Replace yolop's entire central personalization memory with new markdown. Use to edit, \
-         remove, or reorganize preferences — read the current contents first with `read_memory`. \
-         Appending a single new preference is better done with `remember`."
+         remove, or reorganize preferences — read the current contents first with `read_your_memory`. \
+         Appending a single new preference is better done with `remember_your_memory`."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -489,7 +425,7 @@ mod tests {
     #[test]
     fn append_seeds_header_then_bullets() {
         let (_tmp, store) = store_in_tmp();
-        assert!(store.is_empty());
+        assert!(store.snapshot().trim().is_empty());
         store.append_note("prefer terse answers").expect("append");
         store.append_note("name is Mike").expect("append");
 
@@ -497,7 +433,7 @@ mod tests {
         assert!(content.starts_with("# yolop memory"));
         assert!(content.contains("- prefer terse answers\n"));
         assert!(content.contains("- name is Mike\n"));
-        assert!(!store.is_empty());
+        assert!(!store.snapshot().trim().is_empty());
     }
 
     #[test]
@@ -540,6 +476,30 @@ mod tests {
     fn skill_suggestion_only_past_soft_limit() {
         assert!(skill_suggestion(10).is_none());
         assert!(skill_suggestion(MEMORY_SUGGEST_SKILL_BYTES + 1).is_some());
+    }
+
+    #[test]
+    fn capability_exposes_your_named_tools_without_slash_command() {
+        let (_tmp, store) = store_in_tmp();
+        let capability = YourCapability {
+            memory: Arc::new(store),
+        };
+
+        let names = capability
+            .tools()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "remember_your_memory",
+                "read_your_memory",
+                "write_your_memory"
+            ]
+        );
+        assert!(capability.commands().is_empty());
     }
 
     #[tokio::test]
@@ -638,14 +598,5 @@ mod tests {
         assert!(block.contains("Memory is getting large"));
         // The injected slice itself is capped at the budget.
         assert!(!block.contains(&"a".repeat(MEMORY_INJECT_BUDGET_BYTES + 1)));
-    }
-
-    #[test]
-    fn memory_status_covers_all_states() {
-        let p = Path::new("/cfg/MEMORY.md");
-        assert!(memory_status(p, true, 0).contains("(empty)"));
-        assert!(memory_status(p, false, 100).contains("(100 bytes)"));
-        let large = memory_status(p, false, MEMORY_SUGGEST_SKILL_BYTES + 1);
-        assert!(large.contains("large, consider a skill"));
     }
 }

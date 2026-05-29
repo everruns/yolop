@@ -301,13 +301,6 @@ impl App {
         ));
         self.push_system(format!("model: {}", self.model.provider_label()));
         self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
-        self.push_system(format!(
-            "session: {} (folder: {}; log: {}; {} prior event(s) replayed)",
-            self.handles.session_id,
-            self.startup.session_dir.display(),
-            self.startup.session_log_path.display(),
-            self.startup.replayed_events,
-        ));
         if !self.startup.capability_commands.is_empty() {
             let names: Vec<String> = self
                 .startup
@@ -315,7 +308,7 @@ impl App {
                 .iter()
                 .map(|c| format!("/{}", c.name))
                 .collect();
-            self.push_system(format!("capability commands: {}", names.join(", ")));
+            self.push_system(format!("commands: {}", names.join(", ")));
         }
         self.push_system("type /help for commands, Esc or Ctrl-D to exit; approvals: y / n".into());
     }
@@ -626,7 +619,7 @@ impl App {
                         .map(capability_command_usage)
                         .collect::<Vec<_>>()
                         .join(" · ");
-                    self.push_system(format!("capability commands: {caps}"));
+                    self.push_system(format!("commands: {caps}"));
                 }
                 self.push_system(
                     "input: ←/→ edit · Alt/Shift-Enter newline · scroll: use the terminal scrollback"
