@@ -3,6 +3,11 @@
 // These are host/example behavior rather than runtime primitives: `bash` runs
 // against the local workspace, and `/model` mutates this process's provider
 // selection.
+//
+// Each capability that grows beyond a handful of lines gets its own submodule
+// (e.g. `your`); the smaller host capabilities still live inline here.
+
+pub(crate) mod your;
 
 use crate::approval::ApprovalGate;
 use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS};
