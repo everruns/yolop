@@ -75,7 +75,7 @@ jobs:
           cargo llvm-cov report --summary-only
 
       - name: Upload coverage to Codecov
-        if: always()
+        if: always() && github.actor != 'dependabot[bot]'
         uses: codecov/codecov-action@v4
         with:
           files: lcov.info
