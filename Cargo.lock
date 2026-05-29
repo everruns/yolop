@@ -328,9 +328,9 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bashkit"
-version = "0.7.2"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa7892a1440c479f5b70dfddf760fe9671c5436d4c7b5ba39bb05216e2e3f301"
+checksum = "5e20c182deb47b8ce2c8ba724f602cf73bdd6a566971f0f3525b6af60ea2a4c6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1078,9 +1078,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-anthropic"
-version = "0.8.35"
+version = "0.8.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e70e8e2041fe7d54e21b98cb745e68a5b7e495b9518732128ff942e450b1385"
+checksum = "2b7f502172aa8ae67d878de1c30f95363b88fa250f8b43b11571b1de043f3026"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1096,18 +1096,18 @@ dependencies = [
 
 [[package]]
 name = "everruns-config"
-version = "0.8.35"
+version = "0.8.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e2881eb1428385ff27ee91afa2d900c809d2ecbd021a0c3201e166515cfc6df"
+checksum = "7b79271073775f1d32306d0ee2f2285980cd81ef98c88d5ac92091fb34153bf4"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "everruns-core"
-version = "0.8.35"
+version = "0.8.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7eedfb744efb3ec573f358de6874023fcd61514edd61293d1794e9103cc0ba07"
+checksum = "3d47d7498fb030b3534659c1ab4ffc4cea484b570c77343860c7e1147afab467"
 dependencies = [
  "a2a-client-lf",
  "a2a-lf",
@@ -1146,9 +1146,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-duckduckgo"
-version = "0.8.35"
+version = "0.8.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "348b733209e2809b64cb2c1277f1123f910ab7af3b4a2a85be3ce113c521e6e6"
+checksum = "2fa307c32ff2edead14699f84558e0c434286a277e0f087d97f4bc453f780f08"
 dependencies = [
  "async-trait",
  "everruns-core",
@@ -1162,9 +1162,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-openai"
-version = "0.8.35"
+version = "0.8.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3f5dadc11a5503e1ea708b596e3792a153a13edda0b6b22bfae710c4101ba4a"
+checksum = "854e7df92df42495164b152b4f8d836082b71878cdcf524ad13953de60f92edc"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1183,9 +1183,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-runtime"
-version = "0.8.35"
+version = "0.8.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ebecb7ede44ca4572473634e395fb1cfd52ba0e41fab32281e37cade9700c40"
+checksum = "cd041452965729e0f04025893258c00d37f11a5b63bfccdf442f11244ad011f9"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2164,9 +2164,9 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "llmsim"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd8de8212fda25a8c24b7b487be7ee790190b6402a13acd8613b2fc4998c9a41"
+checksum = "bdf2c7d8ebf2b6c24175cb89658e4818ca04b98b69a39ee3b5a110d0e7187f80"
 dependencies = [
  "async-stream",
  "axum",
@@ -2427,9 +2427,9 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "opentelemetry"
-version = "0.31.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b84bcd6ae87133e903af7ef497404dda70c60d0ea14895fc8a5e6722754fc2a0"
+checksum = "b0142c63252a9e054e68a4c61a5778f7b14f576274d593f8ce883d191a099682"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -2441,22 +2441,22 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-http"
-version = "0.31.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7a6d09a73194e6b66df7c8f1b680f156d916a1a942abf2de06823dd02b7855d"
+checksum = "5683015d09e2df236ef005b17f6f196f0d5f6313c4fa43a7b6a53b52776e4331"
 dependencies = [
  "async-trait",
  "bytes",
  "http",
  "opentelemetry",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
 ]
 
 [[package]]
 name = "opentelemetry-otlp"
-version = "0.31.1"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f69cd6acbb9af919df949cd1ec9e5e7fdc2ef15d234b6b795aaa525cc02f71f"
+checksum = "9966929966d17620d7c316c643ba62631826e10021409357772d5eea84f62c35"
 dependencies = [
  "http",
  "opentelemetry",
@@ -2464,35 +2464,33 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
 name = "opentelemetry-proto"
-version = "0.31.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7175df06de5eaee9909d4805a3d07e28bb752c34cab57fa9cff549da596b30f"
+checksum = "56d658ba1faf63f7b9c492cfbe6e0ec365440a16132d3270c1065f7b33f1b638"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
  "prost",
- "tonic",
- "tonic-prost",
 ]
 
 [[package]]
 name = "opentelemetry_sdk"
-version = "0.31.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e14ae4f5991976fd48df6d843de219ca6d31b01daaab2dad5af2badeded372bd"
+checksum = "9b59f80e1ac4d5ff7a2db8fb6c80badb7f0f3f858211fba08dd9aaec750894f9"
 dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
  "opentelemetry",
  "percent-encoding",
+ "portable-atomic",
  "rand 0.9.4",
  "thiserror 2.0.18",
  "tokio",
@@ -3261,7 +3259,6 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
- "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
@@ -4443,9 +4440,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-opentelemetry"
-version = "0.32.1"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ac28f2d093c6c477eaa76b23525478f38de514fa9aeb1285738d4b97a9552fc"
+checksum = "adbc64cba7137545b8044cb1fe9814f7aacf3c6b5f9b45be8bb5db538befdb26"
 dependencies = [
  "js-sys",
  "opentelemetry",
