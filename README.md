@@ -41,7 +41,8 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
     (`<config_dir>/yolop/MEMORY.md`) of durable, cross-session user
     preferences, injected every turn under a managed size budget. Edited in
     natural language ("remember that I prefer terse answers", "what is your
-    config?") via `remember` / `read_memory` / `write_memory`. See
+    config?") via `remember_your_memory` / `read_your_memory` /
+    `write_your_memory`. See
     [`specs/your.md`](./specs/your.md).
   - `skills` — discovers `SKILL.md` files under `.agents/skills/<name>/`;
     exposes `list_skills` / `activate_skill`.
@@ -68,11 +69,10 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - `OPENROUTER_API_KEY` → OpenRouter (`openai/gpt-5.2` by default)
   - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) → Google Gemini (`gemini-2.5-flash`)
   - `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` → Ollama (`llama3.2`)
-  - otherwise `llmsim` (offline simulator, no key required)
 - **Slash commands** (TUI): `/help`, `/tools`, `/cwd`,
   `/provider <name>` (persists), `/token <provider> <value>` (persists),
   `/model <provider>/<id>` (current session only), `/onboard` (guided
-  setup), `/your` (personalization/memory status), `/clear`, `/quit`.
+  setup), `/clear`, `/quit`.
 - **First-run onboarding**: launching yolop with no env vars and no saved
   settings opens an interactive wizard that walks through provider →
   token → default model. Re-runnable any time via `/onboard`.
@@ -204,7 +204,9 @@ Provider resolution at startup:
    *or* a saved token is present. Env vars and saved tokens are treated
    as equivalent credential signals here — the provider order decides
    the tiebreak, not the credential source.
-4. Fall back to `llmsim` (offline) if nothing matches.
+4. Fall back to OpenAI's default model if nothing matches, then open
+   onboarding so a provider/token can be configured. `llmsim` remains
+   available explicitly via `--provider llmsim` or `/provider llmsim`.
 
 At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always
 beats the saved token, so a per-run env override is always possible.
