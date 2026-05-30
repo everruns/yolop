@@ -308,7 +308,9 @@ impl App {
                 .collect();
             self.push_system(format!("commands: {}", names.join(", ")));
         }
-        self.push_system("type /help for commands, Esc or Ctrl-D to exit; approvals: y / n".into());
+        self.push_system(
+            "type /help for commands, Ctrl-C or Ctrl-D to exit; approvals: y / n".into(),
+        );
     }
 
     fn push_user(&mut self, text: String) {
@@ -515,11 +517,6 @@ impl App {
             return;
         }
 
-        if matches!(key.code, KeyCode::Esc) {
-            self.should_quit = true;
-            return;
-        }
-
         if self.busy {
             // Block only input editing while a turn is running.
             return;
@@ -623,7 +620,9 @@ impl App {
                     "input: ←/→ edit · Alt/Shift-Enter newline · scroll: use the terminal scrollback"
                         .into(),
                 );
-                self.push_system("approvals: y allow · n / Esc deny · exit: Esc / Ctrl-D".into());
+                self.push_system(
+                    "approvals: y allow · n / Esc deny · exit: Ctrl-C / Ctrl-D".into(),
+                );
             }
             "tools" => {
                 self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
