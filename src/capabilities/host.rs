@@ -9,8 +9,7 @@ use async_trait::async_trait;
 use chrono::Local;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::command::{
-    CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
-    ExecuteCommandRequest,
+    CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource, ExecuteCommandRequest,
 };
 use everruns_core::tools::Tool;
 use everruns_runtime::RuntimeProviderStore;
@@ -277,31 +276,36 @@ impl Capability for CodingBashCapability {
     }
 }
 
-// ---------- /model ----------
+// ---------- /setup ----------
 //
-// Demonstrates the `Capability::execute_command` hook: `/model` lives entirely
-// outside the TUI's `handle_command` branches. The capability owns the runtime
-// provider store and shares an Arc<RwLock<ProviderChoice>> with the
-// UI-facing `ModelState` so the banner label stays in sync after a switch.
+// One user-facing command owns provider, token, and model setup. The TUI starts
+// an interactive wizard for `/setup`; the internal setup subcommands below let
+// that wizard mutate runtime state without exposing `/provider`, `/token`, and
+// `/model` as separate commands.
 
-pub(crate) const MODEL_SWITCHER_CAPABILITY_ID: &str = "yolop_model_switcher";
+pub(crate) const SETUP_CAPABILITY_ID: &str = "yolop_setup";
 
-pub(crate) struct ModelSwitcherCapability {
+/// Providers that meaningfully consume an API token. `llmsim` is excluded
+/// (no key needed) and `ollama` is included for completeness even though
+/// most local setups don't authenticate.
+const TOKEN_PROVIDERS: &[&str] = &["openai", "anthropic", "google", "openrouter", "ollama"];
+
+pub(crate) struct SetupCapability {
     pub(crate) provider: Arc<RwLock<ProviderChoice>>,
     pub(crate) provider_store: Arc<dyn RuntimeProviderStore>,
     pub(crate) settings: Arc<SettingsStore>,
 }
 
 #[async_trait]
-impl Capability for ModelSwitcherCapability {
+impl Capability for SetupCapability {
     fn id(&self) -> &str {
-        MODEL_SWITCHER_CAPABILITY_ID
+        SETUP_CAPABILITY_ID
     }
     fn name(&self) -> &str {
-        "Coding CLI Model Switcher"
+        "Coding CLI Setup"
     }
     fn description(&self) -> &str {
-        "Show or change the active provider/model via /model."
+        "Configure provider, API key, and model."
     }
     fn status(&self) -> CapabilityStatus {
         CapabilityStatus::Available
@@ -314,21 +318,10 @@ impl Capability for ModelSwitcherCapability {
     }
     fn commands(&self) -> Vec<CommandDescriptor> {
         vec![CommandDescriptor {
-            name: "model".to_string(),
-            description: "Show or change the active provider/model.".to_string(),
+            name: "setup".to_string(),
+            description: "Configure provider, API key, and model.".to_string(),
             source: CommandSource::System,
-            args: vec![CommandArg {
-                name: "spec".to_string(),
-                description: "<provider>/<id> — omit to print the current model.".to_string(),
-                required: false,
-                // Declarative completions so renderers can populate the
-                // autocomplete dropdown directly from the descriptor — no
-                // per-keystroke callback into the capability.
-                suggestions: ProviderChoice::model_suggestions()
-                    .iter()
-                    .map(|s| (*s).to_string())
-                    .collect(),
-            }],
+            args: vec![],
         }]
     }
 
@@ -337,7 +330,7 @@ impl Capability for ModelSwitcherCapability {
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
     ) -> everruns_core::Result<CommandResult> {
-        if request.name != "model" {
+        if request.name != "setup" {
             return Err(everruns_core::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
@@ -345,6 +338,90 @@ impl Capability for ModelSwitcherCapability {
             )));
         }
         let raw = request.arguments.as_deref().unwrap_or("").trim();
+        if raw.is_empty() || raw == "status" {
+            return Ok(self.status_result());
+        }
+
+        let mut parts = raw.splitn(2, char::is_whitespace);
+        let action = parts.next().unwrap_or_default();
+        let rest = parts.next().unwrap_or_default().trim();
+        match action {
+            "provider" => self.change_provider(rest).await,
+            "model" => self.change_model(rest).await,
+            "token" => self.change_token(rest),
+            _ => Ok(failed_result(
+                "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, model <id|provider/id> [openai-reasoning-effort]".to_string(),
+            )),
+        }
+    }
+}
+
+impl SetupCapability {
+    fn status_result(&self) -> CommandResult {
+        let current = self
+            .provider
+            .read()
+            .expect("provider lock poisoned")
+            .clone();
+        let snapshot = self.settings.snapshot();
+        let saved = snapshot
+            .provider
+            .clone()
+            .unwrap_or_else(|| "<unset>".to_string());
+        let stored: Vec<&str> = snapshot.tokens.keys().map(String::as_str).collect();
+        let stored_label = if stored.is_empty() {
+            "none".to_string()
+        } else {
+            stored.join(", ")
+        };
+        CommandResult {
+            success: true,
+            message: format!(
+                "setup: provider={} model={} saved={saved} stored tokens={stored_label} env keys present={}",
+                current.provider_name(),
+                current.label(),
+                env_credential_present()
+            ),
+            error_code: None,
+            error_fields: None,
+        }
+    }
+
+    async fn change_provider(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+        if raw.is_empty() || raw.split_whitespace().count() > 1 {
+            return Ok(failed_result(format!(
+                "setup provider failed: choose one of {}",
+                SUPPORTED_PROVIDERS.join(", ")
+            )));
+        }
+
+        let next = match ProviderChoice::default_for_provider_name(raw) {
+            Ok(n) => n,
+            Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
+        };
+        let mw = match next.model_with_provider(&self.settings.snapshot()) {
+            Ok(m) => m,
+            Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
+        };
+        if let Err(err) = self.provider_store.set_default_model(mw).await {
+            return Ok(failed_result(format!("setup provider failed: {err}")));
+        }
+        let provider_name = next.provider_name().to_string();
+        let label = next.label();
+        *self.provider.write().expect("provider lock poisoned") = next;
+        let persist_note = match self.settings.set_provider(Some(provider_name.clone())) {
+            Ok(()) => format!("saved to {}", self.settings.path().display()),
+            Err(err) => format!("warning: settings not saved: {err}"),
+        };
+        Ok(CommandResult {
+            success: true,
+            message: format!("setup provider changed: {label} ({persist_note})"),
+            error_code: None,
+            error_fields: None,
+        })
+    }
+
+    async fn change_model(&self, raw: &str) -> everruns_core::Result<CommandResult> {
         if raw.is_empty() {
             let label = self
                 .provider
@@ -354,7 +431,7 @@ impl Capability for ModelSwitcherCapability {
             return Ok(CommandResult {
                 success: true,
                 message: format!(
-                    "model: {label}; suggestions: {}",
+                    "setup model: {label}; suggestions: {}",
                     ProviderChoice::model_suggestions().join(", ")
                 ),
                 error_code: None,
@@ -370,236 +447,29 @@ impl Capability for ModelSwitcherCapability {
         let next = match current.resolve_model_spec(raw) {
             Ok(n) => n,
             Err(err) => {
-                return Ok(failed_result(format!("model change failed: {err}")));
+                return Ok(failed_result(format!("setup model failed: {err}")));
             }
         };
         let mw = match next.model_with_provider(&self.settings.snapshot()) {
             Ok(m) => m,
             Err(err) => {
-                return Ok(failed_result(format!("model change failed: {err}")));
+                return Ok(failed_result(format!("setup model failed: {err}")));
             }
         };
         if let Err(err) = self.provider_store.set_default_model(mw).await {
-            return Ok(failed_result(format!("model change failed: {err}")));
+            return Ok(failed_result(format!("setup model failed: {err}")));
         }
         let label = next.label();
         *self.provider.write().expect("provider lock poisoned") = next;
         Ok(CommandResult {
             success: true,
-            message: format!("model changed: {label}"),
+            message: format!("setup model changed: {label}"),
             error_code: None,
             error_fields: None,
         })
     }
-}
 
-fn failed_result(message: String) -> CommandResult {
-    CommandResult {
-        success: false,
-        message,
-        error_code: None,
-        error_fields: None,
-    }
-}
-
-// ---------- /provider ----------
-//
-// Companion to `/model`: picks the *provider* (OpenAI, Anthropic, Google,
-// OpenRouter, Ollama, llmsim) using that provider's default model, and
-// persists the choice to `<config_dir>/yolop/settings.toml` so the next
-// run starts on the same provider. The model is still mutated via `/model`
-// afterward — both commands share the same provider Arc.
-
-pub(crate) const PROVIDER_SWITCHER_CAPABILITY_ID: &str = "yolop_provider_switcher";
-
-pub(crate) struct ProviderSwitcherCapability {
-    pub(crate) provider: Arc<RwLock<ProviderChoice>>,
-    pub(crate) provider_store: Arc<dyn RuntimeProviderStore>,
-    pub(crate) settings: Arc<SettingsStore>,
-}
-
-#[async_trait]
-impl Capability for ProviderSwitcherCapability {
-    fn id(&self) -> &str {
-        PROVIDER_SWITCHER_CAPABILITY_ID
-    }
-    fn name(&self) -> &str {
-        "Coding CLI Provider Switcher"
-    }
-    fn description(&self) -> &str {
-        "Show or change the active LLM provider, persisted across runs."
-    }
-    fn status(&self) -> CapabilityStatus {
-        CapabilityStatus::Available
-    }
-    fn category(&self) -> Option<&str> {
-        Some("Examples")
-    }
-    fn system_prompt_addition(&self) -> Option<&str> {
-        None
-    }
-    fn commands(&self) -> Vec<CommandDescriptor> {
-        vec![CommandDescriptor {
-            name: "provider".to_string(),
-            description: "Show or change the active provider (saved to yolop settings)."
-                .to_string(),
-            source: CommandSource::System,
-            args: vec![CommandArg {
-                name: "name".to_string(),
-                description: format!(
-                    "{} — omit to print the current provider.",
-                    SUPPORTED_PROVIDERS.join(" | ")
-                ),
-                required: false,
-                suggestions: SUPPORTED_PROVIDERS
-                    .iter()
-                    .map(|s| (*s).to_string())
-                    .collect(),
-            }],
-        }]
-    }
-
-    async fn execute_command(
-        &self,
-        request: &ExecuteCommandRequest,
-        _ctx: &CommandExecutionContext,
-    ) -> everruns_core::Result<CommandResult> {
-        if request.name != "provider" {
-            return Err(everruns_core::AgentLoopError::config(format!(
-                "{} cannot execute /{}",
-                self.id(),
-                request.name
-            )));
-        }
-        let raw = request.arguments.as_deref().unwrap_or("").trim();
-        if raw.is_empty() {
-            let current = self
-                .provider
-                .read()
-                .expect("provider lock poisoned")
-                .clone();
-            let saved = self
-                .settings
-                .snapshot()
-                .provider
-                .unwrap_or_else(|| "<unset>".to_string());
-            return Ok(CommandResult {
-                success: true,
-                message: format!(
-                    "provider: {} (model: {}); saved: {saved}; options: {}",
-                    current.provider_name(),
-                    current.label(),
-                    SUPPORTED_PROVIDERS.join(", "),
-                ),
-                error_code: None,
-                error_fields: None,
-            });
-        }
-
-        if raw.split_whitespace().count() > 1 {
-            return Ok(failed_result(
-                "usage: /provider <name> — pick a single provider, then use /model to tune the model"
-                    .to_string(),
-            ));
-        }
-
-        let next = match ProviderChoice::default_for_provider_name(raw) {
-            Ok(n) => n,
-            Err(err) => return Ok(failed_result(format!("provider change failed: {err}"))),
-        };
-        let mw = match next.model_with_provider(&self.settings.snapshot()) {
-            Ok(m) => m,
-            Err(err) => return Ok(failed_result(format!("provider change failed: {err}"))),
-        };
-        if let Err(err) = self.provider_store.set_default_model(mw).await {
-            return Ok(failed_result(format!("provider change failed: {err}")));
-        }
-        let provider_name = next.provider_name().to_string();
-        let label = next.label();
-        *self.provider.write().expect("provider lock poisoned") = next;
-        let persist_note = match self.settings.set_provider(Some(provider_name.clone())) {
-            Ok(()) => format!("saved to {}", self.settings.path().display()),
-            Err(err) => format!("warning: settings not saved: {err}"),
-        };
-        Ok(CommandResult {
-            success: true,
-            message: format!("provider changed: {label} ({persist_note})"),
-            error_code: None,
-            error_fields: None,
-        })
-    }
-}
-
-// ---------- /token ----------
-//
-// Stores per-provider API tokens in the same settings file as `/provider`.
-// Env vars still win at runtime (see `runtime::resolve_token`) so a
-// per-run override is always possible. Slash commands don't echo their
-// arguments to the transcript or session log, so `/token openai sk-...`
-// is the safest entry point we have — but the resulting settings file
-// sits in plain text on disk (0o600 on Unix).
-
-pub(crate) const TOKEN_CAPABILITY_ID: &str = "yolop_token_manager";
-
-/// Providers that meaningfully consume an API token. `llmsim` is excluded
-/// (no key needed) and `ollama` is included for completeness even though
-/// most local setups don't authenticate.
-const TOKEN_PROVIDERS: &[&str] = &["openai", "anthropic", "google", "openrouter", "ollama"];
-
-pub(crate) struct TokenCapability {
-    pub(crate) settings: Arc<SettingsStore>,
-}
-
-#[async_trait]
-impl Capability for TokenCapability {
-    fn id(&self) -> &str {
-        TOKEN_CAPABILITY_ID
-    }
-    fn name(&self) -> &str {
-        "Coding CLI Token Manager"
-    }
-    fn description(&self) -> &str {
-        "Store provider API tokens in yolop settings so env vars are not required."
-    }
-    fn status(&self) -> CapabilityStatus {
-        CapabilityStatus::Available
-    }
-    fn category(&self) -> Option<&str> {
-        Some("Examples")
-    }
-    fn system_prompt_addition(&self) -> Option<&str> {
-        None
-    }
-    fn commands(&self) -> Vec<CommandDescriptor> {
-        vec![CommandDescriptor {
-            name: "token".to_string(),
-            description: "Show or store API tokens. Env vars still override saved tokens."
-                .to_string(),
-            source: CommandSource::System,
-            args: vec![CommandArg {
-                name: "provider [value | clear]".to_string(),
-                description:
-                    "<provider> <value> to store; <provider> clear to remove; omit to list status."
-                        .to_string(),
-                required: false,
-                suggestions: TOKEN_PROVIDERS.iter().map(|s| (*s).to_string()).collect(),
-            }],
-        }]
-    }
-
-    async fn execute_command(
-        &self,
-        request: &ExecuteCommandRequest,
-        _ctx: &CommandExecutionContext,
-    ) -> everruns_core::Result<CommandResult> {
-        if request.name != "token" {
-            return Err(everruns_core::AgentLoopError::config(format!(
-                "{} cannot execute /{}",
-                self.id(),
-                request.name
-            )));
-        }
-        let raw = request.arguments.as_deref().unwrap_or("").trim();
+    fn change_token(&self, raw: &str) -> everruns_core::Result<CommandResult> {
         if raw.is_empty() {
             let snapshot = self.settings.snapshot();
             let status: Vec<String> = TOKEN_PROVIDERS
@@ -612,7 +482,7 @@ impl Capability for TokenCapability {
             return Ok(CommandResult {
                 success: true,
                 message: format!(
-                    "tokens ({}): {}",
+                    "setup tokens ({}): {}",
                     self.settings.path().display(),
                     status.join(", ")
                 ),
@@ -624,16 +494,15 @@ impl Capability for TokenCapability {
         let mut parts = raw.splitn(2, char::is_whitespace);
         let provider = parts.next().unwrap_or_default().to_ascii_lowercase();
         let rest = parts.next().unwrap_or_default().trim();
-
         if !TOKEN_PROVIDERS.contains(&provider.as_str()) {
             return Ok(failed_result(format!(
-                "unknown provider `{provider}`; expected one of {}",
+                "setup token failed: unknown provider `{provider}`; expected one of {}",
                 TOKEN_PROVIDERS.join(", ")
             )));
         }
         if rest.is_empty() {
             return Ok(failed_result(
-                "usage: /token <provider> <value|clear>".to_string(),
+                "setup token failed: expected <provider> <value|clear>".to_string(),
             ));
         }
 
@@ -641,17 +510,17 @@ impl Capability for TokenCapability {
             return Ok(match self.settings.clear_token(&provider) {
                 Ok(true) => CommandResult {
                     success: true,
-                    message: format!("token cleared for {provider}"),
+                    message: format!("setup token cleared for {provider}"),
                     error_code: None,
                     error_fields: None,
                 },
                 Ok(false) => CommandResult {
                     success: true,
-                    message: format!("no token was stored for {provider}"),
+                    message: format!("setup token: no token was stored for {provider}"),
                     error_code: None,
                     error_fields: None,
                 },
-                Err(err) => failed_result(format!("token clear failed: {err}")),
+                Err(err) => failed_result(format!("setup token clear failed: {err}")),
             });
         }
 
@@ -659,35 +528,27 @@ impl Capability for TokenCapability {
             Ok(()) => Ok(CommandResult {
                 success: true,
                 message: format!(
-                    "token stored for {provider} (in {})",
+                    "setup token stored for {provider} (in {})",
                     self.settings.path().display()
                 ),
                 error_code: None,
                 error_fields: None,
             }),
-            Err(err) => Ok(failed_result(format!("token save failed: {err}"))),
+            Err(err) => Ok(failed_result(format!("setup token save failed: {err}"))),
         }
     }
 }
 
-// ---------- /onboard ----------
-//
-// First-run setup helper. The capability itself only registers the
-// `/onboard` slash command and reports the current setup state — the
-// actual interactive wizard lives in the TUI because capabilities are
-// stateless command handlers and can't pause for user input.
-//
-// The TUI matches `descriptor.name == "onboard"` after dispatching the
-// command and enters wizard mode, which then drives `/provider`,
-// `/token`, and `/model` against the same capabilities.
-
-pub(crate) const ONBOARDING_CAPABILITY_ID: &str = "yolop_onboarding";
-
-pub(crate) struct OnboardingCapability {
-    pub(crate) settings: Arc<SettingsStore>,
+fn failed_result(message: String) -> CommandResult {
+    CommandResult {
+        success: false,
+        message,
+        error_code: None,
+        error_fields: None,
+    }
 }
 
-impl OnboardingCapability {
+impl SetupCapability {
     /// True when no provider preference is saved and no API token is set —
     /// either via env var or in the settings file. Used by the TUI at
     /// startup to auto-open the wizard on a fresh install.
@@ -716,74 +577,6 @@ fn env_credential_present() -> bool {
         .any(|var| std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false))
 }
 
-#[async_trait]
-impl Capability for OnboardingCapability {
-    fn id(&self) -> &str {
-        ONBOARDING_CAPABILITY_ID
-    }
-    fn name(&self) -> &str {
-        "Coding CLI Onboarding"
-    }
-    fn description(&self) -> &str {
-        "Guided first-run setup for provider, token, and default model."
-    }
-    fn status(&self) -> CapabilityStatus {
-        CapabilityStatus::Available
-    }
-    fn category(&self) -> Option<&str> {
-        Some("Examples")
-    }
-    fn system_prompt_addition(&self) -> Option<&str> {
-        None
-    }
-    fn commands(&self) -> Vec<CommandDescriptor> {
-        vec![CommandDescriptor {
-            name: "onboard".to_string(),
-            description: "Walk through provider/token/model setup.".to_string(),
-            source: CommandSource::System,
-            args: vec![],
-        }]
-    }
-
-    async fn execute_command(
-        &self,
-        request: &ExecuteCommandRequest,
-        _ctx: &CommandExecutionContext,
-    ) -> everruns_core::Result<CommandResult> {
-        if request.name != "onboard" {
-            return Err(everruns_core::AgentLoopError::config(format!(
-                "{} cannot execute /{}",
-                self.id(),
-                request.name
-            )));
-        }
-        // The TUI starts the actual wizard after dispatch (see
-        // `App::invoke_capability_command`). Reporting current state here
-        // makes the command useful in `--print` mode too, where the wizard
-        // can't run.
-        let snapshot = self.settings.snapshot();
-        let provider = snapshot
-            .provider
-            .clone()
-            .unwrap_or_else(|| "<unset>".to_string());
-        let stored: Vec<&str> = snapshot.tokens.keys().map(String::as_str).collect();
-        let stored_label = if stored.is_empty() {
-            "none".to_string()
-        } else {
-            stored.join(", ")
-        };
-        Ok(CommandResult {
-            success: true,
-            message: format!(
-                "onboarding: provider={provider}, stored tokens={stored_label}, env keys present={}",
-                env_credential_present()
-            ),
-            error_code: None,
-            error_fields: None,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,7 +596,7 @@ mod tests {
             std::env::remove_var("OLLAMA_API_KEY");
         }
         let settings = crate::settings::Settings::default();
-        assert!(OnboardingCapability::needs_onboarding(&settings));
+        assert!(SetupCapability::needs_onboarding(&settings));
     }
 
     #[test]
@@ -812,7 +605,7 @@ mod tests {
             provider: Some("anthropic".to_string()),
             ..Default::default()
         };
-        assert!(!OnboardingCapability::needs_onboarding(&settings));
+        assert!(!SetupCapability::needs_onboarding(&settings));
     }
 
     #[test]
@@ -823,7 +616,7 @@ mod tests {
             provider: None,
             tokens,
         };
-        assert!(!OnboardingCapability::needs_onboarding(&settings));
+        assert!(!SetupCapability::needs_onboarding(&settings));
     }
 
     #[test]
