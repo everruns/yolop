@@ -9,7 +9,5 @@ pub(crate) mod your;
 
 pub(crate) use host::{
     CodingBashCapability, CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
-    MODEL_SWITCHER_CAPABILITY_ID, ModelSwitcherCapability, ONBOARDING_CAPABILITY_ID,
-    OnboardingCapability, PROVIDER_SWITCHER_CAPABILITY_ID, ProviderSwitcherCapability,
-    TOKEN_CAPABILITY_ID, TokenCapability,
+    SETUP_CAPABILITY_ID, SetupCapability,
 };

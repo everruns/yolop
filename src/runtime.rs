@@ -8,9 +8,7 @@ use crate::approval::ApprovalGate;
 use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability, YourStore};
 use crate::capabilities::{
     CodingBashCapability, CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
-    MODEL_SWITCHER_CAPABILITY_ID, ModelSwitcherCapability, ONBOARDING_CAPABILITY_ID,
-    OnboardingCapability, PROVIDER_SWITCHER_CAPABILITY_ID, ProviderSwitcherCapability,
-    TOKEN_CAPABILITY_ID, TokenCapability,
+    SETUP_CAPABILITY_ID, SetupCapability,
 };
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
@@ -410,7 +408,7 @@ pub enum ProviderChoice {
     Sim,
 }
 
-/// Provider names recognized by `/provider` and persisted settings. The order
+/// Provider names recognized by `/setup` and persisted settings. The order
 /// is the user-visible suggestion order.
 pub const SUPPORTED_PROVIDERS: &[&str] = &[
     "openai",
@@ -499,7 +497,7 @@ impl ProviderChoice {
     }
 
     /// Build a ProviderChoice from a bare provider name, picking the
-    /// provider's default model. Used by `/provider` and by startup when
+    /// provider's default model. Used by `/setup` and by startup when
     /// rehydrating the persisted preference.
     pub fn default_for_provider_name(name: &str) -> Result<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
@@ -554,7 +552,7 @@ impl ProviderChoice {
         let reasoning_effort = parts.next().map(str::to_string);
         if parts.next().is_some() {
             return Err(anyhow!(
-                "too many model arguments; use `/model openai/gpt-5.5 medium`"
+                "too many model arguments; use `openai/gpt-5.5 medium`"
             ));
         }
         if let Some((provider, model)) = model_spec.split_once('/') {
@@ -879,10 +877,7 @@ fn coding_harness_capabilities() -> Vec<AgentCapabilityConfig> {
             "web_fetch",
             serde_json::json!({ "enable_file_download": true }),
         ),
-        AgentCapabilityConfig::new(MODEL_SWITCHER_CAPABILITY_ID),
-        AgentCapabilityConfig::new(PROVIDER_SWITCHER_CAPABILITY_ID),
-        AgentCapabilityConfig::new(TOKEN_CAPABILITY_ID),
-        AgentCapabilityConfig::new(ONBOARDING_CAPABILITY_ID),
+        AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
     ]
@@ -924,14 +919,14 @@ pub struct StartupInfo {
     /// Zero for fresh sessions; used by the startup banner.
     pub replayed_events: usize,
     /// True when neither env vars nor saved settings provide a credential
-    /// for any real provider. The TUI auto-opens its onboarding wizard
-    /// in this case; `--print` mode ignores it.
-    pub onboarding_recommended: bool,
+    /// for any real provider. The TUI auto-opens its setup wizard in this
+    /// case; `--print` mode ignores it.
+    pub setup_recommended: bool,
 }
 
 #[derive(Clone)]
 pub struct ModelState {
-    /// Shared with [`crate::capabilities::ModelSwitcherCapability`] so a successful `/model`
+    /// Shared with [`crate::capabilities::SetupCapability`] so a successful `/setup`
     /// invocation through `runtime.execute_command` immediately updates the
     /// banner label.
     provider: Arc<RwLock<ProviderChoice>>,
@@ -1043,7 +1038,7 @@ pub async fn build_with_options(
         .with_event_bus(event_bus)
         .with_message_store(message_store);
     // Shared between `ModelState` (for banner labels) and
-    // `ModelSwitcherCapability` (which mutates it on a successful `/model`).
+    // `SetupCapability` (which mutates it on a successful `/setup`).
     let provider_state = Arc::new(RwLock::new(provider.clone()));
     let provider_store = backends.provider_store.clone();
 
@@ -1084,27 +1079,16 @@ pub async fn build_with_options(
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebFetchCapability::from_env());
     capabilities.register(CodingCliEnvironmentCapability::new(canonical_root.clone()));
-    // `/model` (below) is the example's capability-sourced slash command —
-    // it implements `Capability::execute_command` end to end. We deliberately
+    // `/setup` (below) is the capability-sourced slash command. It implements
+    // `Capability::execute_command` end to end. We deliberately
     // do NOT register `BtwCapability` here: the server's `/btw` flow has its
     // own bespoke executor in `SessionCommandService::execute_btw` (see
     // crates/server/src/domains/session_commands/service.rs) and the
     // capability does not implement `execute_command`, so dispatching it
     // through the embedded runtime would error.
-    capabilities.register(ModelSwitcherCapability {
+    capabilities.register(SetupCapability {
         provider: provider_state.clone(),
         provider_store: provider_store.clone(),
-        settings: settings.clone(),
-    });
-    capabilities.register(ProviderSwitcherCapability {
-        provider: provider_state.clone(),
-        provider_store: provider_store.clone(),
-        settings: settings.clone(),
-    });
-    capabilities.register(TokenCapability {
-        settings: settings.clone(),
-    });
-    capabilities.register(OnboardingCapability {
         settings: settings.clone(),
     });
     // `your` — global personalization. Its MEMORY.md lives beside
@@ -1122,7 +1106,7 @@ pub async fn build_with_options(
     everruns_anthropic::register_driver(&mut driver_registry);
     everruns_openai::register_driver(&mut driver_registry);
     let settings_snapshot = settings.snapshot();
-    let onboarding_recommended = OnboardingCapability::needs_onboarding(&settings_snapshot);
+    let setup_recommended = SetupCapability::needs_onboarding(&settings_snapshot);
     let default_model = match &provider {
         ProviderChoice::Anthropic { .. }
         | ProviderChoice::OpenAi { .. }
@@ -1130,7 +1114,7 @@ pub async fn build_with_options(
         | ProviderChoice::OpenRouter { .. }
         | ProviderChoice::Ollama { .. } => match provider.model_with_provider(&settings_snapshot) {
             Ok(model) => model,
-            Err(_) if onboarding_recommended => provider.model_without_stored_key(),
+            Err(_) if setup_recommended => provider.model_without_stored_key(),
             Err(err) => return Err(err),
         },
         ProviderChoice::Sim => ModelWithProvider {
@@ -1178,7 +1162,7 @@ pub async fn build_with_options(
             }
             s
         });
-    // Always register the llmsim driver so the `/model llmsim` switch works
+    // Always register the llmsim driver so `/setup` can switch to offline mode.
     // mid-session, even if the user started with anthropic or openai.
     let llmsim_config = options.llmsim_override.unwrap_or_else(|| {
         LlmSimConfig::fixed(
@@ -1212,7 +1196,7 @@ pub async fn build_with_options(
             session_log_path: log_path,
             session_dir,
             replayed_events: replayed_events_count,
-            onboarding_recommended,
+            setup_recommended,
         },
         model: ModelState::new(provider_state),
     })
@@ -1221,6 +1205,7 @@ pub async fn build_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_core::command::ExecuteCommandRequest;
 
     #[test]
     fn model_spec_can_switch_to_openai() {
@@ -1228,6 +1213,135 @@ mod tests {
         let next = provider.resolve_model_spec("openai/gpt-5.5").unwrap();
 
         assert_eq!(next.label(), "openai/gpt-5.5 medium");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_is_the_only_provider_configuration_command() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let settings_for_assert = settings.clone();
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            ApprovalGate::auto(),
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        let commands = built
+            .handles
+            .runtime
+            .list_commands(built.handles.session_id)
+            .await
+            .expect("commands");
+        let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
+
+        assert!(names.contains(&"setup"), "commands: {names:?}");
+        for removed in ["provider", "token", "model", "onboard"] {
+            assert!(
+                !names.contains(&removed),
+                "/{removed} should not be a visible setup command: {names:?}"
+            );
+        }
+
+        let status = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("status".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("setup status");
+        assert!(status.success);
+        assert!(status.message.starts_with("setup:"));
+
+        let store_token = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("token openai sk-test".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("store setup token");
+        assert!(store_token.success);
+        assert!(settings_for_assert.snapshot().has_token("openai"));
+
+        let clear_token = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("token openai clear".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("clear setup token");
+        assert!(clear_token.success);
+        assert!(!settings_for_assert.snapshot().has_token("openai"));
+
+        let provider = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("provider llmsim".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("setup provider");
+        assert!(provider.success);
+
+        let model = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("model llmsim/llmsim-yolop".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("setup model");
+        assert!(model.success);
+
+        let unknown = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("wat".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("unknown setup action");
+        assert!(!unknown.success);
+        assert!(unknown.message.contains("model <id|provider/id>"));
     }
 
     #[test]
