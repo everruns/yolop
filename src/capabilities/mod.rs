@@ -4,6 +4,7 @@
 // module boundary here small; capability implementations live in submodules.
 
 mod host;
+pub mod skills;
 pub(crate) mod your;
 
 pub(crate) use host::{
