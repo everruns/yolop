@@ -174,7 +174,7 @@ async fn main() -> Result<()> {
     // Fall back to an unwritable scratch path when no platform config dir
     // is resolvable (minimal containers, CI without HOME). `SettingsStore`
     // loads to defaults when the file does not exist, and writes will
-    // error visibly via `/provider` or `/token` rather than killing
+    // error visibly via `/setup` rather than killing
     // startup — keeps `--print` usable in stripped-down environments.
     let settings_path = settings::default_settings_path().unwrap_or_else(|| {
         eprintln!(

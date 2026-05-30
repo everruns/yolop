@@ -138,15 +138,13 @@ pub struct App {
     rx: Option<mpsc::UnboundedReceiver<TurnEvent>>,
     approval_rx: ApprovalRx,
     pending: Option<PendingApproval>,
-    /// Active onboarding step, if any. The wizard drives the existing
-    /// `/provider`, `/token`, and `/model` capabilities under the hood;
-    /// it captures plain-text input from the composer and dispatches the
-    /// matching slash command at each step.
-    onboarding: Option<OnboardingStep>,
+    /// Active setup step, if any. The wizard captures plain-text input from
+    /// the composer and dispatches internal `/setup` actions at each step.
+    setup: Option<SetupStep>,
 }
 
 #[derive(Clone, Debug)]
-enum OnboardingStep {
+enum SetupStep {
     PickProvider,
     EnterToken {
         provider: String,
@@ -239,7 +237,7 @@ pub(crate) enum TurnEvent {
 
 impl App {
     pub fn new(runtime: BuiltRuntime, approval_rx: ApprovalRx) -> Self {
-        let should_onboard = runtime.startup.onboarding_recommended;
+        let should_setup = runtime.startup.setup_recommended;
         let mut app = Self {
             handles: runtime.handles,
             startup: runtime.startup,
@@ -256,11 +254,11 @@ impl App {
             rx: None,
             approval_rx,
             pending: None,
-            onboarding: None,
+            setup: None,
         };
         app.emit_system_banner();
-        if should_onboard {
-            app.start_onboarding();
+        if should_setup {
+            app.start_setup();
         }
         app
     }
@@ -584,10 +582,10 @@ impl App {
             self.handle_command(rest).await;
             return;
         }
-        // While onboarding, plain-text input is the wizard answer (empty
+        // While setup is active, plain-text input is the wizard answer (empty
         // included — "skip" for token/model steps).
-        if self.onboarding.is_some() {
-            self.advance_onboarding(&text).await;
+        if self.setup.is_some() {
+            self.advance_setup(&text).await;
             return;
         }
         if text.is_empty() {
@@ -663,7 +661,7 @@ impl App {
     ///
     /// `System` commands execute through `runtime.execute_command` — the
     /// capability's own handler runs and the result is rendered inline. This
-    /// is the path `/model` now takes. `Skill` commands match the web UI's
+    /// is the path `/setup` now takes. `Skill` commands match the web UI's
     /// behavior: the literal `/name args` text is sent as a chat message so
     /// the LLM activates the skill.
     async fn invoke_capability_command(&mut self, descriptor: CommandDescriptor, args: String) {
@@ -710,10 +708,11 @@ impl App {
                     }
                     Err(err) => self.push_system(format!("/{} failed: {err}", descriptor.name)),
                 }
-                // `/onboard` flips the TUI into wizard mode after the
-                // capability has reported its status line.
-                if descriptor.name == "onboard" {
-                    self.start_onboarding();
+                // Plain `/setup` flips the TUI into wizard mode after the
+                // capability has reported its status line. Internal
+                // `/setup ...` forms are reserved for the wizard itself.
+                if descriptor.name == "setup" && trimmed.is_empty() {
+                    self.start_setup();
                 }
             }
             CommandSource::Skill => {
@@ -728,28 +727,24 @@ impl App {
         }
     }
 
-    fn start_onboarding(&mut self) {
-        self.onboarding = Some(OnboardingStep::PickProvider);
-        self.push_system(
-            "welcome to yolop — let's get a provider configured (type /onboard any time to redo)"
-                .into(),
-        );
+    fn start_setup(&mut self) {
+        self.setup = Some(SetupStep::PickProvider);
+        self.push_system("setup: configure provider, API key, and model".into());
         self.push_system(format!(
-            "step 1/3: pick a provider — {}",
+            "step 1/3: choose provider — {}",
             crate::runtime::SUPPORTED_PROVIDERS.join(" / ")
         ));
     }
 
-    /// Drive the wizard one step forward. The actual mutations go through
-    /// the existing `/provider`, `/token`, and `/model` capabilities so
-    /// onboarding never knows about settings paths or runtime stores
-    /// directly.
-    async fn advance_onboarding(&mut self, input: &str) {
-        let Some(step) = self.onboarding.clone() else {
+    /// Drive the setup wizard one step forward. State mutations go through the
+    /// single `/setup` capability so provider, token, and model setup have one
+    /// user-facing command.
+    async fn advance_setup(&mut self, input: &str) {
+        let Some(step) = self.setup.clone() else {
             return;
         };
         match step {
-            OnboardingStep::PickProvider => {
+            SetupStep::PickProvider => {
                 let name = input.trim().to_ascii_lowercase();
                 if name.is_empty() {
                     self.push_system(format!(
@@ -767,12 +762,11 @@ impl App {
                 }
                 if name == "llmsim" {
                     // Offline simulator: no token, no model picker.
-                    let _ = self.run_system_command("provider", Some("llmsim")).await;
-                    self.push_system(
-                        "onboarding complete — using offline llmsim. switch any time with /provider"
-                            .into(),
-                    );
-                    self.onboarding = None;
+                    let _ = self
+                        .run_system_command("setup", Some("provider llmsim"))
+                        .await;
+                    self.push_system("setup complete — using offline llmsim".into());
+                    self.setup = None;
                     return;
                 }
                 let default_model =
@@ -782,12 +776,12 @@ impl App {
                 self.push_system(format!(
                     "step 2/3: paste your API token for {name} (press Enter to skip and use env vars)"
                 ));
-                self.onboarding = Some(OnboardingStep::EnterToken {
+                self.setup = Some(SetupStep::EnterToken {
                     provider: name,
                     default_model,
                 });
             }
-            OnboardingStep::EnterToken {
+            SetupStep::EnterToken {
                 provider,
                 default_model,
             } => {
@@ -795,8 +789,8 @@ impl App {
                 if !token.is_empty() {
                     // Don't echo the token; the capability response is the
                     // only line that lands in the transcript.
-                    let arg = format!("{provider} {token}");
-                    let _ = self.run_system_command("token", Some(&arg)).await;
+                    let arg = format!("token {provider} {token}");
+                    let _ = self.run_system_command("setup", Some(&arg)).await;
                 } else {
                     self.push_system(format!(
                         "no token entered — relying on env vars for {provider}"
@@ -805,21 +799,27 @@ impl App {
                 // Now flip the runtime to the chosen provider. With the
                 // token just saved (or env var present), this picks up the
                 // credential transparently.
-                let switched = self.run_system_command("provider", Some(&provider)).await;
+                let arg = format!("provider {provider}");
+                let switched = self.run_system_command("setup", Some(&arg)).await;
                 if !switched {
                     self.push_system(format!(
-                        "couldn't activate {provider} — re-run /token {provider} <key> or set the env var, then /provider {provider}"
+                        "couldn't activate {provider} — paste a token now, or press Enter after setting the provider env var"
                     ));
+                    self.setup = Some(SetupStep::EnterToken {
+                        provider,
+                        default_model,
+                    });
+                    return;
                 }
                 self.push_system(format!(
-                    "step 3/3: model id (Enter to keep default `{default_model}`, or paste e.g. `gpt-5.4-mini`)"
+                    "step 3/3: model id (Enter to keep `{default_model}`, or paste e.g. `gpt-5.4-mini`)"
                 ));
-                self.onboarding = Some(OnboardingStep::PickModel {
+                self.setup = Some(SetupStep::PickModel {
                     provider,
                     default_model,
                 });
             }
-            OnboardingStep::PickModel {
+            SetupStep::PickModel {
                 provider,
                 default_model,
             } => {
@@ -830,17 +830,18 @@ impl App {
                     } else {
                         format!("{provider}/{model}")
                     };
-                    let _ = self.run_system_command("model", Some(&spec)).await;
+                    let arg = format!("model {spec}");
+                    let _ = self.run_system_command("setup", Some(&arg)).await;
                 }
                 self.push_system(format!(
-                    "onboarding complete — provider {provider}, model {}. /provider · /token · /model to revisit",
+                    "setup complete — provider {provider}, model {}. run /setup to change it",
                     if model.is_empty() {
                         default_model.as_str()
                     } else {
                         model
                     }
                 ));
-                self.onboarding = None;
+                self.setup = None;
             }
         }
     }
@@ -2253,22 +2254,28 @@ mod tests {
 
     use everruns_core::command::{CommandArg, CommandDescriptor, CommandSource};
 
-    fn model_capability_command() -> CommandDescriptor {
-        // Mirrors what `ModelSwitcherCapability::commands()` returns: the
-        // arg carries its own static suggestion list so the renderer can
-        // surface autocomplete entries straight from the descriptor.
+    fn setup_capability_command() -> CommandDescriptor {
         CommandDescriptor {
-            name: "model".to_string(),
-            description: "Show or change the active provider/model.".to_string(),
+            name: "setup".to_string(),
+            description: "Configure provider, API key, and model.".to_string(),
+            source: CommandSource::System,
+            args: vec![],
+        }
+    }
+
+    fn command_with_arg_suggestions() -> CommandDescriptor {
+        CommandDescriptor {
+            name: "pick".to_string(),
+            description: "Pick a value.".to_string(),
             source: CommandSource::System,
             args: vec![CommandArg {
-                name: "spec".to_string(),
-                description: "<provider>/<id>".to_string(),
+                name: "value".to_string(),
+                description: "value".to_string(),
                 required: false,
                 suggestions: vec![
-                    "openai/gpt-5.5".to_string(),
-                    "openai/gpt-5.4-mini".to_string(),
-                    "anthropic/claude-sonnet-4-5".to_string(),
+                    "alpha-one".to_string(),
+                    "alpha-two".to_string(),
+                    "beta-one".to_string(),
                 ],
             }],
         }
@@ -2276,31 +2283,31 @@ mod tests {
 
     #[test]
     fn command_suggestions_list_commands_for_slash() {
-        let caps = vec![model_capability_command()];
+        let caps = vec![setup_capability_command()];
         let suggestions = command_suggestions("/", &caps);
 
         assert!(suggestions.iter().any(|s| s.completion == "/help"));
         assert!(
             suggestions
                 .iter()
-                .any(|s| s.completion == "/model" || s.completion == "/model "),
-            "capability-provided /model should appear in suggestions: {suggestions:?}"
+                .any(|s| s.completion == "/setup" || s.completion == "/setup "),
+            "capability-provided /setup should appear in suggestions: {suggestions:?}"
         );
     }
 
     #[test]
     fn suggestion_preview_line_shows_command_dropdown() {
-        let caps = vec![model_capability_command()];
-        let suggestions = command_suggestions("/m", &caps);
+        let caps = vec![setup_capability_command()];
+        let suggestions = command_suggestions("/s", &caps);
         let rendered = line_text(&suggestion_preview_line(&suggestions, 96));
 
-        assert!(rendered.starts_with("Tab /model [spec]"));
-        assert!(rendered.contains("/model [spec]"));
+        assert!(rendered.starts_with("Tab /setup"));
+        assert!(rendered.contains("/setup"));
     }
 
     #[test]
     fn suggestion_preview_line_keeps_first_match_when_truncated() {
-        let caps = vec![model_capability_command()];
+        let caps = vec![setup_capability_command()];
         let suggestions = command_suggestions("/", &caps);
         let rendered = line_text(&suggestion_preview_line(&suggestions, 18));
 
@@ -2310,18 +2317,18 @@ mod tests {
 
     #[test]
     fn command_suggestions_filter_first_arg_by_prefix() {
-        // After `/model <prefix>`, the suggestion source must be the arg's
+        // After `/pick <prefix>`, the suggestion source must be the arg's
         // declared `suggestions` — read straight from the descriptor with
         // no extra plumbing.
-        let caps = vec![model_capability_command()];
-        let suggestions = command_suggestions("/model openai/gpt-5.", &caps);
+        let caps = vec![command_with_arg_suggestions()];
+        let suggestions = command_suggestions("/pick alpha-", &caps);
 
         assert_eq!(
             suggestions
                 .iter()
                 .map(|s| s.completion.as_str())
                 .collect::<Vec<_>>(),
-            vec!["/model openai/gpt-5.5", "/model openai/gpt-5.4-mini"]
+            vec!["/pick alpha-one", "/pick alpha-two"]
         );
     }
 
@@ -3005,6 +3012,46 @@ mod tests {
             rows[0].contains("Tab /help"),
             "slash input should render command suggestions in chrome row: {:?}",
             rows
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_command_starts_guided_wizard() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+
+        app.handle_command("setup").await;
+
+        assert!(matches!(app.setup, Some(SetupStep::PickProvider)));
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == "setup: configure provider, API key, and model")
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.starts_with("step 1/3: choose provider"))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_wizard_can_select_offline_provider() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = Some(SetupStep::PickProvider);
+
+        app.advance_setup("llmsim").await;
+
+        assert!(app.setup.is_none());
+        assert_eq!(app.model.provider_label(), "llmsim/llmsim-yolop");
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == "setup complete — using offline llmsim")
         );
     }
 

@@ -2,12 +2,12 @@
 // API tokens.
 //
 // Stored at `<config_dir>/yolop/settings.toml` (`~/.config/yolop/settings.toml`
-// on Linux). The capabilities that own `/provider` and `/token` write
-// through `SettingsStore` so user choices survive across runs.
+// on Linux). The `/setup` capability writes through `SettingsStore` so user
+// choices survive across runs.
 //
 // Tokens are written with 0o600 on Unix (owner-only) and are still less
 // secure than a real secret manager — they sit in plain text on disk. The
-// `/token <provider> clear` command removes a stored entry. Env vars
+// `/setup` command can remove a stored entry. Env vars
 // (OPENAI_API_KEY, ANTHROPIC_API_KEY, …) continue to take precedence so a
 // per-run override is always possible.
 

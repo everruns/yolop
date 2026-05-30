@@ -69,13 +69,11 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - `OPENROUTER_API_KEY` → OpenRouter (`openai/gpt-5.2` by default)
   - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) → Google Gemini (`gemini-2.5-flash`)
   - `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` → Ollama (`llama3.2`)
-- **Slash commands** (TUI): `/help`, `/tools`, `/cwd`,
-  `/provider <name>` (persists), `/token <provider> <value>` (persists),
-  `/model <provider>/<id>` (current session only), `/onboard` (guided
-  setup), `/clear`, `/quit`.
-- **First-run onboarding**: launching yolop with no env vars and no saved
+- **Slash commands** (TUI): `/help`, `/tools`, `/cwd`, `/setup`,
+  `/clear`, `/quit`.
+- **Guided setup**: launching yolop with no env vars and no saved
   settings opens an interactive wizard that walks through provider →
-  token → default model. Re-runnable any time via `/onboard`.
+  API key → model. Re-runnable any time via `/setup`.
 - **`--print`** one-shot mode for CI smoke tests.
 - **Session persistence** — durable per-session JSONL event log under the
   platform-native user data directory, with `--session <id>` to resume.
@@ -193,7 +191,7 @@ provider API tokens across runs. It lives at `<config_dir>/yolop/settings.toml`
 `~/Library/Application Support/yolop/settings.toml` on macOS,
 `%APPDATA%\yolop\settings.toml` on Windows.
 
-The TUI's `/provider <name>` command writes through this file.
+The TUI's `/setup` command writes through this file.
 
 Provider resolution at startup:
 
@@ -205,29 +203,24 @@ Provider resolution at startup:
    as equivalent credential signals here — the provider order decides
    the tiebreak, not the credential source.
 4. Fall back to OpenAI's default model if nothing matches, then open
-   onboarding so a provider/token can be configured. `llmsim` remains
-   available explicitly via `--provider llmsim` or `/provider llmsim`.
+   setup so a provider/API key can be configured. `llmsim` remains
+   available explicitly via `--provider llmsim` or from `/setup`.
 
 At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always
 beats the saved token, so a per-run env override is always possible.
-`/model <provider>/<id>` then layers on top of the chosen provider for
-the current session.
+The setup wizard can also switch models for the current session.
 
 ### Storing tokens
 
-`/token openai sk-...` stores an API token under `[tokens]` in the
-settings file. The file is written with `0o600` on Unix (owner-only).
-Other commands:
-
-- `/token` — list which providers have a token stored (values are not
-  echoed)
-- `/token <provider> clear` — remove the stored token
+`/setup` can store an API token under `[tokens]` in the settings file.
+The file is written with `0o600` on Unix (owner-only). Stored token values
+are not echoed.
 
 Env vars still win at runtime: if both `OPENAI_API_KEY` is set and a token
-is saved, the env var is used. Slash commands are not echoed into the
-transcript or session log, so `/token openai sk-...` is safer than typing
-it at a chat prompt — but the resulting settings file is plain text on
-disk, so treat it the same way you would `~/.aws/credentials`.
+is saved, the env var is used. Setup answers are not echoed into the
+transcript or session log, so pasting a key into `/setup` is safer than
+typing it at a chat prompt — but the resulting settings file is plain text
+on disk, so treat it the same way you would `~/.aws/credentials`.
 
 ## Session persistence
 
