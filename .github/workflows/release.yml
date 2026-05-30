@@ -20,7 +20,7 @@ jobs:
     # `startsWith` doesn't trip on the null in that path.
     if: "${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message || '', 'chore(release): prepare v') }}"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Extract version
         id: version
