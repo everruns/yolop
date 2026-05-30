@@ -15,4 +15,5 @@ accumulate below.
 
 ### What's Changed
 
+* chore(deps): bump everruns-* crates to 0.8.36
 * chore(release): add release skill, spec, workflows, and Homebrew tap publishing
