@@ -145,16 +145,58 @@ pub struct App {
 
 #[derive(Clone, Debug)]
 enum SetupStep {
+    ChooseAction,
     PickProvider,
+    PickTokenProvider,
     EnterToken {
         provider: String,
         default_model: String,
+        activate: bool,
     },
     PickModel {
         provider: String,
         default_model: String,
     },
 }
+
+struct ProviderOption {
+    name: &'static str,
+    label: &'static str,
+    hint: &'static str,
+}
+
+const PROVIDER_OPTIONS: &[ProviderOption] = &[
+    ProviderOption {
+        name: "openai",
+        label: "OpenAI",
+        hint: "recommended",
+    },
+    ProviderOption {
+        name: "anthropic",
+        label: "Anthropic",
+        hint: "Claude",
+    },
+    ProviderOption {
+        name: "google",
+        label: "Google Gemini",
+        hint: "Gemini models",
+    },
+    ProviderOption {
+        name: "openrouter",
+        label: "OpenRouter",
+        hint: "many hosted models",
+    },
+    ProviderOption {
+        name: "ollama",
+        label: "Ollama local",
+        hint: "local OpenAI-compatible server",
+    },
+    ProviderOption {
+        name: "llmsim",
+        label: "Offline demo mode",
+        hint: "no API key",
+    },
+];
 
 /// Owned snapshot of the App fields the pure-render chrome helpers
 /// (command suggestions, stream preview, separators, session status)
@@ -258,7 +300,7 @@ impl App {
         };
         app.emit_system_banner();
         if should_setup {
-            app.start_setup();
+            app.start_first_run_setup();
         }
         app
     }
@@ -686,6 +728,11 @@ impl App {
 
         match descriptor.source {
             CommandSource::System => {
+                if descriptor.name == "setup" && trimmed.is_empty() {
+                    self.start_setup();
+                    return;
+                }
+
                 let request = everruns_core::command::ExecuteCommandRequest {
                     name: descriptor.name.clone(),
                     arguments: if trimmed.is_empty() {
@@ -707,12 +754,6 @@ impl App {
                     }
                     Err(err) => self.push_system(format!("/{} failed: {err}", descriptor.name)),
                 }
-                // Plain `/setup` flips the TUI into wizard mode after the
-                // capability has reported its status line. Internal
-                // `/setup ...` forms are reserved for the wizard itself.
-                if descriptor.name == "setup" && trimmed.is_empty() {
-                    self.start_setup();
-                }
             }
             CommandSource::Skill => {
                 let text = if trimmed.is_empty() {
@@ -727,12 +768,78 @@ impl App {
     }
 
     fn start_setup(&mut self) {
+        self.setup = Some(SetupStep::ChooseAction);
+        self.push_system(format!("current setup: {}", self.model.provider_label()));
+        self.push_system("what do you want to change?".into());
+        self.push_system("1 provider, API key, and model".into());
+        self.push_system("2 API key".into());
+        self.push_system("3 model".into());
+        self.push_system("4 use offline demo mode".into());
+        self.push_system("5 done".into());
+    }
+
+    fn start_first_run_setup(&mut self) {
+        self.push_system("setup: choose a provider to get started".into());
+        self.ask_provider();
+    }
+
+    fn ask_provider(&mut self) {
         self.setup = Some(SetupStep::PickProvider);
-        self.push_system("setup: configure provider, API key, and model".into());
-        self.push_system(format!(
-            "step 1/3: choose provider — {}",
-            crate::runtime::SUPPORTED_PROVIDERS.join(" / ")
-        ));
+        self.push_system("choose a provider:".into());
+        for (idx, option) in PROVIDER_OPTIONS.iter().enumerate() {
+            self.push_system(format!("{} {} — {}", idx + 1, option.label, option.hint));
+        }
+    }
+
+    fn ask_token_provider(&mut self) {
+        self.setup = Some(SetupStep::PickTokenProvider);
+        self.push_system("API key for which provider?".into());
+        for (idx, option) in PROVIDER_OPTIONS
+            .iter()
+            .filter(|option| option.name != "llmsim")
+            .enumerate()
+        {
+            self.push_system(format!("{} {}", idx + 1, option.label));
+        }
+    }
+
+    fn current_provider_name(&self) -> String {
+        self.model
+            .provider_label()
+            .split('/')
+            .next()
+            .unwrap_or("openai")
+            .trim()
+            .to_string()
+    }
+
+    fn provider_label(name: &str) -> &'static str {
+        PROVIDER_OPTIONS
+            .iter()
+            .find(|option| option.name == name)
+            .map(|option| option.label)
+            .unwrap_or("provider")
+    }
+
+    fn parse_provider_choice(input: &str) -> Option<&'static str> {
+        let value = input.trim().to_ascii_lowercase();
+        if value.is_empty() {
+            return None;
+        }
+        if let Ok(index) = value.parse::<usize>() {
+            return PROVIDER_OPTIONS
+                .get(index.saturating_sub(1))
+                .map(|p| p.name);
+        }
+        PROVIDER_OPTIONS
+            .iter()
+            .find(|option| {
+                option.name == value
+                    || option.label.to_ascii_lowercase() == value
+                    || (option.name == "llmsim"
+                        && matches!(value.as_str(), "offline" | "demo" | "offline demo"))
+            })
+            .map(|option| option.name)
     }
 
     /// Drive the setup wizard one step forward. State mutations go through the
@@ -743,57 +850,133 @@ impl App {
             return;
         };
         match step {
+            SetupStep::ChooseAction => {
+                let choice = input.trim().to_ascii_lowercase();
+                match choice.as_str() {
+                    "" | "1" | "provider" | "providers" | "all" => {
+                        self.ask_provider();
+                    }
+                    "2" | "key" | "api key" | "token" => {
+                        self.ask_token_provider();
+                    }
+                    "3" | "model" => {
+                        let provider = self.current_provider_name();
+                        if provider == "llmsim" {
+                            self.push_system(
+                                "offline mode uses the fixed llmsim model; choose provider first to use another model"
+                                    .into(),
+                            );
+                            self.ask_provider();
+                            return;
+                        }
+                        let current = self.model.provider_label();
+                        self.push_system(format!(
+                            "model for {} (Enter to keep `{current}`, or paste a model id)",
+                            Self::provider_label(&provider)
+                        ));
+                        self.setup = Some(SetupStep::PickModel {
+                            provider,
+                            default_model: current,
+                        });
+                    }
+                    "4" | "offline" | "llmsim" | "demo" => {
+                        let _ = self
+                            .run_system_command("setup", Some("provider llmsim"))
+                            .await;
+                        self.push_system("setup complete — using offline demo mode".into());
+                        self.setup = None;
+                    }
+                    "5" | "done" | "cancel" | "quit" => {
+                        self.push_system("setup unchanged".into());
+                        self.setup = None;
+                    }
+                    _ => {
+                        self.push_system(
+                            "choose 1 provider, 2 API key, 3 model, 4 offline, or 5 done".into(),
+                        );
+                    }
+                }
+            }
             SetupStep::PickProvider => {
-                let name = input.trim().to_ascii_lowercase();
-                if name.is_empty() {
-                    self.push_system(format!(
-                        "type one of: {}",
-                        crate::runtime::SUPPORTED_PROVIDERS.join(", ")
-                    ));
+                let Some(name) = Self::parse_provider_choice(input) else {
+                    self.push_system("choose a provider by number or name".into());
+                    self.ask_provider();
                     return;
-                }
-                if !crate::runtime::SUPPORTED_PROVIDERS.contains(&name.as_str()) {
-                    self.push_system(format!(
-                        "unknown provider `{name}` — options: {}",
-                        crate::runtime::SUPPORTED_PROVIDERS.join(", ")
-                    ));
-                    return;
-                }
+                };
                 if name == "llmsim" {
                     // Offline simulator: no token, no model picker.
                     let _ = self
                         .run_system_command("setup", Some("provider llmsim"))
                         .await;
-                    self.push_system("setup complete — using offline llmsim".into());
+                    self.push_system("setup complete — using offline demo mode".into());
                     self.setup = None;
                     return;
                 }
-                let default_model =
-                    crate::runtime::ProviderChoice::default_for_provider_name(&name)
-                        .map(|p| p.label())
-                        .unwrap_or_else(|_| name.clone());
+                let default_model = crate::runtime::ProviderChoice::default_for_provider_name(name)
+                    .map(|p| p.label())
+                    .unwrap_or_else(|_| name.to_string());
                 self.push_system(format!(
-                    "step 2/3: paste your API token for {name} (press Enter to skip and use env vars)"
+                    "API key for {} (paste it, or press Enter to use env vars)",
+                    Self::provider_label(name)
                 ));
                 self.setup = Some(SetupStep::EnterToken {
-                    provider: name,
+                    provider: name.to_string(),
                     default_model,
+                    activate: true,
+                });
+            }
+            SetupStep::PickTokenProvider => {
+                let Some(provider) = Self::parse_provider_choice(input) else {
+                    self.push_system("choose a provider by number or name".into());
+                    self.ask_token_provider();
+                    return;
+                };
+                if provider == "llmsim" {
+                    self.push_system("offline demo mode does not use an API key".into());
+                    self.ask_token_provider();
+                    return;
+                }
+                let default_model = self.model.provider_label();
+                self.push_system(format!(
+                    "API key for {} (paste it, or type clear to remove the saved key)",
+                    Self::provider_label(provider)
+                ));
+                self.setup = Some(SetupStep::EnterToken {
+                    provider: provider.to_string(),
+                    default_model,
+                    activate: false,
                 });
             }
             SetupStep::EnterToken {
                 provider,
                 default_model,
+                activate,
             } => {
                 let token = input.trim();
-                if !token.is_empty() {
-                    // Don't echo the token; the capability response is the
-                    // only line that lands in the transcript.
+                if token.eq_ignore_ascii_case("clear") {
+                    let arg = format!("token {provider} clear");
+                    let _ = self.run_system_command("setup", Some(&arg)).await;
+                    self.push_system("setup complete — API key cleared".into());
+                    self.setup = None;
+                    return;
+                } else if !token.is_empty() {
+                    // Don't echo the token; successful internal setup
+                    // commands stay out of the transcript.
                     let arg = format!("token {provider} {token}");
                     let _ = self.run_system_command("setup", Some(&arg)).await;
-                } else {
+                } else if activate {
                     self.push_system(format!(
                         "no token entered — relying on env vars for {provider}"
                     ));
+                } else {
+                    self.push_system(format!("setup unchanged — using env vars for {provider}"));
+                }
+                if !activate {
+                    if !token.is_empty() {
+                        self.push_system("setup complete — API key updated".into());
+                    }
+                    self.setup = None;
+                    return;
                 }
                 // Now flip the runtime to the chosen provider. With the
                 // token just saved (or env var present), this picks up the
@@ -807,11 +990,13 @@ impl App {
                     self.setup = Some(SetupStep::EnterToken {
                         provider,
                         default_model,
+                        activate,
                     });
                     return;
                 }
                 self.push_system(format!(
-                    "step 3/3: model id (Enter to keep `{default_model}`, or paste e.g. `gpt-5.4-mini`)"
+                    "model for {} (Enter to keep `{default_model}`, or paste a model id)",
+                    Self::provider_label(&provider)
                 ));
                 self.setup = Some(SetupStep::PickModel {
                     provider,
@@ -845,8 +1030,9 @@ impl App {
         }
     }
 
-    /// Execute a System slash command end to end. Returns whether the
-    /// capability reported success. Status line is always pushed.
+    /// Execute an internal System slash command for the setup wizard. Returns
+    /// whether the capability reported success. Successful mutations stay
+    /// quiet so the user only sees the wizard's prompts and completion lines.
     async fn run_system_command(&mut self, name: &str, arg: Option<&str>) -> bool {
         let request = everruns_core::command::ExecuteCommandRequest {
             name: name.to_string(),
@@ -859,10 +1045,10 @@ impl App {
             .execute_command(self.handles.session_id, request)
             .await
         {
+            Ok(result) if result.success => true,
             Ok(result) => {
-                let prefix = if result.success { "" } else { "error: " };
-                self.push_system(format!("{prefix}{}", result.message));
-                result.success
+                self.push_system(format!("error: {}", result.message));
+                false
             }
             Err(err) => {
                 self.push_system(format!("/{name} failed: {err}"));
@@ -3055,16 +3241,107 @@ mod tests {
 
         app.handle_command("setup").await;
 
-        assert!(matches!(app.setup, Some(SetupStep::PickProvider)));
+        assert!(matches!(app.setup, Some(SetupStep::ChooseAction)));
         assert!(
             app.lines
                 .iter()
-                .any(|line| line.text == "setup: configure provider, API key, and model")
+                .any(|line| line.text.starts_with("current setup: "))
+        );
+        assert!(
+            !app.lines
+                .iter()
+                .any(|line| line.text.starts_with("setup: provider=")),
+            "plain /setup should not print backend status before the wizard"
         );
         assert!(
             app.lines
                 .iter()
-                .any(|line| line.text.starts_with("step 1/3: choose provider"))
+                .any(|line| line.text == "1 provider, API key, and model")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_menu_opens_numbered_provider_picker() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = Some(SetupStep::ChooseAction);
+
+        app.advance_setup("1").await;
+
+        assert!(matches!(app.setup, Some(SetupStep::PickProvider)));
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == "choose a provider:")
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == "1 OpenAI — recommended")
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == "6 Offline demo mode — no API key")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_api_key_only_blank_input_reports_no_change() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = Some(SetupStep::ChooseAction);
+
+        app.advance_setup("2").await;
+        assert!(matches!(app.setup, Some(SetupStep::PickTokenProvider)));
+        app.advance_setup("1").await;
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::EnterToken {
+                ref provider,
+                activate: false,
+                ..
+            }) if provider == "openai"
+        ));
+        app.advance_setup("").await;
+
+        assert!(app.setup.is_none());
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == "setup unchanged — using env vars for openai")
+        );
+        assert!(
+            !app.lines
+                .iter()
+                .any(|line| line.text == "setup complete — API key updated")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_api_key_only_update_hides_internal_success_line() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = Some(SetupStep::ChooseAction);
+
+        app.advance_setup("2").await;
+        app.advance_setup("1").await;
+        app.advance_setup("test-token").await;
+
+        assert!(app.setup.is_none());
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == "setup complete — API key updated")
+        );
+        assert!(
+            !app.lines
+                .iter()
+                .any(|line| line.text.starts_with("setup token stored for")),
+            "wizard should hide internal setup command success output"
         );
     }
 
@@ -3082,7 +3359,13 @@ mod tests {
         assert!(
             app.lines
                 .iter()
-                .any(|line| line.text == "setup complete — using offline llmsim")
+                .any(|line| line.text == "setup complete — using offline demo mode")
+        );
+        assert!(
+            !app.lines
+                .iter()
+                .any(|line| line.text.starts_with("setup provider changed:")),
+            "wizard should hide internal setup command success output"
         );
     }
 
