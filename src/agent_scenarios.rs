@@ -33,28 +33,28 @@ use crate::settings::SettingsStore;
 const TURN_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Build a runtime backed by a scripted llmsim config. The workspace and
-/// session-dir tempdirs are intentionally leaked past the test body — the
-/// runtime canonicalizes the workspace path and we keep the handle alive
-/// by `std::mem::forget`. These are tmpfs paths under the OS-managed temp
-/// tree, so the OS cleans them.
+/// session-dir tempdirs are turned into kept `PathBuf`s via
+/// `TempDir::keep()` so the directories outlive `build_scripted_runtime`
+/// (the runtime canonicalizes paths and holds on to them past return)
+/// without leaking the `TempDir` handle. These are tmpfs paths under the
+/// OS-managed temp tree, so the OS still cleans the directories.
 ///
 /// Returns both the built runtime and the workspace root so tests that
 /// assert on filesystem side effects (scripted bash tool calls) can read
 /// files back.
 async fn build_scripted_runtime(config: LlmSimConfig) -> (BuiltRuntime, std::path::PathBuf) {
-    let workspace = tempfile::tempdir().expect("workspace tempdir");
-    let sessions = tempfile::tempdir().expect("sessions tempdir");
-    let workspace_root = workspace.path().to_path_buf();
+    let workspace_root = tempfile::tempdir().expect("workspace tempdir").keep();
+    let sessions_root = tempfile::tempdir().expect("sessions tempdir").keep();
 
     let llmsim = config.with_model("llmsim-yolop");
-    let settings_path = sessions.path().join("settings.toml");
+    let settings_path = sessions_root.join("settings.toml");
     let settings = Arc::new(SettingsStore::open(settings_path));
     let runtime = build_with_options(
         workspace_root.clone(),
         ProviderChoice::Sim,
         ApprovalGate::auto(),
         None,
-        sessions.path().to_path_buf(),
+        sessions_root,
         settings,
         BuildOptions {
             llmsim_override: Some(llmsim),
@@ -63,8 +63,6 @@ async fn build_scripted_runtime(config: LlmSimConfig) -> (BuiltRuntime, std::pat
     .await
     .expect("build scripted llmsim runtime");
 
-    std::mem::forget(workspace);
-    std::mem::forget(sessions);
     (runtime, workspace_root)
 }
 
@@ -165,7 +163,8 @@ async fn scripted_error_turn_marks_run_failed() {
 async fn scripted_default_repeat_last_lets_second_call_succeed_after_exhaustion() {
     // Default OnExhausted::RepeatLast: once the script is consumed the
     // last turn keeps serving. Two run_turns against a 1-turn script
-    // must both succeed and the second must still see the same text.
+    // must both succeed — proving the agent loop does not error out
+    // when the script has been exhausted under the default mode.
     let (runtime, _ws) = build_scripted_runtime(LlmSimConfig::scripted(vec![SimTurn::Assistant(
         "only turn".to_string(),
     )]))
