@@ -11,6 +11,12 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+use std::time::{Duration, Instant};
+use std::{io::Read, io::Write};
+
+use portable_pty::{Child, CommandBuilder, ExitStatus, NativePtySystem, PtySize, PtySystem};
 
 fn yolop_binary() -> PathBuf {
     // CARGO_BIN_EXE_<name> is set by Cargo for integration tests.
@@ -201,6 +207,49 @@ fn llmsim_unknown_session_id_is_invalid() {
     );
 }
 
+#[test]
+fn tui_escape_does_not_exit_and_ctrl_c_exits() {
+    let mut tui = spawn_tui_llmsim();
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"\x1b");
+    assert!(
+        wait_for_exit(&mut *tui.child, Duration::from_millis(700)).is_none(),
+        "Esc should not exit the TUI: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(
+        status.success(),
+        "Ctrl-C should exit cleanly, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
+#[test]
+fn tui_double_ctrl_c_exits() {
+    let mut tui = spawn_tui_llmsim();
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"\x03\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(
+        status.success(),
+        "double Ctrl-C should exit cleanly, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
 /// Parse the session id printed on the `session …` line of `--print` stdout.
 /// The line shape is:
 /// `session   <id> (folder: ...; log: ...; N prior event(s))`
@@ -258,6 +307,135 @@ fn strip_ansi(input: &str) -> String {
         i += 1;
     }
     out
+}
+
+struct TuiHarness {
+    child: Box<dyn Child + Send + Sync>,
+    writer: Box<dyn Write + Send>,
+    output_rx: Receiver<Vec<u8>>,
+    output: Vec<u8>,
+    _session_dir: tempfile::TempDir,
+    _home: tempfile::TempDir,
+}
+
+impl TuiHarness {
+    fn write_input(&mut self, bytes: &[u8]) {
+        self.writer.write_all(bytes).expect("write pty input");
+        self.writer.flush().expect("flush pty input");
+    }
+
+    fn wait_for_output(&mut self, needle: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            self.drain_output();
+            if self.output_text().contains(needle) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        self.drain_output();
+        self.output_text().contains(needle)
+    }
+
+    fn wait_or_kill(&mut self, timeout: Duration) -> ExitStatus {
+        if let Some(status) = wait_for_exit(&mut *self.child, timeout) {
+            return status;
+        }
+        let _ = self.child.kill();
+        panic!(
+            "TUI did not exit within {:?}: {}",
+            timeout,
+            self.output_text()
+        );
+    }
+
+    fn output_text(&mut self) -> String {
+        self.drain_output();
+        String::from_utf8_lossy(&self.output).into_owned()
+    }
+
+    fn drain_output(&mut self) {
+        while let Ok(chunk) = self.output_rx.try_recv() {
+            self.output.extend_from_slice(&chunk);
+        }
+    }
+}
+
+impl Drop for TuiHarness {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+        }
+    }
+}
+
+fn spawn_tui_llmsim() -> TuiHarness {
+    let session_dir = tempfile::tempdir().expect("session tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .expect("open pty");
+
+    let mut cmd = CommandBuilder::new(yolop_binary());
+    cmd.args(["--provider", "llmsim", "--session-dir"]);
+    cmd.arg(session_dir.path());
+    cmd.env("HOME", home.path());
+    cmd.env("XDG_CONFIG_HOME", home.path().join(".config"));
+    cmd.env("XDG_DATA_HOME", home.path().join(".local/share"));
+    cmd.env("TERM", "xterm-256color");
+    cmd.env_remove("OPENAI_API_KEY");
+    cmd.env_remove("ANTHROPIC_API_KEY");
+    cmd.env_remove("OPENROUTER_API_KEY");
+    cmd.env_remove("OLLAMA_BASE_URL");
+    cmd.env_remove("OLLAMA_API_KEY");
+
+    let child = pair.slave.spawn_command(cmd).expect("spawn yolop TUI");
+    drop(pair.slave);
+
+    let (output_tx, output_rx) = mpsc::channel();
+    let mut reader = pair.master.try_clone_reader().expect("clone pty reader");
+    thread::spawn(move || {
+        let mut buf = [0_u8; 4096];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            if output_tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut writer = pair.master.take_writer().expect("take pty writer");
+    writer
+        .write_all(b"\x1b[1;1R")
+        .expect("seed cursor position response");
+    writer.flush().expect("flush cursor position response");
+    TuiHarness {
+        child,
+        writer,
+        output_rx,
+        output: Vec::new(),
+        _session_dir: session_dir,
+        _home: home,
+    }
+}
+
+fn wait_for_exit(child: &mut dyn Child, timeout: Duration) -> Option<ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Some(status) = child.try_wait().expect("poll child exit") {
+            return Some(status);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    child.try_wait().expect("poll child exit")
 }
 
 #[test]

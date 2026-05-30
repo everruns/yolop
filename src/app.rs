@@ -308,7 +308,9 @@ impl App {
                 .collect();
             self.push_system(format!("commands: {}", names.join(", ")));
         }
-        self.push_system("type /help for commands, Esc or Ctrl-D to exit; approvals: y / n".into());
+        self.push_system(
+            "type /help for commands, Ctrl-C or Ctrl-D to exit; approvals: y / n".into(),
+        );
     }
 
     fn push_user(&mut self, text: String) {
@@ -515,11 +517,6 @@ impl App {
             return;
         }
 
-        if matches!(key.code, KeyCode::Esc) {
-            self.should_quit = true;
-            return;
-        }
-
         if self.busy {
             // Block only input editing while a turn is running.
             return;
@@ -623,7 +620,9 @@ impl App {
                     "input: ←/→ edit · Alt/Shift-Enter newline · scroll: use the terminal scrollback"
                         .into(),
                 );
-                self.push_system("approvals: y allow · n / Esc deny · exit: Esc / Ctrl-D".into());
+                self.push_system(
+                    "approvals: y allow · n / Esc deny · exit: Ctrl-C / Ctrl-D".into(),
+                );
             }
             "tools" => {
                 self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
@@ -2988,6 +2987,38 @@ mod tests {
             _workspace: workspace,
             _sessions: sessions,
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn startup_banner_names_ctrl_c_and_ctrl_d_as_exit_keys() {
+        let fixture = app_with_llmsim().await;
+
+        assert!(
+            fixture
+                .app
+                .lines
+                .iter()
+                .any(|line| line.text.contains("Ctrl-C or Ctrl-D to exit")),
+            "startup banner should name Ctrl-C/Ctrl-D exits: {:?}",
+            fixture.app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn help_command_names_ctrl_c_and_ctrl_d_as_exit_keys() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+
+        app.handle_command("help").await;
+
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("exit: Ctrl-C / Ctrl-D")),
+            "help output should name Ctrl-C/Ctrl-D exits: {:?}",
+            app.lines
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
