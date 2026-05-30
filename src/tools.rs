@@ -313,10 +313,6 @@ mod tests {
     /// though the full log was already saved. With `auto` (the new default),
     /// successful runs return ≤512 bytes inline.
     ///
-    /// Currently ignored: the persistence-first compaction lives in
-    /// `everruns-core`'s tool output sanitizer and only landed after the
-    /// 0.8.34 release. Re-enable once we bump the `everruns-*` family.
-    #[ignore = "requires everruns-core > 0.8.34 (EVE-489 auto-mode compaction)"]
     #[tokio::test]
     async fn bash_success_output_should_be_persistent_first_when_output_is_saved() {
         let dir = tempfile::tempdir().unwrap();
@@ -361,9 +357,6 @@ mod tests {
         );
     }
 
-    /// Currently ignored: depends on the same `auto` default behavior in
-    /// `everruns-core`'s tool output sanitizer that landed after 0.8.34.
-    #[ignore = "requires everruns-core > 0.8.34 (EVE-489 auto-mode compaction)"]
     #[tokio::test]
     async fn bash_defaults_to_auto_mode_for_compact_success() {
         // No `output` parameter at all — the new default must behave like `auto`.
