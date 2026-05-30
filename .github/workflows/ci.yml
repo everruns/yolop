@@ -113,7 +113,7 @@ jobs:
           fi
 
       - name: Install Doppler CLI
-        uses: dopplerhq/cli-action@v3
+        uses: dopplerhq/cli-action@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
