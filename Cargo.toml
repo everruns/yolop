@@ -37,6 +37,7 @@ everruns-runtime = "0.8.36"
 everruns-integrations-duckduckgo = "0.8.36"
 
 [dev-dependencies]
+portable-pty = "0.9.0"
 tempfile = "3"
 
 [profile.release]
