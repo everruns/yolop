@@ -233,6 +233,44 @@ fn tui_escape_does_not_exit_and_ctrl_c_exits() {
 }
 
 #[test]
+fn tui_option_enter_sequence_inserts_newline_before_submit() {
+    let mut tui = spawn_tui_llmsim();
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"one\x1b\r");
+    thread::sleep(Duration::from_millis(250));
+    let before_submit = tui.output_text();
+    assert!(
+        !before_submit.contains("you ›"),
+        "Option-Enter should keep composing, not submit: {before_submit}"
+    );
+
+    tui.write_input(b"two\r");
+    assert!(
+        tui.wait_for_output("you ›", Duration::from_secs(3)),
+        "plain Enter did not submit after multiline input: {}",
+        tui.output_text()
+    );
+    let after_submit = strip_ansi(&tui.output_text());
+    assert!(
+        after_submit.contains("one") && after_submit.contains("two"),
+        "submitted multiline text should render both lines: {after_submit}"
+    );
+
+    tui.write_input(b"\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(
+        status.success(),
+        "Ctrl-C should exit cleanly, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
+#[test]
 fn tui_double_ctrl_c_exits() {
     let mut tui = spawn_tui_llmsim();
     assert!(
@@ -372,6 +410,17 @@ impl Drop for TuiHarness {
 fn spawn_tui_llmsim() -> TuiHarness {
     let session_dir = tempfile::tempdir().expect("session tempdir");
     let home = tempfile::tempdir().expect("home tempdir");
+    for settings_dir in [
+        home.path().join(".config/yolop"),
+        home.path().join("Library/Application Support/yolop"),
+    ] {
+        std::fs::create_dir_all(&settings_dir).expect("create settings dir");
+        std::fs::write(
+            settings_dir.join("settings.toml"),
+            "provider = \"llmsim\"\n",
+        )
+        .expect("write settings");
+    }
     let pty_system = NativePtySystem::default();
     let pair = pty_system
         .openpty(PtySize {

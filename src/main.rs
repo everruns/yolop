@@ -23,13 +23,17 @@ use anyhow::Result;
 use app::{App, COMPOSER_VIEWPORT_HEIGHT};
 use approval::ApprovalGate;
 use clap::Parser;
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::{execute, queue};
 use everruns_core::message::MessageRole;
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use runtime::{BuiltRuntime, ProviderChoice};
 use settings::SettingsStore;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -235,6 +239,7 @@ async fn run_tui(
     )>,
 ) -> Result<()> {
     let mut raw_mode = RawModeGuard::new()?;
+    let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::with_options(
@@ -251,6 +256,7 @@ async fn run_tui(
 
     let cleanup_result = terminal.clear().and_then(|_| terminal.show_cursor());
     drop(terminal);
+    keyboard_enhancements.disable();
     raw_mode.disable()?;
     cleanup_result?;
 
@@ -289,6 +295,35 @@ impl Drop for RawModeGuard {
             let _ = disable_raw_mode();
             self.active = false;
         }
+    }
+}
+
+struct KeyboardEnhancementGuard {
+    active: bool,
+}
+
+impl KeyboardEnhancementGuard {
+    fn new() -> Self {
+        let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
+        let mut stdout = io::stdout();
+        let active = execute!(stdout, PushKeyboardEnhancementFlags(flags)).is_ok();
+        Self { active }
+    }
+
+    fn disable(&mut self) {
+        if self.active {
+            let mut stdout = io::stdout();
+            let _ = queue!(stdout, PopKeyboardEnhancementFlags);
+            let _ = stdout.flush();
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for KeyboardEnhancementGuard {
+    fn drop(&mut self) {
+        self.disable();
     }
 }
 
