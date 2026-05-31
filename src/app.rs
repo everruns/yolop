@@ -450,6 +450,12 @@ impl App {
                     if key.kind == KeyEventKind::Release {
                         continue;
                     }
+                    if key.code == KeyCode::Esc
+                        && self.pending.is_none()
+                        && self.handle_escape_prefixed_enter().await?
+                    {
+                        continue;
+                    }
                     self.handle_key(key).await;
                 }
                 if self.should_quit {
@@ -466,6 +472,32 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    async fn handle_escape_prefixed_enter(&mut self) -> Result<bool> {
+        if !event::poll(Duration::from_millis(25))? {
+            return Ok(false);
+        }
+
+        match event::read()? {
+            CrosstermEvent::Key(next) if next.kind == KeyEventKind::Release => Ok(false),
+            CrosstermEvent::Key(next) if next.code == KeyCode::Enter => {
+                self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT))
+                    .await;
+                Ok(true)
+            }
+            CrosstermEvent::Key(next) => {
+                self.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+                    .await;
+                self.handle_key(next).await;
+                Ok(true)
+            }
+            _ => {
+                self.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+                    .await;
+                Ok(true)
+            }
+        }
     }
 
     async fn emit_replayed_transcript(&mut self) {
@@ -571,6 +603,9 @@ impl App {
             {
                 self.submit_input().await;
             }
+            KeyCode::Enter => {
+                self.input.insert_newline();
+            }
             KeyCode::Tab => {
                 if let Some(suggestion) = self.suggestions().first() {
                     self.set_input_text(suggestion.completion.clone());
@@ -610,7 +645,7 @@ impl App {
     }
 
     fn input_height(&self) -> u16 {
-        1
+        self.input.lines().len().clamp(1, 3) as u16
     }
 
     async fn submit_input(&mut self) {
@@ -658,10 +693,10 @@ impl App {
                         .join(" · ");
                     self.push_system(format!("commands: {caps}"));
                 }
-                self.push_system(
-                    "input: ←/→ edit · Alt/Shift-Enter newline · scroll: use the terminal scrollback"
-                        .into(),
-                );
+                self.push_system(format!(
+                    "input: ←/→ edit · {} newline · scroll: use the terminal scrollback",
+                    newline_shortcut_hint()
+                ));
                 self.push_system(
                     "approvals: y allow · n / Esc deny · exit: Ctrl-C / Ctrl-D".into(),
                 );
@@ -1812,14 +1847,16 @@ pub(crate) fn draw_chrome(
     input_height: u16,
     state: &ViewState,
 ) -> Rect {
+    let preview_height = u16::from(input_height == 1);
+    let status_height = u16::from(input_height < 3);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),            // suggestions / stream preview
-            Constraint::Length(1),            // message separator
-            Constraint::Length(input_height), // input (left to the caller)
-            Constraint::Length(1),            // status separator
-            Constraint::Length(1),            // session status
+            Constraint::Length(preview_height), // suggestions / stream preview
+            Constraint::Length(1),              // message separator
+            Constraint::Length(input_height),   // input (left to the caller)
+            Constraint::Length(status_height),  // status separator
+            Constraint::Length(1),              // session status
         ])
         .split(area);
 
@@ -2353,10 +2390,18 @@ fn message_separator_title(state: &ViewState) -> Line<'static> {
     Line::from(vec![
         Span::styled("─── ", Style::default().fg(ACCENT_BLUE)),
         Span::styled(
-            "(Enter to send, Alt/Shift-Enter for newline) ",
+            format!("(Enter to send, {} for newline) ", newline_shortcut_hint()),
             Style::default().fg(TEXT_MUTED),
         ),
     ])
+}
+
+fn newline_shortcut_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Option-Enter / Shift-Enter"
+    } else {
+        "Alt-Enter / Shift-Enter"
+    }
 }
 
 fn thinking_title(frame: u64, activity: &str) -> Line<'static> {
@@ -2600,6 +2645,16 @@ mod tests {
         }
 
         assert_eq!(input.lines(), ["abc", "d"]);
+    }
+
+    #[test]
+    fn newline_shortcut_hint_matches_host_os() {
+        let hint = newline_shortcut_hint();
+        if cfg!(target_os = "macos") {
+            assert_eq!(hint, "Option-Enter / Shift-Enter");
+        } else {
+            assert_eq!(hint, "Alt-Enter / Shift-Enter");
+        }
     }
 
     #[test]
@@ -3230,6 +3285,46 @@ mod tests {
             "slash input should render command suggestions in chrome row: {:?}",
             rows
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn modified_enter_inserts_newline_without_submitting() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+
+        for key in [
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::empty()),
+        ] {
+            app.handle_key(key).await;
+        }
+
+        assert_eq!(app.input_text(), "a\nb\nc");
+        assert_eq!(app.input_height(), 3);
+        assert!(
+            app.lines
+                .iter()
+                .all(|line| !matches!(line.author, Author::User)),
+            "modified Enter should edit the composer, not submit: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn multiline_input_height_is_bounded() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+
+        assert_eq!(app.input_height(), 1);
+        app.input.insert_newline();
+        assert_eq!(app.input_height(), 2);
+        app.input.insert_newline();
+        assert_eq!(app.input_height(), 3);
+        app.input.insert_newline();
+        assert_eq!(app.input_height(), 3);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
