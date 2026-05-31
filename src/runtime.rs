@@ -7,8 +7,9 @@
 use crate::approval::ApprovalGate;
 use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability, YourStore};
 use crate::capabilities::{
-    CodingBashCapability, CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
-    SETUP_CAPABILITY_ID, SetupCapability,
+    ATTRIBUTION_CAPABILITY_ID, AttributionCapability, CodingBashCapability,
+    CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID,
+    SetupCapability,
 };
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
@@ -871,6 +872,7 @@ fn coding_harness_capabilities() -> Vec<AgentCapabilityConfig> {
         AgentCapabilityConfig::new(PROMPT_CACHING_CAPABILITY_ID),
         AgentCapabilityConfig::new("tool_output_persistence"),
         AgentCapabilityConfig::new("duckduckgo"),
+        AgentCapabilityConfig::new(ATTRIBUTION_CAPABILITY_ID),
         // enable_file_download=true: saved responses land on disk through
         // the platform filesystem stack, so the blocklist + approval gate apply.
         AgentCapabilityConfig::with_config(
@@ -1079,6 +1081,9 @@ pub async fn build_with_options(
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebFetchCapability::from_env());
     capabilities.register(CodingCliEnvironmentCapability::new(canonical_root.clone()));
+    capabilities.register(AttributionCapability {
+        settings: settings.clone(),
+    });
     // `/setup` (below) is the capability-sourced slash command. It implements
     // `Capability::execute_command` end to end. We deliberately
     // do NOT register `BtwCapability` here: the server's `/btw` flow has its
@@ -1264,6 +1269,43 @@ mod tests {
             .expect("setup status");
         assert!(status.success);
         assert!(status.message.starts_with("setup:"));
+        assert!(
+            status.message.contains("attribution=on"),
+            "status: {}",
+            status.message
+        );
+
+        let disable_attribution = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("attribution off".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("disable setup attribution");
+        assert!(disable_attribution.success);
+        assert!(!settings_for_assert.snapshot().attribution_enabled());
+
+        let enable_attribution = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("attribution on".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("enable setup attribution");
+        assert!(enable_attribution.success);
+        assert!(settings_for_assert.snapshot().attribution_enabled());
 
         let store_token = built
             .handles
@@ -1709,6 +1751,16 @@ mod tests {
         assert!(
             ids.iter()
                 .any(|cap| cap.capability_id() == "loop_detection")
+        );
+    }
+
+    #[test]
+    fn coding_harness_enables_yolop_attribution() {
+        let ids = coding_harness_capabilities();
+
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == ATTRIBUTION_CAPABILITY_ID)
         );
     }
 

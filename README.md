@@ -81,6 +81,10 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
 - **`--print`** one-shot mode for CI smoke tests.
 - **Session persistence** — durable per-session JSONL event log under the
   platform-native user data directory, with `--session <id>` to resume.
+- **Git attribution** — enabled by default and configurable. When yolop creates
+  commits, it keeps the user's git author/committer identity and appends
+  `Co-Authored-By: yolop <yolop@everruns.com>` once. Pull request descriptions
+  created or edited through `gh` get a `Generated with yolop` footer.
 
 ## Install
 
@@ -215,6 +219,10 @@ Provider resolution at startup:
 At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always
 beats the saved token, so a per-run env override is always possible.
 The setup wizard can also switch models for the current session.
+
+Attribution is enabled by default. Run `/setup attribution off` to disable it
+for future turns and future sessions, or `/setup attribution on` to re-enable
+it. The saved TOML key is `attribution = false` when disabled.
 
 ### Storing tokens
 

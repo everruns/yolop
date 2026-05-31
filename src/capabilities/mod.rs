@@ -8,6 +8,7 @@ pub mod skills;
 pub(crate) mod your;
 
 pub(crate) use host::{
-    CodingBashCapability, CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
-    SETUP_CAPABILITY_ID, SetupCapability,
+    ATTRIBUTION_CAPABILITY_ID, AttributionCapability, CodingBashCapability,
+    CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID,
+    SetupCapability,
 };
