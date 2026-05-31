@@ -72,12 +72,12 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - `OPENROUTER_API_KEY` → OpenRouter (`openai/gpt-5.2` by default)
   - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) → Google Gemini (`gemini-2.5-flash`)
   - `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` → Ollama (`llama3.2`)
-- **Slash commands** (TUI): `/help`, `/tools`, `/cwd`, `/setup`,
+- **Slash commands** (TUI): `/help`, `/tools`, `/cwd`, `/setup`, `/model`,
   `/clear`, `/quit`.
 - **Guided setup**: launching yolop with no env vars and no saved
-  settings opens a provider picker, then walks through API key → model.
-  Re-running `/setup` opens a small menu for changing provider, API key,
-  model, or switching to offline demo mode.
+  settings opens a keyboard-driven setup overlay for provider → API key →
+  model. Re-running `/setup` opens the same provider setup flow, and
+  `/model` opens the model picker directly.
 - **`--print`** one-shot mode for CI smoke tests.
 - **Session persistence** — durable per-session JSONL event log under the
   platform-native user data directory, with `--session <id>` to resume.
@@ -195,8 +195,9 @@ provider API tokens across runs. It lives at `<config_dir>/yolop/settings.toml`
 `~/Library/Application Support/yolop/settings.toml` on macOS,
 `%APPDATA%\yolop\settings.toml` on Windows.
 
-The TUI's `/setup` command writes through this file and can update the
-active provider, saved API keys, current model, or offline demo mode.
+The TUI's `/setup` and `/model` overlays write through this file and can
+update the active provider, saved API keys, current model, or offline
+demo mode.
 
 Provider resolution at startup:
 

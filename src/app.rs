@@ -18,7 +18,7 @@ use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -101,6 +101,11 @@ const COMMANDS: &[CommandSpec] = &[
         description: "show workspace root",
     },
     CommandSpec {
+        name: "model",
+        usage: "/model",
+        description: "switch model",
+    },
+    CommandSpec {
         name: "clear",
         usage: "/clear",
         description: "clear transcript",
@@ -112,13 +117,15 @@ const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
-pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 5;
+pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
+const COMPACT_CHROME_HEIGHT: u16 = 5;
 const ACCENT_BLUE: Color = Color::Rgb(45, 91, 158);
 const ACCENT_GOLD: Color = Color::Rgb(126, 94, 19);
 const TEXT_PRIMARY: Color = Color::Rgb(230, 230, 232);
 const TEXT_MUTED: Color = Color::Rgb(140, 140, 145);
 const TEXT_DIM: Color = Color::Rgb(72, 72, 78);
 const CODE_BG: Color = Color::Rgb(18, 18, 20);
+const PANEL_BG: Color = Color::Rgb(28, 28, 34);
 
 pub struct App {
     handles: RuntimeHandles,
@@ -138,24 +145,34 @@ pub struct App {
     rx: Option<mpsc::UnboundedReceiver<TurnEvent>>,
     approval_rx: ApprovalRx,
     pending: Option<PendingApproval>,
-    /// Active setup step, if any. The wizard captures plain-text input from
-    /// the composer and dispatches internal `/setup` actions at each step.
+    /// Active setup overlay, if any. The overlay owns its own keyboard
+    /// handling so provider, token, and model setup never echo through the
+    /// normal chat composer.
     setup: Option<SetupStep>,
 }
 
 #[derive(Clone, Debug)]
 enum SetupStep {
-    ChooseAction,
-    PickProvider,
-    PickTokenProvider,
-    EnterToken {
+    Provider {
+        selected: usize,
+    },
+    Credential {
         provider: String,
         default_model: String,
-        activate: bool,
+        selected: usize,
+        error: Option<String>,
+    },
+    TokenInput {
+        provider: String,
+        default_model: String,
+        token: String,
+        error: Option<String>,
     },
     PickModel {
         provider: String,
-        default_model: String,
+        selected: usize,
+        custom: Option<String>,
+        error: Option<String>,
     },
 }
 
@@ -197,6 +214,27 @@ const PROVIDER_OPTIONS: &[ProviderOption] = &[
         hint: "no API key",
     },
 ];
+
+struct CredentialOption {
+    id: CredentialAction,
+    label: String,
+    hint: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CredentialAction {
+    UseEnv,
+    PasteKey,
+    Skip,
+    ClearSaved,
+}
+
+#[derive(Clone, Debug)]
+struct ModelOption {
+    spec: Option<String>,
+    label: String,
+    hint: &'static str,
+}
 
 /// Owned snapshot of the App fields the pure-render chrome helpers
 /// (command suggestions, stream preview, separators, session status)
@@ -318,7 +356,7 @@ impl App {
     pub(crate) fn view_state(&self) -> ViewState {
         ViewState {
             stream_preview: self.stream_preview.clone(),
-            command_suggestions: if !self.busy && self.pending.is_none() {
+            command_suggestions: if !self.busy && self.pending.is_none() && self.setup.is_none() {
                 self.suggestions()
             } else {
                 Vec::new()
@@ -563,6 +601,10 @@ impl App {
             // Block only input editing while a turn is running.
             return;
         }
+        if self.setup.is_some() {
+            self.handle_setup_key(key).await;
+            return;
+        }
         match key.code {
             KeyCode::Enter
                 if !key
@@ -621,12 +663,6 @@ impl App {
             self.handle_command(rest).await;
             return;
         }
-        // While setup is active, plain-text input is the wizard answer (empty
-        // included — "skip" for token/model steps).
-        if self.setup.is_some() {
-            self.advance_setup(&text).await;
-            return;
-        }
         if text.is_empty() {
             return;
         }
@@ -675,6 +711,7 @@ impl App {
                     self.startup.workspace_root.display()
                 ));
             }
+            "model" => self.start_model_setup(),
             "clear" => {
                 self.lines.clear();
                 self.printed_lines = 0;
@@ -768,39 +805,27 @@ impl App {
     }
 
     fn start_setup(&mut self) {
-        self.setup = Some(SetupStep::ChooseAction);
-        self.push_system(format!("current setup: {}", self.model.provider_label()));
-        self.push_system("what do you want to change?".into());
-        self.push_system("1 provider, API key, and model".into());
-        self.push_system("2 API key".into());
-        self.push_system("3 model".into());
-        self.push_system("4 use offline demo mode".into());
-        self.push_system("5 done".into());
+        self.setup = Some(SetupStep::Provider {
+            selected: self.current_provider_index(),
+        });
     }
 
     fn start_first_run_setup(&mut self) {
-        self.push_system("setup: choose a provider to get started".into());
-        self.ask_provider();
+        self.start_setup();
     }
 
-    fn ask_provider(&mut self) {
-        self.setup = Some(SetupStep::PickProvider);
-        self.push_system("choose a provider:".into());
-        for (idx, option) in PROVIDER_OPTIONS.iter().enumerate() {
-            self.push_system(format!("{} {} — {}", idx + 1, option.label, option.hint));
-        }
-    }
-
-    fn ask_token_provider(&mut self) {
-        self.setup = Some(SetupStep::PickTokenProvider);
-        self.push_system("API key for which provider?".into());
-        for (idx, option) in PROVIDER_OPTIONS
-            .iter()
-            .filter(|option| option.name != "llmsim")
-            .enumerate()
-        {
-            self.push_system(format!("{} {}", idx + 1, option.label));
-        }
+    fn start_model_setup(&mut self) {
+        let provider = self.current_provider_name();
+        let selected = model_index_for_label(
+            &self.model.provider_label(),
+            &Self::model_options(&provider),
+        );
+        self.setup = Some(SetupStep::PickModel {
+            provider,
+            selected,
+            custom: None,
+            error: None,
+        });
     }
 
     fn current_provider_name(&self) -> String {
@@ -813,6 +838,14 @@ impl App {
             .to_string()
     }
 
+    fn current_provider_index(&self) -> usize {
+        let provider = self.current_provider_name();
+        PROVIDER_OPTIONS
+            .iter()
+            .position(|option| option.name == provider)
+            .unwrap_or(0)
+    }
+
     fn provider_label(name: &str) -> &'static str {
         PROVIDER_OPTIONS
             .iter()
@@ -821,221 +854,617 @@ impl App {
             .unwrap_or("provider")
     }
 
-    fn parse_provider_choice(input: &str) -> Option<&'static str> {
-        let value = input.trim().to_ascii_lowercase();
-        if value.is_empty() {
-            return None;
+    fn provider_env_names(provider: &str) -> &'static [&'static str] {
+        match provider {
+            "openai" => &["OPENAI_API_KEY"],
+            "anthropic" => &["ANTHROPIC_API_KEY"],
+            "google" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            "openrouter" => &["OPENROUTER_API_KEY"],
+            "ollama" => &["OLLAMA_BASE_URL", "OLLAMA_API_KEY"],
+            _ => &[],
         }
-        if let Ok(index) = value.parse::<usize>() {
-            return PROVIDER_OPTIONS
-                .get(index.saturating_sub(1))
-                .map(|p| p.name);
-        }
-        PROVIDER_OPTIONS
-            .iter()
-            .find(|option| {
-                option.name == value
-                    || option.label.to_ascii_lowercase() == value
-                    || (option.name == "llmsim"
-                        && matches!(value.as_str(), "offline" | "demo" | "offline demo"))
-            })
-            .map(|option| option.name)
     }
 
-    /// Drive the setup wizard one step forward. State mutations go through the
-    /// single `/setup` capability so provider, token, and model setup have one
-    /// user-facing command.
-    async fn advance_setup(&mut self, input: &str) {
+    fn detected_env_var(provider: &str) -> Option<&'static str> {
+        Self::provider_env_names(provider)
+            .iter()
+            .copied()
+            .find(|name| {
+                std::env::var(name)
+                    .map(|value| !value.is_empty())
+                    .unwrap_or(false)
+            })
+    }
+
+    fn credential_options(provider: &str) -> Vec<CredentialOption> {
+        let env_names = Self::provider_env_names(provider);
+        let env_label = match env_names {
+            [] => "Use environment".to_string(),
+            [one] => format!("Use {one} from environment"),
+            many => format!("Use {} from environment", many.join(" / ")),
+        };
+        let env_hint = Self::detected_env_var(provider)
+            .map(|name| format!("{name} detected"))
+            .unwrap_or_else(|| "not detected yet".to_string());
+        vec![
+            CredentialOption {
+                id: CredentialAction::UseEnv,
+                label: env_label,
+                hint: env_hint,
+            },
+            CredentialOption {
+                id: CredentialAction::PasteKey,
+                label: "Paste API key".to_string(),
+                hint: "saved to settings.toml".to_string(),
+            },
+            CredentialOption {
+                id: CredentialAction::Skip,
+                label: "Skip for now".to_string(),
+                hint: "leave setup unchanged".to_string(),
+            },
+            CredentialOption {
+                id: CredentialAction::ClearSaved,
+                label: "Clear saved key".to_string(),
+                hint: "remove this provider token".to_string(),
+            },
+        ]
+    }
+
+    fn model_options(provider: &str) -> Vec<ModelOption> {
+        let mut models = match provider {
+            "openai" => vec![
+                ModelOption {
+                    spec: Some("openai/gpt-5.5 medium".to_string()),
+                    label: "gpt-5.5".to_string(),
+                    hint: "frontier model for complex coding",
+                },
+                ModelOption {
+                    spec: Some("openai/gpt-5.4".to_string()),
+                    label: "gpt-5.4".to_string(),
+                    hint: "strong everyday model",
+                },
+                ModelOption {
+                    spec: Some("openai/gpt-5.4-mini".to_string()),
+                    label: "gpt-5.4-mini".to_string(),
+                    hint: "fast and cost-efficient",
+                },
+                ModelOption {
+                    spec: Some("openai/gpt-5.3-codex".to_string()),
+                    label: "gpt-5.3-codex".to_string(),
+                    hint: "coding-optimized model",
+                },
+                ModelOption {
+                    spec: Some("openai/gpt-5.2".to_string()),
+                    label: "gpt-5.2".to_string(),
+                    hint: "optimized for long-running agents",
+                },
+            ],
+            "anthropic" => vec![
+                ModelOption {
+                    spec: Some("anthropic/claude-sonnet-4-5".to_string()),
+                    label: "claude-sonnet-4-5".to_string(),
+                    hint: "best default Claude model",
+                },
+                ModelOption {
+                    spec: Some("anthropic/claude-opus-4-5".to_string()),
+                    label: "claude-opus-4-5".to_string(),
+                    hint: "more capable for complex work",
+                },
+                ModelOption {
+                    spec: Some("anthropic/claude-haiku-4-5".to_string()),
+                    label: "claude-haiku-4-5".to_string(),
+                    hint: "fast answers",
+                },
+                ModelOption {
+                    spec: Some("anthropic/claude-sonnet-4-6".to_string()),
+                    label: "claude-sonnet-4-6".to_string(),
+                    hint: "newer Sonnet option",
+                },
+            ],
+            "google" => vec![
+                ModelOption {
+                    spec: Some("google/gemini-2.5-flash".to_string()),
+                    label: "gemini-2.5-flash".to_string(),
+                    hint: "fast Gemini default",
+                },
+                ModelOption {
+                    spec: Some("google/gemini-2.5-pro".to_string()),
+                    label: "gemini-2.5-pro".to_string(),
+                    hint: "more capable Gemini model",
+                },
+            ],
+            "openrouter" => vec![
+                ModelOption {
+                    spec: Some("openrouter/openai/gpt-5.2".to_string()),
+                    label: "openai/gpt-5.2".to_string(),
+                    hint: "default OpenRouter model",
+                },
+                ModelOption {
+                    spec: Some("openrouter/anthropic/claude-sonnet-4-5".to_string()),
+                    label: "anthropic/claude-sonnet-4-5".to_string(),
+                    hint: "Claude through OpenRouter",
+                },
+            ],
+            "ollama" => vec![ModelOption {
+                spec: Some("ollama/llama3.2".to_string()),
+                label: "llama3.2".to_string(),
+                hint: "local default model",
+            }],
+            _ => vec![ModelOption {
+                spec: Some("llmsim/llmsim-yolop".to_string()),
+                label: "llmsim-yolop".to_string(),
+                hint: "offline demo model",
+            }],
+        };
+        models.push(ModelOption {
+            spec: None,
+            label: "Custom...".to_string(),
+            hint: "paste a model id",
+        });
+        models
+    }
+
+    async fn handle_setup_key(&mut self, key: KeyEvent) {
         let Some(step) = self.setup.clone() else {
             return;
         };
         match step {
-            SetupStep::ChooseAction => {
-                let choice = input.trim().to_ascii_lowercase();
-                match choice.as_str() {
-                    "" | "1" | "provider" | "providers" | "all" => {
-                        self.ask_provider();
-                    }
-                    "2" | "key" | "api key" | "token" => {
-                        self.ask_token_provider();
-                    }
-                    "3" | "model" => {
-                        let provider = self.current_provider_name();
-                        if provider == "llmsim" {
-                            self.push_system(
-                                "offline mode uses the fixed llmsim model; choose provider first to use another model"
-                                    .into(),
-                            );
-                            self.ask_provider();
-                            return;
-                        }
-                        let current = self.model.provider_label();
-                        self.push_system(format!(
-                            "model for {} (Enter to keep `{current}`, or paste a model id)",
-                            Self::provider_label(&provider)
-                        ));
-                        self.setup = Some(SetupStep::PickModel {
-                            provider,
-                            default_model: current,
-                        });
-                    }
-                    "4" | "offline" | "llmsim" | "demo" => {
-                        let _ = self
-                            .run_system_command("setup", Some("provider llmsim"))
-                            .await;
-                        self.push_system("setup complete — using offline demo mode".into());
-                        self.setup = None;
-                    }
-                    "5" | "done" | "cancel" | "quit" => {
-                        self.push_system("setup unchanged".into());
-                        self.setup = None;
-                    }
-                    _ => {
-                        self.push_system(
-                            "choose 1 provider, 2 API key, 3 model, 4 offline, or 5 done".into(),
-                        );
-                    }
-                }
+            SetupStep::Provider { selected } => {
+                self.handle_provider_key(key, selected).await;
             }
-            SetupStep::PickProvider => {
-                let Some(name) = Self::parse_provider_choice(input) else {
-                    self.push_system("choose a provider by number or name".into());
-                    self.ask_provider();
-                    return;
-                };
-                if name == "llmsim" {
-                    // Offline simulator: no token, no model picker.
-                    let _ = self
-                        .run_system_command("setup", Some("provider llmsim"))
-                        .await;
-                    self.push_system("setup complete — using offline demo mode".into());
-                    self.setup = None;
-                    return;
-                }
-                let default_model = crate::runtime::ProviderChoice::default_for_provider_name(name)
-                    .map(|p| p.label())
-                    .unwrap_or_else(|_| name.to_string());
-                self.push_system(format!(
-                    "API key for {} (paste it, or press Enter to use env vars)",
-                    Self::provider_label(name)
-                ));
-                self.setup = Some(SetupStep::EnterToken {
-                    provider: name.to_string(),
-                    default_model,
-                    activate: true,
-                });
-            }
-            SetupStep::PickTokenProvider => {
-                let Some(provider) = Self::parse_provider_choice(input) else {
-                    self.push_system("choose a provider by number or name".into());
-                    self.ask_token_provider();
-                    return;
-                };
-                if provider == "llmsim" {
-                    self.push_system("offline demo mode does not use an API key".into());
-                    self.ask_token_provider();
-                    return;
-                }
-                let default_model = self.model.provider_label();
-                self.push_system(format!(
-                    "API key for {} (paste it, or type clear to remove the saved key)",
-                    Self::provider_label(provider)
-                ));
-                self.setup = Some(SetupStep::EnterToken {
-                    provider: provider.to_string(),
-                    default_model,
-                    activate: false,
-                });
-            }
-            SetupStep::EnterToken {
+            SetupStep::Credential {
                 provider,
                 default_model,
-                activate,
+                selected,
+                ..
             } => {
-                let token = input.trim();
-                if token.eq_ignore_ascii_case("clear") {
-                    let arg = format!("token {provider} clear");
-                    let _ = self.run_system_command("setup", Some(&arg)).await;
-                    self.push_system("setup complete — API key cleared".into());
-                    self.setup = None;
-                    return;
-                } else if !token.is_empty() {
-                    // Don't echo the token; successful internal setup
-                    // commands stay out of the transcript.
-                    let arg = format!("token {provider} {token}");
-                    let _ = self.run_system_command("setup", Some(&arg)).await;
-                } else if activate {
-                    self.push_system(format!(
-                        "no token entered — relying on env vars for {provider}"
-                    ));
-                } else {
-                    self.push_system(format!("setup unchanged — using env vars for {provider}"));
-                }
-                if !activate {
-                    if !token.is_empty() {
-                        self.push_system("setup complete — API key updated".into());
-                    }
-                    self.setup = None;
-                    return;
-                }
-                // Now flip the runtime to the chosen provider. With the
-                // token just saved (or env var present), this picks up the
-                // credential transparently.
-                let arg = format!("provider {provider}");
-                let switched = self.run_system_command("setup", Some(&arg)).await;
-                if !switched {
-                    self.push_system(format!(
-                        "couldn't activate {provider} — paste a token now, or press Enter after setting the provider env var"
-                    ));
-                    self.setup = Some(SetupStep::EnterToken {
-                        provider,
-                        default_model,
-                        activate,
-                    });
-                    return;
-                }
-                self.push_system(format!(
-                    "model for {} (Enter to keep `{default_model}`, or paste a model id)",
-                    Self::provider_label(&provider)
-                ));
-                self.setup = Some(SetupStep::PickModel {
-                    provider,
-                    default_model,
-                });
+                self.handle_credential_key(key, provider, default_model, selected)
+                    .await;
+            }
+            SetupStep::TokenInput {
+                provider,
+                default_model,
+                token,
+                ..
+            } => {
+                self.handle_token_key(key, provider, default_model, token)
+                    .await;
             }
             SetupStep::PickModel {
                 provider,
-                default_model,
+                selected,
+                custom,
+                ..
             } => {
-                let model = input.trim();
-                if !model.is_empty() {
-                    let spec = if model.contains('/') {
-                        model.to_string()
-                    } else {
-                        format!("{provider}/{model}")
-                    };
-                    let arg = format!("model {spec}");
-                    let _ = self.run_system_command("setup", Some(&arg)).await;
-                }
-                self.push_system(format!(
-                    "setup complete — provider {provider}, model {}. run /setup to change it",
-                    if model.is_empty() {
-                        default_model.as_str()
-                    } else {
-                        model
-                    }
-                ));
-                self.setup = None;
+                self.handle_model_key(key, provider, selected, custom).await;
             }
         }
     }
 
-    /// Execute an internal System slash command for the setup wizard. Returns
-    /// whether the capability reported success. Successful mutations stay
-    /// quiet so the user only sees the wizard's prompts and completion lines.
-    async fn run_system_command(&mut self, name: &str, arg: Option<&str>) -> bool {
+    async fn handle_provider_key(&mut self, key: KeyEvent, selected: usize) {
+        match key.code {
+            KeyCode::Esc => {
+                self.setup = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.setup = Some(SetupStep::Provider {
+                    selected: selected.saturating_sub(1),
+                });
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.setup = Some(SetupStep::Provider {
+                    selected: (selected + 1).min(PROVIDER_OPTIONS.len().saturating_sub(1)),
+                });
+            }
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                if let Some(index) = digit_index(ch, PROVIDER_OPTIONS.len()) {
+                    self.confirm_provider(index).await;
+                }
+            }
+            KeyCode::Enter => {
+                self.confirm_provider(selected).await;
+            }
+            _ => {}
+        }
+    }
+
+    async fn confirm_provider(&mut self, selected: usize) {
+        let option = PROVIDER_OPTIONS
+            .get(selected)
+            .unwrap_or(&PROVIDER_OPTIONS[0]);
+        if option.name == "llmsim" {
+            match self.run_setup_command(Some("provider llmsim")).await {
+                Ok(()) => {
+                    self.setup = None;
+                    self.push_system("setup complete: offline demo mode".into());
+                }
+                Err(error) => {
+                    self.setup = Some(SetupStep::Provider { selected });
+                    self.push_system(format!("setup failed: {error}"));
+                }
+            }
+            return;
+        }
+
+        let default_model = crate::runtime::ProviderChoice::default_for_provider_name(option.name)
+            .map(|p| p.label())
+            .unwrap_or_else(|_| option.name.to_string());
+
+        if option.name == "ollama" {
+            match self
+                .run_setup_command(Some(&format!("provider {}", option.name)))
+                .await
+            {
+                Ok(()) => {
+                    self.setup = Some(SetupStep::PickModel {
+                        provider: option.name.to_string(),
+                        selected: 0,
+                        custom: None,
+                        error: None,
+                    });
+                }
+                Err(error) => {
+                    self.setup = Some(SetupStep::Provider { selected });
+                    self.push_system(format!("setup failed: {error}"));
+                }
+            }
+            return;
+        }
+
+        self.setup = Some(SetupStep::Credential {
+            provider: option.name.to_string(),
+            default_model,
+            selected: 0,
+            error: None,
+        });
+    }
+
+    async fn handle_credential_key(
+        &mut self,
+        key: KeyEvent,
+        provider: String,
+        default_model: String,
+        selected: usize,
+    ) {
+        let options = Self::credential_options(&provider);
+        match key.code {
+            KeyCode::Esc => {
+                self.setup = Some(SetupStep::Provider {
+                    selected: PROVIDER_OPTIONS
+                        .iter()
+                        .position(|option| option.name == provider)
+                        .unwrap_or(0),
+                });
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.setup = Some(SetupStep::Credential {
+                    provider,
+                    default_model,
+                    selected: selected.saturating_sub(1),
+                    error: None,
+                });
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.setup = Some(SetupStep::Credential {
+                    provider,
+                    default_model,
+                    selected: (selected + 1).min(options.len().saturating_sub(1)),
+                    error: None,
+                });
+            }
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                if let Some(index) = digit_index(ch, options.len()) {
+                    self.confirm_credential(provider, default_model, index)
+                        .await;
+                }
+            }
+            KeyCode::Enter => {
+                self.confirm_credential(provider, default_model, selected)
+                    .await;
+            }
+            _ => {}
+        }
+    }
+
+    async fn confirm_credential(
+        &mut self,
+        provider: String,
+        default_model: String,
+        selected: usize,
+    ) {
+        let options = Self::credential_options(&provider);
+        let action = options
+            .get(selected)
+            .map(|option| option.id)
+            .unwrap_or(CredentialAction::UseEnv);
+        match action {
+            CredentialAction::UseEnv => match self
+                .run_setup_command(Some(&format!("provider {provider}")))
+                .await
+            {
+                Ok(()) => {
+                    let selected =
+                        model_index_for_label(&default_model, &Self::model_options(&provider));
+                    self.setup = Some(SetupStep::PickModel {
+                        provider,
+                        selected,
+                        custom: None,
+                        error: None,
+                    });
+                }
+                Err(error) => {
+                    self.setup = Some(SetupStep::Credential {
+                        provider,
+                        default_model,
+                        selected,
+                        error: Some(error),
+                    });
+                }
+            },
+            CredentialAction::PasteKey => {
+                self.setup = Some(SetupStep::TokenInput {
+                    provider,
+                    default_model,
+                    token: String::new(),
+                    error: None,
+                });
+            }
+            CredentialAction::Skip => {
+                self.setup = None;
+                self.push_system("setup skipped".into());
+            }
+            CredentialAction::ClearSaved => {
+                let result = self
+                    .run_setup_command(Some(&format!("token {provider} clear")))
+                    .await;
+                match result {
+                    Ok(()) => {
+                        self.setup = None;
+                        self.push_system(format!(
+                            "setup complete: cleared saved key for {provider}"
+                        ));
+                    }
+                    Err(error) => {
+                        self.setup = Some(SetupStep::Credential {
+                            provider,
+                            default_model,
+                            selected,
+                            error: Some(error),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_token_key(
+        &mut self,
+        key: KeyEvent,
+        provider: String,
+        default_model: String,
+        mut token: String,
+    ) {
+        match key.code {
+            KeyCode::Esc => {
+                self.setup = Some(SetupStep::Credential {
+                    provider,
+                    default_model,
+                    selected: 1,
+                    error: None,
+                });
+            }
+            KeyCode::Enter => {
+                let trimmed = token.trim().to_string();
+                if trimmed.is_empty() {
+                    self.setup = Some(SetupStep::TokenInput {
+                        provider,
+                        default_model,
+                        token,
+                        error: Some("paste a key, or press Esc to go back".to_string()),
+                    });
+                    return;
+                }
+                let save_arg = format!("token {provider} {trimmed}");
+                if let Err(error) = self.run_setup_command(Some(&save_arg)).await {
+                    self.setup = Some(SetupStep::TokenInput {
+                        provider,
+                        default_model,
+                        token: String::new(),
+                        error: Some(error),
+                    });
+                    return;
+                }
+                match self
+                    .run_setup_command(Some(&format!("provider {provider}")))
+                    .await
+                {
+                    Ok(()) => {
+                        let selected =
+                            model_index_for_label(&default_model, &Self::model_options(&provider));
+                        self.setup = Some(SetupStep::PickModel {
+                            provider,
+                            selected,
+                            custom: None,
+                            error: None,
+                        });
+                    }
+                    Err(error) => {
+                        self.setup = Some(SetupStep::TokenInput {
+                            provider,
+                            default_model,
+                            token: String::new(),
+                            error: Some(error),
+                        });
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                token.pop();
+                self.setup = Some(SetupStep::TokenInput {
+                    provider,
+                    default_model,
+                    token,
+                    error: None,
+                });
+            }
+            KeyCode::Char(ch) => {
+                token.push(ch);
+                self.setup = Some(SetupStep::TokenInput {
+                    provider,
+                    default_model,
+                    token,
+                    error: None,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_model_key(
+        &mut self,
+        key: KeyEvent,
+        provider: String,
+        selected: usize,
+        custom: Option<String>,
+    ) {
+        let options = Self::model_options(&provider);
+        if let Some(mut value) = custom {
+            match key.code {
+                KeyCode::Esc => {
+                    self.setup = Some(SetupStep::PickModel {
+                        provider,
+                        selected,
+                        custom: None,
+                        error: None,
+                    });
+                }
+                KeyCode::Enter => {
+                    let value = value.trim().to_string();
+                    if value.is_empty() {
+                        self.setup = Some(SetupStep::PickModel {
+                            provider,
+                            selected,
+                            custom: Some(String::new()),
+                            error: Some("paste a model id, or press Esc to go back".to_string()),
+                        });
+                        return;
+                    }
+                    self.save_model_and_finish(&provider, &value, selected)
+                        .await;
+                }
+                KeyCode::Backspace => {
+                    value.pop();
+                    self.setup = Some(SetupStep::PickModel {
+                        provider,
+                        selected,
+                        custom: Some(value),
+                        error: None,
+                    });
+                }
+                KeyCode::Char(ch) => {
+                    value.push(ch);
+                    self.setup = Some(SetupStep::PickModel {
+                        provider,
+                        selected,
+                        custom: Some(value),
+                        error: None,
+                    });
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.setup = Some(SetupStep::Provider {
+                    selected: PROVIDER_OPTIONS
+                        .iter()
+                        .position(|option| option.name == provider)
+                        .unwrap_or(0),
+                });
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.setup = Some(SetupStep::PickModel {
+                    provider,
+                    selected: selected.saturating_sub(1),
+                    custom: None,
+                    error: None,
+                });
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.setup = Some(SetupStep::PickModel {
+                    provider,
+                    selected: (selected + 1).min(options.len().saturating_sub(1)),
+                    custom: None,
+                    error: None,
+                });
+            }
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                if let Some(index) = digit_index(ch, options.len()) {
+                    self.confirm_model(provider, index).await;
+                }
+            }
+            KeyCode::Enter => {
+                self.confirm_model(provider, selected).await;
+            }
+            _ => {}
+        }
+    }
+
+    async fn confirm_model(&mut self, provider: String, selected: usize) {
+        let options = Self::model_options(&provider);
+        let Some(option) = options.get(selected) else {
+            self.setup = Some(SetupStep::PickModel {
+                provider,
+                selected: 0,
+                custom: None,
+                error: None,
+            });
+            return;
+        };
+        if let Some(spec) = &option.spec {
+            self.save_model_and_finish(&provider, spec, selected).await;
+        } else {
+            self.setup = Some(SetupStep::PickModel {
+                provider,
+                selected,
+                custom: Some(String::new()),
+                error: None,
+            });
+        }
+    }
+
+    async fn save_model_and_finish(&mut self, provider: &str, spec: &str, selected: usize) {
+        let model_spec = if spec.contains('/') {
+            spec.to_string()
+        } else {
+            format!("{provider}/{spec}")
+        };
+        match self
+            .run_setup_command(Some(&format!("model {model_spec}")))
+            .await
+        {
+            Ok(()) => {
+                self.setup = None;
+                self.push_system(format!("setup complete: {}", self.model.provider_label()));
+            }
+            Err(error) => {
+                self.setup = Some(SetupStep::PickModel {
+                    provider: provider.to_string(),
+                    selected,
+                    custom: None,
+                    error: Some(error),
+                });
+            }
+        }
+    }
+
+    /// Execute an internal setup command. Successful mutations stay quiet so
+    /// the user only sees the overlay and a single final completion line.
+    async fn run_setup_command(&mut self, arg: Option<&str>) -> Result<(), String> {
         let request = everruns_core::command::ExecuteCommandRequest {
-            name: name.to_string(),
+            name: "setup".to_string(),
             arguments: arg.map(str::to_string),
             controls: None,
         };
@@ -1045,15 +1474,9 @@ impl App {
             .execute_command(self.handles.session_id, request)
             .await
         {
-            Ok(result) if result.success => true,
-            Ok(result) => {
-                self.push_system(format!("error: {}", result.message));
-                false
-            }
-            Err(err) => {
-                self.push_system(format!("/{name} failed: {err}"));
-                false
-            }
+            Ok(result) if result.success => Ok(()),
+            Ok(result) => Err(result.message),
+            Err(err) => Err(err.to_string()),
         }
     }
 
@@ -1791,11 +2214,47 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let input_height = app.input_height();
     let area = f.area();
     let state = app.view_state();
+    let chrome_area = bottom_rect(area, COMPACT_CHROME_HEIGHT);
+    let transcript_area = Rect {
+        height: area.height.saturating_sub(chrome_area.height),
+        ..area
+    };
 
     // Chrome renders the non-input rows; we then layer the input field
     // on top into the chrome-reserved input slot.
-    let input_rect = draw_chrome(f, area, input_height, &state);
+    draw_recent_transcript(f, transcript_area, app);
+    let input_rect = draw_chrome(f, chrome_area, input_height, &state);
     draw_input(f, input_rect, app);
+    draw_setup_overlay(f, area, app);
+}
+
+fn bottom_rect(area: Rect, height: u16) -> Rect {
+    let height = height.min(area.height);
+    Rect {
+        y: area.y + area.height.saturating_sub(height),
+        height,
+        ..area
+    }
+}
+
+fn draw_recent_transcript(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let inner_width = area.width.saturating_sub(2).max(20) as usize;
+    let mut lines = Vec::new();
+    for (index, chat) in app.lines.iter().enumerate() {
+        append_chat_lines(&mut lines, chat, inner_width);
+        if should_insert_chat_gap(
+            &chat.author,
+            app.lines.get(index + 1).map(|line| &line.author),
+        ) {
+            lines.push(Line::from(""));
+        }
+    }
+    let start = lines.len().saturating_sub(area.height as usize);
+    f.render_widget(Paragraph::new(lines[start..].to_vec()), area);
 }
 
 /// Render the non-input chrome (command suggestions / stream preview,
@@ -1833,6 +2292,251 @@ pub(crate) fn draw_chrome(
     draw_session_status(f, chunks[4], state);
 
     chunks[2]
+}
+
+fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    if app.setup.is_none() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let panel = setup_panel_rect(area);
+    if panel.width == 0 || panel.height == 0 {
+        return;
+    }
+    f.render_widget(Clear, panel);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
+    f.render_widget(block, panel);
+    let inner = Rect {
+        x: panel.x.saturating_add(2),
+        y: panel.y.saturating_add(1),
+        width: panel.width.saturating_sub(4),
+        height: panel.height.saturating_sub(2),
+    };
+    let (lines, cursor) = setup_overlay_content(app);
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(PANEL_BG)),
+        inner,
+    );
+    if let Some((row, col)) = cursor
+        && inner.height > 0
+        && inner.width > 0
+    {
+        f.set_cursor_position((
+            inner
+                .x
+                .saturating_add((col as u16).min(inner.width.saturating_sub(1))),
+            inner
+                .y
+                .saturating_add((row as u16).min(inner.height.saturating_sub(1))),
+        ));
+    }
+}
+
+fn setup_panel_rect(area: Rect) -> Rect {
+    let width = area.width.saturating_sub(4).min(104).max(area.width.min(1));
+    let height = area
+        .height
+        .saturating_sub(2)
+        .min(18)
+        .max(area.height.min(1));
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
+    let mut lines = Vec::new();
+    let mut cursor = None;
+    match app.setup.as_ref() {
+        Some(SetupStep::Provider { selected }) => {
+            lines.push(setup_title("Set Up Yolop"));
+            lines.push(setup_hint("Choose provider, credentials, and model."));
+            lines.push(Line::from(""));
+            let current = app.current_provider_name();
+            for (idx, option) in PROVIDER_OPTIONS.iter().enumerate() {
+                let mut hint = option.hint.to_string();
+                if option.name == current {
+                    hint.push_str(" · current");
+                }
+                if let Some(env) = App::detected_env_var(option.name) {
+                    hint.push_str(&format!(" · {env} detected"));
+                }
+                lines.push(setup_row(idx == *selected, idx + 1, option.label, &hint));
+            }
+            lines.push(Line::from(""));
+            lines.push(setup_footer("Enter confirm · ↑/↓ move · Esc cancel"));
+        }
+        Some(SetupStep::Credential {
+            provider,
+            selected,
+            error,
+            ..
+        }) => {
+            lines.push(setup_title(&format!(
+                "API Key for {}",
+                App::provider_label(provider)
+            )));
+            lines.push(setup_hint(
+                "Choose how yolop should authenticate this provider.",
+            ));
+            lines.push(Line::from(""));
+            for (idx, option) in App::credential_options(provider).iter().enumerate() {
+                lines.push(setup_row(
+                    idx == *selected,
+                    idx + 1,
+                    &option.label,
+                    &option.hint,
+                ));
+            }
+            push_setup_error(&mut lines, error.as_deref());
+            lines.push(setup_footer("Enter confirm · ↑/↓ move · Esc back"));
+        }
+        Some(SetupStep::TokenInput {
+            provider,
+            token,
+            error,
+            ..
+        }) => {
+            lines.push(setup_title(&format!(
+                "Paste API Key for {}",
+                App::provider_label(provider)
+            )));
+            lines.push(setup_hint(
+                "The key is masked and is never written to the transcript.",
+            ));
+            lines.push(Line::from(""));
+            let masked = if token.is_empty() {
+                String::new()
+            } else {
+                "•".repeat(token.chars().count())
+            };
+            let input = format!("› {masked}");
+            cursor = Some((3, input.chars().count()));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "› ",
+                    Style::default()
+                        .fg(ACCENT_BLUE)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(masked, Style::default().fg(TEXT_PRIMARY)),
+            ]));
+            push_setup_error(&mut lines, error.as_deref());
+            lines.push(setup_footer("Enter save · Esc back"));
+        }
+        Some(SetupStep::PickModel {
+            provider,
+            selected,
+            custom,
+            error,
+        }) => {
+            lines.push(setup_title("Select Model"));
+            lines.push(setup_hint(&format!(
+                "{} models. Applies to this session and future sessions.",
+                App::provider_label(provider)
+            )));
+            lines.push(Line::from(""));
+            let options = App::model_options(provider);
+            if let Some(value) = custom {
+                let input = format!("› {value}");
+                cursor = Some((3, input.chars().count()));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "› ",
+                        Style::default()
+                            .fg(ACCENT_BLUE)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(value.clone(), Style::default().fg(TEXT_PRIMARY)),
+                ]));
+            } else {
+                for (idx, option) in options.iter().enumerate() {
+                    let current = app.model.provider_label();
+                    let mut hint = option.hint.to_string();
+                    if option.spec.as_deref() == Some(current.as_str()) {
+                        hint.push_str(" · current");
+                    }
+                    lines.push(setup_row(idx == *selected, idx + 1, &option.label, &hint));
+                }
+            }
+            push_setup_error(&mut lines, error.as_deref());
+            lines.push(setup_footer("Enter confirm · ↑/↓ move · Esc back"));
+        }
+        None => {}
+    }
+    (lines, cursor)
+}
+
+fn setup_title(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default()
+            .fg(TEXT_PRIMARY)
+            .bg(PANEL_BG)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn setup_hint(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+    ))
+}
+
+fn setup_footer(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+    ))
+}
+
+fn setup_row(selected: bool, index: usize, label: &str, hint: &str) -> Line<'static> {
+    let marker = if selected { "›" } else { " " };
+    let marker_style = if selected {
+        Style::default()
+            .fg(ACCENT_BLUE)
+            .bg(PANEL_BG)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(TEXT_DIM).bg(PANEL_BG)
+    };
+    let label_style = if selected {
+        Style::default()
+            .fg(Color::Rgb(135, 220, 205))
+            .bg(PANEL_BG)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(TEXT_PRIMARY).bg(PANEL_BG)
+    };
+    Line::from(vec![
+        Span::styled(format!("{marker} "), marker_style),
+        Span::styled(
+            format!("{index}. "),
+            Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+        ),
+        Span::styled(format!("{label:<28}"), label_style),
+        Span::styled(
+            hint.to_string(),
+            Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+        ),
+    ])
+}
+
+fn push_setup_error(lines: &mut Vec<Line<'static>>, error: Option<&str>) {
+    if let Some(error) = error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("error: {error}"),
+            Style::default().fg(Color::Rgb(220, 120, 90)).bg(PANEL_BG),
+        )));
+    } else {
+        lines.push(Line::from(""));
+    }
 }
 
 fn draw_suggestions(f: &mut ratatui::Frame, area: Rect, suggestions: &[CommandSuggestion]) {
@@ -2248,6 +2952,22 @@ fn spans_plain_text(spans: &[Span]) -> String {
     spans.iter().map(|span| span.content.as_ref()).collect()
 }
 
+fn digit_index(ch: char, len: usize) -> Option<usize> {
+    let digit = ch.to_digit(10)? as usize;
+    if digit == 0 || digit > len {
+        None
+    } else {
+        Some(digit - 1)
+    }
+}
+
+fn model_index_for_label(label: &str, options: &[ModelOption]) -> usize {
+    options
+        .iter()
+        .position(|option| option.spec.as_deref() == Some(label))
+        .unwrap_or(0)
+}
+
 fn inset_x(area: Rect, pad: u16) -> Rect {
     let total = pad.saturating_mul(2);
     if area.width <= total {
@@ -2312,7 +3032,7 @@ fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_input_cursor(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    if app.pending.is_some() || app.busy {
+    if app.pending.is_some() || app.busy || app.setup.is_some() {
         return;
     }
 
@@ -3144,6 +3864,31 @@ mod tests {
             .collect()
     }
 
+    fn render_app_lines(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                let mut row = String::with_capacity(buffer.area.width as usize);
+                for x in 0..buffer.area.width {
+                    let cell = &buffer[(x, y)];
+                    row.push_str(cell.symbol());
+                }
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    fn setup_overlay_text(app: &App) -> Vec<String> {
+        setup_overlay_content(app)
+            .0
+            .iter()
+            .map(|line| spans_plain_text(&line.spans))
+            .collect()
+    }
+
     struct TestApp {
         app: App,
         _workspace: tempfile::TempDir,
@@ -3211,6 +3956,7 @@ mod tests {
     async fn app_slash_input_renders_command_suggestions_end_to_end() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
+        app.setup = None;
 
         app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()))
             .await;
@@ -3241,102 +3987,114 @@ mod tests {
 
         app.handle_command("setup").await;
 
-        assert!(matches!(app.setup, Some(SetupStep::ChooseAction)));
-        assert!(
-            app.lines
-                .iter()
-                .any(|line| line.text.starts_with("current setup: "))
-        );
-        assert!(
-            !app.lines
-                .iter()
-                .any(|line| line.text.starts_with("setup: provider=")),
-            "plain /setup should not print backend status before the wizard"
-        );
-        assert!(
-            app.lines
-                .iter()
-                .any(|line| line.text == "1 provider, API key, and model")
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn setup_menu_opens_numbered_provider_picker() {
-        let mut fixture = app_with_llmsim().await;
-        let app = &mut fixture.app;
-        app.lines.clear();
-        app.setup = Some(SetupStep::ChooseAction);
-
-        app.advance_setup("1").await;
-
-        assert!(matches!(app.setup, Some(SetupStep::PickProvider)));
-        assert!(
-            app.lines
-                .iter()
-                .any(|line| line.text == "choose a provider:")
-        );
-        assert!(
-            app.lines
-                .iter()
-                .any(|line| line.text == "1 OpenAI — recommended")
-        );
-        assert!(
-            app.lines
-                .iter()
-                .any(|line| line.text == "6 Offline demo mode — no API key")
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn setup_api_key_only_blank_input_reports_no_change() {
-        let mut fixture = app_with_llmsim().await;
-        let app = &mut fixture.app;
-        app.lines.clear();
-        app.setup = Some(SetupStep::ChooseAction);
-
-        app.advance_setup("2").await;
-        assert!(matches!(app.setup, Some(SetupStep::PickTokenProvider)));
-        app.advance_setup("1").await;
         assert!(matches!(
             app.setup,
-            Some(SetupStep::EnterToken {
+            Some(SetupStep::Provider { selected: 5 })
+        ));
+        assert!(
+            app.lines.is_empty(),
+            "plain /setup should open the overlay without transcript chatter: {:?}",
+            app.lines
+        );
+        let rendered = setup_overlay_text(app);
+        assert!(rendered.iter().any(|line| line.contains("Set Up Yolop")));
+        assert!(rendered.iter().any(|line| line.contains("OpenAI")));
+        assert!(rendered.iter().any(|line| line.contains("Offline demo")));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_overlay_renders_full_provider_picker() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = Some(SetupStep::Provider { selected: 0 });
+
+        let rows = render_app_lines(app, 110, COMPOSER_VIEWPORT_HEIGHT);
+
+        assert!(
+            rows.iter().any(|line| line.contains("Set Up Yolop")),
+            "setup title should be visible: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|line| line.contains("OpenAI")),
+            "provider choices should be visible: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|line| line.contains("Offline demo mode")),
+            "last provider choice should not be clipped: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|line| line.contains("Esc cancel")),
+            "footer should not be clipped: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_provider_picker_enters_credential_panel() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = Some(SetupStep::Provider { selected: 0 });
+
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::Credential {
                 ref provider,
-                activate: false,
+                selected: 0,
                 ..
             }) if provider == "openai"
         ));
-        app.advance_setup("").await;
-
-        assert!(app.setup.is_none());
+        let rendered = setup_overlay_text(app);
         assert!(
-            app.lines
+            rendered
                 .iter()
-                .any(|line| line.text == "setup unchanged — using env vars for openai")
+                .any(|line| line.contains("API Key for OpenAI"))
         );
         assert!(
-            !app.lines
+            rendered
                 .iter()
-                .any(|line| line.text == "setup complete — API key updated")
+                .any(|line| line.contains("Use OPENAI_API_KEY from environment"))
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn setup_api_key_only_update_hides_internal_success_line() {
+    async fn setup_token_input_masks_secret_and_moves_to_model_picker() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.lines.clear();
-        app.setup = Some(SetupStep::ChooseAction);
+        app.setup = Some(SetupStep::TokenInput {
+            provider: "openai".to_string(),
+            default_model: "openai/gpt-5.5 medium".to_string(),
+            token: String::new(),
+            error: None,
+        });
 
-        app.advance_setup("2").await;
-        app.advance_setup("1").await;
-        app.advance_setup("test-token").await;
-
-        assert!(app.setup.is_none());
+        for ch in "test-token".chars() {
+            app.handle_setup_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        let rendered = setup_overlay_text(app);
         assert!(
-            app.lines
-                .iter()
-                .any(|line| line.text == "setup complete — API key updated")
+            !rendered.iter().any(|line| line.contains("test-token")),
+            "raw token should never render: {rendered:?}"
         );
+        assert!(
+            rendered.iter().any(|line| line.contains("••••••••••")),
+            "masked token should render: {rendered:?}"
+        );
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::PickModel {
+                ref provider,
+                ..
+            }) if provider == "openai"
+        ));
         assert!(
             !app.lines
                 .iter()
@@ -3350,16 +4108,17 @@ mod tests {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.lines.clear();
-        app.setup = Some(SetupStep::PickProvider);
+        app.setup = Some(SetupStep::Provider { selected: 5 });
 
-        app.advance_setup("llmsim").await;
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
 
         assert!(app.setup.is_none());
         assert_eq!(app.model.provider_label(), "llmsim/llmsim-yolop");
         assert!(
             app.lines
                 .iter()
-                .any(|line| line.text == "setup complete — using offline demo mode")
+                .any(|line| line.text == "setup complete: offline demo mode")
         );
         assert!(
             !app.lines
@@ -3370,9 +4129,29 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn model_command_opens_model_picker_overlay() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+
+        app.handle_command("model").await;
+
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::PickModel {
+                ref provider,
+                ..
+            }) if provider == "llmsim"
+        ));
+        let rendered = setup_overlay_text(app);
+        assert!(rendered.iter().any(|line| line.contains("Select Model")));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn app_view_state_hides_command_suggestions_when_input_disabled() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
+        app.setup = None;
 
         app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()))
             .await;
