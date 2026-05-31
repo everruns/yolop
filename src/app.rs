@@ -117,7 +117,8 @@ const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
-pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 5;
+pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
+const COMPACT_CHROME_HEIGHT: u16 = 5;
 const ACCENT_BLUE: Color = Color::Rgb(45, 91, 158);
 const ACCENT_GOLD: Color = Color::Rgb(126, 94, 19);
 const TEXT_PRIMARY: Color = Color::Rgb(230, 230, 232);
@@ -2213,12 +2214,47 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let input_height = app.input_height();
     let area = f.area();
     let state = app.view_state();
+    let chrome_area = bottom_rect(area, COMPACT_CHROME_HEIGHT);
+    let transcript_area = Rect {
+        height: area.height.saturating_sub(chrome_area.height),
+        ..area
+    };
 
     // Chrome renders the non-input rows; we then layer the input field
     // on top into the chrome-reserved input slot.
-    let input_rect = draw_chrome(f, area, input_height, &state);
+    draw_recent_transcript(f, transcript_area, app);
+    let input_rect = draw_chrome(f, chrome_area, input_height, &state);
     draw_input(f, input_rect, app);
     draw_setup_overlay(f, area, app);
+}
+
+fn bottom_rect(area: Rect, height: u16) -> Rect {
+    let height = height.min(area.height);
+    Rect {
+        y: area.y + area.height.saturating_sub(height),
+        height,
+        ..area
+    }
+}
+
+fn draw_recent_transcript(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let inner_width = area.width.saturating_sub(2).max(20) as usize;
+    let mut lines = Vec::new();
+    for (index, chat) in app.lines.iter().enumerate() {
+        append_chat_lines(&mut lines, chat, inner_width);
+        if should_insert_chat_gap(
+            &chat.author,
+            app.lines.get(index + 1).map(|line| &line.author),
+        ) {
+            lines.push(Line::from(""));
+        }
+    }
+    let start = lines.len().saturating_sub(area.height as usize);
+    f.render_widget(Paragraph::new(lines[start..].to_vec()), area);
 }
 
 /// Render the non-input chrome (command suggestions / stream preview,
@@ -3828,6 +3864,23 @@ mod tests {
             .collect()
     }
 
+    fn render_app_lines(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                let mut row = String::with_capacity(buffer.area.width as usize);
+                for x in 0..buffer.area.width {
+                    let cell = &buffer[(x, y)];
+                    row.push_str(cell.symbol());
+                }
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
     fn setup_overlay_text(app: &App) -> Vec<String> {
         setup_overlay_content(app)
             .0
@@ -3947,6 +4000,33 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("Set Up Yolop")));
         assert!(rendered.iter().any(|line| line.contains("OpenAI")));
         assert!(rendered.iter().any(|line| line.contains("Offline demo")));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_overlay_renders_full_provider_picker() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = Some(SetupStep::Provider { selected: 0 });
+
+        let rows = render_app_lines(app, 110, COMPOSER_VIEWPORT_HEIGHT);
+
+        assert!(
+            rows.iter().any(|line| line.contains("Set Up Yolop")),
+            "setup title should be visible: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|line| line.contains("OpenAI")),
+            "provider choices should be visible: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|line| line.contains("Offline demo mode")),
+            "last provider choice should not be clipped: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|line| line.contains("Esc cancel")),
+            "footer should not be clipped: {rows:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
