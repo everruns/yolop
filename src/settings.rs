@@ -1,5 +1,5 @@
-// Persistent yolop settings — preferred provider plus optional per-provider
-// API tokens.
+// Persistent yolop settings — preferred provider, optional per-provider
+// API tokens, and small behavior toggles.
 //
 // Stored at `<config_dir>/yolop/settings.toml` (`~/.config/yolop/settings.toml`
 // on Linux). The `/setup` capability writes through `SettingsStore` so user
@@ -19,10 +19,21 @@ use std::sync::Mutex;
 use toml::Table;
 use toml::Value;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Settings {
     pub provider: Option<String>,
     pub tokens: BTreeMap<String, String>,
+    pub attribution: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            tokens: BTreeMap::new(),
+            attribution: true,
+        }
+    }
 }
 
 impl Settings {
@@ -31,6 +42,10 @@ impl Settings {
             .get("provider")
             .and_then(Value::as_str)
             .map(str::to_string);
+        let attribution = table
+            .get("attribution")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         let mut tokens = BTreeMap::new();
         if let Some(t) = table.get("tokens").and_then(Value::as_table) {
             for (k, v) in t {
@@ -39,13 +54,20 @@ impl Settings {
                 }
             }
         }
-        Self { provider, tokens }
+        Self {
+            provider,
+            tokens,
+            attribution,
+        }
     }
 
     pub fn to_table(&self) -> Table {
         let mut table = Table::new();
         if let Some(p) = &self.provider {
             table.insert("provider".to_string(), Value::String(p.clone()));
+        }
+        if !self.attribution {
+            table.insert("attribution".to_string(), Value::Boolean(false));
         }
         if !self.tokens.is_empty() {
             let mut tokens_table = Table::new();
@@ -63,6 +85,10 @@ impl Settings {
 
     pub fn has_token(&self, provider: &str) -> bool {
         self.tokens.contains_key(provider)
+    }
+
+    pub fn attribution_enabled(&self) -> bool {
+        self.attribution
     }
 }
 
@@ -160,6 +186,12 @@ impl SettingsStore {
         save_to(&self.path, &guard)
     }
 
+    pub fn set_attribution(&self, enabled: bool) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.attribution = enabled;
+        save_to(&self.path, &guard)
+    }
+
     pub fn set_token(&self, provider: String, token: String) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         guard.tokens.insert(provider, token);
@@ -197,6 +229,31 @@ mod tests {
 
         let reloaded = SettingsStore::open(path);
         assert_eq!(reloaded.snapshot().provider.as_deref(), Some("anthropic"));
+    }
+
+    #[test]
+    fn attribution_defaults_to_enabled() {
+        let settings = Settings::from_table(&Table::new());
+
+        assert!(settings.attribution_enabled());
+        assert!(!settings.to_table().contains_key("attribution"));
+    }
+
+    #[test]
+    fn attribution_can_be_disabled_via_disk() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store.set_attribution(false).expect("save");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            on_disk.contains("attribution = false"),
+            "expected attribution setting, got: {on_disk}"
+        );
+
+        let reloaded = SettingsStore::open(path);
+        assert!(!reloaded.snapshot().attribution_enabled());
     }
 
     #[test]

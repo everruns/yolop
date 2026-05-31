@@ -20,6 +20,26 @@ use std::sync::{Arc, RwLock};
 // ---------- environment context ----------
 
 pub(crate) const ENVIRONMENT_CONTEXT_CAPABILITY_ID: &str = "code_environment_context";
+pub(crate) const ATTRIBUTION_CAPABILITY_ID: &str = "yolop_attribution";
+pub(crate) const YOLOP_ATTRIBUTION_TRAILER: &str = "Co-Authored-By: yolop <yolop@everruns.com>";
+pub(crate) const YOLOP_PR_ATTRIBUTION: &str = "Generated with yolop";
+
+fn yolop_attribution_prompt() -> String {
+    format!(
+        "\
+## Attribution
+
+When you create or amend commits for changes you made, keep the user's
+git author/committer identity intact and append this git trailer once:
+{YOLOP_ATTRIBUTION_TRAILER}
+
+When creating or editing pull request descriptions with `gh`, add this
+footer once:
+{YOLOP_PR_ATTRIBUTION}
+
+Do not add duplicate attribution or session links."
+    )
+}
 
 pub(crate) struct CodingCliEnvironmentCapability {
     base: EnvironmentContextBase,
@@ -70,6 +90,38 @@ impl Capability for CodingCliEnvironmentCapability {
 </environment_context>"
                 .to_string(),
         )
+    }
+}
+
+pub(crate) struct AttributionCapability {
+    pub(crate) settings: Arc<SettingsStore>,
+}
+
+#[async_trait]
+impl Capability for AttributionCapability {
+    fn id(&self) -> &str {
+        ATTRIBUTION_CAPABILITY_ID
+    }
+    fn name(&self) -> &str {
+        "Yolop Attribution"
+    }
+    fn description(&self) -> &str {
+        "Adds optional commit and pull request attribution guidance."
+    }
+    fn status(&self) -> CapabilityStatus {
+        CapabilityStatus::Available
+    }
+    fn category(&self) -> Option<&str> {
+        Some("Examples")
+    }
+    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
+        self.settings
+            .snapshot()
+            .attribution_enabled()
+            .then(yolop_attribution_prompt)
+    }
+    fn system_prompt_preview(&self) -> Option<String> {
+        Some(yolop_attribution_prompt())
     }
 }
 
@@ -349,8 +401,9 @@ impl Capability for SetupCapability {
             "provider" => self.change_provider(rest).await,
             "model" => self.change_model(rest).await,
             "token" => self.change_token(rest),
+            "attribution" => self.change_attribution(rest),
             _ => Ok(failed_result(
-                "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, model <id|provider/id> [openai-reasoning-effort]".to_string(),
+                "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, model <id|provider/id> [openai-reasoning-effort], attribution <on|off>".to_string(),
             )),
         }
     }
@@ -377,9 +430,10 @@ impl SetupCapability {
         CommandResult {
             success: true,
             message: format!(
-                "setup: provider={} model={} saved={saved} stored tokens={stored_label} env keys present={}",
+                "setup: provider={} model={} saved={saved} attribution={} stored tokens={stored_label} env keys present={}",
                 current.provider_name(),
                 current.label(),
+                on_off(snapshot.attribution_enabled()),
                 env_credential_present()
             ),
             error_code: None,
@@ -537,6 +591,55 @@ impl SetupCapability {
             Err(err) => Ok(failed_result(format!("setup token save failed: {err}"))),
         }
     }
+
+    fn change_attribution(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
+            let enabled = self.settings.snapshot().attribution_enabled();
+            return Ok(CommandResult {
+                success: true,
+                message: format!(
+                    "setup attribution: {} ({})",
+                    on_off(enabled),
+                    self.settings.path().display()
+                ),
+                error_code: None,
+                error_fields: None,
+            });
+        }
+
+        let enabled = match parse_on_off(trimmed) {
+            Some(enabled) => enabled,
+            None => {
+                return Ok(failed_result(
+                    "setup attribution failed: expected on/off".to_string(),
+                ));
+            }
+        };
+        match self.settings.set_attribution(enabled) {
+            Ok(()) => Ok(CommandResult {
+                success: true,
+                message: format!("setup attribution: {}", on_off(enabled)),
+                error_code: None,
+                error_fields: None,
+            }),
+            Err(err) => Ok(failed_result(format!(
+                "setup attribution save failed: {err}"
+            ))),
+        }
+    }
+}
+
+fn parse_on_off(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" | "1" => Some(true),
+        "off" | "false" | "no" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn on_off(enabled: bool) -> &'static str {
+    if enabled { "on" } else { "off" }
 }
 
 fn failed_result(message: String) -> CommandResult {
@@ -615,8 +718,32 @@ mod tests {
         let settings = crate::settings::Settings {
             provider: None,
             tokens,
+            ..Default::default()
         };
         assert!(!SetupCapability::needs_onboarding(&settings));
+    }
+
+    #[tokio::test]
+    async fn attribution_prompt_follows_settings() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let settings = Arc::new(SettingsStore::open(tmp.path().join("settings.toml")));
+        let capability = AttributionCapability {
+            settings: settings.clone(),
+        };
+        let ctx =
+            SystemPromptContext::without_file_store(everruns_core::typed_id::SessionId::new());
+
+        let enabled = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("enabled attribution prompt");
+        assert!(enabled.contains(YOLOP_ATTRIBUTION_TRAILER));
+        assert!(enabled.contains(YOLOP_PR_ATTRIBUTION));
+
+        settings
+            .set_attribution(false)
+            .expect("disable attribution");
+        assert!(capability.system_prompt_contribution(&ctx).await.is_none());
     }
 
     #[test]
