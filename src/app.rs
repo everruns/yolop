@@ -4037,6 +4037,7 @@ mod tests {
     async fn modified_enter_inserts_newline_without_submitting() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
+        app.setup = None;
 
         for key in [
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()),
