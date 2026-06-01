@@ -186,7 +186,7 @@ const PROVIDER_OPTIONS: &[ProviderOption] = &[
     ProviderOption {
         name: "openai",
         label: "OpenAI",
-        hint: "recommended",
+        hint: "GPT models",
     },
     ProviderOption {
         name: "anthropic",
@@ -4114,6 +4114,10 @@ mod tests {
         assert!(
             rows.iter().any(|line| line.contains("OpenAI")),
             "provider choices should be visible: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|line| line.contains("recommended")),
+            "setup should not recommend a specific provider: {rows:?}"
         );
         assert!(
             rows.iter().any(|line| line.contains("Offline demo mode")),
