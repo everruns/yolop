@@ -124,6 +124,9 @@ const ACCENT_GOLD: Color = Color::Rgb(126, 94, 19);
 const TEXT_PRIMARY: Color = Color::Rgb(230, 230, 232);
 const TEXT_MUTED: Color = Color::Rgb(140, 140, 145);
 const TEXT_DIM: Color = Color::Rgb(72, 72, 78);
+const DIFF_ADD: Color = Color::Rgb(132, 166, 142);
+const DIFF_DELETE: Color = Color::Rgb(180, 132, 136);
+const DIFF_META: Color = Color::Rgb(108, 132, 188);
 const CODE_BG: Color = Color::Rgb(18, 18, 20);
 const PANEL_BG: Color = Color::Rgb(28, 28, 34);
 
@@ -2314,7 +2317,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
 
     // Chrome renders the non-input rows; we then layer the input field
     // on top into the chrome-reserved input slot.
-    draw_recent_transcript(f, transcript_area, app);
+    clear_transcript_viewport(f, transcript_area);
     let input_rect = draw_chrome(f, chrome_area, input_height, &state);
     draw_input(f, input_rect, app);
     draw_setup_overlay(f, area, app);
@@ -2329,24 +2332,12 @@ fn bottom_rect(area: Rect, height: u16) -> Rect {
     }
 }
 
-fn draw_recent_transcript(f: &mut ratatui::Frame, area: Rect, app: &App) {
+fn clear_transcript_viewport(f: &mut ratatui::Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let inner_width = area.width.saturating_sub(2).max(20) as usize;
-    let mut lines = Vec::new();
-    for (index, chat) in app.lines.iter().enumerate() {
-        append_chat_lines(&mut lines, chat, inner_width);
-        if should_insert_chat_gap(
-            &chat.author,
-            app.lines.get(index + 1).map(|line| &line.author),
-        ) {
-            lines.push(Line::from(""));
-        }
-    }
-    let start = lines.len().saturating_sub(area.height as usize);
-    f.render_widget(Paragraph::new(lines[start..].to_vec()), area);
+    f.render_widget(Clear, area);
 }
 
 /// Render the non-input chrome (command suggestions / stream preview,
@@ -2768,6 +2759,8 @@ fn append_chat_lines<'a>(lines: &mut Vec<Line<'a>>, chat: &ChatLine, inner_width
         .add_modifier(Modifier::BOLD);
     if matches!(chat.author, Author::Assistant) {
         append_markdown_lines(lines, &header_text, header_style, &chat.text, inner_width);
+    } else if matches!(chat.author, Author::Diff) {
+        append_wrapped_diff(lines, &header_text, header_style, &chat.text, inner_width);
     } else {
         append_wrapped_plain(lines, &header_text, header_style, &chat.text, inner_width);
     }
@@ -2819,6 +2812,68 @@ fn append_wrapped_plain<'a>(
             prefix_style,
         )]));
     }
+}
+
+fn append_wrapped_diff<'a>(
+    lines: &mut Vec<Line<'a>>,
+    first_prefix: &str,
+    prefix_style: Style,
+    text: &str,
+    inner_width: usize,
+) {
+    let continuation = " ".repeat(first_prefix.chars().count());
+    let wrap_width = inner_width
+        .saturating_sub(first_prefix.chars().count())
+        .max(20);
+    let mut emitted = false;
+    for raw in text.lines() {
+        let content_style = diff_line_style(raw);
+        let wrapped = textwrap::wrap(raw, wrap_width);
+        if wrapped.is_empty() {
+            let prefix = if emitted {
+                continuation.as_str()
+            } else {
+                first_prefix
+            };
+            lines.push(Line::from(vec![Span::styled(
+                prefix.to_string(),
+                prefix_style,
+            )]));
+            emitted = true;
+            continue;
+        }
+        for piece in wrapped {
+            let prefix = if emitted {
+                continuation.as_str()
+            } else {
+                first_prefix
+            };
+            lines.push(Line::from(vec![
+                Span::styled(prefix.to_string(), prefix_style),
+                Span::styled(piece.into_owned(), content_style),
+            ]));
+            emitted = true;
+        }
+    }
+    if !emitted {
+        lines.push(Line::from(vec![Span::styled(
+            first_prefix.to_string(),
+            prefix_style,
+        )]));
+    }
+}
+
+fn diff_line_style(line: &str) -> Style {
+    let color = if line.starts_with('+') {
+        DIFF_ADD
+    } else if line.starts_with('-') {
+        DIFF_DELETE
+    } else if line.starts_with("@@") || line.starts_with('\\') {
+        DIFF_META
+    } else {
+        TEXT_PRIMARY
+    };
+    Style::default().fg(color)
 }
 
 fn append_markdown_lines<'a>(
@@ -3898,6 +3953,30 @@ mod tests {
             .collect::<String>()
     }
 
+    fn line_content_color(line: &Line<'_>) -> Option<Color> {
+        line.spans.get(1).and_then(|span| span.style.fg)
+    }
+
+    #[test]
+    fn diff_lines_style_adds_deletes_and_metadata() {
+        let mut lines = Vec::new();
+        append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::Diff,
+                text: "--- /workspace/src/app.rs (before)\n+++ /workspace/src/app.rs (after)\n@@ -1 +1 @@\n-old\n+new\n unchanged".to_string(),
+            },
+            96,
+        );
+
+        assert_eq!(line_content_color(&lines[0]), Some(DIFF_DELETE));
+        assert_eq!(line_content_color(&lines[1]), Some(DIFF_ADD));
+        assert_eq!(line_content_color(&lines[2]), Some(DIFF_META));
+        assert_eq!(line_content_color(&lines[3]), Some(DIFF_DELETE));
+        assert_eq!(line_content_color(&lines[4]), Some(DIFF_ADD));
+        assert_eq!(line_content_color(&lines[5]), Some(TEXT_PRIMARY));
+    }
+
     #[test]
     fn should_not_insert_chat_gap_inside_tool_blocks() {
         assert!(!should_insert_chat_gap(&Author::Tool, Some(&Author::Tool)));
@@ -4044,6 +4123,21 @@ mod tests {
                 .any(|line| line.text.contains("Ctrl-C or Ctrl-D to exit")),
             "startup banner should name Ctrl-C/Ctrl-D exits: {:?}",
             fixture.app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn startup_banner_is_kept_out_of_inline_viewport() {
+        let mut fixture = app_with_llmsim().await;
+        let rows = render_app_lines(&mut fixture.app, 96, COMPOSER_VIEWPORT_HEIGHT);
+
+        assert!(
+            !rows.iter().any(|row| row.contains("workspace:")),
+            "startup transcript should render through scrollback, not the inline viewport: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("type /help")),
+            "startup transcript should not be mirrored above the composer: {rows:?}"
         );
     }
 
