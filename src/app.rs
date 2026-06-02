@@ -30,6 +30,7 @@ use tokio::sync::{mpsc, oneshot};
 pub enum Author {
     User,
     Assistant,
+    Narration,
     Tool,
     ToolDetail,
     Diff,
@@ -41,6 +42,7 @@ impl Author {
         match self {
             Author::User => "you",
             Author::Assistant => "agent",
+            Author::Narration => "note",
             Author::Tool => "tool",
             Author::ToolDetail => "",
             Author::Diff => "diff",
@@ -51,6 +53,7 @@ impl Author {
         match self {
             Author::User => ACCENT_BLUE,
             Author::Assistant => ACCENT_GOLD,
+            Author::Narration => TEXT_MUTED,
             Author::Tool => TEXT_MUTED,
             Author::ToolDetail => TEXT_MUTED,
             Author::Diff => ACCENT_BLUE,
@@ -1782,7 +1785,7 @@ pub fn lines_for_event(event: &RuntimeEvent) -> Vec<ChatLine> {
                     .filter(|text| !text.is_empty())
                 {
                     lines.push(ChatLine {
-                        author: Author::Assistant,
+                        author: Author::Narration,
                         text: text.to_string(),
                     });
                 }
@@ -1797,7 +1800,7 @@ pub fn lines_for_event(event: &RuntimeEvent) -> Vec<ChatLine> {
             .filter_map(|segment| {
                 let trimmed = segment.trim();
                 (!trimmed.is_empty()).then(|| ChatLine {
-                    author: Author::Assistant,
+                    author: Author::Narration,
                     text: trimmed.to_string(),
                 })
             })
@@ -2759,6 +2762,15 @@ fn append_chat_lines<'a>(lines: &mut Vec<Line<'a>>, chat: &ChatLine, inner_width
         .add_modifier(Modifier::BOLD);
     if matches!(chat.author, Author::Assistant) {
         append_markdown_lines(lines, &header_text, header_style, &chat.text, inner_width);
+    } else if matches!(chat.author, Author::Narration) {
+        append_wrapped_styled(
+            lines,
+            &header_text,
+            header_style,
+            &chat.text,
+            inner_width,
+            Style::default().fg(TEXT_MUTED),
+        );
     } else if matches!(chat.author, Author::Diff) {
         append_wrapped_diff(lines, &header_text, header_style, &chat.text, inner_width);
     } else {
@@ -2772,6 +2784,24 @@ fn append_wrapped_plain<'a>(
     prefix_style: Style,
     text: &str,
     inner_width: usize,
+) {
+    append_wrapped_styled(
+        lines,
+        first_prefix,
+        prefix_style,
+        text,
+        inner_width,
+        Style::default(),
+    );
+}
+
+fn append_wrapped_styled<'a>(
+    lines: &mut Vec<Line<'a>>,
+    first_prefix: &str,
+    prefix_style: Style,
+    text: &str,
+    inner_width: usize,
+    content_style: Style,
 ) {
     let continuation = " ".repeat(first_prefix.chars().count());
     let wrap_width = inner_width
@@ -2801,7 +2831,7 @@ fn append_wrapped_plain<'a>(
             };
             lines.push(Line::from(vec![
                 Span::styled(prefix.to_string(), prefix_style),
-                Span::raw(piece.into_owned()),
+                Span::styled(piece.into_owned(), content_style),
             ]));
             emitted = true;
         }
@@ -3542,8 +3572,9 @@ mod tests {
         let lines = lines_for_event(&event);
 
         assert_eq!(lines.len(), 1);
-        assert!(matches!(lines[0].author, Author::Assistant));
+        assert!(matches!(lines[0].author, Author::Narration));
         assert_eq!(lines[0].text, "I'll check the manifests first.");
+        assert_eq!(lines[0].author.label(), "note");
         assert_eq!(
             status_for_event(&event)
                 .map(|status| status.text)
@@ -3577,7 +3608,7 @@ mod tests {
         let lines = lines_for_event(&event);
 
         assert_eq!(lines.len(), 2, "blank summary segments are dropped");
-        assert!(matches!(lines[0].author, Author::Assistant));
+        assert!(matches!(lines[0].author, Author::Narration));
         assert_eq!(lines[0].text, "Considering file layout");
         assert_eq!(lines[1].text, "Plan the read order");
     }
@@ -3975,6 +4006,26 @@ mod tests {
         assert_eq!(line_content_color(&lines[3]), Some(DIFF_DELETE));
         assert_eq!(line_content_color(&lines[4]), Some(DIFF_ADD));
         assert_eq!(line_content_color(&lines[5]), Some(TEXT_PRIMARY));
+    }
+
+    #[test]
+    fn narration_lines_use_note_label_and_muted_text() {
+        let mut lines = Vec::new();
+        append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::Narration,
+                text: "Considering installation steps".to_string(),
+            },
+            96,
+        );
+
+        assert_eq!(
+            line_text(&lines[0]),
+            "note › Considering installation steps"
+        );
+        assert_eq!(lines[0].spans[0].style.fg, Some(TEXT_MUTED));
+        assert_eq!(line_content_color(&lines[0]), Some(TEXT_MUTED));
     }
 
     #[test]
