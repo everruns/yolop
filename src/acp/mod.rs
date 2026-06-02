@@ -415,4 +415,104 @@ mod tests {
         assert_eq!(entries[0]["content"], "step one");
         assert_eq!(entries[0]["status"], "in_progress");
     }
+
+    /// Regression: if the client disconnects while an agent→client request is
+    /// in flight (a forwarded `session/request_permission` that never gets an
+    /// answer), `serve` must still return rather than deadlock on the awaiting
+    /// permission task. Without `fail_all_pending` + the fail-fast send in
+    /// `Peer::request`, this hangs forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disconnect_during_permission_lets_serve_return() {
+        // First turn issues a bash tool call, which is gated and forwarded to
+        // the client as a permission request the client deliberately ignores.
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".to_string(),
+                arguments: json!({ "command": "true" }),
+                id: None,
+            }]),
+            SimTurn::Assistant("after".to_string()),
+        ]);
+
+        let (mut client_w, agent_r) = tokio::io::duplex(64 * 1024);
+        let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
+        let factory = Arc::new(ScriptedFactory { config });
+        let server = tokio::spawn(async move { serve(agent_r, agent_w, factory).await });
+        let mut reader = BufReader::new(client_r).lines();
+
+        async fn send(w: &mut DuplexStream, value: Value) {
+            let line = value.to_string();
+            w.write_all(line.as_bytes()).await.unwrap();
+            w.write_all(b"\n").await.unwrap();
+            w.flush().await.unwrap();
+        }
+        async fn next(reader: &mut Lines<BufReader<DuplexStream>>) -> Value {
+            let line = tokio::time::timeout(Duration::from_secs(15), reader.next_line())
+                .await
+                .expect("timed out")
+                .expect("read line")
+                .expect("stream open");
+            serde_json::from_str(&line).expect("valid json")
+        }
+        async fn await_id(reader: &mut Lines<BufReader<DuplexStream>>, id: i64) -> Value {
+            loop {
+                let msg = next(reader).await;
+                if msg.get("id").and_then(Value::as_i64) == Some(id)
+                    && (msg.get("result").is_some() || msg.get("error").is_some())
+                {
+                    return msg;
+                }
+            }
+        }
+
+        send(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        await_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd.to_str().unwrap() } }),
+        )
+        .await;
+        let session_id = await_id(&mut reader, 1).await["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string();
+
+        // Send a prompt but never read its response: we want to disconnect
+        // mid-turn, while the permission request is outstanding.
+        send(
+            &mut client_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "go" }] },
+            }),
+        )
+        .await;
+
+        // Wait until the agent forwards the permission request, then drop the
+        // client's write half to simulate a disconnect without answering it.
+        loop {
+            let msg = next(&mut reader).await;
+            if msg.get("method").and_then(Value::as_str) == Some("session/request_permission") {
+                break;
+            }
+        }
+        drop(client_w);
+        drop(reader);
+
+        // The server must wind down: the pending permission fails (deny), the
+        // tool errors, the turn finishes, and `serve` returns.
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("serve must return after disconnect, not hang")
+            .expect("serve task joins")
+            .expect("serve returns Ok");
+    }
 }

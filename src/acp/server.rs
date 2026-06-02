@@ -111,17 +111,26 @@ impl Peer {
         self.notify("session/update", params);
     }
 
-    /// Issue an agent→client request and await its response.
+    /// Issue an agent→client request and await its response. Fails fast (rather
+    /// than awaiting forever) if the outbound channel is already closed — the
+    /// writer task has exited, so no response can ever arrive.
     async fn request(&self, method: &str, params: Value) -> std::result::Result<Value, RpcError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
-        self.send_value(json!({
+        let line = json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
             "params": params,
-        }));
+        })
+        .to_string();
+        if self.out.send(line).is_err() {
+            // Connection gone: don't leak the pending entry or block on a
+            // response that will never come.
+            self.pending.lock().unwrap().remove(&id);
+            return Err(RpcError::new(INTERNAL_ERROR, "connection closed"));
+        }
         rx.await
             .unwrap_or_else(|_| Err(RpcError::new(INTERNAL_ERROR, "connection closed")))
     }
@@ -130,6 +139,16 @@ impl Peer {
     fn route_response(&self, id: i64, result: std::result::Result<Value, RpcError>) {
         if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
             let _ = tx.send(result);
+        }
+    }
+
+    /// Fail every in-flight agent→client request. Called once the connection
+    /// ends so awaiting tasks (e.g. a forwarded `session/request_permission`)
+    /// unwind instead of deadlocking and holding the server alive.
+    fn fail_all_pending(&self) {
+        let drained: Vec<_> = self.pending.lock().unwrap().drain().collect();
+        for (_, tx) in drained {
+            let _ = tx.send(Err(RpcError::new(INTERNAL_ERROR, "connection closed")));
         }
     }
 }
@@ -205,23 +224,29 @@ where
     });
 
     let mut lines = BufReader::new(reader).lines();
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let message: Value = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(err) => {
-                tracing::warn!(%err, "acp: dropping unparseable line");
-                continue;
+    let read_result = loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<Value>(&line) {
+                    Ok(message) => dispatch(server.clone(), message),
+                    Err(err) => tracing::warn!(%err, "acp: dropping unparseable line"),
+                }
             }
-        };
-        dispatch(server.clone(), message);
-    }
+            Ok(None) => break Ok(()),
+            Err(err) => break Err(err),
+        }
+    };
 
+    // Connection ended: fail any in-flight agent→client requests so awaiting
+    // tasks (a forwarded permission prompt, a streaming turn) unwind instead of
+    // deadlocking and holding the writer task — and thus `serve` — open.
+    server.peer.fail_all_pending();
     drop(server);
     let _ = writer_task.await;
-    Ok(())
+    read_result.map_err(Into::into)
 }
 
 /// Classify an inbound message and route it. Requests are handled in spawned
