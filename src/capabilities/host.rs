@@ -400,10 +400,11 @@ impl Capability for SetupCapability {
         match action {
             "provider" => self.change_provider(rest).await,
             "model" => self.change_model(rest).await,
+            "effort" => self.change_effort(rest).await,
             "token" => self.change_token(rest),
             "attribution" => self.change_attribution(rest),
             _ => Ok(failed_result(
-                "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, model <id|provider/id> [openai-reasoning-effort], attribution <on|off>".to_string(),
+                "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, model <id|provider/id> [openai-reasoning-effort], effort <openai-reasoning-effort>, attribution <on|off>".to_string(),
             )),
         }
     }
@@ -518,6 +519,39 @@ impl SetupCapability {
         Ok(CommandResult {
             success: true,
             message: format!("setup model changed: {label}"),
+            error_code: None,
+            error_fields: None,
+        })
+    }
+
+    async fn change_effort(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+        let current = self
+            .provider
+            .read()
+            .expect("provider lock poisoned")
+            .clone();
+        if raw.is_empty() {
+            return Ok(CommandResult {
+                success: true,
+                message: format!(
+                    "setup effort: {}; suggestions: {}",
+                    current.label(),
+                    ProviderChoice::reasoning_effort_suggestions().join(", ")
+                ),
+                error_code: None,
+                error_fields: None,
+            });
+        }
+
+        let next = match current.resolve_reasoning_effort(raw) {
+            Ok(next) => next,
+            Err(err) => return Ok(failed_result(format!("setup effort failed: {err}"))),
+        };
+        let label = next.label();
+        *self.provider.write().expect("provider lock poisoned") = next;
+        Ok(CommandResult {
+            success: true,
+            message: format!("setup effort changed: {label}"),
             error_code: None,
             error_fields: None,
         })

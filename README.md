@@ -73,11 +73,12 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) → Google Gemini (`gemini-2.5-flash`)
   - `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` → Ollama (`llama3.2`)
 - **Slash commands** (TUI): `/help`, `/tools`, `/cwd`, `/setup`, `/model`,
-  `/clear`, `/quit`.
+  `/effort`, `/clear`, `/quit`.
 - **Guided setup**: launching yolop with no env vars and no saved
   settings opens a keyboard-driven setup overlay for provider → API key →
-  model. Re-running `/setup` opens the same provider setup flow, and
-  `/model` opens the model picker directly.
+  model. Re-running `/setup` opens the same provider setup flow, `/model`
+  opens the model picker directly, `/model <id>` opens it prefilled, and
+  `/effort [level]` opens the OpenAI reasoning-effort picker.
 - **`--print`** one-shot mode for CI smoke tests.
 - **Session persistence** — durable per-session JSONL event log under the
   platform-native user data directory, with `--session <id>` to resume.
@@ -199,9 +200,9 @@ provider API tokens across runs. It lives at `<config_dir>/yolop/settings.toml`
 `~/Library/Application Support/yolop/settings.toml` on macOS,
 `%APPDATA%\yolop\settings.toml` on Windows.
 
-The TUI's `/setup` and `/model` overlays write through this file and can
-update the active provider, saved API keys, current model, or offline
-demo mode.
+The TUI's `/setup`, `/model`, and `/effort` commands can update the active
+provider, saved API keys, current model, OpenAI reasoning effort, or offline
+demo mode. Saved provider/API-key choices are written to this file.
 
 Provider resolution at startup:
 
@@ -218,7 +219,9 @@ Provider resolution at startup:
 
 At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always
 beats the saved token, so a per-run env override is always possible.
-The setup wizard can also switch models for the current session.
+The setup wizard can also switch models for the current session. OpenAI
+reasoning effort can be changed at runtime with the `/effort` modal or
+`/setup effort <level>` (for example, `high` or `medium`).
 
 Attribution is enabled by default. Run `/setup attribution off` to disable it
 for future turns and future sessions, or `/setup attribution on` to re-enable

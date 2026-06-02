@@ -374,6 +374,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
 
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.5";
 const DEFAULT_OPENAI_REASONING_EFFORT: &str = "medium";
+const OPENAI_REASONING_EFFORT_SUGGESTIONS: &[&str] = &["minimal", "low", "medium", "high"];
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
 // Gemini exposes an OpenAI-compatible surface at this base URL — the
@@ -691,6 +692,31 @@ impl ProviderChoice {
                 }
             }
         }
+    }
+
+    pub(crate) fn resolve_reasoning_effort(&self, raw: &str) -> Result<Self> {
+        let mut parts = raw.split_whitespace();
+        let effort = parts.next().unwrap_or_default();
+        if effort.is_empty() || parts.next().is_some() {
+            return Err(anyhow!(
+                "expected one OpenAI reasoning effort (suggestions: {})",
+                OPENAI_REASONING_EFFORT_SUGGESTIONS.join(", ")
+            ));
+        }
+        match self {
+            Self::OpenAi { model, .. } => Ok(Self::OpenAi {
+                model: model.clone(),
+                reasoning_effort: normalize_openai_reasoning_effort(Some(effort.to_string())),
+            }),
+            other => Err(anyhow!(
+                "reasoning effort only applies to OpenAI models (current provider: {})",
+                other.provider_name()
+            )),
+        }
+    }
+
+    pub(crate) fn reasoning_effort_suggestions() -> &'static [&'static str] {
+        OPENAI_REASONING_EFFORT_SUGGESTIONS
     }
 
     pub(crate) fn model_with_provider(&self, settings: &Settings) -> Result<ModelWithProvider> {
@@ -1323,6 +1349,37 @@ mod tests {
         assert!(store_token.success);
         assert!(settings_for_assert.snapshot().has_token("openai"));
 
+        let model_effort_base = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("model openai/gpt-5.4".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("setup openai model");
+        assert!(model_effort_base.success);
+
+        let effort = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("effort high".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("setup effort");
+        assert!(effort.success);
+        assert_eq!(built.model.provider_label(), "openai/gpt-5.4 high");
+
         let clear_token = built
             .handles
             .runtime
@@ -1570,6 +1627,27 @@ mod tests {
         let next = provider.resolve_model_spec("openai/gpt-5.5 high").unwrap();
 
         assert_eq!(next.label(), "openai/gpt-5.5 high");
+    }
+
+    #[test]
+    fn reasoning_effort_can_update_current_openai_model() {
+        let provider = ProviderChoice::OpenAi {
+            model: "gpt-5.4".to_string(),
+            reasoning_effort: Some("medium".to_string()),
+        };
+        let next = provider.resolve_reasoning_effort("high").unwrap();
+
+        assert_eq!(next.label(), "openai/gpt-5.4 high");
+    }
+
+    #[test]
+    fn reasoning_effort_rejects_non_openai_provider() {
+        let provider = ProviderChoice::Anthropic {
+            model: "claude-sonnet-4-5".to_string(),
+        };
+        let err = provider.resolve_reasoning_effort("high").unwrap_err();
+
+        assert!(err.to_string().contains("only applies to OpenAI"));
     }
 
     #[tokio::test]

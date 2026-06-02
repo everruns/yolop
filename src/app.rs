@@ -105,8 +105,13 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "model",
-        usage: "/model",
-        description: "switch model",
+        usage: "/model [id]",
+        description: "show or switch model",
+    },
+    CommandSpec {
+        name: "effort",
+        usage: "/effort [level]",
+        description: "show or set OpenAI reasoning effort",
     },
     CommandSpec {
         name: "clear",
@@ -180,6 +185,10 @@ enum SetupStep {
         custom: Option<String>,
         error: Option<String>,
     },
+    PickEffort {
+        selected: usize,
+        error: Option<String>,
+    },
 }
 
 struct ProviderOption {
@@ -241,6 +250,35 @@ struct ModelOption {
     label: String,
     hint: &'static str,
 }
+
+struct EffortOption {
+    value: &'static str,
+    label: &'static str,
+    hint: &'static str,
+}
+
+const EFFORT_OPTIONS: &[EffortOption] = &[
+    EffortOption {
+        value: "minimal",
+        label: "Minimal",
+        hint: "least reasoning",
+    },
+    EffortOption {
+        value: "low",
+        label: "Low",
+        hint: "faster responses",
+    },
+    EffortOption {
+        value: "medium",
+        label: "Medium",
+        hint: "balanced default",
+    },
+    EffortOption {
+        value: "high",
+        label: "High",
+        hint: "more reasoning for hard tasks",
+    },
+];
 
 /// Owned snapshot of the App fields the pure-render chrome helpers
 /// (command suggestions, stream preview, separators, session status)
@@ -752,7 +790,14 @@ impl App {
                     self.startup.workspace_root.display()
                 ));
             }
-            "model" => self.start_model_setup(),
+            "model" => {
+                if arg.is_empty() {
+                    self.start_model_setup();
+                } else {
+                    self.start_model_setup_with_arg(arg);
+                }
+            }
+            "effort" => self.start_effort_setup(arg),
             "clear" => {
                 self.lines.clear();
                 self.printed_lines = 0;
@@ -867,6 +912,62 @@ impl App {
             custom: None,
             error: None,
         });
+    }
+
+    fn start_model_setup_with_arg(&mut self, raw: &str) {
+        let spec = raw.trim();
+        if spec.is_empty() {
+            self.start_model_setup();
+            return;
+        }
+        let provider = spec
+            .split('/')
+            .next()
+            .filter(|part| !part.trim().is_empty() && spec.contains('/'))
+            .map(str::to_string)
+            .unwrap_or_else(|| self.current_provider_name());
+        let options = Self::model_options(&provider);
+        let selected = model_index_for_label(spec, &options);
+        let custom = if options
+            .get(selected)
+            .and_then(|option| option.spec.as_deref())
+            == Some(spec)
+        {
+            None
+        } else {
+            Some(spec.to_string())
+        };
+        self.setup = Some(SetupStep::PickModel {
+            provider,
+            selected,
+            custom,
+            error: None,
+        });
+    }
+
+    fn start_effort_setup(&mut self, raw: &str) {
+        let raw = raw.trim();
+        let selected = effort_index(raw).unwrap_or_else(|| self.current_effort_index());
+        self.setup = Some(SetupStep::PickEffort {
+            selected,
+            error: if raw.is_empty() || effort_index(raw).is_some() {
+                None
+            } else {
+                Some(format!("unknown effort: {raw}"))
+            },
+        });
+    }
+
+    fn current_effort_index(&self) -> usize {
+        let label = self.model.provider_label();
+        if !label.starts_with("openai/") {
+            return effort_index("medium").unwrap_or(0);
+        }
+        label
+            .split_whitespace()
+            .nth(1)
+            .and_then(effort_index)
+            .unwrap_or_else(|| effort_index("medium").unwrap_or(0))
     }
 
     fn current_provider_name(&self) -> String {
@@ -1078,6 +1179,9 @@ impl App {
                 ..
             } => {
                 self.handle_model_key(key, provider, selected, custom).await;
+            }
+            SetupStep::PickEffort { selected, .. } => {
+                self.handle_effort_key(key, selected).await;
             }
         }
     }
@@ -1505,23 +1609,83 @@ impl App {
         }
     }
 
-    /// Execute an internal setup command. Successful mutations stay quiet so
-    /// the user only sees the overlay and a single final completion line.
-    async fn run_setup_command(&mut self, arg: Option<&str>) -> Result<(), String> {
+    async fn handle_effort_key(&mut self, key: KeyEvent, selected: usize) {
+        match key.code {
+            KeyCode::Esc => {
+                self.setup = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.setup = Some(SetupStep::PickEffort {
+                    selected: selected.saturating_sub(1),
+                    error: None,
+                });
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.setup = Some(SetupStep::PickEffort {
+                    selected: (selected + 1).min(EFFORT_OPTIONS.len().saturating_sub(1)),
+                    error: None,
+                });
+            }
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                if let Some(index) = digit_index(ch, EFFORT_OPTIONS.len()) {
+                    self.confirm_effort(index).await;
+                }
+            }
+            KeyCode::Enter => {
+                self.confirm_effort(selected).await;
+            }
+            _ => {}
+        }
+    }
+
+    async fn confirm_effort(&mut self, selected: usize) {
+        let Some(option) = EFFORT_OPTIONS.get(selected) else {
+            self.setup = Some(SetupStep::PickEffort {
+                selected: 0,
+                error: None,
+            });
+            return;
+        };
+        match self
+            .run_setup_command(Some(&format!("effort {}", option.value)))
+            .await
+        {
+            Ok(()) => {
+                self.setup = None;
+                self.push_system(format!("setup complete: {}", self.model.provider_label()));
+            }
+            Err(error) => {
+                self.setup = Some(SetupStep::PickEffort {
+                    selected,
+                    error: Some(error),
+                });
+            }
+        }
+    }
+
+    async fn execute_setup_command(
+        &mut self,
+        arg: Option<&str>,
+    ) -> Result<everruns_core::command::CommandResult, String> {
         let request = everruns_core::command::ExecuteCommandRequest {
             name: "setup".to_string(),
             arguments: arg.map(str::to_string),
             controls: None,
         };
-        match self
-            .handles
+        self.handles
             .runtime
             .execute_command(self.handles.session_id, request)
             .await
-        {
+            .map_err(|err| err.to_string())
+    }
+
+    /// Execute an internal setup command. Successful mutations stay quiet so
+    /// the user only sees the overlay and a single final completion line.
+    async fn run_setup_command(&mut self, arg: Option<&str>) -> Result<(), String> {
+        match self.execute_setup_command(arg).await {
             Ok(result) if result.success => Ok(()),
             Ok(result) => Err(result.message),
-            Err(err) => Err(err.to_string()),
+            Err(err) => Err(err),
         }
     }
 
@@ -2554,6 +2718,32 @@ fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize
             push_setup_error(&mut lines, error.as_deref());
             lines.push(setup_footer("Enter confirm · ↑/↓ move · Esc back"));
         }
+        Some(SetupStep::PickEffort { selected, error }) => {
+            lines.push(setup_title("Select Reasoning Effort"));
+            lines.push(setup_hint(
+                "OpenAI reasoning effort. Applies to this session and future sessions.",
+            ));
+            lines.push(Line::from(""));
+            let current = if app.model.provider_label().starts_with("openai/") {
+                app.model
+                    .provider_label()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("medium")
+                    .to_string()
+            } else {
+                String::new()
+            };
+            for (idx, option) in EFFORT_OPTIONS.iter().enumerate() {
+                let mut hint = option.hint.to_string();
+                if option.value == current {
+                    hint.push_str(" · current");
+                }
+                lines.push(setup_row(idx == *selected, idx + 1, option.label, &hint));
+            }
+            push_setup_error(&mut lines, error.as_deref());
+            lines.push(setup_footer("Enter confirm · ↑/↓ move · Esc cancel"));
+        }
         None => {}
     }
     (lines, cursor)
@@ -3145,6 +3335,12 @@ fn model_index_for_label(label: &str, options: &[ModelOption]) -> usize {
         .iter()
         .position(|option| option.spec.as_deref() == Some(label))
         .unwrap_or(0)
+}
+
+fn effort_index(value: &str) -> Option<usize> {
+    EFFORT_OPTIONS
+        .iter()
+        .position(|option| option.value.eq_ignore_ascii_case(value))
 }
 
 fn inset_x(area: Rect, pad: u16) -> Rect {
@@ -4464,6 +4660,81 @@ mod tests {
         ));
         let rendered = setup_overlay_text(app);
         assert!(rendered.iter().any(|line| line.contains("Select Model")));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn model_command_with_arg_opens_prefilled_model_modal() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = None;
+
+        app.handle_command("setup token openai sk-test").await;
+        app.lines.clear();
+        app.handle_command("model openai/gpt-5.4 high").await;
+
+        assert_eq!(app.model.provider_label(), "llmsim/llmsim-yolop");
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::PickModel {
+                ref provider,
+                ref custom,
+                ..
+            }) if provider == "openai" && custom.as_deref() == Some("openai/gpt-5.4 high")
+        ));
+
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert!(app.setup.is_none());
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.4 high");
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == "setup complete: openai/gpt-5.4 high"),
+            "model modal should report completion: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn effort_command_opens_effort_modal_and_confirms_selection() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = None;
+
+        app.handle_command("setup token openai sk-test").await;
+        app.run_setup_command(Some("model openai/gpt-5.4"))
+            .await
+            .expect("set openai model");
+        app.lines.clear();
+        app.handle_command("effort high").await;
+
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.4 medium");
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::PickEffort { selected: 3, .. })
+        ));
+        let rendered = setup_overlay_text(app);
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("Select Reasoning Effort"))
+        );
+
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert!(app.setup.is_none());
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.4 high");
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == "setup complete: openai/gpt-5.4 high"),
+            "effort modal should report completion: {:?}",
+            app.lines
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
