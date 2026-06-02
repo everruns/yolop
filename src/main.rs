@@ -2,6 +2,7 @@
 // Decision: support both interactive TUI and a `--print` one-shot mode so the
 // example is testable in CI and easy to demo against a real codebase.
 
+mod acp;
 mod app;
 mod approval;
 mod capabilities;
@@ -63,6 +64,14 @@ struct Cli {
     /// Run a single prompt non-interactively and print the result. Useful for CI smoke tests.
     #[arg(short = 'p', long)]
     print: Option<String>,
+
+    /// Speak the Agent Client Protocol (ACP) over stdio instead of launching
+    /// the TUI. Editors such as Zed spawn `yolop --acp` and drive it as an
+    /// external agent. Builds one runtime per ACP session (cwd comes from the
+    /// client); the `-C/--cwd`, `--print`, `--ask`, and `--session` flags are
+    /// ignored in this mode. See `specs/acp.md`.
+    #[arg(long, conflicts_with = "print")]
+    acp: bool,
 
     /// Prompt for y/n before every destructive tool call (write/edit/delete/bash).
     /// Off by default — the agent acts autonomously. Ignored in `--print` mode
@@ -215,6 +224,13 @@ async fn main() -> Result<()> {
         Some(p) => p,
         None => session_log::default_sessions_dir()?,
     };
+
+    // ACP mode builds runtimes per session (cwd arrives via `session/new`), so
+    // it bypasses the up-front runtime build, the approval gate, and the TUI.
+    if cli.acp {
+        return acp::run_stdio(provider, settings, sessions_dir).await;
+    }
+
     let runtime = runtime::build(
         cwd,
         provider,
