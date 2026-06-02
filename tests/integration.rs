@@ -487,6 +487,220 @@ fn wait_for_exit(child: &mut dyn Child, timeout: Duration) -> Option<ExitStatus>
     child.try_wait().expect("poll child exit")
 }
 
+/// Result of one scripted ACP handshake against the real binary.
+struct AcpHandshake {
+    init: serde_json::Value,
+    session_id: String,
+    prompt: serde_json::Value,
+    /// All `agent_message_chunk` text streamed during the prompt, concatenated.
+    assistant_text: String,
+    /// True if the process exited cleanly after stdin was closed.
+    exited_cleanly: bool,
+}
+
+/// Spawn `yolop --acp <provider>` over real OS stdin/stdout pipes and drive the
+/// full JSON-RPC handshake: initialize → session/new → session/prompt, closing
+/// stdin to let the agent exit. Returns the responses and streamed text so
+/// callers can assert per-provider behaviour. Exercises the binary's actual
+/// ACP wiring, not just the in-process `serve` tests.
+fn run_acp_handshake(provider: &str, prompt_text: &str) -> AcpHandshake {
+    use std::io::BufRead;
+    use std::process::{Command as StdCommand, Stdio};
+
+    let session_dir = tempfile::tempdir().expect("session tempdir");
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+
+    let mut child = StdCommand::new(yolop_binary())
+        .args([
+            "--acp",
+            "--provider",
+            provider,
+            "--session-dir",
+            session_dir.path().to_str().unwrap(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn yolop --acp");
+
+    let mut stdin = child.stdin.take().expect("acp stdin");
+    let (line_tx, line_rx) = mpsc::channel::<String>();
+    let stdout = child.stdout.take().expect("acp stdout");
+    let reader = thread::spawn(move || {
+        let mut buf = std::io::BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match buf.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if line_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let send = |stdin: &mut std::process::ChildStdin, value: serde_json::Value| {
+        let line = format!("{value}\n");
+        stdin.write_all(line.as_bytes()).expect("write acp request");
+        stdin.flush().expect("flush acp request");
+    };
+
+    // Collect lines until one parses to a JSON object with the given response
+    // id (carrying result or error). `agent_message_chunk` notifications seen
+    // along the way are accumulated into `assistant_text`.
+    let assistant_text = std::cell::RefCell::new(String::new());
+    let await_response = |rx: &Receiver<String>, id: i64| -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(line) => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                        continue;
+                    };
+                    if value["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+                        && let Some(text) = value["params"]["update"]["content"]["text"].as_str()
+                    {
+                        assistant_text.borrow_mut().push_str(text);
+                    }
+                    if value.get("id").and_then(serde_json::Value::as_i64) == Some(id)
+                        && (value.get("result").is_some() || value.get("error").is_some())
+                    {
+                        return value;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        panic!("timed out awaiting acp response id={id}");
+    };
+
+    send(
+        &mut stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientCapabilities": { "fs": { "readTextFile": true, "writeTextFile": true } }
+            }
+        }),
+    );
+    let init = await_response(&line_rx, 0);
+
+    send(
+        &mut stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "session/new",
+            "params": { "cwd": workspace.path().to_str().unwrap(), "mcpServers": [] }
+        }),
+    );
+    let new_session = await_response(&line_rx, 1);
+    let session_id = new_session["result"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("sessionId in response: {new_session}"))
+        .to_string();
+
+    send(
+        &mut stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "session/prompt",
+            "params": {
+                "sessionId": session_id,
+                "prompt": [{ "type": "text", "text": prompt_text }]
+            }
+        }),
+    );
+    let prompt = await_response(&line_rx, 2);
+
+    // Closing stdin makes the agent's read loop hit EOF and exit cleanly.
+    drop(stdin);
+    let status = wait_for_process_exit(&mut child, Duration::from_secs(10));
+    let _ = reader.join();
+
+    AcpHandshake {
+        init,
+        session_id,
+        prompt,
+        assistant_text: assistant_text.into_inner(),
+        exited_cleanly: status.map(|s| s.success()).unwrap_or(false),
+    }
+}
+
+#[test]
+fn acp_stdio_handshake_smoke() {
+    // env_remove on the parent process is unnecessary: --provider llmsim wins,
+    // and the offline driver needs no key.
+    let result = run_acp_handshake("llmsim", "hi");
+    assert_eq!(
+        result.init["result"]["protocolVersion"], 1,
+        "initialize response: {}",
+        result.init
+    );
+    assert!(
+        result.session_id.starts_with("session_"),
+        "unexpected session id: {}",
+        result.session_id
+    );
+    assert_eq!(
+        result.prompt["result"]["stopReason"], "end_turn",
+        "prompt response: {}",
+        result.prompt
+    );
+    assert!(
+        !result.assistant_text.is_empty(),
+        "expected a streamed agent_message_chunk"
+    );
+    assert!(
+        result.exited_cleanly,
+        "yolop --acp should exit cleanly after stdin close"
+    );
+}
+
+#[test]
+#[ignore = "requires OPENAI_API_KEY; run under doppler with --ignored"]
+fn acp_openai_handshake_smoke() {
+    let Ok(_) = std::env::var("OPENAI_API_KEY") else {
+        panic!("OPENAI_API_KEY required for live ACP smoke test");
+    };
+    let result = run_acp_handshake("openai", "Reply with exactly the single word: pong");
+    assert_eq!(
+        result.prompt["result"]["stopReason"], "end_turn",
+        "prompt response: {}",
+        result.prompt
+    );
+    assert!(
+        result.assistant_text.to_lowercase().contains("pong"),
+        "expected `pong` in streamed assistant text, got: {:?}",
+        result.assistant_text
+    );
+    assert!(result.exited_cleanly, "agent should exit cleanly");
+}
+
+fn wait_for_process_exit(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match child.try_wait().expect("poll acp child") {
+            Some(status) => return Some(status),
+            None => thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    let _ = child.kill();
+    child.try_wait().expect("poll acp child after kill")
+}
+
 #[test]
 #[ignore = "requires OPENAI_API_KEY; run under doppler with --ignored"]
 fn openai_print_smoke() {

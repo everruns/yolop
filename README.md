@@ -80,6 +80,10 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   opens the model picker directly, `/model <id>` opens it prefilled, and
   `/effort [level]` opens the OpenAI reasoning-effort picker.
 - **`--print`** one-shot mode for CI smoke tests.
+- **`--acp`** — speak the [Agent Client Protocol](https://agentclientprotocol.com)
+  over stdio so editors such as Zed can drive yolop as an external agent:
+  streaming message/thought chunks, tool calls, plans, and editor-mediated
+  permission prompts. See [`specs/acp.md`](./specs/acp.md).
 - **Session persistence** — durable per-session JSONL event log under the
   platform-native user data directory, with `--session <id>` to resume.
 - **Git attribution** — enabled by default and configurable. When yolop creates
@@ -162,6 +166,35 @@ Local Ollama:
 OLLAMA_BASE_URL=http://localhost:11434/v1 yolop --provider ollama -m llama3.2 -p "hi"
 ```
 
+## Editor integration (ACP)
+
+yolop implements the agent side of the [Agent Client
+Protocol](https://agentclientprotocol.com), so any ACP-compatible editor can
+drive it. Launch it with `--acp` and it speaks newline-delimited JSON-RPC 2.0
+over stdin/stdout (logs still go to stderr). The editor performs the
+`initialize` handshake, opens a session with `session/new`, and sends turns
+with `session/prompt`; yolop streams the turn back as `session/update`
+notifications (assistant text, reasoning, tool calls, plans) and asks the
+editor to approve destructive operations via `session/request_permission`.
+
+In Zed, add a custom agent server to `~/.config/zed/settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "yolop": {
+      "command": "yolop",
+      "args": ["--acp"],
+      "env": { "OPENAI_API_KEY": "sk-..." }
+    }
+  }
+}
+```
+
+Then pick **yolop** in Zed's agent panel. The working directory and per-turn
+prompts come from the editor. See [`specs/acp.md`](./specs/acp.md) for the
+full protocol surface, mappings, and current limitations.
+
 ## Flags
 
 | Flag                       | Description                                                          |
@@ -170,6 +203,7 @@ OLLAMA_BASE_URL=http://localhost:11434/v1 yolop --provider ollama -m llama3.2 -p
 | `--provider <P>`           | Force `anthropic`, `openai`, `google`, `openrouter`, `ollama`, or `llmsim` |
 | `-m, --model <ID>`         | Override the model id for the chosen provider                        |
 | `-p, --print <PROMPT>`     | Run one prompt non-interactively and print the result                |
+| `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
 | `--ask`                    | Prompt before every destructive tool call (off by default)           |
 | `--session <ID>`           | Resume a previous session by id                                      |
 | `--session-dir <PATH>`     | Override the parent directory for session folders                    |
