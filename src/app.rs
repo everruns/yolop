@@ -656,7 +656,7 @@ impl App {
                 }
             }
             _ => {
-                let _ = self.input.input(key);
+                let _ = self.input.input(normalize_printable_key(key));
             }
         }
     }
@@ -1342,8 +1342,10 @@ impl App {
                     error: None,
                 });
             }
-            KeyCode::Char(ch) => {
-                token.push(ch);
+            KeyCode::Char(_) => {
+                if let KeyCode::Char(ch) = normalize_printable_key(key).code {
+                    token.push(ch);
+                }
                 self.setup = Some(SetupStep::TokenInput {
                     provider,
                     default_model,
@@ -1396,8 +1398,10 @@ impl App {
                         error: None,
                     });
                 }
-                KeyCode::Char(ch) => {
-                    value.push(ch);
+                KeyCode::Char(_) => {
+                    if let KeyCode::Char(ch) = normalize_printable_key(key).code {
+                        value.push(ch);
+                    }
                     self.setup = Some(SetupStep::PickModel {
                         provider,
                         selected,
@@ -2038,6 +2042,59 @@ fn new_input_area(lines: Vec<String>) -> TextArea<'static> {
     input.set_cursor_line_style(Style::default());
     input.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
     input
+}
+
+fn normalize_printable_key(mut key: KeyEvent) -> KeyEvent {
+    if !key.modifiers.contains(KeyModifiers::SHIFT)
+        || key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return key;
+    }
+
+    let KeyCode::Char(ch) = key.code else {
+        return key;
+    };
+    let Some(ch) = shifted_char(ch) else {
+        return key;
+    };
+
+    key.code = KeyCode::Char(ch);
+    key.modifiers.remove(KeyModifiers::SHIFT);
+    key
+}
+
+fn shifted_char(ch: char) -> Option<char> {
+    let shifted = match ch {
+        'a'..='z' => ch.to_ascii_uppercase(),
+        'A'..='Z' | ' ' => ch,
+        '`' => '~',
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '-' => '_',
+        '=' => '+',
+        '[' => '{',
+        ']' => '}',
+        '\\' => '|',
+        ';' => ':',
+        '\'' => '"',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
+        '~' | '!' | '@' | '#' | '$' | '%' | '^' | '&' | '*' | '(' | ')' | '_' | '+' | '{' | '}'
+        | '|' | ':' | '"' | '<' | '>' | '?' => ch,
+        _ => return None,
+    };
+    Some(shifted)
 }
 
 // ---------- helpers for surfacing tool results ----------
@@ -4058,6 +4115,23 @@ mod tests {
             "modified Enter should edit the composer, not submit: {:?}",
             app.lines
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shifted_printable_chars_insert_literal_character() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        for key in [
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('1'), KeyModifiers::SHIFT),
+        ] {
+            app.handle_key(key).await;
+        }
+
+        assert_eq!(app.input_text(), "?A!");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
