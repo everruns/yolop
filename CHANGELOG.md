@@ -29,7 +29,6 @@ tags the version and publishes to crates.io and the Homebrew tap.
 ### What's Changed
 
 * feat(acp): add Agent Client Protocol support ([#48](https://github.com/everruns/yolop/pull/48)) by @chaliy
-* feat(tui): add modal model and effort setup ([e685a18](https://github.com/everruns/yolop/commit/e685a18ba736e71a8356fd931ec7b9fcf1e5de98)) by @chaliy
 * fix(tui): label narration transcript lines ([#47](https://github.com/everruns/yolop/pull/47)) by @chaliy
 * fix(tui): polish transcript rendering ([#46](https://github.com/everruns/yolop/pull/46)) by @chaliy
 * fix(tui): support shifted printable input ([#45](https://github.com/everruns/yolop/pull/45)) by @chaliy
@@ -40,6 +39,9 @@ tags the version and publishes to crates.io and the Homebrew tap.
 * fix(tui): support mac multiline shortcut ([#40](https://github.com/everruns/yolop/pull/40)) by @chaliy
 * feat(tui): add setup overlay picker ([#39](https://github.com/everruns/yolop/pull/39)) by @chaliy
 * feat(tui): improve setup onboarding flow ([#38](https://github.com/everruns/yolop/pull/38)) by @chaliy
+
+Additional changes landed via direct commits to `main`: modal model and
+reasoning-effort setup ([e685a18](https://github.com/everruns/yolop/commit/e685a18ba736e71a8356fd931ec7b9fcf1e5de98)).
 
 **Full Changelog**: https://github.com/everruns/yolop/compare/v0.1.0...v0.2.0
 
