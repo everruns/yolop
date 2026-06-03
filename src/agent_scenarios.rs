@@ -58,6 +58,7 @@ async fn build_scripted_runtime(config: LlmSimConfig) -> (BuiltRuntime, std::pat
         settings,
         BuildOptions {
             llmsim_override: Some(llmsim),
+            ..BuildOptions::default()
         },
     )
     .await

@@ -60,6 +60,7 @@ async fn build_llmsim_runtime() -> crate::runtime::BuiltRuntime {
         settings,
         BuildOptions {
             llmsim_override: Some(llmsim),
+            ..BuildOptions::default()
         },
     )
     .await

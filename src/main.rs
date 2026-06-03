@@ -7,6 +7,7 @@ mod app;
 mod approval;
 mod capabilities;
 mod diff;
+mod host_ui;
 mod into;
 mod runtime;
 mod session_log;
@@ -276,13 +277,21 @@ async fn main() -> Result<()> {
         return acp::run_stdio(provider, settings, sessions_dir).await;
     }
 
-    let runtime = runtime::build(
+    // Only the interactive TUI can apply terminal-side commands (overlays,
+    // transcript clear, quit), so only it enables `ClientCommandsCapability`.
+    // `--print` is one-shot and never dispatches them.
+    let interactive = cli.print.is_none();
+    let runtime = runtime::build_with_options(
         cwd,
         provider,
         gate,
         resume_session_id,
         sessions_dir,
         settings,
+        runtime::BuildOptions {
+            client_commands: interactive,
+            ..Default::default()
+        },
     )
     .await?;
 
@@ -457,6 +466,7 @@ async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
         handles,
         startup,
         model,
+        ui_rx: _,
     } = runtime;
     let color = io::stdout().is_terminal();
     println!("{}", paint(color, "90", &format!("› {prompt}")));
