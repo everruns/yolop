@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -313,11 +314,27 @@ fn write_file_atomically(path: &Path, content: &[u8]) -> Result<()> {
     tmp_name.push(format!(".tmp.{}", std::process::id()));
     let tmp_path = parent.join(tmp_name);
 
-    let write_result = std::fs::write(&tmp_path, content)
-        .with_context(|| format!("write temp Zed settings {}", tmp_path.display()));
+    let write_result = (|| -> Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .with_context(|| format!("open temp Zed settings {}", tmp_path.display()))?;
+        file.write_all(content)
+            .with_context(|| format!("write temp Zed settings {}", tmp_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("sync temp Zed settings {}", tmp_path.display()))?;
+        Ok(())
+    })();
     if let Err(err) = write_result {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(err);
+    }
+    #[cfg(windows)]
+    if path.exists() {
+        std::fs::remove_file(path)
+            .with_context(|| format!("remove existing Zed settings {}", path.display()))?;
     }
     std::fs::rename(&tmp_path, path)
         .with_context(|| format!("rename {} -> {}", tmp_path.display(), path.display()))?;
