@@ -125,15 +125,23 @@ real-provider test documents the live path.
 
 ### Real-life testing in an editor
 
-Configure Zed to launch yolop as a custom agent (`~/.config/zed/settings.json`):
+Configure Zed to launch yolop as a custom agent:
+
+```bash
+yolop into zed
+```
+
+This writes the equivalent `agent_servers.yolop` entry to
+`~/.config/zed/settings.json`:
 
 ```json
 {
   "agent_servers": {
     "yolop": {
+      "type": "custom",
       "command": "yolop",
       "args": ["--acp"],
-      "env": { "OPENAI_API_KEY": "sk-..." }
+      "env": {}
     }
   }
 }
