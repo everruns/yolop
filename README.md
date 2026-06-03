@@ -177,15 +177,26 @@ with `session/prompt`; yolop streams the turn back as `session/update`
 notifications (assistant text, reasoning, tool calls, plans) and asks the
 editor to approve destructive operations via `session/request_permission`.
 
-In Zed, add a custom agent server to `~/.config/zed/settings.json`:
+To set up Zed:
+
+```bash
+yolop into zed
+```
+
+That adds a custom ACP agent server to `~/.config/zed/settings.json` using the
+current yolop executable. Re-running the command updates the existing `yolop`
+entry while preserving its `env` and other extra settings.
+
+Manual equivalent:
 
 ```json
 {
   "agent_servers": {
     "yolop": {
+      "type": "custom",
       "command": "yolop",
       "args": ["--acp"],
-      "env": { "OPENAI_API_KEY": "sk-..." }
+      "env": {}
     }
   }
 }
@@ -208,6 +219,12 @@ full protocol surface, mappings, and current limitations.
 | `--session <ID>`           | Resume a previous session by id                                      |
 | `--session-dir <PATH>`     | Override the parent directory for session folders                    |
 | `--reasoning-effort <E>`   | OpenAI reasoning effort (`low` / `medium` / `high`)                  |
+
+## Commands
+
+| Command            | Description                                     |
+| ------------------ | ----------------------------------------------- |
+| `yolop into zed`   | Configure yolop as a custom ACP agent in Zed    |
 
 `RUST_LOG` is honored for the underlying tracing layer (writes to stderr).
 

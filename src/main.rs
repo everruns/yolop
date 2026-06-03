@@ -7,6 +7,7 @@ mod app;
 mod approval;
 mod capabilities;
 mod diff;
+mod into;
 mod runtime;
 mod session_log;
 mod settings;
@@ -23,7 +24,7 @@ mod agent_scenarios;
 use anyhow::Result;
 use app::{App, COMPOSER_VIEWPORT_HEIGHT};
 use approval::ApprovalGate;
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
@@ -45,6 +46,9 @@ use std::sync::Arc;
     about = "Yolop coding agent — embedded terminal agent built on everruns-runtime"
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Workspace root the agent operates inside (default: current dir)
     #[arg(short = 'C', long = "cwd")]
     cwd: Option<PathBuf>,
@@ -92,6 +96,43 @@ struct Cli {
     /// `%APPDATA%\yolop\sessions\` on Windows).
     #[arg(long)]
     session_dir: Option<PathBuf>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Add yolop into supported editors.
+    Into(IntoCommand),
+}
+
+#[derive(Args, Debug)]
+struct IntoCommand {
+    #[command(subcommand)]
+    target: IntoTarget,
+}
+
+#[derive(Subcommand, Debug)]
+enum IntoTarget {
+    /// Configure Zed to launch yolop as a custom ACP agent.
+    Zed(ZedIntoArgs),
+}
+
+#[derive(Args, Debug)]
+struct ZedIntoArgs {
+    /// Zed settings file to update (default: ~/.config/zed/settings.json).
+    #[arg(long = "settings")]
+    settings_path: Option<PathBuf>,
+
+    /// Agent server name to write under `agent_servers`.
+    #[arg(long, default_value = "yolop")]
+    name: String,
+
+    /// Command path Zed should spawn (default: this yolop executable).
+    #[arg(long)]
+    command: Option<PathBuf>,
+
+    /// Replace an existing `agent_servers.<name>` entry instead of preserving its env/extra fields.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
@@ -183,6 +224,10 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    if let Some(command) = cli.command {
+        return run_command(command);
+    }
+
     let cwd = cli
         .cwd
         .clone()
@@ -245,6 +290,50 @@ async fn main() -> Result<()> {
         return run_print_mode(runtime, prompt).await;
     }
     run_tui(runtime, approval_rx).await
+}
+
+fn run_command(command: Commands) -> Result<()> {
+    match command {
+        Commands::Into(into) => match into.target {
+            IntoTarget::Zed(args) => {
+                let command = match args.command {
+                    Some(path) => path,
+                    None => std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop")),
+                };
+                let result = into::into_zed(into::ZedIntoOptions {
+                    settings_path: args.settings_path,
+                    agent_name: args.name,
+                    command,
+                    force: args.force,
+                })?;
+                match result.status {
+                    into::IntoStatus::Unchanged => {
+                        println!(
+                            "yolop: Zed already has `{}` configured at {}",
+                            result.agent_name,
+                            result.settings_path.display()
+                        );
+                    }
+                    into::IntoStatus::Created => {
+                        println!(
+                            "yolop: added `{}` ACP agent to {}",
+                            result.agent_name,
+                            result.settings_path.display()
+                        );
+                    }
+                    into::IntoStatus::Updated => {
+                        println!(
+                            "yolop: updated `{}` ACP agent in {}",
+                            result.agent_name,
+                            result.settings_path.display()
+                        );
+                    }
+                }
+                println!("yolop: Zed command: {} --acp", result.command);
+                Ok(())
+            }
+        },
+    }
 }
 
 async fn run_tui(
