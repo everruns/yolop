@@ -31,7 +31,7 @@ ACP protocol version: **1** (integer).
 | `initialize` | client → agent | Negotiates protocol version and advertises agent capabilities. Echoes the client's version when supported, else advertises v1. |
 | `authenticate` | client → agent | No-op success: credentials come from the environment/settings the process already inherits, so `authMethods` is empty. |
 | `session/new` | client → agent | Builds a fresh runtime rooted at the client-supplied `cwd`; returns the everruns session id as the ACP `sessionId`. |
-| `session/prompt` | client → agent | Runs one turn, streams `session/update`s, and resolves a `stopReason`. |
+| `session/prompt` | client → agent | Runs one turn, or executes a recognised `/command`; streams `session/update`s, and resolves a `stopReason`. |
 | `session/cancel` | client → agent | Notification. Abandons the in-flight turn for that session and resolves the prompt with `stopReason: "cancelled"`. |
 | `session/update` | agent → client | Notification. Streams the turn (see below). |
 | `session/request_permission` | agent → client | Asks the editor to approve a destructive operation (see Permissions). |
@@ -59,6 +59,23 @@ notifications. The mapping is a pure, per-turn state machine
 Tool `kind` is mapped from the tool name (read/search/edit/delete/execute/fetch,
 else `other`). To avoid duplicating streamed text, a completed assistant message
 is only emitted as a chunk when no deltas streamed for it during the turn.
+
+After `session/new`, yolop sends `available_commands_update` with
+capability-sourced slash commands such as `/setup` and user-invocable skill
+commands. ACP clients run commands by sending their literal text in
+`session/prompt` (for example, `/setup status`). System commands execute
+through `runtime.execute_command` and stream a command-shaped `tool_call` /
+`tool_call_update` pair with structured `rawInput`, `rawOutput`, and text
+`content`; skill commands are forwarded as prompt text so the model can activate
+the skill.
+
+ACP v1 command input only standardises an unstructured `input.hint`. yolop also
+adds compatible extension metadata under `_meta["yolop.dev/command"]` so richer
+clients can render command argument suggestions (for example `/setup status`,
+`/setup provider openai`, or `/setup effort high`). Standard clients ignore
+this metadata and still see the command name, description, and hint. After a
+system command runs, yolop re-emits `available_commands_update` so clients can
+refresh any state-sensitive command UI.
 
 ### Stop reasons
 
@@ -117,7 +134,7 @@ Three layers, all offline (no API key):
    an in-memory ACP client: the full `initialize` → `session/new` →
    `session/prompt` handshake, unknown-method and unknown-session errors,
    scripted tool calls (asserting `tool_call`/`tool_call_update` + permission
-   grant), and `write_todos` → `plan`.
+   grant), `write_todos` → `plan`, and command advertisement/execution.
 
 The binary itself is smoke-tested over real OS pipes in
 `tests/integration.rs` (`acp_stdio_handshake_smoke`), and a `#[ignore]`d
@@ -156,7 +173,6 @@ same way.
 - Client-provided filesystem (`fs/read_text_file`, `fs/write_text_file`):
   yolop's runtime reads and writes the host disk directly under the workspace
   root, so it does not route file ops back through the client.
-- Terminals, MCP-server pass-through, audio/image prompt content, and slash
-  commands (`available_commands_update`).
+- Terminals, MCP-server pass-through, and audio/image prompt content.
 - In-flight turn interruption beyond abandoning the task — the runtime has no
   mid-turn cancellation hook yet.

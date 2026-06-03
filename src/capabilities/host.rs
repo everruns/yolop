@@ -9,7 +9,8 @@ use async_trait::async_trait;
 use chrono::Local;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::command::{
-    CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource, ExecuteCommandRequest,
+    CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
+    ExecuteCommandRequest,
 };
 use everruns_core::tools::Tool;
 use everruns_runtime::RuntimeProviderStore;
@@ -373,7 +374,7 @@ impl Capability for SetupCapability {
             name: "setup".to_string(),
             description: "Configure provider, API key, and model.".to_string(),
             source: CommandSource::System,
-            args: vec![],
+            args: vec![setup_command_arg()],
         }]
     }
 
@@ -407,6 +408,45 @@ impl Capability for SetupCapability {
                 "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, model <id|provider/id> [openai-reasoning-effort], effort <openai-reasoning-effort>, attribution <on|off>".to_string(),
             )),
         }
+    }
+}
+
+fn setup_command_arg() -> CommandArg {
+    let mut suggestions = vec![
+        "status".to_string(),
+        "model".to_string(),
+        "attribution on".to_string(),
+        "attribution off".to_string(),
+    ];
+    suggestions.extend(TOKEN_PROVIDERS.iter().flat_map(|provider| {
+        [
+            format!("token {provider} "),
+            format!("token {provider} clear"),
+        ]
+    }));
+    suggestions.extend(
+        SUPPORTED_PROVIDERS
+            .iter()
+            .map(|provider| format!("provider {provider}")),
+    );
+    suggestions.extend(
+        ProviderChoice::model_suggestions()
+            .iter()
+            .copied()
+            .map(|model| format!("model {model}")),
+    );
+    suggestions.extend(
+        ProviderChoice::reasoning_effort_suggestions()
+            .iter()
+            .copied()
+            .map(|effort| format!("effort {effort}")),
+    );
+
+    CommandArg {
+        name: "action".to_string(),
+        description: "status | provider <name> | token <provider> <value|clear> | model <id|provider/id> | effort <level> | attribution <on|off>".to_string(),
+        required: false,
+        suggestions,
     }
 }
 
