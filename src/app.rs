@@ -2797,7 +2797,17 @@ fn setup_row(selected: bool, index: usize, label: &str, hint: &str) -> Line<'sta
             format!("{index}. "),
             Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
         ),
-        Span::styled(format!("{label:<28}"), label_style),
+        // Pad to a 28-col label column so hints align, but always keep at
+        // least a 2-space gap: labels like "Use OPENAI_API_KEY from
+        // environment" overflow the column, and a bare `{:<28}` would let the
+        // hint butt right against them ("environmentnot detected yet").
+        Span::styled(
+            {
+                let pad = 28usize.saturating_sub(label.chars().count()).max(2);
+                format!("{label}{}", " ".repeat(pad))
+            },
+            label_style,
+        ),
         Span::styled(
             hint.to_string(),
             Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
@@ -4572,6 +4582,30 @@ mod tests {
             rendered
                 .iter()
                 .any(|line| line.contains("Use OPENAI_API_KEY from environment"))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_row_keeps_a_gap_when_label_overflows_column() {
+        // "Use OPENAI_API_KEY from environment" overflows the 28-col label
+        // column; the hint must not butt against it ("environmentnot detected").
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = Some(SetupStep::Credential {
+            provider: "openai".to_string(),
+            default_model: "openai/gpt-5.5 medium".to_string(),
+            selected: 0,
+            error: None,
+        });
+
+        let rendered = setup_overlay_text(app);
+        let env_row = rendered
+            .iter()
+            .find(|line| line.contains("from environment"))
+            .expect("credential panel should render the use-env row");
+        assert!(
+            env_row.contains("environment  "),
+            "hint must stay separated from the overflowing label: {env_row:?}"
         );
     }
 
