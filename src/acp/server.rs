@@ -297,10 +297,29 @@ async fn handle_request<F: RuntimeFactory>(server: Arc<Server<F>>, id: Value, me
         .to_string();
     let params = message.get("params").cloned().unwrap_or(Value::Null);
 
+    if method == "session/new" {
+        match handle_new_session(&server, params).await {
+            Ok(result) => {
+                let session_id = result
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                server.peer.respond_ok(id, result);
+                if let Some(session_id) = session_id
+                    && let Some(session) = server.session(&session_id)
+                {
+                    let commands = session.commands.lock().unwrap().clone();
+                    notify_available_commands(&server.peer, &session_id, &commands);
+                }
+            }
+            Err(err) => server.peer.respond_err(id, err.code, &err.message),
+        }
+        return;
+    }
+
     let outcome = match method.as_str() {
         "initialize" => handle_initialize(params),
         "authenticate" => Ok(json!({})),
-        "session/new" => handle_new_session(&server, params).await,
         "session/prompt" => handle_prompt(&server, params).await,
         other => Err(RpcError::new(
             METHOD_NOT_FOUND,
@@ -400,18 +419,6 @@ async fn handle_new_session<F: RuntimeFactory>(
         .unwrap()
         .insert(acp_id.clone(), session);
 
-    server.peer.session_update(
-        &acp_id,
-        SessionUpdate::AvailableCommandsUpdate {
-            available_commands: available_commands(&commands),
-            meta: Some(json!({
-                "yolop.dev/acp": {
-                    "argSuggestions": true
-                }
-            })),
-        },
-    );
-
     // Forward every approval request to the client as a permission prompt for
     // the lifetime of the session.
     let peer = server.peer.clone();
@@ -475,6 +482,20 @@ fn command_input(command: &CommandDescriptor) -> Option<AvailableCommandInput> {
         .collect::<Vec<_>>()
         .join(", ");
     Some(AvailableCommandInput { hint })
+}
+
+fn notify_available_commands(peer: &Arc<Peer>, session_id: &str, commands: &[CommandDescriptor]) {
+    peer.session_update(
+        session_id,
+        SessionUpdate::AvailableCommandsUpdate {
+            available_commands: available_commands(commands),
+            meta: Some(json!({
+                "yolop.dev/acp": {
+                    "argSuggestions": true
+                }
+            })),
+        },
+    );
 }
 
 fn command_meta(command: &CommandDescriptor) -> Option<Value> {
@@ -640,17 +661,7 @@ async fn refresh_available_commands(peer: &Arc<Peer>, session: &Arc<Session>) {
     {
         Ok(commands) => {
             *session.commands.lock().unwrap() = commands.clone();
-            peer.session_update(
-                &session.acp_id,
-                SessionUpdate::AvailableCommandsUpdate {
-                    available_commands: available_commands(&commands),
-                    meta: Some(json!({
-                        "yolop.dev/acp": {
-                            "argSuggestions": true
-                        }
-                    })),
-                },
-            );
+            notify_available_commands(peer, &session.acp_id, &commands);
         }
         Err(err) => tracing::warn!(%err, "acp: command refresh failed"),
     }

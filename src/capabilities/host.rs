@@ -415,19 +415,15 @@ fn setup_command_arg() -> CommandArg {
     let mut suggestions = vec![
         "status".to_string(),
         "model".to_string(),
-        "token openai ".to_string(),
-        "token anthropic ".to_string(),
-        "token google ".to_string(),
-        "token openrouter ".to_string(),
-        "token ollama ".to_string(),
-        "token openai clear".to_string(),
-        "token anthropic clear".to_string(),
-        "token google clear".to_string(),
-        "token openrouter clear".to_string(),
-        "token ollama clear".to_string(),
         "attribution on".to_string(),
         "attribution off".to_string(),
     ];
+    suggestions.extend(TOKEN_PROVIDERS.iter().flat_map(|provider| {
+        [
+            format!("token {provider} "),
+            format!("token {provider} clear"),
+        ]
+    }));
     suggestions.extend(
         SUPPORTED_PROVIDERS
             .iter()

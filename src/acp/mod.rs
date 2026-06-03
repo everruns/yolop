@@ -256,10 +256,13 @@ mod tests {
                     json!({ "cwd": cwd.to_str().unwrap(), "mcpServers": [] }),
                 )
                 .await;
-            response["result"]["sessionId"]
+            let session_id = response["result"]["sessionId"]
                 .as_str()
                 .expect("sessionId in response")
-                .to_string()
+                .to_string();
+            let update = self.next_message().await;
+            self.handle_incoming(update).await;
+            session_id
         }
     }
 
