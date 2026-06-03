@@ -7,9 +7,41 @@ released version, newest first, with a `### Highlights` summary, an optional
 `### Breaking Changes` block (required for MINOR/MAJOR with breakage), and a
 mechanical `### What's Changed` list of merged PRs.
 
-The first tagged release will be cut via [`/release`](./.agents/skills/release/SKILL.md);
-until then, the `Cargo.toml` version sits at `0.1.0` and unreleased changes
-accumulate below.
+Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
+tags the version and publishes to crates.io and the Homebrew tap.
+
+## [0.2.0] - 2026-06-03
+
+### Highlights
+
+- **Agent Client Protocol support.** yolop now speaks ACP, so it can be
+  driven as an agent backend by ACP-compatible editors and clients.
+- **Reworked setup onboarding.** A modal overlay picker walks through
+  provider, model, and reasoning-effort selection, replacing the older
+  flat onboarding flow.
+- **Configurable attribution.** Commit attribution is now configurable
+  instead of hardcoded, and OpenAI is no longer recommended by default
+  during setup.
+- **TUI input and rendering polish.** Mac and shifted multiline composer
+  shortcuts work correctly, and transcript rendering (including narration
+  line labels) is cleaner.
+
+### What's Changed
+
+* feat(acp): add Agent Client Protocol support ([#48](https://github.com/everruns/yolop/pull/48)) by @chaliy
+* feat(tui): add modal model and effort setup ([e685a18](https://github.com/everruns/yolop/commit/e685a18ba736e71a8356fd931ec7b9fcf1e5de98)) by @chaliy
+* fix(tui): label narration transcript lines ([#47](https://github.com/everruns/yolop/pull/47)) by @chaliy
+* fix(tui): polish transcript rendering ([#46](https://github.com/everruns/yolop/pull/46)) by @chaliy
+* fix(tui): support shifted printable input ([#45](https://github.com/everruns/yolop/pull/45)) by @chaliy
+* fix(setup): avoid recommending OpenAI ([#44](https://github.com/everruns/yolop/pull/44)) by @chaliy
+* test(tui): isolate multiline shortcut test ([#43](https://github.com/everruns/yolop/pull/43)) by @chaliy
+* test(tui): isolate multiline composer shortcut ([#42](https://github.com/everruns/yolop/pull/42)) by @chaliy
+* feat(setup): make attribution configurable ([#41](https://github.com/everruns/yolop/pull/41)) by @chaliy
+* fix(tui): support mac multiline shortcut ([#40](https://github.com/everruns/yolop/pull/40)) by @chaliy
+* feat(tui): add setup overlay picker ([#39](https://github.com/everruns/yolop/pull/39)) by @chaliy
+* feat(tui): improve setup onboarding flow ([#38](https://github.com/everruns/yolop/pull/38)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.1.0...v0.2.0
 
 ## [0.1.0] - 2026-05-31
 
