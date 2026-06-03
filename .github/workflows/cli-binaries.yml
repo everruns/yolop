@@ -102,8 +102,6 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
           REPO: ${{ github.repository }}
         run: |
-          VERSION="${TAG#v}"
-
           for f in yolop-aarch64-apple-darwin.tar.gz.sha256 \
                    yolop-x86_64-apple-darwin.tar.gz.sha256 \
                    yolop-x86_64-unknown-linux-gnu.tar.gz.sha256; do
@@ -134,7 +132,10 @@ jobs:
           class Yolop < Formula
             desc "Minimal terminal coding agent built on everruns-runtime"
             homepage "${HOMEPAGE}"
-            version "${VERSION}"
+            # No explicit `version` — Homebrew scans it from the download URL
+            # (the release tag in the path). Setting it again trips
+            # `brew audit` with "version is redundant with version scanned
+            # from URL".
             license "MIT"
 
             on_macos do

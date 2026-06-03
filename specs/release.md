@@ -176,9 +176,10 @@ cargo search yolop --limit 1                       # shows X.Y.Z
 # GitHub Release
 gh release view vX.Y.Z --repo everruns/yolop       # tarballs + checksums present
 
-# Homebrew tap
+# Homebrew tap — the formula has no explicit `version`; Homebrew scans it
+# from the release tag in the download URL, so verify that instead.
 curl -sSfL https://raw.githubusercontent.com/everruns/homebrew-tap/main/Formula/yolop.rb \
-  | grep '^  version "'                            # shows X.Y.Z
+  | grep -oE 'download/v[0-9][^/]*' | sed 's|download/||'   # shows vX.Y.Z
 
 # End-to-end install (optional, on macOS / Linux)
 brew untap everruns/tap 2>/dev/null; brew install everruns/tap/yolop
