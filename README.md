@@ -99,6 +99,21 @@ With Homebrew (macOS arm64/x86_64, Linux x86_64):
 brew install everruns/tap/yolop
 ```
 
+If Homebrew tap trust checks are enabled, trust the Yolop formula once before
+rerunning the install command:
+
+```bash
+brew trust --formula everruns/tap/yolop
+brew install everruns/tap/yolop
+```
+
+To trust every formula, cask, and command from the Everruns tap instead:
+
+```bash
+brew trust --tap everruns/tap
+brew install everruns/tap/yolop
+```
+
 From crates.io:
 
 ```bash
