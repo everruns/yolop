@@ -1009,8 +1009,9 @@ pub struct BuildOptions {
     pub llmsim_override: Option<LlmSimConfig>,
     /// Register [`ClientCommandsCapability`], which contributes the
     /// terminal-side slash commands (help/tools/cwd/model/effort/clear/quit)
-    /// and drives them through the host UI channel. Only the TUI host can
-    /// honor these, so ACP / `--print` / tests leave this `false`.
+    /// and drives them through the host UI channel. Only a host that can apply
+    /// the effects sets this: the interactive TUI (and the `app` unit tests
+    /// that exercise it). ACP and `--print` leave it `false`.
     pub client_commands: bool,
 }
 

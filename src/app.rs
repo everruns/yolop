@@ -468,9 +468,16 @@ impl App {
                 }
             }
 
-            // 2) drain terminal-side commands emitted by capabilities
-            if let Ok(command) = self.ui_rx.try_recv() {
+            // 2) drain terminal-side commands emitted by capabilities. Apply
+            // every queued command before re-rendering so a burst (or a future
+            // capability that emits more than one) doesn't cost a full
+            // flush/draw per command, matching the test dispatch helper.
+            let mut applied_ui_command = false;
+            while let Ok(command) = self.ui_rx.try_recv() {
                 self.apply_ui_command(command);
+                applied_ui_command = true;
+            }
+            if applied_ui_command {
                 continue;
             }
 
