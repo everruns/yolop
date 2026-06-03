@@ -7,10 +7,11 @@
 use crate::approval::ApprovalGate;
 use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability, YourStore};
 use crate::capabilities::{
-    ATTRIBUTION_CAPABILITY_ID, AttributionCapability, CodingBashCapability,
-    CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID,
-    SetupCapability,
+    ATTRIBUTION_CAPABILITY_ID, AttributionCapability, CLIENT_COMMANDS_CAPABILITY_ID,
+    ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
+    ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
 };
+use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
 use anyhow::{Context, Result, anyhow};
@@ -46,6 +47,7 @@ use crate::session_log::{
 };
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use tokio::sync::mpsc;
 
 // The harness prompt is the durable instruction surface — borrowed in shape
 // from `crates/server/src/harnesses/coding_container.rs` and trimmed for
@@ -870,8 +872,16 @@ fn normalize_openai_reasoning_effort(reasoning_effort: Option<String>) -> Option
     )
 }
 
-fn coding_harness_capabilities() -> Vec<AgentCapabilityConfig> {
-    vec![
+fn coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabilityConfig> {
+    let mut caps = Vec::new();
+    // Terminal-side commands lead the registry so the most-typed commands
+    // (/help, /clear, /quit, …) surface first in the palette. Enabled only
+    // when the host registered the capability that backs them (the TUI);
+    // enabling an unregistered id would have nothing to dispatch to.
+    if client_commands {
+        caps.push(AgentCapabilityConfig::new(CLIENT_COMMANDS_CAPABILITY_ID));
+    }
+    caps.extend([
         AgentCapabilityConfig::new(ENVIRONMENT_CONTEXT_CAPABILITY_ID),
         // Pick up CLAUDE.md / .agents.md alongside AGENTS.md, live-reloaded.
         AgentCapabilityConfig::with_config(
@@ -908,7 +918,8 @@ fn coding_harness_capabilities() -> Vec<AgentCapabilityConfig> {
         AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
-    ]
+    ]);
+    caps
 }
 
 // ---------- runtime wiring result ----------
@@ -917,6 +928,11 @@ pub struct BuiltRuntime {
     pub handles: RuntimeHandles,
     pub startup: StartupInfo,
     pub model: ModelState,
+    /// Receiver for terminal-side commands emitted by
+    /// [`ClientCommandsCapability`]. The TUI drains it in its event loop;
+    /// other hosts ignore it. Empty/never-written when
+    /// [`BuildOptions::client_commands`] is `false`.
+    pub ui_rx: mpsc::UnboundedReceiver<UiCommand>,
 }
 
 #[derive(Clone)]
@@ -934,9 +950,11 @@ pub struct StartupInfo {
     pub tool_names: Vec<String>,
     /// Slash commands contributed by registered capabilities (via
     /// `Capability::commands()`). Resolved once at startup against this
-    /// session's harness/agent chain; surfaced in the TUI's command palette
-    /// alongside the CLI's built-in `/help`, `/tools`, `/cwd`, `/clear`,
-    /// `/quit` (which remain CLI-local).
+    /// session's harness/agent chain; this is the single source of truth for
+    /// the command palette, `/help`, and completion. For the TUI host it
+    /// includes the terminal-side commands (`/help`, `/tools`, `/cwd`,
+    /// `/model`, `/effort`, `/clear`, `/quit`) contributed by
+    /// `ClientCommandsCapability`.
     pub capability_commands: Vec<CommandDescriptor>,
     /// On-disk JSONL log for this session. Populated even for fresh ids
     /// so the startup banner can show where new events are being written.
@@ -989,6 +1007,11 @@ impl ModelState {
 #[derive(Default)]
 pub struct BuildOptions {
     pub llmsim_override: Option<LlmSimConfig>,
+    /// Register [`ClientCommandsCapability`], which contributes the
+    /// terminal-side slash commands (help/tools/cwd/model/effort/clear/quit)
+    /// and drives them through the host UI channel. Only the TUI host can
+    /// honor these, so ACP / `--print` / tests leave this `false`.
+    pub client_commands: bool,
 }
 
 pub async fn build(
@@ -1132,6 +1155,15 @@ pub async fn build_with_options(
         workspace: workspace.clone(),
         gate: gate.clone(),
     });
+    // Terminal-side slash commands. Registered only when the host can apply
+    // their effects (the TUI). The capability declares help/tools/cwd/model/
+    // effort/clear/quit and forwards each invocation as a `UiCommand` down
+    // `ui_tx`; the `App` event loop drains `ui_rx` and performs the effect.
+    let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiCommand>();
+    if options.client_commands {
+        let ui: Arc<dyn HostUi> = Arc::new(TuiHandle::new(ui_tx));
+        capabilities.register(ClientCommandsCapability::new(ui));
+    }
 
     let mut driver_registry = DriverRegistry::new();
     everruns_anthropic::register_driver(&mut driver_registry);
@@ -1170,7 +1202,7 @@ pub async fn build_with_options(
     // runtime owns. `session_id(...)` pins the id so resume can re-attach
     // to the same JSONL log (filename encodes the id).
     let session_title = format!("yolop @ {}", canonical_root.display());
-    let harness_capabilities = coding_harness_capabilities();
+    let harness_capabilities = coding_harness_capabilities(options.client_commands);
 
     let mut builder = InProcessRuntimeBuilder::new()
         .platform_definition(platform)
@@ -1230,6 +1262,7 @@ pub async fn build_with_options(
             setup_recommended,
         },
         model: ModelState::new(provider_state),
+        ui_rx,
     })
 }
 
@@ -1814,7 +1847,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_tool_output_persistence() {
-        let ids = coding_harness_capabilities();
+        let ids = coding_harness_capabilities(false);
 
         assert!(
             ids.iter()
@@ -1824,7 +1857,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_loop_detection() {
-        let ids = coding_harness_capabilities();
+        let ids = coding_harness_capabilities(false);
 
         assert!(
             ids.iter()
@@ -1834,11 +1867,29 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_yolop_attribution() {
-        let ids = coding_harness_capabilities();
+        let ids = coding_harness_capabilities(false);
 
         assert!(
             ids.iter()
                 .any(|cap| cap.capability_id() == ATTRIBUTION_CAPABILITY_ID)
+        );
+    }
+
+    #[test]
+    fn coding_harness_gates_client_commands_on_flag() {
+        let without = coding_harness_capabilities(false);
+        assert!(
+            !without
+                .iter()
+                .any(|cap| cap.capability_id() == CLIENT_COMMANDS_CAPABILITY_ID),
+            "client commands must stay off for hosts that can't apply them"
+        );
+
+        let with = coding_harness_capabilities(true);
+        assert!(
+            with.iter()
+                .any(|cap| cap.capability_id() == CLIENT_COMMANDS_CAPABILITY_ID),
+            "the TUI host enables the terminal-side commands"
         );
     }
 

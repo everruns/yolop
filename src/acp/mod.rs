@@ -102,6 +102,7 @@ mod tests {
                 settings,
                 BuildOptions {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
+                    ..BuildOptions::default()
                 },
             )
             .await

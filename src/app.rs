@@ -4,6 +4,7 @@
 // bottom, with approvals handled through the same status delimiter.
 
 use crate::approval::ApprovalRequest;
+use crate::host_ui::UiCommand;
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles, StartupInfo};
 use anyhow::Result;
 use crossterm::event::{
@@ -74,56 +75,11 @@ struct PendingApproval {
     responder: oneshot::Sender<bool>,
 }
 
-#[derive(Clone, Copy)]
-struct CommandSpec {
-    name: &'static str,
-    usage: &'static str,
-    description: &'static str,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CommandSuggestion {
     completion: String,
     label: String,
 }
-
-const COMMANDS: &[CommandSpec] = &[
-    CommandSpec {
-        name: "help",
-        usage: "/help",
-        description: "show commands",
-    },
-    CommandSpec {
-        name: "tools",
-        usage: "/tools",
-        description: "list available tools",
-    },
-    CommandSpec {
-        name: "cwd",
-        usage: "/cwd",
-        description: "show workspace root",
-    },
-    CommandSpec {
-        name: "model",
-        usage: "/model [id]",
-        description: "show or switch model",
-    },
-    CommandSpec {
-        name: "effort",
-        usage: "/effort [level]",
-        description: "show or set OpenAI reasoning effort",
-    },
-    CommandSpec {
-        name: "clear",
-        usage: "/clear",
-        description: "clear transcript",
-    },
-    CommandSpec {
-        name: "quit",
-        usage: "/quit",
-        description: "exit",
-    },
-];
 
 pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
 const COMPACT_CHROME_HEIGHT: u16 = 5;
@@ -160,6 +116,10 @@ pub struct App {
     /// handling so provider, token, and model setup never echo through the
     /// normal chat composer.
     setup: Option<SetupStep>,
+    /// Terminal-side commands emitted by `ClientCommandsCapability` (via
+    /// `runtime.execute_command`). Drained in the event loop; see
+    /// [`App::apply_ui_command`].
+    ui_rx: mpsc::UnboundedReceiver<UiCommand>,
 }
 
 #[derive(Clone, Debug)]
@@ -379,6 +339,7 @@ impl App {
             approval_rx,
             pending: None,
             setup: None,
+            ui_rx: runtime.ui_rx,
         };
         app.emit_system_banner();
         if should_setup {
@@ -507,7 +468,13 @@ impl App {
                 }
             }
 
-            // 2) drain pending approval requests
+            // 2) drain terminal-side commands emitted by capabilities
+            if let Ok(command) = self.ui_rx.try_recv() {
+                self.apply_ui_command(command);
+                continue;
+            }
+
+            // 3) drain pending approval requests
             if self.pending.is_none()
                 && let Ok((req, responder)) = self.approval_rx.try_recv()
             {
@@ -523,7 +490,7 @@ impl App {
                 self.pending = Some(PendingApproval { responder });
             }
 
-            // 3) keystrokes. Mouse wheel/drag stays native terminal behavior
+            // 4) keystrokes. Mouse wheel/drag stays native terminal behavior
             // because the transcript lives in scrollback, not in this viewport.
             let mut poll_timeout = Duration::from_millis(80);
             while event::poll(poll_timeout)? {
@@ -749,76 +716,81 @@ impl App {
         self.start_turn(text);
     }
 
+    /// Dispatch a slash command. Every command — including the terminal-side
+    /// ones (help/tools/cwd/model/effort/clear/quit) — is now a capability
+    /// command, so this is a single uniform lookup against the registry. The
+    /// terminal-side commands take effect via `UiCommand`s their capability
+    /// emits while executing (drained in the event loop); see
+    /// [`App::apply_ui_command`].
     async fn handle_command(&mut self, cmd: &str) {
         let cmd = cmd.trim();
         let mut parts = cmd.splitn(2, char::is_whitespace);
         let head = parts.next().unwrap_or_default();
         let arg = parts.next().unwrap_or_default().trim();
-        match head {
-            "help" => {
-                self.push_system(
-                    COMMANDS
-                        .iter()
-                        .map(|cmd| cmd.usage)
-                        .collect::<Vec<_>>()
-                        .join(" · "),
-                );
-                if !self.startup.capability_commands.is_empty() {
-                    let caps = self
-                        .startup
-                        .capability_commands
-                        .iter()
-                        .map(capability_command_usage)
-                        .collect::<Vec<_>>()
-                        .join(" · ");
-                    self.push_system(format!("commands: {caps}"));
-                }
-                self.push_system(format!(
-                    "input: ←/→ edit · {} newline · scroll: use the terminal scrollback",
-                    newline_shortcut_hint()
-                ));
-                self.push_system(
-                    "approvals: y allow · n / Esc deny · exit: Ctrl-C / Ctrl-D".into(),
-                );
-            }
-            "tools" => {
+        // `/exit` is an accepted alias for the declared `/quit`.
+        let name = if head == "exit" { "quit" } else { head };
+
+        if let Some(descriptor) = self
+            .startup
+            .capability_commands
+            .iter()
+            .find(|c| c.name == name)
+            .cloned()
+        {
+            self.invoke_capability_command(descriptor, arg.to_string())
+                .await;
+        } else {
+            self.push_system(format!("unknown command: /{head}"));
+        }
+    }
+
+    /// Apply a terminal-side command emitted by a capability. This is the only
+    /// place the host interprets the `UiCommand` vocabulary; capabilities
+    /// declare commands and request effects, the host performs them.
+    fn apply_ui_command(&mut self, command: UiCommand) {
+        match command {
+            UiCommand::ShowHelp => self.show_help(),
+            UiCommand::ShowTools => {
                 self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
             }
-            "cwd" => {
+            UiCommand::ShowCwd => {
                 self.push_system(format!(
                     "workspace root: {}",
                     self.startup.workspace_root.display()
                 ));
             }
-            "model" => {
-                if arg.is_empty() {
-                    self.start_model_setup();
-                } else {
-                    self.start_model_setup_with_arg(arg);
-                }
-            }
-            "effort" => self.start_effort_setup(arg),
-            "clear" => {
+            UiCommand::ClearTranscript => {
                 self.lines.clear();
                 self.printed_lines = 0;
                 self.emit_system_banner();
             }
-            "quit" | "exit" => self.should_quit = true,
-            other => {
-                if let Some(descriptor) = self
-                    .startup
-                    .capability_commands
-                    .iter()
-                    .find(|c| c.name == other)
-                    .cloned()
-                {
-                    self.invoke_capability_command(descriptor, arg.to_string())
-                        .await;
-                } else {
-                    self.push_system(format!("unknown command: /{other}"));
-                }
+            UiCommand::Quit => self.should_quit = true,
+            UiCommand::OpenModelOverlay { arg } => match arg {
+                Some(arg) => self.start_model_setup_with_arg(&arg),
+                None => self.start_model_setup(),
+            },
+            UiCommand::OpenEffortOverlay { arg } => {
+                self.start_effort_setup(arg.as_deref().unwrap_or(""))
             }
         }
+    }
+
+    fn show_help(&mut self) {
+        if !self.startup.capability_commands.is_empty() {
+            let caps = self
+                .startup
+                .capability_commands
+                .iter()
+                .map(capability_command_usage)
+                .collect::<Vec<_>>()
+                .join(" · ");
+            self.push_system(format!("commands: {caps}"));
+        }
+        self.push_system(format!(
+            "input: ←/→ edit · {} newline · scroll: use the terminal scrollback",
+            newline_shortcut_hint()
+        ));
+        self.push_system("approvals: y allow · n / Esc deny · exit: Ctrl-C / Ctrl-D".into());
     }
 
     /// Dispatch a capability-provided slash command.
@@ -872,8 +844,13 @@ impl App {
                     .await;
                 match result {
                     Ok(result) => {
-                        let prefix = if result.success { "" } else { "error: " };
-                        self.push_system(format!("{prefix}{}", result.message));
+                        // Client-executed commands (help/clear/model/…) apply
+                        // their effect via a `UiCommand` and return an empty
+                        // message; don't render a blank line for those.
+                        if !result.message.is_empty() {
+                            let prefix = if result.success { "" } else { "error: " };
+                            self.push_system(format!("{prefix}{}", result.message));
+                        }
                     }
                     Err(err) => self.push_system(format!("/{} failed: {err}", descriptor.name)),
                 }
@@ -2143,28 +2120,12 @@ fn command_suggestions(
             .collect();
     }
 
-    let mut out: Vec<CommandSuggestion> = COMMANDS
-        .iter()
-        .filter(|cmd| cmd.name.starts_with(rest))
-        .map(|cmd| CommandSuggestion {
-            completion: cmd
-                .usage
-                .split_whitespace()
-                .next()
-                .unwrap_or(cmd.usage)
-                .to_string(),
-            label: format!("{}    {}", cmd.usage, cmd.description),
-        })
-        .collect();
-
-    // Capability-provided commands. Names that collide with a built-in CLI
-    // command are skipped (built-in wins) so the local handler keeps running.
-    let builtin_names: std::collections::HashSet<&str> = COMMANDS.iter().map(|c| c.name).collect();
+    // Every command is capability-provided now (the TUI's terminal-side
+    // commands come from `ClientCommandsCapability`), so there is a single
+    // source of truth to filter and present.
+    let mut out: Vec<CommandSuggestion> = Vec::new();
     for descriptor in capability_commands {
         if !descriptor.name.starts_with(rest) {
-            continue;
-        }
-        if builtin_names.contains(descriptor.name.as_str()) {
             continue;
         }
         let usage = capability_command_usage(descriptor);
@@ -3561,6 +3522,30 @@ mod tests {
         }
     }
 
+    /// The terminal-side command descriptors as declared by
+    /// `ClientCommandsCapability` (help/tools/cwd/model/effort/clear/quit).
+    /// These now flow through the same registry as every other command, so
+    /// suggestion tests source them the same way the running TUI does.
+    fn client_command_descriptors() -> Vec<CommandDescriptor> {
+        use everruns_core::capabilities::Capability;
+        struct NoopUi;
+        impl crate::host_ui::HostUi for NoopUi {
+            fn send(&self, _: crate::host_ui::UiCommand) {}
+        }
+        crate::capabilities::client_commands::ClientCommandsCapability::new(std::sync::Arc::new(
+            NoopUi,
+        ))
+        .commands()
+    }
+
+    /// Client commands plus a representative capability command, in the order
+    /// the TUI would see them at startup.
+    fn caps_with_client_commands(extra: Vec<CommandDescriptor>) -> Vec<CommandDescriptor> {
+        let mut caps = client_command_descriptors();
+        caps.extend(extra);
+        caps
+    }
+
     fn command_with_arg_suggestions() -> CommandDescriptor {
         CommandDescriptor {
             name: "pick".to_string(),
@@ -3581,7 +3566,7 @@ mod tests {
 
     #[test]
     fn command_suggestions_list_commands_for_slash() {
-        let caps = vec![setup_capability_command()];
+        let caps = caps_with_client_commands(vec![setup_capability_command()]);
         let suggestions = command_suggestions("/", &caps);
 
         assert!(suggestions.iter().any(|s| s.completion == "/help"));
@@ -3605,7 +3590,7 @@ mod tests {
 
     #[test]
     fn suggestion_preview_line_keeps_first_match_when_truncated() {
-        let caps = vec![setup_capability_command()];
+        let caps = caps_with_client_commands(vec![setup_capability_command()]);
         let suggestions = command_suggestions("/", &caps);
         let rendered = line_text(&suggestion_preview_line(&suggestions, 18));
 
@@ -3675,13 +3660,14 @@ mod tests {
     }
 
     #[test]
-    fn builtin_commands_win_over_capability_with_same_name() {
-        // A capability that accidentally declares /help must not shadow the
-        // built-in handler: the built-in suggestion (no trailing space, no
-        // args) should be the only one returned for that name.
+    fn suggestions_come_solely_from_the_command_registry() {
+        // There are no hard-coded built-ins anymore: every command — including
+        // /help — is a capability command (the TUI's come from
+        // `ClientCommandsCapability`). So suggestions reflect exactly the
+        // descriptor list, one entry per declared command.
         let caps = vec![CommandDescriptor {
             name: "help".to_string(),
-            description: "shadow help".to_string(),
+            description: "show commands".to_string(),
             source: CommandSource::System,
             args: vec![],
         }];
@@ -4356,7 +4342,10 @@ mod tests {
             None,
             sessions.path().to_path_buf(),
             settings,
-            crate::runtime::BuildOptions::default(),
+            crate::runtime::BuildOptions {
+                client_commands: true,
+                ..crate::runtime::BuildOptions::default()
+            },
         )
         .await
         .expect("build llmsim runtime");
@@ -4365,6 +4354,20 @@ mod tests {
             app: App::new(runtime, rx),
             _workspace: workspace,
             _sessions: sessions,
+        }
+    }
+
+    impl App {
+        /// Test-only: dispatch a slash command and pump any `UiCommand`s it
+        /// emits, mirroring what the event loop does between frames. Needed
+        /// because terminal-side commands now take effect asynchronously via
+        /// the host UI channel rather than synchronously inside
+        /// `handle_command`.
+        async fn dispatch_command_for_test(&mut self, cmd: &str) {
+            self.handle_command(cmd).await;
+            while let Ok(command) = self.ui_rx.try_recv() {
+                self.apply_ui_command(command);
+            }
         }
     }
 
@@ -4404,7 +4407,7 @@ mod tests {
         let app = &mut fixture.app;
         app.lines.clear();
 
-        app.handle_command("help").await;
+        app.dispatch_command_for_test("help").await;
 
         assert!(
             app.lines
@@ -4683,7 +4686,7 @@ mod tests {
         let app = &mut fixture.app;
         app.lines.clear();
 
-        app.handle_command("model").await;
+        app.dispatch_command_for_test("model").await;
 
         assert!(matches!(
             app.setup,
@@ -4705,7 +4708,8 @@ mod tests {
 
         app.handle_command("setup token openai sk-test").await;
         app.lines.clear();
-        app.handle_command("model openai/gpt-5.4 high").await;
+        app.dispatch_command_for_test("model openai/gpt-5.4 high")
+            .await;
 
         assert_eq!(app.model.provider_label(), "llmsim/llmsim-yolop");
         assert!(matches!(
@@ -4743,7 +4747,7 @@ mod tests {
             .await
             .expect("set openai model");
         app.lines.clear();
-        app.handle_command("effort high").await;
+        app.dispatch_command_for_test("effort high").await;
 
         assert_eq!(app.model.provider_label(), "openai/gpt-5.4 medium");
         assert!(matches!(
