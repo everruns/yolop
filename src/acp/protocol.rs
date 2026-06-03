@@ -47,6 +47,8 @@ pub struct InitializeResult {
 pub struct AgentCapabilities {
     pub load_session: bool,
     pub prompt_capabilities: PromptCapabilities,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -166,6 +168,12 @@ pub enum SessionUpdate {
     Plan {
         entries: Vec<PlanEntry>,
     },
+    AvailableCommandsUpdate {
+        #[serde(rename = "availableCommands")]
+        available_commands: Vec<AvailableCommand>,
+        #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+        meta: Option<Value>,
+    },
 }
 
 /// A content block. yolop only ever emits text blocks; the spec also defines
@@ -260,6 +268,25 @@ pub enum PlanStatus {
     Completed,
 }
 
+// ---------- available_commands_update ----------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableCommand {
+    pub name: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<AvailableCommandInput>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableCommandInput {
+    pub hint: String,
+}
+
 // ---------- session/request_permission ----------
 
 #[derive(Debug, Clone, Serialize)]
@@ -340,6 +367,7 @@ mod tests {
                     audio: false,
                     embedded_context: true,
                 },
+                meta: None,
             },
             auth_methods: vec![],
         };
@@ -426,6 +454,42 @@ mod tests {
         let v = serde_json::to_value(&entry).unwrap();
         assert_eq!(v["priority"], "medium");
         assert_eq!(v["status"], "in_progress");
+    }
+
+    #[test]
+    fn available_commands_update_serializes_command_list() {
+        let update = SessionUpdate::AvailableCommandsUpdate {
+            available_commands: vec![AvailableCommand {
+                name: "setup".into(),
+                description: "Configure provider.".into(),
+                input: Some(AvailableCommandInput {
+                    hint: "provider, token, model".into(),
+                }),
+                meta: Some(json!({
+                    "yolop.dev/command": {
+                        "args": [
+                            {
+                                "name": "action",
+                                "suggestions": ["status", "provider openai"]
+                            }
+                        ]
+                    }
+                })),
+            }],
+            meta: Some(json!({ "yolop.dev/acp": { "argSuggestions": true } })),
+        };
+        let v = serde_json::to_value(&update).unwrap();
+        assert_eq!(v["sessionUpdate"], "available_commands_update");
+        assert_eq!(v["availableCommands"][0]["name"], "setup");
+        assert_eq!(
+            v["availableCommands"][0]["input"]["hint"],
+            "provider, token, model"
+        );
+        assert_eq!(
+            v["availableCommands"][0]["_meta"]["yolop.dev/command"]["args"][0]["suggestions"][0],
+            "status"
+        );
+        assert_eq!(v["_meta"]["yolop.dev/acp"]["argSuggestions"], true);
     }
 
     #[test]

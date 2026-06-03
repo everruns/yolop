@@ -307,6 +307,88 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn new_session_advertises_available_commands() {
+        let mut client = TestClient::spawn(fixed("hi"), true);
+        client.initialize().await;
+        client.new_session().await;
+
+        let command_updates = client.updates_of_kind("available_commands_update");
+        assert!(
+            !command_updates.is_empty(),
+            "expected available_commands_update, got: {:?}",
+            client.notifications
+        );
+        let commands = command_updates[0]["update"]["availableCommands"]
+            .as_array()
+            .expect("availableCommands array");
+        assert!(
+            commands.iter().any(|c| c["name"] == "setup"),
+            "expected /setup to be advertised, got: {commands:?}"
+        );
+        let setup = commands
+            .iter()
+            .find(|c| c["name"] == "setup")
+            .expect("setup command");
+        let suggestions = setup["_meta"]["yolop.dev/command"]["args"][0]["suggestions"]
+            .as_array()
+            .expect("setup suggestions");
+        assert!(
+            suggestions.iter().any(|s| s == "status")
+                && suggestions.iter().any(|s| s == "provider openai"),
+            "expected setup choices in command metadata, got: {setup:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slash_system_command_executes_without_model_turn() {
+        let mut client = TestClient::spawn(fixed("model should not run"), true);
+        client.initialize().await;
+        let session_id = client.new_session().await;
+
+        let response = client
+            .request(
+                "session/prompt",
+                json!({
+                    "sessionId": session_id,
+                    "prompt": [{ "type": "text", "text": "/setup status" }],
+                }),
+            )
+            .await;
+
+        assert_eq!(response["result"]["stopReason"], "end_turn");
+        let tool_calls = client.updates_of_kind("tool_call");
+        assert!(
+            tool_calls
+                .iter()
+                .any(|u| u["update"]["title"] == "/setup status"
+                    && u["update"]["rawInput"]["command"] == "setup"),
+            "expected command tool_call, got notifications: {:?}",
+            client.notifications
+        );
+        let tool_updates = client.updates_of_kind("tool_call_update");
+        let completed = tool_updates
+            .iter()
+            .find(|u| u["update"]["status"] == "completed")
+            .expect("completed command tool update");
+        assert!(
+            completed["update"]["content"][0]["content"]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("setup: provider=")),
+            "expected setup status in command output, got: {completed:?}"
+        );
+        assert_eq!(completed["update"]["rawOutput"]["success"], true);
+        assert!(
+            !client.assistant_text().contains("model should not run"),
+            "slash command should not invoke the model"
+        );
+        assert!(
+            client.updates_of_kind("available_commands_update").len() >= 2,
+            "expected command refresh after execution, got: {:?}",
+            client.notifications
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unknown_method_returns_method_not_found() {
         let mut client = TestClient::spawn(fixed("hi"), true);
         client.initialize().await;

@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
@@ -35,10 +36,11 @@ use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 
 use super::bridge::Translator;
 use super::protocol::{
-    self, AgentCapabilities, InitializeParams, InitializeResult, NewSessionParams,
-    NewSessionResult, PermissionOption, PermissionOptionKind, PermissionOutcome,
-    PromptCapabilities, PromptParams, PromptResult, RequestPermissionParams,
-    RequestPermissionResult, SessionNotification, SessionUpdate, StopReason,
+    self, AgentCapabilities, AvailableCommand, AvailableCommandInput, InitializeParams,
+    InitializeResult, NewSessionParams, NewSessionResult, PermissionOption, PermissionOptionKind,
+    PermissionOutcome, PromptCapabilities, PromptParams, PromptResult, RequestPermissionParams,
+    RequestPermissionResult, SessionNotification, SessionUpdate, StopReason, ToolCallContent,
+    ToolCallStatus, ToolKind,
 };
 
 /// JSON-RPC error codes used in agent responses.
@@ -159,6 +161,7 @@ struct Session {
     acp_id: String,
     handles: RuntimeHandles,
     model: ModelState,
+    commands: StdMutex<Vec<CommandDescriptor>>,
     cancel: StdMutex<Option<oneshot::Sender<()>>>,
 }
 
@@ -346,6 +349,13 @@ fn handle_initialize(params: Value) -> std::result::Result<Value, RpcError> {
                 audio: false,
                 embedded_context: true,
             },
+            meta: Some(json!({
+                "yolop.dev/acp": {
+                    "commandMetadata": true,
+                    "commandArgSuggestions": true,
+                    "commandToolLifecycle": true
+                }
+            })),
         },
         // No auth handshake: credentials come from the environment/settings
         // the agent process already inherits.
@@ -376,10 +386,12 @@ async fn handle_new_session<F: RuntimeFactory>(
         .map_err(|e| RpcError::new(INTERNAL_ERROR, format!("build runtime: {e}")))?;
 
     let acp_id = built.handles.session_id.to_string();
+    let commands = built.startup.capability_commands.clone();
     let session = Arc::new(Session {
         acp_id: acp_id.clone(),
         handles: built.handles,
         model: built.model,
+        commands: StdMutex::new(commands.clone()),
         cancel: StdMutex::new(None),
     });
     server
@@ -387,6 +399,18 @@ async fn handle_new_session<F: RuntimeFactory>(
         .lock()
         .unwrap()
         .insert(acp_id.clone(), session);
+
+    server.peer.session_update(
+        &acp_id,
+        SessionUpdate::AvailableCommandsUpdate {
+            available_commands: available_commands(&commands),
+            meta: Some(json!({
+                "yolop.dev/acp": {
+                    "argSuggestions": true
+                }
+            })),
+        },
+    );
 
     // Forward every approval request to the client as a permission prompt for
     // the lifetime of the session.
@@ -414,9 +438,222 @@ async fn handle_prompt<F: RuntimeFactory>(
         .ok_or_else(|| RpcError::new(INVALID_PARAMS, "unknown session id"))?;
     let prompt = protocol::prompt_text(&params.prompt);
 
-    let stop_reason = run_prompt(server.peer.clone(), session, prompt).await;
+    let stop_reason = match parse_slash_command(&prompt) {
+        Some((name, args)) => run_slash_command(server.peer.clone(), session, name, args).await,
+        None => run_prompt(server.peer.clone(), session, prompt).await,
+    };
     let result = PromptResult { stop_reason };
     Ok(serde_json::to_value(result).expect("prompt result serializes"))
+}
+
+fn available_commands(commands: &[CommandDescriptor]) -> Vec<AvailableCommand> {
+    commands
+        .iter()
+        .map(|command| AvailableCommand {
+            name: command.name.clone(),
+            description: command.description.clone(),
+            input: command_input(command),
+            meta: command_meta(command),
+        })
+        .collect()
+}
+
+fn command_input(command: &CommandDescriptor) -> Option<AvailableCommandInput> {
+    if command.args.is_empty() {
+        return None;
+    }
+    let hint = command
+        .args
+        .iter()
+        .map(|arg| {
+            if arg.description.trim().is_empty() {
+                arg.name.as_str()
+            } else {
+                arg.description.as_str()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(AvailableCommandInput { hint })
+}
+
+fn command_meta(command: &CommandDescriptor) -> Option<Value> {
+    if command.args.is_empty() {
+        return None;
+    }
+    let source = match command.source {
+        CommandSource::System => "system",
+        CommandSource::Skill => "skill",
+    };
+    Some(json!({
+        "yolop.dev/command": {
+            "source": source,
+            "args": command.args.iter().map(|arg| {
+                json!({
+                    "name": arg.name,
+                    "description": arg.description,
+                    "required": arg.required,
+                    "suggestions": arg.suggestions,
+                })
+            }).collect::<Vec<_>>()
+        }
+    }))
+}
+
+fn parse_slash_command(prompt: &str) -> Option<(String, String)> {
+    let trimmed = prompt.trim();
+    let rest = trimmed.strip_prefix('/')?.trim_start();
+    let mut parts = rest.splitn(2, char::is_whitespace);
+    let name = parts.next()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let args = parts.next().unwrap_or_default().trim();
+    Some((name.to_string(), args.to_string()))
+}
+
+async fn run_slash_command(
+    peer: Arc<Peer>,
+    session: Arc<Session>,
+    name: String,
+    args: String,
+) -> StopReason {
+    let commands = session.commands.lock().unwrap().clone();
+    let Some(descriptor) = commands.iter().find(|c| c.name == name).cloned() else {
+        peer.session_update(
+            &session.acp_id,
+            SessionUpdate::AgentMessageChunk {
+                content: protocol::ContentBlock::text(format!("unknown command: /{name}")),
+            },
+        );
+        return StopReason::EndTurn;
+    };
+
+    let required_missing = descriptor
+        .args
+        .iter()
+        .any(|a| a.required && args.is_empty());
+    if required_missing {
+        let needed = descriptor
+            .args
+            .iter()
+            .filter(|a| a.required)
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        peer.session_update(
+            &session.acp_id,
+            SessionUpdate::AgentMessageChunk {
+                content: protocol::ContentBlock::text(format!("/{name} requires: {needed}")),
+            },
+        );
+        return StopReason::EndTurn;
+    }
+
+    match descriptor.source {
+        CommandSource::System => {
+            let tool_call_id = format!("command_{}", peer.next_id.fetch_add(1, Ordering::Relaxed));
+            peer.session_update(
+                &session.acp_id,
+                SessionUpdate::ToolCall {
+                    tool_call_id: tool_call_id.clone(),
+                    title: command_title(&descriptor.name, &args),
+                    kind: ToolKind::Other,
+                    status: ToolCallStatus::InProgress,
+                    raw_input: Some(json!({
+                        "command": descriptor.name,
+                        "arguments": if args.is_empty() { Value::Null } else { Value::String(args.clone()) },
+                        "source": "system",
+                    })),
+                    content: Vec::new(),
+                },
+            );
+
+            let request = ExecuteCommandRequest {
+                name: descriptor.name.clone(),
+                arguments: if args.is_empty() { None } else { Some(args) },
+                controls: None,
+            };
+            let (success, message, raw_output) = match session
+                .handles
+                .runtime
+                .execute_command(session.handles.session_id, request)
+                .await
+            {
+                Ok(result) => {
+                    let prefix = if result.success { "" } else { "error: " };
+                    (
+                        result.success,
+                        format!("{prefix}{}", result.message),
+                        serde_json::to_value(result).expect("command result serializes"),
+                    )
+                }
+                Err(err) => (
+                    false,
+                    format!("/{name} failed: {err}"),
+                    json!({ "success": false, "message": format!("{err}") }),
+                ),
+            };
+            peer.session_update(
+                &session.acp_id,
+                SessionUpdate::ToolCallUpdate {
+                    tool_call_id,
+                    status: Some(if success {
+                        ToolCallStatus::Completed
+                    } else {
+                        ToolCallStatus::Failed
+                    }),
+                    content: vec![ToolCallContent::Content {
+                        content: protocol::ContentBlock::text(message),
+                    }],
+                    raw_output: Some(raw_output),
+                },
+            );
+            refresh_available_commands(&peer, &session).await;
+            StopReason::EndTurn
+        }
+        CommandSource::Skill => {
+            let text = if args.is_empty() {
+                format!("/{name}")
+            } else {
+                format!("/{name} {args}")
+            };
+            run_prompt(peer, session, text).await
+        }
+    }
+}
+
+fn command_title(name: &str, args: &str) -> String {
+    if args.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("/{name} {args}")
+    }
+}
+
+async fn refresh_available_commands(peer: &Arc<Peer>, session: &Arc<Session>) {
+    match session
+        .handles
+        .runtime
+        .list_commands(session.handles.session_id)
+        .await
+    {
+        Ok(commands) => {
+            *session.commands.lock().unwrap() = commands.clone();
+            peer.session_update(
+                &session.acp_id,
+                SessionUpdate::AvailableCommandsUpdate {
+                    available_commands: available_commands(&commands),
+                    meta: Some(json!({
+                        "yolop.dev/acp": {
+                            "argSuggestions": true
+                        }
+                    })),
+                },
+            );
+        }
+        Err(err) => tracing::warn!(%err, "acp: command refresh failed"),
+    }
 }
 
 /// Drive one prompt turn: stream the runtime's events to the client as
