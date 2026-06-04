@@ -24,11 +24,12 @@ Every shipped change MUST satisfy ALL of these. These are mandatory, not suggest
 
 1. **Safe branch state.** No shipping from `main` or `master`. Working tree clean before final push. Prefer rebasing onto latest `origin/main` before merge.
 2. **Goal achieved with evidence.** The requested behavior is implemented and validated with proof matching the risk.
-3. **Merge-ready code.** Touched code is reviewed for avoidable complexity. A structured security review is performed (see `.agents/skills/ship/SKILL.md` § Security Review). Issues are addressed or explicitly blocked.
-4. **Synced artifacts.** Affected artifacts are updated: README, AGENTS.md, specs. No code-duplicating prose.
-5. **Smoke test impacted functionality.** Mandatory unless the change is docs-only or config-only with explicit justification. For runtime changes, run at least one live-provider smoke through Doppler.
-6. **Follow-ups surfaced.** TODOs, partial fixes, declined suggestions, missed edges, and spec/doc drift are explicitly listed under **Follow-ups** in the PR body (or `"No follow-ups."` if none).
-7. **Safe merge.** PR uses the template, CI is green, every review comment is addressed (via a code change when needed), answered inline on its own thread with a written reply, and marked resolved before merge. An inline reply is required even when the resolution is a pure code change. Merge is squash-only after a final clean comment sweep. Async reviewer bots get at least 2 minutes to comment after CI turns green.
+3. **Feature tested before merge.** Every behavior change is covered by an automated test that exercises the new or changed behavior directly — driving its real entry point, not merely adjacent code that still compiles — added or updated as part of the change. A behavior that is genuinely impractical to test automatically is the only exception: the PR body must say so, describe the manual verification performed instead, and list the gap under **Follow-ups**. Docs-only or config-only changes with no behavior change are exempt with stated justification.
+4. **Merge-ready code.** Touched code is reviewed for avoidable complexity. A structured security review is performed (see `.agents/skills/ship/SKILL.md` § Security Review). Issues are addressed or explicitly blocked.
+5. **Synced artifacts.** Affected artifacts are updated: README, AGENTS.md, specs. No code-duplicating prose.
+6. **Smoke test impacted functionality.** In addition to the automated test in outcome 3, smoke test the affected flows end-to-end. Mandatory unless the change is docs-only or config-only with explicit justification. For runtime changes, run at least one live-provider smoke through Doppler.
+7. **Follow-ups surfaced.** TODOs, partial fixes, declined suggestions, missed edges, and spec/doc drift are explicitly listed under **Follow-ups** in the PR body (or `"No follow-ups."` if none).
+8. **Safe merge.** PR uses the template, CI is green, every review comment is addressed (via a code change when needed), answered inline on its own thread with a written reply, and marked resolved before merge. An inline reply is required even when the resolution is a pure code change. Merge is squash-only after a final clean comment sweep. Async reviewer bots get at least 2 minutes to comment after CI turns green.
 
 ## Constraints
 
