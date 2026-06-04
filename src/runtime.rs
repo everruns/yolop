@@ -20,9 +20,10 @@ use async_trait::async_trait;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, COMPACTION_CAPABILITY_ID,
     CompactionCapability, FileSystemCapability, INFINITY_CONTEXT_CAPABILITY_ID,
-    InfinityContextCapability, LoopDetectionCapability, PROMPT_CACHING_CAPABILITY_ID,
-    PromptCachingCapability, SKILLS_CAPABILITY_ID, StatelessTodoListCapability,
-    ToolOutputPersistenceCapability, WebFetchCapability,
+    InfinityContextCapability, LoopDetectionCapability, OPENAI_TOOL_SEARCH_CAPABILITY_ID,
+    OpenAiToolSearchCapability, PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability,
+    SKILLS_CAPABILITY_ID, StatelessTodoListCapability, ToolOutputPersistenceCapability,
+    WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
@@ -910,6 +911,10 @@ fn coding_harness_capabilities(
         AgentCapabilityConfig::new("stateless_todo_list"),
         AgentCapabilityConfig::new("loop_detection"),
         AgentCapabilityConfig::new(PROMPT_CACHING_CAPABILITY_ID),
+        // Deferred tool loading on supported models (default threshold: 15
+        // tools). yolop exposes ~17 tools, so this activates on OpenAI
+        // GPT-5.4+/5.5 and is silently ignored elsewhere.
+        AgentCapabilityConfig::new(OPENAI_TOOL_SEARCH_CAPABILITY_ID),
         AgentCapabilityConfig::new("tool_output_persistence"),
         AgentCapabilityConfig::new("duckduckgo"),
         AgentCapabilityConfig::new(ATTRIBUTION_CAPABILITY_ID),
@@ -1145,6 +1150,11 @@ pub async fn build_with_options(
     capabilities.register(StatelessTodoListCapability);
     capabilities.register(LoopDetectionCapability);
     capabilities.register(PromptCachingCapability::new());
+    // Deferred tool loading (schemas fetched on demand). Pure optimization:
+    // the runtime self-disables it for any model whose profile lacks
+    // tool_search support (everything except OpenAI GPT-5.4+/5.5), so it is a
+    // no-op for Anthropic/Google/OpenRouter/Ollama/llmsim.
+    capabilities.register(OpenAiToolSearchCapability::new());
     capabilities.register(ToolOutputPersistenceCapability);
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebFetchCapability::from_env());
