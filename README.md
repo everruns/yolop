@@ -26,7 +26,7 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
 
 ## Features
 
-- **TUI** chat (ratatui): scrolling transcript, single-line composer, status
+- **TUI** chat (ratatui): scrolling transcript, multiline composer, status
   bar, optional modal approval bar.
 - **Real-filesystem tools** through the built-in `session_file_system`
   capability layered over `RealDiskFileStore`: `read_file`, `write_file`,

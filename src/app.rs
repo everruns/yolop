@@ -83,6 +83,7 @@ pub(crate) struct CommandSuggestion {
 
 pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
 const COMPACT_CHROME_HEIGHT: u16 = 5;
+const MAX_INPUT_HEIGHT: u16 = 12;
 const ACCENT_BLUE: Color = Color::Rgb(45, 91, 158);
 const ACCENT_GOLD: Color = Color::Rgb(126, 94, 19);
 const TEXT_PRIMARY: Color = Color::Rgb(230, 230, 232);
@@ -656,15 +657,11 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Enter
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
-            {
-                self.submit_input().await;
+            KeyCode::Enter if key.modifiers == KeyModifiers::SHIFT => {
+                self.input.insert_newline();
             }
             KeyCode::Enter => {
-                self.input.insert_newline();
+                self.submit_input().await;
             }
             KeyCode::Tab => {
                 if let Some(suggestion) = self.suggestions().first() {
@@ -705,7 +702,7 @@ impl App {
     }
 
     fn input_height(&self) -> u16 {
-        self.input.lines().len().clamp(1, 3) as u16
+        self.input.lines().len().clamp(1, MAX_INPUT_HEIGHT as usize) as u16
     }
 
     async fn submit_input(&mut self) {
@@ -2444,7 +2441,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let input_height = app.input_height();
     let area = f.area();
     let state = app.view_state();
-    let chrome_area = bottom_rect(area, COMPACT_CHROME_HEIGHT);
+    let chrome_area = bottom_rect(area, chrome_height(input_height));
     let transcript_area = Rect {
         height: area.height.saturating_sub(chrome_area.height),
         ..area
@@ -2465,6 +2462,10 @@ fn bottom_rect(area: Rect, height: u16) -> Rect {
         height,
         ..area
     }
+}
+
+fn chrome_height(input_height: u16) -> u16 {
+    COMPACT_CHROME_HEIGHT.max(input_height.saturating_add(2))
 }
 
 fn clear_transcript_viewport(f: &mut ratatui::Frame, area: Rect) {
@@ -3433,11 +3434,7 @@ fn message_separator_title(state: &ViewState) -> Line<'static> {
 }
 
 fn newline_shortcut_hint() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "Option-Enter / Shift-Enter"
-    } else {
-        "Alt-Enter / Shift-Enter"
-    }
+    "Shift-Enter"
 }
 
 fn thinking_title(frame: u64, activity: &str) -> Line<'static> {
@@ -3709,13 +3706,8 @@ mod tests {
     }
 
     #[test]
-    fn newline_shortcut_hint_matches_host_os() {
-        let hint = newline_shortcut_hint();
-        if cfg!(target_os = "macos") {
-            assert_eq!(hint, "Option-Enter / Shift-Enter");
-        } else {
-            assert_eq!(hint, "Alt-Enter / Shift-Enter");
-        }
+    fn newline_shortcut_hint_uses_shift_enter_only() {
+        assert_eq!(newline_shortcut_hint(), "Shift-Enter");
     }
 
     #[test]
@@ -4535,14 +4527,14 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn modified_enter_inserts_newline_without_submitting() {
+    async fn shift_enter_inserts_newline_without_submitting() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.setup = None;
 
         for key in [
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
             KeyEvent::new(KeyCode::Char('b'), KeyModifiers::empty()),
             KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::empty()),
@@ -4556,7 +4548,31 @@ mod tests {
             app.lines
                 .iter()
                 .all(|line| !matches!(line.author, Author::User)),
-            "modified Enter should edit the composer, not submit: {:?}",
+            "Shift-Enter should edit the composer, not submit: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn alt_shift_enter_submits_instead_of_inserting_newline() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()))
+            .await;
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ))
+        .await;
+
+        assert_eq!(app.input_text(), "");
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| matches!(line.author, Author::User) && line.text == "a"),
+            "Alt-Shift-Enter should submit the composer: {:?}",
             app.lines
         );
     }
@@ -4584,12 +4600,12 @@ mod tests {
         let app = &mut fixture.app;
 
         assert_eq!(app.input_height(), 1);
+        for expected in 2..=MAX_INPUT_HEIGHT {
+            app.input.insert_newline();
+            assert_eq!(app.input_height(), expected);
+        }
         app.input.insert_newline();
-        assert_eq!(app.input_height(), 2);
-        app.input.insert_newline();
-        assert_eq!(app.input_height(), 3);
-        app.input.insert_newline();
-        assert_eq!(app.input_height(), 3);
+        assert_eq!(app.input_height(), MAX_INPUT_HEIGHT);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
