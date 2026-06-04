@@ -269,7 +269,7 @@ fn tui_escape_does_not_exit_and_ctrl_c_exits() {
 }
 
 #[test]
-fn tui_option_enter_sequence_inserts_newline_before_submit() {
+fn tui_alt_enter_sequence_submits_like_enter() {
     let mut tui = spawn_tui_llmsim();
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
@@ -278,23 +278,27 @@ fn tui_option_enter_sequence_inserts_newline_before_submit() {
     );
 
     tui.write_input(b"one\x1b\r");
-    thread::sleep(Duration::from_millis(250));
-    let before_submit = tui.output_text();
     assert!(
-        !before_submit.contains("you ›"),
-        "Option-Enter should keep composing, not submit: {before_submit}"
+        tui.wait_for_output("one", Duration::from_secs(3)),
+        "Alt-Enter should submit like Enter: {}",
+        tui.output_text()
+    );
+    assert!(
+        tui.wait_for_output("offline mode", Duration::from_secs(3)),
+        "first turn did not complete before second input: {}",
+        tui.output_text()
     );
 
     tui.write_input(b"two\r");
     assert!(
-        tui.wait_for_output("you ›", Duration::from_secs(3)),
-        "plain Enter did not submit after multiline input: {}",
+        tui.wait_for_output("two", Duration::from_secs(3)),
+        "plain Enter did not submit second input: {}",
         tui.output_text()
     );
     let after_submit = strip_ansi(&tui.output_text());
     assert!(
         after_submit.contains("one") && after_submit.contains("two"),
-        "submitted multiline text should render both lines: {after_submit}"
+        "submitted text should render both turns: {after_submit}"
     );
 
     tui.write_input(b"\x03");
