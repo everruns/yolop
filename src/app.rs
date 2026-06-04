@@ -657,7 +657,7 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Enter if key.modifiers == KeyModifiers::SHIFT => {
                 self.input.insert_newline();
             }
             KeyCode::Enter => {
@@ -4549,6 +4549,30 @@ mod tests {
                 .iter()
                 .all(|line| !matches!(line.author, Author::User)),
             "Shift-Enter should edit the composer, not submit: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn alt_shift_enter_submits_instead_of_inserting_newline() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()))
+            .await;
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ))
+        .await;
+
+        assert_eq!(app.input_text(), "");
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| matches!(line.author, Author::User) && line.text == "a"),
+            "Alt-Shift-Enter should submit the composer: {:?}",
             app.lines
         );
     }
