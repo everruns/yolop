@@ -33,8 +33,8 @@ use everruns_core::session_file::{FileInfo, FileStat, GrepMatch, InitialFile, Se
 use everruns_core::typed_id::SessionId;
 use everruns_core::{
     AgentCapabilityConfig, CapabilityRegistry, Controls, InputMessage, ModelWithProvider,
-    PlatformDefinition, ReasoningConfig, SessionFileSystem, SessionFileSystemFactory,
-    SessionFileSystemFactoryContext,
+    PlatformDefinition, ReasoningConfig, ScopedMcpServers, SessionFileSystem,
+    SessionFileSystemFactory, SessionFileSystemFactoryContext,
 };
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_runtime::{
@@ -968,6 +968,10 @@ pub struct StartupInfo {
     /// for any real provider. The TUI auto-opens its setup wizard in this
     /// case; `--print` mode ignores it.
     pub setup_recommended: bool,
+    /// Names of MCP servers configured for this session from `.mcp.json`
+    /// (global + workspace, merged). Source for the `/mcp` command and the
+    /// startup banner. Empty when no servers are configured.
+    pub mcp_server_names: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -1047,6 +1051,19 @@ pub async fn build_with_options(
     let canonical_root = std::fs::canonicalize(&workspace_root)
         .with_context(|| format!("canonicalize workspace: {}", workspace_root.display()))?;
     let workspace = Workspace::new(canonical_root.clone());
+
+    // MCP servers from `.mcp.json` (global + workspace, merged). A malformed
+    // config should not sink the whole session, so we warn and continue with
+    // no servers rather than failing startup.
+    let mcp_servers: ScopedMcpServers = match crate::mcp_config::load_mcp_servers(&canonical_root) {
+        Ok(servers) => servers,
+        Err(error) => {
+            tracing::warn!(%error, "failed to load .mcp.json; continuing without MCP servers");
+            ScopedMcpServers::default()
+        }
+    };
+    let mut mcp_server_names: Vec<String> = mcp_servers.keys().cloned().collect();
+    mcp_server_names.sort();
 
     // Pin the SessionId so resume can re-attach to the same session folder
     // (directory name is the session id).
@@ -1204,6 +1221,7 @@ pub async fn build_with_options(
     // to the same JSONL log (filename encodes the id).
     let session_title = format!("yolop @ {}", canonical_root.display());
     let harness_capabilities = coding_harness_capabilities(options.client_commands);
+    let session_mcp_servers = mcp_servers.clone();
 
     let mut builder = InProcessRuntimeBuilder::new()
         .platform_definition(platform)
@@ -1219,6 +1237,7 @@ pub async fn build_with_options(
                 .agent_description("Reads, edits, and runs commands inside a project workspace.")
                 .session_id(session_id)
                 .session_title(session_title.clone())
+                .session_mcp_servers(session_mcp_servers.clone())
                 .tag("example")
                 .tag("coding");
             for cap in harness_capabilities {
@@ -1261,6 +1280,7 @@ pub async fn build_with_options(
             session_dir,
             replayed_events: replayed_events_count,
             setup_recommended,
+            mcp_server_names,
         },
         model: ModelState::new(provider_state),
         ui_rx,
@@ -1278,6 +1298,39 @@ mod tests {
         let next = provider.resolve_model_spec("openai/gpt-5.5").unwrap();
 
         assert_eq!(next.label(), "openai/gpt-5.5 medium");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_wires_mcp_servers_from_dot_mcp_json() {
+        // A workspace `.mcp.json` should flow through build() into the session
+        // and surface in startup info (the source for `/mcp`). build() does not
+        // contact the server, so this stays offline.
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        std::fs::write(
+            workspace.path().join(".mcp.json"),
+            r#"{ "mcpServers": { "docs": { "type": "http", "url": "https://example.com/mcp" } } }"#,
+        )
+        .expect("write .mcp.json");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            ApprovalGate::auto(),
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        assert!(
+            built.startup.mcp_server_names.contains(&"docs".to_string()),
+            "mcp servers: {:?}",
+            built.startup.mcp_server_names
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

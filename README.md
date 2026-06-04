@@ -72,8 +72,11 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - `OPENROUTER_API_KEY` → OpenRouter (`openai/gpt-5.2` by default)
   - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) → Google Gemini (`gemini-2.5-flash`)
   - `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` → Ollama (`llama3.2`)
-- **Slash commands** (TUI): `/help`, `/tools`, `/cwd`, `/setup`, `/model`,
-  `/effort`, `/clear`, `/quit`.
+- **Slash commands** (TUI): `/help`, `/tools`, `/mcp`, `/cwd`, `/setup`,
+  `/model`, `/effort`, `/clear`, `/quit`.
+- **MCP servers**: extra tools from local (stdio) or remote (HTTP) [Model
+  Context Protocol](https://modelcontextprotocol.io) servers, configured via
+  `.mcp.json` (see [MCP servers](#mcp-servers)).
 - **Guided setup**: launching yolop with no env vars and no saved
   settings opens a keyboard-driven setup overlay for provider → API key →
   model. Re-running `/setup` opens the same provider setup flow, `/model`
@@ -258,6 +261,47 @@ full protocol surface, mappings, and current limitations.
 | `OLLAMA_API_KEY`                | Optional, defaults to `ollama` for local Ollama              |
 | `EVERRUNS_CLI_MODEL`            | Override the auto-selected default model                     |
 | `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI-only reasoning effort override                        |
+
+## MCP servers
+
+Yolop can pull in extra tools from [Model Context Protocol](https://modelcontextprotocol.io)
+servers — both remote (Streamable **HTTP**) and local (**stdio**, a child
+process). Configure them in a `.mcp.json` file using the standard `mcpServers`
+shape that every MCP client understands. Two scopes are read and merged
+(workspace overrides global by name):
+
+- **workspace**: `<workspace_root>/.mcp.json`
+- **global**: `<config_dir>/yolop/mcp.json` (e.g. `~/.config/yolop/mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "docs": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" }
+    },
+    "fs": {
+      "type": "stdio",
+      "command": "mcp-server-filesystem",
+      "args": ["${WORKSPACE}"],
+      "env": { "RUST_LOG": "info" }
+    }
+  }
+}
+```
+
+- `type` defaults to `http`; HTTP servers need a `url`, stdio servers need a
+  `command`.
+- String values support `${VAR}` expansion from the environment, so secrets
+  stay out of the file (an unset `${VAR}` is left as-is so it's easy to spot).
+- Discovered tools are exposed to the model as `mcp__<server>__<tool>`.
+- `/mcp` lists the configured servers.
+
+Trust model: HTTP requests keep yolop's DNS-pinned SSRF protection; stdio
+servers run local processes you listed yourself, so authoring `.mcp.json` is
+the act of consent. MCP tool calls do not yet go through the interactive
+`bash`/file-write approval prompt — see [`specs/mcp.md`](specs/mcp.md).
 
 ## Settings
 

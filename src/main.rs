@@ -9,6 +9,7 @@ mod capabilities;
 mod diff;
 mod host_ui;
 mod into;
+mod mcp_config;
 mod runtime;
 mod session_log;
 mod settings;
