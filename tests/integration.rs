@@ -71,6 +71,10 @@ fn assert_version_output(stdout: &str) {
         "version output missing binary name: {stdout}"
     );
     assert!(
+        stdout.contains(env!("CARGO_PKG_VERSION")),
+        "version output missing package version: {stdout}"
+    );
+    assert!(
         stdout.contains("commit "),
         "version output missing commit SHA: {stdout}"
     );
