@@ -1929,6 +1929,53 @@ mod tests {
     }
 
     #[test]
+    fn coding_harness_enables_tool_search() {
+        // Deferred tool loading must be wired for both hosts — it is a
+        // model-gated no-op, so there is no reason to scope it to the TUI.
+        for client_commands in [false, true] {
+            let ids = coding_harness_capabilities(client_commands);
+            assert!(
+                ids.iter()
+                    .any(|cap| cap.capability_id() == OPENAI_TOOL_SEARCH_CAPABILITY_ID),
+                "tool_search must be enabled (client_commands={client_commands})"
+            );
+        }
+    }
+
+    /// Tool search only activates once the tool surface crosses
+    /// `DEFAULT_TOOL_SEARCH_THRESHOLD`; below it, full schemas are sent even
+    /// with the capability on. This guards the integration: if yolop's tool
+    /// count ever drops below the threshold, deferred loading silently stops
+    /// helping and this test fails loudly so the threshold can be revisited.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tool_surface_exceeds_tool_search_threshold() {
+        use everruns_core::capabilities::DEFAULT_TOOL_SEARCH_THRESHOLD;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            ApprovalGate::auto(),
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        let tool_count = built.startup.tool_names.len();
+        assert!(
+            tool_count > DEFAULT_TOOL_SEARCH_THRESHOLD,
+            "tool surface ({tool_count}) must exceed the tool_search threshold \
+             ({DEFAULT_TOOL_SEARCH_THRESHOLD}) for deferred loading to activate; \
+             lower the threshold via capability config if the surface shrinks"
+        );
+    }
+
+    #[test]
     fn coding_harness_enables_loop_detection() {
         let ids = coding_harness_capabilities(false, false);
 
