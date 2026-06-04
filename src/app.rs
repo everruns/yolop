@@ -4467,6 +4467,10 @@ mod tests {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.push_system("sentinel line that must be cleared".into());
+        // Advance the print cursor so the reset assertion below actually
+        // guards the behavior rather than passing on the initial value.
+        app.printed_lines = app.lines.len();
+        assert_ne!(app.printed_lines, 0);
 
         app.dispatch_command_for_test("clear").await;
 

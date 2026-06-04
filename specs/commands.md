@@ -3,10 +3,17 @@
 ## Abstract
 
 yolop exposes user actions as **slash commands**. Every command is contributed
-by a **capability** (`Capability::commands()`), so a single registry —
-`runtime.list_commands(session_id)` — is the source of truth for the command
-palette, `/help`, and completion across every host (the TUI and the ACP
-server). There is no hard-coded command table.
+by a **capability** (`Capability::commands()`), so each host's command surface
+is sourced solely from `runtime.list_commands(session_id)` — the source of
+truth for that host's palette, `/help`, and completion. There is no hard-coded
+command table on any host.
+
+The *set* of commands differs by host, because capabilities are gated per
+session (see [Host gating](#required-behavior)). The TUI registers the
+terminal-side commands and so lists them; the ACP server and `--print` do not,
+so those commands never appear in their advertised command lists. What is
+common is the mechanism: whatever a host advertises comes from its registry,
+never a parallel hard-coded list.
 
 A command's `CommandSource` declares *who executes it*. yolop uses three
 execution targets; the third (client/terminal) is a yolop convention layered on
