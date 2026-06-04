@@ -15,6 +15,7 @@ mod settings;
 #[cfg(test)]
 mod test_env;
 mod tools;
+mod version;
 
 #[cfg(test)]
 mod streaming_tests;
@@ -43,7 +44,7 @@ use std::sync::Arc;
 #[derive(Parser, Debug)]
 #[command(
     name = "yolop",
-    version,
+    version = version::VERSION_DETAILS,
     about = "Yolop coding agent — embedded terminal agent built on everruns-runtime"
 )]
 struct Cli {
@@ -101,6 +102,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Print version information.
+    Version,
     /// Add yolop into supported editors.
     Into(IntoCommand),
 }
@@ -303,6 +306,10 @@ async fn main() -> Result<()> {
 
 fn run_command(command: Commands) -> Result<()> {
     match command {
+        Commands::Version => {
+            println!("{}", version::VERSION_LINE);
+            Ok(())
+        }
         Commands::Into(into) => match into.target {
             IntoTarget::Zed(args) => {
                 let command = match args.command {
