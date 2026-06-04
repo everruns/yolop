@@ -4426,6 +4426,89 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cwd_command_prints_workspace_root() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+
+        app.dispatch_command_for_test("cwd").await;
+
+        let root = app.startup.workspace_root.display().to_string();
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("workspace root:") && line.text.contains(&root)),
+            "cwd should print the workspace root: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tools_command_lists_available_tools() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+
+        app.dispatch_command_for_test("tools").await;
+
+        // The llmsim runtime registers the standard coding toolset, so the
+        // listing must be non-empty and name a known tool.
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.starts_with("tools:") && line.text.contains("bash")),
+            "tools should list available tools: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clear_command_wipes_transcript_and_re_emits_banner() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.push_system("sentinel line that must be cleared".into());
+        // Advance the print cursor so the reset assertion below actually
+        // guards the behavior rather than passing on the initial value.
+        app.printed_lines = app.lines.len();
+        assert_ne!(app.printed_lines, 0);
+
+        app.dispatch_command_for_test("clear").await;
+
+        assert!(
+            !app.lines
+                .iter()
+                .any(|line| line.text.contains("sentinel line")),
+            "clear should wipe prior transcript lines: {:?}",
+            app.lines
+        );
+        assert_eq!(app.printed_lines, 0, "clear should reset the print cursor");
+        // The banner is re-emitted so the cleared screen still shows context.
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("type /help")),
+            "clear should re-emit the startup banner: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn quit_command_and_exit_alias_request_shutdown() {
+        for command in ["quit", "exit"] {
+            let mut fixture = app_with_llmsim().await;
+            let app = &mut fixture.app;
+            assert!(!app.should_quit);
+
+            app.dispatch_command_for_test(command).await;
+
+            assert!(
+                app.should_quit,
+                "/{command} should request shutdown via the UI channel"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn app_slash_input_renders_command_suggestions_end_to_end() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;

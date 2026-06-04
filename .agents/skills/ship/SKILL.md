@@ -36,27 +36,41 @@ Use this skill when the user asks to:
    - Confirm the requested behavior is actually implemented.
    - Validation must match risk. For bugs, prefer a failing test first when practical.
 
-3. **The changed code is fit to merge.**
+3. **The changed feature is tested before merge.**
+   - Every behavior change MUST be covered by an automated test that exercises
+     the new or changed behavior directly — not merely adjacent code that still
+     compiles. Add or update the test as part of the change.
+   - The test must actually drive the feature's entry point (e.g. dispatch the
+     command, call the handler, run the turn), not just assert on a constructor.
+   - If a behavior is genuinely impractical to cover automatically, say so
+     explicitly in the PR body, describe the manual verification you performed
+     instead, and list the gap under **Follow-ups**. "Hard to test" is not a
+     silent pass.
+   - Docs-only or config-only changes with no behavior change are exempt (state
+     why).
+
+4. **The changed code is fit to merge.**
    - Simplify obvious duplication or accidental complexity.
    - Perform the structured security review below.
    - Fix issues you find and refresh the evidence.
 
-4. **Relevant artifacts stay in sync.**
+5. **Relevant artifacts stay in sync.**
    - Update only the artifacts affected by the change: `specs/`, `AGENTS.md`, `README.md`.
 
-5. **Smoke test impacted functionality.**
-   - Always smoke test the flows affected by the change end-to-end.
+6. **Smoke test impacted functionality.**
+   - Always smoke test the flows affected by the change end-to-end. This is in
+     addition to, not a substitute for, the automated feature test in outcome 3.
    - For changes that touch the agent loop, run `doppler run -- cargo run -- --provider openai -p "<focused prompt>"` and read the output.
    - For offline-safe changes, `cargo run -- --provider llmsim -p "hi"` is enough to prove the binary still starts.
    - Docs-only or config-only changes that do not affect runtime may skip smoke testing with explicit justification.
 
-6. **Follow-ups are surfaced, not silently dropped.**
+7. **Follow-ups are surfaced, not silently dropped.**
    - Default to implementing everything in scope before merging.
    - For each candidate, decide explicitly: **implement now** (preferred) or **defer**.
    - For anything deferred, list it under a **Follow-ups** section in the PR body with a one-line rationale.
    - If there are no follow-ups, state "No follow-ups." in the PR body.
 
-7. **The PR is mergeable and merged safely.**
+8. **The PR is mergeable and merged safely.**
    - Push the branch.
    - Create or update the PR.
    - Address every review comment — including low-confidence suggestions, nits, and bot comments. For each comment, post an inline reply on the same thread explaining the resolution (and apply a code change too when one is needed), then mark that thread resolved. An inline reply is required even when the fix is a pure code change; no comment may be left unanswered or unresolved before merge.

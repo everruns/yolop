@@ -89,8 +89,9 @@ agent-like, stop and ask before committing.
 
 ## Shipping, maintenance, and releases
 
-- "Ship" means implement, gather evidence, perform a security review, open a
-  mergeable PR, address every review comment, and merge only after CI is green.
+- "Ship" means implement, test the changed feature with an automated test that
+  exercises it, gather evidence, perform a security review, open a mergeable PR,
+  address every review comment, and merge only after CI is green.
 - When asked to ship, follow [`.agents/skills/ship/SKILL.md`](.agents/skills/ship/SKILL.md)
   and [`specs/shipping.md`](specs/shipping.md).
 - When asked for maintenance or release readiness, follow
