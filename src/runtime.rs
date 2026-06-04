@@ -379,8 +379,10 @@ const DEFAULT_OPENAI_REASONING_EFFORT: &str = "medium";
 const OPENAI_REASONING_EFFORT_SUGGESTIONS: &[&str] = &["minimal", "low", "medium", "high"];
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
-// Gemini exposes an OpenAI-compatible surface at this base URL — the
-// `everruns_openai` driver targets it the same way it targets OpenRouter.
+// Gemini exposes an OpenAI-compatible surface at this base URL, driven through
+// `everruns_openai`. (OpenRouter is OpenAI-compatible too, but it needs the
+// Chat Completions driver — see `model_with_provider` — because its Responses
+// endpoint is stateless.)
 const DEFAULT_GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-5.2";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -760,7 +762,15 @@ impl ProviderChoice {
                     .ok_or_else(|| anyhow!("OPENROUTER_API_KEY not set (and no token stored)"))?;
                 Ok(ModelWithProvider {
                     model: model.clone(),
-                    provider_type: LlmProviderType::Openai,
+                    // Chat Completions, not the Open Responses API. OpenRouter's
+                    // /responses endpoint is stateless: it accepts
+                    // `previous_response_id` but silently ignores it (responses are
+                    // never stored), so the Responses driver — which chains turns by
+                    // id and sends only the newest item — loses the task and history
+                    // after turn 1. The model then loops on read-only exploration and
+                    // never makes progress. Chat Completions replays the full
+                    // conversation each turn, which is what OpenRouter supports.
+                    provider_type: LlmProviderType::OpenaiCompletions,
                     api_key: Some(key),
                     base_url: Some(base_url.clone()),
                 })
@@ -798,10 +808,17 @@ impl ProviderChoice {
                 api_key: None,
                 base_url: None,
             },
-            ProviderChoice::Google { model, base_url }
-            | ProviderChoice::OpenRouter { model, base_url } => ModelWithProvider {
+            ProviderChoice::Google { model, base_url } => ModelWithProvider {
                 model: model.clone(),
                 provider_type: LlmProviderType::Openai,
+                api_key: None,
+                base_url: Some(base_url.clone()),
+            },
+            // OpenRouter must use Chat Completions, not the Open Responses API —
+            // see the keyed path in `model_with_provider` for the full rationale.
+            ProviderChoice::OpenRouter { model, base_url } => ModelWithProvider {
+                model: model.clone(),
+                provider_type: LlmProviderType::OpenaiCompletions,
                 api_key: None,
                 base_url: Some(base_url.clone()),
             },
@@ -1602,7 +1619,7 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_uses_openai_responses_driver_with_base_url() {
+    fn openrouter_requires_api_key() {
         let _guard = crate::test_env::lock();
         unsafe {
             std::env::remove_var("OPENROUTER_API_KEY");
@@ -1617,6 +1634,40 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("OPENROUTER_API_KEY not set"));
+    }
+
+    #[test]
+    fn openrouter_uses_chat_completions_driver_not_responses() {
+        // OpenRouter's /responses endpoint ignores `previous_response_id`, which
+        // breaks the Open Responses driver's turn chaining. We must route through
+        // the stateless Chat Completions driver instead.
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::set_var("OPENROUTER_API_KEY", "test-or-key");
+        }
+        let provider = ProviderChoice::OpenRouter {
+            model: "nvidia/nemotron-3-ultra-550b-a55b".to_string(),
+            base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
+        };
+
+        let model = provider.model_with_provider(&Settings::default()).unwrap();
+        unsafe {
+            std::env::remove_var("OPENROUTER_API_KEY");
+        }
+
+        assert_eq!(model.provider_type, LlmProviderType::OpenaiCompletions);
+        assert_eq!(model.api_key, Some("test-or-key".to_string()));
+        assert_eq!(
+            model.base_url,
+            Some(DEFAULT_OPENROUTER_BASE_URL.to_string())
+        );
+
+        // The keyless fallback path must agree, so /setup and startup don't
+        // silently revert to the Responses driver.
+        assert_eq!(
+            provider.model_without_stored_key().provider_type,
+            LlmProviderType::OpenaiCompletions
+        );
     }
 
     #[test]
