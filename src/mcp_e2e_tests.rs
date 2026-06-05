@@ -9,8 +9,10 @@
 //! The server writes a marker file on each call, so we assert *via the
 //! filesystem* whether a tool actually executed.
 //!
-//! Skipped (with a warning) when `python3` is unavailable so a Python-less CI
-//! box does not fail.
+//! `python3` is required. In CI (`CI` env set) a missing `python3` is a hard
+//! failure — silently skipping would let the test report green without
+//! exercising anything (cf. the live-smoke job in `.github/workflows/ci.yml`).
+//! On a local box without `python3` the tests skip with a warning.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,12 +27,28 @@ use crate::settings::SettingsStore;
 
 const TURN_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Resolve `python3` from `PATH`, or `None` to skip.
+/// Resolve `python3` from `PATH`.
 fn python3() -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
     std::env::split_paths(&paths)
         .map(|dir| dir.join("python3"))
         .find(|candidate| candidate.is_file())
+}
+
+/// Resolve `python3`, deciding whether a miss is a skip or a failure. In CI
+/// (`CI` env set) a missing `python3` panics — a silently green check would not
+/// be exercising anything (matching the live-smoke job's stance in
+/// `.github/workflows/ci.yml`). Locally it skips with a warning.
+fn require_python3(test: &str) -> Option<PathBuf> {
+    if let Some(python) = python3() {
+        return Some(python);
+    }
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "{test}: python3 is required to run the MCP e2e tests in CI but was not found on PATH",
+    );
+    eprintln!("skipping {test}: python3 not found (set CI=1 to make this a hard failure)");
+    None
 }
 
 fn fixture_server() -> PathBuf {
@@ -130,8 +148,7 @@ async fn run_turn(runtime: &BuiltRuntime, text: &str) -> everruns_runtime::TurnR
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_tool_executes_over_real_stdio_server() {
-    let Some(python) = python3() else {
-        eprintln!("skipping mcp_tool_executes_over_real_stdio_server: python3 not found");
+    let Some(python) = require_python3("mcp_tool_executes_over_real_stdio_server") else {
         return;
     };
     let marker = tempfile::tempdir().expect("marker").keep();
@@ -162,8 +179,7 @@ async fn mcp_tool_executes_over_real_stdio_server() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_tool_blocked_when_approval_denied() {
-    let Some(python) = python3() else {
-        eprintln!("skipping mcp_tool_blocked_when_approval_denied: python3 not found");
+    let Some(python) = require_python3("mcp_tool_blocked_when_approval_denied") else {
         return;
     };
     let marker = tempfile::tempdir().expect("marker").keep();
@@ -186,8 +202,7 @@ async fn mcp_tool_blocked_when_approval_denied() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn readonly_mcp_tool_runs_without_approval() {
-    let Some(python) = python3() else {
-        eprintln!("skipping readonly_mcp_tool_runs_without_approval: python3 not found");
+    let Some(python) = require_python3("readonly_mcp_tool_runs_without_approval") else {
         return;
     };
     let marker = tempfile::tempdir().expect("marker").keep();
