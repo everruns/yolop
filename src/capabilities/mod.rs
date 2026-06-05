@@ -6,6 +6,7 @@
 pub(crate) mod client_commands;
 mod host;
 pub mod skills;
+pub(crate) mod tool_search;
 pub(crate) mod your;
 
 pub(crate) use client_commands::{CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCapability};
@@ -14,3 +15,4 @@ pub(crate) use host::{
     CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, MCP_APPROVAL_CAPABILITY_ID,
     McpApprovalCapability, SETUP_CAPABILITY_ID, SetupCapability,
 };
+pub(crate) use tool_search::{TOOL_SEARCH_CAPABILITY_ID, ToolSearchCapability};

@@ -10,7 +10,7 @@ use crate::capabilities::{
     ATTRIBUTION_CAPABILITY_ID, AttributionCapability, CLIENT_COMMANDS_CAPABILITY_ID,
     ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, MCP_APPROVAL_CAPABILITY_ID, McpApprovalCapability,
-    SETUP_CAPABILITY_ID, SetupCapability,
+    SETUP_CAPABILITY_ID, SetupCapability, TOOL_SEARCH_CAPABILITY_ID, ToolSearchCapability,
 };
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
@@ -20,10 +20,9 @@ use async_trait::async_trait;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, COMPACTION_CAPABILITY_ID,
     CompactionCapability, FileSystemCapability, INFINITY_CONTEXT_CAPABILITY_ID,
-    InfinityContextCapability, LoopDetectionCapability, OPENAI_TOOL_SEARCH_CAPABILITY_ID,
-    OpenAiToolSearchCapability, PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability,
-    SKILLS_CAPABILITY_ID, StatelessTodoListCapability, ToolOutputPersistenceCapability,
-    WebFetchCapability,
+    InfinityContextCapability, LoopDetectionCapability, PROMPT_CACHING_CAPABILITY_ID,
+    PromptCachingCapability, SKILLS_CAPABILITY_ID, StatelessTodoListCapability,
+    ToolOutputPersistenceCapability, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
@@ -911,10 +910,10 @@ fn coding_harness_capabilities(
         AgentCapabilityConfig::new("stateless_todo_list"),
         AgentCapabilityConfig::new("loop_detection"),
         AgentCapabilityConfig::new(PROMPT_CACHING_CAPABILITY_ID),
-        // Deferred tool loading on supported models (default threshold: 15
-        // tools). yolop exposes ~17 tools, so this activates on OpenAI
-        // GPT-5.4+/5.5 and is silently ignored elsewhere.
-        AgentCapabilityConfig::new(OPENAI_TOOL_SEARCH_CAPABILITY_ID),
+        // Provider-agnostic deferred tool loading (default threshold: 15
+        // tools). Core tools stay fully loaded; the long tail is stubbed until
+        // the model loads it via the `tool_search` tool. Works on every model.
+        AgentCapabilityConfig::new(TOOL_SEARCH_CAPABILITY_ID),
         AgentCapabilityConfig::new("tool_output_persistence"),
         AgentCapabilityConfig::new("duckduckgo"),
         AgentCapabilityConfig::new(ATTRIBUTION_CAPABILITY_ID),
@@ -1150,11 +1149,12 @@ pub async fn build_with_options(
     capabilities.register(StatelessTodoListCapability);
     capabilities.register(LoopDetectionCapability);
     capabilities.register(PromptCachingCapability::new());
-    // Deferred tool loading (schemas fetched on demand). Pure optimization:
-    // the runtime self-disables it for any model whose profile lacks
-    // tool_search support (everything except OpenAI GPT-5.4+/5.5), so it is a
-    // no-op for Anthropic/Google/OpenRouter/Ollama/llmsim.
-    capabilities.register(OpenAiToolSearchCapability::new());
+    // Provider-agnostic deferred tool loading (vendored, see
+    // `capabilities::tool_search`). Keeps core file/shell tools fully loaded
+    // and defers the long tail behind a `tool_search` tool, revealing real
+    // schemas progressively. Works on every provider/model — unlike the native
+    // `openai_tool_search`, whose Responses round-trip is broken (EVE-521).
+    capabilities.register(ToolSearchCapability::new());
     capabilities.register(ToolOutputPersistenceCapability);
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebFetchCapability::from_env());
@@ -1930,13 +1930,13 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_tool_search() {
-        // Deferred tool loading must be wired for both hosts — it is a
-        // model-gated no-op, so there is no reason to scope it to the TUI.
+        // Deferred tool loading must be wired for both hosts — it works on
+        // every provider, so there is no reason to scope it to the TUI.
         for client_commands in [false, true] {
             let ids = coding_harness_capabilities(client_commands);
             assert!(
                 ids.iter()
-                    .any(|cap| cap.capability_id() == OPENAI_TOOL_SEARCH_CAPABILITY_ID),
+                    .any(|cap| cap.capability_id() == TOOL_SEARCH_CAPABILITY_ID),
                 "tool_search must be enabled (client_commands={client_commands})"
             );
         }
@@ -1949,7 +1949,7 @@ mod tests {
     /// helping and this test fails loudly so the threshold can be revisited.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tool_surface_exceeds_tool_search_threshold() {
-        use everruns_core::capabilities::DEFAULT_TOOL_SEARCH_THRESHOLD;
+        use crate::capabilities::tool_search::DEFAULT_TOOL_SEARCH_THRESHOLD;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");

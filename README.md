@@ -59,10 +59,11 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
   - `web_fetch` — HTTP GET/HEAD with optional markdown/text conversion.
   - `tool_output_persistence` — large bash output spilled to disk under
     `/outputs/` inside the current session folder.
-  - `openai_tool_search` — deferred tool loading: on OpenAI GPT-5.4+/5.5 the
-    model fetches tool schemas on demand instead of receiving all of them
-    upfront, saving input tokens. A self-disabling no-op on every other
-    provider/model. See [`specs/tool-search.md`](./specs/tool-search.md).
+  - `tool_search` — provider-agnostic deferred tool loading (vendored). Core
+    file/shell tools stay fully loaded; long-tail tools are hidden until the
+    model loads them on demand via a `tool_search` tool, saving input tokens.
+    Works on every provider/model. See
+    [`specs/tool-search.md`](./specs/tool-search.md).
 - **Approval prompts (opt-in via `--ask`)**. Off by default: yolop acts
   autonomously. `--ask` prompts y/n before every write/edit/delete and every
   bash command, with a unified diff for writes. `--print` mode always
