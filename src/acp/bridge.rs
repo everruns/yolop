@@ -14,8 +14,8 @@ use everruns_core::message::{ContentPart, MessageRole};
 use serde_json::Value;
 
 use super::protocol::{
-    ContentBlock, PlanEntry, PlanPriority, PlanStatus, SessionUpdate, ToolCallContent,
-    ToolCallStatus, ToolKind,
+    self, ContentBlock, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, SessionUpdate,
+    ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 
 /// The runtime's todo tool. write_todos updates are surfaced as ACP plans
@@ -59,9 +59,9 @@ impl Translator {
                     return Vec::new();
                 }
                 self.current_message_streamed = true;
-                vec![SessionUpdate::AgentMessageChunk {
-                    content: ContentBlock::text(&data.delta),
-                }]
+                vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                    &data.delta,
+                ))]
             }
             EventData::OutputMessageCompleted(data) => {
                 if self.current_message_streamed {
@@ -71,9 +71,9 @@ impl Translator {
                     return Vec::new();
                 }
                 match data.message.text().map(str::trim) {
-                    Some(text) if !text.is_empty() => vec![SessionUpdate::AgentMessageChunk {
-                        content: ContentBlock::text(text),
-                    }],
+                    Some(text) if !text.is_empty() => {
+                        vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(text))]
+                    }
                     _ => Vec::new(),
                 }
             }
@@ -81,25 +81,24 @@ impl Translator {
                 if data.delta.is_empty() {
                     return Vec::new();
                 }
-                vec![SessionUpdate::AgentThoughtChunk {
-                    content: ContentBlock::text(&data.delta),
-                }]
+                vec![SessionUpdate::AgentThoughtChunk(protocol::text_chunk(
+                    &data.delta,
+                ))]
             }
             EventData::ReasonItem(data) => data
                 .summary
                 .iter()
                 .filter_map(|segment| {
                     let trimmed = segment.trim();
-                    (!trimmed.is_empty()).then(|| SessionUpdate::AgentThoughtChunk {
-                        content: ContentBlock::text(trimmed),
-                    })
+                    (!trimmed.is_empty())
+                        .then(|| SessionUpdate::AgentThoughtChunk(protocol::text_chunk(trimmed)))
                 })
                 .collect(),
             EventData::ToolStarted(data) => {
                 let name = data.tool_call.name.as_str();
                 if name == WRITE_TODOS {
                     return plan_from_value(&data.tool_call.arguments)
-                        .map(|entries| vec![SessionUpdate::Plan { entries }])
+                        .map(|entries| vec![SessionUpdate::Plan(Plan::new(entries))])
                         .unwrap_or_default();
                 }
                 let title = data
@@ -108,14 +107,12 @@ impl Translator {
                     .or(data.display_name.as_deref())
                     .unwrap_or(name)
                     .to_string();
-                vec![SessionUpdate::ToolCall {
-                    tool_call_id: data.tool_call.id.clone(),
-                    title,
-                    kind: tool_kind(name),
-                    status: ToolCallStatus::InProgress,
-                    raw_input: non_null(data.tool_call.arguments.clone()),
-                    content: Vec::new(),
-                }]
+                vec![SessionUpdate::ToolCall(
+                    ToolCall::new(data.tool_call.id.clone(), title)
+                        .kind(tool_kind(name))
+                        .status(ToolCallStatus::InProgress)
+                        .raw_input(non_null(data.tool_call.arguments.clone())),
+                )]
             }
             EventData::ToolCompleted(data) => {
                 if data.tool_name == WRITE_TODOS {
@@ -125,7 +122,7 @@ impl Translator {
                     return result_value(data)
                         .as_ref()
                         .and_then(plan_from_value)
-                        .map(|entries| vec![SessionUpdate::Plan { entries }])
+                        .map(|entries| vec![SessionUpdate::Plan(Plan::new(entries))])
                         .unwrap_or_default();
                 }
                 let status = if data.success {
@@ -134,14 +131,12 @@ impl Translator {
                     ToolCallStatus::Failed
                 };
                 let content = tool_result_content(data)
-                    .map(|block| vec![ToolCallContent::Content { content: block }])
+                    .map(|block| vec![ToolCallContent::Content(protocol::Content::new(block))])
                     .unwrap_or_default();
-                vec![SessionUpdate::ToolCallUpdate {
-                    tool_call_id: data.tool_call_id.clone(),
-                    status: Some(status),
-                    content,
-                    raw_output: None,
-                }]
+                vec![SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    data.tool_call_id.clone(),
+                    ToolCallUpdateFields::new().status(status).content(content),
+                ))]
             }
             _ => Vec::new(),
         }
@@ -170,7 +165,7 @@ fn tool_result_content(data: &ToolCompletedData) -> Option<ContentBlock> {
     if trimmed.is_empty() {
         None
     } else {
-        Some(ContentBlock::text(trimmed))
+        Some(protocol::text_block(trimmed))
     }
 }
 
@@ -186,15 +181,11 @@ fn plan_from_value(value: &Value) -> Option<Vec<PlanEntry>> {
                 return None;
             }
             let status = match todo.get("status").and_then(Value::as_str) {
-                Some("completed") => PlanStatus::Completed,
-                Some("in_progress") => PlanStatus::InProgress,
-                _ => PlanStatus::Pending,
+                Some("completed") => PlanEntryStatus::Completed,
+                Some("in_progress") => PlanEntryStatus::InProgress,
+                _ => PlanEntryStatus::Pending,
             };
-            Some(PlanEntry {
-                content: content.to_string(),
-                priority: PlanPriority::Medium,
-                status,
-            })
+            Some(PlanEntry::new(content, PlanEntryPriority::Medium, status))
         })
         .collect::<Vec<_>>();
     Some(entries)
@@ -258,9 +249,9 @@ mod tests {
         )));
         assert_eq!(
             updates,
-            vec![SessionUpdate::AgentMessageChunk {
-                content: ContentBlock::text("Hel")
-            }]
+            vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                "Hel"
+            ))]
         );
     }
 
@@ -303,9 +294,9 @@ mod tests {
         )));
         assert_eq!(
             updates,
-            vec![SessionUpdate::AgentMessageChunk {
-                content: ContentBlock::text("full answer")
-            }]
+            vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                "full answer"
+            ))]
         );
     }
 
@@ -321,9 +312,9 @@ mod tests {
         )));
         assert_eq!(
             updates,
-            vec![SessionUpdate::AgentThoughtChunk {
-                content: ContentBlock::text("pondering")
-            }]
+            vec![SessionUpdate::AgentThoughtChunk(protocol::text_chunk(
+                "pondering"
+            ))]
         );
     }
 
@@ -342,14 +333,12 @@ mod tests {
         })));
         assert_eq!(
             updates,
-            vec![SessionUpdate::ToolCall {
-                tool_call_id: "call_1".into(),
-                title: "Listing files".into(),
-                kind: ToolKind::Execute,
-                status: ToolCallStatus::InProgress,
-                raw_input: Some(json!({ "command": "ls" })),
-                content: vec![],
-            }]
+            vec![SessionUpdate::ToolCall(
+                protocol::ToolCall::new("call_1", "Listing files")
+                    .kind(ToolKind::Execute)
+                    .status(ToolCallStatus::InProgress)
+                    .raw_input(json!({ "command": "ls" })),
+            )]
         );
     }
 
@@ -373,19 +362,12 @@ mod tests {
         })));
         assert_eq!(updates.len(), 1);
         match &updates[0] {
-            SessionUpdate::ToolCallUpdate {
-                tool_call_id,
-                status,
-                content,
-                ..
-            } => {
-                assert_eq!(tool_call_id, "call_1");
-                assert_eq!(*status, Some(ToolCallStatus::Failed));
+            SessionUpdate::ToolCallUpdate(update) => {
+                assert_eq!(update.tool_call_id.to_string(), "call_1");
+                assert_eq!(update.fields.status, Some(ToolCallStatus::Failed));
                 assert_eq!(
-                    content,
-                    &vec![ToolCallContent::Content {
-                        content: ContentBlock::text("error: boom")
-                    }]
+                    update.fields.content,
+                    Some(vec![protocol::content("error: boom")])
                 );
             }
             other => panic!("expected tool_call_update, got {other:?}"),
@@ -413,25 +395,19 @@ mod tests {
         })));
         assert_eq!(
             updates,
-            vec![SessionUpdate::Plan {
-                entries: vec![
-                    PlanEntry {
-                        content: "first".into(),
-                        priority: PlanPriority::Medium,
-                        status: PlanStatus::Completed,
-                    },
-                    PlanEntry {
-                        content: "second".into(),
-                        priority: PlanPriority::Medium,
-                        status: PlanStatus::InProgress,
-                    },
-                    PlanEntry {
-                        content: "third".into(),
-                        priority: PlanPriority::Medium,
-                        status: PlanStatus::Pending,
-                    },
-                ]
-            }]
+            vec![SessionUpdate::Plan(Plan::new(vec![
+                PlanEntry::new(
+                    "first",
+                    PlanEntryPriority::Medium,
+                    PlanEntryStatus::Completed,
+                ),
+                PlanEntry::new(
+                    "second",
+                    PlanEntryPriority::Medium,
+                    PlanEntryStatus::InProgress,
+                ),
+                PlanEntry::new("third", PlanEntryPriority::Medium, PlanEntryStatus::Pending,),
+            ]))]
         );
     }
 

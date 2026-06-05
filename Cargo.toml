@@ -13,6 +13,7 @@ name = "yolop"
 path = "src/main.rs"
 
 [dependencies]
+agent-client-protocol = "0.13.1"
 anyhow = "1.0"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -28,6 +29,7 @@ similar = "3"
 toml = "1"
 textwrap = "0.16"
 tokio = { version = "1.50", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
@@ -38,6 +40,7 @@ everruns-openai = "0.8.38"
 # everruns server/worker never enable it (specs/mcp.md, upstream runtime-mcp.md D2).
 everruns-runtime = { version = "0.8.38", features = ["mcp-stdio"] }
 everruns-integrations-duckduckgo = "0.8.38"
+futures = "0.3"
 
 [dev-dependencies]
 portable-pty = "0.9.0"

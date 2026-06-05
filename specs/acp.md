@@ -103,20 +103,21 @@ the channel gate's existing semantics.
 ```
 src/acp/
   mod.rs        # module root: production RuntimeFactory, run_stdio entry, e2e tests
-  protocol.rs   # serde types for the ACP wire format (camelCase fields, snake_case discriminators)
+  protocol.rs   # SDK-backed ACP schema shim plus yolop helpers
   bridge.rs     # pure runtime-event → session/update translation (Translator)
-  server.rs     # JSON-RPC peer, dispatch, session map, turn streaming, permission bridge
+  server.rs     # SDK transport/dispatch wiring, session map, turn streaming, permission bridge
 ```
 
 Concurrency model in `server::serve`:
 
-- A single **writer task** serialises every outbound line so responses,
-  notifications, and agent→client requests never interleave.
-- The **read loop** never blocks on slow work — `session/prompt` runs in its own
-  task — so `session/cancel` and permission responses keep flowing during a
-  turn.
-- Agent→client requests (`session/request_permission`) are correlated by id
-  through a pending-response table the read loop resolves.
+- The upstream Rust SDK owns newline JSON-RPC parsing, serialization, typed
+  request dispatch, response correlation, and `session/request_permission`
+  replies.
+- `session/prompt` runs in its own Tokio task so SDK dispatch keeps processing
+  `session/cancel` notifications and permission responses during a turn.
+- `serve` uses the SDK `Lines` transport with an EOF signal so a client
+  disconnect still winds the agent process down even if a permission request is
+  outstanding.
 
 `serve` is generic over the byte streams and a `RuntimeFactory`, so the binary
 wires it to real stdin/stdout with a provider-backed factory while tests drive
@@ -126,8 +127,8 @@ it over `tokio::io::duplex` pipes with a scripted llmsim runtime.
 
 Three layers, all offline (no API key):
 
-1. **Wire types** (`protocol.rs`) — serde round-trips assert exact field casing
-   and discriminator values against the published schema.
+1. **Wire types** (`protocol.rs`) — SDK schema round-trips assert exact field
+   casing and discriminator values against the published schema.
 2. **Translation** (`bridge.rs`) — the `Translator` is exercised per event type
    (deltas, tool lifecycle, todos→plan, dedup, streamed-vs-completed).
 3. **End-to-end** (`mod.rs`) — a real `serve` loop over duplex pipes driven by
