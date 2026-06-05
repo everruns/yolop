@@ -4,10 +4,17 @@
 // the binary still launches and the agent loop wires up correctly without any
 // API key.
 //
-// The `#[ignore]`-marked test reaches a real OpenAI endpoint and is meant to
-// be run under Doppler in CI's live-smoke job:
+// The live tests reach real provider endpoints (OpenAI and OpenRouter). They
+// skip themselves when the relevant API key is absent, so a plain `cargo test`
+// stays offline — no `#[ignore]` needed. CI's live-smoke job runs them under
+// Doppler with `YOLOP_REQUIRE_LIVE_TESTS=1`, which upgrades a missing key from
+// "skip" to a hard failure so a misconfigured secret can't report a false
+// green:
 //
-//     doppler run -- cargo test --test integration -- --ignored
+//     YOLOP_REQUIRE_LIVE_TESTS=1 doppler run -- cargo test --test integration
+//
+// The OpenRouter tests default to a Nemotron 3 model and guard the Chat
+// Completions tool-calling path (everruns EVE-522 / EVE-523).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -733,11 +740,33 @@ fn acp_stdio_handshake_smoke() {
     );
 }
 
+/// Resolve a provider API key for a live test.
+///
+/// Returns `None` (the test should then `return` early) when the key is absent,
+/// so a plain `cargo test` run stays offline without any `#[ignore]`. CI's
+/// live-smoke job sets `YOLOP_REQUIRE_LIVE_TESTS=1`, which turns a missing key
+/// into a hard failure — a misconfigured secret must not let the live check
+/// report a false green.
+///
+/// This is a presence check only: it never reads the key value into memory, so
+/// the secret is not materialized here and a non-UTF-8 value still counts as
+/// present.
+fn live_key_or_skip(var: &str) -> Option<()> {
+    if std::env::var_os(var).is_some_and(|value| !value.is_empty()) {
+        return Some(());
+    }
+    assert!(
+        std::env::var_os("YOLOP_REQUIRE_LIVE_TESTS").is_none(),
+        "{var} is required when YOLOP_REQUIRE_LIVE_TESTS is set"
+    );
+    eprintln!("skipping live test: {var} not set");
+    None
+}
+
 #[test]
-#[ignore = "requires OPENAI_API_KEY; run under doppler with --ignored"]
 fn acp_openai_handshake_smoke() {
-    let Ok(_) = std::env::var("OPENAI_API_KEY") else {
-        panic!("OPENAI_API_KEY required for live ACP smoke test");
+    let Some(_) = live_key_or_skip("OPENAI_API_KEY") else {
+        return;
     };
     let result = run_acp_handshake("openai", "Reply with exactly the single word: pong");
     assert_eq!(
@@ -789,10 +818,9 @@ fn wait_for_process_exit(
 }
 
 #[test]
-#[ignore = "requires OPENAI_API_KEY; run under doppler with --ignored"]
 fn openai_print_smoke() {
-    let Ok(_) = std::env::var("OPENAI_API_KEY") else {
-        panic!("OPENAI_API_KEY required for live smoke test");
+    let Some(_) = live_key_or_skip("OPENAI_API_KEY") else {
+        return;
     };
     let tmp = tempfile::tempdir().expect("tempdir");
     let output = Command::new(yolop_binary())
@@ -815,6 +843,139 @@ fn openai_print_smoke() {
     assert!(
         stdout.to_lowercase().contains("pong"),
         "expected `pong` in stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("success=true"),
+        "expected success=true: {stdout}"
+    );
+}
+
+/// Model used by the live OpenRouter smoke tests. Defaults to a Nemotron 3
+/// variant (the path these tests exist to protect); override with
+/// `YOLOP_LIVE_OPENROUTER_MODEL` to pin a cheaper or less rate-limited model in
+/// CI without touching code.
+fn live_openrouter_model() -> String {
+    std::env::var("YOLOP_LIVE_OPENROUTER_MODEL")
+        .unwrap_or_else(|_| "nvidia/nemotron-3-ultra-550b-a55b".to_string())
+}
+
+/// True when a live run failed only because the upstream provider rate-limited
+/// us (HTTP 429). That is infrastructure, not a yolop regression, so the live
+/// OpenRouter tests skip on it rather than fail — the shared Nemotron endpoints
+/// 429 often enough to make a required CI check flaky otherwise. A real
+/// regression in the tool-calling path produces a missing sentinel or
+/// `success=false`, not a 429, so it is still caught.
+fn looks_rate_limited(combined: &str) -> bool {
+    let lower = combined.to_lowercase();
+    combined.contains("429")
+        && (lower.contains("rate-limit") || lower.contains("too many requests"))
+}
+
+#[test]
+fn openrouter_print_smoke() {
+    let Some(_) = live_key_or_skip("OPENROUTER_API_KEY") else {
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let model = live_openrouter_model();
+    let output = Command::new(yolop_binary())
+        .args([
+            "--provider",
+            "openrouter",
+            "--model",
+            &model,
+            "--session-dir",
+            tmp.path().to_str().unwrap(),
+            "-p",
+            "Reply with exactly the single word: pong",
+        ])
+        .output()
+        .expect("spawn yolop --provider openrouter");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() && looks_rate_limited(&format!("{stdout}{stderr}")) {
+        eprintln!("skipping live test: upstream provider rate-limited (429)");
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "yolop openrouter smoke failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.to_lowercase().contains("pong"),
+        "expected `pong` in stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("success=true"),
+        "expected success=true: {stdout}"
+    );
+}
+
+/// Live regression test for the OpenRouter tool-calling path (everruns EVE-522
+/// and EVE-523).
+///
+/// OpenRouter's `/responses` endpoint is stateless (it ignores
+/// `previous_response_id`), so yolop routes OpenRouter through the Chat
+/// Completions driver. On that path, OpenRouter/DeepInfra streams an empty
+/// `content: ""` in the same chunk as `finish_reason: "tool_calls"`, which used
+/// to make the runtime silently drop the tool call — the agent would emit a
+/// `read_file` call, never execute it, and end the turn with no action.
+///
+/// This test seeds a unique sentinel in a workspace file and asks the model to
+/// read it back. The sentinel is *not* in the prompt, so it can only appear in
+/// the answer if `read_file` actually executed and its result flowed back into
+/// the next turn. A regression on either bug makes this fail.
+#[test]
+fn openrouter_tool_call_executes_end_to_end() {
+    let Some(_) = live_key_or_skip("OPENROUTER_API_KEY") else {
+        return;
+    };
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let sessions = tempfile::tempdir().expect("sessions tempdir");
+    // Unique per run so a stale cache or a model that pattern-matches a known
+    // token can't fake a pass — the value only exists in the file we just wrote.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_nanos();
+    let sentinel = format!("MARMOT-{}-{nanos}", std::process::id());
+    std::fs::write(
+        workspace.path().join("secret.txt"),
+        format!("The access token is {sentinel}.\n"),
+    )
+    .expect("write secret.txt");
+
+    let model = live_openrouter_model();
+    let output = Command::new(yolop_binary())
+        .args([
+            "--provider",
+            "openrouter",
+            "--model",
+            &model,
+            "-C",
+            workspace.path().to_str().unwrap(),
+            "--session-dir",
+            sessions.path().to_str().unwrap(),
+            "-p",
+            "Read the file secret.txt in the workspace and reply with ONLY the \
+             access token it contains, and nothing else.",
+        ])
+        .output()
+        .expect("spawn yolop --provider openrouter");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() && looks_rate_limited(&format!("{stdout}{stderr}")) {
+        eprintln!("skipping live test: upstream provider rate-limited (429)");
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "yolop openrouter tool-call smoke failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains(&sentinel),
+        "expected sentinel {sentinel} in stdout (proves read_file executed and \
+         its result reached the model): {stdout}"
     );
     assert!(
         stdout.contains("success=true"),
