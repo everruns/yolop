@@ -10,7 +10,7 @@ use crate::capabilities::{
     ATTRIBUTION_CAPABILITY_ID, AttributionCapability, CLIENT_COMMANDS_CAPABILITY_ID,
     ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, MCP_APPROVAL_CAPABILITY_ID, McpApprovalCapability,
-    SETUP_CAPABILITY_ID, SetupCapability,
+    SETUP_CAPABILITY_ID, SetupCapability, TOOL_SEARCH_CAPABILITY_ID, ToolSearchCapability,
 };
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
@@ -910,6 +910,11 @@ fn coding_harness_capabilities(
         AgentCapabilityConfig::new("stateless_todo_list"),
         AgentCapabilityConfig::new("loop_detection"),
         AgentCapabilityConfig::new(PROMPT_CACHING_CAPABILITY_ID),
+        // Provider-agnostic deferred tool loading. Core tools stay fully
+        // loaded; the long tail is stubbed until the model loads it via the
+        // `tool_search` tool. Works on every model. Default threshold is 15
+        // tools (see DEFAULT_TOOL_SEARCH_THRESHOLD).
+        AgentCapabilityConfig::new(TOOL_SEARCH_CAPABILITY_ID),
         AgentCapabilityConfig::new("tool_output_persistence"),
         AgentCapabilityConfig::new("duckduckgo"),
         AgentCapabilityConfig::new(ATTRIBUTION_CAPABILITY_ID),
@@ -1145,6 +1150,14 @@ pub async fn build_with_options(
     capabilities.register(StatelessTodoListCapability);
     capabilities.register(LoopDetectionCapability);
     capabilities.register(PromptCachingCapability::new());
+    // Provider-agnostic deferred tool loading (vendored, see
+    // `capabilities::tool_search`). Keeps core file/shell tools fully loaded
+    // and defers the long tail behind a `tool_search` tool, revealing real
+    // schemas progressively. Works on every provider/model — unlike the native
+    // `openai_tool_search`, whose Responses round-trip is broken (EVE-521).
+    // TODO(EVE-521): replace with the upstream `ToolSearchCapability` (renamed
+    // from `GenericToolSearchCapability`) once it ships progressive disclosure.
+    capabilities.register(ToolSearchCapability::new());
     capabilities.register(ToolOutputPersistenceCapability);
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebFetchCapability::from_env());
@@ -1915,6 +1928,56 @@ mod tests {
         assert!(
             ids.iter()
                 .any(|cap| cap.capability_id() == "tool_output_persistence")
+        );
+    }
+
+    #[test]
+    fn coding_harness_enables_tool_search() {
+        // Deferred tool loading must be wired for every host configuration —
+        // it works on every provider, so there is no reason to scope it.
+        for client_commands in [false, true] {
+            for mcp_approval in [false, true] {
+                let ids = coding_harness_capabilities(client_commands, mcp_approval);
+                assert!(
+                    ids.iter()
+                        .any(|cap| cap.capability_id() == TOOL_SEARCH_CAPABILITY_ID),
+                    "tool_search must be enabled (client_commands={client_commands}, mcp_approval={mcp_approval})"
+                );
+            }
+        }
+    }
+
+    /// Tool search only activates once the tool surface crosses
+    /// `DEFAULT_TOOL_SEARCH_THRESHOLD`; below it, full schemas are sent even
+    /// with the capability on. This guards the integration: if yolop's tool
+    /// count ever drops below the threshold, deferred loading silently stops
+    /// helping and this test fails loudly so the threshold can be revisited.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tool_surface_exceeds_tool_search_threshold() {
+        use crate::capabilities::tool_search::DEFAULT_TOOL_SEARCH_THRESHOLD;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            ApprovalGate::auto(),
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        let tool_count = built.startup.tool_names.len();
+        assert!(
+            tool_count > DEFAULT_TOOL_SEARCH_THRESHOLD,
+            "tool surface ({tool_count}) must exceed the tool_search threshold \
+             ({DEFAULT_TOOL_SEARCH_THRESHOLD}) for deferred loading to activate; \
+             if the surface shrinks, lower the threshold via \
+             ToolSearchCapability::with_threshold (or DEFAULT_TOOL_SEARCH_THRESHOLD)"
         );
     }
 
