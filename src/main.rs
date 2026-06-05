@@ -22,6 +22,9 @@ mod version;
 mod streaming_tests;
 
 #[cfg(test)]
+mod mcp_e2e_tests;
+
+#[cfg(test)]
 mod agent_scenarios;
 
 use anyhow::Result;
