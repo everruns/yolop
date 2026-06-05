@@ -51,9 +51,36 @@ fn version_flag_succeeds() {
         .expect("spawn yolop --version");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_version_output(&stdout);
+}
+
+#[test]
+fn version_command_succeeds() {
+    let output = Command::new(yolop_binary())
+        .arg("version")
+        .output()
+        .expect("spawn yolop version");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_version_output(&stdout);
+}
+
+fn assert_version_output(stdout: &str) {
     assert!(
         stdout.contains("yolop"),
         "version output missing binary name: {stdout}"
+    );
+    assert!(
+        stdout.contains(env!("CARGO_PKG_VERSION")),
+        "version output missing package version: {stdout}"
+    );
+    assert!(
+        stdout.contains("commit "),
+        "version output missing commit SHA: {stdout}"
+    );
+    assert!(
+        stdout.contains("everruns-runtime "),
+        "version output missing runtime version: {stdout}"
     );
 }
 

@@ -239,6 +239,7 @@ full protocol surface, mappings, and current limitations.
 
 | Command            | Description                                     |
 | ------------------ | ----------------------------------------------- |
+| `yolop version`    | Print yolop, commit, and runtime versions       |
 | `yolop into zed`   | Configure yolop as a custom ACP agent in Zed    |
 
 `RUST_LOG` is honored for the underlying tracing layer (writes to stderr).
