@@ -1,6 +1,6 @@
 # MCP — Model Context Protocol client support
 
-Status: v1 implemented (HTTP + stdio, workspace + global config).
+Status: v1 implemented (HTTP + stdio, workspace + global config, approval gating).
 
 ## Why
 
@@ -30,9 +30,16 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
   the file. Unset placeholders are left intact so the gap is debuggable.
 - **Discovery + execution**: the runtime discovers each server's tools live
   (`tools/list`) and routes `mcp_*` tool calls to the MCP executor. Tool names
-  are prefixed (`mcp__<server>__<tool>`) by the runtime to avoid collisions.
+  are prefixed (`mcp_<server>__<tool>`) by the runtime to avoid collisions.
 - **Visibility**: `/mcp` lists the configured servers; configured server names
   also appear in `StartupInfo`.
+- **Approval gating**: `McpApprovalCapability` contributes a `PreToolUseHook`
+  (via the `Capability::pre_tool_use_hooks` seam, everruns 0.8.38+) that routes
+  every non-readonly `mcp_*` call through the same `ApprovalGate` as `bash`,
+  honoring the readonly hint the runtime derives from MCP tool annotations.
+  Registered only when MCP servers are configured; a no-op when the gate is
+  `Auto` (no `--ask`, and `--print`). Non-MCP tools keep their own gates and
+  are not double-prompted.
 
 Config shape:
 
@@ -54,18 +61,14 @@ Config shape:
 - **HTTP** keeps the runtime's DNS-pinned SSRF protection — no relaxation.
 - **stdio** spawns local processes the user explicitly listed in their own
   `.mcp.json`. Authoring that file is the act of consent, mirroring how other
-  MCP clients treat a project-scoped server list. yolop does not yet add a
-  per-tool interactive approval prompt for MCP calls (the in-process runtime
-  exposes no capability-level pre-tool hook today); MCP tools therefore run
-  without the `bash`/file-write approval gate.
+  MCP clients treat a project-scoped server list.
+- **Per-call approval**: with `--ask`, every non-readonly MCP tool call is
+  gated through the `ApprovalGate` (see "Approval gating" above), the same as
+  `bash` and file writes. Without `--ask` (and in `--print`) the gate
+  auto-approves, consistent with yolop acting autonomously by default.
 
 ## Non-goals (for now)
 
-- Per-tool interactive approval of MCP calls. Tracked as a follow-up — the
-  clean fix is an upstream `Capability::pre_tool_use_hooks()` seam (or a
-  server-level consent prompt persisted in settings) so yolop can route
-  `mcp_*` calls through its `ApprovalGate` honoring the readonly/destructive
-  `ToolHints` that the runtime already derives from MCP annotations.
 - OAuth (browser/device-code) for remote servers. API-key/bearer via `headers`
   (with `${VAR}` expansion) covers the common case; the runtime exposes an
   `mcp_auth_provider()` seam for a future env/device-code provider.
@@ -81,4 +84,5 @@ Config shape:
 | Config loading (scopes, merge, `${VAR}`) | `src/mcp_config.rs` |
 | Wiring into the session | `src/runtime.rs` (`session_mcp_servers`, `StartupInfo.mcp_server_names`) |
 | `/mcp` command | `src/capabilities/client_commands.rs`, `src/host_ui.rs`, `src/app.rs` |
+| Approval gating | `McpApprovalCapability` in `src/capabilities/host.rs`; `ApprovalRequest::McpTool` in `src/approval.rs` |
 | Client / transports / executor | upstream `everruns-mcp`, `everruns-runtime` (`mcp-stdio` feature) |

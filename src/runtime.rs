@@ -9,7 +9,8 @@ use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability, YourStore};
 use crate::capabilities::{
     ATTRIBUTION_CAPABILITY_ID, AttributionCapability, CLIENT_COMMANDS_CAPABILITY_ID,
     ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
+    ENVIRONMENT_CONTEXT_CAPABILITY_ID, MCP_APPROVAL_CAPABILITY_ID, McpApprovalCapability,
+    SETUP_CAPABILITY_ID, SetupCapability,
 };
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
@@ -872,7 +873,10 @@ fn normalize_openai_reasoning_effort(reasoning_effort: Option<String>) -> Option
     )
 }
 
-fn coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabilityConfig> {
+fn coding_harness_capabilities(
+    client_commands: bool,
+    mcp_approval: bool,
+) -> Vec<AgentCapabilityConfig> {
     let mut caps = Vec::new();
     // Terminal-side commands lead the registry so the most-typed commands
     // (/help, /clear, /quit, …) surface first in the palette. Enabled only
@@ -919,6 +923,9 @@ fn coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabilityConf
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
     ]);
+    if mcp_approval {
+        caps.push(AgentCapabilityConfig::new(MCP_APPROVAL_CAPABILITY_ID));
+    }
     caps
 }
 
@@ -1173,6 +1180,13 @@ pub async fn build_with_options(
         workspace: workspace.clone(),
         gate: gate.clone(),
     });
+    // Gate MCP tool calls (which execute via the runtime, outside the bash/file
+    // gates) through the same ApprovalGate. Registered + activated only when MCP
+    // servers are configured, so it adds nothing when MCP is unused.
+    let has_mcp_servers = !mcp_servers.is_empty();
+    if has_mcp_servers {
+        capabilities.register(McpApprovalCapability { gate: gate.clone() });
+    }
     // Terminal-side slash commands. Registered only when the host can apply
     // their effects (the TUI). The capability declares help/tools/cwd/model/
     // effort/clear/quit and forwards each invocation as a `UiCommand` down
@@ -1220,7 +1234,8 @@ pub async fn build_with_options(
     // runtime owns. `session_id(...)` pins the id so resume can re-attach
     // to the same JSONL log (filename encodes the id).
     let session_title = format!("yolop @ {}", canonical_root.display());
-    let harness_capabilities = coding_harness_capabilities(options.client_commands);
+    let harness_capabilities =
+        coding_harness_capabilities(options.client_commands, has_mcp_servers);
     let session_mcp_servers = mcp_servers.clone();
 
     let mut builder = InProcessRuntimeBuilder::new()
@@ -1901,7 +1916,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_tool_output_persistence() {
-        let ids = coding_harness_capabilities(false);
+        let ids = coding_harness_capabilities(false, false);
 
         assert!(
             ids.iter()
@@ -1911,7 +1926,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_loop_detection() {
-        let ids = coding_harness_capabilities(false);
+        let ids = coding_harness_capabilities(false, false);
 
         assert!(
             ids.iter()
@@ -1921,7 +1936,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_yolop_attribution() {
-        let ids = coding_harness_capabilities(false);
+        let ids = coding_harness_capabilities(false, false);
 
         assert!(
             ids.iter()
@@ -1930,8 +1945,26 @@ mod tests {
     }
 
     #[test]
+    fn coding_harness_gates_mcp_approval_on_flag() {
+        let without = coding_harness_capabilities(false, false);
+        assert!(
+            !without
+                .iter()
+                .any(|cap| cap.capability_id() == MCP_APPROVAL_CAPABILITY_ID),
+            "MCP approval must stay off when no MCP servers are configured"
+        );
+
+        let with = coding_harness_capabilities(false, true);
+        assert!(
+            with.iter()
+                .any(|cap| cap.capability_id() == MCP_APPROVAL_CAPABILITY_ID),
+            "MCP approval activates when MCP servers are configured"
+        );
+    }
+
+    #[test]
     fn coding_harness_gates_client_commands_on_flag() {
-        let without = coding_harness_capabilities(false);
+        let without = coding_harness_capabilities(false, false);
         assert!(
             !without
                 .iter()
@@ -1939,7 +1972,7 @@ mod tests {
             "client commands must stay off for hosts that can't apply them"
         );
 
-        let with = coding_harness_capabilities(true);
+        let with = coding_harness_capabilities(true, false);
         assert!(
             with.iter()
                 .any(|cap| cap.capability_id() == CLIENT_COMMANDS_CAPABILITY_ID),

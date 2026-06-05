@@ -295,13 +295,15 @@ shape that every MCP client understands. Two scopes are read and merged
   `command`.
 - String values support `${VAR}` expansion from the environment, so secrets
   stay out of the file (an unset `${VAR}` is left as-is so it's easy to spot).
-- Discovered tools are exposed to the model as `mcp__<server>__<tool>`.
+- Discovered tools are exposed to the model as `mcp_<server>__<tool>`.
 - `/mcp` lists the configured servers.
 
 Trust model: HTTP requests keep yolop's DNS-pinned SSRF protection; stdio
 servers run local processes you listed yourself, so authoring `.mcp.json` is
-the act of consent. MCP tool calls do not yet go through the interactive
-`bash`/file-write approval prompt — see [`specs/mcp.md`](specs/mcp.md).
+the act of consent. With `--ask`, every non-readonly MCP tool call goes through
+the same approval prompt as `bash` and file writes (readonly tools run free);
+without `--ask` it auto-approves, like the rest of yolop. See
+[`specs/mcp.md`](specs/mcp.md).
 
 ## Settings
 
