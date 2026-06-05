@@ -910,9 +910,10 @@ fn coding_harness_capabilities(
         AgentCapabilityConfig::new("stateless_todo_list"),
         AgentCapabilityConfig::new("loop_detection"),
         AgentCapabilityConfig::new(PROMPT_CACHING_CAPABILITY_ID),
-        // Provider-agnostic deferred tool loading (default threshold: 15
-        // tools). Core tools stay fully loaded; the long tail is stubbed until
-        // the model loads it via the `tool_search` tool. Works on every model.
+        // Provider-agnostic deferred tool loading. Core tools stay fully
+        // loaded; the long tail is stubbed until the model loads it via the
+        // `tool_search` tool. Works on every model. Default threshold is 15
+        // tools (see DEFAULT_TOOL_SEARCH_THRESHOLD).
         AgentCapabilityConfig::new(TOOL_SEARCH_CAPABILITY_ID),
         AgentCapabilityConfig::new("tool_output_persistence"),
         AgentCapabilityConfig::new("duckduckgo"),
@@ -1975,7 +1976,8 @@ mod tests {
             tool_count > DEFAULT_TOOL_SEARCH_THRESHOLD,
             "tool surface ({tool_count}) must exceed the tool_search threshold \
              ({DEFAULT_TOOL_SEARCH_THRESHOLD}) for deferred loading to activate; \
-             lower the threshold via capability config if the surface shrinks"
+             if the surface shrinks, lower the threshold via \
+             ToolSearchCapability::with_threshold (or DEFAULT_TOOL_SEARCH_THRESHOLD)"
         );
     }
 

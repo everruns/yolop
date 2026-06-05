@@ -193,8 +193,10 @@ struct DeferSchemaHook {
 
 impl ToolDefinitionHook for DeferSchemaHook {
     fn transform(&self, tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
-        // Below the threshold full schemas fit comfortably; don't defer.
-        if tools.len() < self.threshold {
+        // Defer only once the surface strictly exceeds the threshold; at or
+        // below it the full catalogue fits comfortably. Matches the docs and
+        // the `tool_surface_exceeds_tool_search_threshold` runtime test.
+        if tools.len() <= self.threshold {
             return tools;
         }
         let revealed = self.revealed.lock().expect("revealed tools lock poisoned");
@@ -243,8 +245,9 @@ pub struct ToolSearchTool {
 
 impl ToolSearchTool {
     /// Rank `defs` against `query` by keyword overlap and return the best
-    /// matches (with full schemas). An empty query lists everything so the
-    /// model can browse. The search tool itself is always excluded.
+    /// matches (with full schemas), capped at `MAX_SEARCH_RESULTS`. An empty
+    /// query returns the first `MAX_SEARCH_RESULTS` tools in registry order so
+    /// the model can browse. The search tool itself is always excluded.
     fn search(defs: &[ToolDefinition], query: &str) -> Vec<Value> {
         let terms: Vec<String> = query
             .split_whitespace()
@@ -459,6 +462,25 @@ mod tests {
         assert!(
             out.iter().all(|t| !is_stubbed(t)),
             "nothing should defer below threshold"
+        );
+    }
+
+    #[test]
+    fn deferral_activates_strictly_above_threshold() {
+        let cap = ToolSearchCapability::with_threshold(15);
+        let hook = &cap.tool_definition_hooks()[0];
+        // Exactly at the threshold (6 core + 9 = 15): nothing defers.
+        let at = hook.transform(tool_set(9));
+        assert_eq!(at.len(), 15);
+        assert!(
+            at.iter().all(|t| !is_stubbed(t)),
+            "at the threshold the full catalogue must fit; no deferral"
+        );
+        // One over (16): the long tail defers.
+        let over = hook.transform(tool_set(10));
+        assert!(
+            over.iter().any(|t| is_stubbed(t)),
+            "strictly above the threshold the long tail must defer"
         );
     }
 
