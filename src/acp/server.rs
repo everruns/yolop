@@ -1,21 +1,19 @@
-//! ACP server: the JSON-RPC peer and request dispatch.
+//! ACP server: SDK transport/dispatch plus yolop session execution.
 //!
 //! yolop acts as an ACP *agent*: it reads newline-delimited JSON-RPC 2.0
-//! messages from a client (an editor such as Zed) and drives the everruns
-//! runtime in response. [`serve`] owns the read loop and is generic over the
-//! byte streams and a [`RuntimeFactory`], so the production binary wires it to
-//! real stdin/stdout while tests drive it over in-memory pipes with a scripted
+//! messages from a client (an editor such as Zed) through the upstream ACP SDK
+//! and drives the everruns runtime in response. [`serve`] is generic over byte
+//! streams and a [`RuntimeFactory`], so the production binary wires it to real
+//! stdin/stdout while tests drive it over in-memory pipes with a scripted
 //! runtime.
 //!
 //! Concurrency model:
-//!   * A single writer task serialises every outbound line (responses,
-//!     notifications, and agent→client requests) so writes never interleave.
-//!   * The read loop never blocks on slow work — `session/prompt` runs in its
-//!     own task — so `session/cancel` and permission responses keep flowing
-//!     while a turn is in progress.
-//!   * Agent→client requests (`session/request_permission`) are correlated by
-//!     id through a pending map the read loop resolves when the response
-//!     arrives.
+//!   * The SDK serialises outbound lines, dispatches typed requests, and
+//!     correlates responses.
+//!   * `session/prompt` runs in its own Tokio task, so `session/cancel` and
+//!     permission responses keep flowing while a turn is in progress.
+//!   * Agent→client requests (`session/request_permission`) use the SDK's typed
+//!     request API.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -24,29 +22,28 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
+use agent_client_protocol::{Agent, Client, ConnectionTo, Lines, Responder};
 use anyhow::Result;
 use async_trait::async_trait;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
+use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::approval::{ApprovalGate, ApprovalRequest};
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 
 use super::bridge::Translator;
 use super::protocol::{
-    self, AgentCapabilities, AvailableCommand, AvailableCommandInput, InitializeParams,
-    InitializeResult, NewSessionParams, NewSessionResult, PermissionOption, PermissionOptionKind,
-    PermissionOutcome, PromptCapabilities, PromptParams, PromptResult, RequestPermissionParams,
-    RequestPermissionResult, SessionNotification, SessionUpdate, StopReason, ToolCallContent,
-    ToolCallStatus, ToolKind,
+    self, AgentCapabilities, AuthenticateParams, AuthenticateResult, AvailableCommand,
+    AvailableCommandInput, InitializeParams, InitializeResult, NewSessionParams, NewSessionResult,
+    PermissionOption, PermissionOptionKind, PermissionOutcome, PromptCapabilities, PromptParams,
+    PromptResult, RequestPermissionParams, SessionNotification, SessionUpdate, StopReason,
+    ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    UnstructuredCommandInput,
 };
-
-/// JSON-RPC error codes used in agent responses.
-const METHOD_NOT_FOUND: i64 = -32601;
-const INVALID_PARAMS: i64 = -32602;
-const INTERNAL_ERROR: i64 = -32603;
 
 /// How often the prompt loop wakes to check whether the turn task finished,
 /// in case the final event was already drained from the broadcast.
@@ -59,98 +56,17 @@ pub trait RuntimeFactory: Send + Sync + 'static {
     async fn build(&self, cwd: PathBuf, gate: Arc<ApprovalGate>) -> Result<BuiltRuntime>;
 }
 
-struct RpcError {
-    code: i64,
-    message: String,
-}
-
-impl RpcError {
-    fn new(code: i64, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
-}
-
-/// The JSON-RPC peer: a serialised outbound channel plus a pending-request
-/// table for agent→client calls.
+/// SDK connection wrapper plus yolop-local ids for synthetic command tool calls.
 struct Peer {
-    out: mpsc::UnboundedSender<String>,
-    next_id: AtomicI64,
-    pending: StdMutex<HashMap<i64, oneshot::Sender<std::result::Result<Value, RpcError>>>>,
+    cx: ConnectionTo<Client>,
+    next_id: Arc<AtomicI64>,
 }
 
 impl Peer {
-    fn send_value(&self, value: Value) {
-        // Compact serialization keeps each message on a single line, as the
-        // ndjson transport requires.
-        let _ = self.out.send(value.to_string());
-    }
-
-    fn respond_ok(&self, id: Value, result: Value) {
-        self.send_value(json!({ "jsonrpc": "2.0", "id": id, "result": result }));
-    }
-
-    fn respond_err(&self, id: Value, code: i64, message: &str) {
-        self.send_value(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": { "code": code, "message": message },
-        }));
-    }
-
-    fn notify(&self, method: &str, params: Value) {
-        self.send_value(json!({ "jsonrpc": "2.0", "method": method, "params": params }));
-    }
-
     fn session_update(&self, session_id: &str, update: SessionUpdate) {
-        let params = serde_json::to_value(SessionNotification {
-            session_id: session_id.to_string(),
-            update,
-        })
-        .expect("session notification serializes");
-        self.notify("session/update", params);
-    }
-
-    /// Issue an agent→client request and await its response. Fails fast (rather
-    /// than awaiting forever) if the outbound channel is already closed — the
-    /// writer task has exited, so no response can ever arrive.
-    async fn request(&self, method: &str, params: Value) -> std::result::Result<Value, RpcError> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
-        let line = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        })
-        .to_string();
-        if self.out.send(line).is_err() {
-            // Connection gone: don't leak the pending entry or block on a
-            // response that will never come.
-            self.pending.lock().unwrap().remove(&id);
-            return Err(RpcError::new(INTERNAL_ERROR, "connection closed"));
-        }
-        rx.await
-            .unwrap_or_else(|_| Err(RpcError::new(INTERNAL_ERROR, "connection closed")))
-    }
-
-    /// Resolve a pending agent→client request from an inbound response.
-    fn route_response(&self, id: i64, result: std::result::Result<Value, RpcError>) {
-        if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
-            let _ = tx.send(result);
-        }
-    }
-
-    /// Fail every in-flight agent→client request. Called once the connection
-    /// ends so awaiting tasks (e.g. a forwarded `session/request_permission`)
-    /// unwind instead of deadlocking and holding the server alive.
-    fn fail_all_pending(&self) {
-        let drained: Vec<_> = self.pending.lock().unwrap().drain().collect();
-        for (_, tx) in drained {
-            let _ = tx.send(Err(RpcError::new(INTERNAL_ERROR, "connection closed")));
+        let notification = SessionNotification::new(session_id.to_string(), update);
+        if let Err(err) = self.cx.send_notification(notification) {
+            tracing::warn!(%err, "acp: failed to send session update");
         }
     }
 }
@@ -182,7 +98,6 @@ impl Session {
 }
 
 struct Server<F: RuntimeFactory> {
-    peer: Arc<Peer>,
     factory: Arc<F>,
     sessions: StdMutex<HashMap<String, Arc<Session>>>,
 }
@@ -194,202 +109,189 @@ impl<F: RuntimeFactory> Server<F> {
 }
 
 /// Run the ACP agent over the given byte streams until the client closes its
-/// end (EOF on `reader`). Returns once the read loop ends.
+/// end (EOF on `reader`). Returns once the SDK connection winds down.
 pub async fn serve<R, W, F>(reader: R, writer: W, factory: Arc<F>) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
     F: RuntimeFactory,
 {
-    // Single writer task: every outbound line funnels through here so
-    // notifications, responses, and requests never interleave on the wire.
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
-    let writer_task = tokio::spawn(async move {
-        let mut writer = writer;
-        while let Some(line) = out_rx.recv().await {
-            if writer.write_all(line.as_bytes()).await.is_err()
-                || writer.write_all(b"\n").await.is_err()
-                || writer.flush().await.is_err()
-            {
-                break;
-            }
-        }
-    });
-
     let server = Arc::new(Server {
-        peer: Arc::new(Peer {
-            out: out_tx,
-            next_id: AtomicI64::new(1),
-            pending: StdMutex::new(HashMap::new()),
-        }),
         factory,
         sessions: StdMutex::new(HashMap::new()),
     });
-
-    let mut lines = BufReader::new(reader).lines();
-    let read_result = loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<Value>(&line) {
-                    Ok(message) => dispatch(server.clone(), message),
-                    Err(err) => tracing::warn!(%err, "acp: dropping unparseable line"),
-                }
-            }
-            Ok(None) => break Ok(()),
-            Err(err) => break Err(err),
-        }
-    };
-
-    // Connection ended: fail any in-flight agent→client requests so awaiting
-    // tasks (a forwarded permission prompt, a streaming turn) unwind instead of
-    // deadlocking and holding the writer task — and thus `serve` — open.
-    server.peer.fail_all_pending();
-    drop(server);
-    let _ = writer_task.await;
-    read_result.map_err(Into::into)
-}
-
-/// Classify an inbound message and route it. Requests are handled in spawned
-/// tasks so the read loop keeps draining (essential for cancel + permission
-/// flows during a long prompt). Responses resolve pending agent→client calls.
-fn dispatch<F: RuntimeFactory>(server: Arc<Server<F>>, message: Value) {
-    let has_method = message.get("method").and_then(Value::as_str).is_some();
-    if has_method {
-        let id = message.get("id").cloned();
-        match id {
-            Some(id) if !id.is_null() => {
-                tokio::spawn(handle_request(server, id, message));
-            }
-            _ => handle_notification(&server, &message),
-        }
-        return;
-    }
-    // Otherwise it is a response to one of our outbound requests.
-    if let Some(id) = message.get("id").and_then(Value::as_i64) {
-        if let Some(error) = message.get("error") {
-            let code = error
-                .get("code")
-                .and_then(Value::as_i64)
-                .unwrap_or(INTERNAL_ERROR);
-            let msg = error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("request failed")
-                .to_string();
-            server
-                .peer
-                .route_response(id, Err(RpcError::new(code, msg)));
-        } else {
-            let result = message.get("result").cloned().unwrap_or(Value::Null);
-            server.peer.route_response(id, Ok(result));
-        }
-    }
-}
-
-async fn handle_request<F: RuntimeFactory>(server: Arc<Server<F>>, id: Value, message: Value) {
-    let method = message
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let params = message.get("params").cloned().unwrap_or(Value::Null);
-
-    if method == "session/new" {
-        match handle_new_session(&server, params).await {
-            Ok(result) => {
-                let session_id = result
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                server.peer.respond_ok(id, result);
-                if let Some(session_id) = session_id
-                    && let Some(session) = server.session(&session_id)
-                {
-                    let commands = session.commands.lock().unwrap().clone();
-                    notify_available_commands(&server.peer, &session_id, &commands);
+    let next_tool_id = Arc::new(AtomicI64::new(1));
+    let (eof_tx, eof_rx) = oneshot::channel::<()>();
+    let incoming_lines = futures::io::BufReader::new(reader.compat()).lines();
+    let incoming = futures::stream::unfold(
+        (incoming_lines, Some(eof_tx)),
+        |(mut lines, mut eof_tx)| async move {
+            match lines.next().await {
+                Some(line) => Some((line, (lines, eof_tx))),
+                None => {
+                    if let Some(tx) = eof_tx.take() {
+                        let _ = tx.send(());
+                    }
+                    None
                 }
             }
-            Err(err) => server.peer.respond_err(id, err.code, &err.message),
+        },
+    );
+    let outgoing = futures::sink::unfold(
+        writer.compat_write(),
+        async move |mut writer, line: String| {
+            writer.write_all(line.as_bytes()).await?;
+            writer.write_all(b"\n").await?;
+            writer.flush().await?;
+            Ok::<_, std::io::Error>(writer)
+        },
+    );
+    let transport = Lines::new(outgoing, incoming);
+
+    let result = Agent
+        .builder()
+        .name("yolop")
+        .on_receive_request(
+            async |params: InitializeParams, responder, _cx| {
+                responder.respond(handle_initialize(params))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async |_params: AuthenticateParams, responder, _cx| {
+                responder.respond(AuthenticateResult::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let server = server.clone();
+                let next_tool_id = next_tool_id.clone();
+                async move |params: NewSessionParams, responder, cx| {
+                    let peer = Arc::new(Peer {
+                        cx: cx.clone(),
+                        next_id: next_tool_id.clone(),
+                    });
+                    match handle_new_session(&server, peer.clone(), params).await {
+                        Ok(result) => {
+                            let session_id = result.session_id.to_string();
+                            responder.respond(result)?;
+                            if let Some(session) = server.session(&session_id) {
+                                let commands = session.commands.lock().unwrap().clone();
+                                notify_available_commands(&peer, &session_id, &commands);
+                            }
+                        }
+                        Err(err) => responder.respond_with_error(err)?,
+                    }
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let server = server.clone();
+                let next_tool_id = next_tool_id.clone();
+                async move |params: PromptParams, responder, cx| {
+                    let peer = Arc::new(Peer {
+                        cx: cx.clone(),
+                        next_id: next_tool_id.clone(),
+                    });
+                    tokio::spawn({
+                        let server = server.clone();
+                        async move {
+                            respond_prompt(&server, peer, params, responder).await;
+                        }
+                    });
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            {
+                let server = server.clone();
+                async move |params: protocol::CancelNotification, _cx| {
+                    if let Some(session) = server.session(&params.session_id.to_string()) {
+                        session.trigger_cancel();
+                    }
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(transport, async move |_cx| {
+            let _ = eof_rx.await;
+            Ok(())
+        })
+        .await;
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) if is_client_disconnect_error(&err) => {
+            tracing::debug!(%err, "acp: client disconnected while transport was closing");
+            Ok(())
         }
-        return;
-    }
-
-    let outcome = match method.as_str() {
-        "initialize" => handle_initialize(params),
-        "authenticate" => Ok(json!({})),
-        "session/prompt" => handle_prompt(&server, params).await,
-        other => Err(RpcError::new(
-            METHOD_NOT_FOUND,
-            format!("unknown method: {other}"),
-        )),
-    };
-
-    match outcome {
-        Ok(result) => server.peer.respond_ok(id, result),
-        Err(err) => server.peer.respond_err(id, err.code, &err.message),
+        Err(err) => Err(err.into()),
     }
 }
 
-fn handle_notification<F: RuntimeFactory>(server: &Arc<Server<F>>, message: &Value) {
-    let method = message
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if method == "session/cancel" {
-        let params = message.get("params").cloned().unwrap_or(Value::Null);
-        if let Ok(parsed) = serde_json::from_value::<protocol::CancelParams>(params)
-            && let Some(session) = server.session(&parsed.session_id)
-        {
-            session.trigger_cancel();
-        }
+fn invalid_params(message: impl Into<String>) -> agent_client_protocol::Error {
+    agent_client_protocol::Error::invalid_params().data(message.into())
+}
+
+fn internal_error(message: impl Into<String>) -> agent_client_protocol::Error {
+    agent_client_protocol::Error::internal_error().data(message.into())
+}
+
+fn is_client_disconnect_error(err: &agent_client_protocol::Error) -> bool {
+    err.code == agent_client_protocol::ErrorCode::InternalError
+        && err.data.as_ref().is_some_and(value_mentions_broken_pipe)
+}
+
+fn value_mentions_broken_pipe(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.to_ascii_lowercase().contains("broken pipe"),
+        Value::Array(values) => values.iter().any(value_mentions_broken_pipe),
+        Value::Object(map) => map.values().any(value_mentions_broken_pipe),
+        _ => false,
     }
 }
 
-fn handle_initialize(params: Value) -> std::result::Result<Value, RpcError> {
-    let params: InitializeParams = serde_json::from_value(params)
-        .map_err(|e| RpcError::new(INVALID_PARAMS, format!("initialize: {e}")))?;
+fn handle_initialize(params: InitializeParams) -> InitializeResult {
     // Echo a supported version: honour the client's request when it is one we
     // speak, otherwise advertise our own.
     let version = match params.protocol_version {
-        Some(v) if v == protocol::PROTOCOL_VERSION => v,
+        v if v == protocol::PROTOCOL_VERSION => v,
         _ => protocol::PROTOCOL_VERSION,
     };
-    let result = InitializeResult {
-        protocol_version: version,
-        agent_capabilities: AgentCapabilities {
+    InitializeResult::new(version).agent_capabilities(
+        AgentCapabilities::new()
             // yolop builds a fresh runtime per session and does not yet
             // rehydrate prior ACP sessions, so loadSession stays false.
-            load_session: false,
-            prompt_capabilities: PromptCapabilities {
-                image: false,
-                audio: false,
-                embedded_context: true,
-            },
-            meta: Some(json!({
+            .load_session(false)
+            .prompt_capabilities(
+                PromptCapabilities::new()
+                    .image(false)
+                    .audio(false)
+                    .embedded_context(true),
+            )
+            .meta(protocol::meta(json!({
                 "yolop.dev/acp": {
                     "commandMetadata": true,
                     "commandArgSuggestions": true,
                     "commandToolLifecycle": true
                 }
-            })),
-        },
-        // No auth handshake: credentials come from the environment/settings
-        // the agent process already inherits.
-        auth_methods: vec![],
-    };
-    Ok(serde_json::to_value(result).expect("initialize result serializes"))
+            }))),
+    )
 }
 
 async fn handle_new_session<F: RuntimeFactory>(
     server: &Arc<Server<F>>,
-    params: Value,
-) -> std::result::Result<Value, RpcError> {
-    let params: NewSessionParams = serde_json::from_value(params)
-        .map_err(|e| RpcError::new(INVALID_PARAMS, format!("session/new: {e}")))?;
-    let cwd = PathBuf::from(&params.cwd);
+    peer: Arc<Peer>,
+    params: NewSessionParams,
+) -> std::result::Result<NewSessionResult, agent_client_protocol::Error> {
+    let cwd = params.cwd;
 
     // Delegate destructive-operation approval to the client via
     // `session/request_permission`. The editor owns the human, so this is the
@@ -402,7 +304,7 @@ async fn handle_new_session<F: RuntimeFactory>(
         .factory
         .build(cwd, gate)
         .await
-        .map_err(|e| RpcError::new(INTERNAL_ERROR, format!("build runtime: {e}")))?;
+        .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
     let acp_id = built.handles.session_id.to_string();
     let commands = built.startup.capability_commands.clone();
@@ -421,7 +323,6 @@ async fn handle_new_session<F: RuntimeFactory>(
 
     // Forward every approval request to the client as a permission prompt for
     // the lifetime of the session.
-    let peer = server.peer.clone();
     let permission_session = acp_id.clone();
     tokio::spawn(async move {
         while let Some((request, responder)) = approval_rx.recv().await {
@@ -430,37 +331,50 @@ async fn handle_new_session<F: RuntimeFactory>(
         }
     });
 
-    let result = NewSessionResult { session_id: acp_id };
-    Ok(serde_json::to_value(result).expect("new session result serializes"))
+    Ok(NewSessionResult::new(acp_id))
 }
 
 async fn handle_prompt<F: RuntimeFactory>(
     server: &Arc<Server<F>>,
-    params: Value,
-) -> std::result::Result<Value, RpcError> {
-    let params: PromptParams = serde_json::from_value(params)
-        .map_err(|e| RpcError::new(INVALID_PARAMS, format!("session/prompt: {e}")))?;
+    peer: Arc<Peer>,
+    params: PromptParams,
+) -> std::result::Result<PromptResult, agent_client_protocol::Error> {
+    let session_id = params.session_id.to_string();
     let session = server
-        .session(&params.session_id)
-        .ok_or_else(|| RpcError::new(INVALID_PARAMS, "unknown session id"))?;
+        .session(&session_id)
+        .ok_or_else(|| invalid_params("unknown session id"))?;
     let prompt = protocol::prompt_text(&params.prompt);
 
     let stop_reason = match parse_slash_command(&prompt) {
-        Some((name, args)) => run_slash_command(server.peer.clone(), session, name, args).await,
-        None => run_prompt(server.peer.clone(), session, prompt).await,
+        Some((name, args)) => run_slash_command(peer, session, name, args).await,
+        None => run_prompt(peer, session, prompt).await,
     };
-    let result = PromptResult { stop_reason };
-    Ok(serde_json::to_value(result).expect("prompt result serializes"))
+    Ok(PromptResult::new(stop_reason))
+}
+
+async fn respond_prompt<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    peer: Arc<Peer>,
+    params: PromptParams,
+    responder: Responder<PromptResult>,
+) {
+    match handle_prompt(server, peer, params).await {
+        Ok(result) => {
+            let _ = responder.respond(result);
+        }
+        Err(err) => {
+            let _ = responder.respond_with_error(err);
+        }
+    }
 }
 
 fn available_commands(commands: &[CommandDescriptor]) -> Vec<AvailableCommand> {
     commands
         .iter()
-        .map(|command| AvailableCommand {
-            name: command.name.clone(),
-            description: command.description.clone(),
-            input: command_input(command),
-            meta: command_meta(command),
+        .map(|command| {
+            AvailableCommand::new(command.name.clone(), command.description.clone())
+                .input(command_input(command))
+                .meta(command_meta(command))
         })
         .collect()
 }
@@ -481,24 +395,27 @@ fn command_input(command: &CommandDescriptor) -> Option<AvailableCommandInput> {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    Some(AvailableCommandInput { hint })
+    Some(AvailableCommandInput::Unstructured(
+        UnstructuredCommandInput::new(hint),
+    ))
 }
 
 fn notify_available_commands(peer: &Arc<Peer>, session_id: &str, commands: &[CommandDescriptor]) {
     peer.session_update(
         session_id,
-        SessionUpdate::AvailableCommandsUpdate {
-            available_commands: available_commands(commands),
-            meta: Some(json!({
-                "yolop.dev/acp": {
-                    "argSuggestions": true
-                }
-            })),
-        },
+        SessionUpdate::AvailableCommandsUpdate(
+            protocol::AvailableCommandsUpdate::new(available_commands(commands)).meta(
+                protocol::meta(json!({
+                    "yolop.dev/acp": {
+                        "argSuggestions": true
+                    }
+                })),
+            ),
+        ),
     );
 }
 
-fn command_meta(command: &CommandDescriptor) -> Option<Value> {
+fn command_meta(command: &CommandDescriptor) -> Option<serde_json::Map<String, Value>> {
     if command.args.is_empty() {
         return None;
     }
@@ -506,7 +423,7 @@ fn command_meta(command: &CommandDescriptor) -> Option<Value> {
         CommandSource::System => "system",
         CommandSource::Skill => "skill",
     };
-    Some(json!({
+    protocol::meta(json!({
         "yolop.dev/command": {
             "source": source,
             "args": command.args.iter().map(|arg| {
@@ -543,9 +460,9 @@ async fn run_slash_command(
     let Some(descriptor) = commands.iter().find(|c| c.name == name).cloned() else {
         peer.session_update(
             &session.acp_id,
-            SessionUpdate::AgentMessageChunk {
-                content: protocol::ContentBlock::text(format!("unknown command: /{name}")),
-            },
+            SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
+                "unknown command: /{name}"
+            ))),
         );
         return StopReason::EndTurn;
     };
@@ -564,9 +481,9 @@ async fn run_slash_command(
             .join(", ");
         peer.session_update(
             &session.acp_id,
-            SessionUpdate::AgentMessageChunk {
-                content: protocol::ContentBlock::text(format!("/{name} requires: {needed}")),
-            },
+            SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
+                "/{name} requires: {needed}"
+            ))),
         );
         return StopReason::EndTurn;
     }
@@ -576,18 +493,16 @@ async fn run_slash_command(
             let tool_call_id = format!("command_{}", peer.next_id.fetch_add(1, Ordering::Relaxed));
             peer.session_update(
                 &session.acp_id,
-                SessionUpdate::ToolCall {
-                    tool_call_id: tool_call_id.clone(),
-                    title: command_title(&descriptor.name, &args),
-                    kind: ToolKind::Other,
-                    status: ToolCallStatus::InProgress,
-                    raw_input: Some(json!({
+                SessionUpdate::ToolCall(
+                    ToolCall::new(tool_call_id.clone(), command_title(&descriptor.name, &args))
+                        .kind(ToolKind::Other)
+                        .status(ToolCallStatus::InProgress)
+                        .raw_input(json!({
                         "command": descriptor.name,
                         "arguments": if args.is_empty() { Value::Null } else { Value::String(args.clone()) },
                         "source": "system",
                     })),
-                    content: Vec::new(),
-                },
+                ),
             );
 
             let request = ExecuteCommandRequest {
@@ -617,18 +532,17 @@ async fn run_slash_command(
             };
             peer.session_update(
                 &session.acp_id,
-                SessionUpdate::ToolCallUpdate {
+                SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
                     tool_call_id,
-                    status: Some(if success {
-                        ToolCallStatus::Completed
-                    } else {
-                        ToolCallStatus::Failed
-                    }),
-                    content: vec![ToolCallContent::Content {
-                        content: protocol::ContentBlock::text(message),
-                    }],
-                    raw_output: Some(raw_output),
-                },
+                    ToolCallUpdateFields::new()
+                        .status(if success {
+                            ToolCallStatus::Completed
+                        } else {
+                            ToolCallStatus::Failed
+                        })
+                        .content(vec![protocol::content(message)])
+                        .raw_output(raw_output),
+                )),
             );
             refresh_available_commands(&peer, &session).await;
             StopReason::EndTurn
@@ -736,9 +650,9 @@ async fn run_prompt(peer: Arc<Peer>, session: Arc<Session>, prompt: String) -> S
             if let Some(error) = result.error {
                 peer.session_update(
                     &acp_id,
-                    SessionUpdate::AgentMessageChunk {
-                        content: protocol::ContentBlock::text(format!("turn error: {error}")),
-                    },
+                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
+                        "turn error: {error}"
+                    ))),
                 );
             }
             StopReason::EndTurn
@@ -746,9 +660,9 @@ async fn run_prompt(peer: Arc<Peer>, session: Arc<Session>, prompt: String) -> S
         Ok(Err(err)) => {
             peer.session_update(
                 &acp_id,
-                SessionUpdate::AgentMessageChunk {
-                    content: protocol::ContentBlock::text(format!("turn failed: {err}")),
-                },
+                SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
+                    "turn failed: {err}"
+                ))),
             );
             StopReason::EndTurn
         }
@@ -784,37 +698,26 @@ async fn request_permission(peer: &Arc<Peer>, session_id: &str, request: &Approv
     const ALLOW: &str = "allow";
     const REJECT: &str = "reject";
 
-    let params = RequestPermissionParams {
-        session_id: session_id.to_string(),
-        tool_call: json!({ "toolCallId": "pending", "title": request.headline() }),
-        options: vec![
-            PermissionOption {
-                option_id: ALLOW.to_string(),
-                name: "Allow".to_string(),
-                kind: PermissionOptionKind::AllowOnce,
-            },
-            PermissionOption {
-                option_id: REJECT.to_string(),
-                name: "Reject".to_string(),
-                kind: PermissionOptionKind::RejectOnce,
-            },
+    let params = RequestPermissionParams::new(
+        session_id.to_string(),
+        ToolCallUpdate::new(
+            "pending",
+            ToolCallUpdateFields::new().title(request.headline()),
+        ),
+        vec![
+            PermissionOption::new(ALLOW, "Allow", PermissionOptionKind::AllowOnce),
+            PermissionOption::new(REJECT, "Reject", PermissionOptionKind::RejectOnce),
         ],
-    };
-    let params = serde_json::to_value(params).expect("permission params serialize");
+    );
 
-    match peer.request("session/request_permission", params).await {
-        Ok(value) => match serde_json::from_value::<RequestPermissionResult>(value) {
-            Ok(result) => match result.outcome {
-                PermissionOutcome::Selected { option_id } => option_id == ALLOW,
-                PermissionOutcome::Cancelled => false,
-            },
-            Err(err) => {
-                tracing::warn!(%err, "acp: malformed permission response; denying");
-                false
-            }
+    match peer.cx.send_request(params).block_task().await {
+        Ok(result) => match result.outcome {
+            PermissionOutcome::Selected(outcome) => outcome.option_id.to_string() == ALLOW,
+            PermissionOutcome::Cancelled => false,
+            _ => false,
         },
         Err(err) => {
-            tracing::warn!(code = err.code, message = %err.message, "acp: permission request failed; denying");
+            tracing::warn!(%err, "acp: permission request failed; denying");
             false
         }
     }

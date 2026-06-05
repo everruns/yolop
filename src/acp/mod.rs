@@ -10,9 +10,9 @@
 //! See `specs/acp.md` for the full surface and `README.md` for editor setup.
 //!
 //! Module layout:
-//!   * [`protocol`] — serde types for the ACP wire format.
+//!   * [`protocol`] — SDK schema re-exports plus small yolop helpers.
 //!   * [`bridge`] — pure translation of runtime events into `session/update`s.
-//!   * [`server`] — the JSON-RPC peer, dispatch, and turn streaming.
+//!   * [`server`] — SDK-backed transport/dispatch plus turn streaming.
 
 mod bridge;
 mod protocol;
@@ -75,10 +75,21 @@ pub async fn run_stdio(
 mod tests {
     use super::*;
     use crate::runtime::{BuildOptions, build_with_options};
+    use agent_client_protocol::schema::{
+        InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest,
+        RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+        SelectedPermissionOutcome, SessionId, SessionUpdate,
+    };
+    use agent_client_protocol::{
+        Agent, ByteStreams, Client, ConnectionTo, JsonRpcRequest, SessionMessage,
+    };
     use everruns_core::llmsim_driver::{LlmSimConfig, SimToolCall, SimTurn};
+    use futures::Future;
+    use serde::{Deserialize, Serialize};
     use serde_json::{Value, json};
     use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines};
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
     /// Scripted [`RuntimeFactory`] for tests: each session gets its own
     /// offline llmsim runtime rooted at the supplied `cwd`. The session-log
@@ -109,163 +120,162 @@ mod tests {
         }
     }
 
-    /// In-memory ACP client driving the agent over a pair of duplex pipes.
-    struct TestClient {
-        writer: DuplexStream,
-        reader: Lines<BufReader<DuplexStream>>,
-        next_id: i64,
-        /// Notifications collected while waiting for responses.
-        notifications: Vec<Value>,
-        /// How the client answers `session/request_permission` requests.
-        permission_allow: bool,
+    struct SdkClient {
+        cx: ConnectionTo<Agent>,
+        init: InitializeResponse,
     }
 
-    impl TestClient {
-        /// Spawn `serve` against this scripted factory and return a connected
-        /// client. The server task runs until the client's write half drops.
-        fn spawn(config: LlmSimConfig, permission_allow: bool) -> Self {
-            let (client_w, agent_r) = tokio::io::duplex(64 * 1024);
-            let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
-            let factory = Arc::new(ScriptedFactory { config });
-            tokio::spawn(async move {
-                let _ = serve(agent_r, agent_w, factory).await;
-            });
-            Self {
-                writer: client_w,
-                reader: BufReader::new(client_r).lines(),
-                next_id: 0,
-                notifications: Vec::new(),
-                permission_allow,
-            }
-        }
-
-        fn alloc_id(&mut self) -> i64 {
-            let id = self.next_id;
-            self.next_id += 1;
-            id
-        }
-
-        async fn send(&mut self, value: Value) {
-            let line = value.to_string();
-            self.writer.write_all(line.as_bytes()).await.unwrap();
-            self.writer.write_all(b"\n").await.unwrap();
-            self.writer.flush().await.unwrap();
-        }
-
-        async fn next_message(&mut self) -> Value {
-            let line = tokio::time::timeout(Duration::from_secs(15), self.reader.next_line())
+    impl SdkClient {
+        async fn new_session(
+            &self,
+        ) -> agent_client_protocol::Result<agent_client_protocol::ActiveSession<'static, Agent>>
+        {
+            let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+            self.cx
+                .build_session_from(NewSessionRequest::new(cwd))
+                .block_task()
+                .start_session()
                 .await
-                .expect("timed out waiting for agent message")
-                .expect("read agent line")
-                .expect("agent closed stream");
-            serde_json::from_str(&line).expect("agent line is valid json")
         }
 
-        /// Send a request and pump messages until its response arrives.
-        /// Notifications are buffered; permission requests are auto-answered
-        /// per `permission_allow`.
-        async fn request(&mut self, method: &str, params: Value) -> Value {
-            let id = self.alloc_id();
-            self.send(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-                "params": params,
-            }))
-            .await;
-            loop {
-                let message = self.next_message().await;
-                if message.get("id").and_then(Value::as_i64) == Some(id)
-                    && (message.get("result").is_some() || message.get("error").is_some())
-                {
-                    return message;
-                }
-                self.handle_incoming(message).await;
-            }
+        async fn prompt(
+            session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+            prompt: &str,
+        ) -> agent_client_protocol::Result<PromptRun> {
+            session.send_prompt(prompt)?;
+            collect_prompt_run(session).await
         }
+    }
 
-        async fn handle_incoming(&mut self, message: Value) {
-            let method = message.get("method").and_then(Value::as_str);
-            match method {
-                Some("session/request_permission") => {
-                    let id = message.get("id").cloned().unwrap_or(Value::Null);
-                    let option_id = if self.permission_allow {
-                        "allow"
-                    } else {
-                        "reject"
-                    };
-                    self.send(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": { "outcome": { "outcome": "selected", "optionId": option_id } },
-                    }))
-                    .await;
-                }
-                Some("session/update") => {
-                    self.notifications.push(message);
-                }
-                _ => {}
-            }
-        }
+    struct PromptRun {
+        stop_reason: agent_client_protocol::schema::StopReason,
+        updates: Vec<Value>,
+    }
 
-        /// Collect every `session/update` whose `sessionUpdate` matches.
-        fn updates_of_kind(&self, kind: &str) -> Vec<Value> {
-            self.notifications
+    impl PromptRun {
+        fn updates_of_kind(&self, kind: &str) -> Vec<&Value> {
+            self.updates
                 .iter()
-                .filter_map(|n| n.get("params"))
-                .filter(|p| {
-                    p.get("update")
-                        .and_then(|u| u.get("sessionUpdate"))
-                        .and_then(Value::as_str)
-                        == Some(kind)
-                })
-                .cloned()
+                .filter(|u| u.get("sessionUpdate").and_then(Value::as_str) == Some(kind))
                 .collect()
         }
 
-        /// All assistant text streamed during the session, concatenated.
         fn assistant_text(&self) -> String {
             self.updates_of_kind("agent_message_chunk")
                 .iter()
-                .filter_map(|p| {
-                    p.get("update")
-                        .and_then(|u| u.get("content"))
+                .filter_map(|u| {
+                    u.get("content")
                         .and_then(|c| c.get("text"))
                         .and_then(Value::as_str)
-                        .map(str::to_string)
                 })
                 .collect::<Vec<_>>()
                 .join("")
         }
+    }
 
-        async fn initialize(&mut self) -> Value {
-            self.request(
-                "initialize",
-                json!({
-                    "protocolVersion": 1,
-                    "clientCapabilities": { "fs": { "readTextFile": true, "writeTextFile": true } },
-                }),
+    async fn with_sdk_client<T, F, Fut>(config: LlmSimConfig, permission_allow: bool, op: F) -> T
+    where
+        F: FnOnce(SdkClient) -> Fut + Send + 'static,
+        Fut: Future<Output = agent_client_protocol::Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (client_w, agent_r) = tokio::io::duplex(64 * 1024);
+        let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
+        let factory = Arc::new(ScriptedFactory { config });
+        tokio::spawn(async move {
+            let _ = serve(agent_r, agent_w, factory).await;
+        });
+        let transport = ByteStreams::new(client_w.compat_write(), client_r.compat());
+
+        Client
+            .builder()
+            .name("test-client")
+            .on_receive_request(
+                async move |_params: RequestPermissionRequest, responder, _cx| {
+                    let option_id = if permission_allow { "allow" } else { "reject" };
+                    responder.respond(RequestPermissionResponse::new(
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                            option_id,
+                        )),
+                    ))
+                },
+                agent_client_protocol::on_receive_request!(),
             )
+            .connect_with(transport, async move |cx| {
+                let init = cx
+                    .send_request(InitializeRequest::new(protocol::PROTOCOL_VERSION))
+                    .block_task()
+                    .await?;
+                op(SdkClient { cx, init }).await
+            })
             .await
-        }
+            .expect("SDK ACP client run")
+    }
 
-        async fn new_session(&mut self) -> String {
-            let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
-            let response = self
-                .request(
-                    "session/new",
-                    json!({ "cwd": cwd.to_str().unwrap(), "mcpServers": [] }),
-                )
-                .await;
-            let session_id = response["result"]["sessionId"]
-                .as_str()
-                .expect("sessionId in response")
-                .to_string();
-            let update = self.next_message().await;
-            self.handle_incoming(update).await;
-            session_id
+    async fn collect_prompt_run(
+        session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+    ) -> agent_client_protocol::Result<PromptRun> {
+        let mut updates = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(15), session.read_update()).await {
+                Ok(Ok(SessionMessage::SessionMessage(dispatch))) => {
+                    let message = dispatch.to_untyped_message()?;
+                    if message.method() == "session/update" {
+                        let notification: agent_client_protocol::schema::SessionNotification =
+                            serde_json::from_value(message.params().clone())?;
+                        updates.push(serde_json::to_value(notification.update)?);
+                    }
+                }
+                Ok(Ok(SessionMessage::StopReason(stop_reason))) => {
+                    return Ok(PromptRun {
+                        stop_reason,
+                        updates,
+                    });
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(err)) => return Err(err),
+                Err(_) => {
+                    return Err(agent_client_protocol::Error::internal_error()
+                        .data("timed out waiting for prompt update"));
+                }
+            }
         }
     }
+
+    async fn collect_available_commands(
+        session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+    ) -> agent_client_protocol::Result<Vec<Value>> {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let update = match session.read_update().await {
+                    Ok(SessionMessage::SessionMessage(dispatch)) => {
+                        let message = dispatch.to_untyped_message()?;
+                        if message.method() != "session/update" {
+                            continue;
+                        }
+                        let notification: agent_client_protocol::schema::SessionNotification =
+                            serde_json::from_value(message.params().clone())?;
+                        notification.update
+                    }
+                    Ok(SessionMessage::StopReason(_)) => continue,
+                    Ok(_) => continue,
+                    Err(err) => return Err(err),
+                };
+                if matches!(update, SessionUpdate::AvailableCommandsUpdate(_)) {
+                    return Ok(vec![serde_json::to_value(update)?]);
+                }
+            }
+        })
+        .await
+        .map_err(|_| {
+            agent_client_protocol::Error::internal_error()
+                .data("timed out waiting for available_commands_update")
+        })?
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
+    #[request(method = "does/not/exist", response = Value)]
+    struct UnknownRequest {}
 
     fn fixed(text: &str) -> LlmSimConfig {
         LlmSimConfig::fixed(text)
@@ -273,56 +283,44 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn initialize_advertises_protocol_version_and_capabilities() {
-        let mut client = TestClient::spawn(fixed("hi"), true);
-        let response = client.initialize().await;
-        assert_eq!(response["result"]["protocolVersion"], 1);
-        assert_eq!(
-            response["result"]["agentCapabilities"]["loadSession"],
-            false
-        );
-        assert_eq!(
-            response["result"]["agentCapabilities"]["promptCapabilities"]["embeddedContext"],
-            true
-        );
+        let init =
+            with_sdk_client(fixed("hi"), true, |client| async move { Ok(client.init) }).await;
+        assert_eq!(init.protocol_version, protocol::PROTOCOL_VERSION);
+        assert!(!init.agent_capabilities.load_session);
+        assert!(init.agent_capabilities.prompt_capabilities.embedded_context);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn full_handshake_then_prompt_streams_text_and_ends_turn() {
-        let mut client = TestClient::spawn(fixed("hello from acp"), true);
-        client.initialize().await;
-        let session_id = client.new_session().await;
+        let run = with_sdk_client(fixed("hello from acp"), true, |client| async move {
+            let mut session = client.new_session().await?;
+            SdkClient::prompt(&mut session, "say hi").await
+        })
+        .await;
 
-        let response = client
-            .request(
-                "session/prompt",
-                json!({
-                    "sessionId": session_id,
-                    "prompt": [{ "type": "text", "text": "say hi" }],
-                }),
-            )
-            .await;
-
-        assert_eq!(response["result"]["stopReason"], "end_turn");
+        assert_eq!(
+            run.stop_reason,
+            agent_client_protocol::schema::StopReason::EndTurn
+        );
         assert!(
-            client.assistant_text().contains("hello from acp"),
-            "expected streamed assistant text, got notifications: {:?}",
-            client.notifications
+            run.assistant_text().contains("hello from acp"),
+            "expected streamed assistant text, got updates: {:?}",
+            run.updates
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn new_session_advertises_available_commands() {
-        let mut client = TestClient::spawn(fixed("hi"), true);
-        client.initialize().await;
-        client.new_session().await;
-
-        let command_updates = client.updates_of_kind("available_commands_update");
+        let command_updates = with_sdk_client(fixed("hi"), true, |client| async move {
+            let mut session = client.new_session().await?;
+            collect_available_commands(&mut session).await
+        })
+        .await;
         assert!(
             !command_updates.is_empty(),
-            "expected available_commands_update, got: {:?}",
-            client.notifications
+            "expected available_commands_update"
         );
-        let commands = command_updates[0]["update"]["availableCommands"]
+        let commands = command_updates[0]["availableCommands"]
             .as_array()
             .expect("availableCommands array");
         assert!(
@@ -345,72 +343,70 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn slash_system_command_executes_without_model_turn() {
-        let mut client = TestClient::spawn(fixed("model should not run"), true);
-        client.initialize().await;
-        let session_id = client.new_session().await;
+        let run = with_sdk_client(fixed("model should not run"), true, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "/setup status").await
+        })
+        .await;
 
-        let response = client
-            .request(
-                "session/prompt",
-                json!({
-                    "sessionId": session_id,
-                    "prompt": [{ "type": "text", "text": "/setup status" }],
-                }),
-            )
-            .await;
-
-        assert_eq!(response["result"]["stopReason"], "end_turn");
-        let tool_calls = client.updates_of_kind("tool_call");
+        assert_eq!(
+            run.stop_reason,
+            agent_client_protocol::schema::StopReason::EndTurn
+        );
+        let tool_calls = run.updates_of_kind("tool_call");
         assert!(
             tool_calls
                 .iter()
-                .any(|u| u["update"]["title"] == "/setup status"
-                    && u["update"]["rawInput"]["command"] == "setup"),
-            "expected command tool_call, got notifications: {:?}",
-            client.notifications
+                .any(|u| u["title"] == "/setup status" && u["rawInput"]["command"] == "setup"),
+            "expected command tool_call, got updates: {:?}",
+            run.updates
         );
-        let tool_updates = client.updates_of_kind("tool_call_update");
+        let tool_updates = run.updates_of_kind("tool_call_update");
         let completed = tool_updates
             .iter()
-            .find(|u| u["update"]["status"] == "completed")
+            .find(|u| u["status"] == "completed")
             .expect("completed command tool update");
         assert!(
-            completed["update"]["content"][0]["content"]["text"]
+            completed["content"][0]["content"]["text"]
                 .as_str()
                 .is_some_and(|text| text.contains("setup: provider=")),
             "expected setup status in command output, got: {completed:?}"
         );
-        assert_eq!(completed["update"]["rawOutput"]["success"], true);
+        assert_eq!(completed["rawOutput"]["success"], true);
         assert!(
-            !client.assistant_text().contains("model should not run"),
+            !run.assistant_text().contains("model should not run"),
             "slash command should not invoke the model"
         );
-        assert!(
-            client.updates_of_kind("available_commands_update").len() >= 2,
-            "expected command refresh after execution, got: {:?}",
-            client.notifications
-        );
+        assert!(!run.updates_of_kind("available_commands_update").is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unknown_method_returns_method_not_found() {
-        let mut client = TestClient::spawn(fixed("hi"), true);
-        client.initialize().await;
-        let response = client.request("does/not/exist", json!({})).await;
-        assert_eq!(response["error"]["code"], -32601);
+        let err = with_sdk_client(fixed("hi"), true, |client| async move {
+            match client.cx.send_request(UnknownRequest {}).block_task().await {
+                Ok(_) => panic!("unknown method unexpectedly succeeded"),
+                Err(err) => Ok(err),
+            }
+        })
+        .await;
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::MethodNotFound);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn prompt_to_unknown_session_is_invalid_params() {
-        let mut client = TestClient::spawn(fixed("hi"), true);
-        client.initialize().await;
-        let response = client
-            .request(
-                "session/prompt",
-                json!({ "sessionId": "session_does_not_exist", "prompt": [] }),
-            )
-            .await;
-        assert_eq!(response["error"]["code"], -32602);
+        let err = with_sdk_client(fixed("hi"), true, |client| async move {
+            let request = PromptRequest::new(
+                SessionId::new("session_does_not_exist"),
+                vec!["hello".to_string().into()],
+            );
+            match client.cx.send_request(request).block_task().await {
+                Ok(_) => panic!("unknown session unexpectedly succeeded"),
+                Err(err) => Ok(err),
+            }
+        })
+        .await;
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::InvalidParams);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -427,38 +423,34 @@ mod tests {
             }]),
             SimTurn::Assistant("tool done".to_string()),
         ]);
-        let mut client = TestClient::spawn(config, true);
-        client.initialize().await;
-        let session_id = client.new_session().await;
+        let run = with_sdk_client(config, true, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "run the tool").await
+        })
+        .await;
 
-        let response = client
-            .request(
-                "session/prompt",
-                json!({
-                    "sessionId": session_id,
-                    "prompt": [{ "type": "text", "text": "run the tool" }],
-                }),
-            )
-            .await;
-
-        assert_eq!(response["result"]["stopReason"], "end_turn");
-        let tool_calls = client.updates_of_kind("tool_call");
+        assert_eq!(
+            run.stop_reason,
+            agent_client_protocol::schema::StopReason::EndTurn
+        );
+        let tool_calls = run.updates_of_kind("tool_call");
         assert!(
             !tool_calls.is_empty(),
             "expected a tool_call update, got: {:?}",
-            client.notifications
+            run.updates
         );
         assert_eq!(
-            tool_calls[0]["update"]["kind"], "execute",
+            tool_calls[0]["kind"], "execute",
             "bash should map to execute kind"
         );
-        let updates = client.updates_of_kind("tool_call_update");
+        let updates = run.updates_of_kind("tool_call_update");
         assert!(
-            updates.iter().any(|u| u["update"]["status"] == "completed"),
+            updates.iter().any(|u| u["status"] == "completed"),
             "expected a completed tool_call_update, got: {:?}",
-            client.notifications
+            run.updates
         );
-        assert!(client.assistant_text().contains("tool done"));
+        assert!(run.assistant_text().contains("tool done"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -476,27 +468,20 @@ mod tests {
             }]),
             SimTurn::Assistant("planned".to_string()),
         ]);
-        let mut client = TestClient::spawn(config, true);
-        client.initialize().await;
-        let session_id = client.new_session().await;
+        let run = with_sdk_client(config, true, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "make a plan").await
+        })
+        .await;
 
-        client
-            .request(
-                "session/prompt",
-                json!({
-                    "sessionId": session_id,
-                    "prompt": [{ "type": "text", "text": "make a plan" }],
-                }),
-            )
-            .await;
-
-        let plans = client.updates_of_kind("plan");
+        let plans = run.updates_of_kind("plan");
         assert!(
             !plans.is_empty(),
             "expected a plan update, got: {:?}",
-            client.notifications
+            run.updates
         );
-        let entries = plans[0]["update"]["entries"].as_array().unwrap();
+        let entries = plans[0]["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["content"], "step one");
         assert_eq!(entries[0]["status"], "in_progress");
@@ -561,7 +546,7 @@ mod tests {
         let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
         send(
             &mut client_w,
-            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd.to_str().unwrap() } }),
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd.to_str().unwrap(), "mcpServers": [] } }),
         )
         .await;
         let session_id = await_id(&mut reader, 1).await["result"]["sessionId"]

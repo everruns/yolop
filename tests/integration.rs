@@ -753,6 +753,26 @@ fn acp_openai_handshake_smoke() {
     assert!(result.exited_cleanly, "agent should exit cleanly");
 }
 
+#[test]
+#[ignore = "requires ANTHROPIC_API_KEY; run under doppler with --ignored"]
+fn acp_anthropic_handshake_smoke() {
+    let Ok(_) = std::env::var("ANTHROPIC_API_KEY") else {
+        panic!("ANTHROPIC_API_KEY required for live ACP smoke test");
+    };
+    let result = run_acp_handshake("anthropic", "Reply with exactly the single word: pong");
+    assert_eq!(
+        result.prompt["result"]["stopReason"], "end_turn",
+        "prompt response: {}",
+        result.prompt
+    );
+    assert!(
+        result.assistant_text.to_lowercase().contains("pong"),
+        "expected `pong` in streamed assistant text, got: {:?}",
+        result.assistant_text
+    );
+    assert!(result.exited_cleanly, "agent should exit cleanly");
+}
+
 fn wait_for_process_exit(
     child: &mut std::process::Child,
     timeout: Duration,
