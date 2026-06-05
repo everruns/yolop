@@ -479,7 +479,7 @@ mod tests {
         // One over (16): the long tail defers.
         let over = hook.transform(tool_set(10));
         assert!(
-            over.iter().any(|t| is_stubbed(t)),
+            over.iter().any(is_stubbed),
             "strictly above the threshold the long tail must defer"
         );
     }
