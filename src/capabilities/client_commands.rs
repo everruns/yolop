@@ -42,7 +42,7 @@ impl Capability for ClientCommandsCapability {
         "Client Commands"
     }
     fn description(&self) -> &str {
-        "Terminal-side slash commands (help, tools, cwd, model, effort, clear, quit)."
+        "Terminal-side slash commands (help, tools, mcp, cwd, model, effort, clear, quit)."
     }
     fn status(&self) -> CapabilityStatus {
         CapabilityStatus::Available
@@ -58,6 +58,7 @@ impl Capability for ClientCommandsCapability {
         vec![
             cmd("help", "show commands", &[]),
             cmd("tools", "list available tools", &[]),
+            cmd("mcp", "list configured MCP servers", &[]),
             cmd("cwd", "show workspace root", &[]),
             cmd("model", "show or switch model", &[opt("id")]),
             cmd("effort", "show or set reasoning effort", &[opt("level")]),
@@ -80,6 +81,7 @@ impl Capability for ClientCommandsCapability {
         let command = match request.name.as_str() {
             "help" => UiCommand::ShowHelp,
             "tools" => UiCommand::ShowTools,
+            "mcp" => UiCommand::ShowMcp,
             "cwd" => UiCommand::ShowCwd,
             "clear" => UiCommand::ClearTranscript,
             "quit" => UiCommand::Quit,

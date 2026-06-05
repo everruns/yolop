@@ -19,6 +19,8 @@ pub enum UiCommand {
     ShowHelp,
     /// Print the list of available tools.
     ShowTools,
+    /// Print the configured MCP servers.
+    ShowMcp,
     /// Print the workspace root.
     ShowCwd,
     /// Clear the transcript buffer.

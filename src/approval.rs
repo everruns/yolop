@@ -25,6 +25,13 @@ pub enum ApprovalRequest {
         path: String,
         recursive: bool,
     },
+    /// A tool call from an MCP server (`mcp_<server>__<tool>`). Gated because
+    /// MCP tools run through the runtime's executor, outside the bash/file
+    /// gates; read-only tools are filtered out before reaching here.
+    McpTool {
+        name: String,
+        arguments: serde_json::Value,
+    },
 }
 
 impl ApprovalRequest {
@@ -43,6 +50,10 @@ impl ApprovalRequest {
                 let r = if *recursive { " (recursive)" } else { "" };
                 format!("delete {path}{r}")
             }
+            Self::McpTool { name, .. } => match everruns_core::parse_mcp_tool_name(name) {
+                Some((server, tool)) => format!("call MCP tool {server} / {tool}"),
+                None => format!("call MCP tool {name}"),
+            },
         }
     }
 
@@ -59,6 +70,9 @@ impl ApprovalRequest {
                 None => format!("(new file, {} bytes)", after.len()),
             },
             Self::FileDelete { .. } => String::new(),
+            Self::McpTool { arguments, .. } => {
+                serde_json::to_string_pretty(arguments).unwrap_or_else(|_| arguments.to_string())
+            }
         }
     }
 }

@@ -9,6 +9,7 @@ mod capabilities;
 mod diff;
 mod host_ui;
 mod into;
+mod mcp_config;
 mod runtime;
 mod session_log;
 mod settings;
@@ -19,6 +20,9 @@ mod version;
 
 #[cfg(test)]
 mod streaming_tests;
+
+#[cfg(test)]
+mod mcp_e2e_tests;
 
 #[cfg(test)]
 mod agent_scenarios;

@@ -757,6 +757,22 @@ impl App {
             UiCommand::ShowTools => {
                 self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
             }
+            UiCommand::ShowMcp => {
+                if self.startup.mcp_server_names.is_empty() {
+                    let global = crate::mcp_config::global_mcp_config_path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "the yolop config dir".to_string());
+                    self.push_system(format!(
+                        "no MCP servers configured (add them to .mcp.json in the workspace \
+                         root or {global})"
+                    ));
+                } else {
+                    self.push_system(format!(
+                        "MCP servers: {}",
+                        self.startup.mcp_server_names.join(", ")
+                    ));
+                }
+            }
             UiCommand::ShowCwd => {
                 self.push_system(format!(
                     "workspace root: {}",
@@ -2146,7 +2162,10 @@ fn command_suggestions(
         });
     }
 
-    out.truncate(8);
+    // Keep the dropdown bounded but large enough to show every built-in
+    // command (8 client commands + capability commands like /setup) for a
+    // bare `/`, so none is hidden behind the cap.
+    out.truncate(12);
     out
 }
 
