@@ -747,18 +747,20 @@ fn acp_stdio_handshake_smoke() {
 /// live-smoke job sets `YOLOP_REQUIRE_LIVE_TESTS=1`, which turns a missing key
 /// into a hard failure — a misconfigured secret must not let the live check
 /// report a false green.
-fn live_key_or_skip(var: &str) -> Option<String> {
-    match std::env::var(var) {
-        Ok(key) if !key.is_empty() => Some(key),
-        _ => {
-            assert!(
-                std::env::var_os("YOLOP_REQUIRE_LIVE_TESTS").is_none(),
-                "{var} is required when YOLOP_REQUIRE_LIVE_TESTS is set"
-            );
-            eprintln!("skipping live test: {var} not set");
-            None
-        }
+///
+/// This is a presence check only: it never reads the key value into memory, so
+/// the secret is not materialized here and a non-UTF-8 value still counts as
+/// present.
+fn live_key_or_skip(var: &str) -> Option<()> {
+    if std::env::var_os(var).is_some_and(|value| !value.is_empty()) {
+        return Some(());
     }
+    assert!(
+        std::env::var_os("YOLOP_REQUIRE_LIVE_TESTS").is_none(),
+        "{var} is required when YOLOP_REQUIRE_LIVE_TESTS is set"
+    );
+    eprintln!("skipping live test: {var} not set");
+    None
 }
 
 #[test]
@@ -837,6 +839,18 @@ fn live_openrouter_model() -> String {
         .unwrap_or_else(|_| "nvidia/nemotron-3-ultra-550b-a55b".to_string())
 }
 
+/// True when a live run failed only because the upstream provider rate-limited
+/// us (HTTP 429). That is infrastructure, not a yolop regression, so the live
+/// OpenRouter tests skip on it rather than fail — the shared Nemotron endpoints
+/// 429 often enough to make a required CI check flaky otherwise. A real
+/// regression in the tool-calling path produces a missing sentinel or
+/// `success=false`, not a 429, so it is still caught.
+fn looks_rate_limited(combined: &str) -> bool {
+    let lower = combined.to_lowercase();
+    combined.contains("429")
+        && (lower.contains("rate-limit") || lower.contains("too many requests"))
+}
+
 #[test]
 fn openrouter_print_smoke() {
     let Some(_) = live_key_or_skip("OPENROUTER_API_KEY") else {
@@ -859,6 +873,10 @@ fn openrouter_print_smoke() {
         .expect("spawn yolop --provider openrouter");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() && looks_rate_limited(&format!("{stdout}{stderr}")) {
+        eprintln!("skipping live test: upstream provider rate-limited (429)");
+        return;
+    }
     assert!(
         output.status.success(),
         "yolop openrouter smoke failed: stdout={stdout} stderr={stderr}"
@@ -894,7 +912,13 @@ fn openrouter_tool_call_executes_end_to_end() {
     };
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let sessions = tempfile::tempdir().expect("sessions tempdir");
-    let sentinel = "MARMOT-7741-ZQX";
+    // Unique per run so a stale cache or a model that pattern-matches a known
+    // token can't fake a pass — the value only exists in the file we just wrote.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_nanos();
+    let sentinel = format!("MARMOT-{}-{nanos}", std::process::id());
     std::fs::write(
         workspace.path().join("secret.txt"),
         format!("The access token is {sentinel}.\n"),
@@ -920,12 +944,16 @@ fn openrouter_tool_call_executes_end_to_end() {
         .expect("spawn yolop --provider openrouter");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() && looks_rate_limited(&format!("{stdout}{stderr}")) {
+        eprintln!("skipping live test: upstream provider rate-limited (429)");
+        return;
+    }
     assert!(
         output.status.success(),
         "yolop openrouter tool-call smoke failed: stdout={stdout} stderr={stderr}"
     );
     assert!(
-        stdout.contains(sentinel),
+        stdout.contains(&sentinel),
         "expected sentinel {sentinel} in stdout (proves read_file executed and \
          its result reached the model): {stdout}"
     );
