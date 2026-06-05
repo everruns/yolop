@@ -84,6 +84,8 @@ def main():
                     with open(os.path.join(marker_dir, name + ".called"), "w") as fh:
                         json.dump(args, fh)
                 except OSError:
+                    # Marker persistence is best-effort test instrumentation; a
+                    # filesystem hiccup must not break the MCP tools/call reply.
                     pass
             text = args.get("message", "")
             send({
