@@ -1932,15 +1932,17 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_tool_search() {
-        // Deferred tool loading must be wired for both hosts — it works on
-        // every provider, so there is no reason to scope it to the TUI.
+        // Deferred tool loading must be wired for every host configuration —
+        // it works on every provider, so there is no reason to scope it.
         for client_commands in [false, true] {
-            let ids = coding_harness_capabilities(client_commands);
-            assert!(
-                ids.iter()
-                    .any(|cap| cap.capability_id() == TOOL_SEARCH_CAPABILITY_ID),
-                "tool_search must be enabled (client_commands={client_commands})"
-            );
+            for mcp_approval in [false, true] {
+                let ids = coding_harness_capabilities(client_commands, mcp_approval);
+                assert!(
+                    ids.iter()
+                        .any(|cap| cap.capability_id() == TOOL_SEARCH_CAPABILITY_ID),
+                    "tool_search must be enabled (client_commands={client_commands}, mcp_approval={mcp_approval})"
+                );
+            }
         }
     }
 
