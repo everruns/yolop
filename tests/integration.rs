@@ -4,10 +4,14 @@
 // the binary still launches and the agent loop wires up correctly without any
 // API key.
 //
-// The `#[ignore]`-marked tests reach real provider endpoints (OpenAI and
-// OpenRouter) and are meant to be run under Doppler in CI's live-smoke job:
+// The live tests reach real provider endpoints (OpenAI and OpenRouter). They
+// skip themselves when the relevant API key is absent, so a plain `cargo test`
+// stays offline — no `#[ignore]` needed. CI's live-smoke job runs them under
+// Doppler with `YOLOP_REQUIRE_LIVE_TESTS=1`, which upgrades a missing key from
+// "skip" to a hard failure so a misconfigured secret can't report a false
+// green:
 //
-//     doppler run -- cargo test --test integration -- --ignored
+//     YOLOP_REQUIRE_LIVE_TESTS=1 doppler run -- cargo test --test integration
 //
 // The OpenRouter tests default to a Nemotron 3 model and guard the Chat
 // Completions tool-calling path (everruns EVE-522 / EVE-523).
@@ -736,11 +740,31 @@ fn acp_stdio_handshake_smoke() {
     );
 }
 
+/// Resolve a provider API key for a live test.
+///
+/// Returns `None` (the test should then `return` early) when the key is absent,
+/// so a plain `cargo test` run stays offline without any `#[ignore]`. CI's
+/// live-smoke job sets `YOLOP_REQUIRE_LIVE_TESTS=1`, which turns a missing key
+/// into a hard failure — a misconfigured secret must not let the live check
+/// report a false green.
+fn live_key_or_skip(var: &str) -> Option<String> {
+    match std::env::var(var) {
+        Ok(key) if !key.is_empty() => Some(key),
+        _ => {
+            assert!(
+                std::env::var_os("YOLOP_REQUIRE_LIVE_TESTS").is_none(),
+                "{var} is required when YOLOP_REQUIRE_LIVE_TESTS is set"
+            );
+            eprintln!("skipping live test: {var} not set");
+            None
+        }
+    }
+}
+
 #[test]
-#[ignore = "requires OPENAI_API_KEY; run under doppler with --ignored"]
 fn acp_openai_handshake_smoke() {
-    let Ok(_) = std::env::var("OPENAI_API_KEY") else {
-        panic!("OPENAI_API_KEY required for live ACP smoke test");
+    let Some(_) = live_key_or_skip("OPENAI_API_KEY") else {
+        return;
     };
     let result = run_acp_handshake("openai", "Reply with exactly the single word: pong");
     assert_eq!(
@@ -772,10 +796,9 @@ fn wait_for_process_exit(
 }
 
 #[test]
-#[ignore = "requires OPENAI_API_KEY; run under doppler with --ignored"]
 fn openai_print_smoke() {
-    let Ok(_) = std::env::var("OPENAI_API_KEY") else {
-        panic!("OPENAI_API_KEY required for live smoke test");
+    let Some(_) = live_key_or_skip("OPENAI_API_KEY") else {
+        return;
     };
     let tmp = tempfile::tempdir().expect("tempdir");
     let output = Command::new(yolop_binary())
@@ -815,10 +838,9 @@ fn live_openrouter_model() -> String {
 }
 
 #[test]
-#[ignore = "requires OPENROUTER_API_KEY; run under doppler with --ignored"]
 fn openrouter_print_smoke() {
-    let Ok(_) = std::env::var("OPENROUTER_API_KEY") else {
-        panic!("OPENROUTER_API_KEY required for live smoke test");
+    let Some(_) = live_key_or_skip("OPENROUTER_API_KEY") else {
+        return;
     };
     let tmp = tempfile::tempdir().expect("tempdir");
     let model = live_openrouter_model();
@@ -866,10 +888,9 @@ fn openrouter_print_smoke() {
 /// the answer if `read_file` actually executed and its result flowed back into
 /// the next turn. A regression on either bug makes this fail.
 #[test]
-#[ignore = "requires OPENROUTER_API_KEY; run under doppler with --ignored"]
 fn openrouter_tool_call_executes_end_to_end() {
-    let Ok(_) = std::env::var("OPENROUTER_API_KEY") else {
-        panic!("OPENROUTER_API_KEY required for live smoke test");
+    let Some(_) = live_key_or_skip("OPENROUTER_API_KEY") else {
+        return;
     };
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let sessions = tempfile::tempdir().expect("sessions tempdir");

@@ -137,8 +137,9 @@ Three layers, all offline (no API key):
    grant), `write_todos` → `plan`, and command advertisement/execution.
 
 The binary itself is smoke-tested over real OS pipes in
-`tests/integration.rs` (`acp_stdio_handshake_smoke`), and a `#[ignore]`d
-real-provider test documents the live path.
+`tests/integration.rs` (`acp_stdio_handshake_smoke`), and a real-provider test
+(`acp_openai_handshake_smoke`, which skips itself when no API key is present)
+documents the live path.
 
 ### Real-life testing in an editor
 
