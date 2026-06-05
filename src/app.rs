@@ -759,11 +759,13 @@ impl App {
             }
             UiCommand::ShowMcp => {
                 if self.startup.mcp_server_names.is_empty() {
-                    self.push_system(
+                    let global = crate::mcp_config::global_mcp_config_path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "the yolop config dir".to_string());
+                    self.push_system(format!(
                         "no MCP servers configured (add them to .mcp.json in the workspace \
-                         root or ~/.config/yolop/mcp.json)"
-                            .into(),
-                    );
+                         root or {global})"
+                    ));
                 } else {
                     self.push_system(format!(
                         "MCP servers: {}",

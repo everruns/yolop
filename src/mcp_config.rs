@@ -20,9 +20,11 @@
 //! - **global**: `<config_dir>/yolop/mcp.json` (e.g. `~/.config/yolop/mcp.json`)
 //! - **workspace**: `<workspace_root>/.mcp.json`
 //!
-//! String values support `${VAR}` environment expansion (matching how every
-//! other MCP client lets you keep secrets out of the file). Both remote HTTP
-//! and local stdio servers are supported; stdio requires the runtime's
+//! Each scope is best-effort: a missing file contributes nothing, and a
+//! malformed file is warned about and skipped so it cannot mask the other
+//! scope. String values support `${VAR}` environment expansion (matching how
+//! every other MCP client lets you keep secrets out of the file). Both remote
+//! HTTP and local stdio servers are supported; stdio requires the runtime's
 //! `mcp-stdio` feature, which yolop enables.
 
 use std::collections::HashMap;
@@ -48,22 +50,40 @@ pub fn global_mcp_config_path() -> Option<PathBuf> {
 }
 
 /// Load the effective scoped MCP servers for a workspace: the global config
-/// overlaid by the workspace `.mcp.json`. Missing files contribute nothing;
-/// `${VAR}` placeholders in string fields are expanded from the environment.
-pub fn load_mcp_servers(workspace_root: &Path) -> Result<ScopedMcpServers> {
-    let global = match global_mcp_config_path() {
-        Some(path) => read_config(&path)?,
-        None => ScopedMcpServers::default(),
-    };
-    let workspace = read_config(&workspace_root.join(MCP_CONFIG_FILE))?;
+/// overlaid by the workspace `.mcp.json`, with `${VAR}` placeholders expanded
+/// from the environment. Each scope is best-effort (a malformed or unreadable
+/// file is warned about and skipped), so one bad file never masks the other.
+pub fn load_mcp_servers(workspace_root: &Path) -> ScopedMcpServers {
+    load_merged(global_mcp_config_path().as_deref(), workspace_root)
+}
+
+/// Merge an explicit global path (or none) with the workspace `.mcp.json`.
+/// Split out from [`load_mcp_servers`] so tests can pin both scopes and stay
+/// independent of the host's real `<config_dir>/yolop/mcp.json`.
+fn load_merged(global_path: Option<&Path>, workspace_root: &Path) -> ScopedMcpServers {
+    let global = global_path.map(read_scope).unwrap_or_default();
+    let workspace = read_scope(&workspace_root.join(MCP_CONFIG_FILE));
     let mut merged = merge_scoped_mcp_servers(&global, &workspace);
     for server in merged.values_mut() {
         expand_server_env(server);
     }
-    Ok(merged)
+    merged
 }
 
-/// Read one `.mcp.json`-shaped file. Absent file → no servers.
+/// Read one scope, downgrading any read/parse failure to a warning + no
+/// servers so a malformed file in one scope cannot sink the other.
+fn read_scope(path: &Path) -> ScopedMcpServers {
+    match read_config(path) {
+        Ok(servers) => servers,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "ignoring malformed MCP config");
+            ScopedMcpServers::default()
+        }
+    }
+}
+
+/// Read one `.mcp.json`-shaped file. Absent file → no servers; malformed file
+/// → error (callers decide whether to skip it).
 fn read_config(path: &Path) -> Result<ScopedMcpServers> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
@@ -136,11 +156,16 @@ mod tests {
         std::fs::write(dir.join(MCP_CONFIG_FILE), contents).unwrap();
     }
 
+    /// Workspace-only load with no global scope — deterministic regardless of
+    /// the host's real `<config_dir>/yolop/mcp.json`.
+    fn load_workspace(dir: &Path) -> ScopedMcpServers {
+        load_merged(None, dir)
+    }
+
     #[test]
     fn missing_file_yields_no_servers() {
         let dir = tempfile::tempdir().unwrap();
-        let servers = load_mcp_servers(dir.path()).unwrap();
-        assert!(servers.is_empty());
+        assert!(load_workspace(dir.path()).is_empty());
     }
 
     #[test]
@@ -157,7 +182,7 @@ mod tests {
             }}"#,
         );
 
-        let servers = load_mcp_servers(dir.path()).unwrap();
+        let servers = load_workspace(dir.path());
         let docs = servers.get("docs").expect("docs server");
         assert_eq!(docs.transport_type, McpServerTransportType::Http);
         assert_eq!(docs.url, "https://example.com/mcp");
@@ -175,7 +200,7 @@ mod tests {
             dir.path(),
             r#"{ "mcpServers": { "b": { "url": "https://b.example.com/mcp" } } }"#,
         );
-        let servers = load_mcp_servers(dir.path()).unwrap();
+        let servers = load_workspace(dir.path());
         assert_eq!(servers["b"].transport_type, McpServerTransportType::Http);
     }
 
@@ -183,14 +208,36 @@ mod tests {
     fn empty_object_is_ok() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "{}");
-        assert!(load_mcp_servers(dir.path()).unwrap().is_empty());
+        assert!(load_workspace(dir.path()).is_empty());
     }
 
     #[test]
-    fn malformed_json_is_an_error() {
+    fn malformed_json_is_an_error_at_the_scope_level() {
+        // `read_config` surfaces the parse error...
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "{ not json");
-        assert!(load_mcp_servers(dir.path()).is_err());
+        assert!(read_config(&dir.path().join(MCP_CONFIG_FILE)).is_err());
+    }
+
+    #[test]
+    fn malformed_scope_is_skipped_not_fatal() {
+        // ...but a malformed file in one scope must not mask the other. A bad
+        // global config still lets a valid workspace `.mcp.json` load.
+        let global = tempfile::tempdir().unwrap();
+        let global_path = global.path().join("mcp.json");
+        std::fs::write(&global_path, "{ not json").unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        write(
+            workspace.path(),
+            r#"{ "mcpServers": { "ws": { "url": "https://ws.example.com/mcp" } } }"#,
+        );
+
+        let servers = load_merged(Some(&global_path), workspace.path());
+        assert!(
+            servers.contains_key("ws"),
+            "valid workspace server survives a malformed global config: {servers:?}"
+        );
     }
 
     #[test]
@@ -208,7 +255,7 @@ mod tests {
             }}"#,
         );
 
-        let servers = load_mcp_servers(dir.path()).unwrap();
+        let servers = load_workspace(dir.path());
         let fs = servers.get("fs").expect("fs server");
         assert_eq!(fs.transport_type, McpServerTransportType::Stdio);
         assert_eq!(fs.command.as_deref(), Some("mcp-server-filesystem"));
@@ -218,7 +265,8 @@ mod tests {
 
     #[test]
     fn expands_env_placeholders() {
-        // SAFETY: single-threaded test; restores nothing it doesn't own.
+        // Serialize against every other env-mutating test in this binary.
+        let _guard = crate::test_env::lock();
         unsafe {
             std::env::set_var("YOLOP_TEST_MCP_TOKEN", "s3cret");
             std::env::set_var("YOLOP_TEST_MCP_ROOT", "/srv/work");
@@ -240,7 +288,7 @@ mod tests {
             }}"#,
         );
 
-        let servers = load_mcp_servers(dir.path()).unwrap();
+        let servers = load_workspace(dir.path());
         assert_eq!(
             servers["docs"]
                 .headers
@@ -249,10 +297,18 @@ mod tests {
             Some("Bearer s3cret")
         );
         assert_eq!(servers["fs"].args, vec!["/srv/work".to_string()]);
+        unsafe {
+            std::env::remove_var("YOLOP_TEST_MCP_TOKEN");
+            std::env::remove_var("YOLOP_TEST_MCP_ROOT");
+        }
     }
 
     #[test]
     fn unset_env_placeholder_is_left_intact() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("YOLOP_UNSET_VAR_XYZ");
+        }
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
@@ -260,7 +316,7 @@ mod tests {
                 "docs": { "type": "http", "url": "https://example.com/${YOLOP_UNSET_VAR_XYZ}" }
             }}"#,
         );
-        let servers = load_mcp_servers(dir.path()).unwrap();
+        let servers = load_workspace(dir.path());
         assert_eq!(
             servers["docs"].url,
             "https://example.com/${YOLOP_UNSET_VAR_XYZ}"
@@ -269,6 +325,7 @@ mod tests {
 
     #[test]
     fn expand_env_handles_multiple_and_adjacent() {
+        let _guard = crate::test_env::lock();
         unsafe {
             std::env::set_var("YOLOP_TEST_A", "a");
             std::env::set_var("YOLOP_TEST_B", "b");
@@ -277,5 +334,9 @@ mod tests {
         assert_eq!(expand_env("x${YOLOP_TEST_A}${YOLOP_TEST_B}y"), "xaby");
         assert_eq!(expand_env("no placeholders"), "no placeholders");
         assert_eq!(expand_env("${unterminated"), "${unterminated");
+        unsafe {
+            std::env::remove_var("YOLOP_TEST_A");
+            std::env::remove_var("YOLOP_TEST_B");
+        }
     }
 }

@@ -1059,16 +1059,10 @@ pub async fn build_with_options(
         .with_context(|| format!("canonicalize workspace: {}", workspace_root.display()))?;
     let workspace = Workspace::new(canonical_root.clone());
 
-    // MCP servers from `.mcp.json` (global + workspace, merged). A malformed
-    // config should not sink the whole session, so we warn and continue with
-    // no servers rather than failing startup.
-    let mcp_servers: ScopedMcpServers = match crate::mcp_config::load_mcp_servers(&canonical_root) {
-        Ok(servers) => servers,
-        Err(error) => {
-            tracing::warn!(%error, "failed to load .mcp.json; continuing without MCP servers");
-            ScopedMcpServers::default()
-        }
-    };
+    // MCP servers from `.mcp.json` (global + workspace, merged). Loading is
+    // best-effort per scope: a malformed file is warned about and skipped, so
+    // it never sinks the session or masks the other scope.
+    let mcp_servers: ScopedMcpServers = crate::mcp_config::load_mcp_servers(&canonical_root);
     let mut mcp_server_names: Vec<String> = mcp_servers.keys().cloned().collect();
     mcp_server_names.sort();
 

@@ -877,11 +877,13 @@ mod tests {
     /// A gate that denies every request, so we can prove the hook blocks (and
     /// that bypassed tools are *not* sent to it).
     fn deny_gate() -> Arc<ApprovalGate> {
-        let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<(crate::approval::ApprovalRequest, _)>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
+            crate::approval::ApprovalRequest,
+            tokio::sync::oneshot::Sender<bool>,
+        )>();
         tokio::spawn(async move {
             while let Some((_req, responder)) = rx.recv().await {
-                let _ = tokio::sync::oneshot::Sender::send(responder, false);
+                let _ = responder.send(false);
             }
         });
         ApprovalGate::channel(tx)
