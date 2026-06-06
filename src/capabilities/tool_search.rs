@@ -37,7 +37,7 @@
 // on OpenAI (gpt-5.4/5.5), Anthropic, and OpenAI-compatible backends such as
 // OpenRouter (e.g. NVIDIA Nemotron) without any driver support.
 //
-// TODO(EVE-521): this whole module is a temporary vendor. As of 0.9.0 upstream
+// TODO(EVE-527): this whole module is a temporary vendor. As of 0.9.0 upstream
 // has renamed `GenericToolSearchCapability` to
 // `everruns_core::capabilities::ToolSearchCapability`, but it still defers with
 // the stateless `DeferSchemaHook` above and has *not* shipped the
@@ -45,7 +45,8 @@
 // structured callers. Once upstream ships that fix (revealed-set + core
 // allowlist, or equivalent), delete this file and register the upstream
 // `ToolSearchCapability` in `runtime.rs` instead. Keep the `yolop_tool_search`
-// id wiring until then so the harness selects this implementation.
+// id wiring until then so the harness selects this implementation. (EVE-521 is
+// the related, separate native-`openai_tool_search` server_error.)
 
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, ToolDefinitionHook};
@@ -59,7 +60,7 @@ use std::sync::{Arc, Mutex};
 
 /// Capability id. Distinct from upstream `tool_search` / `openai_tool_search`
 /// so the harness selects this vendored implementation unambiguously.
-// TODO(EVE-521): drop the `yolop_` prefix and use the upstream `tool_search`
+// TODO(EVE-527): drop the `yolop_` prefix and use the upstream `tool_search`
 // id once `everruns_core::capabilities::ToolSearchCapability` ships the fix.
 pub const TOOL_SEARCH_CAPABILITY_ID: &str = "yolop_tool_search";
 
@@ -90,7 +91,7 @@ const ALWAYS_FULL: &[&str] = &[
 /// (by `Arc`) between the capability, its schema hook, and its tool so a reveal
 /// during tool execution is visible to the next context assembly.
 //
-// TODO(EVE-521): this revealed-set is the progressive-disclosure mechanism that
+// TODO(EVE-527): this revealed-set is the progressive-disclosure mechanism that
 // upstream's `ToolSearchCapability` lacks. Once upstream adopts it, this type
 // and its plumbing go away with the rest of the module.
 type RevealedTools = Arc<Mutex<HashSet<String>>>;
