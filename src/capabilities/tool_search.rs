@@ -336,6 +336,7 @@ impl Tool for ToolSearchTool {
             category: None,
             deferrable: DeferrablePolicy::Never,
             hints: self.hints(),
+            full_parameters: None,
         })
     }
 
@@ -427,6 +428,7 @@ mod tests {
             category: None,
             deferrable,
             hints: ToolHints::default(),
+            full_parameters: None,
         })
     }
 
