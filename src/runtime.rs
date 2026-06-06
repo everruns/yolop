@@ -1172,8 +1172,9 @@ pub async fn build_with_options(
     // and defers the long tail behind a `tool_search` tool, revealing real
     // schemas progressively. Works on every provider/model — unlike the native
     // `openai_tool_search`, whose Responses round-trip is broken (EVE-521).
-    // TODO(EVE-521): replace with the upstream `ToolSearchCapability` (renamed
-    // from `GenericToolSearchCapability`) once it ships progressive disclosure.
+    // TODO(EVE-521): the upstream `ToolSearchCapability` (renamed from
+    // `GenericToolSearchCapability` in 0.9.0) still defers statelessly and lacks
+    // progressive disclosure; replace this vendor once upstream ships that fix.
     capabilities.register(ToolSearchCapability::new());
     capabilities.register(ToolOutputPersistenceCapability);
     capabilities.register(DuckDuckGoCapability);

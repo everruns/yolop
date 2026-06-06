@@ -4,9 +4,13 @@
 // Background: everruns ships two deferral capabilities. `openai_tool_search`
 // uses OpenAI's native Responses `tool_search` and currently fails with a
 // `server_error` on the reasoning models that advertise it (EVE-521). The
-// generic `everruns_core::capabilities::GenericToolSearchCapability` defers
-// schemas client-side, but its `DeferSchemaHook` is *stateless*: it re-stubs
-// every deferrable tool on every reason iteration. Because OpenAI/Anthropic
+// generic `everruns_core::capabilities::ToolSearchCapability` (renamed from
+// `GenericToolSearchCapability` in 0.9.0) defers schemas client-side, but its
+// `DeferSchemaHook` is *stateless*: it re-stubs every deferrable tool on every
+// reason iteration. 0.9.0 added a `full_parameters` field so its `tool_search`
+// can echo the real schema back *as text*, but that does not help structured
+// callers (see below) — the registered schema the model sees stays the stub.
+// Because OpenAI/Anthropic
 // structured tool calling makes the model emit arguments against the tool's
 // *registered* schema (the empty stub), the model calls every deferred tool
 // with `{}` and can never pass parameters — even after `tool_search` returns
@@ -33,9 +37,12 @@
 // on OpenAI (gpt-5.4/5.5), Anthropic, and OpenAI-compatible backends such as
 // OpenRouter (e.g. NVIDIA Nemotron) without any driver support.
 //
-// TODO(EVE-521): this whole module is a temporary vendor. Upstream is renaming
-// `GenericToolSearchCapability` to `everruns_core::capabilities::ToolSearchCapability`.
-// Once that ships the progressive-disclosure fix (revealed-set + core
+// TODO(EVE-521): this whole module is a temporary vendor. As of 0.9.0 upstream
+// has renamed `GenericToolSearchCapability` to
+// `everruns_core::capabilities::ToolSearchCapability`, but it still defers with
+// the stateless `DeferSchemaHook` above and has *not* shipped the
+// progressive-disclosure fix — so it still regresses to empty tool calls on
+// structured callers. Once upstream ships that fix (revealed-set + core
 // allowlist, or equivalent), delete this file and register the upstream
 // `ToolSearchCapability` in `runtime.rs` instead. Keep the `yolop_tool_search`
 // id wiring until then so the harness selects this implementation.
