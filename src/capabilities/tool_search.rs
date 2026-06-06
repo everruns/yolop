@@ -4,9 +4,13 @@
 // Background: everruns ships two deferral capabilities. `openai_tool_search`
 // uses OpenAI's native Responses `tool_search` and currently fails with a
 // `server_error` on the reasoning models that advertise it (EVE-521). The
-// generic `everruns_core::capabilities::GenericToolSearchCapability` defers
-// schemas client-side, but its `DeferSchemaHook` is *stateless*: it re-stubs
-// every deferrable tool on every reason iteration. Because OpenAI/Anthropic
+// generic `everruns_core::capabilities::ToolSearchCapability` (renamed from
+// `GenericToolSearchCapability` in 0.9.0) defers schemas client-side, but its
+// `DeferSchemaHook` is *stateless*: it re-stubs every deferrable tool on every
+// reason iteration. 0.9.0 added a `full_parameters` field so its `tool_search`
+// can echo the real schema back *as text*, but that does not help structured
+// callers (see below) — the registered schema the model sees stays the stub.
+// Because OpenAI/Anthropic
 // structured tool calling makes the model emit arguments against the tool's
 // *registered* schema (the empty stub), the model calls every deferred tool
 // with `{}` and can never pass parameters — even after `tool_search` returns
@@ -33,12 +37,16 @@
 // on OpenAI (gpt-5.4/5.5), Anthropic, and OpenAI-compatible backends such as
 // OpenRouter (e.g. NVIDIA Nemotron) without any driver support.
 //
-// TODO(EVE-521): this whole module is a temporary vendor. Upstream is renaming
-// `GenericToolSearchCapability` to `everruns_core::capabilities::ToolSearchCapability`.
-// Once that ships the progressive-disclosure fix (revealed-set + core
+// TODO(EVE-527): this whole module is a temporary vendor. As of 0.9.0 upstream
+// has renamed `GenericToolSearchCapability` to
+// `everruns_core::capabilities::ToolSearchCapability`, but it still defers with
+// the stateless `DeferSchemaHook` above and has *not* shipped the
+// progressive-disclosure fix — so it still regresses to empty tool calls on
+// structured callers. Once upstream ships that fix (revealed-set + core
 // allowlist, or equivalent), delete this file and register the upstream
 // `ToolSearchCapability` in `runtime.rs` instead. Keep the `yolop_tool_search`
-// id wiring until then so the harness selects this implementation.
+// id wiring until then so the harness selects this implementation. (EVE-521 is
+// the related, separate native-`openai_tool_search` server_error.)
 
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, ToolDefinitionHook};
@@ -52,7 +60,7 @@ use std::sync::{Arc, Mutex};
 
 /// Capability id. Distinct from upstream `tool_search` / `openai_tool_search`
 /// so the harness selects this vendored implementation unambiguously.
-// TODO(EVE-521): drop the `yolop_` prefix and use the upstream `tool_search`
+// TODO(EVE-527): drop the `yolop_` prefix and use the upstream `tool_search`
 // id once `everruns_core::capabilities::ToolSearchCapability` ships the fix.
 pub const TOOL_SEARCH_CAPABILITY_ID: &str = "yolop_tool_search";
 
@@ -83,7 +91,7 @@ const ALWAYS_FULL: &[&str] = &[
 /// (by `Arc`) between the capability, its schema hook, and its tool so a reveal
 /// during tool execution is visible to the next context assembly.
 //
-// TODO(EVE-521): this revealed-set is the progressive-disclosure mechanism that
+// TODO(EVE-527): this revealed-set is the progressive-disclosure mechanism that
 // upstream's `ToolSearchCapability` lacks. Once upstream adopts it, this type
 // and its plumbing go away with the rest of the module.
 type RevealedTools = Arc<Mutex<HashSet<String>>>;
@@ -336,6 +344,7 @@ impl Tool for ToolSearchTool {
             category: None,
             deferrable: DeferrablePolicy::Never,
             hints: self.hints(),
+            full_parameters: None,
         })
     }
 
@@ -427,6 +436,7 @@ mod tests {
             category: None,
             deferrable,
             hints: ToolHints::default(),
+            full_parameters: None,
         })
     }
 
