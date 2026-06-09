@@ -3,10 +3,12 @@ name = "yolop"
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
-description = "Yolop — a minimal terminal coding agent built on everruns-runtime"
+description = "Yolop — a terminal coding agent built on everruns-runtime"
 homepage = "https://github.com/everruns/yolop"
 repository = "https://github.com/everruns/yolop"
 readme = "README.md"
+# Demo media is for the GitHub README only; keep it out of the crate package.
+exclude = ["/docs"]
 
 [[bin]]
 name = "yolop"

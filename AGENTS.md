@@ -1,6 +1,6 @@
 # Yolop — coding-agent guidance
 
-Yolop is a minimal terminal coding agent built on top of
+Yolop is a terminal coding agent built on top of
 [`everruns-runtime`](https://crates.io/crates/everruns-runtime). The binary is
 named `yolop`; the crate is `yolop`.
 
