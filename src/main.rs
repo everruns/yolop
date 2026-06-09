@@ -64,7 +64,7 @@ struct Cli {
     #[arg(short, long)]
     model: Option<String>,
 
-    /// OpenAI reasoning effort for model calls (default: medium)
+    /// Reasoning effort for OpenAI and OpenRouter model calls
     #[arg(long)]
     reasoning_effort: Option<String>,
 
@@ -161,6 +161,7 @@ fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
 /// of whichever base was chosen.
 fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
     let snapshot = settings.snapshot();
+    let cli_reasoning_effort = runtime::normalize_reasoning_effort(cli.reasoning_effort.clone());
     let base = if let Some(arg) = cli.provider {
         ProviderChoice::default_for_provider_name(provider_name_for_arg(arg))
             .expect("ProviderArg names are always valid")
@@ -184,20 +185,29 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
             Some(m),
         ) => ProviderChoice::OpenAi {
             model: m,
-            reasoning_effort: cli.reasoning_effort.clone().or(reasoning_effort),
+            reasoning_effort: cli_reasoning_effort.clone().or(reasoning_effort),
         },
         (ProviderChoice::Google { base_url, .. }, Some(m)) => {
             ProviderChoice::Google { model: m, base_url }
         }
-        (ProviderChoice::OpenRouter { base_url, .. }, Some(m)) => {
-            ProviderChoice::OpenRouter { model: m, base_url }
-        }
+        (
+            ProviderChoice::OpenRouter {
+                base_url,
+                reasoning_effort,
+                ..
+            },
+            Some(m),
+        ) => ProviderChoice::OpenRouter {
+            model: m,
+            base_url,
+            reasoning_effort: cli_reasoning_effort.clone().or(reasoning_effort),
+        },
         (ProviderChoice::Ollama { base_url, .. }, Some(m)) => {
             ProviderChoice::Ollama { model: m, base_url }
         }
         (other, _) => other,
     };
-    match (selected, cli.reasoning_effort.clone()) {
+    match (selected, cli_reasoning_effort) {
         (
             ProviderChoice::OpenAi {
                 model,
@@ -206,6 +216,18 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
             effort,
         ) => ProviderChoice::OpenAi {
             model,
+            reasoning_effort: effort.or(reasoning_effort),
+        },
+        (
+            ProviderChoice::OpenRouter {
+                model,
+                base_url,
+                reasoning_effort,
+            },
+            effort,
+        ) => ProviderChoice::OpenRouter {
+            model,
+            base_url,
             reasoning_effort: effort.or(reasoning_effort),
         },
         (other, _) => other,
@@ -593,5 +615,50 @@ fn paint(enabled: bool, code: &str, text: &str) -> String {
         format!("\x1b[{code}m{text}\x1b[0m")
     } else {
         text.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cli_with_reasoning_effort(reasoning_effort: Option<&str>) -> Cli {
+        Cli {
+            command: None,
+            cwd: None,
+            provider: Some(ProviderArg::Openrouter),
+            model: Some("nvidia/nemotron-3-super-120b-a12b".to_string()),
+            reasoning_effort: reasoning_effort.map(str::to_string),
+            print: None,
+            acp: false,
+            session: None,
+            session_dir: None,
+        }
+    }
+
+    #[test]
+    fn pick_provider_normalizes_cli_reasoning_effort() {
+        let tmp = tempfile::tempdir().expect("settings tempdir");
+        let settings = SettingsStore::open(tmp.path().join("settings.toml"));
+
+        let provider = pick_provider(&cli_with_reasoning_effort(Some(" HIGH ")), &settings);
+
+        assert_eq!(
+            provider.label(),
+            "openrouter/nvidia/nemotron-3-super-120b-a12b high"
+        );
+    }
+
+    #[test]
+    fn pick_provider_ignores_blank_cli_reasoning_effort() {
+        let tmp = tempfile::tempdir().expect("settings tempdir");
+        let settings = SettingsStore::open(tmp.path().join("settings.toml"));
+
+        let provider = pick_provider(&cli_with_reasoning_effort(Some("  ")), &settings);
+
+        assert_eq!(
+            provider.label(),
+            "openrouter/nvidia/nemotron-3-super-120b-a12b"
+        );
     }
 }

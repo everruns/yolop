@@ -400,7 +400,7 @@ impl Capability for SetupCapability {
             "token" => self.change_token(rest),
             "attribution" => self.change_attribution(rest),
             _ => Ok(failed_result(
-                "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, model <id|provider/id> [openai-reasoning-effort], effort <openai-reasoning-effort>, attribution <on|off>".to_string(),
+                "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, model <id|provider/id> [reasoning-effort], effort <reasoning-effort>, attribution <on|off>".to_string(),
             )),
         }
     }
