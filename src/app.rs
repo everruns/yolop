@@ -75,6 +75,12 @@ pub(crate) struct CommandSuggestion {
 }
 
 pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
+/// Consecutive failed event-loop iterations tolerated before the terminal is
+/// considered gone and the error becomes fatal. The slowest failure mode (an
+/// unanswered cursor-position query) blocks ~2s per attempt inside crossterm,
+/// so this bounds a permanently dead terminal to ~10s before exit while
+/// letting a briefly unresponsive emulator recover.
+const MAX_TERMINAL_IO_FAILURES: usize = 5;
 const COMPACT_CHROME_HEIGHT: u16 = 5;
 const MAX_INPUT_HEIGHT: u16 = 12;
 const ACCENT_BLUE: Color = Color::Rgb(45, 91, 158);
@@ -401,87 +407,129 @@ impl App {
         B::Error: std::error::Error + Send + Sync + 'static,
     {
         self.emit_replayed_transcript().await;
+        // Terminal I/O fails transiently in the wild, so one failed loop
+        // iteration must not end the session. The motivating case:
+        // xterm.js-backed hosts (ttyd, vhs recordings) resize the PTY
+        // mid-session, ratatui re-anchors the inline viewport by querying
+        // the cursor position (`CSI 6n`), and crossterm abandons that query
+        // after 2s if the emulator is too busy (reflowing scrollback,
+        // screencasting) to answer in time. Propagating that error killed
+        // the TUI right as turns completed, while tmux — which answers the
+        // query itself, instantly — never showed the bug.
+        //
+        // Retrying is safe because a failed iteration mutates no app state:
+        // the failed resize/draw is simply re-attempted next frame, and the
+        // terminal answers once it catches up. Only a run of consecutive
+        // failures (terminal actually gone, e.g. PTY closed) is fatal.
+        let mut io_failures = 0usize;
         loop {
             if self.busy {
                 self.busy_frame = self.busy_frame.wrapping_add(1);
             }
-            self.flush_transcript(terminal)?;
-            terminal.draw(|f| draw(f, self))?;
-
-            // 1) drain background turn events
-            if let Some(rx) = self.rx.as_mut() {
-                match rx.try_recv() {
-                    Ok(TurnEvent::Lines(lines)) => {
-                        self.lines.extend(lines);
-                        continue;
+            match self.run_loop_iteration(terminal).await {
+                Ok(()) => io_failures = 0,
+                Err(err) => {
+                    io_failures += 1;
+                    if io_failures >= MAX_TERMINAL_IO_FAILURES {
+                        return Err(err);
                     }
-                    Ok(TurnEvent::Activity(activity)) => {
-                        if !activity.fallback || self.turn_activity.is_none() {
-                            self.turn_activity = Some(activity.text);
-                        }
-                        continue;
-                    }
-                    Ok(TurnEvent::Stream(preview)) => {
-                        self.stream_preview = preview;
-                        continue;
-                    }
-                    Ok(TurnEvent::Done) => {
-                        self.busy = false;
-                        self.busy_frame = 0;
-                        self.turn_activity = None;
-                        self.stream_preview = None;
-                        self.rx = None;
-                        continue;
-                    }
-                    Ok(TurnEvent::Failed(err)) => {
-                        self.busy = false;
-                        self.busy_frame = 0;
-                        self.turn_activity = None;
-                        self.stream_preview = None;
-                        self.rx = None;
-                        self.push_system(format!("turn failed: {err}"));
-                        continue;
-                    }
-                    Err(mpsc::error::TryRecvError::Empty) => {}
-                    Err(mpsc::error::TryRecvError::Disconnected) => {
-                        self.busy = false;
-                        self.turn_activity = None;
-                        self.stream_preview = None;
-                        self.rx = None;
-                    }
+                    tracing::warn!(
+                        "terminal i/o failed ({io_failures}/{MAX_TERMINAL_IO_FAILURES}): {err:#}"
+                    );
                 }
             }
-
-            // 2) drain terminal-side commands emitted by capabilities. Apply
-            // every queued command before re-rendering so a burst (or a future
-            // capability that emits more than one) doesn't cost a full
-            // flush/draw per command, matching the test dispatch helper.
-            let mut applied_ui_command = false;
-            while let Ok(command) = self.ui_rx.try_recv() {
-                self.apply_ui_command(command);
-                applied_ui_command = true;
+            if self.should_quit {
+                return Ok(());
             }
-            if applied_ui_command {
-                continue;
-            }
+        }
+    }
 
-            // 3) keystrokes. Mouse wheel/drag stays native terminal behavior
-            // because the transcript lives in scrollback, not in this viewport.
-            let mut poll_timeout = Duration::from_millis(80);
-            while event::poll(poll_timeout)? {
-                poll_timeout = Duration::ZERO;
-                if let CrosstermEvent::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Release {
-                        continue;
-                    }
-                    if key.code == KeyCode::Esc && self.handle_escape_prefixed_enter().await? {
-                        continue;
-                    }
-                    self.handle_key(key).await;
+    /// One iteration of the event loop: render, then drain at most one
+    /// class of pending work (turn events, UI commands, keystrokes).
+    ///
+    /// Invariant: every terminal read/write the TUI performs belongs in
+    /// here (or below), never directly in [`App::run`], so it is covered
+    /// by `run`'s retry policy. A bare `?` on terminal I/O outside this
+    /// function reintroduces the bug where one slow terminal reply exits
+    /// the whole session.
+    async fn run_loop_iteration<B>(&mut self, terminal: &mut Terminal<B>) -> Result<()>
+    where
+        B: Backend,
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
+        self.flush_transcript(terminal)?;
+        terminal.draw(|f| draw(f, self))?;
+
+        // 1) drain background turn events
+        if let Some(rx) = self.rx.as_mut() {
+            match rx.try_recv() {
+                Ok(TurnEvent::Lines(lines)) => {
+                    self.lines.extend(lines);
+                    return Ok(());
                 }
-                if self.should_quit {
-                    break;
+                Ok(TurnEvent::Activity(activity)) => {
+                    if !activity.fallback || self.turn_activity.is_none() {
+                        self.turn_activity = Some(activity.text);
+                    }
+                    return Ok(());
                 }
+                Ok(TurnEvent::Stream(preview)) => {
+                    self.stream_preview = preview;
+                    return Ok(());
+                }
+                Ok(TurnEvent::Done) => {
+                    self.busy = false;
+                    self.busy_frame = 0;
+                    self.turn_activity = None;
+                    self.stream_preview = None;
+                    self.rx = None;
+                    return Ok(());
+                }
+                Ok(TurnEvent::Failed(err)) => {
+                    self.busy = false;
+                    self.busy_frame = 0;
+                    self.turn_activity = None;
+                    self.stream_preview = None;
+                    self.rx = None;
+                    self.push_system(format!("turn failed: {err}"));
+                    return Ok(());
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {}
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.busy = false;
+                    self.turn_activity = None;
+                    self.stream_preview = None;
+                    self.rx = None;
+                }
+            }
+        }
+
+        // 2) drain terminal-side commands emitted by capabilities. Apply
+        // every queued command before re-rendering so a burst (or a future
+        // capability that emits more than one) doesn't cost a full
+        // flush/draw per command, matching the test dispatch helper.
+        let mut applied_ui_command = false;
+        while let Ok(command) = self.ui_rx.try_recv() {
+            self.apply_ui_command(command);
+            applied_ui_command = true;
+        }
+        if applied_ui_command {
+            return Ok(());
+        }
+
+        // 3) keystrokes. Mouse wheel/drag stays native terminal behavior
+        // because the transcript lives in scrollback, not in this viewport.
+        let mut poll_timeout = Duration::from_millis(80);
+        while event::poll(poll_timeout)? {
+            poll_timeout = Duration::ZERO;
+            if let CrosstermEvent::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Release {
+                    continue;
+                }
+                if key.code == KeyCode::Esc && self.handle_escape_prefixed_enter().await? {
+                    continue;
+                }
+                self.handle_key(key).await;
             }
             if self.should_quit {
                 break;
