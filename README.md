@@ -1,202 +1,135 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/everruns/yolop/main/logo.svg" width="96" alt="Yolop logo">
+</p>
+
 # Yolop
 
-A minimal terminal coding agent, built on
-[`everruns-runtime`](https://crates.io/crates/everruns-runtime). Think codex /
-claude-code in spirit, embedded as a single binary that talks to your codebase
-through a curated set of in-process capabilities.
+A terminal coding agent built on
+[`everruns-runtime`](https://crates.io/crates/everruns-runtime). One binary
+that plans, edits, runs, and verifies code in your repository — autonomous by
+default, with persistent sessions, agent skills, MCP servers, and editor
+integration over the Agent Client Protocol.
 
-Yolop is a friendly promotion of the `examples/coding-cli` example from the
-[`everruns/everruns`](https://github.com/everruns/everruns) workspace into a
-standalone, releasable project. The original example still lives upstream and
-serves as the reference embedder for the public runtime crate. Yolop is where
-active development happens.
+![yolop upgrading a project's dependencies](https://raw.githubusercontent.com/everruns/yolop/main/assets/demo.gif)
 
-```text
-$ yolop --provider openai -p "list the top-level files in this repo"
-› list the top-level files in this repo
-workspace  /home/me/code/some-repo
-provider   openai/gpt-5.5
-tools      read_file, write_file, edit_file, list_directory, grep_files,
-           delete_file, stat_file, bash, web_fetch, duckduckgo_search,
-           write_todos, query_history, list_skills, activate_skill, …
-session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
-…
-• Top-level files: AGENTS.md, Cargo.toml, LICENSE, README.md, …
+## Install
+
+```bash
+brew install everruns/tap/yolop
+```
+
+Works on macOS (arm64/x86_64) and Linux (x86_64). If your Homebrew enforces
+tap trust checks, trust the tap once first with `brew trust --tap everruns/tap`.
+Building from source instead? `cargo install yolop --locked`.
+
+## Quick start
+
+```bash
+cd your/repo
+yolop
+```
+
+First launch with no credentials opens a guided, keyboard-driven setup:
+provider → API key → model. Or set a provider key and go:
+
+```bash
+OPENAI_API_KEY=sk-… yolop
+
+yolop -C /path/to/repo        # work in a different workspace
+yolop -p "summarize the build setup"   # one-shot, no TUI, prints to stdout
+yolop --provider llmsim -p "hi"        # offline demo, no API key required
 ```
 
 ## Features
 
-- **TUI** chat (ratatui): scrolling transcript, multiline composer, status
-  bar.
-- **Real-filesystem tools** through the built-in `session_file_system`
-  capability layered over `RealDiskFileStore`: `read_file`, `write_file`,
-  `edit_file`, `list_directory`, `grep_files`, `delete_file`, `stat_file`.
-- **Host bash tool** — `bash -lc` from the workspace root, with a 120 s
-  wall-clock timeout and per-stream 1 MiB output cap.
-- **Curated capabilities** wired beyond the filesystem:
-  - `code_environment_context` — workspace root, shell, local date/timezone,
-    Git identity and branch.
-  - `agent_instructions` — re-reads `AGENTS.md` every turn.
-  - `your` — global personalization. Maintains a central `MEMORY.md`
-    (`<config_dir>/yolop/MEMORY.md`) of durable, cross-session user
-    preferences, injected every turn under a managed size budget. Edited in
-    natural language ("remember that I prefer terse answers", "what is your
-    config?") via `remember_your_memory` / `read_your_memory` /
-    `write_your_memory`. See
-    [`specs/your.md`](./specs/your.md).
-  - `skills` — discovers `SKILL.md` files and exposes `list_skills` /
-    `activate_skill`. Three scopes are merged (most-specific wins):
-    **workspace** (`<workspace>/.agents/skills/<name>/`), **global**
-    (`<config_dir>/yolop/skills/<name>/`, installed once per user), and
-    **system** (pre-packed with the binary). See [`specs/skills.md`](specs/skills.md).
-  - `infinity_context` — trims older history out of the live prompt while
-    keeping it queryable via `query_history`.
-  - `stateless_todo_list` — `write_todos` for multi-step tasks.
-  - `loop_detection` — safety net against the model retrying the same failing
-    tool call.
-  - `prompt_caching` — Anthropic prompt-caching markers.
-  - `duckduckgo` — `duckduckgo_search`, free, no API key.
-  - `web_fetch` — HTTP GET/HEAD with optional markdown/text conversion.
-  - `tool_output_persistence` — large bash output spilled to disk under
-    `/outputs/` inside the current session folder.
-  - `tool_search` — provider-agnostic deferred tool loading (vendored). Core
-    file/shell tools stay fully loaded; long-tail tools are hidden until the
-    model loads them on demand via a `tool_search` tool, saving input tokens.
-    Works on every provider/model. See
-    [`specs/tool-search.md`](./specs/tool-search.md).
-- **Autonomous by default**: yolop runs writes, edits, deletes, and bash
-  commands without prompting. The write blocklist below is the standing
-  guardrail.
-- **Write blocklist**: writes into `.git/`, `node_modules/`, `target/`,
-  `dist/`, `build/`, `.next/`, `.venv/`, `venv/`, `.tox/`, `.gradle/` are
-  rejected at any depth. Read access is unrestricted inside the workspace.
-- **Multi-provider** via env vars and `--provider`:
-  - `OPENAI_API_KEY` → OpenAI (`gpt-5.5`)
-  - `ANTHROPIC_API_KEY` → Anthropic (`claude-sonnet-4-5`)
-  - `OPENROUTER_API_KEY` → OpenRouter (`openai/gpt-5.2` by default)
-  - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) → Google Gemini (`gemini-2.5-flash`)
-  - `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` → Ollama (`llama3.2`)
-- **Slash commands** (TUI): `/help`, `/tools`, `/mcp`, `/cwd`, `/setup`,
-  `/model`, `/effort`, `/clear`, `/quit`.
-- **MCP servers**: extra tools from local (stdio) or remote (HTTP) [Model
-  Context Protocol](https://modelcontextprotocol.io) servers, configured via
+### Agent core
+
+- **Autonomous by default** — yolop runs writes, edits, deletes, and bash
+  commands without prompting. A standing **write blocklist** rejects writes
+  into `.git/`, `node_modules/`, `target/`, `dist/`, `build/`, `.next/`,
+  `.venv/`, `venv/`, `.tox/`, `.gradle/` at any depth; reads are unrestricted
+  inside the workspace.
+- **TUI chat** (ratatui): scrolling transcript, multiline composer, status
+  bar, slash commands (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`,
+  `/effort`, `/clear`, `/quit`).
+- **Planning** — `write_todos` keeps multi-step tasks on track, and
+  loop detection stops the model from retrying the same failing tool call.
+- **One-shot mode** — `--print` runs a single prompt non-interactively, for
+  scripts and CI.
+
+### Tools
+
+- **Filesystem** — `read_file`, `write_file`, `edit_file`, `list_directory`,
+  `grep_files`, `delete_file`, `stat_file`, backed by the real workspace disk.
+- **Shell** — `bash -lc` from the workspace root, with a 120 s wall-clock
+  timeout and per-stream 1 MiB output cap; large output is spilled to disk
+  under the session folder and stays readable.
+- **Web** — `web_fetch` (HTTP GET/HEAD with markdown/text conversion, DNS-pinned
+  SSRF protection) and `duckduckgo_search` (free, no API key).
+
+### Context engineering
+
+- **`AGENTS.md`** — project instructions re-read every turn.
+- **Workspace context** — root, shell, local date/timezone, Git identity and
+  branch injected automatically.
+- **Memory** — a central `MEMORY.md` of durable, cross-session user
+  preferences, edited in natural language ("remember that I prefer terse
+  answers") and injected every turn under a managed size budget. See
+  [`specs/your.md`](./specs/your.md).
+- **Skills** — `SKILL.md` files discovered from workspace
+  (`.agents/skills/`), global (`<config_dir>/yolop/skills/`), and system
+  (bundled) scopes, exposed via `list_skills` / `activate_skill`. See
+  [`specs/skills.md`](./specs/skills.md).
+- **Infinity context** — older history is trimmed out of the live prompt but
+  stays queryable via `query_history`, so long sessions don't hit the wall.
+- **Tool search** — provider-agnostic deferred tool loading: core file/shell
+  tools stay loaded, long-tail tools are hidden until the model pulls them in
+  on demand, saving input tokens on every provider. See
+  [`specs/tool-search.md`](./specs/tool-search.md).
+- **Prompt caching** — Anthropic prompt-caching markers out of the box.
+
+### Extensibility
+
+- **MCP servers** — extra tools from local (stdio) or remote (HTTP)
+  [Model Context Protocol](https://modelcontextprotocol.io) servers via
   `.mcp.json` (see [MCP servers](#mcp-servers)).
-- **Guided setup**: launching yolop with no env vars and no saved
-  settings opens a keyboard-driven setup overlay for provider → API key →
-  model. Re-running `/setup` opens the same provider setup flow, `/model`
-  opens the model picker directly, `/model <id>` opens it prefilled, and
-  `/effort [level]` opens the OpenAI reasoning-effort picker.
-- **`--print`** one-shot mode for CI smoke tests.
-- **`--acp`** — speak the [Agent Client Protocol](https://agentclientprotocol.com)
-  over stdio so editors such as Zed can drive yolop as an external agent:
-  streaming message/thought chunks, tool calls, and plans. See
-  [`specs/acp.md`](./specs/acp.md).
-- **Session persistence** — durable per-session JSONL event log under the
-  platform-native user data directory, with `--session <id>` to resume.
-- **Git attribution** — enabled by default and configurable. When yolop creates
-  commits, it keeps the user's git author/committer identity and appends
-  `Co-Authored-By: yolop <yolop@everruns.com>` once. Pull request descriptions
-  created or edited through `gh` get a `Generated with yolop` footer.
+- **Editor integration** — `--acp` speaks the
+  [Agent Client Protocol](https://agentclientprotocol.com) over stdio, so
+  editors such as Zed can drive yolop as an external agent (see
+  [Editor integration](#editor-integration-acp)).
+- **Sessions** — every run writes a durable per-session event log; resume any
+  conversation with `--session <id>` (see
+  [Session persistence](#session-persistence)).
 
-## Install
+### Providers
 
-With Homebrew (macOS arm64/x86_64, Linux x86_64):
+| Provider   | Credential                            | Default model     |
+| ---------- | ------------------------------------- | ----------------- |
+| OpenAI     | `OPENAI_API_KEY`                      | `gpt-5.5`         |
+| Anthropic  | `ANTHROPIC_API_KEY`                   | `claude-sonnet-4-5` |
+| OpenRouter | `OPENROUTER_API_KEY`                  | `openai/gpt-5.2`  |
+| Google     | `GEMINI_API_KEY` / `GOOGLE_API_KEY`   | `gemini-2.5-flash` |
+| Ollama     | `OLLAMA_BASE_URL` / `OLLAMA_API_KEY`  | `llama3.2`        |
+| llmsim     | none (offline simulator)              | —                 |
 
-```bash
-brew install everruns/tap/yolop
-```
+Pick explicitly with `--provider`, override the model with `-m/--model`.
 
-If Homebrew tap trust checks are enabled, trust the Yolop formula once before
-rerunning the install command:
+### Git attribution
 
-```bash
-brew trust --formula everruns/tap/yolop
-brew install everruns/tap/yolop
-```
-
-To trust every formula, cask, and command from the Everruns tap instead:
-
-```bash
-brew trust --tap everruns/tap
-brew install everruns/tap/yolop
-```
-
-From crates.io:
-
-```bash
-cargo install yolop --locked
-```
-
-From git:
-
-```bash
-cargo install --git https://github.com/everruns/yolop --locked
-```
-
-Or, from a local clone:
-
-```bash
-cargo install --path . --locked
-```
-
-That drops the `yolop` binary into `~/.cargo/bin/` (or, for the Homebrew
-install, the Homebrew prefix on your `$PATH`).
-
-## Run
-
-Interactive TUI in the current repo:
-
-```bash
-yolop
-# or without installing:
-cargo run
-```
-
-Against a different workspace:
-
-```bash
-yolop -C /path/to/repo
-```
-
-One-shot prompt (no TUI, prints to stdout):
-
-```bash
-yolop --provider anthropic -p "list the top-level crates and summarize each in one line."
-```
-
-With Doppler secrets:
-
-```bash
-doppler run -- yolop -p "Show me the README."
-```
-
-Offline (no API key required):
-
-```bash
-yolop --provider llmsim -p "hi"
-```
-
-OpenRouter, using its OpenAI-compatible Responses endpoint:
-
-```bash
-OPENROUTER_API_KEY=sk-or-... yolop --provider openrouter -m openai/gpt-5.2 -p "hi"
-```
-
-Local Ollama:
-
-```bash
-OLLAMA_BASE_URL=http://localhost:11434/v1 yolop --provider ollama -m llama3.2 -p "hi"
-```
+Enabled by default and configurable. When yolop creates commits, it keeps
+your git author/committer identity and appends
+`Co-Authored-By: yolop <yolop@everruns.com>` once. PR descriptions created or
+edited through `gh` get a `Generated with yolop` footer. Disable with
+`/setup attribution off`.
 
 ## Editor integration (ACP)
 
 yolop implements the agent side of the [Agent Client
-Protocol](https://agentclientprotocol.com), so any ACP-compatible editor can
-drive it. Launch it with `--acp` and it speaks newline-delimited JSON-RPC 2.0
-over stdin/stdout (logs still go to stderr). The editor performs the
-`initialize` handshake, opens a session with `session/new`, and sends turns
-with `session/prompt`; yolop streams the turn back as `session/update`
-notifications (assistant text, reasoning, tool calls, plans).
+Protocol](https://agentclientprotocol.com). Launch it with `--acp` and it
+speaks newline-delimited JSON-RPC 2.0 over stdin/stdout: the editor performs
+the `initialize` handshake, opens a session with `session/new`, and sends
+turns with `session/prompt`; yolop streams back assistant text, reasoning,
+tool calls, and plans as `session/update` notifications.
 
 To set up Zed:
 
@@ -204,73 +137,18 @@ To set up Zed:
 yolop into zed
 ```
 
-That adds a custom ACP agent server to `~/.config/zed/settings.json` using the
-current yolop executable. Re-running the command updates the existing `yolop`
-entry while preserving its `env` and other extra settings.
-
-Manual equivalent:
-
-```json
-{
-  "agent_servers": {
-    "yolop": {
-      "type": "custom",
-      "command": "yolop",
-      "args": ["--acp"],
-      "env": {}
-    }
-  }
-}
-```
-
-Then pick **yolop** in Zed's agent panel. The working directory and per-turn
-prompts come from the editor. See [`specs/acp.md`](./specs/acp.md) for the
-full protocol surface, mappings, and current limitations.
-
-## Flags
-
-| Flag                       | Description                                                          |
-| -------------------------- | -------------------------------------------------------------------- |
-| `-C, --cwd <PATH>`         | Workspace root (default: current dir)                                |
-| `--provider <P>`           | Force `anthropic`, `openai`, `google`, `openrouter`, `ollama`, or `llmsim` |
-| `-m, --model <ID>`         | Override the model id for the chosen provider                        |
-| `-p, --print <PROMPT>`     | Run one prompt non-interactively and print the result                |
-| `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
-| `--session <ID>`           | Resume a previous session by id                                      |
-| `--session-dir <PATH>`     | Override the parent directory for session folders                    |
-| `--reasoning-effort <E>`   | OpenAI reasoning effort (`low` / `medium` / `high`)                  |
-
-## Commands
-
-| Command            | Description                                     |
-| ------------------ | ----------------------------------------------- |
-| `yolop version`    | Print yolop, commit, and runtime versions       |
-| `yolop into zed`   | Configure yolop as a custom ACP agent in Zed    |
-
-`RUST_LOG` is honored for the underlying tracing layer (writes to stderr).
-
-## Provider env vars
-
-| Env var                         | Effect                                                       |
-| ------------------------------- | ------------------------------------------------------------ |
-| `OPENAI_API_KEY`                | Select OpenAI unless `--provider` overrides                  |
-| `ANTHROPIC_API_KEY`             | Select Anthropic when OpenAI is not configured               |
-| `OPENROUTER_API_KEY`            | Select OpenRouter when OpenAI/Anthropic are not configured   |
-| `OPENROUTER_BASE_URL`           | Optional, defaults to `https://openrouter.ai/api/v1`         |
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Select Google Gemini via its OpenAI-compatible endpoint  |
-| `GOOGLE_BASE_URL`               | Optional, defaults to `https://generativelanguage.googleapis.com/v1beta/openai` |
-| `OLLAMA_BASE_URL`               | Select Ollama, defaults to `http://localhost:11434/v1`       |
-| `OLLAMA_API_KEY`                | Optional, defaults to `ollama` for local Ollama              |
-| `EVERRUNS_CLI_MODEL`            | Override the auto-selected default model                     |
-| `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI-only reasoning effort override                        |
+That adds a custom ACP agent server to `~/.config/zed/settings.json` using
+the current yolop executable, preserving any existing `env` and extra
+settings on re-run. Then pick **yolop** in Zed's agent panel. See
+[`specs/acp.md`](./specs/acp.md) for the full protocol surface, mappings, and
+current limitations.
 
 ## MCP servers
 
-Yolop can pull in extra tools from [Model Context Protocol](https://modelcontextprotocol.io)
-servers — both remote (Streamable **HTTP**) and local (**stdio**, a child
-process). Configure them in a `.mcp.json` file using the standard `mcpServers`
-shape that every MCP client understands. Two scopes are read and merged
-(workspace overrides global by name):
+Yolop pulls in extra tools from MCP servers — remote (Streamable **HTTP**)
+and local (**stdio**, a child process) — configured in the standard
+`.mcp.json` shape every MCP client understands. Two scopes are read and
+merged (workspace overrides global by name):
 
 - **workspace**: `<workspace_root>/.mcp.json`
 - **global**: `<config_dir>/yolop/mcp.json` (e.g. `~/.config/yolop/mcp.json`)
@@ -297,62 +175,84 @@ shape that every MCP client understands. Two scopes are read and merged
   `command`.
 - String values support `${VAR}` expansion from the environment, so secrets
   stay out of the file (an unset `${VAR}` is left as-is so it's easy to spot).
-- Discovered tools are exposed to the model as `mcp_<server>__<tool>`.
-- `/mcp` lists the configured servers.
+- Discovered tools are exposed to the model as `mcp_<server>__<tool>`;
+  `/mcp` lists the configured servers.
 
 Trust model: HTTP requests keep yolop's DNS-pinned SSRF protection; stdio
 servers run local processes you listed yourself, so authoring `.mcp.json` is
-the act of consent. MCP tools run autonomously like the rest of yolop's tools.
-See [`specs/mcp.md`](specs/mcp.md).
+the act of consent. MCP tools run autonomously like the rest of yolop's
+tools. See [`specs/mcp.md`](specs/mcp.md).
 
-## Settings
+## Reference
+
+### Flags
+
+| Flag                       | Description                                                          |
+| -------------------------- | -------------------------------------------------------------------- |
+| `-C, --cwd <PATH>`         | Workspace root (default: current dir)                                |
+| `--provider <P>`           | Force `anthropic`, `openai`, `google`, `openrouter`, `ollama`, or `llmsim` |
+| `-m, --model <ID>`         | Override the model id for the chosen provider                        |
+| `-p, --print <PROMPT>`     | Run one prompt non-interactively and print the result                |
+| `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
+| `--session <ID>`           | Resume a previous session by id                                      |
+| `--session-dir <PATH>`     | Override the parent directory for session folders                    |
+| `--reasoning-effort <E>`   | OpenAI reasoning effort (`low` / `medium` / `high`)                  |
+
+### Commands
+
+| Command            | Description                                     |
+| ------------------ | ----------------------------------------------- |
+| `yolop version`    | Print yolop, commit, and runtime versions       |
+| `yolop into zed`   | Configure yolop as a custom ACP agent in Zed    |
+
+`RUST_LOG` is honored for the underlying tracing layer (writes to stderr).
+
+### Provider env vars
+
+| Env var                         | Effect                                                       |
+| ------------------------------- | ------------------------------------------------------------ |
+| `OPENAI_API_KEY`                | Select OpenAI unless `--provider` overrides                  |
+| `ANTHROPIC_API_KEY`             | Select Anthropic when OpenAI is not configured               |
+| `OPENROUTER_API_KEY`            | Select OpenRouter when OpenAI/Anthropic are not configured   |
+| `OPENROUTER_BASE_URL`           | Optional, defaults to `https://openrouter.ai/api/v1`         |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Select Google Gemini via its OpenAI-compatible endpoint  |
+| `GOOGLE_BASE_URL`               | Optional, defaults to `https://generativelanguage.googleapis.com/v1beta/openai` |
+| `OLLAMA_BASE_URL`               | Select Ollama, defaults to `http://localhost:11434/v1`       |
+| `OLLAMA_API_KEY`                | Optional, defaults to `ollama` for local Ollama              |
+| `EVERRUNS_CLI_MODEL`            | Override the auto-selected default model                     |
+| `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI-only reasoning effort override                        |
+
+### Settings
 
 A small TOML settings file persists the preferred provider and (optionally)
-provider API tokens across runs. It lives at `<config_dir>/yolop/settings.toml`
-— `~/.config/yolop/settings.toml` on Linux,
+provider API tokens across runs: `<config_dir>/yolop/settings.toml` —
+`~/.config/yolop/settings.toml` on Linux,
 `~/Library/Application Support/yolop/settings.toml` on macOS,
 `%APPDATA%\yolop\settings.toml` on Windows.
 
-The TUI's `/setup`, `/model`, and `/effort` commands can update the active
+The TUI's `/setup`, `/model`, and `/effort` commands update the active
 provider, saved API keys, current model, OpenAI reasoning effort, or offline
-demo mode. Saved provider/API-key choices are written to this file.
+demo mode.
 
 Provider resolution at startup:
 
 1. `--provider` flag (always wins)
 2. Saved `provider` setting
 3. Auto-detect: the first provider in the order **OpenAI → Anthropic →
-   OpenRouter → Google → Ollama** for which *either* a matching env var
-   *or* a saved token is present. Env vars and saved tokens are treated
-   as equivalent credential signals here — the provider order decides
-   the tiebreak, not the credential source.
-4. Fall back to OpenAI's default model if nothing matches, then open
-   setup so a provider/API key can be configured. `llmsim` remains
-   available explicitly via `--provider llmsim` or from `/setup`.
+   OpenRouter → Google → Ollama** with either a matching env var or a saved
+   token (the provider order decides the tiebreak, not the credential source)
+4. Fall back to OpenAI's default model and open setup so a provider/API key
+   can be configured
 
-At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always
-beats the saved token, so a per-run env override is always possible.
-The setup wizard can also switch models for the current session. OpenAI
-reasoning effort can be changed at runtime with the `/effort` modal or
-`/setup effort <level>` (for example, `high` or `medium`).
+At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always beats
+the saved token, so a per-run env override is always possible.
 
-Attribution is enabled by default. Run `/setup attribution off` to disable it
-for future turns and future sessions, or `/setup attribution on` to re-enable
-it. The saved TOML key is `attribution = false` when disabled.
+`/setup` can store an API token under `[tokens]` in the settings file. The
+file is written with `0o600` on Unix (owner-only) and stored token values are
+never echoed — but it is plain text on disk, so treat it the same way you
+would `~/.aws/credentials`.
 
-### Storing tokens
-
-`/setup` can store an API token under `[tokens]` in the settings file.
-The file is written with `0o600` on Unix (owner-only). Stored token values
-are not echoed.
-
-Env vars still win at runtime: if both `OPENAI_API_KEY` is set and a token
-is saved, the env var is used. Setup answers are not echoed into the
-transcript or session log, so pasting a key into `/setup` is safer than
-typing it at a chat prompt — but the resulting settings file is plain text
-on disk, so treat it the same way you would `~/.aws/credentials`.
-
-## Session persistence
+### Session persistence
 
 Every run writes a durable per-session folder under the platform-native user
 data directory:
@@ -363,33 +263,11 @@ data directory:
 | macOS   | `~/Library/Application Support/yolop/sessions/<session_id>/` |
 | Windows | `%APPDATA%\yolop\sessions\<session_id>\`                   |
 
-The event log lives at `<session_folder>/events.jsonl`. Tool output persisted
-by `tool_output_persistence` lives under `<session_folder>/outputs/`. On Unix
-`events.jsonl` is created with `0o600` and its parent session folder is set
-to `0o700` (both owner-only) because session logs contain user prompts, tool
-arguments, tool output, and the reasoning artifacts discussed below.
-
-The event types kept on disk are those that round-trip into the
-conversation (`input.message`, `output.message.completed`,
-`tool.completed`) plus the agent reasoning artifacts yolop needs to
-restore the live transcript view and provider continuation state on
-resume (`reason.completed` carries the safe `text_preview` narration;
-`reason.item` carries opaque/encrypted reasoning context curated by the
-provider, such as OpenAI Responses reasoning items). Assistant
-`thinking` / `thinking_signature` are persisted alongside
-`output.message.completed` — providers that resume via encrypted
-reasoning continuation (e.g. OpenAI Responses replays
-`thinking_signature` as `encrypted_content`) cannot continue without
-them. Streaming `*.delta` events and lifecycle markers
-(`reason.started`, `reason.thinking.*`, `output.message.started`) are
-dropped from the log — they are live status signals only and the delta
-types would inflate the file O(n²) without adding resume value.
-
-This persistence contract is **local-store**, not user-facing transcript
-export. On Unix, the per-session folder is set to `0o700` and the
-`events.jsonl` file inside it to `0o600` on every open, both under the
-platform-native user data directory; treat the folder contents as
-sensitive (see [Sensitivity](#sensitivity) below).
+The event log lives at `<session_folder>/events.jsonl`; large tool output is
+spilled under `<session_folder>/outputs/`. On Unix the session folder is
+`0o700` and the log `0o600` (owner-only). The log keeps everything needed to
+restore the transcript and provider continuation state on resume — including
+prompts, tool arguments and output, and reasoning artifacts.
 
 To continue a previous conversation:
 
@@ -400,25 +278,13 @@ yolop --session session_019e3db018a17450aba5407af5777237
 `--session-dir <PATH>` overrides the parent storage location (useful for
 keeping per-workspace session histories in `<workspace>/.yolop/sessions/`).
 
-### Sensitivity
-
-**Treat session logs as you would shell history.** Each line is a serialized
-event from a turn, which may include:
-
-- every prompt you typed
-- tool call arguments — paths and any string passed to `bash`, `write_file`,
-  `edit_file`, `web_fetch`, etc.
-- tool output — `bash` stdout/stderr, file contents, HTTP response bodies
-- agent reasoning artifacts — `reason.completed.text_preview` narration,
-  `reason.item` opaque/encrypted reasoning context, and the `thinking` /
-  `thinking_signature` fields on assistant messages. Persisting these is
-  what lets `--session <id>` resume restore the transcript view and lets
-  providers (e.g. OpenAI Responses) continue encrypted reasoning across
-  resumes; they are deliberately not redacted from the local log.
-
-There is no retention policy or rotation. If a session should not be
-persisted, point `--session-dir` at a path you can wipe (e.g. a `tmpfs`) or
-delete the JSONL after the run.
+**Treat session logs as you would shell history.** They contain every prompt
+you typed, every string passed to `bash` / `write_file` / `web_fetch`, tool
+output, and reasoning artifacts — deliberately unredacted, because providers
+need them to resume encrypted reasoning across sessions. There is no
+retention policy or rotation. If a session should not be persisted, point
+`--session-dir` at a path you can wipe (e.g. a `tmpfs`) or delete the JSONL
+after the run.
 
 ## Contributing
 
@@ -430,17 +296,9 @@ the project [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) when participating.
 
 ## Releases
 
-Yolop is released to two registries:
-
-- crates.io as the `yolop` crate (`cargo install yolop --locked`)
-- the `everruns/homebrew-tap` Homebrew tap (`brew install everruns/tap/yolop`)
-
-Releases are prepared by asking an agent ("cut release vX.Y.Z" / `/release`),
-which opens a `chore(release): prepare vX.Y.Z` PR. After a human squash-
-merges, [`.github/workflows/release.yml`](./.github/workflows/release.yml)
-tags the commit, creates the GitHub Release, and dispatches the publish and
-binary-build workflows. See [`specs/release.md`](./specs/release.md) for the
-full procedure and [`CHANGELOG.md`](./CHANGELOG.md) for what shipped in
+Yolop ships to the `everruns/homebrew-tap` Homebrew tap and to crates.io as
+the `yolop` crate. See [`specs/release.md`](./specs/release.md) for the
+release procedure and [`CHANGELOG.md`](./CHANGELOG.md) for what shipped in
 each version.
 
 ## License
