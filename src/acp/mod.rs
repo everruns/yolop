@@ -422,9 +422,10 @@ mod tests {
             "expected a tool_call update, got: {:?}",
             run.updates
         );
-        assert_eq!(
-            tool_calls[0]["kind"], "execute",
-            "bash should map to execute kind"
+        assert!(
+            tool_calls[0].get("kind").is_none(),
+            "autonomous tools should not advertise approval-looking ACP kinds: {:?}",
+            tool_calls[0]
         );
         let updates = run.updates_of_kind("tool_call_update");
         assert!(

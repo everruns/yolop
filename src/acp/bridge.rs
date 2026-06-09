@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use super::protocol::{
     self, ContentBlock, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, SessionUpdate,
-    ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 
 /// The runtime's todo tool. write_todos updates are surfaced as ACP plans
@@ -109,7 +109,6 @@ impl Translator {
                     .to_string();
                 vec![SessionUpdate::ToolCall(
                     ToolCall::new(data.tool_call.id.clone(), title)
-                        .kind(tool_kind(name))
                         .status(ToolCallStatus::InProgress)
                         .raw_input(non_null(data.tool_call.arguments.clone())),
                 )]
@@ -140,20 +139,6 @@ impl Translator {
             }
             _ => Vec::new(),
         }
-    }
-}
-
-/// Map a runtime tool name to an ACP tool kind so editors can pick the right
-/// affordance. Unknown tools fall back to `other`.
-fn tool_kind(name: &str) -> ToolKind {
-    match name {
-        "read_file" | "stat_file" | "list_directory" => ToolKind::Read,
-        "grep" | "grep_files" | "duckduckgo_search" => ToolKind::Search,
-        "edit_file" | "write_file" | "create_directory" => ToolKind::Edit,
-        "delete_file" => ToolKind::Delete,
-        "bash" => ToolKind::Execute,
-        "web_fetch" => ToolKind::Fetch,
-        _ => ToolKind::Other,
     }
 }
 
@@ -319,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_started_maps_kind_and_in_progress_status() {
+    fn tool_started_uses_in_progress_status_without_kind() {
         let mut t = Translator::new();
         let updates = t.on_event(&event(EventData::ToolStarted(ToolStartedData {
             tool_call: ToolCall {
@@ -335,10 +320,15 @@ mod tests {
             updates,
             vec![SessionUpdate::ToolCall(
                 protocol::ToolCall::new("call_1", "Listing files")
-                    .kind(ToolKind::Execute)
                     .status(ToolCallStatus::InProgress)
                     .raw_input(json!({ "command": "ls" })),
             )]
+        );
+        let serialized = serde_json::to_value(&updates[0]).unwrap();
+        assert_eq!(serialized["status"], "in_progress");
+        assert!(
+            serialized.get("kind").is_none(),
+            "autonomous tools must not advertise approval-looking categories: {serialized}"
         );
     }
 
