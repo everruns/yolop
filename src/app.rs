@@ -2662,11 +2662,17 @@ fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize
             ));
             lines.push(Line::from(""));
             let label = app.model.provider_label();
-            let current = if label.starts_with("openai/") || label.starts_with("openrouter/") {
+            let current = if label.starts_with("openai/") {
                 label
                     .split_whitespace()
                     .nth(1)
                     .unwrap_or("medium")
+                    .to_string()
+            } else if label.starts_with("openrouter/") {
+                label
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
                     .to_string()
             } else {
                 String::new()
@@ -4832,6 +4838,31 @@ mod tests {
                 .any(|line| line.text == "setup complete: openai/gpt-5.4 high"),
             "effort modal should report completion: {:?}",
             app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn effort_modal_does_not_mark_unset_openrouter_effort_current() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = None;
+
+        app.handle_command("setup token openrouter sk-test").await;
+        app.run_setup_command(Some("model openrouter/nvidia/nemotron-3-super-120b-a12b"))
+            .await
+            .expect("set openrouter model");
+        app.lines.clear();
+        app.dispatch_command_for_test("effort").await;
+
+        assert_eq!(
+            app.model.provider_label(),
+            "openrouter/nvidia/nemotron-3-super-120b-a12b"
+        );
+        let rendered = setup_overlay_text(app);
+        assert!(
+            !rendered.iter().any(|line| line.contains("· current")),
+            "unset OpenRouter effort should not render a current marker: {rendered:?}"
         );
     }
 

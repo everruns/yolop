@@ -192,7 +192,7 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 | `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
 | `--session <ID>`           | Resume a previous session by id                                      |
 | `--session-dir <PATH>`     | Override the parent directory for session folders                    |
-| `--reasoning-effort <E>`   | OpenAI/OpenRouter reasoning effort (`low` / `medium` / `high`)       |
+| `--reasoning-effort <E>`   | OpenAI/OpenRouter reasoning effort (`minimal` / `low` / `medium` / `high`) |
 
 ### Commands
 

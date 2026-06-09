@@ -904,7 +904,7 @@ fn normalize_openai_reasoning_effort(reasoning_effort: Option<String>) -> Option
     ))
 }
 
-fn normalize_reasoning_effort(reasoning_effort: Option<String>) -> Option<String> {
+pub(crate) fn normalize_reasoning_effort(reasoning_effort: Option<String>) -> Option<String> {
     reasoning_effort
         .map(|effort| effort.trim().to_ascii_lowercase())
         .filter(|effort| !effort.is_empty())
