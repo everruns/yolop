@@ -15,7 +15,7 @@ name = "yolop"
 path = "src/main.rs"
 
 [dependencies]
-agent-client-protocol = "0.13.1"
+agent-client-protocol = "0.14.0"
 anyhow = "1.0"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
