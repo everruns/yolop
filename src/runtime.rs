@@ -542,6 +542,7 @@ impl ProviderChoice {
             "anthropic/claude-haiku-4-5",
             "anthropic/claude-sonnet-4-6",
             "anthropic/claude-opus-4-6",
+            "anthropic/claude-fable-5",
             "llmsim/llmsim-yolop",
         ]
     }
@@ -1554,6 +1555,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(next.label(), "anthropic/claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn model_suggestions_include_claude_fable_5() {
+        // Fable 5 rejects budget thinking and sampling params; yolop sends
+        // neither for Anthropic, so the published driver works as-is.
+        assert!(ProviderChoice::model_suggestions().contains(&"anthropic/claude-fable-5"));
+
+        let next = ProviderChoice::Sim
+            .resolve_model_spec("anthropic/claude-fable-5")
+            .unwrap();
+        assert_eq!(next.label(), "anthropic/claude-fable-5");
     }
 
     #[test]

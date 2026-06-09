@@ -1038,6 +1038,11 @@ impl App {
                     label: "claude-sonnet-4-6".to_string(),
                     hint: "newer Sonnet option",
                 },
+                ModelOption {
+                    spec: Some("anthropic/claude-fable-5".to_string()),
+                    label: "claude-fable-5".to_string(),
+                    hint: "most powerful Claude model",
+                },
             ],
             "google" => vec![
                 ModelOption {
