@@ -6,7 +6,7 @@ that plans, edits, runs, and verifies code in your repository — autonomous by
 default, with persistent sessions, agent skills, MCP servers, and editor
 integration over the Agent Client Protocol.
 
-![yolop upgrading a project's dependencies](https://raw.githubusercontent.com/everruns/yolop/main/docs/demo.gif)
+<video src="https://raw.githubusercontent.com/everruns/yolop/main/docs/demo.mp4" controls muted playsinline></video>
 
 ## Install
 
