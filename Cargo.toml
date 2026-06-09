@@ -8,7 +8,7 @@ homepage = "https://github.com/everruns/yolop"
 repository = "https://github.com/everruns/yolop"
 readme = "README.md"
 # Demo media is for the GitHub README only; keep it out of the crate package.
-exclude = ["/assets"]
+exclude = ["/docs"]
 
 [[bin]]
 name = "yolop"

@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/everruns/yolop/main/logo.svg" width="96" alt="Yolop logo">
-</p>
-
 # Yolop
 
 A terminal coding agent built on
@@ -10,7 +6,7 @@ that plans, edits, runs, and verifies code in your repository — autonomous by
 default, with persistent sessions, agent skills, MCP servers, and editor
 integration over the Agent Client Protocol.
 
-![yolop upgrading a project's dependencies](https://raw.githubusercontent.com/everruns/yolop/main/assets/demo.gif)
+![yolop upgrading a project's dependencies](docs/demo.gif)
 
 ## Install
 
