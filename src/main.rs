@@ -4,9 +4,7 @@
 
 mod acp;
 mod app;
-mod approval;
 mod capabilities;
-mod diff;
 mod host_ui;
 mod into;
 mod mcp_config;
@@ -29,7 +27,6 @@ mod agent_scenarios;
 
 use anyhow::Result;
 use app::{App, COMPOSER_VIEWPORT_HEIGHT};
-use approval::ApprovalGate;
 use clap::{Args, Parser, Subcommand};
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -78,16 +75,10 @@ struct Cli {
     /// Speak the Agent Client Protocol (ACP) over stdio instead of launching
     /// the TUI. Editors such as Zed spawn `yolop --acp` and drive it as an
     /// external agent. Builds one runtime per ACP session (cwd comes from the
-    /// client); the `-C/--cwd`, `--print`, `--ask`, and `--session` flags are
+    /// client); the `-C/--cwd`, `--print`, and `--session` flags are
     /// ignored in this mode. See `specs/acp.md`.
     #[arg(long, conflicts_with = "print")]
     acp: bool,
-
-    /// Prompt for y/n before every destructive tool call (write/edit/delete/bash).
-    /// Off by default — the agent acts autonomously. Ignored in `--print` mode
-    /// (one-shot runs always auto-approve since there's no interactive terminal).
-    #[arg(long)]
-    ask: bool,
 
     /// Resume an existing session. Reads the JSONL log for this id and
     /// seeds the message history; the new run continues appending to the
@@ -254,18 +245,6 @@ async fn main() -> Result<()> {
     let settings = Arc::new(SettingsStore::open(settings_path));
     let provider = pick_provider(&cli, &settings);
 
-    let is_print = cli.print.is_some();
-    // Approval is opt-in: the agent runs autonomously by default. `--ask` in
-    // TUI mode wires a channel that prompts before destructive ops.
-    // Print/one-shot mode never prompts (no terminal to prompt at).
-    // Either way we still hand the TUI an mpsc receiver — when the gate is
-    // Auto nothing is ever sent on the channel, so the receiver sits idle.
-    let (gate_tx, approval_rx) = tokio::sync::mpsc::unbounded_channel();
-    let gate = if cli.ask && !is_print {
-        ApprovalGate::channel(gate_tx)
-    } else {
-        ApprovalGate::auto()
-    };
     let resume_session_id = match cli.session.as_deref() {
         Some(raw) => Some(
             raw.parse()
@@ -279,7 +258,7 @@ async fn main() -> Result<()> {
     };
 
     // ACP mode builds runtimes per session (cwd arrives via `session/new`), so
-    // it bypasses the up-front runtime build, the approval gate, and the TUI.
+    // it bypasses the up-front runtime build and the TUI.
     if cli.acp {
         return acp::run_stdio(provider, settings, sessions_dir).await;
     }
@@ -291,7 +270,6 @@ async fn main() -> Result<()> {
     let runtime = runtime::build_with_options(
         cwd,
         provider,
-        gate,
         resume_session_id,
         sessions_dir,
         settings,
@@ -305,7 +283,7 @@ async fn main() -> Result<()> {
     if let Some(prompt) = cli.print {
         return run_print_mode(runtime, prompt).await;
     }
-    run_tui(runtime, approval_rx).await
+    run_tui(runtime).await
 }
 
 fn run_command(command: Commands) -> Result<()> {
@@ -356,13 +334,7 @@ fn run_command(command: Commands) -> Result<()> {
     }
 }
 
-async fn run_tui(
-    runtime: BuiltRuntime,
-    approval_rx: tokio::sync::mpsc::UnboundedReceiver<(
-        approval::ApprovalRequest,
-        tokio::sync::oneshot::Sender<bool>,
-    )>,
-) -> Result<()> {
+async fn run_tui(runtime: BuiltRuntime) -> Result<()> {
     let mut raw_mode = RawModeGuard::new()?;
     let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
     let stdout = io::stdout();
@@ -374,7 +346,7 @@ async fn run_tui(
         },
     )?;
 
-    let mut app = App::new(runtime, approval_rx);
+    let mut app = App::new(runtime);
     let result = app.run(&mut terminal).await;
     let show_resume_hint = app.should_show_resume_hint();
     let session_id = app.session_id();

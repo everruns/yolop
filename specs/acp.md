@@ -34,7 +34,6 @@ ACP protocol version: **1** (integer).
 | `session/prompt` | client → agent | Runs one turn, or executes a recognised `/command`; streams `session/update`s, and resolves a `stopReason`. |
 | `session/cancel` | client → agent | Notification. Abandons the in-flight turn for that session and resolves the prompt with `stopReason: "cancelled"`. |
 | `session/update` | agent → client | Notification. Streams the turn (see below). |
-| `session/request_permission` | agent → client | Asks the editor to approve a destructive operation (see Permissions). |
 
 `session/load` is **not** implemented: `loadSession` is advertised as `false`.
 Each ACP session builds its own runtime; prior ACP sessions are not rehydrated.
@@ -90,13 +89,10 @@ The runtime does not expose token-limit or refusal outcomes distinctly, so
 
 ### Permissions
 
-Destructive operations (file writes, deletes, `bash`) flow through yolop's
-existing `ApprovalGate`. In ACP mode the gate is wired to the client: each
-request becomes a `session/request_permission` call offering **Allow** /
-**Reject** (`allow_once` / `reject_once`). The editor owns the human, which is
-the idiomatic ACP design. A `selected` "allow" proceeds; `reject`, `cancelled`,
-a malformed response, or a transport error all **deny** (fail-closed), matching
-the channel gate's existing semantics.
+yolop runs tools autonomously: file writes, deletes, and `bash` execute without
+a per-call approval gate, so the agent never issues `session/request_permission`.
+The standing guardrail is the write blocklist on filesystem writes (see
+`specs/maintenance.md`).
 
 ## Architecture
 
@@ -105,19 +101,17 @@ src/acp/
   mod.rs        # module root: production RuntimeFactory, run_stdio entry, e2e tests
   protocol.rs   # SDK-backed ACP schema shim plus yolop helpers
   bridge.rs     # pure runtime-event → session/update translation (Translator)
-  server.rs     # SDK transport/dispatch wiring, session map, turn streaming, permission bridge
+  server.rs     # SDK transport/dispatch wiring, session map, turn streaming
 ```
 
 Concurrency model in `server::serve`:
 
 - The upstream Rust SDK owns newline JSON-RPC parsing, serialization, typed
-  request dispatch, response correlation, and `session/request_permission`
-  replies.
+  request dispatch, and response correlation.
 - `session/prompt` runs in its own Tokio task so SDK dispatch keeps processing
-  `session/cancel` notifications and permission responses during a turn.
+  `session/cancel` notifications during a turn.
 - `serve` uses the SDK `Lines` transport with an EOF signal so a client
-  disconnect still winds the agent process down even if a permission request is
-  outstanding.
+  disconnect still winds the agent process down even mid-turn.
 
 `serve` is generic over the byte streams and a `RuntimeFactory`, so the binary
 wires it to real stdin/stdout with a provider-backed factory while tests drive
@@ -134,8 +128,8 @@ Three layers, all offline (no API key):
 3. **End-to-end** (`mod.rs`) — a real `serve` loop over duplex pipes driven by
    an in-memory ACP client: the full `initialize` → `session/new` →
    `session/prompt` handshake, unknown-method and unknown-session errors,
-   scripted tool calls (asserting `tool_call`/`tool_call_update` + permission
-   grant), `write_todos` → `plan`, and command advertisement/execution.
+   scripted tool calls (asserting `tool_call`/`tool_call_update`),
+   `write_todos` → `plan`, and command advertisement/execution.
 
 The binary itself is smoke-tested over real OS pipes in
 `tests/integration.rs` (`acp_stdio_handshake_smoke`), and a real-provider test

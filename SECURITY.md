@@ -37,7 +37,6 @@ commands, and call configured model providers. Key security boundaries:
 | --- | --- |
 | Filesystem | Workspace-rooted file access with a write blocklist for generated, dependency, build, environment, and VCS directories |
 | Shell | Workspace-rooted `bash -lc` execution with a 120 s wall-clock timeout and 1 MiB per-stream output cap |
-| Approvals | Optional `--ask` mode prompts before writes, edits, deletes, and shell commands |
 | Sessions | Per-session logs are stored under the platform-native user data directory with owner-only permissions on Unix |
 | Secrets | Provider credentials are read from process environment variables and should be supplied through a secret manager such as Doppler |
 

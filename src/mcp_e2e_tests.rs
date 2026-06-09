@@ -3,11 +3,10 @@
 //! These spin up a **real** stdio MCP server (the small Python fixture in
 //! `tests/fixtures/mcp_echo_server.py`) and drive a real `InProcessRuntime`
 //! against it, with the bundled llmsim scripted to call the server's tools.
-//! Nothing here is mocked except the LLM: live `tools/list` discovery, the
-//! annotation→`ToolHints` mapping, the `McpApprovalCapability` pre-tool hook,
-//! and real `tools/call` execution over the stdio transport all run for real.
-//! The server writes a marker file on each call, so we assert *via the
-//! filesystem* whether a tool actually executed.
+//! Nothing here is mocked except the LLM: live `tools/list` discovery and real
+//! `tools/call` execution over the stdio transport all run for real. The
+//! server writes a marker file on each call, so we assert *via the filesystem*
+//! whether a tool actually executed.
 //!
 //! `python3` is required. In CI (`CI` env set) a missing `python3` is a hard
 //! failure — silently skipping would let the test report green without
@@ -21,7 +20,6 @@ use std::time::Duration;
 use everruns_core::llmsim_driver::{LlmSimConfig, SimToolCall, SimTurn};
 use serde_json::json;
 
-use crate::approval::{ApprovalGate, ApprovalRequest};
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
 use crate::settings::SettingsStore;
 
@@ -61,21 +59,6 @@ fn mcp_tool(server: &str, tool: &str) -> String {
     format!("mcp_{server}__{tool}")
 }
 
-/// A channel gate that denies every request, plus a task that answers `false`.
-/// Used to prove blocking — and that readonly/non-MCP tools never reach it.
-fn deny_gate() -> Arc<ApprovalGate> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
-        ApprovalRequest,
-        tokio::sync::oneshot::Sender<bool>,
-    )>();
-    tokio::spawn(async move {
-        while let Some((_req, responder)) = rx.recv().await {
-            let _ = responder.send(false);
-        }
-    });
-    ApprovalGate::channel(tx)
-}
-
 /// One scripted tool call followed by a closing assistant turn.
 fn script(tool: &str, message: &str) -> LlmSimConfig {
     LlmSimConfig::scripted(vec![
@@ -90,12 +73,7 @@ fn script(tool: &str, message: &str) -> LlmSimConfig {
 
 /// Build a runtime whose workspace `.mcp.json` points the `echo` server at the
 /// Python fixture, passing `marker_dir` so calls leave a filesystem trace.
-async fn build_runtime(
-    config: LlmSimConfig,
-    gate: Arc<ApprovalGate>,
-    marker_dir: &Path,
-    python: &Path,
-) -> BuiltRuntime {
+async fn build_runtime(config: LlmSimConfig, marker_dir: &Path, python: &Path) -> BuiltRuntime {
     let workspace_root = tempfile::tempdir().expect("workspace").keep();
     let sessions_root = tempfile::tempdir().expect("sessions").keep();
 
@@ -121,7 +99,6 @@ async fn build_runtime(
     build_with_options(
         workspace_root,
         ProviderChoice::Sim,
-        gate,
         None,
         sessions_root,
         settings,
@@ -153,13 +130,7 @@ async fn mcp_tool_executes_over_real_stdio_server() {
     };
     let marker = tempfile::tempdir().expect("marker").keep();
     let tool = mcp_tool("echo", "echo");
-    let runtime = build_runtime(
-        script(&tool, "hello-mcp"),
-        ApprovalGate::auto(),
-        &marker,
-        &python,
-    )
-    .await;
+    let runtime = build_runtime(script(&tool, "hello-mcp"), &marker, &python).await;
 
     let result = run_turn(&runtime, "use the echo tool").await;
 
@@ -174,48 +145,5 @@ async fn mcp_tool_executes_over_real_stdio_server() {
     assert!(
         body.contains("hello-mcp"),
         "server should receive the call arguments: {body}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_tool_blocked_when_approval_denied() {
-    let Some(python) = require_python3("mcp_tool_blocked_when_approval_denied") else {
-        return;
-    };
-    let marker = tempfile::tempdir().expect("marker").keep();
-    let tool = mcp_tool("echo", "echo");
-    let runtime = build_runtime(script(&tool, "nope"), deny_gate(), &marker, &python).await;
-
-    let result = run_turn(&runtime, "use the echo tool").await;
-
-    // The turn still completes — the block surfaces to the model as a tool
-    // error and the scripted assistant turn closes the loop.
-    assert!(
-        result.success,
-        "turn completes after a blocked tool: {result:?}"
-    );
-    assert!(
-        !marker.join("echo.called").exists(),
-        "a denied MCP tool must NOT reach the server"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn readonly_mcp_tool_runs_without_approval() {
-    let Some(python) = require_python3("readonly_mcp_tool_runs_without_approval") else {
-        return;
-    };
-    let marker = tempfile::tempdir().expect("marker").keep();
-    // `peek` advertises `readOnlyHint: true`; even under a denying gate it must
-    // run, proving the annotation→hint→hook-skip chain end to end.
-    let tool = mcp_tool("echo", "peek");
-    let runtime = build_runtime(script(&tool, "ok"), deny_gate(), &marker, &python).await;
-
-    let result = run_turn(&runtime, "peek at it").await;
-
-    assert!(result.success, "turn must succeed: {result:?}");
-    assert!(
-        marker.join("peek.called").exists(),
-        "a readonly MCP tool must run even with a denying gate"
     );
 }

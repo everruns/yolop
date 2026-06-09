@@ -27,7 +27,7 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
 ## Features
 
 - **TUI** chat (ratatui): scrolling transcript, multiline composer, status
-  bar, optional modal approval bar.
+  bar.
 - **Real-filesystem tools** through the built-in `session_file_system`
   capability layered over `RealDiskFileStore`: `read_file`, `write_file`,
   `edit_file`, `list_directory`, `grep_files`, `delete_file`, `stat_file`.
@@ -64,10 +64,9 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
     model loads them on demand via a `tool_search` tool, saving input tokens.
     Works on every provider/model. See
     [`specs/tool-search.md`](./specs/tool-search.md).
-- **Approval prompts (opt-in via `--ask`)**. Off by default: yolop acts
-  autonomously. `--ask` prompts y/n before every write/edit/delete and every
-  bash command, with a unified diff for writes. `--print` mode always
-  auto-approves.
+- **Autonomous by default**: yolop runs writes, edits, deletes, and bash
+  commands without prompting. The write blocklist below is the standing
+  guardrail.
 - **Write blocklist**: writes into `.git/`, `node_modules/`, `target/`,
   `dist/`, `build/`, `.next/`, `.venv/`, `venv/`, `.tox/`, `.gradle/` are
   rejected at any depth. Read access is unrestricted inside the workspace.
@@ -90,8 +89,8 @@ session    session_019e3db018a17450aba5407af5777237 (folder: …; log: …)
 - **`--print`** one-shot mode for CI smoke tests.
 - **`--acp`** — speak the [Agent Client Protocol](https://agentclientprotocol.com)
   over stdio so editors such as Zed can drive yolop as an external agent:
-  streaming message/thought chunks, tool calls, plans, and editor-mediated
-  permission prompts. See [`specs/acp.md`](./specs/acp.md).
+  streaming message/thought chunks, tool calls, and plans. See
+  [`specs/acp.md`](./specs/acp.md).
 - **Session persistence** — durable per-session JSONL event log under the
   platform-native user data directory, with `--session <id>` to resume.
 - **Git attribution** — enabled by default and configurable. When yolop creates
@@ -197,8 +196,7 @@ drive it. Launch it with `--acp` and it speaks newline-delimited JSON-RPC 2.0
 over stdin/stdout (logs still go to stderr). The editor performs the
 `initialize` handshake, opens a session with `session/new`, and sends turns
 with `session/prompt`; yolop streams the turn back as `session/update`
-notifications (assistant text, reasoning, tool calls, plans) and asks the
-editor to approve destructive operations via `session/request_permission`.
+notifications (assistant text, reasoning, tool calls, plans).
 
 To set up Zed:
 
@@ -238,7 +236,6 @@ full protocol surface, mappings, and current limitations.
 | `-m, --model <ID>`         | Override the model id for the chosen provider                        |
 | `-p, --print <PROMPT>`     | Run one prompt non-interactively and print the result                |
 | `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
-| `--ask`                    | Prompt before every destructive tool call (off by default)           |
 | `--session <ID>`           | Resume a previous session by id                                      |
 | `--session-dir <PATH>`     | Override the parent directory for session folders                    |
 | `--reasoning-effort <E>`   | OpenAI reasoning effort (`low` / `medium` / `high`)                  |
@@ -305,10 +302,8 @@ shape that every MCP client understands. Two scopes are read and merged
 
 Trust model: HTTP requests keep yolop's DNS-pinned SSRF protection; stdio
 servers run local processes you listed yourself, so authoring `.mcp.json` is
-the act of consent. With `--ask`, every non-readonly MCP tool call goes through
-the same approval prompt as `bash` and file writes (readonly tools run free);
-without `--ask` it auto-approves, like the rest of yolop. See
-[`specs/mcp.md`](specs/mcp.md).
+the act of consent. MCP tools run autonomously like the rest of yolop's tools.
+See [`specs/mcp.md`](specs/mcp.md).
 
 ## Settings
 

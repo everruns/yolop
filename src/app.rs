@@ -1,9 +1,8 @@
 // TUI app state and event loop.
 // Decision: keep the TUI surface tiny. Transcript output is inserted into the
 // native terminal scrollback; ratatui owns only a short inline composer at the
-// bottom, with approvals handled through the same status delimiter.
+// bottom.
 
-use crate::approval::ApprovalRequest;
 use crate::host_ui::UiCommand;
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles, StartupInfo};
 use anyhow::Result;
@@ -25,7 +24,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::broadcast;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 #[derive(Clone, Debug)]
 pub enum Author {
@@ -69,12 +68,6 @@ pub struct ChatLine {
     pub text: String,
 }
 
-type ApprovalRx = mpsc::UnboundedReceiver<(ApprovalRequest, oneshot::Sender<bool>)>;
-
-struct PendingApproval {
-    responder: oneshot::Sender<bool>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CommandSuggestion {
     completion: String,
@@ -111,8 +104,6 @@ pub struct App {
     /// Cleared on turn completion; never enters the persistent transcript.
     stream_preview: Option<StreamPreview>,
     rx: Option<mpsc::UnboundedReceiver<TurnEvent>>,
-    approval_rx: ApprovalRx,
-    pending: Option<PendingApproval>,
     /// Active setup overlay, if any. The overlay owns its own keyboard
     /// handling so provider, token, and model setup never echo through the
     /// normal chat composer.
@@ -257,9 +248,6 @@ const EFFORT_OPTIONS: &[EffortOption] = &[
 pub(crate) struct ViewState {
     pub stream_preview: Option<StreamPreview>,
     pub command_suggestions: Vec<CommandSuggestion>,
-    /// `true` while an approval prompt is waiting on user input. The
-    /// renderer only needs the bit, not the responder channel.
-    pub approval_pending: bool,
     pub busy: bool,
     pub busy_frame: u64,
     pub turn_activity: Option<String>,
@@ -321,7 +309,7 @@ pub(crate) enum TurnEvent {
 }
 
 impl App {
-    pub fn new(runtime: BuiltRuntime, approval_rx: ApprovalRx) -> Self {
+    pub fn new(runtime: BuiltRuntime) -> Self {
         let should_setup = runtime.startup.setup_recommended;
         let mut app = Self {
             handles: runtime.handles,
@@ -337,8 +325,6 @@ impl App {
             turn_activity: None,
             stream_preview: None,
             rx: None,
-            approval_rx,
-            pending: None,
             setup: None,
             ui_rx: runtime.ui_rx,
         };
@@ -362,12 +348,11 @@ impl App {
     pub(crate) fn view_state(&self) -> ViewState {
         ViewState {
             stream_preview: self.stream_preview.clone(),
-            command_suggestions: if !self.busy && self.pending.is_none() && self.setup.is_none() {
+            command_suggestions: if !self.busy && self.setup.is_none() {
                 self.suggestions()
             } else {
                 Vec::new()
             },
-            approval_pending: self.pending.is_some(),
             busy: self.busy,
             busy_frame: self.busy_frame,
             turn_activity: self.turn_activity.clone(),
@@ -394,9 +379,7 @@ impl App {
                 .collect();
             self.push_system(format!("commands: {}", names.join(", ")));
         }
-        self.push_system(
-            "type /help for commands, Ctrl-C or Ctrl-D to exit; approvals: y / n".into(),
-        );
+        self.push_system("type /help for commands, Ctrl-C or Ctrl-D to exit".into());
     }
 
     fn push_user(&mut self, text: String) {
@@ -482,23 +465,7 @@ impl App {
                 continue;
             }
 
-            // 3) drain pending approval requests
-            if self.pending.is_none()
-                && let Ok((req, responder)) = self.approval_rx.try_recv()
-            {
-                let header = format!("approval needed: {}", req.headline());
-                self.push_system(header);
-                let detail = req.detail();
-                for line in detail.lines().take(40) {
-                    self.lines.push(ChatLine {
-                        author: Author::Diff,
-                        text: line.to_string(),
-                    });
-                }
-                self.pending = Some(PendingApproval { responder });
-            }
-
-            // 4) keystrokes. Mouse wheel/drag stays native terminal behavior
+            // 3) keystrokes. Mouse wheel/drag stays native terminal behavior
             // because the transcript lives in scrollback, not in this viewport.
             let mut poll_timeout = Duration::from_millis(80);
             while event::poll(poll_timeout)? {
@@ -507,10 +474,7 @@ impl App {
                     if key.kind == KeyEventKind::Release {
                         continue;
                     }
-                    if key.code == KeyCode::Esc
-                        && self.pending.is_none()
-                        && self.handle_escape_prefixed_enter().await?
-                    {
+                    if key.code == KeyCode::Esc && self.handle_escape_prefixed_enter().await? {
                         continue;
                     }
                     self.handle_key(key).await;
@@ -520,11 +484,6 @@ impl App {
                 }
             }
             if self.should_quit {
-                // If we exit with an outstanding approval, deny it so the tool
-                // task unblocks and the runtime can record a tool error.
-                if let Some(p) = self.pending.take() {
-                    let _ = p.responder.send(false);
-                }
                 break;
             }
         }
@@ -626,26 +585,6 @@ impl App {
                 }
                 _ => {}
             }
-        }
-
-        // Approval mode: only y / n / Esc.
-        if self.pending.is_some() {
-            match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if let Some(p) = self.pending.take() {
-                        let _ = p.responder.send(true);
-                        self.push_system("approved".into());
-                    }
-                }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    if let Some(p) = self.pending.take() {
-                        let _ = p.responder.send(false);
-                        self.push_system("denied".into());
-                    }
-                }
-                _ => {}
-            }
-            return;
         }
 
         if self.busy {
@@ -810,7 +749,7 @@ impl App {
             "input: ←/→ edit · {} newline · scroll: use the terminal scrollback",
             newline_shortcut_hint()
         ));
-        self.push_system("approvals: y allow · n / Esc deny · exit: Ctrl-C / Ctrl-D".into());
+        self.push_system("exit: Ctrl-C / Ctrl-D".into());
     }
 
     /// Dispatch a capability-provided slash command.
@@ -3405,7 +3344,7 @@ fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_input_cursor(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    if app.pending.is_some() || app.busy || app.setup.is_some() {
+    if app.busy || app.setup.is_some() {
         return;
     }
 
@@ -3426,17 +3365,6 @@ fn draw_input_cursor(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn message_separator_title(state: &ViewState) -> Line<'static> {
-    if state.approval_pending {
-        return Line::from(vec![
-            Span::styled("─── ", Style::default().fg(ACCENT_GOLD)),
-            Span::styled(
-                "approval pending - press y / n ",
-                Style::default()
-                    .fg(ACCENT_GOLD)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]);
-    }
     if state.busy {
         return thinking_title(
             state.busy_frame,
@@ -4266,7 +4194,7 @@ mod tests {
     // These render the non-input chrome (stream preview, message
     // separator, status separator, session status) into a TestBackend
     // buffer and assert on its textual contents. The point is to lock
-    // down what each UI mode (idle / busy / approval-pending / streaming)
+    // down what each UI mode (idle / busy / streaming)
     // looks like end-to-end on the screen, without spinning up a runtime.
     // ====================================================================
 
@@ -4277,7 +4205,6 @@ mod tests {
         ViewState {
             stream_preview: None,
             command_suggestions: Vec::new(),
-            approval_pending: false,
             busy: false,
             busy_frame: 0,
             turn_activity: None,
@@ -4356,7 +4283,6 @@ mod tests {
         let runtime = crate::runtime::build_with_options(
             workspace.path().to_path_buf(),
             crate::runtime::ProviderChoice::Sim,
-            crate::approval::ApprovalGate::auto(),
             None,
             sessions.path().to_path_buf(),
             settings,
@@ -4367,9 +4293,8 @@ mod tests {
         )
         .await
         .expect("build llmsim runtime");
-        let (_tx, rx) = mpsc::unbounded_channel();
         TestApp {
-            app: App::new(runtime, rx),
+            app: App::new(runtime),
             _workspace: workspace,
             _sessions: sessions,
         }
@@ -4918,14 +4843,6 @@ mod tests {
             app.view_state().command_suggestions.is_empty(),
             "busy turns should not render suggestions"
         );
-
-        app.busy = false;
-        let (responder, _rx) = oneshot::channel();
-        app.pending = Some(PendingApproval { responder });
-        assert!(
-            app.view_state().command_suggestions.is_empty(),
-            "approval prompts should not render suggestions"
-        );
     }
 
     #[test]
@@ -5000,34 +4917,6 @@ mod tests {
         assert!(
             rows[1].contains("Enter to send"),
             "idle separator missing Enter hint: rows={rows:?}"
-        );
-        assert!(
-            !rows[1].contains("approval pending"),
-            "idle separator should not mention approval: {}",
-            rows[1]
-        );
-    }
-
-    #[test]
-    fn chrome_approval_pending_overrides_busy_separator() {
-        // Even when `busy` is true, the approval prompt takes priority
-        // — the user must answer y/n before the loop can resume.
-        let state = ViewState {
-            approval_pending: true,
-            busy: true,
-            busy_frame: 12,
-            ..view_state_idle()
-        };
-        let rows = render_chrome_lines(&state, 80, 5);
-        assert!(
-            rows[1].contains("approval pending"),
-            "expected approval separator, got: {}",
-            rows[1]
-        );
-        assert!(
-            rows[1].contains("y / n"),
-            "approval separator must surface the key bindings: {}",
-            rows[1]
         );
     }
 

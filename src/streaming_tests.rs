@@ -22,7 +22,6 @@ use everruns_core::llmsim_driver::LlmSimConfig;
 use std::sync::Arc;
 
 use crate::app::{DeltaRouter, StreamKind, TurnEvent, handle_live_event};
-use crate::approval::ApprovalGate;
 use crate::runtime::{BuildOptions, ProviderChoice, build_with_options};
 use crate::settings::SettingsStore;
 
@@ -54,7 +53,6 @@ async fn build_llmsim_runtime() -> crate::runtime::BuiltRuntime {
     let runtime = build_with_options(
         workspace.path().to_path_buf(),
         ProviderChoice::Sim,
-        ApprovalGate::auto(),
         None,
         sessions.path().to_path_buf(),
         settings,

@@ -1,7 +1,6 @@
 // Host/example capabilities for yolop: local environment context, bash, and
 // TUI-facing slash commands that mutate this process's provider selection.
 
-use crate::approval::ApprovalGate;
 use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS};
 use crate::settings::SettingsStore;
 use crate::tools::{BashTool, Workspace};
@@ -296,7 +295,6 @@ fn git_output(workspace_root: &Path, args: &[&str]) -> Option<String> {
 
 pub(crate) struct CodingBashCapability {
     pub(crate) workspace: Workspace,
-    pub(crate) gate: Arc<ApprovalGate>,
 }
 
 impl Capability for CodingBashCapability {
@@ -307,7 +305,7 @@ impl Capability for CodingBashCapability {
         "Coding CLI Bash"
     }
     fn description(&self) -> &str {
-        "Shell command execution rooted at the host workspace. Requires user approval."
+        "Shell command execution rooted at the host workspace."
     }
     fn status(&self) -> CapabilityStatus {
         CapabilityStatus::Available
@@ -322,95 +320,7 @@ impl Capability for CodingBashCapability {
         None
     }
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![Box::new(BashTool::new(
-            self.workspace.clone(),
-            self.gate.clone(),
-        ))]
-    }
-}
-
-// ---------- MCP approval ----------
-//
-// MCP tools execute through the runtime's executor, so they bypass the bash
-// and filesystem approval gates. This capability closes that gap uniformly via
-// the `pre_tool_use_hooks` seam (everruns 0.8.38+): every `mcp_*` tool call is
-// routed through the same `ApprovalGate` as bash, honoring the readonly hint
-// the runtime derives from MCP tool annotations. Non-MCP tools are left to
-// their own gates so they aren't prompted twice. When the gate is `Auto` (no
-// `--ask`, and `--print`), this is a no-op — consistent with yolop acting
-// autonomously by default.
-
-pub(crate) const MCP_APPROVAL_CAPABILITY_ID: &str = "yolop_mcp_approval";
-
-pub(crate) struct McpApprovalCapability {
-    pub(crate) gate: Arc<ApprovalGate>,
-}
-
-impl Capability for McpApprovalCapability {
-    fn id(&self) -> &str {
-        MCP_APPROVAL_CAPABILITY_ID
-    }
-    fn name(&self) -> &str {
-        "MCP Approval"
-    }
-    fn description(&self) -> &str {
-        "Routes MCP tool calls through the approval gate (readonly tools run free)."
-    }
-    fn status(&self) -> CapabilityStatus {
-        CapabilityStatus::Available
-    }
-    fn category(&self) -> Option<&str> {
-        Some("Examples")
-    }
-    fn system_prompt_addition(&self) -> Option<&str> {
-        None
-    }
-    fn pre_tool_use_hooks(&self) -> Vec<Arc<dyn everruns_core::atoms::PreToolUseHook>> {
-        vec![Arc::new(McpApprovalHook {
-            gate: self.gate.clone(),
-        })]
-    }
-}
-
-struct McpApprovalHook {
-    gate: Arc<ApprovalGate>,
-}
-
-#[async_trait]
-impl everruns_core::atoms::PreToolUseHook for McpApprovalHook {
-    async fn before_exec(
-        &self,
-        tool_call: everruns_core::ToolCall,
-        tool_def: &everruns_core::ToolDefinition,
-        _context: &everruns_core::ToolContext,
-    ) -> everruns_core::atoms::PreToolUseDecision {
-        use everruns_core::atoms::PreToolUseDecision;
-
-        // Only gate MCP tools; bash and filesystem writes keep their own gates.
-        if !everruns_core::is_mcp_tool(&tool_call.name) {
-            return PreToolUseDecision::Continue(tool_call);
-        }
-        // Read-only tools (per MCP annotations → ToolHints) run without a prompt.
-        if tool_def.hints().readonly == Some(true) {
-            return PreToolUseDecision::Continue(tool_call);
-        }
-
-        let approved = self
-            .gate
-            .approve(crate::approval::ApprovalRequest::McpTool {
-                name: tool_call.name.clone(),
-                arguments: tool_call.arguments.clone(),
-            })
-            .await;
-        if approved {
-            PreToolUseDecision::Continue(tool_call)
-        } else {
-            PreToolUseDecision::Block {
-                reason: format!("user denied MCP tool call: {}", tool_call.name),
-                user_message: Some("denied".into()),
-                tool_call,
-            }
-        }
+        vec![Box::new(BashTool::new(self.workspace.clone()))]
     }
 }
 
@@ -842,94 +752,6 @@ fn env_credential_present() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---------- MCP approval hook ----------
-
-    use everruns_core::atoms::{PreToolUseDecision, PreToolUseHook};
-    use everruns_core::tool_types::{BuiltinTool, ToolHints};
-    use everruns_core::typed_id::SessionId;
-    use everruns_core::{ToolCall, ToolContext, ToolDefinition};
-
-    fn tool_def(name: &str, readonly: Option<bool>) -> ToolDefinition {
-        ToolDefinition::Builtin(BuiltinTool {
-            name: name.to_string(),
-            display_name: None,
-            description: String::new(),
-            parameters: serde_json::json!({}),
-            policy: Default::default(),
-            category: None,
-            deferrable: Default::default(),
-            hints: ToolHints {
-                readonly,
-                ..Default::default()
-            },
-            full_parameters: None,
-        })
-    }
-
-    fn tool_call(name: &str) -> ToolCall {
-        ToolCall {
-            id: "call_1".into(),
-            name: name.to_string(),
-            arguments: serde_json::json!({"k": "v"}),
-        }
-    }
-
-    /// A gate that denies every request, so we can prove the hook blocks (and
-    /// that bypassed tools are *not* sent to it).
-    fn deny_gate() -> Arc<ApprovalGate> {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
-            crate::approval::ApprovalRequest,
-            tokio::sync::oneshot::Sender<bool>,
-        )>();
-        tokio::spawn(async move {
-            while let Some((_req, responder)) = rx.recv().await {
-                let _ = responder.send(false);
-            }
-        });
-        ApprovalGate::channel(tx)
-    }
-
-    async fn decide(gate: Arc<ApprovalGate>, def: &ToolDefinition, call: ToolCall) -> bool {
-        let hook = McpApprovalHook { gate };
-        let ctx = ToolContext::new(SessionId::new());
-        matches!(
-            hook.before_exec(call, def, &ctx).await,
-            PreToolUseDecision::Continue(_)
-        )
-    }
-
-    #[tokio::test]
-    async fn mcp_approval_hook_blocks_denied_mcp_tool() {
-        let def = tool_def("mcp_docs__search", None);
-        let allowed = decide(deny_gate(), &def, tool_call("mcp_docs__search")).await;
-        assert!(!allowed, "a denied MCP tool must be blocked");
-    }
-
-    #[tokio::test]
-    async fn mcp_approval_hook_allows_approved_mcp_tool() {
-        let def = tool_def("mcp_docs__search", None);
-        // Auto gate approves everything.
-        let allowed = decide(ApprovalGate::auto(), &def, tool_call("mcp_docs__search")).await;
-        assert!(allowed, "an approved MCP tool must continue");
-    }
-
-    #[tokio::test]
-    async fn mcp_approval_hook_skips_readonly_mcp_tool() {
-        // Readonly tools continue without consulting the (denying) gate.
-        let def = tool_def("mcp_docs__search", Some(true));
-        let allowed = decide(deny_gate(), &def, tool_call("mcp_docs__search")).await;
-        assert!(allowed, "readonly MCP tools should not be gated");
-    }
-
-    #[tokio::test]
-    async fn mcp_approval_hook_ignores_non_mcp_tool() {
-        // Non-MCP tools (bash, files) keep their own gates and pass through here
-        // even when this gate would deny.
-        let def = tool_def("bash", None);
-        let allowed = decide(deny_gate(), &def, tool_call("bash")).await;
-        assert!(allowed, "non-MCP tools must not be gated by this hook");
-    }
 
     #[test]
     fn needs_onboarding_true_for_empty_settings() {

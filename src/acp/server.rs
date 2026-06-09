@@ -10,10 +10,8 @@
 //! Concurrency model:
 //!   * The SDK serialises outbound lines, dispatches typed requests, and
 //!     correlates responses.
-//!   * `session/prompt` runs in its own Tokio task, so `session/cancel` and
-//!     permission responses keep flowing while a turn is in progress.
-//!   * Agent→client requests (`session/request_permission`) use the SDK's typed
-//!     request API.
+//!   * `session/prompt` runs in its own Tokio task, so `session/cancel`
+//!     keeps flowing while a turn is in progress.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -29,18 +27,16 @@ use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandReq
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::approval::{ApprovalGate, ApprovalRequest};
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 
 use super::bridge::Translator;
 use super::protocol::{
     self, AgentCapabilities, AuthenticateParams, AuthenticateResult, AvailableCommand,
     AvailableCommandInput, InitializeParams, InitializeResult, NewSessionParams, NewSessionResult,
-    PermissionOption, PermissionOptionKind, PermissionOutcome, PromptCapabilities, PromptParams,
-    PromptResult, RequestPermissionParams, SessionNotification, SessionUpdate, StopReason,
+    PromptCapabilities, PromptParams, PromptResult, SessionNotification, SessionUpdate, StopReason,
     ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     UnstructuredCommandInput,
 };
@@ -53,7 +49,7 @@ const TURN_POLL_INTERVAL: Duration = Duration::from_millis(150);
 /// substitute a scripted llmsim runtime for the real provider wiring.
 #[async_trait]
 pub trait RuntimeFactory: Send + Sync + 'static {
-    async fn build(&self, cwd: PathBuf, gate: Arc<ApprovalGate>) -> Result<BuiltRuntime>;
+    async fn build(&self, cwd: PathBuf) -> Result<BuiltRuntime>;
 }
 
 /// SDK connection wrapper plus yolop-local ids for synthetic command tool calls.
@@ -172,7 +168,7 @@ where
                         cx: cx.clone(),
                         next_id: next_tool_id.clone(),
                     });
-                    match handle_new_session(&server, peer.clone(), params).await {
+                    match handle_new_session(&server, params).await {
                         Ok(result) => {
                             let session_id = result.session_id.to_string();
                             responder.respond(result)?;
@@ -288,21 +284,13 @@ fn handle_initialize(params: InitializeParams) -> InitializeResult {
 
 async fn handle_new_session<F: RuntimeFactory>(
     server: &Arc<Server<F>>,
-    peer: Arc<Peer>,
     params: NewSessionParams,
 ) -> std::result::Result<NewSessionResult, agent_client_protocol::Error> {
     let cwd = params.cwd;
 
-    // Delegate destructive-operation approval to the client via
-    // `session/request_permission`. The editor owns the human, so this is the
-    // idiomatic ACP behaviour.
-    let (gate_tx, mut approval_rx) =
-        mpsc::unbounded_channel::<(ApprovalRequest, oneshot::Sender<bool>)>();
-    let gate = ApprovalGate::channel(gate_tx);
-
     let built = server
         .factory
-        .build(cwd, gate)
+        .build(cwd)
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
@@ -320,16 +308,6 @@ async fn handle_new_session<F: RuntimeFactory>(
         .lock()
         .unwrap()
         .insert(acp_id.clone(), session);
-
-    // Forward every approval request to the client as a permission prompt for
-    // the lifetime of the session.
-    let permission_session = acp_id.clone();
-    tokio::spawn(async move {
-        while let Some((request, responder)) = approval_rx.recv().await {
-            let allowed = request_permission(&peer, &permission_session, &request).await;
-            let _ = responder.send(allowed);
-        }
-    });
 
     Ok(NewSessionResult::new(acp_id))
 }
@@ -687,38 +665,6 @@ async fn drain_events(
         }
         for update in translator.on_event(event) {
             peer.session_update(acp_id, update);
-        }
-    }
-}
-
-/// Ask the client to approve a destructive operation. Maps the client's
-/// selection back to a boolean. Any error or cancellation denies the
-/// operation, matching the channel gate's fail-closed default.
-async fn request_permission(peer: &Arc<Peer>, session_id: &str, request: &ApprovalRequest) -> bool {
-    const ALLOW: &str = "allow";
-    const REJECT: &str = "reject";
-
-    let params = RequestPermissionParams::new(
-        session_id.to_string(),
-        ToolCallUpdate::new(
-            "pending",
-            ToolCallUpdateFields::new().title(request.headline()),
-        ),
-        vec![
-            PermissionOption::new(ALLOW, "Allow", PermissionOptionKind::AllowOnce),
-            PermissionOption::new(REJECT, "Reject", PermissionOptionKind::RejectOnce),
-        ],
-    );
-
-    match peer.cx.send_request(params).block_task().await {
-        Ok(result) => match result.outcome {
-            PermissionOutcome::Selected(outcome) => outcome.option_id.to_string() == ALLOW,
-            PermissionOutcome::Cancelled => false,
-            _ => false,
-        },
-        Err(err) => {
-            tracing::warn!(%err, "acp: permission request failed; denying");
-            false
         }
     }
 }
