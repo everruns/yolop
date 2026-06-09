@@ -192,7 +192,7 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 | `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
 | `--session <ID>`           | Resume a previous session by id                                      |
 | `--session-dir <PATH>`     | Override the parent directory for session folders                    |
-| `--reasoning-effort <E>`   | OpenAI reasoning effort (`low` / `medium` / `high`)                  |
+| `--reasoning-effort <E>`   | OpenAI/OpenRouter reasoning effort (`low` / `medium` / `high`)       |
 
 ### Commands
 
@@ -216,7 +216,7 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 | `OLLAMA_BASE_URL`               | Select Ollama, defaults to `http://localhost:11434/v1`       |
 | `OLLAMA_API_KEY`                | Optional, defaults to `ollama` for local Ollama              |
 | `EVERRUNS_CLI_MODEL`            | Override the auto-selected default model                     |
-| `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI-only reasoning effort override                        |
+| `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI/OpenRouter reasoning effort override                  |
 
 ### Settings
 
@@ -226,9 +226,9 @@ provider API tokens across runs: `<config_dir>/yolop/settings.toml` —
 `~/Library/Application Support/yolop/settings.toml` on macOS,
 `%APPDATA%\yolop\settings.toml` on Windows.
 
-The TUI's `/setup`, `/model`, and `/effort` commands update the active
-provider, saved API keys, current model, OpenAI reasoning effort, or offline
-demo mode.
+The TUI's `/setup`, `/model`, and `/effort` commands can update the active
+provider, saved API keys, current model, OpenAI/OpenRouter reasoning effort,
+or offline demo mode. Saved provider/API-key choices are written to this file.
 
 Provider resolution at startup:
 
@@ -240,8 +240,11 @@ Provider resolution at startup:
 4. Fall back to OpenAI's default model and open setup so a provider/API key
    can be configured
 
-At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always beats
-the saved token, so a per-run env override is always possible.
+At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always
+beats the saved token, so a per-run env override is always possible.
+The setup wizard can also switch models for the current session. OpenAI and
+OpenRouter reasoning effort can be changed at runtime with the `/effort` modal
+or `/setup effort <level>` (for example, `high` or `medium`).
 
 `/setup` can store an API token under `[tokens]` in the settings file. The
 file is written with `0o600` on Unix (owner-only) and stored token values are

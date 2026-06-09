@@ -64,7 +64,7 @@ struct Cli {
     #[arg(short, long)]
     model: Option<String>,
 
-    /// OpenAI reasoning effort for model calls (default: medium)
+    /// Reasoning effort for OpenAI and OpenRouter model calls
     #[arg(long)]
     reasoning_effort: Option<String>,
 
@@ -189,9 +189,18 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
         (ProviderChoice::Google { base_url, .. }, Some(m)) => {
             ProviderChoice::Google { model: m, base_url }
         }
-        (ProviderChoice::OpenRouter { base_url, .. }, Some(m)) => {
-            ProviderChoice::OpenRouter { model: m, base_url }
-        }
+        (
+            ProviderChoice::OpenRouter {
+                base_url,
+                reasoning_effort,
+                ..
+            },
+            Some(m),
+        ) => ProviderChoice::OpenRouter {
+            model: m,
+            base_url,
+            reasoning_effort: cli.reasoning_effort.clone().or(reasoning_effort),
+        },
         (ProviderChoice::Ollama { base_url, .. }, Some(m)) => {
             ProviderChoice::Ollama { model: m, base_url }
         }
@@ -206,6 +215,18 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
             effort,
         ) => ProviderChoice::OpenAi {
             model,
+            reasoning_effort: effort.or(reasoning_effort),
+        },
+        (
+            ProviderChoice::OpenRouter {
+                model,
+                base_url,
+                reasoning_effort,
+            },
+            effort,
+        ) => ProviderChoice::OpenRouter {
+            model,
+            base_url,
             reasoning_effort: effort.or(reasoning_effort),
         },
         (other, _) => other,

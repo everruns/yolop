@@ -371,7 +371,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
 
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.5";
 const DEFAULT_OPENAI_REASONING_EFFORT: &str = "medium";
-const OPENAI_REASONING_EFFORT_SUGGESTIONS: &[&str] = &["minimal", "low", "medium", "high"];
+const REASONING_EFFORT_SUGGESTIONS: &[&str] = &["minimal", "low", "medium", "high"];
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
 // Gemini exposes an OpenAI-compatible surface at this base URL, driven through
@@ -401,6 +401,7 @@ pub enum ProviderChoice {
     OpenRouter {
         model: String,
         base_url: String,
+        reasoning_effort: Option<String>,
     },
     Ollama {
         model: String,
@@ -438,6 +439,9 @@ impl ProviderChoice {
             return Self::OpenRouter {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL),
                 base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
+                reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                    "EVERRUNS_CLI_REASONING_EFFORT",
+                )),
             };
         }
         if google_api_key().is_some() || settings.has_token("google") {
@@ -479,7 +483,14 @@ impl ProviderChoice {
                 None => format!("openai/{model}"),
             },
             Self::Google { model, .. } => format!("google/{model}"),
-            Self::OpenRouter { model, .. } => format!("openrouter/{model}"),
+            Self::OpenRouter {
+                model,
+                reasoning_effort,
+                ..
+            } => match reasoning_effort {
+                Some(effort) => format!("openrouter/{model} {effort}"),
+                None => format!("openrouter/{model}"),
+            },
             Self::Ollama { model, .. } => format!("ollama/{model}"),
             Self::Sim => "llmsim/llmsim-yolop".to_string(),
         }
@@ -513,6 +524,9 @@ impl ProviderChoice {
             "openrouter" => Ok(Self::OpenRouter {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL),
                 base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
+                reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                    "EVERRUNS_CLI_REASONING_EFFORT",
+                )),
             }),
             "ollama" => Ok(Self::Ollama {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL),
@@ -536,6 +550,7 @@ impl ProviderChoice {
             "google/gemini-2.5-flash",
             "google/gemini-2.5-pro",
             "openrouter/openai/gpt-5.2",
+            "openrouter/nvidia/nemotron-3-super-120b-a12b high",
             "ollama/llama3.2",
             "anthropic/claude-sonnet-4-5",
             "anthropic/claude-opus-4-5",
@@ -591,17 +606,11 @@ impl ProviderChoice {
                     base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
                 })
             }
-            "openrouter" => {
-                if reasoning_effort.is_some() {
-                    return Err(anyhow!(
-                        "openrouter model switching does not accept reasoning effort"
-                    ));
-                }
-                Ok(Self::OpenRouter {
-                    model: model.to_string(),
-                    base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
-                })
-            }
+            "openrouter" => Ok(Self::OpenRouter {
+                model: model.to_string(),
+                base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
+                reasoning_effort: normalize_reasoning_effort(reasoning_effort),
+            }),
             "ollama" => {
                 if reasoning_effort.is_some() {
                     return Err(anyhow!(
@@ -659,17 +668,11 @@ impl ProviderChoice {
                     base_url: base_url.clone(),
                 })
             }
-            Self::OpenRouter { base_url, .. } => {
-                if reasoning_effort.is_some() {
-                    return Err(anyhow!(
-                        "openrouter model switching does not accept reasoning effort"
-                    ));
-                }
-                Ok(Self::OpenRouter {
-                    model,
-                    base_url: base_url.clone(),
-                })
-            }
+            Self::OpenRouter { base_url, .. } => Ok(Self::OpenRouter {
+                model,
+                base_url: base_url.clone(),
+                reasoning_effort: normalize_reasoning_effort(reasoning_effort),
+            }),
             Self::Ollama { base_url, .. } => {
                 if reasoning_effort.is_some() {
                     return Err(anyhow!(
@@ -699,8 +702,8 @@ impl ProviderChoice {
         let effort = parts.next().unwrap_or_default();
         if effort.is_empty() || parts.next().is_some() {
             return Err(anyhow!(
-                "expected one OpenAI reasoning effort (suggestions: {})",
-                OPENAI_REASONING_EFFORT_SUGGESTIONS.join(", ")
+                "expected one reasoning effort (suggestions: {})",
+                REASONING_EFFORT_SUGGESTIONS.join(", ")
             ));
         }
         match self {
@@ -708,15 +711,22 @@ impl ProviderChoice {
                 model: model.clone(),
                 reasoning_effort: normalize_openai_reasoning_effort(Some(effort.to_string())),
             }),
+            Self::OpenRouter {
+                model, base_url, ..
+            } => Ok(Self::OpenRouter {
+                model: model.clone(),
+                base_url: base_url.clone(),
+                reasoning_effort: normalize_reasoning_effort(Some(effort.to_string())),
+            }),
             other => Err(anyhow!(
-                "reasoning effort only applies to OpenAI models (current provider: {})",
+                "reasoning effort only applies to OpenAI and OpenRouter models (current provider: {})",
                 other.provider_name()
             )),
         }
     }
 
     pub(crate) fn reasoning_effort_suggestions() -> &'static [&'static str] {
-        OPENAI_REASONING_EFFORT_SUGGESTIONS
+        REASONING_EFFORT_SUGGESTIONS
     }
 
     pub(crate) fn model_with_provider(&self, settings: &Settings) -> Result<ModelWithProvider> {
@@ -753,7 +763,9 @@ impl ProviderChoice {
                     base_url: Some(base_url.clone()),
                 })
             }
-            ProviderChoice::OpenRouter { model, base_url } => {
+            ProviderChoice::OpenRouter {
+                model, base_url, ..
+            } => {
                 let key = resolve_token(settings, "openrouter", &["OPENROUTER_API_KEY"])
                     .ok_or_else(|| anyhow!("OPENROUTER_API_KEY not set (and no token stored)"))?;
                 Ok(ModelWithProvider {
@@ -812,7 +824,9 @@ impl ProviderChoice {
             },
             // OpenRouter must use Chat Completions, not the Open Responses API —
             // see the keyed path in `model_with_provider` for the full rationale.
-            ProviderChoice::OpenRouter { model, base_url } => ModelWithProvider {
+            ProviderChoice::OpenRouter {
+                model, base_url, ..
+            } => ModelWithProvider {
                 model: model.clone(),
                 provider_type: LlmProviderType::OpenaiCompletions,
                 api_key: None,
@@ -835,11 +849,16 @@ impl ProviderChoice {
 
     fn input_message(&self, text: impl Into<String>) -> InputMessage {
         let mut input = InputMessage::user(text);
-        if let Self::OpenAi {
-            reasoning_effort: Some(effort),
-            ..
-        } = self
-        {
+        let reasoning_effort = match self {
+            Self::OpenAi {
+                reasoning_effort, ..
+            }
+            | Self::OpenRouter {
+                reasoning_effort, ..
+            } => reasoning_effort.as_ref(),
+            _ => None,
+        };
+        if let Some(effort) = reasoning_effort {
             input.controls = Some(Controls {
                 reasoning: Some(ReasoningConfig {
                     effort: Some(effort.clone()),
@@ -878,11 +897,17 @@ fn env_or_default(name: &str, default: &str) -> String {
 }
 
 fn normalize_openai_reasoning_effort(reasoning_effort: Option<String>) -> Option<String> {
-    Some(
+    normalize_reasoning_effort(Some(
         reasoning_effort
             .filter(|effort| !effort.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_OPENAI_REASONING_EFFORT.to_string()),
-    )
+    ))
+}
+
+fn normalize_reasoning_effort(reasoning_effort: Option<String>) -> Option<String> {
+    reasoning_effort
+        .map(|effort| effort.trim().to_ascii_lowercase())
+        .filter(|effort| !effort.is_empty())
 }
 
 fn coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabilityConfig> {
@@ -1602,6 +1627,19 @@ mod tests {
     }
 
     #[test]
+    fn model_spec_accepts_openrouter_reasoning_effort() {
+        let provider = ProviderChoice::Sim;
+        let next = provider
+            .resolve_model_spec("openrouter/nvidia/nemotron-3-super-120b-a12b high")
+            .unwrap();
+
+        assert_eq!(
+            next.label(),
+            "openrouter/nvidia/nemotron-3-super-120b-a12b high"
+        );
+    }
+
+    #[test]
     fn model_spec_accepts_ollama_provider_name() {
         let provider = ProviderChoice::Sim;
         let next = provider.resolve_model_spec("ollama/llama3.2").unwrap();
@@ -1689,6 +1727,7 @@ mod tests {
         let provider = ProviderChoice::OpenRouter {
             model: "openai/gpt-5.2".to_string(),
             base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
+            reasoning_effort: None,
         };
 
         let err = provider
@@ -1710,6 +1749,7 @@ mod tests {
         let provider = ProviderChoice::OpenRouter {
             model: "nvidia/nemotron-3-ultra-550b-a55b".to_string(),
             base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
+            reasoning_effort: None,
         };
 
         let model = provider.model_with_provider(&Settings::default()).unwrap();
@@ -1788,13 +1828,31 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_effort_rejects_non_openai_provider() {
+    fn reasoning_effort_can_update_current_openrouter_model() {
+        let provider = ProviderChoice::OpenRouter {
+            model: "nvidia/nemotron-3-super-120b-a12b".to_string(),
+            base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
+            reasoning_effort: Some("medium".to_string()),
+        };
+        let next = provider.resolve_reasoning_effort("high").unwrap();
+
+        assert_eq!(
+            next.label(),
+            "openrouter/nvidia/nemotron-3-super-120b-a12b high"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_rejects_unsupported_provider() {
         let provider = ProviderChoice::Anthropic {
             model: "claude-sonnet-4-5".to_string(),
         };
         let err = provider.resolve_reasoning_effort("high").unwrap_err();
 
-        assert!(err.to_string().contains("only applies to OpenAI"));
+        assert!(
+            err.to_string()
+                .contains("only applies to OpenAI and OpenRouter")
+        );
     }
 
     #[tokio::test]
@@ -1956,6 +2014,25 @@ mod tests {
                 .and_then(|controls| controls.reasoning)
                 .and_then(|reasoning| reasoning.effort),
             Some("medium".to_string())
+        );
+    }
+
+    #[test]
+    fn openrouter_input_message_carries_reasoning_effort() {
+        let provider = ProviderChoice::OpenRouter {
+            model: "nvidia/nemotron-3-super-120b-a12b".to_string(),
+            base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
+            reasoning_effort: Some("high".to_string()),
+        };
+
+        let input = provider.input_message("hello");
+
+        assert_eq!(
+            input
+                .controls
+                .and_then(|controls| controls.reasoning)
+                .and_then(|reasoning| reasoning.effort),
+            Some("high".to_string())
         );
     }
 
