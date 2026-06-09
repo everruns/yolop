@@ -90,9 +90,9 @@ Use this skill when the user asks to:
 Mandatory for every change that touches code, configuration, or infrastructure. Yolop is a coding agent with disk and shell access on the user's host, so the relevant categories are concentrated:
 
 - **TM-FS** — filesystem access. Verify the write blocklist still covers `.git/`, `node_modules/`, `target/`, `dist/`, `build/`, `.next/`, `.venv/`, `venv/`, `.tox/`, `.gradle/` at any depth. Verify reads remain unrestricted only inside the workspace root.
-- **TM-BASH** — shell execution. Verify timeouts, output caps, and approval-gate behavior. Any change to `tools.rs` must preserve the bounded execution model.
+- **TM-BASH** — shell execution. Verify timeouts and output caps. Any change to `tools.rs` must preserve the bounded execution model.
 - **TM-LLM** — prompt construction and API key handling. Verify keys are never logged or written to session JSONL. Verify provider env vars are read from process env only.
-- **TM-TOOL** — capability registration. Verify new capabilities respect the same approval gate and blocklist.
+- **TM-TOOL** — capability registration. Verify new capabilities respect the write blocklist.
 - **TM-DEP** — dependency risk. New crates need a one-line justification. Bump `everruns-*` versions together; mismatched versions are a soft API break.
 
 For every relevant category, check the diff for: injection (command/prompt/path traversal), data exposure (keys in logs, session files), input validation at trust boundaries, dependency risk, and resource exhaustion (unbounded loops, missing limits).

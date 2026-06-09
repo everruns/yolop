@@ -24,7 +24,6 @@ use std::time::Duration;
 use everruns_core::llmsim_driver::{LlmSimConfig, OnExhausted, SimError, SimToolCall, SimTurn};
 use serde_json::json;
 
-use crate::approval::ApprovalGate;
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
 use crate::settings::SettingsStore;
 
@@ -52,7 +51,6 @@ async fn build_scripted_runtime(config: LlmSimConfig) -> (BuiltRuntime, std::pat
     let runtime = build_with_options(
         workspace_root.clone(),
         ProviderChoice::Sim,
-        ApprovalGate::auto(),
         None,
         sessions_root,
         settings,

@@ -64,7 +64,7 @@ Before tagging a release:
 
 Yolop runs unsandboxed on the user's host. The threat surface is concentrated:
 
-- **Filesystem** — the write blocklist in `runtime.rs` is the only thing preventing rewrites of `.git/`, dependency caches, and build artifacts. Maintenance must verify it is still wired through both the approval gate and the real-disk file store.
+- **Filesystem** — the write blocklist in `runtime.rs` is the only thing preventing rewrites of `.git/`, dependency caches, and build artifacts. Maintenance must verify it is still wired through the real-disk file store.
 - **Shell** — the bash tool spawns a real subprocess on the host. Maintenance must verify the timeout and the per-stream output cap.
 - **Session log** — JSONL session logs contain prompts, tool arguments, and tool output. They must be created with `0o600` on Unix.
 - **API keys** — provider keys must only be read from process env. They must never be written to the session log or echoed to tracing output.

@@ -4,8 +4,7 @@
 //! using newline-delimited JSON-RPC 2.0. Run it with `yolop --acp`; the editor
 //! spawns that process, performs the `initialize` handshake, opens sessions
 //! with `session/new`, and sends turns with `session/prompt`. yolop streams the
-//! turn back as `session/update` notifications and delegates destructive-action
-//! approval to the editor via `session/request_permission`.
+//! turn back as `session/update` notifications.
 //!
 //! See `specs/acp.md` for the full surface and `README.md` for editor setup.
 //!
@@ -24,7 +23,6 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::approval::ApprovalGate;
 use crate::runtime::{self, BuiltRuntime, ProviderChoice};
 use crate::settings::SettingsStore;
 
@@ -42,11 +40,10 @@ struct ConfigRuntimeFactory {
 
 #[async_trait]
 impl RuntimeFactory for ConfigRuntimeFactory {
-    async fn build(&self, cwd: PathBuf, gate: Arc<ApprovalGate>) -> Result<BuiltRuntime> {
+    async fn build(&self, cwd: PathBuf) -> Result<BuiltRuntime> {
         runtime::build(
             cwd,
             self.provider.clone(),
-            gate,
             None,
             self.sessions_dir.clone(),
             self.settings.clone(),
@@ -76,9 +73,8 @@ mod tests {
     use super::*;
     use crate::runtime::{BuildOptions, build_with_options};
     use agent_client_protocol::schema::{
-        InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest,
-        RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-        SelectedPermissionOutcome, SessionId, SessionUpdate,
+        InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, SessionId,
+        SessionUpdate,
     };
     use agent_client_protocol::{
         Agent, ByteStreams, Client, ConnectionTo, JsonRpcRequest, SessionMessage,
@@ -101,13 +97,12 @@ mod tests {
 
     #[async_trait]
     impl RuntimeFactory for ScriptedFactory {
-        async fn build(&self, cwd: PathBuf, gate: Arc<ApprovalGate>) -> Result<BuiltRuntime> {
+        async fn build(&self, cwd: PathBuf) -> Result<BuiltRuntime> {
             let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
             let settings = Arc::new(SettingsStore::open(sessions.join("settings.toml")));
             build_with_options(
                 cwd,
                 ProviderChoice::Sim,
-                gate,
                 None,
                 sessions,
                 settings,
@@ -173,7 +168,7 @@ mod tests {
         }
     }
 
-    async fn with_sdk_client<T, F, Fut>(config: LlmSimConfig, permission_allow: bool, op: F) -> T
+    async fn with_sdk_client<T, F, Fut>(config: LlmSimConfig, op: F) -> T
     where
         F: FnOnce(SdkClient) -> Fut + Send + 'static,
         Fut: Future<Output = agent_client_protocol::Result<T>> + Send + 'static,
@@ -190,17 +185,6 @@ mod tests {
         Client
             .builder()
             .name("test-client")
-            .on_receive_request(
-                async move |_params: RequestPermissionRequest, responder, _cx| {
-                    let option_id = if permission_allow { "allow" } else { "reject" };
-                    responder.respond(RequestPermissionResponse::new(
-                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                            option_id,
-                        )),
-                    ))
-                },
-                agent_client_protocol::on_receive_request!(),
-            )
             .connect_with(transport, async move |cx| {
                 let init = cx
                     .send_request(InitializeRequest::new(protocol::PROTOCOL_VERSION))
@@ -283,8 +267,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn initialize_advertises_protocol_version_and_capabilities() {
-        let init =
-            with_sdk_client(fixed("hi"), true, |client| async move { Ok(client.init) }).await;
+        let init = with_sdk_client(fixed("hi"), |client| async move { Ok(client.init) }).await;
         assert_eq!(init.protocol_version, protocol::PROTOCOL_VERSION);
         assert!(!init.agent_capabilities.load_session);
         assert!(init.agent_capabilities.prompt_capabilities.embedded_context);
@@ -292,7 +275,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn full_handshake_then_prompt_streams_text_and_ends_turn() {
-        let run = with_sdk_client(fixed("hello from acp"), true, |client| async move {
+        let run = with_sdk_client(fixed("hello from acp"), |client| async move {
             let mut session = client.new_session().await?;
             SdkClient::prompt(&mut session, "say hi").await
         })
@@ -311,7 +294,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn new_session_advertises_available_commands() {
-        let command_updates = with_sdk_client(fixed("hi"), true, |client| async move {
+        let command_updates = with_sdk_client(fixed("hi"), |client| async move {
             let mut session = client.new_session().await?;
             collect_available_commands(&mut session).await
         })
@@ -343,7 +326,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn slash_system_command_executes_without_model_turn() {
-        let run = with_sdk_client(fixed("model should not run"), true, |client| async move {
+        let run = with_sdk_client(fixed("model should not run"), |client| async move {
             let mut session = client.new_session().await?;
             let _ = collect_available_commands(&mut session).await?;
             SdkClient::prompt(&mut session, "/setup status").await
@@ -383,7 +366,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unknown_method_returns_method_not_found() {
-        let err = with_sdk_client(fixed("hi"), true, |client| async move {
+        let err = with_sdk_client(fixed("hi"), |client| async move {
             match client.cx.send_request(UnknownRequest {}).block_task().await {
                 Ok(_) => panic!("unknown method unexpectedly succeeded"),
                 Err(err) => Ok(err),
@@ -395,7 +378,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn prompt_to_unknown_session_is_invalid_params() {
-        let err = with_sdk_client(fixed("hi"), true, |client| async move {
+        let err = with_sdk_client(fixed("hi"), |client| async move {
             let request = PromptRequest::new(
                 SessionId::new("session_does_not_exist"),
                 vec!["hello".to_string().into()],
@@ -410,10 +393,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn scripted_tool_call_streams_tool_updates_when_permission_granted() {
+    async fn scripted_tool_call_streams_tool_updates() {
         // First scripted turn writes a marker file via bash; second closes
-        // the loop with plain text. The bash write is gated through the
-        // approval channel, which the client grants.
+        // the loop with plain text. The bash write runs autonomously.
         let marker = "acp_tool_ran.marker";
         let config = LlmSimConfig::scripted(vec![
             SimTurn::ToolCalls(vec![SimToolCall {
@@ -423,7 +405,7 @@ mod tests {
             }]),
             SimTurn::Assistant("tool done".to_string()),
         ]);
-        let run = with_sdk_client(config, true, |client| async move {
+        let run = with_sdk_client(config, |client| async move {
             let mut session = client.new_session().await?;
             let _ = collect_available_commands(&mut session).await?;
             SdkClient::prompt(&mut session, "run the tool").await
@@ -468,7 +450,7 @@ mod tests {
             }]),
             SimTurn::Assistant("planned".to_string()),
         ]);
-        let run = with_sdk_client(config, true, |client| async move {
+        let run = with_sdk_client(config, |client| async move {
             let mut session = client.new_session().await?;
             let _ = collect_available_commands(&mut session).await?;
             SdkClient::prompt(&mut session, "make a plan").await
@@ -487,15 +469,13 @@ mod tests {
         assert_eq!(entries[0]["status"], "in_progress");
     }
 
-    /// Regression: if the client disconnects while an agent→client request is
-    /// in flight (a forwarded `session/request_permission` that never gets an
-    /// answer), `serve` must still return rather than deadlock on the awaiting
-    /// permission task. Without `fail_all_pending` + the fail-fast send in
-    /// `Peer::request`, this hangs forever.
+    /// Regression: if the client disconnects mid-turn, `serve` must still
+    /// return rather than deadlock. The EOF signal winds the agent process
+    /// down even while a turn task is in flight.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn disconnect_during_permission_lets_serve_return() {
-        // First turn issues a bash tool call, which is gated and forwarded to
-        // the client as a permission request the client deliberately ignores.
+    async fn disconnect_mid_turn_lets_serve_return() {
+        // First turn issues a bash tool call; we disconnect as soon as the
+        // agent starts streaming the turn back.
         let config = LlmSimConfig::scripted(vec![
             SimTurn::ToolCalls(vec![SimToolCall {
                 name: "bash".to_string(),
@@ -555,7 +535,7 @@ mod tests {
             .to_string();
 
         // Send a prompt but never read its response: we want to disconnect
-        // mid-turn, while the permission request is outstanding.
+        // mid-turn, while the turn task is still running.
         send(
             &mut client_w,
             json!({
@@ -567,19 +547,18 @@ mod tests {
         )
         .await;
 
-        // Wait until the agent forwards the permission request, then drop the
-        // client's write half to simulate a disconnect without answering it.
+        // Wait until the agent starts streaming the turn back, then drop the
+        // client's write half to simulate a disconnect mid-turn.
         loop {
             let msg = next(&mut reader).await;
-            if msg.get("method").and_then(Value::as_str) == Some("session/request_permission") {
+            if msg.get("method").and_then(Value::as_str) == Some("session/update") {
                 break;
             }
         }
         drop(client_w);
         drop(reader);
 
-        // The server must wind down: the pending permission fails (deny), the
-        // tool errors, the turn finishes, and `serve` returns.
+        // The server must wind down: the turn finishes and `serve` returns.
         tokio::time::timeout(Duration::from_secs(10), server)
             .await
             .expect("serve must return after disconnect, not hang")

@@ -5,10 +5,8 @@
 // filesystem factory. The bash tool stays custom because the built-in `virtual_bash`
 // runs commands against the VFS, not against the real workspace, and the
 // security model for unsandboxed shell-on-host needs yolop-specific policy
-// (timeout, output cap, approval gate). See EVE-478 for the eventual
-// runtime-side story.
+// (timeout, output cap). See EVE-478 for the eventual runtime-side story.
 
-use crate::approval::{ApprovalGate, ApprovalRequest};
 use async_trait::async_trait;
 use everruns_core::exec_tool_result::ExecToolResultPayload;
 use everruns_core::tool_types::ToolHints;
@@ -40,16 +38,14 @@ impl Workspace {
 
 pub struct BashTool {
     ws: Workspace,
-    gate: Arc<ApprovalGate>,
     timeout_secs: u64,
     max_output_bytes: usize,
 }
 
 impl BashTool {
-    pub fn new(ws: Workspace, gate: Arc<ApprovalGate>) -> Self {
+    pub fn new(ws: Workspace) -> Self {
         Self {
             ws,
-            gate,
             timeout_secs: 120,
             max_output_bytes: 1024 * 1024,
         }
@@ -65,7 +61,7 @@ impl Tool for BashTool {
         Some("Bash")
     }
     fn description(&self) -> &str {
-        "Run a bash command from the workspace root. Captures stdout/stderr with configurable verbosity. 120s timeout. Requires user approval."
+        "Run a bash command from the workspace root. Captures stdout/stderr with configurable verbosity. 120s timeout."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -97,15 +93,6 @@ impl Tool for BashTool {
             .get("output")
             .and_then(Value::as_str)
             .unwrap_or("auto");
-        let approved = self
-            .gate
-            .approve(ApprovalRequest::Bash {
-                command: command.clone(),
-            })
-            .await;
-        if !approved {
-            return ToolExecutionResult::tool_error("user denied bash command");
-        }
         let root = self.ws.root().to_path_buf();
         let timeout = std::time::Duration::from_secs(self.timeout_secs);
         let max_bytes = self.max_output_bytes;
@@ -221,10 +208,7 @@ mod tests {
 
     #[test]
     fn bash_tool_requests_output_persistence() {
-        let tool = BashTool::new(
-            Workspace::new(std::env::current_dir().unwrap()),
-            ApprovalGate::auto(),
-        );
+        let tool = BashTool::new(Workspace::new(std::env::current_dir().unwrap()));
 
         assert_eq!(tool.hints().persist_output, Some(true));
         assert_eq!(tool.hints().long_running, Some(true));
@@ -233,10 +217,7 @@ mod tests {
     #[tokio::test]
     async fn bash_tool_uses_exec_payload_shape_and_raw_output() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(
-            Workspace::new(dir.path().to_path_buf()),
-            ApprovalGate::auto(),
-        );
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
 
         let result = tool
             .execute(json!({
@@ -260,10 +241,7 @@ mod tests {
     #[tokio::test]
     async fn bash_tool_output_persistence_hook_saves_full_output_to_outputs_folder() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(
-            Workspace::new(dir.path().to_path_buf()),
-            ApprovalGate::auto(),
-        );
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
         let call = ToolCall {
             id: "call-persist".to_string(),
             name: "bash".to_string(),
@@ -316,10 +294,7 @@ mod tests {
     #[tokio::test]
     async fn bash_success_output_should_be_persistent_first_when_output_is_saved() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(
-            Workspace::new(dir.path().to_path_buf()),
-            ApprovalGate::auto(),
-        );
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
         let call = ToolCall {
             id: "call-auto-compact".to_string(),
             name: "bash".to_string(),
@@ -361,10 +336,7 @@ mod tests {
     async fn bash_defaults_to_auto_mode_for_compact_success() {
         // No `output` parameter at all — the new default must behave like `auto`.
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(
-            Workspace::new(dir.path().to_path_buf()),
-            ApprovalGate::auto(),
-        );
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
 
         let result = tool
             .execute(json!({
@@ -390,10 +362,7 @@ mod tests {
     #[tokio::test]
     async fn bash_auto_failure_returns_diagnostic_inline_output() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(
-            Workspace::new(dir.path().to_path_buf()),
-            ApprovalGate::auto(),
-        );
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
 
         // Produce lots of stdout, then exit non-zero with a useful stderr line.
         let result = tool
@@ -425,10 +394,7 @@ mod tests {
     #[tokio::test]
     async fn bash_explicit_normal_still_returns_larger_inline_output() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(
-            Workspace::new(dir.path().to_path_buf()),
-            ApprovalGate::auto(),
-        );
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
 
         let result = tool
             .execute(json!({
@@ -454,124 +420,10 @@ mod tests {
         );
     }
 
-    /// Spawn a background task that auto-responds to every approval
-    /// request with `decision`. Returns the gate to install on the tool
-    /// along with the responder task's `JoinHandle` so callers can
-    /// `.abort()` it on test shutdown.
-    fn auto_decision_gate(decision: bool) -> (Arc<ApprovalGate>, tokio::task::JoinHandle<()>) {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
-            ApprovalRequest,
-            tokio::sync::oneshot::Sender<bool>,
-        )>();
-        let handle = tokio::spawn(async move {
-            while let Some((_req, responder)) = rx.recv().await {
-                let _ = responder.send(decision);
-            }
-        });
-        (ApprovalGate::channel(tx), handle)
-    }
-
-    #[tokio::test]
-    async fn bash_tool_returns_error_when_user_denies() {
-        let dir = tempfile::tempdir().unwrap();
-        let (gate, approver) = auto_decision_gate(false);
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()), gate);
-
-        let result = tool.execute(json!({ "command": "echo hi" })).await;
-
-        match result {
-            ToolExecutionResult::ToolError(msg) => {
-                assert_eq!(
-                    msg, "user denied bash command",
-                    "denial must return the exact documented error"
-                );
-            }
-            other => panic!("expected ToolError, got: {other:?}"),
-        }
-        drop(tool);
-        approver.abort();
-    }
-
-    #[tokio::test]
-    async fn bash_tool_denial_does_not_execute_command() {
-        let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("should-not-exist");
-        let (gate, approver) = auto_decision_gate(false);
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()), gate);
-
-        // If the command runs, the marker file will exist.
-        let cmd = format!("touch {}", marker.display());
-        let _ = tool.execute(json!({ "command": cmd })).await;
-
-        assert!(
-            !marker.exists(),
-            "command must not run after denial, but marker exists at {marker:?}"
-        );
-        approver.abort();
-    }
-
-    #[tokio::test]
-    async fn bash_tool_forwards_command_to_approval_gate() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
-            ApprovalRequest,
-            tokio::sync::oneshot::Sender<bool>,
-        )>();
-        let gate = ApprovalGate::channel(tx);
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()), gate);
-
-        let approver = tokio::spawn(async move {
-            let (req, responder) = rx.recv().await.expect("approval request");
-            match req {
-                ApprovalRequest::Bash { command } => {
-                    assert_eq!(command, "echo captured");
-                }
-                other => panic!("expected Bash variant, got: {other:?}"),
-            }
-            responder.send(true).unwrap();
-        });
-
-        let result = tool.execute(json!({ "command": "echo captured" })).await;
-        approver.await.unwrap();
-
-        let ToolExecutionResult::Success(value) = result else {
-            panic!("expected success after approval");
-        };
-        assert_eq!(value["exit_code"], 0);
-    }
-
-    #[tokio::test]
-    async fn bash_tool_returns_error_when_gate_channel_closed() {
-        // If the TUI tears down its approval channel mid-turn, the gate
-        // should fail closed (deny) rather than hang or panic.
-        let dir = tempfile::tempdir().unwrap();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<(
-            ApprovalRequest,
-            tokio::sync::oneshot::Sender<bool>,
-        )>();
-        drop(rx);
-        let gate = ApprovalGate::channel(tx);
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()), gate);
-
-        let result = tool.execute(json!({ "command": "echo hi" })).await;
-        match result {
-            ToolExecutionResult::ToolError(msg) => {
-                assert_eq!(
-                    msg, "user denied bash command",
-                    "dropped-channel gate must fail closed with the documented error"
-                );
-            }
-            other => panic!("expected ToolError, got: {other:?}"),
-        }
-    }
-
     #[tokio::test]
     async fn bash_tool_missing_command_argument_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(
-            Workspace::new(dir.path().to_path_buf()),
-            ApprovalGate::auto(),
-        );
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
 
         let result = tool.execute(json!({})).await;
         match result {
@@ -585,10 +437,7 @@ mod tests {
     #[tokio::test]
     async fn bash_tool_non_string_command_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(
-            Workspace::new(dir.path().to_path_buf()),
-            ApprovalGate::auto(),
-        );
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
 
         let result = tool.execute(json!({ "command": 42 })).await;
         match result {
@@ -602,10 +451,7 @@ mod tests {
     #[tokio::test]
     async fn bash_explicit_full_returns_unlimited_inline_output() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(
-            Workspace::new(dir.path().to_path_buf()),
-            ApprovalGate::auto(),
-        );
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
 
         let result = tool
             .execute(json!({

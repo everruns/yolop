@@ -8,11 +8,9 @@ pub use agent_client_protocol::schema::{
     AuthenticateResponse as AuthenticateResult, AvailableCommand, AvailableCommandInput,
     AvailableCommandsUpdate, CancelNotification, Content, ContentBlock, ContentChunk,
     InitializeRequest as InitializeParams, InitializeResponse as InitializeResult,
-    NewSessionRequest as NewSessionParams, NewSessionResponse as NewSessionResult,
-    PermissionOption, PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
-    PromptCapabilities, PromptRequest as PromptParams, PromptResponse as PromptResult,
-    ProtocolVersion, RequestPermissionOutcome as PermissionOutcome,
-    RequestPermissionRequest as RequestPermissionParams, SessionNotification, SessionUpdate,
+    NewSessionRequest as NewSessionParams, NewSessionResponse as NewSessionResult, Plan, PlanEntry,
+    PlanEntryPriority, PlanEntryStatus, PromptCapabilities, PromptRequest as PromptParams,
+    PromptResponse as PromptResult, ProtocolVersion, SessionNotification, SessionUpdate,
     StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
     ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
 };
@@ -55,7 +53,6 @@ pub fn prompt_text(blocks: &[ContentBlock]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn sdk_initialize_result_serializes_camel_case() {
@@ -95,21 +92,5 @@ mod tests {
             text_block("world"),
         ];
         assert_eq!(prompt_text(&blocks), "hello\nworld");
-    }
-
-    #[test]
-    fn permission_outcome_parses_selected_and_cancelled() {
-        let selected: agent_client_protocol::schema::RequestPermissionResponse =
-            serde_json::from_value(
-                json!({ "outcome": { "outcome": "selected", "optionId": "ok" } }),
-            )
-            .unwrap();
-        match selected.outcome {
-            PermissionOutcome::Selected(outcome) => assert_eq!(outcome.option_id.to_string(), "ok"),
-            _ => panic!("expected selected"),
-        }
-        let cancelled: agent_client_protocol::schema::RequestPermissionResponse =
-            serde_json::from_value(json!({ "outcome": { "outcome": "cancelled" } })).unwrap();
-        assert!(matches!(cancelled.outcome, PermissionOutcome::Cancelled));
     }
 }

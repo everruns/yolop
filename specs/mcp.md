@@ -1,6 +1,6 @@
 # MCP — Model Context Protocol client support
 
-Status: v1 implemented (HTTP + stdio, workspace + global config, approval gating).
+Status: v1 implemented (HTTP + stdio, workspace + global config).
 
 ## Why
 
@@ -33,13 +33,8 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
   are prefixed (`mcp_<server>__<tool>`) by the runtime to avoid collisions.
 - **Visibility**: `/mcp` lists the configured servers; configured server names
   also appear in `StartupInfo`.
-- **Approval gating**: `McpApprovalCapability` contributes a `PreToolUseHook`
-  (via the `Capability::pre_tool_use_hooks` seam, everruns 0.8.38+) that routes
-  every non-readonly `mcp_*` call through the same `ApprovalGate` as `bash`,
-  honoring the readonly hint the runtime derives from MCP tool annotations.
-  Registered only when MCP servers are configured; a no-op when the gate is
-  `Auto` (no `--ask`, and `--print`). Non-MCP tools keep their own gates and
-  are not double-prompted.
+- **Execution model**: MCP tool calls run autonomously, like every other yolop
+  tool — there is no per-call approval gate.
 
 Config shape:
 
@@ -62,10 +57,8 @@ Config shape:
 - **stdio** spawns local processes the user explicitly listed in their own
   `.mcp.json`. Authoring that file is the act of consent, mirroring how other
   MCP clients treat a project-scoped server list.
-- **Per-call approval**: with `--ask`, every non-readonly MCP tool call is
-  gated through the `ApprovalGate` (see "Approval gating" above), the same as
-  `bash` and file writes. Without `--ask` (and in `--print`) the gate
-  auto-approves, consistent with yolop acting autonomously by default.
+- **No per-call approval**: MCP tools run autonomously like the rest of yolop's
+  tools; the standing guardrail is the write blocklist on filesystem writes.
 
 ## Non-goals (for now)
 
@@ -84,5 +77,4 @@ Config shape:
 | Config loading (scopes, merge, `${VAR}`) | `src/mcp_config.rs` |
 | Wiring into the session | `src/runtime.rs` (`session_mcp_servers`, `StartupInfo.mcp_server_names`) |
 | `/mcp` command | `src/capabilities/client_commands.rs`, `src/host_ui.rs`, `src/app.rs` |
-| Approval gating | `McpApprovalCapability` in `src/capabilities/host.rs`; `ApprovalRequest::McpTool` in `src/approval.rs` |
 | Client / transports / executor | upstream `everruns-mcp`, `everruns-runtime` (`mcp-stdio` feature) |
