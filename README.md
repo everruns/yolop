@@ -89,6 +89,10 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **MCP servers** — extra tools from local (stdio) or remote (HTTP)
   [Model Context Protocol](https://modelcontextprotocol.io) servers via
   `.mcp.json` (see [MCP servers](#mcp-servers)).
+- **Hooks** — workspace and global hook files can block, mutate, or audit
+  agent actions through the upstream `user_hooks` capability. Configure them
+  by chatting with yolop or by editing `hooks.json`. See
+  [`docs/features/hooks.md`](./docs/features/hooks.md).
 - **Editor integration** — `--acp` speaks the
   [Agent Client Protocol](https://agentclientprotocol.com) over stdio, so
   editors such as Zed can drive yolop as an external agent (see

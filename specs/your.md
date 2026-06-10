@@ -75,6 +75,19 @@ syntax required:
   or to edit precisely).
 - `write_your_memory` — replace the whole file, for reorganizing or removing.
 
+## Self-Configuration Pattern
+
+Natural language is the user interface, but durable configuration changes
+should go through purpose-built tools. The `your` prompt decides whether a user
+is asking to configure yolop itself; embedded `your` skills can provide
+examples and recipes; tools perform validated writes to stable config files.
+
+For example, "yolop setup a hook to prevent calls to git" is a
+self-configuration request. `your` should translate it into a hook spec,
+validate it, and write it through hook config tools rather than storing a
+memory note that says "avoid git". See [`hooks.md`](./hooks.md) for the hook
+tool design and scope rules.
+
 ## Roadmap (not yet implemented)
 
 The roadmap rides on everruns' existing extension points rather than inventing
@@ -94,9 +107,9 @@ yolop-specific formats.
   (`/.agents/skills`) so the built-in `skills` capability lists/activates
   them in every session. This is also where memory that has outgrown a few
   bullets gets promoted to.
-- **Hooks** — once yolop grows a hook system, `your` configures global hooks
-  from the same central dir (and, where everruns exposes hook contributions
-  on capabilities, via declarative definitions).
+- **Hooks** — `your` should configure global and workspace hooks through
+  structured hook tools, using the scope and merge contract in
+  [`hooks.md`](./hooks.md).
 - **General config** — map natural-language requests ("set yolop blue") onto
   real settings as those settings come to exist. Until a knob exists, the
   preference is recorded in memory and honored on a best-effort basis.

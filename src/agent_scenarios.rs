@@ -42,8 +42,16 @@ const TURN_TIMEOUT: Duration = Duration::from_secs(15);
 /// assert on filesystem side effects (scripted bash tool calls) can read
 /// files back.
 async fn build_scripted_runtime(config: LlmSimConfig) -> (BuiltRuntime, std::path::PathBuf) {
+    build_scripted_runtime_with_workspace(config, |_| {}).await
+}
+
+async fn build_scripted_runtime_with_workspace(
+    config: LlmSimConfig,
+    setup_workspace: impl FnOnce(&std::path::Path),
+) -> (BuiltRuntime, std::path::PathBuf) {
     let workspace_root = tempfile::tempdir().expect("workspace tempdir").keep();
     let sessions_root = tempfile::tempdir().expect("sessions tempdir").keep();
+    setup_workspace(&workspace_root);
 
     let llmsim = config.with_model("llmsim-yolop");
     let settings_path = sessions_root.join("settings.toml");
@@ -132,6 +140,63 @@ async fn scripted_tool_call_executes_bash_then_assistant_completes() {
     assert!(
         workspace.join(marker).exists(),
         "BashTool must have run the scripted command and created {marker:?} in {workspace:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_hook_blocks_matching_bash_call() {
+    let marker = "git_hook_should_block.marker";
+    let cmd = format!("git status > {marker}");
+    let (runtime, workspace) = build_scripted_runtime_with_workspace(
+        LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".to_string(),
+                arguments: json!({ "command": cmd }),
+                id: None,
+            }]),
+            SimTurn::Assistant("git was blocked".to_string()),
+        ]),
+        |workspace| {
+            let hooks_dir = workspace.join(".agents");
+            std::fs::create_dir_all(&hooks_dir).expect("create hooks dir");
+            std::fs::write(
+                hooks_dir.join("hooks.json"),
+                r#"{
+                  "hooks": [
+                    {
+                      "id": "block-git",
+                      "event": "pre_tool_use",
+                      "matcher": {
+                        "tool_name": "bash",
+                        "args_jsonpath": "$.command",
+                        "match_regex": "(^|[;&|()[:space:]])git([[:space:]]|$)"
+                      },
+                      "executor": {
+                        "type": "bash",
+                        "command": "printf '%s\\n' '{\"decision\":\"block\",\"reason\":\"git blocked by test hook\",\"user_message\":\"git is blocked\"}'"
+                      },
+                      "timeout_ms": 1000,
+                      "on_error": "block",
+                      "description": "Block git"
+                    }
+                  ]
+                }"#,
+            )
+            .expect("write hooks config");
+        },
+    )
+    .await;
+
+    let result = run_single_turn(&runtime, "try git").await;
+
+    assert!(result.success, "agent should continue after blocked tool");
+    assert!(
+        !workspace.join(marker).exists(),
+        "pre_tool_use hook must block bash before it creates {marker:?}"
+    );
+    assert_eq!(
+        runtime.startup.hook_count, 1,
+        "workspace hook should be loaded into startup info"
     );
 }
 
