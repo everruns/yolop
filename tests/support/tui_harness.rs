@@ -41,6 +41,12 @@ impl TuiHarness {
         self.writer.flush().expect("flush pty input");
     }
 
+    /// The settings.toml the spawned TUI reads and writes (Linux config
+    /// layout; the harness seeds the macOS path with the same content).
+    pub fn settings_path(&self) -> PathBuf {
+        self._home.path().join(".config/yolop/settings.toml")
+    }
+
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.master
             .resize(PtySize {
@@ -102,6 +108,14 @@ pub fn spawn_tui_llmsim(binary: &PathBuf) -> TuiHarness {
 }
 
 pub fn spawn_tui_llmsim_with(binary: &PathBuf, options: TuiSpawnOptions) -> TuiHarness {
+    spawn_tui_llmsim_with_settings(binary, options, "provider = \"llmsim\"\n")
+}
+
+pub fn spawn_tui_llmsim_with_settings(
+    binary: &PathBuf,
+    options: TuiSpawnOptions,
+    settings_toml: &str,
+) -> TuiHarness {
     let session_dir = tempfile::tempdir().expect("session tempdir");
     let home = tempfile::tempdir().expect("home tempdir");
     for settings_dir in [
@@ -109,11 +123,7 @@ pub fn spawn_tui_llmsim_with(binary: &PathBuf, options: TuiSpawnOptions) -> TuiH
         home.path().join("Library/Application Support/yolop"),
     ] {
         std::fs::create_dir_all(&settings_dir).expect("create settings dir");
-        std::fs::write(
-            settings_dir.join("settings.toml"),
-            "provider = \"llmsim\"\n",
-        )
-        .expect("write settings");
+        std::fs::write(settings_dir.join("settings.toml"), settings_toml).expect("write settings");
     }
     let pty_system = NativePtySystem::default();
     let pair = pty_system
@@ -135,8 +145,14 @@ pub fn spawn_tui_llmsim_with(binary: &PathBuf, options: TuiSpawnOptions) -> TuiH
     cmd.env_remove("OPENAI_API_KEY");
     cmd.env_remove("ANTHROPIC_API_KEY");
     cmd.env_remove("OPENROUTER_API_KEY");
+    cmd.env_remove("GEMINI_API_KEY");
+    cmd.env_remove("GOOGLE_API_KEY");
     cmd.env_remove("OLLAMA_BASE_URL");
     cmd.env_remove("OLLAMA_API_KEY");
+    cmd.env_remove("CUSTOM_BASE_URL");
+    cmd.env_remove("CUSTOM_API_KEY");
+    cmd.env_remove("EVERRUNS_CLI_MODEL");
+    cmd.env_remove("EVERRUNS_CLI_REASONING_EFFORT");
 
     let child = pair.slave.spawn_command(cmd).expect("spawn yolop TUI");
     drop(pair.slave);

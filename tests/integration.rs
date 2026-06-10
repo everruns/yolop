@@ -25,10 +25,11 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use support::mock_openai::MockOpenAiServer;
 use support::strip_ansi;
 use support::tui_harness::{
     TuiSpawnOptions, assert_cursor_near_bottom, spawn_tui_llmsim, spawn_tui_llmsim_with,
-    wait_for_exit,
+    spawn_tui_llmsim_with_settings, wait_for_exit,
 };
 
 fn yolop_binary() -> PathBuf {
@@ -478,6 +479,154 @@ fn tui_setup_overlay_renders_in_real_pty() {
         tui.wait_for_output("Esc cancel", Duration::from_secs(3)),
         "/setup footer should render without clipping: {}",
         tui.output_text()
+    );
+}
+
+/// Drive the real TUI binary through the whole model-selection flow:
+/// `/setup` → quick-select a provider that is already connected (saved key)
+/// → the wizard jumps straight to the model picker → quick-select a preset
+/// model → the switch is announced and persisted to settings.toml.
+#[test]
+fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
+    let mut tui = spawn_tui_llmsim_with_settings(
+        &yolop_binary(),
+        TuiSpawnOptions::default(),
+        "provider = \"llmsim\"\n\n[tokens]\nopenai = \"sk-test\"\n",
+    );
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"/setup\r");
+    assert!(
+        tui.wait_for_output("Set Up Yolop", Duration::from_secs(3)),
+        "/setup should render the provider picker: {}",
+        tui.output_text()
+    );
+    assert!(
+        tui.wait_for_output("saved key", Duration::from_secs(3)),
+        "OpenAI should show as connected via the saved key: {}",
+        tui.output_text()
+    );
+
+    // Quick-select OpenAI (row 1). It is connected, so the wizard must skip
+    // the credential step and open the model picker directly. Render diffs
+    // are unreliable to wait on (ratatui repaints only changed cells and the
+    // async "fetching models" hint shifts rows), so wait on the side effect
+    // that the fast path produces just before the picker opens: the provider
+    // switch is persisted to settings.toml.
+    tui.write_input(b"1");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline
+        && !std::fs::read_to_string(tui.settings_path())
+            .unwrap_or_default()
+            .contains("provider = \"openai\"")
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
+    let before_pick = strip_ansi(&tui.output_text());
+    assert!(
+        !before_pick.contains("API Key for OpenAI"),
+        "credential step should be skipped for a connected provider: {before_pick}"
+    );
+
+    // Quick-select the second preset (gpt-5.4).
+    tui.write_input(b"2");
+    assert!(
+        tui.wait_for_output(
+            "setup complete: openai/gpt-5.4 medium",
+            Duration::from_secs(3)
+        ),
+        "model selection should complete with the picked model: {}",
+        tui.output_text()
+    );
+
+    let settings =
+        std::fs::read_to_string(tui.settings_path()).expect("read settings written by the TUI");
+    assert!(
+        settings.contains("provider = \"openai\""),
+        "provider switch should persist: {settings}"
+    );
+    assert!(
+        settings.contains("openai = \"gpt-5.4 medium\""),
+        "picked model should persist under [models]: {settings}"
+    );
+
+    tui.write_input(b"\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(
+        status.success(),
+        "Ctrl-C should exit cleanly, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
+/// A model picked via `/setup model` must be restored on the next run and
+/// actually sent to the provider. Seeds settings the way the wizard writes
+/// them (custom provider, saved base URL + model), runs one `--print` turn
+/// against a mock OpenAI-compatible server, and asserts the request body
+/// carries the saved model id.
+#[test]
+fn print_mode_sends_saved_model_selection_to_endpoint() {
+    let mock = MockOpenAiServer::spawn("hello from custom endpoint");
+    let home = tempfile::tempdir().expect("home tempdir");
+    let sessions = tempfile::tempdir().expect("sessions tempdir");
+    let settings_toml = format!(
+        "provider = \"custom\"\n\n[base_urls]\ncustom = \"{}\"\n\n[models]\ncustom = \"picked-model-x\"\n",
+        mock.base_url
+    );
+    for settings_dir in [
+        home.path().join(".config/yolop"),
+        home.path().join("Library/Application Support/yolop"),
+    ] {
+        std::fs::create_dir_all(&settings_dir).expect("create settings dir");
+        std::fs::write(settings_dir.join("settings.toml"), &settings_toml).expect("write settings");
+    }
+
+    let output = Command::new(yolop_binary())
+        .args([
+            "--session-dir",
+            sessions.path().to_str().unwrap(),
+            "-p",
+            "hi",
+        ])
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("XDG_DATA_HOME", home.path().join(".local/share"))
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("GEMINI_API_KEY")
+        .env_remove("GOOGLE_API_KEY")
+        .env_remove("OLLAMA_BASE_URL")
+        .env_remove("OLLAMA_API_KEY")
+        .env_remove("CUSTOM_BASE_URL")
+        .env_remove("CUSTOM_API_KEY")
+        .env_remove("EVERRUNS_CLI_MODEL")
+        .env_remove("EVERRUNS_CLI_REASONING_EFFORT")
+        .output()
+        .expect("spawn yolop against mock endpoint");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "saved-model run failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("custom/picked-model-x"),
+        "startup banner should show the restored model: {stdout}"
+    );
+    assert!(
+        stdout.contains("hello from custom endpoint"),
+        "mock reply should reach the transcript: {stdout}"
+    );
+
+    let request = mock.next_request(Duration::from_secs(5));
+    assert_eq!(
+        request["model"], "picked-model-x",
+        "request must carry the saved model id: {request}"
     );
 }
 

@@ -121,8 +121,10 @@ pub struct App {
     /// `runtime.execute_command`). Drained in the event loop; see
     /// [`App::apply_ui_command`].
     ui_rx: mpsc::UnboundedReceiver<UiCommand>,
-    /// Settings store shared with the runtime; used to resolve credentials
-    /// when querying provider models APIs.
+    /// Settings store shared with the runtime (same instance
+    /// `SetupCapability` writes). Used to resolve credentials when querying
+    /// provider models APIs and to show per-provider connection status in
+    /// the setup overlay.
     settings: Arc<crate::settings::SettingsStore>,
     /// Models discovered from each provider's models API, keyed by provider
     /// name. Once populated, replaces the curated fallback list in the
@@ -149,15 +151,18 @@ enum SetupStep {
     Provider {
         selected: usize,
     },
+    /// Endpoint base URL for the generic OpenAI-compatible provider.
+    BaseUrlInput {
+        value: String,
+        error: Option<String>,
+    },
     Credential {
         provider: String,
-        default_model: String,
         selected: usize,
         error: Option<String>,
     },
     TokenInput {
         provider: String,
-        default_model: String,
         token: String,
         error: Option<String>,
     },
@@ -206,9 +211,14 @@ const PROVIDER_OPTIONS: &[ProviderOption] = &[
         hint: "local OpenAI-compatible server",
     },
     ProviderOption {
+        name: "custom",
+        label: "Custom endpoint",
+        hint: "any OpenAI-compatible URL",
+    },
+    ProviderOption {
         name: "llmsim",
         label: "Offline demo mode",
-        hint: "no API key",
+        hint: "canned offline responses",
     },
 ];
 
@@ -931,15 +941,7 @@ impl App {
 
     fn start_model_setup(&mut self) {
         let provider = self.current_provider_name();
-        self.request_model_discovery(&provider);
-        let selected =
-            model_index_for_label(&self.model.model_id(), &self.model_options(&provider));
-        self.setup = Some(SetupStep::PickModel {
-            provider,
-            selected,
-            custom: None,
-            error: None,
-        });
+        self.open_model_step(&provider);
     }
 
     fn start_model_setup_with_arg(&mut self, raw: &str) {
@@ -984,7 +986,10 @@ impl App {
 
     fn current_effort_index(&self) -> usize {
         let label = self.model.provider_label();
-        if !label.starts_with("openai/") && !label.starts_with("openrouter/") {
+        if !label.starts_with("openai/")
+            && !label.starts_with("openrouter/")
+            && !label.starts_with("custom/")
+        {
             return effort_index("medium").unwrap_or(0);
         }
         label
@@ -1027,7 +1032,33 @@ impl App {
             "google" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
             "openrouter" => &["OPENROUTER_API_KEY"],
             "ollama" => &["OLLAMA_BASE_URL", "OLLAMA_API_KEY"],
+            "custom" => &["CUSTOM_API_KEY"],
             _ => &[],
+        }
+    }
+
+    /// Connection status shown in the provider picker. `true` means the
+    /// provider can be used right away (setup may jump straight to model
+    /// selection); the string is the short status appended to the row hint.
+    fn provider_status(settings: &crate::settings::Settings, provider: &str) -> (bool, String) {
+        match provider {
+            "llmsim" | "ollama" => (true, "✓ no key needed".to_string()),
+            "custom" => {
+                if crate::runtime::custom_base_url(settings).is_some() {
+                    (true, "✓ base URL set".to_string())
+                } else {
+                    (false, "needs base URL".to_string())
+                }
+            }
+            _ => {
+                if let Some(env) = Self::detected_env_var(provider) {
+                    (true, format!("✓ {env}"))
+                } else if settings.has_token(provider) {
+                    (true, "✓ saved key".to_string())
+                } else {
+                    (false, "needs API key".to_string())
+                }
+            }
         }
     }
 
@@ -1044,14 +1075,27 @@ impl App {
 
     fn credential_options(provider: &str) -> Vec<CredentialOption> {
         let env_names = Self::provider_env_names(provider);
-        let env_label = match env_names {
-            [] => "Use environment".to_string(),
-            [one] => format!("Use {one} from environment"),
-            many => format!("Use {} from environment", many.join(" / ")),
+        // The custom endpoint treats a key as optional: most local servers
+        // accept any bearer token, so the first option proceeds with the env
+        // key when present and a placeholder otherwise.
+        let env_label = if provider == "custom" {
+            "Continue without key".to_string()
+        } else {
+            match env_names {
+                [] => "Use environment".to_string(),
+                [one] => format!("Use {one} from environment"),
+                many => format!("Use {} from environment", many.join(" / ")),
+            }
         };
         let env_hint = Self::detected_env_var(provider)
             .map(|name| format!("{name} detected"))
-            .unwrap_or_else(|| "not detected yet".to_string());
+            .unwrap_or_else(|| {
+                if provider == "custom" {
+                    "fine for endpoints without auth".to_string()
+                } else {
+                    "not detected yet".to_string()
+                }
+            });
         vec![
             CredentialOption {
                 id: CredentialAction::UseEnv,
@@ -1179,6 +1223,9 @@ impl App {
                 label: "llama3.2".to_string(),
                 hint: "local default model".to_string(),
             }],
+            // No preset list exists for an arbitrary endpoint; only the
+            // trailing "Custom..." free-form entry is offered.
+            "custom" => Vec::new(),
             _ => vec![ModelOption {
                 spec: Some("llmsim-yolop".to_string()),
                 label: "llmsim-yolop".to_string(),
@@ -1301,23 +1348,18 @@ impl App {
             SetupStep::Provider { selected } => {
                 self.handle_provider_key(key, selected).await;
             }
+            SetupStep::BaseUrlInput { value, .. } => {
+                self.handle_base_url_key(key, value).await;
+            }
             SetupStep::Credential {
-                provider,
-                default_model,
-                selected,
-                ..
+                provider, selected, ..
             } => {
-                self.handle_credential_key(key, provider, default_model, selected)
-                    .await;
+                self.handle_credential_key(key, provider, selected).await;
             }
             SetupStep::TokenInput {
-                provider,
-                default_model,
-                token,
-                ..
+                provider, token, ..
             } => {
-                self.handle_token_key(key, provider, default_model, token)
-                    .await;
+                self.handle_token_key(key, provider, token).await;
             }
             SetupStep::PickModel {
                 provider,
@@ -1348,6 +1390,9 @@ impl App {
                     selected: (selected + 1).min(PROVIDER_OPTIONS.len().saturating_sub(1)),
                 });
             }
+            KeyCode::Char('c') => {
+                self.open_provider_config(selected);
+            }
             KeyCode::Char(ch) if ch.is_ascii_digit() => {
                 if let Some(index) = digit_index(ch, PROVIDER_OPTIONS.len()) {
                     self.confirm_provider(index).await;
@@ -1360,6 +1405,9 @@ impl App {
         }
     }
 
+    /// Enter on a provider row. Already-connected providers switch
+    /// immediately and jump straight to model selection; the rest go
+    /// through credential (or base URL) configuration first.
     async fn confirm_provider(&mut self, selected: usize) {
         let option = PROVIDER_OPTIONS
             .get(selected)
@@ -1378,47 +1426,148 @@ impl App {
             return;
         }
 
-        let default_model = crate::runtime::ProviderChoice::default_for_provider_name(option.name)
-            .map(|p| p.model_id().to_string())
-            .unwrap_or_else(|_| option.name.to_string());
-
-        if option.name == "ollama" {
-            match self
-                .run_setup_command(Some(&format!("provider {}", option.name)))
-                .await
-            {
-                Ok(()) => {
-                    self.request_model_discovery(option.name);
-                    self.setup = Some(SetupStep::PickModel {
-                        provider: option.name.to_string(),
-                        selected: 0,
-                        custom: None,
-                        error: None,
-                    });
-                }
-                Err(error) => {
-                    self.setup = Some(SetupStep::Provider { selected });
-                    self.push_system(format!("setup failed: {error}"));
-                }
-            }
+        let (connected, _) = Self::provider_status(&self.settings.snapshot(), option.name);
+        if !connected {
+            self.open_provider_config(selected);
             return;
         }
 
-        self.setup = Some(SetupStep::Credential {
-            provider: option.name.to_string(),
-            default_model,
-            selected: 0,
+        if option.name == "custom" {
+            // Best-effort switch: it fails harmlessly when no model is saved
+            // yet, and the model step right after sets provider + model
+            // atomically via `provider custom <model>`.
+            let _ = self.run_setup_command(Some("provider custom")).await;
+            self.open_model_step("custom");
+            return;
+        }
+
+        match self
+            .run_setup_command(Some(&format!("provider {}", option.name)))
+            .await
+        {
+            Ok(()) => self.open_model_step(option.name),
+            Err(error) => {
+                // A connected-looking provider that still fails to switch
+                // (stale key, unreachable endpoint) lands on the credential
+                // step where the user can fix it.
+                self.setup = Some(SetupStep::Credential {
+                    provider: option.name.to_string(),
+                    selected: 0,
+                    error: Some(error),
+                });
+            }
+        }
+    }
+
+    /// `c` on a provider row: configure credentials (or the endpoint base
+    /// URL for the custom provider) even when already connected — e.g. to
+    /// replace or clear a saved key.
+    fn open_provider_config(&mut self, selected: usize) {
+        let option = PROVIDER_OPTIONS
+            .get(selected)
+            .unwrap_or(&PROVIDER_OPTIONS[0]);
+        match option.name {
+            "llmsim" => {}
+            "custom" => self.open_base_url_step(),
+            _ => {
+                self.setup = Some(SetupStep::Credential {
+                    provider: option.name.to_string(),
+                    selected: 0,
+                    error: None,
+                });
+            }
+        }
+    }
+
+    fn open_base_url_step(&mut self) {
+        let value = crate::runtime::custom_base_url(&self.settings.snapshot()).unwrap_or_default();
+        self.setup = Some(SetupStep::BaseUrlInput { value, error: None });
+    }
+
+    /// Open the model picker for `provider`, preselecting the active model
+    /// and kicking off live discovery. The custom provider has no curated
+    /// list, so until (or unless) discovery fills the catalog its picker
+    /// shows only the free-form "Custom..." entry.
+    fn open_model_step(&mut self, provider: &str) {
+        self.request_model_discovery(provider);
+        let selected = model_index_for_label(&self.model.model_id(), &self.model_options(provider));
+        self.setup = Some(SetupStep::PickModel {
+            provider: provider.to_string(),
+            selected,
+            custom: None,
             error: None,
         });
     }
 
-    async fn handle_credential_key(
-        &mut self,
-        key: KeyEvent,
-        provider: String,
-        default_model: String,
-        selected: usize,
-    ) {
+    /// Prefill for the custom provider's free-form model input: the active
+    /// model when already on the custom provider, else the saved one.
+    fn custom_model_prefill(&self) -> String {
+        if self.current_provider_name() == "custom" {
+            return self.model.model_id();
+        }
+        self.settings
+            .snapshot()
+            .model_for("custom")
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    async fn handle_base_url_key(&mut self, key: KeyEvent, mut value: String) {
+        match key.code {
+            KeyCode::Esc => {
+                self.setup = Some(SetupStep::Provider {
+                    selected: PROVIDER_OPTIONS
+                        .iter()
+                        .position(|option| option.name == "custom")
+                        .unwrap_or(0),
+                });
+            }
+            KeyCode::Enter => {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    self.setup = Some(SetupStep::BaseUrlInput {
+                        value,
+                        error: Some(
+                            "enter a base URL like http://localhost:8000/v1, or press Esc"
+                                .to_string(),
+                        ),
+                    });
+                    return;
+                }
+                match self
+                    .run_setup_command(Some(&format!("url custom {trimmed}")))
+                    .await
+                {
+                    Ok(()) => {
+                        self.setup = Some(SetupStep::Credential {
+                            provider: "custom".to_string(),
+                            selected: 0,
+                            error: None,
+                        });
+                    }
+                    Err(error) => {
+                        self.setup = Some(SetupStep::BaseUrlInput {
+                            value,
+                            error: Some(error),
+                        });
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                value.pop();
+                self.setup = Some(SetupStep::BaseUrlInput { value, error: None });
+            }
+            KeyCode::Char(_) => {
+                if let KeyCode::Char(ch) = normalize_printable_key(key).code {
+                    value.push(ch);
+                }
+                self.setup = Some(SetupStep::BaseUrlInput { value, error: None });
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_credential_key(&mut self, key: KeyEvent, provider: String, selected: usize) {
         let options = Self::credential_options(&provider);
         match key.code {
             KeyCode::Esc => {
@@ -1432,7 +1581,6 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.setup = Some(SetupStep::Credential {
                     provider,
-                    default_model,
                     selected: selected.saturating_sub(1),
                     error: None,
                 });
@@ -1440,65 +1588,54 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.setup = Some(SetupStep::Credential {
                     provider,
-                    default_model,
                     selected: (selected + 1).min(options.len().saturating_sub(1)),
                     error: None,
                 });
             }
             KeyCode::Char(ch) if ch.is_ascii_digit() => {
                 if let Some(index) = digit_index(ch, options.len()) {
-                    self.confirm_credential(provider, default_model, index)
-                        .await;
+                    self.confirm_credential(provider, index).await;
                 }
             }
             KeyCode::Enter => {
-                self.confirm_credential(provider, default_model, selected)
-                    .await;
+                self.confirm_credential(provider, selected).await;
             }
             _ => {}
         }
     }
 
-    async fn confirm_credential(
-        &mut self,
-        provider: String,
-        default_model: String,
-        selected: usize,
-    ) {
+    async fn confirm_credential(&mut self, provider: String, selected: usize) {
         let options = Self::credential_options(&provider);
         let action = options
             .get(selected)
             .map(|option| option.id)
             .unwrap_or(CredentialAction::UseEnv);
         match action {
-            CredentialAction::UseEnv => match self
-                .run_setup_command(Some(&format!("provider {provider}")))
-                .await
-            {
-                Ok(()) => {
-                    self.request_model_discovery(&provider);
-                    let selected =
-                        model_index_for_label(&default_model, &self.model_options(&provider));
-                    self.setup = Some(SetupStep::PickModel {
-                        provider,
-                        selected,
-                        custom: None,
-                        error: None,
-                    });
+            CredentialAction::UseEnv => {
+                // The custom provider can't be switched to until a model is
+                // chosen, so the validation switch is deferred to the model
+                // step (its key is optional anyway).
+                if provider == "custom" {
+                    self.open_model_step("custom");
+                    return;
                 }
-                Err(error) => {
-                    self.setup = Some(SetupStep::Credential {
-                        provider,
-                        default_model,
-                        selected,
-                        error: Some(error),
-                    });
+                match self
+                    .run_setup_command(Some(&format!("provider {provider}")))
+                    .await
+                {
+                    Ok(()) => self.open_model_step(&provider),
+                    Err(error) => {
+                        self.setup = Some(SetupStep::Credential {
+                            provider,
+                            selected,
+                            error: Some(error),
+                        });
+                    }
                 }
-            },
+            }
             CredentialAction::PasteKey => {
                 self.setup = Some(SetupStep::TokenInput {
                     provider,
-                    default_model,
                     token: String::new(),
                     error: None,
                 });
@@ -1521,7 +1658,6 @@ impl App {
                     Err(error) => {
                         self.setup = Some(SetupStep::Credential {
                             provider,
-                            default_model,
                             selected,
                             error: Some(error),
                         });
@@ -1531,18 +1667,11 @@ impl App {
         }
     }
 
-    async fn handle_token_key(
-        &mut self,
-        key: KeyEvent,
-        provider: String,
-        default_model: String,
-        mut token: String,
-    ) {
+    async fn handle_token_key(&mut self, key: KeyEvent, provider: String, mut token: String) {
         match key.code {
             KeyCode::Esc => {
                 self.setup = Some(SetupStep::Credential {
                     provider,
-                    default_model,
                     selected: 1,
                     error: None,
                 });
@@ -1552,9 +1681,8 @@ impl App {
                 if trimmed.is_empty() {
                     self.setup = Some(SetupStep::TokenInput {
                         provider,
-                        default_model,
                         token,
-                        error: Some("paste a key, or press Esc to go back".to_string()),
+                        error: Some("API key is empty — paste a key, or press Esc".to_string()),
                     });
                     return;
                 }
@@ -1562,31 +1690,26 @@ impl App {
                 if let Err(error) = self.run_setup_command(Some(&save_arg)).await {
                     self.setup = Some(SetupStep::TokenInput {
                         provider,
-                        default_model,
                         token: String::new(),
                         error: Some(error),
                     });
+                    return;
+                }
+                // Custom defers the provider switch to the model step (no
+                // model is known yet); other providers validate the new key
+                // by switching now.
+                if provider == "custom" {
+                    self.open_model_step("custom");
                     return;
                 }
                 match self
                     .run_setup_command(Some(&format!("provider {provider}")))
                     .await
                 {
-                    Ok(()) => {
-                        self.request_model_discovery(&provider);
-                        let selected =
-                            model_index_for_label(&default_model, &self.model_options(&provider));
-                        self.setup = Some(SetupStep::PickModel {
-                            provider,
-                            selected,
-                            custom: None,
-                            error: None,
-                        });
-                    }
+                    Ok(()) => self.open_model_step(&provider),
                     Err(error) => {
                         self.setup = Some(SetupStep::TokenInput {
                             provider,
-                            default_model,
                             token: String::new(),
                             error: Some(error),
                         });
@@ -1597,7 +1720,6 @@ impl App {
                 token.pop();
                 self.setup = Some(SetupStep::TokenInput {
                     provider,
-                    default_model,
                     token,
                     error: None,
                 });
@@ -1608,7 +1730,6 @@ impl App {
                 }
                 self.setup = Some(SetupStep::TokenInput {
                     provider,
-                    default_model,
                     token,
                     error: None,
                 });
@@ -1725,17 +1846,34 @@ impl App {
         if let Some(spec) = &option.spec {
             self.save_model_and_finish(&provider, spec, selected).await;
         } else {
+            // "Custom..." free-form input. For the custom endpoint the
+            // current/saved model is prefilled — it is the provider's only
+            // memory of a model id.
+            let prefill = if provider == "custom" {
+                self.custom_model_prefill()
+            } else {
+                String::new()
+            };
             self.setup = Some(SetupStep::PickModel {
                 provider,
                 selected,
-                custom: Some(String::new()),
+                custom: Some(prefill),
                 error: None,
             });
         }
     }
 
     async fn save_model_and_finish(&mut self, provider: &str, spec: &str, selected: usize) {
-        match self.run_setup_command(Some(&format!("model {spec}"))).await {
+        // `model <spec>` resolves against the current provider. For the
+        // custom endpoint the wizard reaches this step before any switch
+        // could succeed (a first-time custom provider has no model yet), so
+        // it switches provider and model atomically instead.
+        let command = if provider == "custom" {
+            format!("provider custom {spec}")
+        } else {
+            format!("model {spec}")
+        };
+        match self.run_setup_command(Some(&command)).await {
             Ok(()) => {
                 self.setup = None;
                 self.push_system(format!("setup complete: {}", self.model.provider_label()));
@@ -2814,21 +2952,44 @@ fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize
     match app.setup.as_ref() {
         Some(SetupStep::Provider { selected }) => {
             lines.push(setup_title("Set Up Yolop"));
-            lines.push(setup_hint("Choose provider, credentials, and model."));
+            lines.push(setup_hint(
+                "Connected providers jump straight to model selection.",
+            ));
             lines.push(Line::from(""));
             let current = app.current_provider_name();
+            let snapshot = app.settings.snapshot();
             for (idx, option) in PROVIDER_OPTIONS.iter().enumerate() {
-                let mut hint = option.hint.to_string();
+                let (_, status) = App::provider_status(&snapshot, option.name);
+                let mut hint = format!("{} · {status}", option.hint);
                 if option.name == current {
                     hint.push_str(" · current");
-                }
-                if let Some(env) = App::detected_env_var(option.name) {
-                    hint.push_str(&format!(" · {env} detected"));
                 }
                 lines.push(setup_row(idx == *selected, idx + 1, option.label, &hint));
             }
             lines.push(Line::from(""));
-            lines.push(setup_footer("Enter confirm · ↑/↓ move · Esc cancel"));
+            lines.push(setup_footer(
+                "Enter select · c configure key/URL · ↑/↓ move · Esc cancel",
+            ));
+        }
+        Some(SetupStep::BaseUrlInput { value, error }) => {
+            lines.push(setup_title("Custom OpenAI-Compatible Endpoint"));
+            lines.push(setup_hint(
+                "Base URL of the API, e.g. http://localhost:8000/v1 — saved to settings.toml.",
+            ));
+            lines.push(Line::from(""));
+            let input = format!("› {value}");
+            cursor = Some((3, input.chars().count()));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "› ",
+                    Style::default()
+                        .fg(ACCENT_BLUE)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(value.clone(), Style::default().fg(TEXT_PRIMARY)),
+            ]));
+            push_setup_error(&mut lines, error.as_deref());
+            lines.push(setup_footer("Enter save · Esc back"));
         }
         Some(SetupStep::Credential {
             provider,
@@ -2895,10 +3056,15 @@ fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize
             error,
         }) => {
             lines.push(setup_title("Select Model"));
-            lines.push(setup_hint(&format!(
-                "{} models. Applies to this session and future sessions.",
-                App::provider_label(provider)
-            )));
+            lines.push(setup_hint(&if provider == "custom" {
+                "Model id served by your endpoint. Applies to this session and future sessions."
+                    .to_string()
+            } else {
+                format!(
+                    "{} models. Applies to this session and future sessions.",
+                    App::provider_label(provider)
+                )
+            }));
             lines.push(Line::from(""));
             let options = app.model_options(provider);
             if let Some(value) = custom {
@@ -2922,8 +3088,10 @@ fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize
                 if start > 0 {
                     lines.push(setup_hint(&format!("↑ {start} more")));
                 }
+                // Specs are provider-relative; compare against the bare model
+                // id (the same anchor `model_index_for_label` uses).
+                let current = app.model.model_id();
                 for (idx, option) in options.iter().enumerate().take(end).skip(start) {
-                    let current = app.model.provider_label();
                     let mut hint = option.hint.to_string();
                     if option.spec.as_deref() == Some(current.as_str()) {
                         hint.push_str(" · current");
@@ -2940,7 +3108,7 @@ fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize
         Some(SetupStep::PickEffort { selected, error }) => {
             lines.push(setup_title("Select Reasoning Effort"));
             lines.push(setup_hint(
-                "OpenAI/OpenRouter reasoning effort. Applies to this session and future sessions.",
+                "Applies to OpenAI, OpenRouter, and custom endpoints — this session and future sessions.",
             ));
             lines.push(Line::from(""));
             let label = app.model.provider_label();
@@ -2950,7 +3118,7 @@ fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize
                     .nth(1)
                     .unwrap_or("medium")
                     .to_string()
-            } else if label.starts_with("openrouter/") {
+            } else if label.starts_with("openrouter/") || label.starts_with("custom/") {
                 label
                     .split_whitespace()
                     .nth(1)
@@ -5276,9 +5444,13 @@ mod tests {
 
         app.handle_command("setup").await;
 
+        let llmsim_index = PROVIDER_OPTIONS
+            .iter()
+            .position(|option| option.name == "llmsim")
+            .expect("llmsim provider option");
         assert!(matches!(
             app.setup,
-            Some(SetupStep::Provider { selected: 5 })
+            Some(SetupStep::Provider { selected }) if selected == llmsim_index
         ));
         assert!(
             app.lines.is_empty(),
@@ -5322,8 +5494,20 @@ mod tests {
         );
     }
 
+    // Holding the env lock across awaits is deliberate: the overlay reads
+    // env vars throughout the test, so releasing early would let another
+    // env-mutating test change them mid-assertion. The guard owner always
+    // makes progress, so this cannot deadlock.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn setup_provider_picker_enters_credential_panel() {
+        // Serialize against other env-mutating tests; a present
+        // OPENAI_API_KEY would make the provider "connected" and skip the
+        // credential panel entirely.
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+        }
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.lines.clear();
@@ -5361,7 +5545,6 @@ mod tests {
         let app = &mut fixture.app;
         app.setup = Some(SetupStep::Credential {
             provider: "openai".to_string(),
-            default_model: "gpt-5.5".to_string(),
             selected: 0,
             error: None,
         });
@@ -5384,7 +5567,6 @@ mod tests {
         app.lines.clear();
         app.setup = Some(SetupStep::TokenInput {
             provider: "openai".to_string(),
-            default_model: "gpt-5.5".to_string(),
             token: String::new(),
             error: None,
         });
@@ -5425,7 +5607,13 @@ mod tests {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.lines.clear();
-        app.setup = Some(SetupStep::Provider { selected: 5 });
+        let llmsim_index = PROVIDER_OPTIONS
+            .iter()
+            .position(|option| option.name == "llmsim")
+            .expect("llmsim provider option");
+        app.setup = Some(SetupStep::Provider {
+            selected: llmsim_index,
+        });
 
         app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
             .await;
@@ -5442,6 +5630,52 @@ mod tests {
                 .iter()
                 .any(|line| line.text.starts_with("setup provider changed:")),
             "wizard should hide internal setup command success output"
+        );
+    }
+
+    // See setup_provider_picker_enters_credential_panel for why the env
+    // lock is held across awaits.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_provider_picker_shows_connection_status() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("CUSTOM_BASE_URL");
+        }
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = Some(SetupStep::Provider { selected: 0 });
+
+        let rendered = setup_overlay_text(app);
+        let openai_row = rendered
+            .iter()
+            .find(|line| line.contains("OpenAI") && !line.contains("compatible"))
+            .expect("openai row");
+        assert!(
+            openai_row.contains("needs API key"),
+            "unconnected provider should say so: {openai_row:?}"
+        );
+        let custom_row = rendered
+            .iter()
+            .find(|line| line.contains("Custom endpoint"))
+            .expect("custom row");
+        assert!(
+            custom_row.contains("needs base URL"),
+            "custom without URL should say so: {custom_row:?}"
+        );
+
+        app.settings
+            .set_token("openai".to_string(), "sk-test".to_string())
+            .expect("save token");
+        let rendered = setup_overlay_text(app);
+        let openai_row = rendered
+            .iter()
+            .find(|line| line.contains("OpenAI") && !line.contains("compatible"))
+            .expect("openai row");
+        assert!(
+            openai_row.contains("✓ saved key"),
+            "saved key should mark the provider connected: {openai_row:?}"
         );
     }
 
@@ -5572,6 +5806,184 @@ mod tests {
         // The curated list must remain usable after a failed fetch.
         let options = app.model_options("openai");
         assert_eq!(options[0].spec.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_connected_provider_jumps_straight_to_model_picker() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.settings
+            .set_token("openai".to_string(), "sk-test".to_string())
+            .expect("save token");
+        app.setup = Some(SetupStep::Provider { selected: 0 });
+
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert!(
+            matches!(
+                app.setup,
+                Some(SetupStep::PickModel { ref provider, .. }) if provider == "openai"
+            ),
+            "connected provider should skip the credential step: {:?}",
+            app.setup
+        );
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.5 medium");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_model_picker_preset_selection_applies_and_persists() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.settings
+            .set_token("openai".to_string(), "sk-test".to_string())
+            .expect("save token");
+        app.setup = Some(SetupStep::Provider { selected: 0 });
+
+        // Enter the wizard the way a user does: the connected-provider fast
+        // path switches to openai first, so the provider-relative
+        // `model <id>` the picker emits resolves against it.
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        assert!(
+            matches!(app.setup, Some(SetupStep::PickModel { .. })),
+            "fast path should open the model picker: {:?}",
+            app.setup
+        );
+
+        // Navigate to the second preset (gpt-5.4) and confirm it.
+        app.handle_setup_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()))
+            .await;
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert!(app.setup.is_none(), "wizard should finish: {:?}", app.setup);
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.4 medium");
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == "setup complete: openai/gpt-5.4 medium"),
+            "completion line should report the picked model: {:?}",
+            app.lines
+        );
+        // The pick persists, so the next run restores it (see
+        // pick_provider_applies_saved_model_for_saved_provider in main.rs).
+        let snapshot = app.settings.snapshot();
+        assert_eq!(snapshot.provider.as_deref(), Some("openai"));
+        assert_eq!(snapshot.model_for("openai"), Some("gpt-5.4 medium"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_c_key_opens_credential_panel_even_when_connected() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.settings
+            .set_token("openai".to_string(), "sk-test".to_string())
+            .expect("save token");
+        app.setup = Some(SetupStep::Provider { selected: 0 });
+
+        app.handle_setup_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::empty()))
+            .await;
+
+        assert!(
+            matches!(
+                app.setup,
+                Some(SetupStep::Credential { ref provider, .. }) if provider == "openai"
+            ),
+            "c should open credential config: {:?}",
+            app.setup
+        );
+    }
+
+    // See setup_provider_picker_enters_credential_panel for why the env
+    // lock is held across awaits.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_custom_endpoint_flow_collects_url_and_model() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("CUSTOM_BASE_URL");
+            std::env::remove_var("CUSTOM_API_KEY");
+        }
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        let custom_index = PROVIDER_OPTIONS
+            .iter()
+            .position(|option| option.name == "custom")
+            .expect("custom provider option");
+        app.setup = Some(SetupStep::Provider {
+            selected: custom_index,
+        });
+
+        // Not connected yet → Enter opens the base URL input.
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        assert!(
+            matches!(app.setup, Some(SetupStep::BaseUrlInput { .. })),
+            "custom without URL should ask for one: {:?}",
+            app.setup
+        );
+
+        for ch in "http://localhost:8000/v1".chars() {
+            app.handle_setup_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        assert!(
+            matches!(
+                app.setup,
+                Some(SetupStep::Credential { ref provider, selected: 0, .. }) if provider == "custom"
+            ),
+            "saved URL should advance to the credential step: {:?}",
+            app.setup
+        );
+
+        // "Continue without key" → model picker. With discovery disabled in
+        // tests the list holds only the "Custom..." escape hatch; confirming
+        // it opens the free-form input.
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        assert!(
+            matches!(
+                app.setup,
+                Some(SetupStep::PickModel { ref provider, custom: None, .. })
+                    if provider == "custom"
+            ),
+            "custom credential step should advance to the model picker: {:?}",
+            app.setup
+        );
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        assert!(
+            matches!(
+                app.setup,
+                Some(SetupStep::PickModel { ref provider, custom: Some(_), .. })
+                    if provider == "custom"
+            ),
+            "Custom... should open the free-form model input: {:?}",
+            app.setup
+        );
+
+        for ch in "qwen3-coder".chars() {
+            app.handle_setup_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert!(app.setup.is_none(), "wizard should finish: {:?}", app.setup);
+        assert_eq!(app.model.provider_label(), "custom/qwen3-coder");
+        let snapshot = app.settings.snapshot();
+        assert_eq!(
+            snapshot.base_url_for("custom"),
+            Some("http://localhost:8000/v1")
+        );
+        assert_eq!(snapshot.provider.as_deref(), Some("custom"));
+        assert_eq!(snapshot.model_for("custom"), Some("qwen3-coder"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

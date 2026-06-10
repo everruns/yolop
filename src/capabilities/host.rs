@@ -334,9 +334,20 @@ impl Capability for CodingBashCapability {
 pub(crate) const SETUP_CAPABILITY_ID: &str = "yolop_setup";
 
 /// Providers that meaningfully consume an API token. `llmsim` is excluded
-/// (no key needed) and `ollama` is included for completeness even though
-/// most local setups don't authenticate.
-const TOKEN_PROVIDERS: &[&str] = &["openai", "anthropic", "google", "openrouter", "ollama"];
+/// (no key needed); `ollama` and `custom` are included for completeness even
+/// though most local setups don't authenticate.
+const TOKEN_PROVIDERS: &[&str] = &[
+    "openai",
+    "anthropic",
+    "google",
+    "openrouter",
+    "ollama",
+    "custom",
+];
+
+/// Providers whose endpoint base URL is user configuration stored in
+/// settings (vs. a compiled-in default with env override).
+const BASE_URL_PROVIDERS: &[&str] = &["custom"];
 
 pub(crate) struct SetupCapability {
     pub(crate) provider: Arc<RwLock<ProviderChoice>>,
@@ -398,9 +409,10 @@ impl Capability for SetupCapability {
             "model" => self.change_model(rest).await,
             "effort" => self.change_effort(rest).await,
             "token" => self.change_token(rest),
+            "url" => self.change_base_url(rest),
             "attribution" => self.change_attribution(rest),
             _ => Ok(failed_result(
-                "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, model <id> [reasoning-effort], effort <reasoning-effort>, attribution <on|off>".to_string(),
+                "usage: /setup — run guided setup; internal forms: status, provider <name> [model], token <provider> <value|clear>, url <provider> <base-url|clear>, model <id> [reasoning-effort], effort <reasoning-effort>, attribution <on|off>".to_string(),
             )),
         }
     }
@@ -419,6 +431,11 @@ fn setup_command_arg() -> CommandArg {
             format!("token {provider} clear"),
         ]
     }));
+    suggestions.extend(
+        BASE_URL_PROVIDERS
+            .iter()
+            .flat_map(|provider| [format!("url {provider} "), format!("url {provider} clear")]),
+    );
     suggestions.extend(
         SUPPORTED_PROVIDERS
             .iter()
@@ -440,7 +457,7 @@ fn setup_command_arg() -> CommandArg {
 
     CommandArg {
         name: "action".to_string(),
-        description: "status | provider <name> | token <provider> <value|clear> | model <id> | effort <level> | attribution <on|off>".to_string(),
+        description: "status | provider <name> [model] | token <provider> <value|clear> | url <provider> <base-url|clear> | model <id> | effort <level> | attribution <on|off>".to_string(),
         required: false,
         suggestions,
     }
@@ -478,18 +495,38 @@ impl SetupCapability {
         }
     }
 
+    /// `provider <name> [model [effort]]`. The optional model spec switches
+    /// provider and model atomically — the wizard needs this for the custom
+    /// provider, whose `/setup model` form would otherwise have no provider
+    /// context to resolve against on first-time setup.
     async fn change_provider(&self, raw: &str) -> everruns_core::Result<CommandResult> {
-        if raw.is_empty() || raw.split_whitespace().count() > 1 {
+        let mut parts = raw.splitn(2, char::is_whitespace);
+        let name = parts.next().unwrap_or_default();
+        let model_spec = parts.next().unwrap_or_default().trim();
+        if name.is_empty() {
             return Ok(failed_result(format!(
                 "setup provider failed: choose one of {}",
                 SUPPORTED_PROVIDERS.join(", ")
             )));
         }
 
-        let next = match ProviderChoice::default_for_provider_name(raw) {
-            Ok(n) => n,
+        let next = match ProviderChoice::default_for_provider_name(name) {
+            Ok(n) => n.with_saved_model(&self.settings.snapshot()),
             Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
         };
+        let next = if model_spec.is_empty() {
+            next
+        } else {
+            match next.resolve_model_spec(model_spec) {
+                Ok(n) => n,
+                Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
+            }
+        };
+        if next.model_id().trim().is_empty() {
+            return Ok(failed_result(format!(
+                "setup provider failed: no model configured for {name}; pick one with /setup"
+            )));
+        }
         let mw = match next.model_with_provider(&self.settings.snapshot()) {
             Ok(m) => m,
             Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
@@ -499,8 +536,18 @@ impl SetupCapability {
         }
         let provider_name = next.provider_name().to_string();
         let label = next.label();
+        // Persist the model only when explicitly given: a plain provider
+        // switch must not clobber the saved model with the default.
+        let model_persist = if model_spec.is_empty() {
+            Ok(())
+        } else {
+            self.settings
+                .set_model(provider_name.clone(), next.model_spec())
+        };
         *self.provider.write().expect("provider lock poisoned") = next;
-        let persist_note = match self.settings.set_provider(Some(provider_name.clone())) {
+        let persist_note = match model_persist
+            .and_then(|()| self.settings.set_provider(Some(provider_name.clone())))
+        {
             Ok(()) => format!("saved to {}", self.settings.path().display()),
             Err(err) => format!("warning: settings not saved: {err}"),
         };
@@ -552,13 +599,31 @@ impl SetupCapability {
             return Ok(failed_result(format!("setup model failed: {err}")));
         }
         let label = next.label();
+        let persist_note = self.persist_model_choice(&next);
         *self.provider.write().expect("provider lock poisoned") = next;
         Ok(CommandResult {
             success: true,
-            message: format!("setup model changed: {label}"),
+            message: format!("setup model changed: {label}{persist_note}"),
             error_code: None,
             error_fields: None,
         })
+    }
+
+    /// Persist a model switch: the provider preference and the
+    /// provider-relative `model [effort]` spec, so both survive a restart
+    /// (the model picker promises "future sessions"). Best-effort — a failed
+    /// save is reported in the message but never blocks the in-session
+    /// switch.
+    fn persist_model_choice(&self, next: &ProviderChoice) -> String {
+        let provider_name = next.provider_name().to_string();
+        let result = self
+            .settings
+            .set_provider(Some(provider_name.clone()))
+            .and_then(|()| self.settings.set_model(provider_name, next.model_spec()));
+        match result {
+            Ok(()) => String::new(),
+            Err(err) => format!(" (warning: settings not saved: {err})"),
+        }
     }
 
     /// Live model suggestions for the current provider, queried from its
@@ -619,10 +684,11 @@ impl SetupCapability {
             Err(err) => return Ok(failed_result(format!("setup effort failed: {err}"))),
         };
         let label = next.label();
+        let persist_note = self.persist_model_choice(&next);
         *self.provider.write().expect("provider lock poisoned") = next;
         Ok(CommandResult {
             success: true,
-            message: format!("setup effort changed: {label}"),
+            message: format!("setup effort changed: {label}{persist_note}"),
             error_code: None,
             error_fields: None,
         })
@@ -694,6 +760,68 @@ impl SetupCapability {
                 error_fields: None,
             }),
             Err(err) => Ok(failed_result(format!("setup token save failed: {err}"))),
+        }
+    }
+
+    fn change_base_url(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+        let mut parts = raw.splitn(2, char::is_whitespace);
+        let provider = parts.next().unwrap_or_default().to_ascii_lowercase();
+        let rest = parts.next().unwrap_or_default().trim();
+        if !BASE_URL_PROVIDERS.contains(&provider.as_str()) {
+            return Ok(failed_result(format!(
+                "setup url failed: unknown provider `{provider}`; expected one of {}",
+                BASE_URL_PROVIDERS.join(", ")
+            )));
+        }
+        if rest.is_empty() {
+            let snapshot = self.settings.snapshot();
+            let current = snapshot
+                .base_url_for(&provider)
+                .unwrap_or("<unset>")
+                .to_string();
+            return Ok(CommandResult {
+                success: true,
+                message: format!("setup url for {provider}: {current}"),
+                error_code: None,
+                error_fields: None,
+            });
+        }
+        if rest.eq_ignore_ascii_case("clear") {
+            return Ok(match self.settings.clear_base_url(&provider) {
+                Ok(true) => CommandResult {
+                    success: true,
+                    message: format!("setup url cleared for {provider}"),
+                    error_code: None,
+                    error_fields: None,
+                },
+                Ok(false) => CommandResult {
+                    success: true,
+                    message: format!("setup url: no base URL was stored for {provider}"),
+                    error_code: None,
+                    error_fields: None,
+                },
+                Err(err) => failed_result(format!("setup url clear failed: {err}")),
+            });
+        }
+        if !rest.starts_with("http://") && !rest.starts_with("https://") {
+            return Ok(failed_result(
+                "setup url failed: base URL must start with http:// or https://".to_string(),
+            ));
+        }
+        match self
+            .settings
+            .set_base_url(provider.clone(), rest.to_string())
+        {
+            Ok(()) => Ok(CommandResult {
+                success: true,
+                message: format!(
+                    "setup url stored for {provider} (in {})",
+                    self.settings.path().display()
+                ),
+                error_code: None,
+                error_fields: None,
+            }),
+            Err(err) => Ok(failed_result(format!("setup url save failed: {err}"))),
         }
     }
 
@@ -780,6 +908,10 @@ fn env_credential_present() -> bool {
         "GOOGLE_API_KEY",
         "OLLAMA_BASE_URL",
         "OLLAMA_API_KEY",
+        // CUSTOM_API_KEY is deliberately absent: the custom endpoint is
+        // unusable without a base URL, so a stray key alone must not
+        // suppress first-run onboarding.
+        "CUSTOM_BASE_URL",
     ];
     VARS.iter()
         .any(|var| std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false))
@@ -802,9 +934,40 @@ mod tests {
             std::env::remove_var("GOOGLE_API_KEY");
             std::env::remove_var("OLLAMA_BASE_URL");
             std::env::remove_var("OLLAMA_API_KEY");
+            std::env::remove_var("CUSTOM_BASE_URL");
+            std::env::remove_var("CUSTOM_API_KEY");
         }
         let settings = crate::settings::Settings::default();
         assert!(SetupCapability::needs_onboarding(&settings));
+    }
+
+    #[test]
+    fn needs_onboarding_ignores_custom_api_key_without_base_url() {
+        // A stray CUSTOM_API_KEY is not a usable credential: without a base
+        // URL the custom provider cannot run, so onboarding must still open.
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("OPENROUTER_API_KEY");
+            std::env::remove_var("GEMINI_API_KEY");
+            std::env::remove_var("GOOGLE_API_KEY");
+            std::env::remove_var("OLLAMA_BASE_URL");
+            std::env::remove_var("OLLAMA_API_KEY");
+            std::env::remove_var("CUSTOM_BASE_URL");
+            std::env::set_var("CUSTOM_API_KEY", "sk-orphan");
+        }
+        let settings = crate::settings::Settings::default();
+        assert!(SetupCapability::needs_onboarding(&settings));
+
+        unsafe {
+            std::env::set_var("CUSTOM_BASE_URL", "http://localhost:8000/v1");
+        }
+        assert!(!SetupCapability::needs_onboarding(&settings));
+        unsafe {
+            std::env::remove_var("CUSTOM_BASE_URL");
+            std::env::remove_var("CUSTOM_API_KEY");
+        }
     }
 
     #[test]
