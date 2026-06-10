@@ -400,7 +400,7 @@ impl Capability for SetupCapability {
             "token" => self.change_token(rest),
             "attribution" => self.change_attribution(rest),
             _ => Ok(failed_result(
-                "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, model <id|provider/id> [reasoning-effort], effort <reasoning-effort>, attribution <on|off>".to_string(),
+                "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, model <id> [reasoning-effort], effort <reasoning-effort>, attribution <on|off>".to_string(),
             )),
         }
     }
@@ -425,8 +425,9 @@ fn setup_command_arg() -> CommandArg {
             .map(|provider| format!("provider {provider}")),
     );
     suggestions.extend(
-        ProviderChoice::model_suggestions()
+        SUPPORTED_PROVIDERS
             .iter()
+            .flat_map(|provider| ProviderChoice::model_suggestions_for_provider(provider))
             .copied()
             .map(|model| format!("model {model}")),
     );
@@ -439,7 +440,7 @@ fn setup_command_arg() -> CommandArg {
 
     CommandArg {
         name: "action".to_string(),
-        description: "status | provider <name> | token <provider> <value|clear> | model <id|provider/id> | effort <level> | attribution <on|off>".to_string(),
+        description: "status | provider <name> | token <provider> <value|clear> | model <id> | effort <level> | attribution <on|off>".to_string(),
         required: false,
         suggestions,
     }
@@ -513,17 +514,17 @@ impl SetupCapability {
 
     async fn change_model(&self, raw: &str) -> everruns_core::Result<CommandResult> {
         if raw.is_empty() {
-            let label = self
+            let current = self
                 .provider
                 .read()
                 .expect("provider lock poisoned")
-                .label();
+                .clone();
+            let label = current.label();
+            let suggestions =
+                ProviderChoice::model_suggestions_for_provider(current.provider_name()).join(", ");
             return Ok(CommandResult {
                 success: true,
-                message: format!(
-                    "setup model: {label}; suggestions: {}",
-                    ProviderChoice::model_suggestions().join(", ")
-                ),
+                message: format!("setup model: {label}; suggestions: {suggestions}"),
                 error_code: None,
                 error_fields: None,
             });

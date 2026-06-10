@@ -890,10 +890,8 @@ impl App {
 
     fn start_model_setup(&mut self) {
         let provider = self.current_provider_name();
-        let selected = model_index_for_label(
-            &self.model.provider_label(),
-            &Self::model_options(&provider),
-        );
+        let selected =
+            model_index_for_label(&self.model.model_id(), &Self::model_options(&provider));
         self.setup = Some(SetupStep::PickModel {
             provider,
             selected,
@@ -908,12 +906,7 @@ impl App {
             self.start_model_setup();
             return;
         }
-        let provider = spec
-            .split('/')
-            .next()
-            .filter(|part| !part.trim().is_empty() && spec.contains('/'))
-            .map(str::to_string)
-            .unwrap_or_else(|| self.current_provider_name());
+        let provider = self.current_provider_name();
         let options = Self::model_options(&provider);
         let selected = model_index_for_label(spec, &options);
         let custom = if options
@@ -1044,94 +1037,94 @@ impl App {
         let mut models = match provider {
             "openai" => vec![
                 ModelOption {
-                    spec: Some("openai/gpt-5.5 medium".to_string()),
+                    spec: Some("gpt-5.5".to_string()),
                     label: "gpt-5.5".to_string(),
                     hint: "frontier model for complex coding",
                 },
                 ModelOption {
-                    spec: Some("openai/gpt-5.4".to_string()),
+                    spec: Some("gpt-5.4".to_string()),
                     label: "gpt-5.4".to_string(),
                     hint: "strong everyday model",
                 },
                 ModelOption {
-                    spec: Some("openai/gpt-5.4-mini".to_string()),
+                    spec: Some("gpt-5.4-mini".to_string()),
                     label: "gpt-5.4-mini".to_string(),
                     hint: "fast and cost-efficient",
                 },
                 ModelOption {
-                    spec: Some("openai/gpt-5.3-codex".to_string()),
+                    spec: Some("gpt-5.3-codex".to_string()),
                     label: "gpt-5.3-codex".to_string(),
                     hint: "coding-optimized model",
                 },
                 ModelOption {
-                    spec: Some("openai/gpt-5.2".to_string()),
+                    spec: Some("gpt-5.2".to_string()),
                     label: "gpt-5.2".to_string(),
                     hint: "optimized for long-running agents",
                 },
             ],
             "anthropic" => vec![
                 ModelOption {
-                    spec: Some("anthropic/claude-sonnet-4-5".to_string()),
+                    spec: Some("claude-sonnet-4-5".to_string()),
                     label: "claude-sonnet-4-5".to_string(),
                     hint: "best default Claude model",
                 },
                 ModelOption {
-                    spec: Some("anthropic/claude-opus-4-5".to_string()),
+                    spec: Some("claude-opus-4-5".to_string()),
                     label: "claude-opus-4-5".to_string(),
                     hint: "more capable for complex work",
                 },
                 ModelOption {
-                    spec: Some("anthropic/claude-haiku-4-5".to_string()),
+                    spec: Some("claude-haiku-4-5".to_string()),
                     label: "claude-haiku-4-5".to_string(),
                     hint: "fast answers",
                 },
                 ModelOption {
-                    spec: Some("anthropic/claude-sonnet-4-6".to_string()),
+                    spec: Some("claude-sonnet-4-6".to_string()),
                     label: "claude-sonnet-4-6".to_string(),
                     hint: "newer Sonnet option",
                 },
                 ModelOption {
-                    spec: Some("anthropic/claude-fable-5".to_string()),
+                    spec: Some("claude-fable-5".to_string()),
                     label: "claude-fable-5".to_string(),
                     hint: "most powerful Claude model",
                 },
             ],
             "google" => vec![
                 ModelOption {
-                    spec: Some("google/gemini-2.5-flash".to_string()),
+                    spec: Some("gemini-2.5-flash".to_string()),
                     label: "gemini-2.5-flash".to_string(),
                     hint: "fast Gemini default",
                 },
                 ModelOption {
-                    spec: Some("google/gemini-2.5-pro".to_string()),
+                    spec: Some("gemini-2.5-pro".to_string()),
                     label: "gemini-2.5-pro".to_string(),
                     hint: "more capable Gemini model",
                 },
             ],
             "openrouter" => vec![
                 ModelOption {
-                    spec: Some("openrouter/openai/gpt-5.2".to_string()),
+                    spec: Some("openai/gpt-5.2".to_string()),
                     label: "openai/gpt-5.2".to_string(),
                     hint: "default OpenRouter model",
                 },
                 ModelOption {
-                    spec: Some("openrouter/nvidia/nemotron-3-super-120b-a12b high".to_string()),
+                    spec: Some("nvidia/nemotron-3-super-120b-a12b high".to_string()),
                     label: "nvidia/nemotron-3-super-120b-a12b".to_string(),
                     hint: "reasoning model through OpenRouter",
                 },
                 ModelOption {
-                    spec: Some("openrouter/anthropic/claude-sonnet-4-5".to_string()),
+                    spec: Some("anthropic/claude-sonnet-4-5".to_string()),
                     label: "anthropic/claude-sonnet-4-5".to_string(),
                     hint: "Claude through OpenRouter",
                 },
             ],
             "ollama" => vec![ModelOption {
-                spec: Some("ollama/llama3.2".to_string()),
+                spec: Some("llama3.2".to_string()),
                 label: "llama3.2".to_string(),
                 hint: "local default model",
             }],
             _ => vec![ModelOption {
-                spec: Some("llmsim/llmsim-yolop".to_string()),
+                spec: Some("llmsim-yolop".to_string()),
                 label: "llmsim-yolop".to_string(),
                 hint: "offline demo model",
             }],
@@ -1230,7 +1223,7 @@ impl App {
         }
 
         let default_model = crate::runtime::ProviderChoice::default_for_provider_name(option.name)
-            .map(|p| p.label())
+            .map(|p| p.model_id().to_string())
             .unwrap_or_else(|_| option.name.to_string());
 
         if option.name == "ollama" {
@@ -1583,15 +1576,7 @@ impl App {
     }
 
     async fn save_model_and_finish(&mut self, provider: &str, spec: &str, selected: usize) {
-        let model_spec = if spec.contains('/') {
-            spec.to_string()
-        } else {
-            format!("{provider}/{spec}")
-        };
-        match self
-            .run_setup_command(Some(&format!("model {model_spec}")))
-            .await
-        {
+        match self.run_setup_command(Some(&format!("model {spec}"))).await {
             Ok(()) => {
                 self.setup = None;
                 self.push_system(format!("setup complete: {}", self.model.provider_label()));
@@ -4714,7 +4699,7 @@ mod tests {
         let app = &mut fixture.app;
         app.setup = Some(SetupStep::Credential {
             provider: "openai".to_string(),
-            default_model: "openai/gpt-5.5 medium".to_string(),
+            default_model: "gpt-5.5".to_string(),
             selected: 0,
             error: None,
         });
@@ -4737,7 +4722,7 @@ mod tests {
         app.lines.clear();
         app.setup = Some(SetupStep::TokenInput {
             provider: "openai".to_string(),
-            default_model: "openai/gpt-5.5 medium".to_string(),
+            default_model: "gpt-5.5".to_string(),
             token: String::new(),
             error: None,
         });
@@ -4818,6 +4803,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn model_command_preselects_current_raw_model_id() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = None;
+
+        app.handle_command("setup token openai sk-test").await;
+        app.run_setup_command(Some("provider openai"))
+            .await
+            .expect("set openai provider");
+        app.run_setup_command(Some("model gpt-5.4"))
+            .await
+            .expect("set openai model");
+        app.lines.clear();
+
+        app.dispatch_command_for_test("model").await;
+
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::PickModel {
+                ref provider,
+                selected,
+                ..
+            }) if provider == "openai" && selected == 1
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn model_command_with_arg_opens_prefilled_model_modal() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
@@ -4825,18 +4838,20 @@ mod tests {
         app.setup = None;
 
         app.handle_command("setup token openai sk-test").await;
+        app.run_setup_command(Some("provider openai"))
+            .await
+            .expect("set openai provider");
         app.lines.clear();
-        app.dispatch_command_for_test("model openai/gpt-5.4 high")
-            .await;
+        app.dispatch_command_for_test("model gpt-5.4 high").await;
 
-        assert_eq!(app.model.provider_label(), "llmsim/llmsim-yolop");
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.5 medium");
         assert!(matches!(
             app.setup,
             Some(SetupStep::PickModel {
                 ref provider,
                 ref custom,
                 ..
-            }) if provider == "openai" && custom.as_deref() == Some("openai/gpt-5.4 high")
+            }) if provider == "openai" && custom.as_deref() == Some("gpt-5.4 high")
         ));
 
         app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
@@ -4861,7 +4876,10 @@ mod tests {
         app.setup = None;
 
         app.handle_command("setup token openai sk-test").await;
-        app.run_setup_command(Some("model openai/gpt-5.4"))
+        app.run_setup_command(Some("provider openai"))
+            .await
+            .expect("set openai provider");
+        app.run_setup_command(Some("model gpt-5.4"))
             .await
             .expect("set openai model");
         app.lines.clear();
@@ -4901,7 +4919,10 @@ mod tests {
         app.setup = None;
 
         app.handle_command("setup token openrouter sk-test").await;
-        app.run_setup_command(Some("model openrouter/nvidia/nemotron-3-super-120b-a12b"))
+        app.run_setup_command(Some("provider openrouter"))
+            .await
+            .expect("set openrouter provider");
+        app.run_setup_command(Some("model nvidia/nemotron-3-super-120b-a12b"))
             .await
             .expect("set openrouter model");
         app.lines.clear();
