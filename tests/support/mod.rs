@@ -1,3 +1,4 @@
+pub mod mock_openai;
 pub mod tui_harness;
 
 /// Strip ANSI CSI sequences from terminal output.

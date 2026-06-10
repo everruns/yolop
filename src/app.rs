@@ -5484,6 +5484,43 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_model_picker_preset_selection_applies_and_persists() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.settings
+            .set_token("openai".to_string(), "sk-test".to_string())
+            .expect("save token");
+        app.setup = Some(SetupStep::PickModel {
+            provider: "openai".to_string(),
+            selected: 0,
+            custom: None,
+            error: None,
+        });
+
+        // Navigate to the second preset (gpt-5.4) and confirm it.
+        app.handle_setup_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()))
+            .await;
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert!(app.setup.is_none(), "wizard should finish: {:?}", app.setup);
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.4 medium");
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == "setup complete: openai/gpt-5.4 medium"),
+            "completion line should report the picked model: {:?}",
+            app.lines
+        );
+        // The pick persists, so the next run restores it (see
+        // pick_provider_applies_saved_model_for_saved_provider in main.rs).
+        let snapshot = app.settings.snapshot();
+        assert_eq!(snapshot.provider.as_deref(), Some("openai"));
+        assert_eq!(snapshot.model_for("openai"), Some("openai/gpt-5.4 medium"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn setup_c_key_opens_credential_panel_even_when_connected() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
