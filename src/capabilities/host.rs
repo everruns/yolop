@@ -520,11 +520,12 @@ impl SetupCapability {
                 .expect("provider lock poisoned")
                 .clone();
             let label = current.label();
-            let suggestions =
-                ProviderChoice::model_suggestions_for_provider(current.provider_name()).join(", ");
             return Ok(CommandResult {
                 success: true,
-                message: format!("setup model: {label}; suggestions: {suggestions}"),
+                message: format!(
+                    "setup model: {label}; {}",
+                    self.model_suggestions_message(&current).await
+                ),
                 error_code: None,
                 error_fields: None,
             });
@@ -558,6 +559,40 @@ impl SetupCapability {
             error_code: None,
             error_fields: None,
         })
+    }
+
+    /// Live model suggestions for the current provider, queried from its
+    /// models API; falls back to the curated static list when the provider
+    /// does not support listing (or the query fails/times out).
+    async fn model_suggestions_message(&self, current: &ProviderChoice) -> String {
+        const MODEL_SUGGESTION_LIMIT: usize = 20;
+        const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+        let discovered = tokio::time::timeout(
+            DISCOVERY_TIMEOUT,
+            super::model_discovery::discover_provider_models(current, &self.settings.snapshot()),
+        )
+        .await;
+        if let Ok(Ok(Some(models))) = discovered
+            && !models.is_empty()
+        {
+            let provider = current.provider_name();
+            let shown: Vec<&str> = models
+                .iter()
+                .take(MODEL_SUGGESTION_LIMIT)
+                .map(|model| model.model_id.as_str())
+                .collect();
+            let suffix = if models.len() > MODEL_SUGGESTION_LIMIT {
+                format!(" … and {} more", models.len() - MODEL_SUGGESTION_LIMIT)
+            } else {
+                String::new()
+            };
+            return format!("models from {provider} API: {}{suffix}", shown.join(", "));
+        }
+        format!(
+            "suggestions: {}",
+            ProviderChoice::model_suggestions_for_provider(current.provider_name()).join(", ")
+        )
     }
 
     async fn change_effort(&self, raw: &str) -> everruns_core::Result<CommandResult> {

@@ -24,6 +24,9 @@ crossterm = "0.29"
 dirs = "6"
 include_dir = "0.7"
 ratatui = "0.30"
+# Already in the tree via the everruns driver crates; used directly only for
+# the OpenAI-compatible `GET <base>/models` discovery fallback.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 ratatui-textarea = "0.9.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

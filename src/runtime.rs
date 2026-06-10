@@ -926,6 +926,9 @@ pub struct BuiltRuntime {
     pub handles: RuntimeHandles,
     pub startup: StartupInfo,
     pub model: ModelState,
+    /// Settings store shared with the runtime capabilities. The TUI uses it
+    /// to resolve credentials when querying provider models APIs.
+    pub settings: Arc<SettingsStore>,
     /// Receiver for terminal-side commands emitted by
     /// [`ClientCommandsCapability`]. The TUI drains it in its event loop;
     /// other hosts ignore it. Empty/never-written when
@@ -998,6 +1001,15 @@ impl ModelState {
             .expect("provider lock poisoned")
             .model_id()
             .to_string()
+    }
+
+    /// Snapshot of the current provider choice (including any custom base
+    /// URL), e.g. for model discovery against the live configuration.
+    pub fn provider_choice(&self) -> ProviderChoice {
+        self.provider
+            .read()
+            .expect("provider lock poisoned")
+            .clone()
     }
 
     pub fn input_message(&self, text: impl Into<String>) -> InputMessage {
@@ -1287,6 +1299,7 @@ pub async fn build_with_options(
             mcp_server_names,
         },
         model: ModelState::new(provider_state),
+        settings,
         ui_rx,
     })
 }

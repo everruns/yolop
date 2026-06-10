@@ -496,7 +496,7 @@ async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
         handles,
         startup,
         model,
-        ui_rx: _,
+        ..
     } = runtime;
     let color = io::stdout().is_terminal();
     println!("{}", paint(color, "90", &format!("› {prompt}")));
