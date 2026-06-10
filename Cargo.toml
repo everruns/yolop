@@ -23,6 +23,10 @@ clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29"
 dirs = "6"
 include_dir = "0.7"
+# ratatui-core 0.1.1 (pulled in by the ratatui 0.30.1 family) probes the kitty
+# keyboard protocol before the first draw, which stalls startup when the
+# terminal never replies and breaks every PTY integration test. The lockfile
+# holds the ratatui family at 0.30.0/0.1.0; see the tracking issue before bumping.
 ratatui = "0.30"
 # Already in the tree via the everruns driver crates; used directly only for
 # the OpenAI-compatible `GET <base>/models` discovery fallback.
