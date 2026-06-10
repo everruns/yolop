@@ -5,6 +5,7 @@
 
 pub(crate) mod client_commands;
 mod host;
+pub(crate) mod model_discovery;
 pub mod skills;
 pub(crate) mod tool_search;
 pub(crate) mod your;

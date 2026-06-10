@@ -233,6 +233,14 @@ The TUI's `/setup`, `/model`, and `/effort` commands can update the active
 provider, saved API keys, current model, OpenAI/OpenRouter reasoning effort,
 or offline demo mode. Saved provider/API-key choices are written to this file.
 
+The model picker queries the provider's models API live (OpenAI, Anthropic,
+and OpenRouter via the everruns drivers; Ollama, Gemini, and other
+OpenAI-compatible endpoints via `GET <base>/models`), enriched with
+human-readable names and descriptions from the everruns model profiles. A
+curated shortlist is shown until the API responds — or instead of it, when
+listing is unavailable — and the "Custom..." entry always accepts any model
+id.
+
 Provider resolution at startup:
 
 1. `--provider` flag (always wins)
