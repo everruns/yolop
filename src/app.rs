@@ -417,10 +417,14 @@ impl App {
         // the TUI right as turns completed, while tmux — which answers the
         // query itself, instantly — never showed the bug.
         //
-        // Retrying is safe because a failed iteration mutates no app state:
-        // the failed resize/draw is simply re-attempted next frame, and the
-        // terminal answers once it catches up. Only a run of consecutive
-        // failures (terminal actually gone, e.g. PTY closed) is fatal.
+        // Retrying is safe because a failed iteration loses nothing and is
+        // re-attempted next frame once the terminal catches up. Worst case
+        // it leaves cosmetic artifacts: `flush_transcript` only advances
+        // `printed_lines` after every chunk landed, so a flush interrupted
+        // mid-way re-inserts its lines on retry (briefly duplicated
+        // scrollback during a terminal hiccup), and the spinner skips the
+        // frames spent failing. Only a run of consecutive failures
+        // (terminal actually gone, e.g. PTY closed) is fatal.
         let mut io_failures = 0usize;
         loop {
             if self.busy {
