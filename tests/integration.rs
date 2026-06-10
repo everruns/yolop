@@ -302,6 +302,11 @@ fn tui_escape_does_not_exit_and_ctrl_c_exits() {
         "Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
     );
+    assert!(
+        tui.output_text().contains("Resume with yolop --session"),
+        "Ctrl-C cleanup should print resume hint: {}",
+        tui.output_text()
+    );
 }
 
 #[test]
@@ -394,6 +399,76 @@ fn tui_survives_slow_cursor_position_reply_after_resize() {
 }
 
 #[test]
+fn tui_startup_anchors_composer_from_top_in_tall_terminal() {
+    let mut tui = spawn_tui_llmsim_with(TuiSpawnOptions {
+        rows: 40,
+        cols: 100,
+        cursor_row: 1,
+    });
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    assert_cursor_near_bottom(&mut tui, 40);
+}
+
+#[test]
+fn tui_startup_anchors_composer_when_prompt_is_already_near_bottom() {
+    let mut tui = spawn_tui_llmsim_with(TuiSpawnOptions {
+        rows: 24,
+        cols: 80,
+        cursor_row: 23,
+    });
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    assert_cursor_near_bottom(&mut tui, 24);
+}
+
+#[test]
+fn tui_startup_anchors_composer_in_short_terminal() {
+    let mut tui = spawn_tui_llmsim_with(TuiSpawnOptions {
+        rows: 8,
+        cols: 80,
+        cursor_row: 1,
+    });
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    assert_cursor_near_bottom(&mut tui, 8);
+}
+
+#[test]
+fn tui_setup_overlay_renders_in_real_pty() {
+    let mut tui = spawn_tui_llmsim();
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"/setup\r");
+    assert!(
+        tui.wait_for_output("Set Up Yolop", Duration::from_secs(3)),
+        "/setup should render setup overlay: {}",
+        tui.output_text()
+    );
+    assert!(
+        tui.wait_for_output("Esc cancel", Duration::from_secs(3)),
+        "/setup footer should render without clipping: {}",
+        tui.output_text()
+    );
+}
+
+#[test]
 fn tui_double_ctrl_c_exits() {
     let mut tui = spawn_tui_llmsim();
     assert!(
@@ -408,6 +483,17 @@ fn tui_double_ctrl_c_exits() {
         status.success(),
         "double Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
+    );
+}
+
+fn assert_cursor_near_bottom(tui: &mut TuiHarness, rows: u16) {
+    let output = tui.output_text();
+    let cursor_row = max_absolute_cursor_row(output.as_bytes())
+        .unwrap_or_else(|| panic!("missing cursor move in TUI output: {output}"));
+    let minimum_row = rows.saturating_sub(2).max(1);
+    assert!(
+        cursor_row >= minimum_row,
+        "composer cursor should be near terminal bottom (row {cursor_row}, expected >= {minimum_row}): {output}"
     );
 }
 
@@ -470,6 +556,43 @@ fn strip_ansi(input: &str) -> String {
     out
 }
 
+fn max_absolute_cursor_row(output: &[u8]) -> Option<u16> {
+    let mut row = None;
+    let mut i = 0;
+    while i + 2 < output.len() {
+        if output[i] != 0x1b || output[i + 1] != b'[' {
+            i += 1;
+            continue;
+        }
+        let start = i + 2;
+        let mut end = start;
+        while end < output.len() && !matches!(output[end], 0x40..=0x7e) {
+            end += 1;
+        }
+        if end == output.len() {
+            break;
+        }
+        let final_byte = output[end];
+        if matches!(final_byte, b'H' | b'f') {
+            let params = std::str::from_utf8(&output[start..end]).ok()?;
+            if !params.starts_with('?') {
+                let parsed = params
+                    .split(';')
+                    .next()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("1")
+                    .parse::<u16>()
+                    .ok();
+                if let Some(parsed) = parsed {
+                    row = Some(row.map_or(parsed, |current: u16| current.max(parsed)));
+                }
+            }
+        }
+        i = end + 1;
+    }
+    row
+}
+
 struct TuiHarness {
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
@@ -478,6 +601,23 @@ struct TuiHarness {
     output: Vec<u8>,
     _session_dir: tempfile::TempDir,
     _home: tempfile::TempDir,
+}
+
+#[derive(Clone, Copy)]
+struct TuiSpawnOptions {
+    rows: u16,
+    cols: u16,
+    cursor_row: u16,
+}
+
+impl Default for TuiSpawnOptions {
+    fn default() -> Self {
+        Self {
+            rows: 24,
+            cols: 80,
+            cursor_row: 1,
+        }
+    }
 }
 
 impl TuiHarness {
@@ -543,6 +683,10 @@ impl Drop for TuiHarness {
 }
 
 fn spawn_tui_llmsim() -> TuiHarness {
+    spawn_tui_llmsim_with(TuiSpawnOptions::default())
+}
+
+fn spawn_tui_llmsim_with(options: TuiSpawnOptions) -> TuiHarness {
     let session_dir = tempfile::tempdir().expect("session tempdir");
     let home = tempfile::tempdir().expect("home tempdir");
     for settings_dir in [
@@ -559,8 +703,8 @@ fn spawn_tui_llmsim() -> TuiHarness {
     let pty_system = NativePtySystem::default();
     let pair = pty_system
         .openpty(PtySize {
-            rows: 24,
-            cols: 80,
+            rows: options.rows,
+            cols: options.cols,
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -597,8 +741,9 @@ fn spawn_tui_llmsim() -> TuiHarness {
     });
 
     let mut writer = pair.master.take_writer().expect("take pty writer");
+    let cursor_row = options.cursor_row.clamp(1, options.rows.max(1));
     writer
-        .write_all(b"\x1b[1;1R")
+        .write_all(format!("\x1b[{cursor_row};1R").as_bytes())
         .expect("seed cursor position response");
     writer.flush().expect("flush cursor position response");
     TuiHarness {

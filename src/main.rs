@@ -367,6 +367,7 @@ async fn run_tui(runtime: BuiltRuntime) -> Result<()> {
             viewport: Viewport::Inline(COMPOSER_VIEWPORT_HEIGHT),
         },
     )?;
+    anchor_inline_viewport_at_bottom(&mut terminal)?;
 
     let mut app = App::new(runtime);
     let result = app.run(&mut terminal).await;
@@ -387,6 +388,30 @@ async fn run_tui(runtime: BuiltRuntime) -> Result<()> {
         print_centered_ukraine_banner();
     }
     result
+}
+
+fn anchor_inline_viewport_at_bottom<B>(terminal: &mut Terminal<B>) -> Result<()>
+where
+    B: ratatui::backend::Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let terminal_height = terminal.size()?.height;
+    let viewport_area = terminal.get_frame().area();
+    let blank_lines =
+        blank_lines_after_inline_viewport(viewport_area.y, viewport_area.height, terminal_height);
+    if blank_lines == 0 {
+        return Ok(());
+    }
+    terminal.insert_before(blank_lines, |_| {})?;
+    Ok(())
+}
+
+fn blank_lines_after_inline_viewport(
+    viewport_top: u16,
+    viewport_height: u16,
+    terminal_height: u16,
+) -> u16 {
+    terminal_height.saturating_sub(viewport_top.saturating_add(viewport_height))
 }
 
 struct RawModeGuard {
@@ -660,5 +685,21 @@ mod tests {
             provider.label(),
             "openrouter/nvidia/nemotron-3-super-120b-a12b"
         );
+    }
+
+    #[test]
+    fn inline_viewport_anchor_fills_space_above_bottom_target() {
+        assert_eq!(blank_lines_after_inline_viewport(4, 18, 60), 38);
+    }
+
+    #[test]
+    fn inline_viewport_anchor_does_not_scroll_when_already_low_enough() {
+        assert_eq!(blank_lines_after_inline_viewport(42, 18, 60), 0);
+        assert_eq!(blank_lines_after_inline_viewport(50, 18, 60), 0);
+    }
+
+    #[test]
+    fn inline_viewport_anchor_handles_small_terminals() {
+        assert_eq!(blank_lines_after_inline_viewport(0, 18, 10), 0);
     }
 }
