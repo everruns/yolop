@@ -34,6 +34,9 @@ use everruns_core::tool_types::ToolHints;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use include_dir::{Dir, include_dir};
 use serde_json::{Value, json};
+use std::ffi::OsString;
+use std::io::Write;
+use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -50,6 +53,10 @@ const SYSTEM_SKILLS_DIR_ENV: &str = "YOLOP_SYSTEM_SKILLS_DIR";
 const MAX_SKILLS_IN_PROMPT: usize = 15;
 /// Max description length in the system-prompt listing (truncated with "…").
 const MAX_DESCRIPTION_CHARS: usize = 76;
+/// Defensive cap for extra files installed with a skill.
+const MAX_EXTRA_SKILL_FILES: usize = 64;
+/// Defensive cap for one skill file body.
+const MAX_SKILL_FILE_BYTES: usize = 1024 * 1024;
 
 /// System skills shipped inside the binary. The crate-root `skills/` directory is
 /// embedded at compile time so a `cargo install` / Homebrew build carries them.
@@ -110,7 +117,9 @@ impl SkillSources {
     }
 
     /// Build from explicit per-scope directories (used by `resolve` and tests).
-    /// Each is included only when it is an existing directory.
+    /// Missing directories are kept so a skill installed later in the same
+    /// process becomes discoverable on the next `list_skills`/`activate_skill`
+    /// call without restarting yolop.
     pub(crate) fn from_dirs(
         workspace: Option<PathBuf>,
         global: Option<PathBuf>,
@@ -122,7 +131,7 @@ impl SkillSources {
             (SkillScope::Global, global),
             (SkillScope::System, system),
         ] {
-            if let Some(dir) = dir.filter(|p| p.is_dir()) {
+            if let Some(dir) = dir {
                 roots.push((scope, dir));
             }
         }
@@ -184,6 +193,13 @@ impl SkillSources {
             }
         }
         None
+    }
+
+    fn root_for(&self, requested: SkillWriteScope) -> Option<PathBuf> {
+        let wanted = requested.skill_scope();
+        self.roots
+            .iter()
+            .find_map(|(scope, root)| (*scope == wanted).then(|| root.clone()))
     }
 }
 
@@ -313,6 +329,12 @@ impl Capability for YolopSkillsCapability {
             Box::new(ListSkillsTool {
                 sources: self.sources.clone(),
             }),
+            Box::new(ReadSkillTool {
+                sources: self.sources.clone(),
+            }),
+            Box::new(WriteSkillTool {
+                sources: self.sources.clone(),
+            }),
             Box::new(ActivateSkillTool {
                 sources: self.sources.clone(),
             }),
@@ -381,6 +403,301 @@ impl Tool for ListSkillsTool {
             "count": skills.len(),
             "skills": skills,
         }))
+    }
+}
+
+// ============================================================================
+// read_skill
+// ============================================================================
+
+struct ReadSkillTool {
+    sources: Arc<SkillSources>,
+}
+
+#[async_trait]
+impl Tool for ReadSkillTool {
+    fn name(&self) -> &str {
+        "read_skill"
+    }
+
+    fn display_name(&self) -> Option<&str> {
+        Some("Read Skill")
+    }
+
+    fn description(&self) -> &str {
+        "Read one installed skill's SKILL.md and file manifest. Use before modifying \
+         or upgrading a workspace/global skill."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The skill directory name."
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["workspace", "local", "global", "system"],
+                    "description": "Optional scope to read from. Omit to use normal precedence."
+                }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        })
+    }
+
+    fn hints(&self) -> ToolHints {
+        ToolHints::default()
+            .with_readonly(true)
+            .with_idempotent(true)
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let Some(name) = arguments.get("name").and_then(|v| v.as_str()) else {
+            return ToolExecutionResult::tool_error("Missing required parameter: name");
+        };
+        if let Err(e) = validate_requested_skill_name(name) {
+            return ToolExecutionResult::tool_error(e);
+        }
+
+        let located = match arguments.get("scope").and_then(|v| v.as_str()) {
+            Some(raw) => {
+                let Some(scope) = SkillReadScope::parse(raw) else {
+                    return ToolExecutionResult::tool_error(
+                        "'scope' must be one of workspace, local, global, or system",
+                    );
+                };
+                self.sources
+                    .roots
+                    .iter()
+                    .find(|(candidate, _)| *candidate == scope.skill_scope())
+                    .and_then(|(scope, root)| {
+                        let dir_path = root.join(name);
+                        std::fs::read_to_string(dir_path.join("SKILL.md"))
+                            .ok()
+                            .map(|content| (*scope, dir_path, content))
+                    })
+            }
+            None => self.sources.locate(name),
+        };
+
+        let Some((scope, dir_path, content)) = located else {
+            return ToolExecutionResult::tool_error(format!(
+                "Skill '{name}' not found. Use list_skills to see what's available."
+            ));
+        };
+
+        ToolExecutionResult::success(json!({
+            "name": name,
+            "scope": scope.label(),
+            "path": dir_path.join("SKILL.md").display().to_string(),
+            "skill_md": content,
+            "files": skill_file_manifest(&dir_path),
+        }))
+    }
+}
+
+// ============================================================================
+// write_skill
+// ============================================================================
+
+struct WriteSkillTool {
+    sources: Arc<SkillSources>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkillWriteScope {
+    Workspace,
+    Global,
+}
+
+impl SkillWriteScope {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "workspace" | "local" => Some(Self::Workspace),
+            "global" => Some(Self::Global),
+            _ => None,
+        }
+    }
+
+    fn skill_scope(self) -> SkillScope {
+        match self {
+            Self::Workspace => SkillScope::Workspace,
+            Self::Global => SkillScope::Global,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        self.skill_scope().label()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkillReadScope {
+    Workspace,
+    Global,
+    System,
+}
+
+impl SkillReadScope {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "workspace" | "local" => Some(Self::Workspace),
+            "global" => Some(Self::Global),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+
+    fn skill_scope(self) -> SkillScope {
+        match self {
+            Self::Workspace => SkillScope::Workspace,
+            Self::Global => SkillScope::Global,
+            Self::System => SkillScope::System,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for WriteSkillTool {
+    fn name(&self) -> &str {
+        "write_skill"
+    }
+
+    fn display_name(&self) -> Option<&str> {
+        Some("Write Skill")
+    }
+
+    fn description(&self) -> &str {
+        "Install or update a skill in the current workspace or global yolop config. \
+         Provide the full SKILL.md and optional bundled files. Use this to recreate \
+         skills from a registry/GitHub source without requiring npx."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["workspace", "local", "global"],
+                    "description": "Where to write the skill. 'local' is an alias for 'workspace'."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Skill directory name. Must match the SKILL.md frontmatter name."
+                },
+                "skill_md": {
+                    "type": "string",
+                    "description": "The complete SKILL.md contents, including frontmatter."
+                },
+                "files": {
+                    "type": "object",
+                    "description": "Optional bundled files to write under the skill directory, keyed by relative path. Do not include SKILL.md here.",
+                    "additionalProperties": { "type": "string" }
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "Whether to replace existing files. Defaults to true."
+                }
+            },
+            "required": ["scope", "name", "skill_md"],
+            "additionalProperties": false
+        })
+    }
+
+    fn hints(&self) -> ToolHints {
+        ToolHints::default().with_idempotent(true)
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let Some(scope_raw) = arguments.get("scope").and_then(|v| v.as_str()) else {
+            return ToolExecutionResult::tool_error("'scope' is required");
+        };
+        let Some(scope) = SkillWriteScope::parse(scope_raw) else {
+            return ToolExecutionResult::tool_error(
+                "'scope' must be one of workspace, local, or global",
+            );
+        };
+        let Some(name) = arguments.get("name").and_then(|v| v.as_str()) else {
+            return ToolExecutionResult::tool_error("'name' is required");
+        };
+        if let Err(e) = validate_requested_skill_name(name) {
+            return ToolExecutionResult::tool_error(e);
+        }
+        let Some(skill_md) = arguments.get("skill_md").and_then(|v| v.as_str()) else {
+            return ToolExecutionResult::tool_error("'skill_md' is required");
+        };
+        if skill_md.len() > MAX_SKILL_FILE_BYTES {
+            return ToolExecutionResult::tool_error(format!(
+                "'skill_md' exceeds the {MAX_SKILL_FILE_BYTES} byte limit"
+            ));
+        }
+
+        let parsed = match parse_skill_md(skill_md) {
+            Ok(parsed) => parsed,
+            Err(errors) => {
+                return ToolExecutionResult::tool_error(format!(
+                    "Invalid SKILL.md: {}",
+                    errors.join(", ")
+                ));
+            }
+        };
+        if parsed.name != name {
+            return ToolExecutionResult::tool_error(format!(
+                "'name' must match SKILL.md frontmatter name (got '{}')",
+                parsed.name
+            ));
+        }
+
+        let Some(root) = self.sources.root_for(scope) else {
+            return ToolExecutionResult::tool_error(format!(
+                "{} skills directory is unavailable on this host",
+                scope.label()
+            ));
+        };
+        let skill_dir = root.join(name);
+        let overwrite = arguments
+            .get("overwrite")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let files = match collect_extra_files(arguments.get("files")) {
+            Ok(files) => files,
+            Err(e) => return ToolExecutionResult::tool_error(e),
+        };
+
+        if !overwrite && skill_dir.exists() {
+            return ToolExecutionResult::tool_error(format!(
+                "Skill '{}' already exists in {} scope; pass overwrite=true to update it",
+                name,
+                scope.label()
+            ));
+        }
+
+        let write_result = (|| -> std::io::Result<()> {
+            prepare_skill_dir(&root, &skill_dir)?;
+            std::fs::create_dir_all(&skill_dir)?;
+            save_skill_file(&skill_dir.join("SKILL.md"), skill_md)?;
+            for (rel, content) in &files {
+                let target = checked_skill_file_path(&skill_dir, rel)?;
+                save_skill_file(&target, content)?;
+            }
+            Ok(())
+        })();
+
+        match write_result {
+            Ok(()) => ToolExecutionResult::success(json!({
+                "ok": true,
+                "name": name,
+                "scope": scope.label(),
+                "path": skill_dir.join("SKILL.md").display().to_string(),
+                "files_written": files.len() + 1,
+                "message": "skill written; it is discoverable immediately via list_skills and activate_skill",
+            })),
+            Err(e) => ToolExecutionResult::tool_error(format!("could not write skill: {e}")),
+        }
     }
 }
 
@@ -523,14 +840,15 @@ impl Tool for ActivateSkillTool {
 // Scope folder resolution + system-skill materialization
 // ============================================================================
 
-/// Global skills directory, or `None` when it does not exist.
+/// Global skills directory, or `None` when no platform config directory exists.
 /// Honors `YOLOP_GLOBAL_SKILLS_DIR`; otherwise `<config_dir>/yolop/skills`.
+/// The path is returned even when absent so newly installed global skills become
+/// available without restarting the process.
 pub fn global_skills_dir() -> Option<PathBuf> {
-    let dir = match std::env::var(GLOBAL_SKILLS_DIR_ENV) {
+    Some(match std::env::var(GLOBAL_SKILLS_DIR_ENV) {
         Ok(value) if !value.is_empty() => PathBuf::from(value),
         _ => dirs::config_dir()?.join("yolop").join("skills"),
-    };
-    dir.is_dir().then_some(dir)
+    })
 }
 
 /// System skills directory, materializing the embedded skills first.
@@ -617,6 +935,179 @@ fn write_if_changed(target: &Path, contents: &[u8]) -> std::io::Result<()> {
     ));
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, target)
+}
+
+fn validate_requested_skill_name(name: &str) -> Result<(), String> {
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(
+            "Invalid skill name. Must be a simple directory name without path separators."
+                .to_string(),
+        );
+    }
+    validate_skill_name(name)
+        .map_err(|errors| format!("Invalid skill name '{name}': {}", errors.join(", ")))
+}
+
+fn collect_extra_files(value: Option<&Value>) -> Result<Vec<(PathBuf, String)>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let Some(map) = value.as_object() else {
+        return Err("'files' must be an object of relative path to string content".to_string());
+    };
+    if map.len() > MAX_EXTRA_SKILL_FILES {
+        return Err(format!(
+            "'files' contains too many entries (max {MAX_EXTRA_SKILL_FILES})"
+        ));
+    }
+
+    let mut out = Vec::with_capacity(map.len());
+    for (raw_path, value) in map {
+        let Some(content) = value.as_str() else {
+            return Err(format!("file '{raw_path}' content must be a string"));
+        };
+        if content.len() > MAX_SKILL_FILE_BYTES {
+            return Err(format!(
+                "file '{raw_path}' exceeds the {MAX_SKILL_FILE_BYTES} byte limit"
+            ));
+        }
+        let rel = validate_skill_file_path(raw_path)?;
+        out.push((rel, content.to_string()));
+    }
+    Ok(out)
+}
+
+fn validate_skill_file_path(raw: &str) -> Result<PathBuf, String> {
+    if raw.trim().is_empty() || raw.contains('\\') {
+        return Err(format!("invalid skill file path '{raw}'"));
+    }
+    let path = PathBuf::from(raw);
+    if path == Path::new("SKILL.md") || path.is_absolute() {
+        return Err(format!("invalid skill file path '{raw}'"));
+    }
+    for component in path.components() {
+        match component {
+            Component::Normal(_) => {}
+            _ => return Err(format!("invalid skill file path '{raw}'")),
+        }
+    }
+    Ok(path)
+}
+
+fn save_skill_file(path: &Path, content: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if let Ok(existing) = std::fs::read_to_string(path)
+        && existing == content
+    {
+        return Ok(());
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().unwrap_or_default();
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut tmp_name = OsString::from(".");
+    tmp_name.push(file_name);
+    tmp_name.push(format!(".tmp.{}-{seq}", std::process::id()));
+    let tmp_path = parent.join(tmp_name);
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp_path)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    std::fs::rename(&tmp_path, path)
+}
+
+fn prepare_skill_dir(root: &Path, skill_dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(root)?;
+    reject_symlink(skill_dir)?;
+    std::fs::create_dir_all(skill_dir)?;
+
+    let root = root.canonicalize()?;
+    let skill_dir = skill_dir.canonicalize()?;
+    if !skill_dir.starts_with(&root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "skill directory resolves outside the configured skills root",
+        ));
+    }
+    Ok(())
+}
+
+fn checked_skill_file_path(skill_dir: &Path, rel: &Path) -> std::io::Result<PathBuf> {
+    let target = skill_dir.join(rel);
+    reject_symlink(&target)?;
+    let parent = target.parent().unwrap_or(skill_dir);
+    std::fs::create_dir_all(parent)?;
+
+    let skill_dir = skill_dir.canonicalize()?;
+    let parent = parent.canonicalize()?;
+    if !parent.starts_with(&skill_dir) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "skill file path resolves outside the skill directory",
+        ));
+    }
+    Ok(target)
+}
+
+fn reject_symlink(path: &Path) -> std::io::Result<()> {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("refusing to write through symlink {}", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+fn skill_file_manifest(dir_path: &Path) -> Vec<Value> {
+    let mut out = Vec::new();
+    collect_skill_manifest_entries(dir_path, dir_path, &mut out);
+    out.sort_by_key(|entry| {
+        entry
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    });
+    out
+}
+
+fn collect_skill_manifest_entries(root: &Path, dir: &Path, out: &mut Vec<Value>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            collect_skill_manifest_entries(root, &path, out);
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        out.push(json!({
+            "path": rel.display().to_string(),
+            "bytes": entry.metadata().map(|m| m.len()).unwrap_or(0),
+        }));
+    }
 }
 
 #[cfg(test)]
@@ -806,6 +1297,178 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn global_skill_created_after_sources_are_built_is_listed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing_global = tmp.path().join("global-skills");
+        let tool = ListSkillsTool {
+            sources: Arc::new(SkillSources::from_dirs(
+                None,
+                Some(missing_global.clone()),
+                None,
+            )),
+        };
+
+        let ToolExecutionResult::Success(v) = tool.execute(json!({})).await else {
+            panic!("expected success");
+        };
+        assert_eq!(v["count"], 0);
+
+        write_skill(
+            &missing_global,
+            "hot-install",
+            "hot-install",
+            "installed after startup",
+        );
+        let ToolExecutionResult::Success(v) = tool.execute(json!({})).await else {
+            panic!("expected success");
+        };
+        assert_eq!(v["count"], 1);
+        assert_eq!(v["skills"][0]["name"], "hot-install");
+        assert_eq!(v["skills"][0]["scope"], "global");
+    }
+
+    #[tokio::test]
+    async fn write_skill_installs_global_skill_readable_without_restart() {
+        let ws = tempfile::tempdir().unwrap();
+        let gl = tempfile::tempdir().unwrap();
+        let sources = Arc::new(SkillSources::from_dirs(
+            Some(ws.path().into()),
+            Some(gl.path().into()),
+            None,
+        ));
+        let writer = WriteSkillTool {
+            sources: sources.clone(),
+        };
+        let skill_md =
+            "---\nname: new-skill\ndescription: installed by tool\n---\n\n# New\nUse data.txt\n";
+
+        let res = writer
+            .execute(json!({
+                "scope": "global",
+                "name": "new-skill",
+                "skill_md": skill_md,
+                "files": {
+                    "data.txt": "hello"
+                }
+            }))
+            .await;
+        assert!(res.is_success(), "got: {res:?}");
+        assert_eq!(
+            std::fs::read_to_string(gl.path().join("new-skill").join("SKILL.md")).unwrap(),
+            skill_md
+        );
+
+        let reader = ReadSkillTool {
+            sources: sources.clone(),
+        };
+        let ToolExecutionResult::Success(v) = reader.execute(json!({"name": "new-skill"})).await
+        else {
+            panic!("expected read success");
+        };
+        assert_eq!(v["scope"], "global");
+        assert_eq!(v["skill_md"], skill_md);
+        assert_eq!(v["files"][0]["path"], "SKILL.md");
+
+        let lister = ListSkillsTool { sources };
+        let ToolExecutionResult::Success(v) = lister.execute(json!({})).await else {
+            panic!("expected list success");
+        };
+        let skill = v["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "new-skill")
+            .unwrap();
+        assert_eq!(skill["scope"], "global");
+    }
+
+    #[tokio::test]
+    async fn write_skill_rejects_unsafe_paths_and_readonly_scopes() {
+        let ws = tempfile::tempdir().unwrap();
+        let writer = WriteSkillTool {
+            sources: Arc::new(SkillSources::from_dirs(Some(ws.path().into()), None, None)),
+        };
+        let skill_md = "---\nname: safe-skill\ndescription: safe\n---\n\nbody\n";
+
+        let system = writer
+            .execute(json!({
+                "scope": "system",
+                "name": "safe-skill",
+                "skill_md": skill_md,
+            }))
+            .await;
+        assert!(system.is_error());
+
+        let traversal = writer
+            .execute(json!({
+                "scope": "workspace",
+                "name": "safe-skill",
+                "skill_md": skill_md,
+                "files": {
+                    "../escape.txt": "nope"
+                }
+            }))
+            .await;
+        assert!(traversal.is_error());
+        assert!(!ws.path().join("escape.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_skill_rejects_symlinked_skill_dir() {
+        use std::os::unix::fs::symlink;
+
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), ws.path().join("linked-skill")).unwrap();
+        let writer = WriteSkillTool {
+            sources: Arc::new(SkillSources::from_dirs(Some(ws.path().into()), None, None)),
+        };
+        let skill_md = "---\nname: linked-skill\ndescription: linked\n---\n\nbody\n";
+
+        let res = writer
+            .execute(json!({
+                "scope": "workspace",
+                "name": "linked-skill",
+                "skill_md": skill_md,
+            }))
+            .await;
+
+        assert!(res.is_error(), "got: {res:?}");
+        assert!(!outside.path().join("SKILL.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_skill_rejects_symlinked_extra_file_parent() {
+        use std::os::unix::fs::symlink;
+
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let skill_dir = ws.path().join("safe-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        symlink(outside.path(), skill_dir.join("data")).unwrap();
+        let writer = WriteSkillTool {
+            sources: Arc::new(SkillSources::from_dirs(Some(ws.path().into()), None, None)),
+        };
+        let skill_md = "---\nname: safe-skill\ndescription: safe\n---\n\nbody\n";
+
+        let res = writer
+            .execute(json!({
+                "scope": "workspace",
+                "name": "safe-skill",
+                "skill_md": skill_md,
+                "files": {
+                    "data/escape.txt": "nope"
+                }
+            }))
+            .await;
+
+        assert!(res.is_error(), "got: {res:?}");
+        assert!(!outside.path().join("escape.txt").exists());
+    }
+
+    #[tokio::test]
     async fn system_prompt_lists_visible_skills_and_filters_opted_out() {
         let ws = tempfile::tempdir().unwrap();
         write_skill(ws.path(), "shown", "shown", "appears in the prompt");
@@ -827,5 +1490,22 @@ mod tests {
 
         assert!(prompt.contains("**shown** [workspace]"));
         assert!(!prompt.contains("hidden"));
+    }
+
+    #[test]
+    fn capability_exposes_skill_management_tools() {
+        let ws = tempfile::tempdir().unwrap();
+        let cap =
+            YolopSkillsCapability::new(SkillSources::from_dirs(Some(ws.path().into()), None, None));
+        let names = cap
+            .tools()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec!["list_skills", "read_skill", "write_skill", "activate_skill"]
+        );
     }
 }

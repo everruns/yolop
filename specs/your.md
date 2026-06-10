@@ -34,7 +34,7 @@ existing `settings.toml`:
 <config_dir>/yolop/
   settings.toml      # provider + tokens (pre-existing)
   MEMORY.md          # v1: durable cross-session user memory
-  skills/            # roadmap: global, always-available skills
+  skills/            # global, always-available skills
 ```
 
 The capability must always be able to **describe itself** — what it is, where
@@ -88,7 +88,7 @@ validate it, and write it through hook config tools rather than storing a
 memory note that says "avoid git". See [`hooks.md`](./hooks.md) for the hook
 tool design and scope rules.
 
-## Roadmap (not yet implemented)
+## Roadmap
 
 The roadmap rides on everruns' existing extension points rather than inventing
 yolop-specific formats.
@@ -102,11 +102,10 @@ yolop-specific formats.
   central config dir and registers them into every session, so a user can add
   global capabilities without rebuilding yolop. Compiled (built-in)
   capabilities remain the path for behavior that needs real Rust.
-- **Global skills** — fall out of the above: a declarative capability's
-  `skills` are mounted at everruns' `SKILLS_DISCOVERY_PATH`
-  (`/.agents/skills`) so the built-in `skills` capability lists/activates
-  them in every session. This is also where memory that has outgrown a few
-  bullets gets promoted to.
+- **Declarative capability skills** — global skills are already discovered
+  directly from `<config_dir>/yolop/skills`. A future declarative capability
+  layer can also contribute skills into that same global personalization model.
+  This is where memory that has outgrown a few bullets gets promoted to.
 - **Hooks** — `your` should configure global and workspace hooks through
   structured hook tools, using the scope and merge contract in
   [`hooks.md`](./hooks.md).
