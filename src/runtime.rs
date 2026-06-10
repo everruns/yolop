@@ -473,7 +473,15 @@ impl ProviderChoice {
                 base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
             };
         }
-        if env_non_empty("CUSTOM_BASE_URL").is_some() || settings.base_url_for("custom").is_some() {
+        // The custom endpoint has no default model, so it is auto-selected
+        // only when a model is also known (env override or a persisted
+        // `[models].custom` pick — applied by the caller's
+        // `with_saved_model`). Otherwise a non-interactive run would send a
+        // Chat Completions request with an empty model id.
+        if (env_non_empty("CUSTOM_BASE_URL").is_some() || settings.base_url_for("custom").is_some())
+            && (env_non_empty("EVERRUNS_CLI_MODEL").is_some()
+                || settings.model_for("custom").is_some())
+        {
             return Self::Custom {
                 model: env_or_default("EVERRUNS_CLI_MODEL", ""),
                 reasoning_effort: normalize_reasoning_effort(env_non_empty(
@@ -1893,6 +1901,43 @@ mod tests {
         let provider = ProviderChoice::from_env_or_settings(&Settings::default());
 
         assert_eq!(provider.provider_name(), "openai");
+    }
+
+    #[test]
+    fn from_env_or_settings_picks_custom_only_when_a_model_is_known() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("OPENROUTER_API_KEY");
+            std::env::remove_var("GEMINI_API_KEY");
+            std::env::remove_var("GOOGLE_API_KEY");
+            std::env::remove_var("OLLAMA_BASE_URL");
+            std::env::remove_var("OLLAMA_API_KEY");
+            std::env::remove_var("CUSTOM_BASE_URL");
+            std::env::remove_var("EVERRUNS_CLI_MODEL");
+        }
+        let mut settings = Settings::default();
+        settings
+            .base_urls
+            .insert("custom".to_string(), "http://localhost:8000/v1".to_string());
+
+        // A base URL alone is not enough — with no model known, a
+        // non-interactive run would send an empty model id. Fall back.
+        let provider = ProviderChoice::from_env_or_settings(&settings);
+        assert_eq!(provider.provider_name(), "openai");
+
+        // With a persisted model the custom endpoint is auto-selected (the
+        // caller's `with_saved_model` fills the model in).
+        settings
+            .models
+            .insert("custom".to_string(), "qwen3-coder".to_string());
+        let provider = ProviderChoice::from_env_or_settings(&settings);
+        assert_eq!(provider.provider_name(), "custom");
+        assert_eq!(
+            provider.with_saved_model(&settings).label(),
+            "custom/qwen3-coder"
+        );
     }
 
     #[test]

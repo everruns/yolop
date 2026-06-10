@@ -908,8 +908,10 @@ fn env_credential_present() -> bool {
         "GOOGLE_API_KEY",
         "OLLAMA_BASE_URL",
         "OLLAMA_API_KEY",
+        // CUSTOM_API_KEY is deliberately absent: the custom endpoint is
+        // unusable without a base URL, so a stray key alone must not
+        // suppress first-run onboarding.
         "CUSTOM_BASE_URL",
-        "CUSTOM_API_KEY",
     ];
     VARS.iter()
         .any(|var| std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false))
@@ -932,9 +934,40 @@ mod tests {
             std::env::remove_var("GOOGLE_API_KEY");
             std::env::remove_var("OLLAMA_BASE_URL");
             std::env::remove_var("OLLAMA_API_KEY");
+            std::env::remove_var("CUSTOM_BASE_URL");
+            std::env::remove_var("CUSTOM_API_KEY");
         }
         let settings = crate::settings::Settings::default();
         assert!(SetupCapability::needs_onboarding(&settings));
+    }
+
+    #[test]
+    fn needs_onboarding_ignores_custom_api_key_without_base_url() {
+        // A stray CUSTOM_API_KEY is not a usable credential: without a base
+        // URL the custom provider cannot run, so onboarding must still open.
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("OPENROUTER_API_KEY");
+            std::env::remove_var("GEMINI_API_KEY");
+            std::env::remove_var("GOOGLE_API_KEY");
+            std::env::remove_var("OLLAMA_BASE_URL");
+            std::env::remove_var("OLLAMA_API_KEY");
+            std::env::remove_var("CUSTOM_BASE_URL");
+            std::env::set_var("CUSTOM_API_KEY", "sk-orphan");
+        }
+        let settings = crate::settings::Settings::default();
+        assert!(SetupCapability::needs_onboarding(&settings));
+
+        unsafe {
+            std::env::set_var("CUSTOM_BASE_URL", "http://localhost:8000/v1");
+        }
+        assert!(!SetupCapability::needs_onboarding(&settings));
+        unsafe {
+            std::env::remove_var("CUSTOM_BASE_URL");
+            std::env::remove_var("CUSTOM_API_KEY");
+        }
     }
 
     #[test]
