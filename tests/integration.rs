@@ -13,8 +13,8 @@
 //
 //     YOLOP_REQUIRE_LIVE_TESTS=1 doppler run -- cargo test --test integration
 //
-// The OpenRouter tests default to a Nemotron 3 model and guard the Chat
-// Completions tool-calling path (everruns EVE-522 / EVE-523).
+// The OpenRouter tests default to a Nemotron 3 model and guard the OpenRouter
+// driver's tool-calling and turn-chaining path (everruns EVE-522 / EVE-523).
 
 mod support;
 
@@ -1074,16 +1074,17 @@ fn openrouter_print_smoke() {
 /// and EVE-523).
 ///
 /// OpenRouter's `/responses` endpoint is stateless (it ignores
-/// `previous_response_id`), so yolop routes OpenRouter through the Chat
-/// Completions driver. On that path, OpenRouter/DeepInfra streams an empty
-/// `content: ""` in the same chunk as `finish_reason: "tool_calls"`, which used
-/// to make the runtime silently drop the tool call — the agent would emit a
-/// `read_file` call, never execute it, and end the turn with no action.
+/// `previous_response_id`). Yolop routes OpenRouter through the first-class
+/// OpenRouter Responses driver (everruns 0.10+), which replays the full
+/// transcript each turn instead of chaining by response id. History loss on
+/// this path is silent: the agent emits a tool call, the result never reaches
+/// the next turn, and the model loops without making progress.
 ///
 /// This test seeds a unique sentinel in a workspace file and asks the model to
 /// read it back. The sentinel is *not* in the prompt, so it can only appear in
 /// the answer if `read_file` actually executed and its result flowed back into
-/// the next turn. A regression on either bug makes this fail.
+/// the next turn. A regression on tool-call streaming or turn chaining makes
+/// this fail.
 #[test]
 fn openrouter_tool_call_executes_end_to_end() {
     let Some(_) = live_key_or_skip("OPENROUTER_API_KEY") else {

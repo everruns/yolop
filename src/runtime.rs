@@ -375,9 +375,8 @@ const REASONING_EFFORT_SUGGESTIONS: &[&str] = &["minimal", "low", "medium", "hig
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
 // Gemini exposes an OpenAI-compatible surface at this base URL, driven through
-// `everruns_openai`. (OpenRouter is OpenAI-compatible too, but it needs the
-// Chat Completions driver — see `model_with_provider` — because its Responses
-// endpoint is stateless.)
+// `everruns_openai`. (OpenRouter has its own first-class driver since
+// everruns 0.10 — see `model_with_provider`.)
 const DEFAULT_GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-5.2";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -809,15 +808,16 @@ impl ProviderChoice {
                     .ok_or_else(|| anyhow!("OPENROUTER_API_KEY not set (and no token stored)"))?;
                 Ok(ModelWithProvider {
                     model: model.clone(),
-                    // Chat Completions, not the Open Responses API. OpenRouter's
-                    // /responses endpoint is stateless: it accepts
-                    // `previous_response_id` but silently ignores it (responses are
-                    // never stored), so the Responses driver — which chains turns by
-                    // id and sends only the newest item — loses the task and history
-                    // after turn 1. The model then loops on read-only exploration and
-                    // never makes progress. Chat Completions replays the full
-                    // conversation each turn, which is what OpenRouter supports.
-                    provider_type: LlmProviderType::OpenaiCompletions,
+                    // First-class OpenRouter driver (everruns 0.10+). It speaks
+                    // OpenRouter's OpenAI-compatible Responses API but knows the
+                    // endpoint is stateless (`previous_response_id` is silently
+                    // ignored), so it replays the full transcript each turn
+                    // instead of chaining by response id, and it looks up model
+                    // profiles under the OpenRouter provider so OpenAI-only
+                    // extensions (native phases, hosted tool_search) are never
+                    // sent to the gateway. This replaces the earlier Chat
+                    // Completions workaround for the stateless endpoint.
+                    provider_type: LlmProviderType::Openrouter,
                     api_key: Some(key),
                     base_url: Some(base_url.clone()),
                 })
@@ -880,13 +880,13 @@ impl ProviderChoice {
                 api_key: None,
                 base_url: Some(base_url.clone()),
             },
-            // OpenRouter must use Chat Completions, not the Open Responses API —
-            // see the keyed path in `model_with_provider` for the full rationale.
+            // First-class OpenRouter driver — see the keyed path in
+            // `model_with_provider` for the full rationale.
             ProviderChoice::OpenRouter {
                 model, base_url, ..
             } => ModelWithProvider {
                 model: model.clone(),
-                provider_type: LlmProviderType::OpenaiCompletions,
+                provider_type: LlmProviderType::Openrouter,
                 api_key: None,
                 base_url: Some(base_url.clone()),
             },
@@ -2154,10 +2154,12 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_uses_chat_completions_driver_not_responses() {
-        // OpenRouter's /responses endpoint ignores `previous_response_id`, which
-        // breaks the Open Responses driver's turn chaining. We must route through
-        // the stateless Chat Completions driver instead.
+    fn openrouter_uses_first_class_openrouter_driver() {
+        // OpenRouter routes through the first-class OpenRouter provider type
+        // (everruns 0.10+): the driver replays the full transcript each turn
+        // (the /responses endpoint ignores `previous_response_id`) and resolves
+        // model profiles under the OpenRouter provider, so OpenAI-only
+        // extensions are never sent to the gateway.
         let _guard = crate::test_env::lock();
         unsafe {
             std::env::set_var("OPENROUTER_API_KEY", "test-or-key");
@@ -2173,7 +2175,7 @@ mod tests {
             std::env::remove_var("OPENROUTER_API_KEY");
         }
 
-        assert_eq!(model.provider_type, LlmProviderType::OpenaiCompletions);
+        assert_eq!(model.provider_type, LlmProviderType::Openrouter);
         assert_eq!(model.api_key, Some("test-or-key".to_string()));
         assert_eq!(
             model.base_url,
@@ -2181,10 +2183,10 @@ mod tests {
         );
 
         // The keyless fallback path must agree, so /setup and startup don't
-        // silently revert to the Responses driver.
+        // silently fall back to a different driver.
         assert_eq!(
             provider.model_without_stored_key().provider_type,
-            LlmProviderType::OpenaiCompletions
+            LlmProviderType::Openrouter
         );
     }
 
