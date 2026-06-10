@@ -1271,8 +1271,15 @@ impl App {
                     });
                 }
             }
-            // Listing unsupported (or empty): keep the curated fallback.
-            Ok(_) => {}
+            // Listing unsupported (or empty): cache the curated fallback so
+            // reopening the picker doesn't re-query an API that can't answer.
+            // Errors are deliberately not cached — the next picker open retries.
+            Ok(_) => {
+                self.model_catalog.insert(
+                    discovery.provider.clone(),
+                    Self::fallback_model_options(&discovery.provider),
+                );
+            }
             Err(mut err) => {
                 if let Some(SetupStep::PickModel {
                     provider, error, ..
@@ -5520,6 +5527,12 @@ mod tests {
 
         let options = app.model_options("ollama");
         assert_eq!(options[0].spec.as_deref(), Some("llama3.2"));
+
+        // The unsupported outcome is cached so reopening the picker doesn't
+        // re-query an API that can't answer.
+        app.model_discovery_enabled = true;
+        app.request_model_discovery("ollama");
+        assert!(!app.is_fetching_models("ollama"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
