@@ -74,8 +74,10 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   [`specs/your.md`](./specs/your.md).
 - **Skills** — `SKILL.md` files discovered from workspace
   (`.agents/skills/`), global (`<config_dir>/yolop/skills/`), and system
-  (bundled) scopes, exposed via `list_skills` / `activate_skill`. See
-  [`specs/skills.md`](./specs/skills.md).
+  (bundled) scopes, exposed via `list_skills`, `read_skill`, `write_skill`,
+  and `activate_skill`. Workspace/global skills installed after startup are
+  available immediately; the bundled `skill-management` skill covers search,
+  npx-style imports, and upgrades. See [`specs/skills.md`](./specs/skills.md).
 - **Infinity context** — older history is trimmed out of the live prompt but
   stays queryable via `query_history`, so long sessions don't hit the wall.
 - **Tool search** — provider-agnostic deferred tool loading: core file/shell

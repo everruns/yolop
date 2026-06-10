@@ -2,9 +2,9 @@
 
 ## Abstract
 
-Skills are instruction packages (`SKILL.md` files) the agent can discover and
-activate at runtime via the `list_skills` and `activate_skill` tools, plus a
-system-prompt listing of what's available.
+Skills are instruction packages (`SKILL.md` files) the agent can discover,
+activate, and manage at runtime via skills tools, plus a system-prompt listing
+of what's available.
 
 yolop **vendors** the upstream `skills` capability from `everruns-core`. The
 upstream capability scans a single virtual-filesystem path (`/.agents/skills`)
@@ -49,17 +49,33 @@ resolves to a **real on-disk directory**:
 4. **No command execution on activation.** The `!`cmd`` substitution is never
    expanded — activating a skill must not spawn a shell on the host (mirrors the
    upstream trust gate; see `everruns-core` skills / EVE-388).
-5. **Writes stay in the workspace.** Global and system folders are read-only
-   inputs; only the workspace scope is edited through the agent's file tools.
-6. **Absent scopes are silent.** A missing global directory, or a failure to
-   materialize system skills, disables that scope without failing the session.
-7. **Materialization is safe.** System-skill materialization is idempotent and
+5. **Writes are explicit.** Normal file tools edit only the workspace. The
+   dedicated `write_skill` tool may write workspace or global skills when the
+   user asks Yolop to install or modify skills. System skills are read-only.
+6. **Hot install.** Workspace and global scope paths are kept even when the
+   directories do not exist yet. Discovery reads the filesystem on each
+   `list_skills`, `read_skill`, and `activate_skill` call, so a skill installed
+   after Yolop starts is available without restarting.
+7. **Manage workspace/global skills.** `read_skill` returns an installed
+   skill's `SKILL.md` and file manifest. `write_skill` installs or updates a
+   skill in the workspace (`workspace`/`local`) or global (`global`) scope.
+   `write_skill` validates the skill name and `SKILL.md`, requires the
+   frontmatter `name` to match the directory name, bounds extra files, rejects
+   path traversal, and never writes system skills.
+8. **Absent scopes are silent.** A missing workspace/global directory is simply
+   empty until a skill is installed. A failure to materialize system skills
+   disables that scope without failing the session.
+9. **Materialization is safe.** System-skill materialization is idempotent and
    concurrency-safe (atomic per-file writes, skipped when bytes are unchanged),
    so parallel processes do not race on the shared cache directory.
+10. **Management guidance is bundled.** Yolop ships a `skill-management` system
+    skill that tells the agent how to inspect, install, search for, and upgrade
+    skills, including reconstructing `npx skill add ...` style installs by
+    fetching source files directly and writing them with `write_skill`.
 
 ## Ownership Boundary
 
 - This spec and `crate::skills` own scope resolution, discovery, precedence, and
-  the two tools.
+  the skills tools.
 - `everruns_core::skill` owns the `SKILL.md` format, parsing, validation, and
   substitution.
