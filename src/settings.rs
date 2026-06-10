@@ -1,5 +1,6 @@
 // Persistent yolop settings — preferred provider, optional per-provider
-// API tokens, and small behavior toggles.
+// API tokens, per-provider model picks, custom endpoint base URLs, and
+// small behavior toggles.
 //
 // Stored at `<config_dir>/yolop/settings.toml` (`~/.config/yolop/settings.toml`
 // on Linux). The `/setup` capability writes through `SettingsStore` so user
@@ -23,6 +24,12 @@ use toml::Value;
 pub struct Settings {
     pub provider: Option<String>,
     pub tokens: BTreeMap<String, String>,
+    /// Last model spec chosen per provider (full `provider/model [effort]`
+    /// label). Lets `/setup model` survive restarts and provider switches.
+    pub models: BTreeMap<String, String>,
+    /// Endpoint base URLs keyed by provider. Today only `custom` (the
+    /// generic OpenAI-compatible provider) writes here.
+    pub base_urls: BTreeMap<String, String>,
     pub attribution: bool,
 }
 
@@ -31,6 +38,8 @@ impl Default for Settings {
         Self {
             provider: None,
             tokens: BTreeMap::new(),
+            models: BTreeMap::new(),
+            base_urls: BTreeMap::new(),
             attribution: true,
         }
     }
@@ -46,17 +55,22 @@ impl Settings {
             .get("attribution")
             .and_then(Value::as_bool)
             .unwrap_or(true);
-        let mut tokens = BTreeMap::new();
-        if let Some(t) = table.get("tokens").and_then(Value::as_table) {
-            for (k, v) in t {
-                if let Some(s) = v.as_str() {
-                    tokens.insert(k.clone(), s.to_string());
+        let string_map = |key: &str| {
+            let mut map = BTreeMap::new();
+            if let Some(t) = table.get(key).and_then(Value::as_table) {
+                for (k, v) in t {
+                    if let Some(s) = v.as_str() {
+                        map.insert(k.clone(), s.to_string());
+                    }
                 }
             }
-        }
+            map
+        };
         Self {
             provider,
-            tokens,
+            tokens: string_map("tokens"),
+            models: string_map("models"),
+            base_urls: string_map("base_urls"),
             attribution,
         }
     }
@@ -69,13 +83,18 @@ impl Settings {
         if !self.attribution {
             table.insert("attribution".to_string(), Value::Boolean(false));
         }
-        if !self.tokens.is_empty() {
-            let mut tokens_table = Table::new();
-            for (k, v) in &self.tokens {
-                tokens_table.insert(k.clone(), Value::String(v.clone()));
+        let mut insert_map = |key: &str, map: &BTreeMap<String, String>| {
+            if !map.is_empty() {
+                let mut t = Table::new();
+                for (k, v) in map {
+                    t.insert(k.clone(), Value::String(v.clone()));
+                }
+                table.insert(key.to_string(), Value::Table(t));
             }
-            table.insert("tokens".to_string(), Value::Table(tokens_table));
-        }
+        };
+        insert_map("tokens", &self.tokens);
+        insert_map("models", &self.models);
+        insert_map("base_urls", &self.base_urls);
         table
     }
 
@@ -85,6 +104,14 @@ impl Settings {
 
     pub fn has_token(&self, provider: &str) -> bool {
         self.tokens.contains_key(provider)
+    }
+
+    pub fn model_for(&self, provider: &str) -> Option<&str> {
+        self.models.get(provider).map(String::as_str)
+    }
+
+    pub fn base_url_for(&self, provider: &str) -> Option<&str> {
+        self.base_urls.get(provider).map(String::as_str)
     }
 
     pub fn attribution_enabled(&self) -> bool {
@@ -205,6 +232,26 @@ impl SettingsStore {
         save_to(&self.path, &guard)?;
         Ok(existed)
     }
+
+    pub fn set_model(&self, provider: String, spec: String) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.models.insert(provider, spec);
+        save_to(&self.path, &guard)
+    }
+
+    pub fn set_base_url(&self, provider: String, url: String) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.base_urls.insert(provider, url);
+        save_to(&self.path, &guard)
+    }
+
+    /// Returns whether a base URL was actually present before removal.
+    pub fn clear_base_url(&self, provider: &str) -> Result<bool> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let existed = guard.base_urls.remove(provider).is_some();
+        save_to(&self.path, &guard)?;
+        Ok(existed)
+    }
 }
 
 #[cfg(test)]
@@ -310,6 +357,47 @@ mod tests {
         let store = SettingsStore::open(path);
         let removed = store.clear_token("openai").expect("clear");
         assert!(!removed);
+    }
+
+    #[test]
+    fn model_and_base_url_roundtrip_via_disk() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store
+            .set_model("openai".to_string(), "openai/gpt-5.5 high".to_string())
+            .expect("save model");
+        store
+            .set_base_url("custom".to_string(), "http://localhost:8000/v1".to_string())
+            .expect("save base url");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(on_disk.contains("[models]"), "got: {on_disk}");
+        assert!(on_disk.contains("[base_urls]"), "got: {on_disk}");
+
+        let reloaded = SettingsStore::open(path);
+        assert_eq!(
+            reloaded.snapshot().model_for("openai"),
+            Some("openai/gpt-5.5 high")
+        );
+        assert_eq!(
+            reloaded.snapshot().base_url_for("custom"),
+            Some("http://localhost:8000/v1")
+        );
+        assert!(reloaded.snapshot().model_for("anthropic").is_none());
+    }
+
+    #[test]
+    fn clearing_base_url_reports_presence() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path);
+        assert!(!store.clear_base_url("custom").expect("clear absent"));
+        store
+            .set_base_url("custom".to_string(), "http://localhost:1234/v1".to_string())
+            .expect("save");
+        assert!(store.clear_base_url("custom").expect("clear present"));
+        assert!(store.snapshot().base_url_for("custom").is_none());
     }
 
     #[test]

@@ -384,6 +384,9 @@ const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 const DEFAULT_OLLAMA_API_KEY: &str = "ollama";
+// Generic OpenAI-compatible servers usually ignore the bearer token, but the
+// OpenAI client requires one — same trick as Ollama's placeholder key.
+const DEFAULT_CUSTOM_API_KEY: &str = "unused";
 
 #[derive(Clone, Debug)]
 pub enum ProviderChoice {
@@ -407,6 +410,16 @@ pub enum ProviderChoice {
         model: String,
         base_url: String,
     },
+    /// Generic OpenAI-compatible endpoint (vLLM, llama.cpp, LM Studio,
+    /// hosted gateways, …). Unlike the other variants the base URL is not
+    /// carried here: it is user configuration, resolved from
+    /// `CUSTOM_BASE_URL` or the settings file at request-build time in
+    /// [`Self::model_with_provider`], so a bare `custom/model` spec can be
+    /// parsed without access to settings.
+    Custom {
+        model: String,
+        reasoning_effort: Option<String>,
+    },
     Sim,
 }
 
@@ -418,6 +431,7 @@ pub const SUPPORTED_PROVIDERS: &[&str] = &[
     "google",
     "openrouter",
     "ollama",
+    "custom",
     "llmsim",
 ];
 
@@ -459,6 +473,14 @@ impl ProviderChoice {
                 base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
             };
         }
+        if env_non_empty("CUSTOM_BASE_URL").is_some() || settings.base_url_for("custom").is_some() {
+            return Self::Custom {
+                model: env_or_default("EVERRUNS_CLI_MODEL", ""),
+                reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                    "EVERRUNS_CLI_REASONING_EFFORT",
+                )),
+            };
+        }
         Self::default_openai()
     }
 
@@ -492,6 +514,13 @@ impl ProviderChoice {
                 None => format!("openrouter/{model}"),
             },
             Self::Ollama { model, .. } => format!("ollama/{model}"),
+            Self::Custom {
+                model,
+                reasoning_effort,
+            } => match reasoning_effort {
+                Some(effort) => format!("custom/{model} {effort}"),
+                None => format!("custom/{model}"),
+            },
             Self::Sim => "llmsim/llmsim-yolop".to_string(),
         }
     }
@@ -504,6 +533,7 @@ impl ProviderChoice {
             Self::Google { .. } => "google",
             Self::OpenRouter { .. } => "openrouter",
             Self::Ollama { .. } => "ollama",
+            Self::Custom { .. } => "custom",
             Self::Sim => "llmsim",
         }
     }
@@ -532,11 +562,37 @@ impl ProviderChoice {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL),
                 base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
             }),
+            // No sensible default model exists for an arbitrary endpoint; an
+            // empty model is rejected later by `model_with_provider` so the
+            // setup wizard (or a saved model from settings) must fill it in.
+            "custom" => Ok(Self::Custom {
+                model: env_or_default("EVERRUNS_CLI_MODEL", ""),
+                reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                    "EVERRUNS_CLI_REASONING_EFFORT",
+                )),
+            }),
             "llmsim" => Ok(Self::Sim),
             other => Err(anyhow!(
                 "unknown provider {other}; expected one of {}",
                 SUPPORTED_PROVIDERS.join(", ")
             )),
+        }
+    }
+
+    /// Overlay the model spec persisted for this provider in settings, if
+    /// any. `EVERRUNS_CLI_MODEL` keeps precedence (env beats settings,
+    /// matching token resolution); a stored spec that fails to parse or
+    /// names a different provider is ignored rather than fatal.
+    pub fn with_saved_model(self, settings: &Settings) -> Self {
+        if env_non_empty("EVERRUNS_CLI_MODEL").is_some() {
+            return self;
+        }
+        let Some(spec) = settings.model_for(self.provider_name()) else {
+            return self;
+        };
+        match self.resolve_model_spec(spec) {
+            Ok(saved) if saved.provider_name() == self.provider_name() => saved,
+            _ => self,
         }
     }
 
@@ -622,6 +678,10 @@ impl ProviderChoice {
                     base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
                 })
             }
+            "custom" => Ok(Self::Custom {
+                model: model.to_string(),
+                reasoning_effort: normalize_reasoning_effort(reasoning_effort),
+            }),
             "llmsim" | "sim" => {
                 if reasoning_effort.is_some() {
                     return Err(anyhow!("offline llmsim does not support reasoning effort"));
@@ -684,6 +744,10 @@ impl ProviderChoice {
                     base_url: base_url.clone(),
                 })
             }
+            Self::Custom { .. } => Ok(Self::Custom {
+                model,
+                reasoning_effort: normalize_reasoning_effort(reasoning_effort),
+            }),
             Self::Sim => {
                 if reasoning_effort.is_some() {
                     return Err(anyhow!("offline llmsim does not support reasoning effort"));
@@ -718,8 +782,12 @@ impl ProviderChoice {
                 base_url: base_url.clone(),
                 reasoning_effort: normalize_reasoning_effort(Some(effort.to_string())),
             }),
+            Self::Custom { model, .. } => Ok(Self::Custom {
+                model: model.clone(),
+                reasoning_effort: normalize_reasoning_effort(Some(effort.to_string())),
+            }),
             other => Err(anyhow!(
-                "reasoning effort only applies to OpenAI and OpenRouter models (current provider: {})",
+                "reasoning effort only applies to OpenAI, OpenRouter, and custom models (current provider: {})",
                 other.provider_name()
             )),
         }
@@ -793,6 +861,27 @@ impl ProviderChoice {
                     base_url: Some(base_url.clone()),
                 })
             }
+            ProviderChoice::Custom { model, .. } => {
+                let base_url = custom_base_url(settings).ok_or_else(|| {
+                    anyhow!("custom endpoint base URL not set (set CUSTOM_BASE_URL or run /setup)")
+                })?;
+                if model.trim().is_empty() {
+                    return Err(anyhow!(
+                        "custom endpoint model not set (run /setup or pass --model)"
+                    ));
+                }
+                // Chat Completions is the lowest common denominator that
+                // virtually every OpenAI-compatible server implements; the
+                // Responses driver would break on most of them.
+                let key = resolve_token(settings, "custom", &["CUSTOM_API_KEY"])
+                    .unwrap_or_else(|| DEFAULT_CUSTOM_API_KEY.to_string());
+                Ok(ModelWithProvider {
+                    model: model.clone(),
+                    provider_type: LlmProviderType::OpenaiCompletions,
+                    api_key: Some(key),
+                    base_url: Some(base_url),
+                })
+            }
             ProviderChoice::Sim => Ok(ModelWithProvider {
                 model: "llmsim-yolop".into(),
                 provider_type: LlmProviderType::LlmSim,
@@ -838,6 +927,12 @@ impl ProviderChoice {
                 api_key: Some(DEFAULT_OLLAMA_API_KEY.to_string()),
                 base_url: Some(base_url.clone()),
             },
+            ProviderChoice::Custom { model, .. } => ModelWithProvider {
+                model: model.clone(),
+                provider_type: LlmProviderType::OpenaiCompletions,
+                api_key: None,
+                base_url: env_non_empty("CUSTOM_BASE_URL"),
+            },
             ProviderChoice::Sim => ModelWithProvider {
                 model: "llmsim-yolop".into(),
                 provider_type: LlmProviderType::LlmSim,
@@ -854,6 +949,9 @@ impl ProviderChoice {
                 reasoning_effort, ..
             }
             | Self::OpenRouter {
+                reasoning_effort, ..
+            }
+            | Self::Custom {
                 reasoning_effort, ..
             } => reasoning_effort.as_ref(),
             _ => None,
@@ -878,6 +976,12 @@ fn env_non_empty(name: &str) -> Option<String> {
 /// `GOOGLE_API_KEY`; the Google docs lean on `GEMINI_API_KEY` so it wins.
 fn google_api_key() -> Option<String> {
     env_non_empty("GEMINI_API_KEY").or_else(|| env_non_empty("GOOGLE_API_KEY"))
+}
+
+/// Base URL for the generic OpenAI-compatible provider. Env beats the
+/// settings file, mirroring token resolution.
+pub(crate) fn custom_base_url(settings: &Settings) -> Option<String> {
+    env_non_empty("CUSTOM_BASE_URL").or_else(|| settings.base_url_for("custom").map(str::to_string))
 }
 
 /// Env vars beat settings — a per-run override always wins over a saved
@@ -971,6 +1075,9 @@ pub struct BuiltRuntime {
     pub handles: RuntimeHandles,
     pub startup: StartupInfo,
     pub model: ModelState,
+    /// Shared settings store, also held by `SetupCapability`. The TUI reads
+    /// it to show per-provider connection status in the setup overlay.
+    pub settings: Arc<SettingsStore>,
     /// Receiver for terminal-side commands emitted by
     /// [`ClientCommandsCapability`]. The TUI drains it in its event loop;
     /// other hosts ignore it. Empty/never-written when
@@ -1235,7 +1342,8 @@ pub async fn build_with_options(
         | ProviderChoice::OpenAi { .. }
         | ProviderChoice::Google { .. }
         | ProviderChoice::OpenRouter { .. }
-        | ProviderChoice::Ollama { .. } => match provider.model_with_provider(&settings_snapshot) {
+        | ProviderChoice::Ollama { .. }
+        | ProviderChoice::Custom { .. } => match provider.model_with_provider(&settings_snapshot) {
             Ok(model) => model,
             Err(_) if setup_recommended => provider.model_without_stored_key(),
             Err(err) => return Err(err),
@@ -1324,6 +1432,7 @@ pub async fn build_with_options(
             mcp_server_names,
         },
         model: ModelState::new(provider_state),
+        settings,
         ui_rx,
     })
 }
@@ -1569,6 +1678,72 @@ mod tests {
         assert!(unknown.message.contains("model <id|provider/id>"));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_url_and_custom_model_persist_through_settings() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let settings_for_assert = settings.clone();
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let run = |arg: &str| {
+            let runtime = built.handles.runtime.clone();
+            let session_id = built.handles.session_id;
+            let arg = arg.to_string();
+            async move {
+                runtime
+                    .execute_command(
+                        session_id,
+                        ExecuteCommandRequest {
+                            name: "setup".to_string(),
+                            arguments: Some(arg),
+                            controls: None,
+                        },
+                    )
+                    .await
+                    .expect("execute setup")
+            }
+        };
+
+        let bad_provider = run("url ollama http://localhost:1234/v1").await;
+        assert!(!bad_provider.success, "{}", bad_provider.message);
+
+        let bad_scheme = run("url custom ftp://example.com").await;
+        assert!(!bad_scheme.success, "{}", bad_scheme.message);
+
+        let stored = run("url custom http://localhost:8000/v1").await;
+        assert!(stored.success, "{}", stored.message);
+        assert_eq!(
+            settings_for_assert.snapshot().base_url_for("custom"),
+            Some("http://localhost:8000/v1")
+        );
+
+        let model = run("model custom/qwen3-coder").await;
+        assert!(model.success, "{}", model.message);
+        assert_eq!(built.model.provider_label(), "custom/qwen3-coder");
+        // Model switches persist so the choice survives a restart.
+        let snapshot = settings_for_assert.snapshot();
+        assert_eq!(snapshot.provider.as_deref(), Some("custom"));
+        assert_eq!(snapshot.model_for("custom"), Some("custom/qwen3-coder"));
+
+        let cleared = run("url custom clear").await;
+        assert!(cleared.success, "{}", cleared.message);
+        assert!(
+            settings_for_assert
+                .snapshot()
+                .base_url_for("custom")
+                .is_none()
+        );
+    }
+
     #[test]
     fn model_spec_can_switch_to_anthropic() {
         let provider = ProviderChoice::OpenAi {
@@ -1684,11 +1859,100 @@ mod tests {
             std::env::remove_var("GOOGLE_API_KEY");
             std::env::remove_var("OLLAMA_BASE_URL");
             std::env::remove_var("OLLAMA_API_KEY");
+            std::env::remove_var("CUSTOM_BASE_URL");
         }
 
         let provider = ProviderChoice::from_env_or_settings(&Settings::default());
 
         assert_eq!(provider.provider_name(), "openai");
+    }
+
+    #[test]
+    fn model_spec_accepts_custom_provider_name_with_effort() {
+        let provider = ProviderChoice::Sim;
+        let next = provider
+            .resolve_model_spec("custom/qwen3-coder high")
+            .unwrap();
+
+        assert_eq!(next.label(), "custom/qwen3-coder high");
+        assert_eq!(next.provider_name(), "custom");
+    }
+
+    #[test]
+    fn custom_model_with_provider_resolves_saved_base_url_and_placeholder_key() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("CUSTOM_BASE_URL");
+            std::env::remove_var("CUSTOM_API_KEY");
+        }
+        let mut settings = Settings::default();
+        settings
+            .base_urls
+            .insert("custom".to_string(), "http://localhost:8000/v1".to_string());
+
+        let provider = ProviderChoice::Custom {
+            model: "qwen3-coder".to_string(),
+            reasoning_effort: None,
+        };
+        let mw = provider.model_with_provider(&settings).unwrap();
+
+        assert_eq!(mw.model, "qwen3-coder");
+        assert_eq!(mw.base_url.as_deref(), Some("http://localhost:8000/v1"));
+        assert_eq!(mw.api_key.as_deref(), Some(DEFAULT_CUSTOM_API_KEY));
+    }
+
+    #[test]
+    fn custom_model_with_provider_requires_base_url_and_model() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("CUSTOM_BASE_URL");
+            std::env::remove_var("CUSTOM_API_KEY");
+        }
+        let no_url = ProviderChoice::Custom {
+            model: "qwen3-coder".to_string(),
+            reasoning_effort: None,
+        };
+        let err = no_url
+            .model_with_provider(&Settings::default())
+            .unwrap_err();
+        assert!(err.to_string().contains("base URL"), "got: {err}");
+
+        let mut settings = Settings::default();
+        settings
+            .base_urls
+            .insert("custom".to_string(), "http://localhost:8000/v1".to_string());
+        let no_model = ProviderChoice::Custom {
+            model: String::new(),
+            reasoning_effort: None,
+        };
+        let err = no_model.model_with_provider(&settings).unwrap_err();
+        assert!(err.to_string().contains("model not set"), "got: {err}");
+    }
+
+    #[test]
+    fn with_saved_model_overlays_persisted_spec_for_same_provider() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("EVERRUNS_CLI_MODEL");
+        }
+        let mut settings = Settings::default();
+        settings
+            .models
+            .insert("openai".to_string(), "openai/gpt-5.4 high".to_string());
+        // A spec saved under the wrong key must not switch providers.
+        settings
+            .models
+            .insert("anthropic".to_string(), "openai/gpt-5.5".to_string());
+
+        let openai = ProviderChoice::default_for_provider_name("openai")
+            .unwrap()
+            .with_saved_model(&settings);
+        assert_eq!(openai.label(), "openai/gpt-5.4 high");
+
+        let anthropic = ProviderChoice::default_for_provider_name("anthropic")
+            .unwrap()
+            .with_saved_model(&settings);
+        assert_eq!(anthropic.label(), "anthropic/claude-sonnet-4-5");
     }
 
     #[test]
@@ -1851,7 +2115,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("only applies to OpenAI and OpenRouter")
+                .contains("only applies to OpenAI, OpenRouter, and custom")
         );
     }
 

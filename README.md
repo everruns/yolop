@@ -106,9 +106,13 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 | OpenRouter | `OPENROUTER_API_KEY`                  | `openai/gpt-5.2`  |
 | Google     | `GEMINI_API_KEY` / `GOOGLE_API_KEY`   | `gemini-2.5-flash` |
 | Ollama     | `OLLAMA_BASE_URL` / `OLLAMA_API_KEY`  | `llama3.2`        |
+| Custom     | `CUSTOM_BASE_URL` (+ optional `CUSTOM_API_KEY`) | — (set via `/setup`) |
 | llmsim     | none (offline simulator)              | —                 |
 
 Pick explicitly with `--provider`, override the model with `-m/--model`.
+**Custom** is any OpenAI-compatible Chat Completions endpoint (vLLM,
+llama.cpp, LM Studio, hosted gateways, …): point `CUSTOM_BASE_URL` at it or
+configure the base URL, optional key, and model interactively via `/setup`.
 
 ### Git attribution
 
@@ -186,13 +190,13 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 | Flag                       | Description                                                          |
 | -------------------------- | -------------------------------------------------------------------- |
 | `-C, --cwd <PATH>`         | Workspace root (default: current dir)                                |
-| `--provider <P>`           | Force `anthropic`, `openai`, `google`, `openrouter`, `ollama`, or `llmsim` |
+| `--provider <P>`           | Force `anthropic`, `openai`, `google`, `openrouter`, `ollama`, `custom`, or `llmsim` |
 | `-m, --model <ID>`         | Override the model id for the chosen provider                        |
 | `-p, --print <PROMPT>`     | Run one prompt non-interactively and print the result                |
 | `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
 | `--session <ID>`           | Resume a previous session by id                                      |
 | `--session-dir <PATH>`     | Override the parent directory for session folders                    |
-| `--reasoning-effort <E>`   | OpenAI/OpenRouter reasoning effort (`minimal` / `low` / `medium` / `high`) |
+| `--reasoning-effort <E>`   | OpenAI/OpenRouter/custom reasoning effort (`minimal` / `low` / `medium` / `high`) |
 
 ### Commands
 
@@ -215,35 +219,44 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 | `GOOGLE_BASE_URL`               | Optional, defaults to `https://generativelanguage.googleapis.com/v1beta/openai` |
 | `OLLAMA_BASE_URL`               | Select Ollama, defaults to `http://localhost:11434/v1`       |
 | `OLLAMA_API_KEY`                | Optional, defaults to `ollama` for local Ollama              |
-| `EVERRUNS_CLI_MODEL`            | Override the auto-selected default model                     |
-| `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI/OpenRouter reasoning effort override                  |
+| `CUSTOM_BASE_URL`               | Select the custom OpenAI-compatible endpoint (beats the saved base URL) |
+| `CUSTOM_API_KEY`                | Optional key for the custom endpoint (a placeholder is sent otherwise) |
+| `EVERRUNS_CLI_MODEL`            | Override the auto-selected default model (beats the saved model) |
+| `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI/OpenRouter/custom reasoning effort override           |
 
 ### Settings
 
-A small TOML settings file persists the preferred provider and (optionally)
-provider API tokens across runs: `<config_dir>/yolop/settings.toml` —
+A small TOML settings file persists the preferred provider, per-provider
+model picks, custom endpoint base URLs, and (optionally) provider API tokens
+across runs: `<config_dir>/yolop/settings.toml` —
 `~/.config/yolop/settings.toml` on Linux,
 `~/Library/Application Support/yolop/settings.toml` on macOS,
 `%APPDATA%\yolop\settings.toml` on Windows.
 
-The TUI's `/setup`, `/model`, and `/effort` commands can update the active
-provider, saved API keys, current model, OpenAI/OpenRouter reasoning effort,
-or offline demo mode. Saved provider/API-key choices are written to this file.
+The TUI's `/setup`, `/model`, and `/effort` commands update the active
+provider, saved API keys, current model, reasoning effort, or offline demo
+mode. The `/setup` provider picker shows which providers are already
+connected (env key, saved key, or no key needed); selecting a connected one
+jumps straight to model selection, and `c` opens key/base-URL configuration
+for any provider. Provider, model, and custom base URL choices are written
+to this file.
 
 Provider resolution at startup:
 
 1. `--provider` flag (always wins)
 2. Saved `provider` setting
 3. Auto-detect: the first provider in the order **OpenAI → Anthropic →
-   OpenRouter → Google → Ollama** with either a matching env var or a saved
-   token (the provider order decides the tiebreak, not the credential source)
+   OpenRouter → Google → Ollama → Custom** with either a matching env var or
+   a saved token/base URL (the provider order decides the tiebreak, not the
+   credential source)
 4. Fall back to OpenAI's default model and open setup so a provider/API key
    can be configured
 
-At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always
-beats the saved token, so a per-run env override is always possible.
-The setup wizard can also switch models for the current session. OpenAI and
-OpenRouter reasoning effort can be changed at runtime with the `/effort` modal
+The model saved by `/setup model` for the resolved provider is restored,
+unless `-m/--model` or `EVERRUNS_CLI_MODEL` overrides it. At runtime, the
+per-provider env var (`OPENAI_API_KEY`, etc.) always beats the saved token,
+so a per-run env override is always possible. OpenAI, OpenRouter, and custom
+endpoint reasoning effort can be changed at runtime with the `/effort` modal
 or `/setup effort <level>` (for example, `high` or `medium`).
 
 `/setup` can store an API token under `[tokens]` in the settings file. The

@@ -141,6 +141,8 @@ enum ProviderArg {
     Google,
     Openrouter,
     Ollama,
+    /// Generic OpenAI-compatible endpoint (CUSTOM_BASE_URL / saved base URL).
+    Custom,
     #[value(name = "llmsim", alias = "sim")]
     Sim,
 }
@@ -152,6 +154,7 @@ fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
         ProviderArg::Google => "google",
         ProviderArg::Openrouter => "openrouter",
         ProviderArg::Ollama => "ollama",
+        ProviderArg::Custom => "custom",
         ProviderArg::Sim => "llmsim",
     }
 }
@@ -176,6 +179,9 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
     } else {
         ProviderChoice::from_env_or_settings(&snapshot)
     };
+    // A model persisted by `/setup model` for the chosen provider wins over
+    // the provider default; CLI flags still override it below.
+    let base = base.with_saved_model(&snapshot);
     let selected = match (base, cli.model.clone()) {
         (ProviderChoice::Anthropic { .. }, Some(m)) => ProviderChoice::Anthropic { model: m },
         (
@@ -205,6 +211,15 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
         (ProviderChoice::Ollama { base_url, .. }, Some(m)) => {
             ProviderChoice::Ollama { model: m, base_url }
         }
+        (
+            ProviderChoice::Custom {
+                reasoning_effort, ..
+            },
+            Some(m),
+        ) => ProviderChoice::Custom {
+            model: m,
+            reasoning_effort: cli_reasoning_effort.clone().or(reasoning_effort),
+        },
         (other, _) => other,
     };
     match (selected, cli_reasoning_effort) {
@@ -228,6 +243,16 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
         ) => ProviderChoice::OpenRouter {
             model,
             base_url,
+            reasoning_effort: effort.or(reasoning_effort),
+        },
+        (
+            ProviderChoice::Custom {
+                model,
+                reasoning_effort,
+            },
+            effort,
+        ) => ProviderChoice::Custom {
+            model,
             reasoning_effort: effort.or(reasoning_effort),
         },
         (other, _) => other,
@@ -496,6 +521,7 @@ async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
         handles,
         startup,
         model,
+        settings: _,
         ui_rx: _,
     } = runtime;
     let color = io::stdout().is_terminal();
@@ -685,6 +711,37 @@ mod tests {
             provider.label(),
             "openrouter/nvidia/nemotron-3-super-120b-a12b"
         );
+    }
+
+    #[test]
+    fn pick_provider_applies_saved_model_for_saved_provider() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("EVERRUNS_CLI_MODEL");
+        }
+        let tmp = tempfile::tempdir().expect("settings tempdir");
+        let path = tmp.path().join("settings.toml");
+        std::fs::write(
+            &path,
+            "provider = \"openai\"\n\n[models]\nopenai = \"openai/gpt-5.4 high\"\n",
+        )
+        .expect("write settings");
+        let settings = SettingsStore::open(path);
+        let cli = Cli {
+            command: None,
+            cwd: None,
+            provider: None,
+            model: None,
+            reasoning_effort: None,
+            print: None,
+            acp: false,
+            session: None,
+            session_dir: None,
+        };
+
+        let provider = pick_provider(&cli, &settings);
+
+        assert_eq!(provider.label(), "openai/gpt-5.4 high");
     }
 
     #[test]
