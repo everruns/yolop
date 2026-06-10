@@ -30,7 +30,7 @@ include_dir = "0.7"
 # onto the broken releases; the ratatui-core pin cascades to the rest of the
 # family. Tracked in #91 — drop both pins once it is resolved.
 ratatui = "=0.30.0"
-ratatui-core = "=0.1.0"
+ratatui-core = "=0.1.1"
 # Already in the tree via the everruns driver crates; used directly only for
 # the OpenAI-compatible `GET <base>/models` discovery fallback.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
