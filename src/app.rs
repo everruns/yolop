@@ -84,7 +84,7 @@ const MAX_TERMINAL_IO_FAILURES: usize = 5;
 const COMPACT_CHROME_HEIGHT: u16 = 5;
 const MAX_INPUT_HEIGHT: u16 = 12;
 const RECENT_TRANSCRIPT_SOURCE_LINES: usize = 80;
-const RECENT_TRANSCRIPT_MAX_TEXT_CHARS: usize = 4_000;
+const RECENT_TRANSCRIPT_MAX_TEXT_BYTES: usize = 4_000;
 const ACCENT_BLUE: Color = Color::Rgb(45, 91, 158);
 const ACCENT_GOLD: Color = Color::Rgb(126, 94, 19);
 const TEXT_PRIMARY: Color = Color::Rgb(230, 230, 232);
@@ -2527,42 +2527,49 @@ fn recent_transcript_lines(app: &App, width: usize, max_lines: usize) -> Vec<Lin
         return Vec::new();
     }
 
-    let mut rendered = Vec::new();
-    let mut visible = app
+    let mut chunks = Vec::new();
+    let mut total_lines = 0;
+    let mut newer_author: Option<Author> = None;
+
+    for chat in app
         .lines
         .iter()
         .rev()
         .filter(|line| !matches!(line.author, Author::System))
         .take(RECENT_TRANSCRIPT_SOURCE_LINES)
-        .collect::<Vec<_>>();
-    visible.reverse();
-
-    for (index, chat) in visible.iter().enumerate() {
+    {
         let chat = bounded_recent_chat_line(chat);
-        append_chat_lines(&mut rendered, &chat, width);
-        if should_insert_chat_gap(
-            &chat.author,
-            visible.get(index + 1).map(|line| &line.author),
-        ) {
-            rendered.push(Line::from(""));
+        let mut chunk = Vec::new();
+        append_chat_lines(&mut chunk, &chat, width);
+        if should_insert_chat_gap(&chat.author, newer_author.as_ref()) {
+            chunk.push(Line::from(""));
         }
+
+        if total_lines + chunk.len() > max_lines {
+            let remaining = max_lines.saturating_sub(total_lines);
+            if remaining > 0 {
+                chunks.push(chunk.split_off(chunk.len().saturating_sub(remaining)));
+            }
+            break;
+        }
+
+        total_lines += chunk.len();
+        newer_author = Some(chat.author);
+        chunks.push(chunk);
     }
 
-    if rendered.len() > max_lines {
-        rendered.split_off(rendered.len() - max_lines)
-    } else {
-        rendered
-    }
+    chunks.reverse();
+    chunks.into_iter().flatten().collect()
 }
 
 fn bounded_recent_chat_line(chat: &ChatLine) -> ChatLine {
-    if chat.text.chars().count() <= RECENT_TRANSCRIPT_MAX_TEXT_CHARS {
+    if chat.text.len() <= RECENT_TRANSCRIPT_MAX_TEXT_BYTES {
         return chat.clone();
     }
 
     ChatLine {
         author: chat.author.clone(),
-        text: truncate_tail_chars(&chat.text, RECENT_TRANSCRIPT_MAX_TEXT_CHARS),
+        text: truncate_tail_bytes(&chat.text, RECENT_TRANSCRIPT_MAX_TEXT_BYTES),
     }
 }
 
@@ -2976,6 +2983,24 @@ fn truncate_tail_chars(text: &str, max_chars: usize) -> String {
     out.push('…');
     out.extend(text.chars().skip(skip));
     out
+}
+
+fn truncate_tail_bytes(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    if max_bytes == 0 {
+        return String::new();
+    }
+    if max_bytes <= '…'.len_utf8() {
+        return "…".to_string();
+    }
+
+    let mut start = text.len().saturating_sub(max_bytes - '…'.len_utf8());
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &text[start..])
 }
 
 fn truncate_end_chars(text: &str, max_chars: usize) -> String {
@@ -4540,18 +4565,44 @@ mod tests {
             author: Author::Assistant,
             text: format!(
                 "{} visible-tail",
-                "hidden-head ".repeat(RECENT_TRANSCRIPT_MAX_TEXT_CHARS)
+                "hidden-head ".repeat(RECENT_TRANSCRIPT_MAX_TEXT_BYTES)
             ),
         });
 
         assert!(
-            bounded.text.chars().count() <= RECENT_TRANSCRIPT_MAX_TEXT_CHARS,
+            bounded.text.len() <= RECENT_TRANSCRIPT_MAX_TEXT_BYTES,
             "bounded text should fit the inline render budget"
         );
         assert!(bounded.text.starts_with('…'), "bounded text: {bounded:?}");
         assert!(
             bounded.text.ends_with("visible-tail"),
             "recent transcript should keep the tail: {bounded:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_viewport_stops_rendering_after_visible_tail_is_full() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.lines.push(ChatLine {
+            author: Author::Assistant,
+            text: "older invisible line".repeat(200),
+        });
+        for index in 0..20 {
+            app.push_user(format!("new line {index}"));
+        }
+
+        let rows = render_app_lines(app, 96, COMPOSER_VIEWPORT_HEIGHT);
+
+        assert!(
+            !rows.iter().any(|row| row.contains("older invisible")),
+            "inline viewport should avoid rendering invisible older entries: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("new line 19")),
+            "inline viewport should keep newest entries: {rows:?}"
         );
     }
 
