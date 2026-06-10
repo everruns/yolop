@@ -125,7 +125,10 @@ Protocol](https://agentclientprotocol.com). Launch it with `--acp` and it
 speaks newline-delimited JSON-RPC 2.0 over stdin/stdout: the editor performs
 the `initialize` handshake, opens a session with `session/new`, and sends
 turns with `session/prompt`; yolop streams back assistant text, reasoning,
-tool calls, and plans as `session/update` notifications.
+tool calls, and plans as `session/update` notifications. Editors can also
+load an existing yolop session with `session/load`; yolop replays the persisted
+conversation history and continues from the same JSONL session log used by
+CLI `--session`.
 
 To set up Zed:
 

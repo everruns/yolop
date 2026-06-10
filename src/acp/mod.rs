@@ -24,7 +24,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::runtime::{self, BuiltRuntime, ProviderChoice};
+use crate::session_log::{legacy_session_log_path, session_dir_path, session_log_path};
 use crate::settings::SettingsStore;
+use everruns_core::typed_id::SessionId as RuntimeSessionId;
 
 pub use server::{RuntimeFactory, serve};
 
@@ -40,11 +42,21 @@ struct ConfigRuntimeFactory {
 
 #[async_trait]
 impl RuntimeFactory for ConfigRuntimeFactory {
-    async fn build(&self, cwd: PathBuf) -> Result<BuiltRuntime> {
+    fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+        let session_dir = session_dir_path(&self.sessions_dir, session_id);
+        session_log_path(&session_dir).exists()
+            || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+    }
+
+    async fn build(
+        &self,
+        cwd: PathBuf,
+        resume_session_id: Option<RuntimeSessionId>,
+    ) -> Result<BuiltRuntime> {
         runtime::build(
             cwd,
             self.provider.clone(),
-            None,
+            resume_session_id,
             self.sessions_dir.clone(),
             self.settings.clone(),
         )
@@ -93,19 +105,29 @@ mod tests {
     /// runtime, which canonicalizes and retains its paths.
     struct ScriptedFactory {
         config: LlmSimConfig,
+        sessions_dir: PathBuf,
+        settings: Arc<SettingsStore>,
     }
 
     #[async_trait]
     impl RuntimeFactory for ScriptedFactory {
-        async fn build(&self, cwd: PathBuf) -> Result<BuiltRuntime> {
-            let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
-            let settings = Arc::new(SettingsStore::open(sessions.join("settings.toml")));
+        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+            let session_dir = session_dir_path(&self.sessions_dir, session_id);
+            session_log_path(&session_dir).exists()
+                || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+        }
+
+        async fn build(
+            &self,
+            cwd: PathBuf,
+            resume_session_id: Option<RuntimeSessionId>,
+        ) -> Result<BuiltRuntime> {
             build_with_options(
                 cwd,
                 ProviderChoice::Sim,
-                None,
-                sessions,
-                settings,
+                resume_session_id,
+                self.sessions_dir.clone(),
+                self.settings.clone(),
                 BuildOptions {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
                     ..BuildOptions::default()
@@ -176,7 +198,13 @@ mod tests {
     {
         let (client_w, agent_r) = tokio::io::duplex(64 * 1024);
         let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
-        let factory = Arc::new(ScriptedFactory { config });
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        let settings = Arc::new(SettingsStore::open(sessions.join("settings.toml")));
+        let factory = Arc::new(ScriptedFactory {
+            config,
+            sessions_dir: sessions,
+            settings,
+        });
         tokio::spawn(async move {
             let _ = serve(agent_r, agent_w, factory).await;
         });
@@ -257,6 +285,71 @@ mod tests {
         })?
     }
 
+    async fn send_json(w: &mut DuplexStream, value: Value) {
+        let line = value.to_string();
+        w.write_all(line.as_bytes()).await.unwrap();
+        w.write_all(b"\n").await.unwrap();
+        w.flush().await.unwrap();
+    }
+
+    async fn next_json(reader: &mut Lines<BufReader<DuplexStream>>) -> Value {
+        let line = tokio::time::timeout(Duration::from_secs(15), reader.next_line())
+            .await
+            .expect("timed out")
+            .expect("read line")
+            .expect("stream open");
+        serde_json::from_str(&line).expect("valid json")
+    }
+
+    async fn collect_until_response_id(
+        reader: &mut Lines<BufReader<DuplexStream>>,
+        id: i64,
+    ) -> (Value, Vec<Value>) {
+        let mut updates = Vec::new();
+        loop {
+            let msg = next_json(reader).await;
+            if msg.get("method").and_then(Value::as_str) == Some("session/update") {
+                updates.push(msg);
+                continue;
+            }
+            if msg.get("id").and_then(Value::as_i64) == Some(id)
+                && (msg.get("result").is_some() || msg.get("error").is_some())
+            {
+                return (msg, updates);
+            }
+        }
+    }
+
+    fn start_raw_server(
+        config: LlmSimConfig,
+        sessions_dir: PathBuf,
+    ) -> (
+        DuplexStream,
+        Lines<BufReader<DuplexStream>>,
+        tokio::task::JoinHandle<Result<()>>,
+    ) {
+        let (client_w, agent_r) = tokio::io::duplex(64 * 1024);
+        let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
+        let settings = Arc::new(SettingsStore::open(sessions_dir.join("settings.toml")));
+        let factory = Arc::new(ScriptedFactory {
+            config,
+            sessions_dir,
+            settings,
+        });
+        let server = tokio::spawn(async move { serve(agent_r, agent_w, factory).await });
+        (client_w, BufReader::new(client_r).lines(), server)
+    }
+
+    fn update_texts(updates: &[Value], kind: &str) -> Vec<String> {
+        updates
+            .iter()
+            .filter_map(|msg| msg.get("params")?.get("update")?.as_object())
+            .filter(|update| update.get("sessionUpdate").and_then(Value::as_str) == Some(kind))
+            .filter_map(|update| update.get("content")?.get("text").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    }
+
     #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
     #[request(method = "does/not/exist", response = Value)]
     struct UnknownRequest {}
@@ -269,8 +362,127 @@ mod tests {
     async fn initialize_advertises_protocol_version_and_capabilities() {
         let init = with_sdk_client(fixed("hi"), |client| async move { Ok(client.init) }).await;
         assert_eq!(init.protocol_version, protocol::PROTOCOL_VERSION);
-        assert!(!init.agent_capabilities.load_session);
+        assert!(init.agent_capabilities.load_session);
         assert!(init.agent_capabilities.prompt_capabilities.embedded_context);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn load_session_replays_history_and_continues_turns() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let sessions_dir = sessions.path().to_path_buf();
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+
+        let (mut first_w, mut first_reader, first_server) =
+            start_raw_server(fixed("first answer"), sessions_dir.clone());
+        send_json(
+            &mut first_w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        let (init, _) = collect_until_response_id(&mut first_reader, 0).await;
+        assert_eq!(init["result"]["agentCapabilities"]["loadSession"], true);
+
+        send_json(
+            &mut first_w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd.to_str().unwrap(), "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut first_reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string();
+
+        send_json(
+            &mut first_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "first prompt" }] },
+            }),
+        )
+        .await;
+        let (prompt_response, first_updates) =
+            collect_until_response_id(&mut first_reader, 2).await;
+        assert!(prompt_response.get("result").is_some());
+        assert!(
+            update_texts(&first_updates, "agent_message_chunk")
+                .iter()
+                .any(|text| text.contains("first answer")),
+            "expected first prompt response in updates: {first_updates:?}"
+        );
+
+        drop(first_w);
+        drop(first_reader);
+        tokio::time::timeout(Duration::from_secs(10), first_server)
+            .await
+            .expect("first server must stop")
+            .expect("first server joins")
+            .expect("first server returns Ok");
+
+        let (mut second_w, mut second_reader, second_server) =
+            start_raw_server(fixed("second answer"), sessions_dir);
+        send_json(
+            &mut second_w,
+            json!({ "jsonrpc": "2.0", "id": 10, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        let _ = collect_until_response_id(&mut second_reader, 10).await;
+
+        send_json(
+            &mut second_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 11,
+                "method": "session/load",
+                "params": { "sessionId": session_id, "cwd": cwd.to_str().unwrap(), "mcpServers": [] },
+            }),
+        )
+        .await;
+        let (load_response, replay_updates) =
+            collect_until_response_id(&mut second_reader, 11).await;
+        assert!(load_response.get("result").is_some());
+        assert!(
+            update_texts(&replay_updates, "user_message_chunk")
+                .iter()
+                .any(|text| text.contains("first prompt")),
+            "expected replayed user message, got: {replay_updates:?}"
+        );
+        assert!(
+            update_texts(&replay_updates, "agent_message_chunk")
+                .iter()
+                .any(|text| text.contains("first answer")),
+            "expected replayed agent message, got: {replay_updates:?}"
+        );
+
+        send_json(
+            &mut second_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 12,
+                "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "second prompt" }] },
+            }),
+        )
+        .await;
+        let (second_prompt, second_updates) =
+            collect_until_response_id(&mut second_reader, 12).await;
+        assert!(second_prompt.get("result").is_some());
+        assert!(
+            update_texts(&second_updates, "agent_message_chunk")
+                .iter()
+                .any(|text| text.contains("second answer")),
+            "expected loaded session to accept a new prompt, got: {second_updates:?}"
+        );
+
+        drop(second_w);
+        drop(second_reader);
+        tokio::time::timeout(Duration::from_secs(10), second_server)
+            .await
+            .expect("second server must stop")
+            .expect("second server joins")
+            .expect("second server returns Ok");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -393,6 +605,46 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn load_unknown_session_is_invalid_params() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        let (mut client_w, mut reader, server) =
+            start_raw_server(fixed("hi"), sessions.path().to_path_buf());
+
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        let _ = collect_until_response_id(&mut reader, 0).await;
+
+        send_json(
+            &mut client_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/load",
+                "params": { "sessionId": "session_does_not_exist", "cwd": cwd.to_str().unwrap(), "mcpServers": [] },
+            }),
+        )
+        .await;
+        let (response, updates) = collect_until_response_id(&mut reader, 1).await;
+        assert!(
+            updates.is_empty(),
+            "unknown load should not replay: {updates:?}"
+        );
+        assert_eq!(response["error"]["code"], -32602);
+
+        drop(client_w);
+        drop(reader);
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("server must stop")
+            .expect("server joins")
+            .expect("server returns Ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scripted_tool_call_streams_tool_updates() {
         // First scripted turn writes a marker file via bash; second closes
         // the loop with plain text. The bash write runs autonomously.
@@ -488,7 +740,13 @@ mod tests {
 
         let (mut client_w, agent_r) = tokio::io::duplex(64 * 1024);
         let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
-        let factory = Arc::new(ScriptedFactory { config });
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        let settings = Arc::new(SettingsStore::open(sessions.join("settings.toml")));
+        let factory = Arc::new(ScriptedFactory {
+            config,
+            sessions_dir: sessions,
+            settings,
+        });
         let server = tokio::spawn(async move { serve(agent_r, agent_w, factory).await });
         let mut reader = BufReader::new(client_r).lines();
 
