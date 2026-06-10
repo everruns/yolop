@@ -642,7 +642,14 @@ impl ProviderChoice {
                 "claude-haiku-4-5",
                 "claude-sonnet-4-6",
                 "claude-opus-4-6",
+                "claude-opus-4-7",
+                "claude-opus-4-8",
                 "claude-fable-5",
+                // `[1m]` ids are the 1M-context twins of the 200K base models;
+                // the everruns-anthropic driver strips the suffix on the wire
+                // and requests the window via the `context-1m` beta header.
+                "claude-fable-5[1m]",
+                "claude-opus-4-8[1m]",
             ],
             "google" => &["gemini-2.5-flash", "gemini-2.5-pro"],
             "openrouter" => &[
@@ -1848,6 +1855,22 @@ mod tests {
         };
         let next = provider.resolve_model_spec("claude-fable-5").unwrap();
         assert_eq!(next.label(), "anthropic/claude-fable-5");
+    }
+
+    #[test]
+    fn model_suggestions_include_1m_context_variants() {
+        // The `[1m]` ids resolve through the normal Anthropic model-spec path;
+        // the driver handles the suffix (bare id on the wire + `context-1m`
+        // beta header), so yolop only needs to offer them in the picker.
+        let suggestions = ProviderChoice::model_suggestions_for_provider("anthropic");
+        assert!(suggestions.contains(&"claude-fable-5[1m]"));
+        assert!(suggestions.contains(&"claude-opus-4-8[1m]"));
+
+        let provider = ProviderChoice::Anthropic {
+            model: "claude-sonnet-4-5".to_string(),
+        };
+        let next = provider.resolve_model_spec("claude-fable-5[1m]").unwrap();
+        assert_eq!(next.label(), "anthropic/claude-fable-5[1m]");
     }
 
     #[test]
