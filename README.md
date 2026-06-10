@@ -129,7 +129,10 @@ Protocol](https://agentclientprotocol.com). Launch it with `--acp` and it
 speaks newline-delimited JSON-RPC 2.0 over stdin/stdout: the editor performs
 the `initialize` handshake, opens a session with `session/new`, and sends
 turns with `session/prompt`; yolop streams back assistant text, reasoning,
-tool calls, and plans as `session/update` notifications.
+tool calls, and plans as `session/update` notifications. Editors can also
+load an existing yolop session with `session/load`; yolop replays the persisted
+conversation history and continues from the same JSONL session log used by
+CLI `--session`.
 
 To set up Zed:
 
@@ -241,6 +244,14 @@ jumps straight to model selection, and `c` opens key/base-URL configuration
 for any provider. Provider, model, and custom base URL choices are written
 to this file.
 
+The model picker queries the provider's models API live (OpenAI, Anthropic,
+and OpenRouter via the everruns drivers; Ollama, Gemini, and other
+OpenAI-compatible endpoints via `GET <base>/models`), enriched with
+human-readable names and descriptions from the everruns model profiles. A
+curated shortlist is shown until the API responds — or instead of it, when
+listing is unavailable — and the "Custom..." entry always accepts any model
+id.
+
 Provider resolution at startup:
 
 1. `--provider` flag (always wins)
@@ -255,7 +266,8 @@ Provider resolution at startup:
 The model saved by `/setup model` for the resolved provider is restored,
 unless `-m/--model` or `EVERRUNS_CLI_MODEL` overrides it. At runtime, the
 per-provider env var (`OPENAI_API_KEY`, etc.) always beats the saved token,
-so a per-run env override is always possible. OpenAI, OpenRouter, and custom
+so a per-run env override is always possible. `/model <id>` opens the model
+picker prefilled for the active provider. OpenAI, OpenRouter, and custom
 endpoint reasoning effort can be changed at runtime with the `/effort` modal
 or `/setup effort <level>` (for example, `high` or `medium`).
 

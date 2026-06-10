@@ -412,7 +412,7 @@ impl Capability for SetupCapability {
             "url" => self.change_base_url(rest),
             "attribution" => self.change_attribution(rest),
             _ => Ok(failed_result(
-                "usage: /setup — run guided setup; internal forms: status, provider <name>, token <provider> <value|clear>, url <provider> <base-url|clear>, model <id|provider/id> [reasoning-effort], effort <reasoning-effort>, attribution <on|off>".to_string(),
+                "usage: /setup — run guided setup; internal forms: status, provider <name> [model], token <provider> <value|clear>, url <provider> <base-url|clear>, model <id> [reasoning-effort], effort <reasoning-effort>, attribution <on|off>".to_string(),
             )),
         }
     }
@@ -442,8 +442,9 @@ fn setup_command_arg() -> CommandArg {
             .map(|provider| format!("provider {provider}")),
     );
     suggestions.extend(
-        ProviderChoice::model_suggestions()
+        SUPPORTED_PROVIDERS
             .iter()
+            .flat_map(|provider| ProviderChoice::model_suggestions_for_provider(provider))
             .copied()
             .map(|model| format!("model {model}")),
     );
@@ -456,7 +457,7 @@ fn setup_command_arg() -> CommandArg {
 
     CommandArg {
         name: "action".to_string(),
-        description: "status | provider <name> | token <provider> <value|clear> | url <provider> <base-url|clear> | model <id|provider/id> | effort <level> | attribution <on|off>".to_string(),
+        description: "status | provider <name> [model] | token <provider> <value|clear> | url <provider> <base-url|clear> | model <id> | effort <level> | attribution <on|off>".to_string(),
         required: false,
         suggestions,
     }
@@ -494,18 +495,38 @@ impl SetupCapability {
         }
     }
 
+    /// `provider <name> [model [effort]]`. The optional model spec switches
+    /// provider and model atomically — the wizard needs this for the custom
+    /// provider, whose `/setup model` form would otherwise have no provider
+    /// context to resolve against on first-time setup.
     async fn change_provider(&self, raw: &str) -> everruns_core::Result<CommandResult> {
-        if raw.is_empty() || raw.split_whitespace().count() > 1 {
+        let mut parts = raw.splitn(2, char::is_whitespace);
+        let name = parts.next().unwrap_or_default();
+        let model_spec = parts.next().unwrap_or_default().trim();
+        if name.is_empty() {
             return Ok(failed_result(format!(
                 "setup provider failed: choose one of {}",
                 SUPPORTED_PROVIDERS.join(", ")
             )));
         }
 
-        let next = match ProviderChoice::default_for_provider_name(raw) {
+        let next = match ProviderChoice::default_for_provider_name(name) {
             Ok(n) => n.with_saved_model(&self.settings.snapshot()),
             Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
         };
+        let next = if model_spec.is_empty() {
+            next
+        } else {
+            match next.resolve_model_spec(model_spec) {
+                Ok(n) => n,
+                Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
+            }
+        };
+        if next.model_id().trim().is_empty() {
+            return Ok(failed_result(format!(
+                "setup provider failed: no model configured for {name}; pick one with /setup"
+            )));
+        }
         let mw = match next.model_with_provider(&self.settings.snapshot()) {
             Ok(m) => m,
             Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
@@ -515,8 +536,18 @@ impl SetupCapability {
         }
         let provider_name = next.provider_name().to_string();
         let label = next.label();
+        // Persist the model only when explicitly given: a plain provider
+        // switch must not clobber the saved model with the default.
+        let model_persist = if model_spec.is_empty() {
+            Ok(())
+        } else {
+            self.settings
+                .set_model(provider_name.clone(), next.model_spec())
+        };
         *self.provider.write().expect("provider lock poisoned") = next;
-        let persist_note = match self.settings.set_provider(Some(provider_name.clone())) {
+        let persist_note = match model_persist
+            .and_then(|()| self.settings.set_provider(Some(provider_name.clone())))
+        {
             Ok(()) => format!("saved to {}", self.settings.path().display()),
             Err(err) => format!("warning: settings not saved: {err}"),
         };
@@ -530,16 +561,17 @@ impl SetupCapability {
 
     async fn change_model(&self, raw: &str) -> everruns_core::Result<CommandResult> {
         if raw.is_empty() {
-            let label = self
+            let current = self
                 .provider
                 .read()
                 .expect("provider lock poisoned")
-                .label();
+                .clone();
+            let label = current.label();
             return Ok(CommandResult {
                 success: true,
                 message: format!(
-                    "setup model: {label}; suggestions: {}",
-                    ProviderChoice::model_suggestions().join(", ")
+                    "setup model: {label}; {}",
+                    self.model_suggestions_message(&current).await
                 ),
                 error_code: None,
                 error_fields: None,
@@ -577,20 +609,55 @@ impl SetupCapability {
         })
     }
 
-    /// Persist a model switch: the provider preference and the full
-    /// `provider/model [effort]` label, so both survive a restart (the model
-    /// picker promises "future sessions"). Best-effort — a failed save is
-    /// reported in the message but never blocks the in-session switch.
+    /// Persist a model switch: the provider preference and the
+    /// provider-relative `model [effort]` spec, so both survive a restart
+    /// (the model picker promises "future sessions"). Best-effort — a failed
+    /// save is reported in the message but never blocks the in-session
+    /// switch.
     fn persist_model_choice(&self, next: &ProviderChoice) -> String {
         let provider_name = next.provider_name().to_string();
         let result = self
             .settings
             .set_provider(Some(provider_name.clone()))
-            .and_then(|()| self.settings.set_model(provider_name, next.label()));
+            .and_then(|()| self.settings.set_model(provider_name, next.model_spec()));
         match result {
             Ok(()) => String::new(),
             Err(err) => format!(" (warning: settings not saved: {err})"),
         }
+    }
+
+    /// Live model suggestions for the current provider, queried from its
+    /// models API; falls back to the curated static list when the provider
+    /// does not support listing (or the query fails/times out).
+    async fn model_suggestions_message(&self, current: &ProviderChoice) -> String {
+        const MODEL_SUGGESTION_LIMIT: usize = 20;
+        const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+        let discovered = tokio::time::timeout(
+            DISCOVERY_TIMEOUT,
+            super::model_discovery::discover_provider_models(current, &self.settings.snapshot()),
+        )
+        .await;
+        if let Ok(Ok(Some(models))) = discovered
+            && !models.is_empty()
+        {
+            let provider = current.provider_name();
+            let shown: Vec<&str> = models
+                .iter()
+                .take(MODEL_SUGGESTION_LIMIT)
+                .map(|model| model.model_id.as_str())
+                .collect();
+            let suffix = if models.len() > MODEL_SUGGESTION_LIMIT {
+                format!(" … and {} more", models.len() - MODEL_SUGGESTION_LIMIT)
+            } else {
+                String::new()
+            };
+            return format!("models from {provider} API: {}{suffix}", shown.join(", "));
+        }
+        format!(
+            "suggestions: {}",
+            ProviderChoice::model_suggestions_for_provider(current.provider_name()).join(", ")
+        )
     }
 
     async fn change_effort(&self, raw: &str) -> everruns_core::Result<CommandResult> {

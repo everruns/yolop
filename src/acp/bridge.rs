@@ -36,11 +36,23 @@ pub struct Translator {
     /// event across the live broadcast and the catch-up drain; dedup keeps
     /// the client from seeing doubles.
     seen: HashSet<String>,
+    /// Replay mode is used only for `session/load`, where ACP requires the
+    /// agent to stream the historical user turns back to the client. Live
+    /// `session/prompt` handling leaves this off because the client already
+    /// has the prompt it just sent.
+    replay_input_messages: bool,
 }
 
 impl Translator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn for_replay() -> Self {
+        Self {
+            replay_input_messages: true,
+            ..Self::default()
+        }
     }
 
     /// Translate a single runtime event into zero or more ACP updates.
@@ -50,6 +62,20 @@ impl Translator {
             return Vec::new();
         }
         match &event.data {
+            EventData::InputMessage(data) => {
+                if !self.replay_input_messages {
+                    return Vec::new();
+                }
+                if data.message.role != MessageRole::User {
+                    return Vec::new();
+                }
+                match data.message.text().map(str::trim) {
+                    Some(text) if !text.is_empty() => {
+                        vec![SessionUpdate::UserMessageChunk(protocol::text_chunk(text))]
+                    }
+                    _ => Vec::new(),
+                }
+            }
             EventData::OutputMessageStarted(_) => {
                 self.current_message_streamed = false;
                 Vec::new()
@@ -411,5 +437,28 @@ mod tests {
         }));
         assert_eq!(t.on_event(&ev).len(), 1);
         assert_eq!(t.on_event(&ev).len(), 0, "second delivery must be ignored");
+    }
+
+    #[test]
+    fn replay_mode_emits_user_messages() {
+        let mut t = Translator::for_replay();
+        let updates = t.on_event(&event(EventData::InputMessage(
+            everruns_core::events::InputMessageData::new(Message::user("prior prompt")),
+        )));
+        assert_eq!(
+            updates,
+            vec![SessionUpdate::UserMessageChunk(protocol::text_chunk(
+                "prior prompt"
+            ))]
+        );
+    }
+
+    #[test]
+    fn live_mode_suppresses_user_messages() {
+        let mut t = Translator::new();
+        let updates = t.on_event(&event(EventData::InputMessage(
+            everruns_core::events::InputMessageData::new(Message::user("current prompt")),
+        )));
+        assert!(updates.is_empty());
     }
 }

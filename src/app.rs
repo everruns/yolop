@@ -21,7 +21,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
@@ -116,13 +117,33 @@ pub struct App {
     /// handling so provider, token, and model setup never echo through the
     /// normal chat composer.
     setup: Option<SetupStep>,
-    /// Shared settings store (same instance `SetupCapability` writes). Read
-    /// by the setup overlay to show which providers are already connected.
-    settings: std::sync::Arc<crate::settings::SettingsStore>,
     /// Terminal-side commands emitted by `ClientCommandsCapability` (via
     /// `runtime.execute_command`). Drained in the event loop; see
     /// [`App::apply_ui_command`].
     ui_rx: mpsc::UnboundedReceiver<UiCommand>,
+    /// Settings store shared with the runtime (same instance
+    /// `SetupCapability` writes). Used to resolve credentials when querying
+    /// provider models APIs and to show per-provider connection status in
+    /// the setup overlay.
+    settings: Arc<crate::settings::SettingsStore>,
+    /// Models discovered from each provider's models API, keyed by provider
+    /// name. Once populated, replaces the curated fallback list in the
+    /// model picker.
+    model_catalog: HashMap<String, Vec<ModelOption>>,
+    /// Providers with an in-flight models API fetch.
+    model_fetches_in_flight: HashSet<String>,
+    /// Disabled in unit tests so opening the picker never spawns real
+    /// network requests.
+    model_discovery_enabled: bool,
+    models_tx: mpsc::UnboundedSender<ModelDiscovery>,
+    models_rx: mpsc::UnboundedReceiver<ModelDiscovery>,
+}
+
+/// Result of one background models API fetch. `Ok(None)` means the provider
+/// does not support listing; the picker keeps the curated fallback list.
+struct ModelDiscovery {
+    provider: String,
+    result: Result<Option<Vec<ModelOption>>, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -219,7 +240,7 @@ enum CredentialAction {
 struct ModelOption {
     spec: Option<String>,
     label: String,
-    hint: &'static str,
+    hint: String,
 }
 
 struct EffortOption {
@@ -330,6 +351,7 @@ pub(crate) enum TurnEvent {
 impl App {
     pub fn new(runtime: BuiltRuntime) -> Self {
         let should_setup = runtime.startup.setup_recommended;
+        let (models_tx, models_rx) = mpsc::unbounded_channel::<ModelDiscovery>();
         let mut app = Self {
             handles: runtime.handles,
             startup: runtime.startup,
@@ -345,8 +367,13 @@ impl App {
             stream_preview: None,
             rx: None,
             setup: None,
-            settings: runtime.settings,
             ui_rx: runtime.ui_rx,
+            settings: runtime.settings,
+            model_catalog: HashMap::new(),
+            model_fetches_in_flight: HashSet::new(),
+            model_discovery_enabled: true,
+            models_tx,
+            models_rx,
         };
         app.emit_system_banner();
         if should_setup {
@@ -535,7 +562,17 @@ impl App {
             return Ok(());
         }
 
-        // 3) keystrokes. Mouse wheel/drag stays native terminal behavior
+        // 3) drain finished models API fetches so an open picker refreshes.
+        let mut applied_model_discovery = false;
+        while let Ok(discovery) = self.models_rx.try_recv() {
+            self.apply_model_discovery(discovery);
+            applied_model_discovery = true;
+        }
+        if applied_model_discovery {
+            return Ok(());
+        }
+
+        // 4) keystrokes. Mouse wheel/drag stays native terminal behavior
         // because the transcript lives in scrollback, not in this viewport.
         let mut poll_timeout = Duration::from_millis(80);
         while event::poll(poll_timeout)? {
@@ -913,13 +950,9 @@ impl App {
             self.start_model_setup();
             return;
         }
-        let provider = spec
-            .split('/')
-            .next()
-            .filter(|part| !part.trim().is_empty() && spec.contains('/'))
-            .map(str::to_string)
-            .unwrap_or_else(|| self.current_provider_name());
-        let options = Self::model_options(&provider);
+        let provider = self.current_provider_name();
+        self.request_model_discovery(&provider);
+        let options = self.model_options(&provider);
         let selected = model_index_for_label(spec, &options);
         let custom = if options
             .get(selected)
@@ -1087,111 +1120,224 @@ impl App {
         ]
     }
 
-    fn model_options(provider: &str) -> Vec<ModelOption> {
+    /// Options for the model picker: models discovered live from the
+    /// provider's models API when available, otherwise the curated
+    /// fallback list.
+    fn model_options(&self, provider: &str) -> Vec<ModelOption> {
+        match self.model_catalog.get(provider) {
+            Some(options) => options.clone(),
+            None => Self::fallback_model_options(provider),
+        }
+    }
+
+    /// Curated static list, used until (or instead of) live discovery —
+    /// e.g. before the models API responds, when the provider does not
+    /// support listing, or when the query fails.
+    fn fallback_model_options(provider: &str) -> Vec<ModelOption> {
         let mut models = match provider {
             "openai" => vec![
                 ModelOption {
-                    spec: Some("openai/gpt-5.5 medium".to_string()),
+                    spec: Some("gpt-5.5".to_string()),
                     label: "gpt-5.5".to_string(),
-                    hint: "frontier model for complex coding",
+                    hint: "frontier model for complex coding".to_string(),
                 },
                 ModelOption {
-                    spec: Some("openai/gpt-5.4".to_string()),
+                    spec: Some("gpt-5.4".to_string()),
                     label: "gpt-5.4".to_string(),
-                    hint: "strong everyday model",
+                    hint: "strong everyday model".to_string(),
                 },
                 ModelOption {
-                    spec: Some("openai/gpt-5.4-mini".to_string()),
+                    spec: Some("gpt-5.4-mini".to_string()),
                     label: "gpt-5.4-mini".to_string(),
-                    hint: "fast and cost-efficient",
+                    hint: "fast and cost-efficient".to_string(),
                 },
                 ModelOption {
-                    spec: Some("openai/gpt-5.3-codex".to_string()),
+                    spec: Some("gpt-5.3-codex".to_string()),
                     label: "gpt-5.3-codex".to_string(),
-                    hint: "coding-optimized model",
+                    hint: "coding-optimized model".to_string(),
                 },
                 ModelOption {
-                    spec: Some("openai/gpt-5.2".to_string()),
+                    spec: Some("gpt-5.2".to_string()),
                     label: "gpt-5.2".to_string(),
-                    hint: "optimized for long-running agents",
+                    hint: "optimized for long-running agents".to_string(),
                 },
             ],
             "anthropic" => vec![
                 ModelOption {
-                    spec: Some("anthropic/claude-sonnet-4-5".to_string()),
+                    spec: Some("claude-sonnet-4-5".to_string()),
                     label: "claude-sonnet-4-5".to_string(),
-                    hint: "best default Claude model",
+                    hint: "best default Claude model".to_string(),
                 },
                 ModelOption {
-                    spec: Some("anthropic/claude-opus-4-5".to_string()),
+                    spec: Some("claude-opus-4-5".to_string()),
                     label: "claude-opus-4-5".to_string(),
-                    hint: "more capable for complex work",
+                    hint: "more capable for complex work".to_string(),
                 },
                 ModelOption {
-                    spec: Some("anthropic/claude-haiku-4-5".to_string()),
+                    spec: Some("claude-haiku-4-5".to_string()),
                     label: "claude-haiku-4-5".to_string(),
-                    hint: "fast answers",
+                    hint: "fast answers".to_string(),
                 },
                 ModelOption {
-                    spec: Some("anthropic/claude-sonnet-4-6".to_string()),
+                    spec: Some("claude-sonnet-4-6".to_string()),
                     label: "claude-sonnet-4-6".to_string(),
-                    hint: "newer Sonnet option",
+                    hint: "newer Sonnet option".to_string(),
                 },
                 ModelOption {
-                    spec: Some("anthropic/claude-fable-5".to_string()),
+                    spec: Some("claude-fable-5".to_string()),
                     label: "claude-fable-5".to_string(),
-                    hint: "most powerful Claude model",
+                    hint: "most powerful Claude model".to_string(),
                 },
             ],
             "google" => vec![
                 ModelOption {
-                    spec: Some("google/gemini-2.5-flash".to_string()),
+                    spec: Some("gemini-2.5-flash".to_string()),
                     label: "gemini-2.5-flash".to_string(),
-                    hint: "fast Gemini default",
+                    hint: "fast Gemini default".to_string(),
                 },
                 ModelOption {
-                    spec: Some("google/gemini-2.5-pro".to_string()),
+                    spec: Some("gemini-2.5-pro".to_string()),
                     label: "gemini-2.5-pro".to_string(),
-                    hint: "more capable Gemini model",
+                    hint: "more capable Gemini model".to_string(),
                 },
             ],
             "openrouter" => vec![
                 ModelOption {
-                    spec: Some("openrouter/openai/gpt-5.2".to_string()),
+                    spec: Some("openai/gpt-5.2".to_string()),
                     label: "openai/gpt-5.2".to_string(),
-                    hint: "default OpenRouter model",
+                    hint: "default OpenRouter model".to_string(),
                 },
                 ModelOption {
-                    spec: Some("openrouter/nvidia/nemotron-3-super-120b-a12b high".to_string()),
+                    spec: Some("nvidia/nemotron-3-super-120b-a12b high".to_string()),
                     label: "nvidia/nemotron-3-super-120b-a12b".to_string(),
-                    hint: "reasoning model through OpenRouter",
+                    hint: "reasoning model through OpenRouter".to_string(),
                 },
                 ModelOption {
-                    spec: Some("openrouter/anthropic/claude-sonnet-4-5".to_string()),
+                    spec: Some("anthropic/claude-sonnet-4-5".to_string()),
                     label: "anthropic/claude-sonnet-4-5".to_string(),
-                    hint: "Claude through OpenRouter",
+                    hint: "Claude through OpenRouter".to_string(),
                 },
             ],
             "ollama" => vec![ModelOption {
-                spec: Some("ollama/llama3.2".to_string()),
+                spec: Some("llama3.2".to_string()),
                 label: "llama3.2".to_string(),
-                hint: "local default model",
+                hint: "local default model".to_string(),
             }],
             // No preset list exists for an arbitrary endpoint; only the
             // trailing "Custom..." free-form entry is offered.
             "custom" => Vec::new(),
             _ => vec![ModelOption {
-                spec: Some("llmsim/llmsim-yolop".to_string()),
+                spec: Some("llmsim-yolop".to_string()),
                 label: "llmsim-yolop".to_string(),
-                hint: "offline demo model",
+                hint: "offline demo model".to_string(),
             }],
         };
-        models.push(ModelOption {
-            spec: None,
-            label: "Custom...".to_string(),
-            hint: "paste a model id",
-        });
+        models.push(custom_model_option());
         models
+    }
+
+    fn is_fetching_models(&self, provider: &str) -> bool {
+        self.model_fetches_in_flight.contains(provider)
+    }
+
+    /// Kick off a background fetch of the provider's models API, if one is
+    /// not already cached or in flight. The result lands on `models_rx`
+    /// and is applied between frames; the picker shows the fallback list
+    /// (plus a loading hint) in the meantime.
+    fn request_model_discovery(&mut self, provider: &str) {
+        if !self.model_discovery_enabled
+            || provider == "llmsim"
+            || self.model_catalog.contains_key(provider)
+            || self.model_fetches_in_flight.contains(provider)
+        {
+            return;
+        }
+        // Prefer the live provider choice (it carries any custom base URL);
+        // fall back to the provider's defaults when picking across providers.
+        let choice = if self.current_provider_name() == provider {
+            self.model.provider_choice()
+        } else {
+            match crate::runtime::ProviderChoice::default_for_provider_name(provider) {
+                Ok(choice) => choice,
+                Err(_) => return,
+            }
+        };
+        self.model_fetches_in_flight.insert(provider.to_string());
+        let tx = self.models_tx.clone();
+        let settings = self.settings.clone();
+        let provider_name = provider.to_string();
+        tokio::spawn(async move {
+            let result = match tokio::time::timeout(
+                Duration::from_secs(10),
+                crate::capabilities::model_discovery::discover_provider_models(
+                    &choice,
+                    &settings.snapshot(),
+                ),
+            )
+            .await
+            {
+                Ok(Ok(Some(models))) => Ok(Some(model_options_from_discovered(models))),
+                Ok(Ok(None)) => Ok(None),
+                Ok(Err(err)) => Err(err.to_string()),
+                Err(_) => Err("models API request timed out".to_string()),
+            };
+            let _ = tx.send(ModelDiscovery {
+                provider: provider_name,
+                result,
+            });
+        });
+    }
+
+    /// Apply a finished models API fetch: cache the options and re-anchor
+    /// an open picker for that provider on the refreshed list.
+    fn apply_model_discovery(&mut self, discovery: ModelDiscovery) {
+        self.model_fetches_in_flight.remove(&discovery.provider);
+        match discovery.result {
+            // > 1 because the list always ends with the "Custom..." entry.
+            Ok(Some(options)) if options.len() > 1 => {
+                self.model_catalog
+                    .insert(discovery.provider.clone(), options);
+                if let Some(SetupStep::PickModel {
+                    provider,
+                    custom,
+                    error,
+                    ..
+                }) = self.setup.clone()
+                    && provider == discovery.provider
+                    && custom.is_none()
+                {
+                    let selected = model_index_for_label(
+                        &self.model.model_id(),
+                        &self.model_options(&provider),
+                    );
+                    self.setup = Some(SetupStep::PickModel {
+                        provider,
+                        selected,
+                        custom,
+                        error,
+                    });
+                }
+            }
+            // Listing unsupported (or empty): cache the curated fallback so
+            // reopening the picker doesn't re-query an API that can't answer.
+            // Errors are deliberately not cached — the next picker open retries.
+            Ok(_) => {
+                self.model_catalog.insert(
+                    discovery.provider.clone(),
+                    Self::fallback_model_options(&discovery.provider),
+                );
+            }
+            Err(mut err) => {
+                if let Some(SetupStep::PickModel {
+                    provider, error, ..
+                }) = self.setup.as_mut()
+                    && *provider == discovery.provider
+                {
+                    err.truncate(120);
+                    *error = Some(format!("model list unavailable: {err}"));
+                }
+            }
+        }
     }
 
     async fn handle_setup_key(&mut self, key: KeyEvent) {
@@ -1288,7 +1434,8 @@ impl App {
 
         if option.name == "custom" {
             // Best-effort switch: it fails harmlessly when no model is saved
-            // yet, and the model step right after sets provider + model.
+            // yet, and the model step right after sets provider + model
+            // atomically via `provider custom <model>`.
             let _ = self.run_setup_command(Some("provider custom")).await;
             self.open_model_step("custom");
             return;
@@ -1337,21 +1484,13 @@ impl App {
         self.setup = Some(SetupStep::BaseUrlInput { value, error: None });
     }
 
-    /// Open the model picker for `provider`, preselecting the active model.
-    /// For the custom provider there is no preset list, so the free-form
-    /// input opens directly, prefilled with the current or saved model.
+    /// Open the model picker for `provider`, preselecting the active model
+    /// and kicking off live discovery. The custom provider has no curated
+    /// list, so until (or unless) discovery fills the catalog its picker
+    /// shows only the free-form "Custom..." entry.
     fn open_model_step(&mut self, provider: &str) {
-        if provider == "custom" {
-            self.setup = Some(SetupStep::PickModel {
-                provider: "custom".to_string(),
-                selected: 0,
-                custom: Some(self.custom_model_prefill()),
-                error: None,
-            });
-            return;
-        }
-        let selected =
-            model_index_for_label(&self.model.provider_label(), &Self::model_options(provider));
+        self.request_model_discovery(provider);
+        let selected = model_index_for_label(&self.model.model_id(), &self.model_options(provider));
         self.setup = Some(SetupStep::PickModel {
             provider: provider.to_string(),
             selected,
@@ -1360,15 +1499,15 @@ impl App {
         });
     }
 
+    /// Prefill for the custom provider's free-form model input: the active
+    /// model when already on the custom provider, else the saved one.
     fn custom_model_prefill(&self) -> String {
-        let label = self.model.provider_label();
-        if let Some(rest) = label.strip_prefix("custom/") {
-            return rest.to_string();
+        if self.current_provider_name() == "custom" {
+            return self.model.model_id();
         }
         self.settings
             .snapshot()
             .model_for("custom")
-            .and_then(|spec| spec.strip_prefix("custom/"))
             .unwrap_or_default()
             .to_string()
     }
@@ -1606,21 +1745,10 @@ impl App {
         selected: usize,
         custom: Option<String>,
     ) {
-        let options = Self::model_options(&provider);
+        let options = self.model_options(&provider);
         if let Some(mut value) = custom {
             match key.code {
                 KeyCode::Esc => {
-                    // The custom provider has no preset list to fall back to,
-                    // so Esc returns to the provider picker instead.
-                    if provider == "custom" {
-                        self.setup = Some(SetupStep::Provider {
-                            selected: PROVIDER_OPTIONS
-                                .iter()
-                                .position(|option| option.name == "custom")
-                                .unwrap_or(0),
-                        });
-                        return;
-                    }
                     self.setup = Some(SetupStep::PickModel {
                         provider,
                         selected,
@@ -1705,7 +1833,7 @@ impl App {
     }
 
     async fn confirm_model(&mut self, provider: String, selected: usize) {
-        let options = Self::model_options(&provider);
+        let options = self.model_options(&provider);
         let Some(option) = options.get(selected) else {
             self.setup = Some(SetupStep::PickModel {
                 provider,
@@ -1718,25 +1846,34 @@ impl App {
         if let Some(spec) = &option.spec {
             self.save_model_and_finish(&provider, spec, selected).await;
         } else {
+            // "Custom..." free-form input. For the custom endpoint the
+            // current/saved model is prefilled — it is the provider's only
+            // memory of a model id.
+            let prefill = if provider == "custom" {
+                self.custom_model_prefill()
+            } else {
+                String::new()
+            };
             self.setup = Some(SetupStep::PickModel {
                 provider,
                 selected,
-                custom: Some(String::new()),
+                custom: Some(prefill),
                 error: None,
             });
         }
     }
 
     async fn save_model_and_finish(&mut self, provider: &str, spec: &str, selected: usize) {
-        let model_spec = if spec.contains('/') {
-            spec.to_string()
+        // `model <spec>` resolves against the current provider. For the
+        // custom endpoint the wizard reaches this step before any switch
+        // could succeed (a first-time custom provider has no model yet), so
+        // it switches provider and model atomically instead.
+        let command = if provider == "custom" {
+            format!("provider custom {spec}")
         } else {
-            format!("{provider}/{spec}")
+            format!("model {spec}")
         };
-        match self
-            .run_setup_command(Some(&format!("model {model_spec}")))
-            .await
-        {
+        match self.run_setup_command(Some(&command)).await {
             Ok(()) => {
                 self.setup = None;
                 self.push_system(format!("setup complete: {}", self.model.provider_label()));
@@ -2929,7 +3066,7 @@ fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize
                 )
             }));
             lines.push(Line::from(""));
-            let options = App::model_options(provider);
+            let options = app.model_options(provider);
             if let Some(value) = custom {
                 let input = format!("› {value}");
                 cursor = Some((3, input.chars().count()));
@@ -2943,13 +3080,26 @@ fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize
                     Span::styled(value.clone(), Style::default().fg(TEXT_PRIMARY)),
                 ]));
             } else {
-                for (idx, option) in options.iter().enumerate() {
-                    let current = app.model.provider_label();
+                if app.is_fetching_models(provider) {
+                    lines.push(setup_hint("fetching models from the provider API…"));
+                }
+                let total = options.len();
+                let (start, end) = model_window(*selected, total, MAX_VISIBLE_MODEL_ROWS);
+                if start > 0 {
+                    lines.push(setup_hint(&format!("↑ {start} more")));
+                }
+                // Specs are provider-relative; compare against the bare model
+                // id (the same anchor `model_index_for_label` uses).
+                let current = app.model.model_id();
+                for (idx, option) in options.iter().enumerate().take(end).skip(start) {
                     let mut hint = option.hint.to_string();
                     if option.spec.as_deref() == Some(current.as_str()) {
                         hint.push_str(" · current");
                     }
                     lines.push(setup_row(idx == *selected, idx + 1, &option.label, &hint));
+                }
+                if end < total {
+                    lines.push(setup_hint(&format!("↓ {} more", total - end)));
                 }
             }
             push_setup_error(&mut lines, error.as_deref());
@@ -3608,6 +3758,59 @@ fn model_index_for_label(label: &str, options: &[ModelOption]) -> usize {
         .unwrap_or(0)
 }
 
+fn custom_model_option() -> ModelOption {
+    ModelOption {
+        spec: None,
+        label: "Custom...".to_string(),
+        hint: "paste a model id".to_string(),
+    }
+}
+
+/// Convert models discovered from a provider's models API (already enriched
+/// with core profile names/descriptions) into picker options, keeping the
+/// trailing "Custom..." escape hatch.
+fn model_options_from_discovered(
+    models: Vec<crate::capabilities::model_discovery::DiscoveredProviderModel>,
+) -> Vec<ModelOption> {
+    /// OpenRouter descriptions run to paragraphs; the hint shares one row
+    /// with the model id, so keep it short.
+    const MAX_HINT_CHARS: usize = 72;
+
+    let mut options: Vec<ModelOption> = models
+        .into_iter()
+        .map(|model| {
+            let mut hint = match (model.display_name, model.description) {
+                (Some(name), Some(description)) => format!("{name} · {description}"),
+                (Some(name), None) => name,
+                (None, Some(description)) => description,
+                (None, None) => String::new(),
+            };
+            if hint.chars().count() > MAX_HINT_CHARS {
+                hint = hint.chars().take(MAX_HINT_CHARS - 1).collect::<String>() + "…";
+            }
+            ModelOption {
+                spec: Some(model.model_id.clone()),
+                label: model.model_id,
+                hint,
+            }
+        })
+        .collect();
+    options.push(custom_model_option());
+    options
+}
+
+/// Discovered model lists can be hundreds of entries (OpenRouter), far more
+/// than the setup panel can show. Window the list around the selection.
+const MAX_VISIBLE_MODEL_ROWS: usize = 8;
+
+fn model_window(selected: usize, total: usize, max_rows: usize) -> (usize, usize) {
+    if total <= max_rows {
+        return (0, total);
+    }
+    let start = selected.saturating_sub(max_rows / 2).min(total - max_rows);
+    (start, start + max_rows)
+}
+
 fn effort_index(value: &str) -> Option<usize> {
     EFFORT_OPTIONS
         .iter()
@@ -3788,6 +3991,7 @@ fn display_path(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::model_discovery::DiscoveredProviderModel;
     use everruns_core::events::{
         EventContext, InputMessageData, OutputMessageCompletedData, OutputMessageStartedData,
         ReasonCompletedData,
@@ -4627,8 +4831,11 @@ mod tests {
         )
         .await
         .expect("build llmsim runtime");
+        let mut app = App::new(runtime);
+        // Never let unit tests hit real provider models APIs.
+        app.model_discovery_enabled = false;
         TestApp {
-            app: App::new(runtime),
+            app,
             _workspace: workspace,
             _sessions: sessions,
         }
@@ -4780,19 +4987,32 @@ mod tests {
             .expect("first turn");
         drop(first);
 
-        let resumed = crate::runtime::build_with_options(
-            workspace.path().to_path_buf(),
-            crate::runtime::ProviderChoice::Sim,
-            Some(session_id),
-            sessions.path().to_path_buf(),
-            settings,
-            crate::runtime::BuildOptions {
-                client_commands: true,
-                ..crate::runtime::BuildOptions::default()
-            },
-        )
-        .await
-        .expect("build resumed runtime");
+        let mut resumed = None;
+        for _ in 0..20 {
+            match crate::runtime::build_with_options(
+                workspace.path().to_path_buf(),
+                crate::runtime::ProviderChoice::Sim,
+                Some(session_id),
+                sessions.path().to_path_buf(),
+                settings.clone(),
+                crate::runtime::BuildOptions {
+                    client_commands: true,
+                    ..crate::runtime::BuildOptions::default()
+                },
+            )
+            .await
+            {
+                Ok(runtime) => {
+                    resumed = Some(runtime);
+                    break;
+                }
+                Err(err) if err.to_string().contains("another yolop process") => {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(err) => panic!("build resumed runtime: {err}"),
+            }
+        }
+        let resumed = resumed.expect("build resumed runtime after releasing first log lock");
         assert!(
             resumed.startup.replayed_events > 0,
             "resume should report replayed events"
@@ -5459,6 +5679,135 @@ mod tests {
         );
     }
 
+    fn discovered(model_id: &str, display_name: Option<&str>) -> DiscoveredProviderModel {
+        DiscoveredProviderModel {
+            model_id: model_id.to_string(),
+            display_name: display_name.map(str::to_string),
+            description: None,
+        }
+    }
+
+    #[test]
+    fn model_window_centers_selection_in_long_lists() {
+        assert_eq!(model_window(0, 5, 8), (0, 5));
+        assert_eq!(model_window(0, 300, 8), (0, 8));
+        assert_eq!(model_window(150, 300, 8), (146, 154));
+        assert_eq!(model_window(299, 300, 8), (292, 300));
+    }
+
+    #[test]
+    fn discovered_models_convert_to_options_with_custom_escape_hatch() {
+        let mut described = discovered("openai/gpt-5.2", Some("OpenAI: GPT-5.2"));
+        described.description = Some("optimized for long-running agents".to_string());
+        let options = model_options_from_discovered(vec![
+            described,
+            discovered("nvidia/nemotron-3-super-120b-a12b", None),
+        ]);
+
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].spec.as_deref(), Some("openai/gpt-5.2"));
+        assert_eq!(options[0].label, "openai/gpt-5.2");
+        assert_eq!(
+            options[0].hint,
+            "OpenAI: GPT-5.2 · optimized for long-running agents"
+        );
+        assert_eq!(
+            options[1].spec.as_deref(),
+            Some("nvidia/nemotron-3-super-120b-a12b")
+        );
+        assert!(options[2].spec.is_none(), "last option must stay Custom...");
+    }
+
+    #[test]
+    fn discovered_model_hints_are_truncated_for_one_row_display() {
+        let mut model = discovered("verbose/model", None);
+        model.description = Some("x".repeat(200));
+
+        let options = model_options_from_discovered(vec![model]);
+
+        assert!(
+            options[0].hint.chars().count() <= 72,
+            "hint must fit one picker row: {} chars",
+            options[0].hint.chars().count()
+        );
+        assert!(options[0].hint.ends_with('…'));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn discovered_models_replace_fallback_options_in_open_picker() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = Some(SetupStep::PickModel {
+            provider: "openrouter".to_string(),
+            selected: 0,
+            custom: None,
+            error: None,
+        });
+
+        app.apply_model_discovery(ModelDiscovery {
+            provider: "openrouter".to_string(),
+            result: Ok(Some(model_options_from_discovered(vec![
+                discovered("zai/glm-5", None),
+                discovered("moon/kimi-k3", None),
+            ]))),
+        });
+
+        let options = app.model_options("openrouter");
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].spec.as_deref(), Some("zai/glm-5"));
+        let rendered = setup_overlay_text(app);
+        assert!(
+            rendered.iter().any(|line| line.contains("zai/glm-5")),
+            "open picker should render discovered models: {rendered:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unsupported_model_discovery_keeps_fallback_options() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+
+        app.apply_model_discovery(ModelDiscovery {
+            provider: "ollama".to_string(),
+            result: Ok(None),
+        });
+
+        let options = app.model_options("ollama");
+        assert_eq!(options[0].spec.as_deref(), Some("llama3.2"));
+
+        // The unsupported outcome is cached so reopening the picker doesn't
+        // re-query an API that can't answer.
+        app.model_discovery_enabled = true;
+        app.request_model_discovery("ollama");
+        assert!(!app.is_fetching_models("ollama"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_model_discovery_surfaces_error_in_open_picker() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = Some(SetupStep::PickModel {
+            provider: "openai".to_string(),
+            selected: 0,
+            custom: None,
+            error: None,
+        });
+
+        app.apply_model_discovery(ModelDiscovery {
+            provider: "openai".to_string(),
+            result: Err("connection refused".to_string()),
+        });
+
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::PickModel { ref error, .. })
+                if error.as_deref() == Some("model list unavailable: connection refused")
+        ));
+        // The curated list must remain usable after a failed fetch.
+        let options = app.model_options("openai");
+        assert_eq!(options[0].spec.as_deref(), Some("gpt-5.5"));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn setup_connected_provider_jumps_straight_to_model_picker() {
         let mut fixture = app_with_llmsim().await;
@@ -5491,12 +5840,18 @@ mod tests {
         app.settings
             .set_token("openai".to_string(), "sk-test".to_string())
             .expect("save token");
-        app.setup = Some(SetupStep::PickModel {
-            provider: "openai".to_string(),
-            selected: 0,
-            custom: None,
-            error: None,
-        });
+        app.setup = Some(SetupStep::Provider { selected: 0 });
+
+        // Enter the wizard the way a user does: the connected-provider fast
+        // path switches to openai first, so the provider-relative
+        // `model <id>` the picker emits resolves against it.
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        assert!(
+            matches!(app.setup, Some(SetupStep::PickModel { .. })),
+            "fast path should open the model picker: {:?}",
+            app.setup
+        );
 
         // Navigate to the second preset (gpt-5.4) and confirm it.
         app.handle_setup_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()))
@@ -5517,7 +5872,7 @@ mod tests {
         // pick_provider_applies_saved_model_for_saved_provider in main.rs).
         let snapshot = app.settings.snapshot();
         assert_eq!(snapshot.provider.as_deref(), Some("openai"));
-        assert_eq!(snapshot.model_for("openai"), Some("openai/gpt-5.4 medium"));
+        assert_eq!(snapshot.model_for("openai"), Some("gpt-5.4 medium"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5587,7 +5942,20 @@ mod tests {
             app.setup
         );
 
-        // "Continue without key" → free-form model input.
+        // "Continue without key" → model picker. With discovery disabled in
+        // tests the list holds only the "Custom..." escape hatch; confirming
+        // it opens the free-form input.
+        app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        assert!(
+            matches!(
+                app.setup,
+                Some(SetupStep::PickModel { ref provider, custom: None, .. })
+                    if provider == "custom"
+            ),
+            "custom credential step should advance to the model picker: {:?}",
+            app.setup
+        );
         app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
             .await;
         assert!(
@@ -5596,7 +5964,7 @@ mod tests {
                 Some(SetupStep::PickModel { ref provider, custom: Some(_), .. })
                     if provider == "custom"
             ),
-            "custom should open the model input directly: {:?}",
+            "Custom... should open the free-form model input: {:?}",
             app.setup
         );
 
@@ -5615,7 +5983,7 @@ mod tests {
             Some("http://localhost:8000/v1")
         );
         assert_eq!(snapshot.provider.as_deref(), Some("custom"));
-        assert_eq!(snapshot.model_for("custom"), Some("custom/qwen3-coder"));
+        assert_eq!(snapshot.model_for("custom"), Some("qwen3-coder"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5638,6 +6006,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn model_command_preselects_current_raw_model_id() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = None;
+
+        app.handle_command("setup token openai sk-test").await;
+        app.run_setup_command(Some("provider openai"))
+            .await
+            .expect("set openai provider");
+        app.run_setup_command(Some("model gpt-5.4"))
+            .await
+            .expect("set openai model");
+        app.lines.clear();
+
+        app.dispatch_command_for_test("model").await;
+
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::PickModel {
+                ref provider,
+                selected,
+                ..
+            }) if provider == "openai" && selected == 1
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn model_command_with_arg_opens_prefilled_model_modal() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
@@ -5645,18 +6041,20 @@ mod tests {
         app.setup = None;
 
         app.handle_command("setup token openai sk-test").await;
+        app.run_setup_command(Some("provider openai"))
+            .await
+            .expect("set openai provider");
         app.lines.clear();
-        app.dispatch_command_for_test("model openai/gpt-5.4 high")
-            .await;
+        app.dispatch_command_for_test("model gpt-5.4 high").await;
 
-        assert_eq!(app.model.provider_label(), "llmsim/llmsim-yolop");
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.5 medium");
         assert!(matches!(
             app.setup,
             Some(SetupStep::PickModel {
                 ref provider,
                 ref custom,
                 ..
-            }) if provider == "openai" && custom.as_deref() == Some("openai/gpt-5.4 high")
+            }) if provider == "openai" && custom.as_deref() == Some("gpt-5.4 high")
         ));
 
         app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
@@ -5681,7 +6079,10 @@ mod tests {
         app.setup = None;
 
         app.handle_command("setup token openai sk-test").await;
-        app.run_setup_command(Some("model openai/gpt-5.4"))
+        app.run_setup_command(Some("provider openai"))
+            .await
+            .expect("set openai provider");
+        app.run_setup_command(Some("model gpt-5.4"))
             .await
             .expect("set openai model");
         app.lines.clear();
@@ -5721,7 +6122,10 @@ mod tests {
         app.setup = None;
 
         app.handle_command("setup token openrouter sk-test").await;
-        app.run_setup_command(Some("model openrouter/nvidia/nemotron-3-super-120b-a12b"))
+        app.run_setup_command(Some("provider openrouter"))
+            .await
+            .expect("set openrouter provider");
+        app.run_setup_command(Some("model nvidia/nemotron-3-super-120b-a12b"))
             .await
             .expect("set openrouter model");
         app.lines.clear();

@@ -5790,6 +5790,7 @@ dependencies = [
  "portable-pty",
  "ratatui",
  "ratatui-textarea",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "tempfile",

@@ -521,8 +521,7 @@ async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
         handles,
         startup,
         model,
-        settings: _,
-        ui_rx: _,
+        ..
     } = runtime;
     let color = io::stdout().is_terminal();
     println!("{}", paint(color, "90", &format!("› {prompt}")));
@@ -723,7 +722,7 @@ mod tests {
         let path = tmp.path().join("settings.toml");
         std::fs::write(
             &path,
-            "provider = \"openai\"\n\n[models]\nopenai = \"openai/gpt-5.4 high\"\n",
+            "provider = \"openai\"\n\n[models]\nopenai = \"gpt-5.4 high\"\n",
         )
         .expect("write settings");
         let settings = SettingsStore::open(path);

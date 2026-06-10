@@ -512,16 +512,20 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
     );
 
     // Quick-select OpenAI (row 1). It is connected, so the wizard must skip
-    // the credential step and open the model picker directly. ratatui only
-    // repaints changed cells, so wait for a string unique to the model list
-    // ("Select Model" partially overlaps the previous title and never
-    // appears contiguously in the raw PTY stream).
+    // the credential step and open the model picker directly. Render diffs
+    // are unreliable to wait on (ratatui repaints only changed cells and the
+    // async "fetching models" hint shifts rows), so wait on the side effect
+    // that the fast path produces just before the picker opens: the provider
+    // switch is persisted to settings.toml.
     tui.write_input(b"1");
-    assert!(
-        tui.wait_for_output("gpt-5.4-mini", Duration::from_secs(3)),
-        "connected provider should jump straight to model selection: {}",
-        tui.output_text()
-    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline
+        && !std::fs::read_to_string(tui.settings_path())
+            .unwrap_or_default()
+            .contains("provider = \"openai\"")
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
     let before_pick = strip_ansi(&tui.output_text());
     assert!(
         !before_pick.contains("API Key for OpenAI"),
@@ -546,7 +550,7 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
         "provider switch should persist: {settings}"
     );
     assert!(
-        settings.contains("openai = \"openai/gpt-5.4 medium\""),
+        settings.contains("openai = \"gpt-5.4 medium\""),
         "picked model should persist under [models]: {settings}"
     );
 
@@ -570,7 +574,7 @@ fn print_mode_sends_saved_model_selection_to_endpoint() {
     let home = tempfile::tempdir().expect("home tempdir");
     let sessions = tempfile::tempdir().expect("sessions tempdir");
     let settings_toml = format!(
-        "provider = \"custom\"\n\n[base_urls]\ncustom = \"{}\"\n\n[models]\ncustom = \"custom/picked-model-x\"\n",
+        "provider = \"custom\"\n\n[base_urls]\ncustom = \"{}\"\n\n[models]\ncustom = \"picked-model-x\"\n",
         mock.base_url
     );
     for settings_dir in [

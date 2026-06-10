@@ -31,14 +31,15 @@ ACP protocol version: **1** (integer).
 | `initialize` | client → agent | Negotiates protocol version and advertises agent capabilities. Echoes the client's version when supported, else advertises v1. |
 | `authenticate` | client → agent | No-op success: credentials come from the environment/settings the process already inherits, so `authMethods` is empty. |
 | `session/new` | client → agent | Builds a fresh runtime rooted at the client-supplied `cwd`; returns the everruns session id as the ACP `sessionId`. |
+| `session/load` | client → agent | Rehydrates an existing yolop JSONL session for the supplied `sessionId` and `cwd`, replays persisted conversation history as `session/update` notifications, and then returns success. |
 | `session/prompt` | client → agent | Runs one turn, or executes a recognised `/command`; streams `session/update`s, and resolves a `stopReason`. |
 | `session/cancel` | client → agent | Notification. Abandons the in-flight turn for that session and resolves the prompt with `stopReason: "cancelled"`. |
 | `session/update` | agent → client | Notification. Streams the turn (see below). |
 
-`session/load` is **not** implemented: `loadSession` is advertised as `false`.
-Each ACP session builds its own runtime; prior ACP sessions are not rehydrated.
-(Yolop's own JSONL session logs are still written under the session dir and can
-be resumed by the CLI with `--session`.)
+`loadSession` is advertised as `true`. `session/load` uses the same JSONL
+replay path as CLI `--session`: prior user and assistant messages are streamed
+back to the editor before the response, and the loaded runtime then continues
+appending to the same session folder.
 
 ### Streaming a turn
 
@@ -128,9 +129,10 @@ Three layers, all offline (no API key):
    (deltas, tool lifecycle, todos→plan, dedup, streamed-vs-completed).
 3. **End-to-end** (`mod.rs`) — a real `serve` loop over duplex pipes driven by
    an in-memory ACP client: the full `initialize` → `session/new` →
-   `session/prompt` handshake, unknown-method and unknown-session errors,
-   scripted tool calls (asserting `tool_call`/`tool_call_update`),
-   `write_todos` → `plan`, and command advertisement/execution.
+   `session/prompt` handshake, `session/load` history replay across an ACP
+   server restart, unknown-method and unknown-session errors, scripted tool
+   calls (asserting `tool_call`/`tool_call_update`), `write_todos` → `plan`,
+   and command advertisement/execution.
 
 The binary itself is smoke-tested over real OS pipes in
 `tests/integration.rs` (`acp_stdio_handshake_smoke`), and a real-provider test
@@ -166,7 +168,6 @@ same way.
 
 ## Non-goals (for now)
 
-- `session/load` / ACP session rehydration.
 - Client-provided filesystem (`fs/read_text_file`, `fs/write_text_file`):
   yolop's runtime reads and writes the host disk directly under the workspace
   root, so it does not route file ops back through the client.
