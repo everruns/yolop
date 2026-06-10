@@ -242,9 +242,10 @@ Provider resolution at startup:
 
 At runtime, the per-provider env var (`OPENAI_API_KEY`, etc.) always
 beats the saved token, so a per-run env override is always possible.
-The setup wizard can also switch models for the current session. OpenAI and
-OpenRouter reasoning effort can be changed at runtime with the `/effort` modal
-or `/setup effort <level>` (for example, `high` or `medium`).
+The setup wizard can also switch models for the current session, and
+`/model <id>` opens the model picker prefilled for the active provider.
+OpenAI and OpenRouter reasoning effort can be changed at runtime with the
+`/effort` modal or `/setup effort <level>` (for example, `high` or `medium`).
 
 `/setup` can store an API token under `[tokens]` in the settings file. The
 file is written with `0o600` on Unix (owner-only) and stored token values are

@@ -540,26 +540,44 @@ impl ProviderChoice {
         }
     }
 
-    pub fn model_suggestions() -> &'static [&'static str] {
-        &[
-            "openai/gpt-5.5 medium",
-            "openai/gpt-5.4",
-            "openai/gpt-5.4-mini",
-            "openai/gpt-5.3-codex",
-            "openai/gpt-5.2",
-            "google/gemini-2.5-flash",
-            "google/gemini-2.5-pro",
-            "openrouter/openai/gpt-5.2",
-            "openrouter/nvidia/nemotron-3-super-120b-a12b high",
-            "ollama/llama3.2",
-            "anthropic/claude-sonnet-4-5",
-            "anthropic/claude-opus-4-5",
-            "anthropic/claude-haiku-4-5",
-            "anthropic/claude-sonnet-4-6",
-            "anthropic/claude-opus-4-6",
-            "anthropic/claude-fable-5",
-            "llmsim/llmsim-yolop",
-        ]
+    pub fn model_id(&self) -> &str {
+        match self {
+            Self::Anthropic { model }
+            | Self::OpenAi { model, .. }
+            | Self::Google { model, .. }
+            | Self::OpenRouter { model, .. }
+            | Self::Ollama { model, .. } => model,
+            Self::Sim => "llmsim-yolop",
+        }
+    }
+
+    pub fn model_suggestions_for_provider(provider: &str) -> &'static [&'static str] {
+        match provider {
+            "openai" => &[
+                "gpt-5.5",
+                "gpt-5.4",
+                "gpt-5.4-mini",
+                "gpt-5.3-codex",
+                "gpt-5.2",
+            ],
+            "anthropic" => &[
+                "claude-sonnet-4-5",
+                "claude-opus-4-5",
+                "claude-haiku-4-5",
+                "claude-sonnet-4-6",
+                "claude-opus-4-6",
+                "claude-fable-5",
+            ],
+            "google" => &["gemini-2.5-flash", "gemini-2.5-pro"],
+            "openrouter" => &[
+                "openai/gpt-5.2",
+                "nvidia/nemotron-3-super-120b-a12b high",
+                "anthropic/claude-sonnet-4-5",
+            ],
+            "ollama" => &["llama3.2"],
+            "llmsim" => &["llmsim-yolop"],
+            _ => &[],
+        }
     }
 
     pub(crate) fn resolve_model_spec(&self, spec: &str) -> Result<Self> {
@@ -568,75 +586,9 @@ impl ProviderChoice {
         let model_spec = parts.next().unwrap_or_default();
         let reasoning_effort = parts.next().map(str::to_string);
         if parts.next().is_some() {
-            return Err(anyhow!(
-                "too many model arguments; use `openai/gpt-5.5 medium`"
-            ));
-        }
-        if let Some((provider, model)) = model_spec.split_once('/') {
-            return Self::from_provider_model(provider, model, reasoning_effort);
+            return Err(anyhow!("too many model arguments; use `gpt-5.5 medium`"));
         }
         self.with_current_provider_model(model_spec.to_string(), reasoning_effort)
-    }
-
-    fn from_provider_model(
-        provider: &str,
-        model: &str,
-        reasoning_effort: Option<String>,
-    ) -> Result<Self> {
-        let model = model.trim();
-        if model.is_empty() {
-            return Err(anyhow!("model id is required"));
-        }
-        match provider.trim().to_ascii_lowercase().as_str() {
-            "anthropic" => Ok(Self::Anthropic {
-                model: model.to_string(),
-            }),
-            "openai" => Ok(Self::OpenAi {
-                model: model.to_string(),
-                reasoning_effort: normalize_openai_reasoning_effort(reasoning_effort),
-            }),
-            "google" | "gemini" => {
-                if reasoning_effort.is_some() {
-                    return Err(anyhow!(
-                        "google model switching does not accept reasoning effort"
-                    ));
-                }
-                Ok(Self::Google {
-                    model: model.to_string(),
-                    base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
-                })
-            }
-            "openrouter" => Ok(Self::OpenRouter {
-                model: model.to_string(),
-                base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
-                reasoning_effort: normalize_reasoning_effort(reasoning_effort),
-            }),
-            "ollama" => {
-                if reasoning_effort.is_some() {
-                    return Err(anyhow!(
-                        "ollama model switching does not accept reasoning effort"
-                    ));
-                }
-                Ok(Self::Ollama {
-                    model: model.to_string(),
-                    base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
-                })
-            }
-            "llmsim" | "sim" => {
-                if reasoning_effort.is_some() {
-                    return Err(anyhow!("offline llmsim does not support reasoning effort"));
-                }
-                if model == "llmsim-yolop" {
-                    Ok(Self::Sim)
-                } else {
-                    Err(anyhow!("offline llmsim only supports llmsim-yolop"))
-                }
-            }
-            other => Err(anyhow!(
-                "unknown provider {other}; expected one of {}",
-                SUPPORTED_PROVIDERS.join(", ")
-            )),
-        }
     }
 
     fn with_current_provider_model(
@@ -644,6 +596,9 @@ impl ProviderChoice {
         model: String,
         reasoning_effort: Option<String>,
     ) -> Result<Self> {
+        if model.trim().is_empty() {
+            return Err(anyhow!("model id is required"));
+        }
         match self {
             Self::Anthropic { .. } => {
                 if reasoning_effort.is_some() {
@@ -1037,6 +992,14 @@ impl ModelState {
             .label()
     }
 
+    pub fn model_id(&self) -> String {
+        self.provider
+            .read()
+            .expect("provider lock poisoned")
+            .model_id()
+            .to_string()
+    }
+
     pub fn input_message(&self, text: impl Into<String>) -> InputMessage {
         self.provider
             .read()
@@ -1334,11 +1297,14 @@ mod tests {
     use everruns_core::command::ExecuteCommandRequest;
 
     #[test]
-    fn model_spec_can_switch_to_openai() {
+    fn model_spec_rejects_invalid_current_provider_model() {
         let provider = ProviderChoice::Sim;
-        let next = provider.resolve_model_spec("openai/gpt-5.5").unwrap();
+        let err = provider.resolve_model_spec("openai/gpt-5.5").unwrap_err();
 
-        assert_eq!(next.label(), "openai/gpt-5.5 medium");
+        assert!(
+            err.to_string()
+                .contains("offline llmsim only supports llmsim-yolop")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1475,6 +1441,21 @@ mod tests {
         assert!(store_token.success);
         assert!(settings_for_assert.snapshot().has_token("openai"));
 
+        let set_provider = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("provider openai".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("setup openai provider");
+        assert!(set_provider.success);
+
         let model_effort_base = built
             .handles
             .runtime
@@ -1482,7 +1463,7 @@ mod tests {
                 built.handles.session_id,
                 ExecuteCommandRequest {
                     name: "setup".to_string(),
-                    arguments: Some("model openai/gpt-5.4".to_string()),
+                    arguments: Some("model gpt-5.4".to_string()),
                     controls: None,
                 },
             )
@@ -1544,7 +1525,7 @@ mod tests {
                 built.handles.session_id,
                 ExecuteCommandRequest {
                     name: "setup".to_string(),
-                    arguments: Some("model llmsim/llmsim-yolop".to_string()),
+                    arguments: Some("model llmsim-yolop".to_string()),
                     controls: None,
                 },
             )
@@ -1566,11 +1547,11 @@ mod tests {
             .await
             .expect("unknown setup action");
         assert!(!unknown.success);
-        assert!(unknown.message.contains("model <id|provider/id>"));
+        assert!(unknown.message.contains("model <id>"));
     }
 
     #[test]
-    fn model_spec_can_switch_to_anthropic() {
+    fn model_spec_treats_slashes_as_current_provider_model_id() {
         let provider = ProviderChoice::OpenAi {
             model: "gpt-5.5".to_string(),
             reasoning_effort: Some("medium".to_string()),
@@ -1579,18 +1560,21 @@ mod tests {
             .resolve_model_spec("anthropic/claude-sonnet-4-5")
             .unwrap();
 
-        assert_eq!(next.label(), "anthropic/claude-sonnet-4-5");
+        assert_eq!(next.label(), "openai/anthropic/claude-sonnet-4-5 medium");
     }
 
     #[test]
     fn model_suggestions_include_claude_fable_5() {
         // Fable 5 rejects budget thinking and sampling params; yolop sends
         // neither for Anthropic, so the published driver works as-is.
-        assert!(ProviderChoice::model_suggestions().contains(&"anthropic/claude-fable-5"));
+        assert!(
+            ProviderChoice::model_suggestions_for_provider("anthropic").contains(&"claude-fable-5")
+        );
 
-        let next = ProviderChoice::Sim
-            .resolve_model_spec("anthropic/claude-fable-5")
-            .unwrap();
+        let provider = ProviderChoice::Anthropic {
+            model: "claude-sonnet-4-5".to_string(),
+        };
+        let next = provider.resolve_model_spec("claude-fable-5").unwrap();
         assert_eq!(next.label(), "anthropic/claude-fable-5");
     }
 
@@ -1606,31 +1590,39 @@ mod tests {
     }
 
     #[test]
-    fn model_spec_accepts_llmsim_provider_name() {
-        let provider = ProviderChoice::OpenAi {
-            model: "gpt-5.5".to_string(),
-            reasoning_effort: Some("medium".to_string()),
-        };
-        let next = provider.resolve_model_spec("llmsim/llmsim-yolop").unwrap();
+    fn model_spec_accepts_llmsim_model_id() {
+        let provider = ProviderChoice::Sim;
+        let next = provider.resolve_model_spec("llmsim-yolop").unwrap();
 
         assert_eq!(next.label(), "llmsim/llmsim-yolop");
     }
 
     #[test]
-    fn model_spec_accepts_openrouter_provider_name() {
-        let provider = ProviderChoice::Sim;
+    fn model_spec_accepts_openrouter_model_id_with_slash() {
+        let provider = ProviderChoice::OpenRouter {
+            model: "openai/gpt-5.2".to_string(),
+            base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
+            reasoning_effort: None,
+        };
         let next = provider
-            .resolve_model_spec("openrouter/openai/gpt-5.2")
+            .resolve_model_spec("nvidia/nemotron-3-ultra-550b-a55b:free")
             .unwrap();
 
-        assert_eq!(next.label(), "openrouter/openai/gpt-5.2");
+        assert_eq!(
+            next.label(),
+            "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+        );
     }
 
     #[test]
     fn model_spec_accepts_openrouter_reasoning_effort() {
-        let provider = ProviderChoice::Sim;
+        let provider = ProviderChoice::OpenRouter {
+            model: "openai/gpt-5.2".to_string(),
+            base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
+            reasoning_effort: None,
+        };
         let next = provider
-            .resolve_model_spec("openrouter/nvidia/nemotron-3-super-120b-a12b high")
+            .resolve_model_spec("nvidia/nemotron-3-super-120b-a12b high")
             .unwrap();
 
         assert_eq!(
@@ -1640,19 +1632,23 @@ mod tests {
     }
 
     #[test]
-    fn model_spec_accepts_ollama_provider_name() {
-        let provider = ProviderChoice::Sim;
-        let next = provider.resolve_model_spec("ollama/llama3.2").unwrap();
+    fn model_spec_accepts_ollama_model_id() {
+        let provider = ProviderChoice::Ollama {
+            model: "llama3.2".to_string(),
+            base_url: DEFAULT_OLLAMA_BASE_URL.to_string(),
+        };
+        let next = provider.resolve_model_spec("llama3.3").unwrap();
 
-        assert_eq!(next.label(), "ollama/llama3.2");
+        assert_eq!(next.label(), "ollama/llama3.3");
     }
 
     #[test]
-    fn model_spec_accepts_google_provider_name() {
-        let provider = ProviderChoice::Sim;
-        let next = provider
-            .resolve_model_spec("google/gemini-2.5-pro")
-            .unwrap();
+    fn model_spec_accepts_google_model_id() {
+        let provider = ProviderChoice::Google {
+            model: "gemini-2.5-flash".to_string(),
+            base_url: DEFAULT_GOOGLE_BASE_URL.to_string(),
+        };
+        let next = provider.resolve_model_spec("gemini-2.5-pro").unwrap();
 
         assert_eq!(next.label(), "google/gemini-2.5-pro");
         assert_eq!(next.provider_name(), "google");
@@ -1810,8 +1806,11 @@ mod tests {
 
     #[test]
     fn model_spec_accepts_openai_reasoning_effort() {
-        let provider = ProviderChoice::Sim;
-        let next = provider.resolve_model_spec("openai/gpt-5.5 high").unwrap();
+        let provider = ProviderChoice::OpenAi {
+            model: "gpt-5.4".to_string(),
+            reasoning_effort: Some("medium".to_string()),
+        };
+        let next = provider.resolve_model_spec("gpt-5.5 high").unwrap();
 
         assert_eq!(next.label(), "openai/gpt-5.5 high");
     }
