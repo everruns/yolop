@@ -24,6 +24,7 @@ use agent_client_protocol::{Agent, Client, ConnectionTo, Lines, Responder};
 use anyhow::Result;
 use async_trait::async_trait;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
+use everruns_core::typed_id::SessionId as RuntimeSessionId;
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -35,10 +36,10 @@ use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 use super::bridge::Translator;
 use super::protocol::{
     self, AgentCapabilities, AuthenticateParams, AuthenticateResult, AvailableCommand,
-    AvailableCommandInput, InitializeParams, InitializeResult, NewSessionParams, NewSessionResult,
-    PromptCapabilities, PromptParams, PromptResult, SessionNotification, SessionUpdate, StopReason,
-    ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
-    UnstructuredCommandInput,
+    AvailableCommandInput, InitializeParams, InitializeResult, LoadSessionParams,
+    LoadSessionResult, NewSessionParams, NewSessionResult, PromptCapabilities, PromptParams,
+    PromptResult, SessionNotification, SessionUpdate, StopReason, ToolCall, ToolCallStatus,
+    ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
 };
 
 /// How often the prompt loop wakes to check whether the turn task finished,
@@ -49,7 +50,13 @@ const TURN_POLL_INTERVAL: Duration = Duration::from_millis(150);
 /// substitute a scripted llmsim runtime for the real provider wiring.
 #[async_trait]
 pub trait RuntimeFactory: Send + Sync + 'static {
-    async fn build(&self, cwd: PathBuf) -> Result<BuiltRuntime>;
+    fn session_exists(&self, session_id: RuntimeSessionId) -> bool;
+
+    async fn build(
+        &self,
+        cwd: PathBuf,
+        resume_session_id: Option<RuntimeSessionId>,
+    ) -> Result<BuiltRuntime>;
 }
 
 /// SDK connection wrapper plus yolop-local ids for synthetic command tool calls.
@@ -188,6 +195,30 @@ where
             {
                 let server = server.clone();
                 let next_tool_id = next_tool_id.clone();
+                async move |params: LoadSessionParams, responder, cx| {
+                    let peer = Arc::new(Peer {
+                        cx: cx.clone(),
+                        next_id: next_tool_id.clone(),
+                    });
+                    match handle_load_session(&server, &peer, params).await {
+                        Ok((result, session_id)) => {
+                            responder.respond(result)?;
+                            if let Some(session) = server.session(&session_id) {
+                                let commands = session.commands.lock().unwrap().clone();
+                                notify_available_commands(&peer, &session_id, &commands);
+                            }
+                        }
+                        Err(err) => responder.respond_with_error(err)?,
+                    }
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let server = server.clone();
+                let next_tool_id = next_tool_id.clone();
                 async move |params: PromptParams, responder, cx| {
                     let peer = Arc::new(Peer {
                         cx: cx.clone(),
@@ -263,9 +294,7 @@ fn handle_initialize(params: InitializeParams) -> InitializeResult {
     };
     InitializeResult::new(version).agent_capabilities(
         AgentCapabilities::new()
-            // yolop builds a fresh runtime per session and does not yet
-            // rehydrate prior ACP sessions, so loadSession stays false.
-            .load_session(false)
+            .load_session(true)
             .prompt_capabilities(
                 PromptCapabilities::new()
                     .image(false)
@@ -290,10 +319,50 @@ async fn handle_new_session<F: RuntimeFactory>(
 
     let built = server
         .factory
-        .build(cwd)
+        .build(cwd, None)
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
+    let acp_id = register_session(server, built);
+
+    Ok(NewSessionResult::new(acp_id))
+}
+
+async fn handle_load_session<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    peer: &Arc<Peer>,
+    params: LoadSessionParams,
+) -> std::result::Result<(LoadSessionResult, String), agent_client_protocol::Error> {
+    let requested_id = params.session_id.to_string();
+    let resume_session_id = requested_id
+        .parse::<RuntimeSessionId>()
+        .map_err(|e| invalid_params(format!("invalid session id `{requested_id}`: {e}")))?;
+
+    let session = match server.session(&requested_id) {
+        Some(session) => session,
+        None => {
+            if !server.factory.session_exists(resume_session_id) {
+                return Err(invalid_params(format!(
+                    "unknown session id `{requested_id}`"
+                )));
+            }
+            let built = server
+                .factory
+                .build(params.cwd, Some(resume_session_id))
+                .await
+                .map_err(|e| internal_error(format!("load runtime: {e}")))?;
+            let acp_id = register_session(server, built);
+            server
+                .session(&acp_id)
+                .ok_or_else(|| internal_error("loaded session was not registered"))?
+        }
+    };
+
+    replay_session_history(peer, &session).await?;
+    Ok((LoadSessionResult::new(), session.acp_id.clone()))
+}
+
+fn register_session<F: RuntimeFactory>(server: &Arc<Server<F>>, built: BuiltRuntime) -> String {
     let acp_id = built.handles.session_id.to_string();
     let commands = built.startup.capability_commands.clone();
     let session = Arc::new(Session {
@@ -309,7 +378,29 @@ async fn handle_new_session<F: RuntimeFactory>(
         .unwrap()
         .insert(acp_id.clone(), session);
 
-    Ok(NewSessionResult::new(acp_id))
+    acp_id
+}
+
+async fn replay_session_history(
+    peer: &Arc<Peer>,
+    session: &Arc<Session>,
+) -> std::result::Result<(), agent_client_protocol::Error> {
+    let events = session
+        .handles
+        .runtime
+        .events()
+        .await
+        .map_err(|e| internal_error(format!("load session history: {e}")))?;
+    let mut translator = Translator::for_replay();
+    for event in events {
+        if event.session_id != session.handles.session_id {
+            continue;
+        }
+        for update in translator.on_event(&event) {
+            peer.session_update(&session.acp_id, update);
+        }
+    }
+    Ok(())
 }
 
 async fn handle_prompt<F: RuntimeFactory>(

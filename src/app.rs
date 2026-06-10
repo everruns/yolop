@@ -4594,19 +4594,32 @@ mod tests {
             .expect("first turn");
         drop(first);
 
-        let resumed = crate::runtime::build_with_options(
-            workspace.path().to_path_buf(),
-            crate::runtime::ProviderChoice::Sim,
-            Some(session_id),
-            sessions.path().to_path_buf(),
-            settings,
-            crate::runtime::BuildOptions {
-                client_commands: true,
-                ..crate::runtime::BuildOptions::default()
-            },
-        )
-        .await
-        .expect("build resumed runtime");
+        let mut resumed = None;
+        for _ in 0..20 {
+            match crate::runtime::build_with_options(
+                workspace.path().to_path_buf(),
+                crate::runtime::ProviderChoice::Sim,
+                Some(session_id),
+                sessions.path().to_path_buf(),
+                settings.clone(),
+                crate::runtime::BuildOptions {
+                    client_commands: true,
+                    ..crate::runtime::BuildOptions::default()
+                },
+            )
+            .await
+            {
+                Ok(runtime) => {
+                    resumed = Some(runtime);
+                    break;
+                }
+                Err(err) if err.to_string().contains("another yolop process") => {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(err) => panic!("build resumed runtime: {err}"),
+            }
+        }
+        let resumed = resumed.expect("build resumed runtime after releasing first log lock");
         assert!(
             resumed.startup.replayed_events > 0,
             "resume should report replayed events"

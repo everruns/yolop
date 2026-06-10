@@ -8,6 +8,7 @@ pub use agent_client_protocol::schema::{
     AuthenticateResponse as AuthenticateResult, AvailableCommand, AvailableCommandInput,
     AvailableCommandsUpdate, CancelNotification, Content, ContentBlock, ContentChunk,
     InitializeRequest as InitializeParams, InitializeResponse as InitializeResult,
+    LoadSessionRequest as LoadSessionParams, LoadSessionResponse as LoadSessionResult,
     NewSessionRequest as NewSessionParams, NewSessionResponse as NewSessionResult, Plan, PlanEntry,
     PlanEntryPriority, PlanEntryStatus, PromptCapabilities, PromptRequest as PromptParams,
     PromptResponse as PromptResult, ProtocolVersion, SessionNotification, SessionUpdate,
@@ -58,12 +59,12 @@ mod tests {
     fn sdk_initialize_result_serializes_camel_case() {
         let result = InitializeResult::new(PROTOCOL_VERSION).agent_capabilities(
             AgentCapabilities::new()
-                .load_session(false)
+                .load_session(true)
                 .prompt_capabilities(PromptCapabilities::new().embedded_context(true)),
         );
         let v = serde_json::to_value(&result).unwrap();
         assert_eq!(v["protocolVersion"], 1);
-        assert_eq!(v["agentCapabilities"]["loadSession"], false);
+        assert_eq!(v["agentCapabilities"]["loadSession"], true);
         assert_eq!(
             v["agentCapabilities"]["promptCapabilities"]["embeddedContext"],
             true
