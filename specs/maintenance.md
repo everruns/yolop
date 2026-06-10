@@ -13,6 +13,7 @@ The canonical agent workflow lives in [`.agents/skills/maintenance/SKILL.md`](..
 3. Match validation depth to the actual risk surface.
 4. Keep release claims honest.
 5. Detect drift between yolop and its upstream source (`examples/coding-cli` in `everruns/everruns`).
+6. Detect feature-completeness drift: features that look shipped on one surface (CLI flags, TUI behavior, specs, README, tests, bundled skills) but are missing or stale on another.
 
 ## Ownership Boundary
 
@@ -27,6 +28,39 @@ The canonical agent workflow lives in [`.agents/skills/maintenance/SKILL.md`](..
 - Maintenance prefers concrete fixes over ceremonial audits when a safe local fix exists.
 - Dependency upgrades against external registries should respect a short release-age floor (≥1 day for patch, ≥7 days for minor/major) to avoid landing same-day yanks.
 
+## CI Health Gate
+
+GitHub Actions on `main` is the CI source of truth. The latest run on `main`
+must be green before a maintenance pass is reported complete:
+
+- A red `main` is the first maintenance item, ahead of any other scope.
+- If the pass cannot fix the failure, it must open a tracked issue and report
+  the pass as **blocked**, not complete.
+
+## Deferred Findings
+
+Findings too large to fix inline (multi-file refactors, upgrades needing
+non-trivial rework) are deferred, not dropped:
+
+- each deferred finding becomes a GitHub issue with scope and reproduction
+- the issue numbers appear in the maintenance report
+
+Deferred items are not failures. Untracked ones are.
+
+## Feature Completeness Drift
+
+A feature is not release-ready merely because one surface exists. Yolop's
+surfaces are the CLI flags, the TUI behavior, `specs/`, `README.md`, the test
+suite, and the bundled `skills/`. Maintenance should catch:
+
+- flags or behavior present in `src/` but absent from `README.md` or `specs/`
+- specs or README describing behavior the binary no longer has
+- shipped features with no test exercising them
+
+The outcome is either a small fix that reconnects the surfaces or a crisp
+finding naming the missing surface and its user-visible impact — not a
+generic "tech debt" note.
+
 ## Dependency Discipline
 
 The `everruns-*` family is yolop's single most consequential dependency vector:
@@ -38,6 +72,12 @@ The `everruns-*` family is yolop's single most consequential dependency vector:
 - `everruns-integrations-duckduckgo`
 
 These crates ship together from one upstream workspace and are designed to be used at the same version. Yolop pins them at a single minor version. Mixing minor versions across the family is a soft API break and is not allowed without an explicit reason recorded in the PR.
+
+Beyond the everruns family, dependency hygiene means:
+
+- no known CVEs in the tree (`cargo audit` when available, plus the repo's Dependabot alerts)
+- duplicate transitive versions reviewed (`cargo tree --duplicates`) — fix or note why unfixable
+- no unused direct dependencies; prefer narrow sub-crates over umbrella crates when only a slice is used
 
 ## Upstream Mirror
 
