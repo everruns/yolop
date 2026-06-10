@@ -4380,6 +4380,177 @@ mod tests {
                 self.apply_ui_command(command);
             }
         }
+
+        /// Drain turn events the way [`App::run_loop_iteration`] does until
+        /// the background turn finishes or the deadline passes.
+        async fn pump_turn_until_idle_for_test(&mut self) {
+            use std::time::Duration;
+
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+            while self.busy {
+                if tokio::time::Instant::now() >= deadline {
+                    panic!(
+                        "turn did not complete within 15s: busy={} lines={:?}",
+                        self.busy, self.lines
+                    );
+                }
+                if let Some(rx) = self.rx.as_mut() {
+                    match rx.try_recv() {
+                        Ok(TurnEvent::Lines(lines)) => self.lines.extend(lines),
+                        Ok(TurnEvent::Activity(activity)) => {
+                            if !activity.fallback || self.turn_activity.is_none() {
+                                self.turn_activity = Some(activity.text);
+                            }
+                        }
+                        Ok(TurnEvent::Stream(preview)) => self.stream_preview = preview,
+                        Ok(TurnEvent::Done) => {
+                            self.busy = false;
+                            self.busy_frame = 0;
+                            self.turn_activity = None;
+                            self.stream_preview = None;
+                            self.rx = None;
+                        }
+                        Ok(TurnEvent::Failed(err)) => {
+                            self.busy = false;
+                            self.busy_frame = 0;
+                            self.turn_activity = None;
+                            self.stream_preview = None;
+                            self.rx = None;
+                            self.push_system(format!("turn failed: {err}"));
+                        }
+                        Err(mpsc::error::TryRecvError::Empty) => {}
+                        Err(mpsc::error::TryRecvError::Disconnected) => {
+                            self.busy = false;
+                            self.turn_activity = None;
+                            self.stream_preview = None;
+                            self.rx = None;
+                        }
+                    }
+                }
+                if self.busy {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        }
+
+        /// Mirror [`App::run`]'s startup replay without standing up a terminal.
+        async fn replay_transcript_for_test(&mut self) {
+            self.emit_replayed_transcript().await;
+        }
+    }
+
+    async fn llmsim_settings(
+        sessions: &tempfile::TempDir,
+    ) -> std::sync::Arc<crate::settings::SettingsStore> {
+        let settings_path = sessions.path().join("settings.toml");
+        std::fs::write(settings_path, "provider = \"llmsim\"\n").expect("write settings");
+        std::sync::Arc::new(crate::settings::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn enter_submit_completes_llmsim_turn_in_transcript() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+
+        for ch in "hello turn".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert!(app.busy, "submit should start a background turn");
+        app.pump_turn_until_idle_for_test().await;
+
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| matches!(line.author, Author::User) && line.text == "hello turn"),
+            "user prompt should land in the transcript: {:?}",
+            app.lines
+        );
+        assert!(
+            app.lines.iter().any(|line| {
+                matches!(line.author, Author::Assistant) && line.text.contains("offline mode")
+            }),
+            "assistant reply should finalize into the transcript: {:?}",
+            app.lines
+        );
+        assert!(!app.busy);
+        assert!(app.stream_preview.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resume_replays_prior_turn_into_transcript() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let settings = llmsim_settings(&sessions).await;
+
+        let first = crate::runtime::build_with_options(
+            workspace.path().to_path_buf(),
+            crate::runtime::ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings.clone(),
+            crate::runtime::BuildOptions {
+                client_commands: true,
+                ..crate::runtime::BuildOptions::default()
+            },
+        )
+        .await
+        .expect("build first runtime");
+        let session_id = first.handles.session_id;
+        let prompt = "prior turn";
+        let input = first.model.input_message(prompt.to_string());
+        first
+            .handles
+            .runtime
+            .run_turn(session_id, input)
+            .await
+            .expect("first turn");
+        drop(first);
+
+        let resumed = crate::runtime::build_with_options(
+            workspace.path().to_path_buf(),
+            crate::runtime::ProviderChoice::Sim,
+            Some(session_id),
+            sessions.path().to_path_buf(),
+            settings,
+            crate::runtime::BuildOptions {
+                client_commands: true,
+                ..crate::runtime::BuildOptions::default()
+            },
+        )
+        .await
+        .expect("build resumed runtime");
+        assert!(
+            resumed.startup.replayed_events > 0,
+            "resume should report replayed events"
+        );
+
+        let mut app = App::new(resumed);
+        app.setup = None;
+        app.lines.clear();
+        app.replay_transcript_for_test().await;
+
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| matches!(line.author, Author::User) && line.text == prompt),
+            "replayed transcript should include the prior user prompt: {:?}",
+            app.lines
+        );
+        assert!(
+            app.lines.iter().any(|line| {
+                matches!(line.author, Author::Assistant) && line.text.contains("offline mode")
+            }),
+            "replayed transcript should include the prior assistant reply: {:?}",
+            app.lines
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

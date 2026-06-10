@@ -16,15 +16,19 @@
 // The OpenRouter tests default to a Nemotron 3 model and guard the Chat
 // Completions tool-calling path (everruns EVE-522 / EVE-523).
 
+mod support;
+
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
-use std::{io::Read, io::Write};
 
-use portable_pty::{
-    Child, CommandBuilder, ExitStatus, MasterPty, NativePtySystem, PtySize, PtySystem,
+use support::strip_ansi;
+use support::tui_harness::{
+    TuiSpawnOptions, assert_cursor_near_bottom, spawn_tui_llmsim, spawn_tui_llmsim_with,
+    wait_for_exit,
 };
 
 fn yolop_binary() -> PathBuf {
@@ -281,7 +285,7 @@ fn llmsim_unknown_session_id_is_invalid() {
 
 #[test]
 fn tui_escape_does_not_exit_and_ctrl_c_exits() {
-    let mut tui = spawn_tui_llmsim();
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
         "TUI did not render startup banner: {}",
@@ -311,7 +315,7 @@ fn tui_escape_does_not_exit_and_ctrl_c_exits() {
 
 #[test]
 fn tui_alt_enter_sequence_submits_like_enter() {
-    let mut tui = spawn_tui_llmsim();
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
         "TUI did not render startup banner: {}",
@@ -360,7 +364,7 @@ fn tui_survives_slow_cursor_position_reply_after_resize() {
     // cursor-position query ratatui issues to re-anchor the inline viewport
     // after a resize — crossterm gives up on that query after 2 seconds.
     // That transient failure must not exit the TUI.
-    let mut tui = spawn_tui_llmsim();
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
         "TUI did not render startup banner: {}",
@@ -400,11 +404,14 @@ fn tui_survives_slow_cursor_position_reply_after_resize() {
 
 #[test]
 fn tui_startup_anchors_composer_from_top_in_tall_terminal() {
-    let mut tui = spawn_tui_llmsim_with(TuiSpawnOptions {
-        rows: 40,
-        cols: 100,
-        cursor_row: 1,
-    });
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            rows: 40,
+            cols: 100,
+            cursor_row: 1,
+        },
+    );
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
         "TUI did not render startup banner: {}",
@@ -416,11 +423,14 @@ fn tui_startup_anchors_composer_from_top_in_tall_terminal() {
 
 #[test]
 fn tui_startup_anchors_composer_when_prompt_is_already_near_bottom() {
-    let mut tui = spawn_tui_llmsim_with(TuiSpawnOptions {
-        rows: 24,
-        cols: 80,
-        cursor_row: 23,
-    });
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            rows: 24,
+            cols: 80,
+            cursor_row: 23,
+        },
+    );
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
         "TUI did not render startup banner: {}",
@@ -432,11 +442,14 @@ fn tui_startup_anchors_composer_when_prompt_is_already_near_bottom() {
 
 #[test]
 fn tui_startup_anchors_composer_in_short_terminal() {
-    let mut tui = spawn_tui_llmsim_with(TuiSpawnOptions {
-        rows: 8,
-        cols: 80,
-        cursor_row: 1,
-    });
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            rows: 8,
+            cols: 80,
+            cursor_row: 1,
+        },
+    );
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
         "TUI did not render startup banner: {}",
@@ -448,7 +461,7 @@ fn tui_startup_anchors_composer_in_short_terminal() {
 
 #[test]
 fn tui_setup_overlay_renders_in_real_pty() {
-    let mut tui = spawn_tui_llmsim();
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
         "TUI did not render startup banner: {}",
@@ -469,8 +482,44 @@ fn tui_setup_overlay_renders_in_real_pty() {
 }
 
 #[test]
+fn tui_submit_turn_renders_assistant_in_scrollback() {
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"scrollback smoke\r");
+    assert!(
+        tui.wait_for_output("scrollback smoke", Duration::from_secs(3)),
+        "submitted prompt should appear in scrollback: {}",
+        tui.output_text()
+    );
+    assert!(
+        tui.wait_for_output("offline mode", Duration::from_secs(5)),
+        "assistant reply should land in scrollback after turn completion: {}",
+        tui.output_text()
+    );
+
+    let transcript = strip_ansi(&tui.output_text());
+    assert!(
+        transcript.contains("scrollback smoke") && transcript.contains("offline mode"),
+        "scrollback should retain both user prompt and assistant reply: {transcript}"
+    );
+
+    tui.write_input(b"\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(
+        status.success(),
+        "Ctrl-C should exit cleanly, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
+#[test]
 fn tui_double_ctrl_c_exits() {
-    let mut tui = spawn_tui_llmsim();
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
         "TUI did not render startup banner: {}",
@@ -483,17 +532,6 @@ fn tui_double_ctrl_c_exits() {
         status.success(),
         "double Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
-    );
-}
-
-fn assert_cursor_near_bottom(tui: &mut TuiHarness, rows: u16) {
-    let output = tui.output_text();
-    let cursor_row = max_absolute_cursor_row(output.as_bytes())
-        .unwrap_or_else(|| panic!("missing cursor move in TUI output: {output}"));
-    let minimum_row = rows.saturating_sub(2).max(1);
-    assert!(
-        cursor_row >= minimum_row,
-        "composer cursor should be near terminal bottom (row {cursor_row}, expected >= {minimum_row}): {output}"
     );
 }
 
@@ -531,241 +569,6 @@ fn parse_prior_events(stdout: &str) -> Option<u64> {
         }
     }
     None
-}
-
-fn strip_ansi(input: &str) -> String {
-    // Tiny ANSI CSI stripper: enough for the colour escapes the print driver
-    // emits. Avoids pulling in a crate just for one helper.
-    let mut out = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            i += 2;
-            while i < bytes.len() && !matches!(bytes[i], 0x40..=0x7e) {
-                i += 1;
-            }
-            if i < bytes.len() {
-                i += 1;
-            }
-            continue;
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
-}
-
-fn max_absolute_cursor_row(output: &[u8]) -> Option<u16> {
-    let mut row = None;
-    let mut i = 0;
-    while i + 2 < output.len() {
-        if output[i] != 0x1b || output[i + 1] != b'[' {
-            i += 1;
-            continue;
-        }
-        let start = i + 2;
-        let mut end = start;
-        while end < output.len() && !matches!(output[end], 0x40..=0x7e) {
-            end += 1;
-        }
-        if end == output.len() {
-            break;
-        }
-        let final_byte = output[end];
-        if matches!(final_byte, b'H' | b'f') {
-            let params = std::str::from_utf8(&output[start..end]).ok()?;
-            if !params.starts_with('?') {
-                let parsed = params
-                    .split(';')
-                    .next()
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or("1")
-                    .parse::<u16>()
-                    .ok();
-                if let Some(parsed) = parsed {
-                    row = Some(row.map_or(parsed, |current: u16| current.max(parsed)));
-                }
-            }
-        }
-        i = end + 1;
-    }
-    row
-}
-
-struct TuiHarness {
-    child: Box<dyn Child + Send + Sync>,
-    master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
-    output_rx: Receiver<Vec<u8>>,
-    output: Vec<u8>,
-    _session_dir: tempfile::TempDir,
-    _home: tempfile::TempDir,
-}
-
-#[derive(Clone, Copy)]
-struct TuiSpawnOptions {
-    rows: u16,
-    cols: u16,
-    cursor_row: u16,
-}
-
-impl Default for TuiSpawnOptions {
-    fn default() -> Self {
-        Self {
-            rows: 24,
-            cols: 80,
-            cursor_row: 1,
-        }
-    }
-}
-
-impl TuiHarness {
-    fn write_input(&mut self, bytes: &[u8]) {
-        self.writer.write_all(bytes).expect("write pty input");
-        self.writer.flush().expect("flush pty input");
-    }
-
-    fn resize(&mut self, cols: u16, rows: u16) {
-        self.master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("resize pty");
-    }
-
-    fn wait_for_output(&mut self, needle: &str, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            self.drain_output();
-            if self.output_text().contains(needle) {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        self.drain_output();
-        self.output_text().contains(needle)
-    }
-
-    fn wait_or_kill(&mut self, timeout: Duration) -> ExitStatus {
-        if let Some(status) = wait_for_exit(&mut *self.child, timeout) {
-            return status;
-        }
-        let _ = self.child.kill();
-        panic!(
-            "TUI did not exit within {:?}: {}",
-            timeout,
-            self.output_text()
-        );
-    }
-
-    fn output_text(&mut self) -> String {
-        self.drain_output();
-        String::from_utf8_lossy(&self.output).into_owned()
-    }
-
-    fn drain_output(&mut self) {
-        while let Ok(chunk) = self.output_rx.try_recv() {
-            self.output.extend_from_slice(&chunk);
-        }
-    }
-}
-
-impl Drop for TuiHarness {
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
-        }
-    }
-}
-
-fn spawn_tui_llmsim() -> TuiHarness {
-    spawn_tui_llmsim_with(TuiSpawnOptions::default())
-}
-
-fn spawn_tui_llmsim_with(options: TuiSpawnOptions) -> TuiHarness {
-    let session_dir = tempfile::tempdir().expect("session tempdir");
-    let home = tempfile::tempdir().expect("home tempdir");
-    for settings_dir in [
-        home.path().join(".config/yolop"),
-        home.path().join("Library/Application Support/yolop"),
-    ] {
-        std::fs::create_dir_all(&settings_dir).expect("create settings dir");
-        std::fs::write(
-            settings_dir.join("settings.toml"),
-            "provider = \"llmsim\"\n",
-        )
-        .expect("write settings");
-    }
-    let pty_system = NativePtySystem::default();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: options.rows,
-            cols: options.cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .expect("open pty");
-
-    let mut cmd = CommandBuilder::new(yolop_binary());
-    cmd.args(["--provider", "llmsim", "--session-dir"]);
-    cmd.arg(session_dir.path());
-    cmd.env("HOME", home.path());
-    cmd.env("XDG_CONFIG_HOME", home.path().join(".config"));
-    cmd.env("XDG_DATA_HOME", home.path().join(".local/share"));
-    cmd.env("TERM", "xterm-256color");
-    cmd.env_remove("OPENAI_API_KEY");
-    cmd.env_remove("ANTHROPIC_API_KEY");
-    cmd.env_remove("OPENROUTER_API_KEY");
-    cmd.env_remove("OLLAMA_BASE_URL");
-    cmd.env_remove("OLLAMA_API_KEY");
-
-    let child = pair.slave.spawn_command(cmd).expect("spawn yolop TUI");
-    drop(pair.slave);
-
-    let (output_tx, output_rx) = mpsc::channel();
-    let mut reader = pair.master.try_clone_reader().expect("clone pty reader");
-    thread::spawn(move || {
-        let mut buf = [0_u8; 4096];
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 {
-                break;
-            }
-            if output_tx.send(buf[..n].to_vec()).is_err() {
-                break;
-            }
-        }
-    });
-
-    let mut writer = pair.master.take_writer().expect("take pty writer");
-    let cursor_row = options.cursor_row.clamp(1, options.rows.max(1));
-    writer
-        .write_all(format!("\x1b[{cursor_row};1R").as_bytes())
-        .expect("seed cursor position response");
-    writer.flush().expect("flush cursor position response");
-    TuiHarness {
-        child,
-        master: pair.master,
-        writer,
-        output_rx,
-        output: Vec::new(),
-        _session_dir: session_dir,
-        _home: home,
-    }
-}
-
-fn wait_for_exit(child: &mut dyn Child, timeout: Duration) -> Option<ExitStatus> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if let Some(status) = child.try_wait().expect("poll child exit") {
-            return Some(status);
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    child.try_wait().expect("poll child exit")
 }
 
 /// Result of one scripted ACP handshake against the real binary.
