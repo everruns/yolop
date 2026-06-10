@@ -43,7 +43,10 @@ pub(crate) async fn discover_provider_models(
         LlmProviderType::OpenaiCompletions => ProviderType::OpenAICompletions,
         LlmProviderType::Anthropic => ProviderType::Anthropic,
         LlmProviderType::Gemini => ProviderType::Gemini,
-        LlmProviderType::LlmSim => return Ok(None),
+        LlmProviderType::Openrouter => ProviderType::OpenRouter,
+        // Yolop never constructs Bedrock (no Bedrock driver is registered
+        // below); treat discovery as unsupported rather than erroring.
+        LlmProviderType::Bedrock | LlmProviderType::LlmSim => return Ok(None),
     };
     let mut config = ProviderConfig::new(provider_type);
     if let Some(key) = &target.api_key {
