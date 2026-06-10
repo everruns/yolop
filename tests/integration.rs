@@ -18,12 +18,12 @@
 
 mod support;
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
-use std::io::Write;
 
 use support::strip_ansi;
 use support::tui_harness::{
