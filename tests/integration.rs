@@ -23,7 +23,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::{io::Read, io::Write};
 
-use portable_pty::{Child, CommandBuilder, ExitStatus, NativePtySystem, PtySize, PtySystem};
+use portable_pty::{
+    Child, CommandBuilder, ExitStatus, MasterPty, NativePtySystem, PtySize, PtySystem,
+};
 
 fn yolop_binary() -> PathBuf {
     // CARGO_BIN_EXE_<name> is set by Cargo for integration tests.
@@ -345,6 +347,53 @@ fn tui_alt_enter_sequence_submits_like_enter() {
 }
 
 #[test]
+fn tui_survives_slow_cursor_position_reply_after_resize() {
+    // Regression test for the TUI dying right around turn completion under
+    // xterm.js-backed terminals (ttyd / vhs recordings). Those emulators
+    // resize the PTY mid-session (fit-addon re-measuring once the scrollbar
+    // appears or fonts settle) and can be slow to answer the `CSI 6n`
+    // cursor-position query ratatui issues to re-anchor the inline viewport
+    // after a resize — crossterm gives up on that query after 2 seconds.
+    // That transient failure must not exit the TUI.
+    let mut tui = spawn_tui_llmsim();
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"hi\r");
+    assert!(
+        tui.wait_for_output("offline mode", Duration::from_secs(5)),
+        "turn did not complete: {}",
+        tui.output_text()
+    );
+
+    // Shrink the PTY by one column, like xterm.js does when its scrollbar
+    // appears as the transcript first overflows. The harness deliberately
+    // does NOT answer the cursor-position query this triggers, emulating a
+    // busy emulator. crossterm's 2s query timeout fires at least once.
+    tui.resize(79, 24);
+    assert!(
+        wait_for_exit(&mut *tui.child, Duration::from_secs(5)).is_none(),
+        "TUI exited after an unanswered cursor-position query: {}",
+        tui.output_text()
+    );
+
+    // The emulator catches up: answer the (retried) query, then Ctrl-C. The
+    // reply must come first — the event loop is blocked inside the cursor
+    // query until it arrives.
+    tui.write_input(b"\x1b[1;1R");
+    tui.write_input(b"\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(10));
+    assert!(
+        status.success(),
+        "Ctrl-C should exit cleanly after recovery, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
+#[test]
 fn tui_double_ctrl_c_exits() {
     let mut tui = spawn_tui_llmsim();
     assert!(
@@ -423,6 +472,7 @@ fn strip_ansi(input: &str) -> String {
 
 struct TuiHarness {
     child: Box<dyn Child + Send + Sync>,
+    master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     output_rx: Receiver<Vec<u8>>,
     output: Vec<u8>,
@@ -434,6 +484,17 @@ impl TuiHarness {
     fn write_input(&mut self, bytes: &[u8]) {
         self.writer.write_all(bytes).expect("write pty input");
         self.writer.flush().expect("flush pty input");
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) {
+        self.master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("resize pty");
     }
 
     fn wait_for_output(&mut self, needle: &str, timeout: Duration) -> bool {
@@ -542,6 +603,7 @@ fn spawn_tui_llmsim() -> TuiHarness {
     writer.flush().expect("flush cursor position response");
     TuiHarness {
         child,
+        master: pair.master,
         writer,
         output_rx,
         output: Vec::new(),
