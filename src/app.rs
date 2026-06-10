@@ -83,6 +83,8 @@ pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
 const MAX_TERMINAL_IO_FAILURES: usize = 5;
 const COMPACT_CHROME_HEIGHT: u16 = 5;
 const MAX_INPUT_HEIGHT: u16 = 12;
+const RECENT_TRANSCRIPT_SOURCE_LINES: usize = 80;
+const RECENT_TRANSCRIPT_MAX_TEXT_BYTES: usize = 4_000;
 const ACCENT_BLUE: Color = Color::Rgb(45, 91, 158);
 const ACCENT_GOLD: Color = Color::Rgb(126, 94, 19);
 const TEXT_PRIMARY: Color = Color::Rgb(230, 230, 232);
@@ -2470,6 +2472,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // Chrome renders the non-input rows; we then layer the input field
     // on top into the chrome-reserved input slot.
     clear_transcript_viewport(f, transcript_area);
+    draw_recent_transcript(f, transcript_area, app);
     let input_rect = draw_chrome(f, chrome_area, input_height, &state);
     draw_input(f, input_rect, app);
     draw_setup_overlay(f, area, app);
@@ -2494,6 +2497,80 @@ fn clear_transcript_viewport(f: &mut ratatui::Frame, area: Rect) {
     }
 
     f.render_widget(Clear, area);
+}
+
+fn draw_recent_transcript(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    if area.width < 4 || area.height == 0 {
+        return;
+    }
+
+    let inner = Rect {
+        x: area.x.saturating_add(1),
+        y: area.y,
+        width: area.width.saturating_sub(2),
+        height: area.height,
+    };
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let rendered = recent_transcript_lines(app, inner.width as usize, inner.height as usize);
+    if rendered.is_empty() {
+        return;
+    }
+
+    f.render_widget(Paragraph::new(rendered), inner);
+}
+
+fn recent_transcript_lines(app: &App, width: usize, max_lines: usize) -> Vec<Line<'static>> {
+    if max_lines == 0 {
+        return Vec::new();
+    }
+
+    let mut chunks = Vec::new();
+    let mut total_lines = 0;
+    let mut newer_author: Option<Author> = None;
+
+    for chat in app
+        .lines
+        .iter()
+        .rev()
+        .filter(|line| !matches!(line.author, Author::System))
+        .take(RECENT_TRANSCRIPT_SOURCE_LINES)
+    {
+        let chat = bounded_recent_chat_line(chat);
+        let mut chunk = Vec::new();
+        append_chat_lines(&mut chunk, &chat, width);
+        if should_insert_chat_gap(&chat.author, newer_author.as_ref()) {
+            chunk.push(Line::from(""));
+        }
+
+        if total_lines + chunk.len() > max_lines {
+            let remaining = max_lines.saturating_sub(total_lines);
+            if remaining > 0 {
+                chunks.push(chunk.split_off(chunk.len().saturating_sub(remaining)));
+            }
+            break;
+        }
+
+        total_lines += chunk.len();
+        newer_author = Some(chat.author);
+        chunks.push(chunk);
+    }
+
+    chunks.reverse();
+    chunks.into_iter().flatten().collect()
+}
+
+fn bounded_recent_chat_line(chat: &ChatLine) -> ChatLine {
+    if chat.text.len() <= RECENT_TRANSCRIPT_MAX_TEXT_BYTES {
+        return chat.clone();
+    }
+
+    ChatLine {
+        author: chat.author.clone(),
+        text: truncate_tail_bytes(&chat.text, RECENT_TRANSCRIPT_MAX_TEXT_BYTES),
+    }
 }
 
 /// Render the non-input chrome (command suggestions / stream preview,
@@ -2906,6 +2983,24 @@ fn truncate_tail_chars(text: &str, max_chars: usize) -> String {
     out.push('…');
     out.extend(text.chars().skip(skip));
     out
+}
+
+fn truncate_tail_bytes(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    if max_bytes == 0 {
+        return String::new();
+    }
+    if max_bytes <= '…'.len_utf8() {
+        return "…".to_string();
+    }
+
+    let mut start = text.len().saturating_sub(max_bytes - '…'.len_utf8());
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &text[start..])
 }
 
 fn truncate_end_chars(text: &str, max_chars: usize) -> String {
@@ -4580,6 +4675,164 @@ mod tests {
         assert!(
             !rows.iter().any(|row| row.contains("type /help")),
             "startup transcript should not be mirrored above the composer: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_viewport_shows_recent_transcript_lines() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.push_user("What changed last time?".into());
+        app.lines.push(ChatLine {
+            author: Author::Assistant,
+            text: "The renderer now mirrors resumed history.".into(),
+        });
+
+        let rows = render_app_lines(app, 96, COMPOSER_VIEWPORT_HEIGHT);
+
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("What changed last time?")),
+            "inline viewport should show recent user transcript: {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("mirrors resumed history")),
+            "inline viewport should show recent assistant transcript: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_viewport_uses_recent_transcript_tail() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        for index in 0..20 {
+            app.push_user(format!("old line {index}"));
+        }
+        app.lines.push(ChatLine {
+            author: Author::Assistant,
+            text: "newest resumed line".into(),
+        });
+
+        let rows = render_app_lines(app, 96, COMPOSER_VIEWPORT_HEIGHT);
+
+        assert!(
+            !rows.iter().any(|row| row.contains("old line 0")),
+            "inline viewport should drop old transcript head: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("newest resumed line")),
+            "inline viewport should keep transcript tail: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_viewport_bounds_large_recent_entries() {
+        let bounded = bounded_recent_chat_line(&ChatLine {
+            author: Author::Assistant,
+            text: format!(
+                "{} visible-tail",
+                "hidden-head ".repeat(RECENT_TRANSCRIPT_MAX_TEXT_BYTES)
+            ),
+        });
+
+        assert!(
+            bounded.text.len() <= RECENT_TRANSCRIPT_MAX_TEXT_BYTES,
+            "bounded text should fit the inline render budget"
+        );
+        assert!(bounded.text.starts_with('…'), "bounded text: {bounded:?}");
+        assert!(
+            bounded.text.ends_with("visible-tail"),
+            "recent transcript should keep the tail: {bounded:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_viewport_stops_rendering_after_visible_tail_is_full() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.lines.push(ChatLine {
+            author: Author::Assistant,
+            text: "older invisible line".repeat(200),
+        });
+        for index in 0..20 {
+            app.push_user(format!("new line {index}"));
+        }
+
+        let rows = render_app_lines(app, 96, COMPOSER_VIEWPORT_HEIGHT);
+
+        assert!(
+            !rows.iter().any(|row| row.contains("older invisible")),
+            "inline viewport should avoid rendering invisible older entries: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("new line 19")),
+            "inline viewport should keep newest entries: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resumed_session_renders_replayed_history_in_inline_viewport() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let session_id = SessionId::from_seed(321987);
+        let session_dir = crate::session_log::session_dir_path(sessions.path(), session_id);
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        let log_path = crate::session_log::session_log_path(&session_dir);
+        let events = [
+            RuntimeEvent::new(
+                session_id,
+                EventContext::empty(),
+                InputMessageData::new(Message::user("previous question")),
+            ),
+            RuntimeEvent::new(
+                session_id,
+                EventContext::empty(),
+                OutputMessageCompletedData::new(Message::assistant("previous answer")),
+            ),
+        ];
+        let jsonl = events
+            .iter()
+            .map(|event| serde_json::to_string(event).expect("serialize event"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&log_path, format!("{jsonl}\n")).expect("session log");
+
+        let settings = std::sync::Arc::new(crate::settings::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
+        let runtime = crate::runtime::build_with_options(
+            workspace.path().to_path_buf(),
+            crate::runtime::ProviderChoice::Sim,
+            Some(session_id),
+            sessions.path().to_path_buf(),
+            settings,
+            crate::runtime::BuildOptions {
+                client_commands: true,
+                ..crate::runtime::BuildOptions::default()
+            },
+        )
+        .await
+        .expect("build resumed runtime");
+        let mut app = App::new(runtime);
+        app.setup = None;
+
+        app.emit_replayed_transcript().await;
+        let rows = render_app_lines(&mut app, 96, COMPOSER_VIEWPORT_HEIGHT);
+
+        assert!(
+            rows.iter().any(|row| row.contains("previous question")),
+            "inline viewport should show replayed user message: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("previous answer")),
+            "inline viewport should show replayed assistant message: {rows:?}"
         );
     }
 
