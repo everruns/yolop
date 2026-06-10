@@ -5,6 +5,7 @@
 mod acp;
 mod app;
 mod capabilities;
+mod hooks_config;
 mod host_ui;
 mod into;
 mod mcp_config;
@@ -531,6 +532,13 @@ async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
             .map(|c| format!("/{}", c.name))
             .collect();
         println!("{} {}", paint(color, "90", "commands"), names.join(", "));
+    }
+    if startup.hook_configured {
+        println!(
+            "{}     {}",
+            paint(color, "90", "hooks"),
+            startup.hook_summary()
+        );
     }
     println!();
 

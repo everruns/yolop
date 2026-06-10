@@ -21,7 +21,7 @@ use everruns_core::capabilities::{
     CompactionCapability, FileSystemCapability, INFINITY_CONTEXT_CAPABILITY_ID,
     InfinityContextCapability, LoopDetectionCapability, PROMPT_CACHING_CAPABILITY_ID,
     PromptCachingCapability, SKILLS_CAPABILITY_ID, StatelessTodoListCapability,
-    ToolOutputPersistenceCapability, WebFetchCapability,
+    ToolOutputPersistenceCapability, UserHooksCapability, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
@@ -865,7 +865,10 @@ pub(crate) fn normalize_reasoning_effort(reasoning_effort: Option<String>) -> Op
         .filter(|effort| !effort.is_empty())
 }
 
-fn coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabilityConfig> {
+fn coding_harness_capabilities(
+    client_commands: bool,
+    hook_config: Option<serde_json::Value>,
+) -> Vec<AgentCapabilityConfig> {
     let mut caps = Vec::new();
     // Terminal-side commands lead the registry so the most-typed commands
     // (/help, /clear, /quit, …) surface first in the palette. Enabled only
@@ -917,6 +920,9 @@ fn coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabilityConf
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
     ]);
+    if let Some(config) = hook_config {
+        caps.push(AgentCapabilityConfig::with_config("user_hooks", config));
+    }
     caps
 }
 
@@ -973,6 +979,38 @@ pub struct StartupInfo {
     /// (global + workspace, merged). Source for the `/mcp` command and the
     /// startup banner. Empty when no servers are configured.
     pub mcp_server_names: Vec<String>,
+    /// Effective user hooks loaded from global/workspace config.
+    pub hook_count: usize,
+    pub hook_scope_counts: std::collections::BTreeMap<String, usize>,
+    pub disabled_hook_contribution_count: usize,
+    pub hook_configured: bool,
+}
+
+impl StartupInfo {
+    pub fn hook_summary(&self) -> String {
+        if !self.hook_configured {
+            return "none".to_string();
+        }
+        let scopes = self
+            .hook_scope_counts
+            .iter()
+            .map(|(scope, count)| format!("{scope}:{count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let hooks = if scopes.is_empty() {
+            self.hook_count.to_string()
+        } else {
+            format!("{} ({scopes})", self.hook_count)
+        };
+        if self.disabled_hook_contribution_count == 0 {
+            hooks
+        } else {
+            format!(
+                "{hooks}, {} disabled contribution(s)",
+                self.disabled_hook_contribution_count
+            )
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1073,6 +1111,16 @@ pub async fn build_with_options(
     let mcp_servers: ScopedMcpServers = crate::mcp_config::load_mcp_servers(&canonical_root);
     let mut mcp_server_names: Vec<String> = mcp_servers.keys().cloned().collect();
     mcp_server_names.sort();
+    let hooks_store = Arc::new(crate::hooks_config::HooksStore::beside_settings(
+        &settings,
+        canonical_root.clone(),
+    ));
+    let effective_hooks = hooks_store.effective();
+    let hook_count = effective_hooks.hooks.len();
+    let hook_scope_counts = effective_hooks.scope_counts();
+    let disabled_hook_contribution_count = effective_hooks.disabled_contributions.len();
+    let hook_configured = !effective_hooks.is_empty();
+    let hook_capability_config = hook_configured.then(|| effective_hooks.capability_config());
 
     // Pin the SessionId so resume can re-attach to the same session folder
     // (directory name is the session id).
@@ -1140,6 +1188,8 @@ pub async fn build_with_options(
     //   * loop_detection       — safety net against repeated identical tool calls
     //   * prompt_caching       — Anthropic prompt caching; free token savings
     //   * duckduckgo           — free web search (`duckduckgo_search`); no API key
+    //   * user_hooks           — executes user-authored hook specs loaded from
+    //                            global/workspace hook config
     let mut capabilities = CapabilityRegistry::new();
     capabilities.register(AgentInstructionsCapability);
     capabilities.register(FileSystemCapability);
@@ -1163,6 +1213,7 @@ pub async fn build_with_options(
     // progressive disclosure; replace this vendor once upstream ships that fix.
     capabilities.register(ToolSearchCapability::new());
     capabilities.register(ToolOutputPersistenceCapability);
+    capabilities.register(UserHooksCapability);
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebFetchCapability::from_env());
     capabilities.register(CodingCliEnvironmentCapability::new(canonical_root.clone()));
@@ -1186,6 +1237,7 @@ pub async fn build_with_options(
     // tests isolates memory automatically.
     capabilities.register(YourCapability {
         memory: Arc::new(YourStore::beside_settings(&settings)),
+        hooks: hooks_store,
     });
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
@@ -1236,7 +1288,8 @@ pub async fn build_with_options(
     // runtime owns. `session_id(...)` pins the id so resume can re-attach
     // to the same JSONL log (filename encodes the id).
     let session_title = format!("yolop @ {}", canonical_root.display());
-    let harness_capabilities = coding_harness_capabilities(options.client_commands);
+    let harness_capabilities =
+        coding_harness_capabilities(options.client_commands, hook_capability_config);
     let session_mcp_servers = mcp_servers.clone();
 
     let mut builder = InProcessRuntimeBuilder::new()
@@ -1297,6 +1350,10 @@ pub async fn build_with_options(
             replayed_events: replayed_events_count,
             setup_recommended,
             mcp_server_names,
+            hook_count,
+            hook_scope_counts,
+            disabled_hook_contribution_count,
+            hook_configured,
         },
         model: ModelState::new(provider_state),
         settings,
@@ -2050,7 +2107,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_tool_output_persistence() {
-        let ids = coding_harness_capabilities(false);
+        let ids = coding_harness_capabilities(false, None);
 
         assert!(
             ids.iter()
@@ -2063,7 +2120,7 @@ mod tests {
         // Deferred tool loading must be wired for every host configuration —
         // it works on every provider, so there is no reason to scope it.
         for client_commands in [false, true] {
-            let ids = coding_harness_capabilities(client_commands);
+            let ids = coding_harness_capabilities(client_commands, None);
             assert!(
                 ids.iter()
                     .any(|cap| cap.capability_id() == TOOL_SEARCH_CAPABILITY_ID),
@@ -2107,7 +2164,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_loop_detection() {
-        let ids = coding_harness_capabilities(false);
+        let ids = coding_harness_capabilities(false, None);
 
         assert!(
             ids.iter()
@@ -2117,7 +2174,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_yolop_attribution() {
-        let ids = coding_harness_capabilities(false);
+        let ids = coding_harness_capabilities(false, None);
 
         assert!(
             ids.iter()
@@ -2127,7 +2184,7 @@ mod tests {
 
     #[test]
     fn coding_harness_gates_client_commands_on_flag() {
-        let without = coding_harness_capabilities(false);
+        let without = coding_harness_capabilities(false, None);
         assert!(
             !without
                 .iter()
@@ -2135,7 +2192,7 @@ mod tests {
             "client commands must stay off for hosts that can't apply them"
         );
 
-        let with = coding_harness_capabilities(true);
+        let with = coding_harness_capabilities(true, None);
         assert!(
             with.iter()
                 .any(|cap| cap.capability_id() == CLIENT_COMMANDS_CAPABILITY_ID),
