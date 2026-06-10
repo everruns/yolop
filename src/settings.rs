@@ -24,8 +24,9 @@ use toml::Value;
 pub struct Settings {
     pub provider: Option<String>,
     pub tokens: BTreeMap<String, String>,
-    /// Last model spec chosen per provider (full `provider/model [effort]`
-    /// label). Lets `/setup model` survive restarts and provider switches.
+    /// Last model spec chosen per provider, in the provider-relative
+    /// `model [effort]` form `/setup model` accepts. Lets a model pick
+    /// survive restarts and provider switches.
     pub models: BTreeMap<String, String>,
     /// Endpoint base URLs keyed by provider. Today only `custom` (the
     /// generic OpenAI-compatible provider) writes here.
@@ -365,7 +366,7 @@ mod tests {
         let path = tmp.path().join("settings.toml");
         let store = SettingsStore::open(path.clone());
         store
-            .set_model("openai".to_string(), "openai/gpt-5.5 high".to_string())
+            .set_model("openai".to_string(), "gpt-5.5 high".to_string())
             .expect("save model");
         store
             .set_base_url("custom".to_string(), "http://localhost:8000/v1".to_string())
@@ -378,7 +379,7 @@ mod tests {
         let reloaded = SettingsStore::open(path);
         assert_eq!(
             reloaded.snapshot().model_for("openai"),
-            Some("openai/gpt-5.5 high")
+            Some("gpt-5.5 high")
         );
         assert_eq!(
             reloaded.snapshot().base_url_for("custom"),
