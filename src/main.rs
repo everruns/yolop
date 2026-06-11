@@ -408,10 +408,15 @@ async fn run_tui(runtime: BuiltRuntime) -> Result<()> {
 
     // Cosmetic cleanup must not turn a successful session into an error
     // exit: since ratatui 0.30.1 `Terminal::clear` issues the same blocking
-    // cursor query as anchoring above. Raw-mode restore below still fails
+    // cursor query as anchoring above. The two steps are independent —
+    // restoring the cursor is a plain escape write that should still happen
+    // when the clear's query times out. Raw-mode restore below still fails
     // hard — leaving the terminal unusable is worth a nonzero exit.
-    if let Err(err) = terminal.clear().and_then(|_| terminal.show_cursor()) {
-        tracing::warn!("terminal cleanup failed: {err:#}");
+    if let Err(err) = terminal.clear() {
+        tracing::warn!("terminal clear failed: {err:#}");
+    }
+    if let Err(err) = terminal.show_cursor() {
+        tracing::warn!("cursor restore failed: {err:#}");
     }
     drop(terminal);
     keyboard_enhancements.disable();
