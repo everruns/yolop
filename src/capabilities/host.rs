@@ -354,6 +354,9 @@ const BASE_URL_PROVIDERS: &[&str] = &["custom"];
 pub(crate) struct SetupCapability {
     pub(crate) provider: Arc<RwLock<ProviderChoice>>,
     pub(crate) provider_store: Arc<dyn RuntimeProviderStore>,
+    /// Reads current configuration through the shared config service…
+    pub(crate) config: Arc<dyn ConfigService>,
+    /// …and writes provider/token/model choices through the concrete store.
     pub(crate) settings: Arc<SettingsStore>,
 }
 
@@ -476,7 +479,7 @@ impl SetupCapability {
             .read()
             .expect("provider lock poisoned")
             .clone();
-        let snapshot = self.settings.snapshot();
+        let snapshot = self.config.snapshot();
         let saved = snapshot
             .default_provider
             .clone()
@@ -517,8 +520,11 @@ impl SetupCapability {
             )));
         }
 
+        // One snapshot reused across both reads in this command: consistent and
+        // avoids cloning the full Settings (token strings included) twice.
+        let snapshot = self.config.snapshot();
         let next = match ProviderChoice::default_for_provider_name(name) {
-            Ok(n) => n.with_saved_model(&self.settings.snapshot()),
+            Ok(n) => n.with_saved_model(&snapshot),
             Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
         };
         let next = if model_spec.is_empty() {
@@ -534,7 +540,7 @@ impl SetupCapability {
                 "setup provider failed: no model configured for {name}; pick one with /setup"
             )));
         }
-        let mw = match next.model_with_provider(&self.settings.snapshot()) {
+        let mw = match next.model_with_provider(&snapshot) {
             Ok(m) => m,
             Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
         };
@@ -597,7 +603,7 @@ impl SetupCapability {
                 return Ok(failed_result(format!("setup model failed: {err}")));
             }
         };
-        let mw = match next.model_with_provider(&self.settings.snapshot()) {
+        let mw = match next.model_with_provider(&self.config.snapshot()) {
             Ok(m) => m,
             Err(err) => {
                 return Ok(failed_result(format!("setup model failed: {err}")));
@@ -643,7 +649,7 @@ impl SetupCapability {
 
         let discovered = tokio::time::timeout(
             DISCOVERY_TIMEOUT,
-            super::model_discovery::discover_provider_models(current, &self.settings.snapshot()),
+            super::model_discovery::discover_provider_models(current, &self.config.snapshot()),
         )
         .await;
         if let Ok(Ok(Some(models))) = discovered
@@ -704,7 +710,7 @@ impl SetupCapability {
 
     fn change_token(&self, raw: &str) -> everruns_core::Result<CommandResult> {
         if raw.is_empty() {
-            let snapshot = self.settings.snapshot();
+            let snapshot = self.config.snapshot();
             let status: Vec<String> = TOKEN_PROVIDERS
                 .iter()
                 .map(|p| {
@@ -782,7 +788,7 @@ impl SetupCapability {
             )));
         }
         if rest.is_empty() {
-            let snapshot = self.settings.snapshot();
+            let snapshot = self.config.snapshot();
             let current = snapshot
                 .base_url_for(&provider)
                 .unwrap_or("<unset>")
@@ -836,7 +842,7 @@ impl SetupCapability {
     fn change_attribution(&self, raw: &str) -> everruns_core::Result<CommandResult> {
         let trimmed = raw.trim();
         if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
-            let enabled = self.settings.snapshot().attribution_enabled();
+            let enabled = self.config.attribution_enabled();
             return Ok(CommandResult {
                 success: true,
                 message: format!(
@@ -877,7 +883,7 @@ impl SetupCapability {
                 success: true,
                 message: format!(
                     "setup approval: {} (protective | normal | off) ({})",
-                    self.settings.snapshot().approval_mode(),
+                    self.config.approval_mode(),
                     self.settings.path().display()
                 ),
                 error_code: None,

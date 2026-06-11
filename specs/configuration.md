@@ -77,13 +77,15 @@ capability adds a typed getter only when it grows a real need rather than
 carrying speculative methods.
 
 `SettingsStore` implements `ConfigService`, so the single shared handle that
-backs writes also serves reads. Capabilities that only *read* config take an
-`Arc<dyn ConfigService>`; capabilities that *write* (setup, config) keep the
-concrete `SettingsStore`. `AttributionCapability` reads whether attribution is
-enabled through the service; `ApprovalCapability` reads its soft-approval
-paranoia level through `ConfigService::approval_mode()` each turn (keeping the
-concrete store only for its `set_approval_mode` write tool); and the `config`
-capability's `get_config` reads single values through `ConfigService::current`.
+backs writes also serves reads. Read-only capabilities take only an
+`Arc<dyn ConfigService>`; write-coupled capabilities hold both — reads go
+through the service handle, writes through the concrete `SettingsStore` — so the
+read/write split is explicit at the type level. `AttributionCapability` reads
+whether attribution is enabled through the service; `ApprovalCapability` reads
+its soft-approval paranoia level through `ConfigService::approval_mode()` each
+turn; the `config` capability's `get_config` reads single values through
+`ConfigService::current`; and `SetupCapability` reads provider/token/model state
+through its config handle while persisting `/setup` changes through the store.
 `approval_mode` is also a first-class schema key, so `get_config`/`set_config`
 manage it alongside everything else.
 
