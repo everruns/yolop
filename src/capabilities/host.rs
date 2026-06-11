@@ -478,7 +478,7 @@ impl SetupCapability {
             .clone();
         let snapshot = self.settings.snapshot();
         let saved = snapshot
-            .provider
+            .default_provider
             .clone()
             .unwrap_or_else(|| "<unset>".to_string());
         let stored: Vec<&str> = snapshot.tokens.keys().map(String::as_str).collect();
@@ -552,9 +552,10 @@ impl SetupCapability {
                 .set_model(provider_name.clone(), next.model_spec())
         };
         *self.provider.write().expect("provider lock poisoned") = next;
-        let persist_note = match model_persist
-            .and_then(|()| self.settings.set_provider(Some(provider_name.clone())))
-        {
+        let persist_note = match model_persist.and_then(|()| {
+            self.settings
+                .set_default_provider(Some(provider_name.clone()))
+        }) {
             Ok(()) => format!("saved to {}", self.settings.path().display()),
             Err(err) => format!("warning: settings not saved: {err}"),
         };
@@ -625,7 +626,7 @@ impl SetupCapability {
         let provider_name = next.provider_name().to_string();
         let result = self
             .settings
-            .set_provider(Some(provider_name.clone()))
+            .set_default_provider(Some(provider_name.clone()))
             .and_then(|()| self.settings.set_model(provider_name, next.model_spec()));
         match result {
             Ok(()) => String::new(),
@@ -930,7 +931,7 @@ impl SetupCapability {
     /// either via env var or in the settings file. Used by the TUI at
     /// startup to auto-open the wizard on a fresh install.
     pub(crate) fn needs_onboarding(settings: &crate::settings::Settings) -> bool {
-        if settings.provider.is_some() {
+        if settings.default_provider.is_some() {
             return false;
         }
         if env_credential_present() {
@@ -1014,7 +1015,7 @@ mod tests {
     #[test]
     fn needs_onboarding_false_when_provider_is_saved() {
         let settings = crate::settings::Settings {
-            provider: Some("anthropic".to_string()),
+            default_provider: Some("anthropic".to_string()),
             ..Default::default()
         };
         assert!(!SetupCapability::needs_onboarding(&settings));
@@ -1025,7 +1026,7 @@ mod tests {
         let mut tokens = std::collections::BTreeMap::new();
         tokens.insert("openai".to_string(), "sk-test".to_string());
         let settings = crate::settings::Settings {
-            provider: None,
+            default_provider: None,
             tokens,
             ..Default::default()
         };

@@ -60,18 +60,15 @@ pub struct ConfigField {
 
 /// The full configuration schema. Order is the user-facing display order.
 pub fn schema() -> &'static [ConfigField] {
-    // Note: `default_provider` and `default_model` are surfaced under those
-    // human-friendly names; on disk `default_provider` is the top-level
-    // `provider` key (its long-standing TOML name). `set_config` routes the
-    // alias to the one stored field so there is never divergent provider state.
     const FIELDS: &[ConfigField] = &[
         ConfigField {
             key: "default_provider",
             aliases: &["provider"],
             title: "Default provider",
-            description: "The model provider used when neither the --provider flag nor an \
-                          environment credential forces a choice. Stored on disk as the \
-                          `provider` key.",
+            description: "The model provider used when no --provider flag is given. A value set \
+                          here takes precedence over environment-credential auto-detection, which \
+                          applies only when this is unset. Persisted as `default_provider` (the \
+                          legacy `provider` key is still read, and accepted as an alias).",
             kind: ValueKind::Text,
             default: Some("openai (auto-detected from available credentials)"),
             examples: &["anthropic", "openai", "google", "openrouter", "ollama"],

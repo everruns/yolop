@@ -69,9 +69,11 @@ impl std::fmt::Display for ApprovalMode {
 
 #[derive(Debug, Clone)]
 pub struct Settings {
-    /// The default provider used when neither `--provider` nor an env
-    /// credential forces a choice. Schema-described as `default_provider`.
-    pub provider: Option<String>,
+    /// The default provider, used when no `--provider` flag is given. A value
+    /// here takes precedence over environment-credential auto-detection, which
+    /// applies only when this is unset. Persisted as the `default_provider` key
+    /// (the legacy `provider` key is still read for backward compatibility).
+    pub default_provider: Option<String>,
     pub tokens: BTreeMap<String, String>,
     /// Last model spec chosen per provider, in the provider-relative
     /// `model [effort]` form `/setup model` accepts. Lets a model pick
@@ -93,7 +95,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            provider: None,
+            default_provider: None,
             tokens: BTreeMap::new(),
             models: BTreeMap::new(),
             default_model: None,
@@ -106,8 +108,11 @@ impl Default for Settings {
 
 impl Settings {
     pub fn from_table(table: &Table) -> Self {
-        let provider = table
-            .get("provider")
+        // Read the current `default_provider` key, falling back to the legacy
+        // `provider` key so pre-rename settings files keep working.
+        let default_provider = table
+            .get("default_provider")
+            .or_else(|| table.get("provider"))
             .and_then(Value::as_str)
             .map(str::to_string);
         let default_model = table
@@ -135,7 +140,7 @@ impl Settings {
             map
         };
         Self {
-            provider,
+            default_provider,
             tokens: string_map("tokens"),
             models: string_map("models"),
             default_model,
@@ -147,8 +152,8 @@ impl Settings {
 
     pub fn to_table(&self) -> Table {
         let mut table = Table::new();
-        if let Some(p) = &self.provider {
-            table.insert("provider".to_string(), Value::String(p.clone()));
+        if let Some(p) = &self.default_provider {
+            table.insert("default_provider".to_string(), Value::String(p.clone()));
         }
         if let Some(m) = &self.default_model {
             table.insert("default_model".to_string(), Value::String(m.clone()));
@@ -295,9 +300,9 @@ impl SettingsStore {
         &self.path
     }
 
-    pub fn set_provider(&self, provider: Option<String>) -> Result<()> {
+    pub fn set_default_provider(&self, provider: Option<String>) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.provider = provider;
+        guard.default_provider = provider;
         save_to(&self.path, &guard)
     }
 
@@ -368,23 +373,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_roundtrip_via_disk() {
+    fn default_provider_roundtrip_via_disk() {
         let tmp = tempfile::tempdir().expect("tmp");
         let path = tmp.path().join("nested").join("settings.toml");
         let store = SettingsStore::open(path.clone());
-        assert!(store.snapshot().provider.is_none());
+        assert!(store.snapshot().default_provider.is_none());
         store
-            .set_provider(Some("anthropic".to_string()))
+            .set_default_provider(Some("anthropic".to_string()))
             .expect("save");
 
         let on_disk = std::fs::read_to_string(&path).expect("read");
         assert!(
-            on_disk.contains("provider = \"anthropic\""),
+            on_disk.contains("default_provider = \"anthropic\""),
             "expected TOML key/value, got: {on_disk}"
         );
 
         let reloaded = SettingsStore::open(path);
-        assert_eq!(reloaded.snapshot().provider.as_deref(), Some("anthropic"));
+        assert_eq!(
+            reloaded.snapshot().default_provider.as_deref(),
+            Some("anthropic")
+        );
+    }
+
+    #[test]
+    fn legacy_provider_key_is_still_read() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        // A settings file written before the rename uses the bare `provider` key.
+        std::fs::write(&path, "provider = \"anthropic\"\n").expect("seed");
+        let store = SettingsStore::open(path);
+        assert_eq!(
+            store.snapshot().default_provider.as_deref(),
+            Some("anthropic")
+        );
     }
 
     #[test]
@@ -604,7 +625,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let path = tmp.path().join("absent.toml");
         let store = SettingsStore::open(path);
-        assert!(store.snapshot().provider.is_none());
+        assert!(store.snapshot().default_provider.is_none());
         assert!(store.snapshot().tokens.is_empty());
     }
 
@@ -614,7 +635,7 @@ mod tests {
         let path = tmp.path().join("settings.toml");
         std::fs::write(&path, "this = is = not = toml").expect("write");
         let store = SettingsStore::open(path);
-        assert!(store.snapshot().provider.is_none());
+        assert!(store.snapshot().default_provider.is_none());
     }
 
     #[cfg(unix)]

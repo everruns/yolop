@@ -171,7 +171,7 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
     let base = if let Some(arg) = cli.provider {
         ProviderChoice::default_for_provider_name(provider_name_for_arg(arg))
             .expect("ProviderArg names are always valid")
-    } else if let Some(saved) = snapshot.provider.as_deref() {
+    } else if let Some(saved) = snapshot.default_provider.as_deref() {
         match ProviderChoice::default_for_provider_name(saved) {
             Ok(choice) => choice,
             Err(err) => {

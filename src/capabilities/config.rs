@@ -13,7 +13,7 @@
 // the interactive `/setup` command to switch the *live* model mid-session.
 
 use crate::config_schema::{KeyTarget, ValueKind, known_keys, parse_key, schema};
-use crate::config_service::{current_value, scoped_current};
+use crate::config_service::{ConfigService, current_value, scoped_current};
 use crate::runtime::SUPPORTED_PROVIDERS;
 use crate::settings::{ApprovalMode, Settings, SettingsStore};
 use async_trait::async_trait;
@@ -154,17 +154,19 @@ impl Tool for GetConfigTool {
                 };
                 let field = target.field();
                 let mut entry = field_json(&settings, field);
-                // For a provider-scoped single key, narrow `current` to the
-                // requested provider while preserving the whole-table view
-                // under `table` (field_json seeded `current` with the table).
-                if field.provider_scoped {
-                    if let Value::Object(map) = &mut entry {
-                        let table = map.get("current").cloned().unwrap_or(Value::Null);
-                        map.insert("table".to_string(), table);
-                        map.insert("key".to_string(), Value::String(key.to_string()));
-                    }
-                    entry["current"] = current_value(&settings, &target);
+                // Read the single value through the config service (the same
+                // path any capability uses), which narrows a provider-scoped
+                // key to the requested provider. For those keys, preserve the
+                // whole-table view that field_json seeded into `current`.
+                let value = self.settings.current(key).unwrap_or(Value::Null);
+                if field.provider_scoped
+                    && let Value::Object(map) = &mut entry
+                {
+                    let table = map.get("current").cloned().unwrap_or(Value::Null);
+                    map.insert("table".to_string(), table);
+                    map.insert("key".to_string(), Value::String(key.to_string()));
                 }
+                entry["current"] = value;
                 return ToolExecutionResult::success(json!({
                     "settings_path": path,
                     "field": entry,
@@ -270,7 +272,7 @@ impl SetConfigTool {
         match target {
             KeyTarget::DefaultProvider => {
                 if clearing {
-                    self.settings.set_provider(None).map_err(map_err)?;
+                    self.settings.set_default_provider(None).map_err(map_err)?;
                     return Ok(saved(
                         "cleared default_provider; it will be auto-detected from credentials"
                             .to_string(),
@@ -284,7 +286,7 @@ impl SetConfigTool {
                     ));
                 }
                 self.settings
-                    .set_provider(Some(provider.clone()))
+                    .set_default_provider(Some(provider.clone()))
                     .map_err(map_err)?;
                 Ok(saved(format!(
                     "default_provider = {provider}; applies on the next run (use /setup to switch now)"
@@ -403,7 +405,10 @@ mod tests {
             .execute(json!({ "key": "default_provider", "value": "anthropic" }))
             .await;
         assert!(matches!(r, ToolExecutionResult::Success(_)));
-        assert_eq!(settings.snapshot().provider.as_deref(), Some("anthropic"));
+        assert_eq!(
+            settings.snapshot().default_provider.as_deref(),
+            Some("anthropic")
+        );
 
         // Alias `model` routes to default_model.
         tool.execute(json!({ "key": "model", "value": "claude-opus-4-5" }))

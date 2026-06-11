@@ -297,7 +297,7 @@ id.
 Provider resolution at startup:
 
 1. `--provider` flag (always wins)
-2. Saved `provider` setting
+2. Saved `default_provider` setting (the legacy `provider` key is still read)
 3. Auto-detect: the first provider in the order **OpenAI → Anthropic →
    OpenRouter → Google → Ollama → Custom** with either a matching env var or
    a saved token/base URL (the provider order decides the tiebreak, not the
