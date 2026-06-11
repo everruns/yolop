@@ -5,6 +5,8 @@
 mod acp;
 mod app;
 mod capabilities;
+mod config_schema;
+mod config_service;
 mod hooks_config;
 mod host_ui;
 mod into;

@@ -7,9 +7,10 @@
 use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability, YourStore};
 use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability, AttributionCapability,
-    CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCapability, CodingBashCapability,
-    CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID,
-    SetupCapability, TOOL_SEARCH_CAPABILITY_ID, ToolSearchCapability,
+    CLIENT_COMMANDS_CAPABILITY_ID, CONFIG_CAPABILITY_ID, ClientCommandsCapability,
+    CodingBashCapability, CodingCliEnvironmentCapability, ConfigCapability,
+    ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
+    TOOL_SEARCH_CAPABILITY_ID, ToolSearchCapability,
 };
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
@@ -595,7 +596,12 @@ impl ProviderChoice {
         if env_non_empty("EVERRUNS_CLI_MODEL").is_some() {
             return self;
         }
-        let Some(spec) = settings.model_for(self.provider_name()) else {
+        // A per-provider pick wins; the global `default_model` is the
+        // cross-provider fallback when this provider has no saved model.
+        let Some(spec) = settings
+            .model_for(self.provider_name())
+            .or_else(|| settings.default_model())
+        else {
             return self;
         };
         match self.resolve_model_spec(spec) {
@@ -1042,6 +1048,7 @@ fn coding_harness_capabilities(
             serde_json::json!({ "enable_file_download": true }),
         ),
         AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
+        AgentCapabilityConfig::new(CONFIG_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
         // Soft approval: injects spoken-consent guidance for critical actions,
         // tuned by the central `approval_mode` setting (off contributes nothing).
@@ -1346,8 +1353,11 @@ pub async fn build_with_options(
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebFetchCapability::from_env());
     capabilities.register(CodingCliEnvironmentCapability::new(canonical_root.clone()));
+    // Read-only consumer of the shared config service. `SettingsStore`
+    // implements `ConfigService`, so the same handle that backs writes also
+    // serves reads to capabilities that don't need the concrete store.
     capabilities.register(AttributionCapability {
-        settings: settings.clone(),
+        config: settings.clone(),
     });
     // `/setup` (below) is the capability-sourced slash command. It implements
     // `Capability::execute_command` end to end. We deliberately
@@ -1361,6 +1371,12 @@ pub async fn build_with_options(
         provider_store: provider_store.clone(),
         settings: settings.clone(),
     });
+    // Schema-described, human-friendly config editing (`get_config` /
+    // `set_config`) plus an always-on pointer into the system prompt. Persists
+    // to the same `settings.toml`; provider/model edits take effect next run.
+    capabilities.register(ConfigCapability {
+        settings: settings.clone(),
+    });
     // `your` — global personalization. Its MEMORY.md lives beside
     // settings.toml in the yolop config dir, so a tempdir settings path in
     // tests isolates memory automatically.
@@ -1371,6 +1387,7 @@ pub async fn build_with_options(
     // Soft approval — spoken-consent guidance + audit tool, gated by the
     // central `approval_mode` setting (read live each turn).
     capabilities.register(ApprovalCapability {
+        config: settings.clone(),
         settings: settings.clone(),
     });
     capabilities.register(CodingBashCapability {
@@ -2164,6 +2181,33 @@ mod tests {
             .unwrap()
             .with_saved_model(&settings);
         assert_eq!(anthropic.label(), "anthropic/claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn with_saved_model_falls_back_to_global_default_model() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("EVERRUNS_CLI_MODEL");
+        }
+        let mut settings = Settings {
+            default_model: Some("claude-opus-4-5".to_string()),
+            ..Default::default()
+        };
+
+        // No per-provider entry, so the global default_model is applied.
+        let anthropic = ProviderChoice::default_for_provider_name("anthropic")
+            .unwrap()
+            .with_saved_model(&settings);
+        assert_eq!(anthropic.label(), "anthropic/claude-opus-4-5");
+
+        // A per-provider pick still wins over the global default.
+        settings
+            .models
+            .insert("anthropic".to_string(), "claude-haiku-4-5".to_string());
+        let anthropic = ProviderChoice::default_for_provider_name("anthropic")
+            .unwrap()
+            .with_saved_model(&settings);
+        assert_eq!(anthropic.label(), "anthropic/claude-haiku-4-5");
     }
 
     #[test]

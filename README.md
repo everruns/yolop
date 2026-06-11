@@ -306,7 +306,9 @@ Provider resolution at startup:
    can be configured
 
 The model saved by `/setup model` for the resolved provider is restored,
-unless `-m/--model` or `EVERRUNS_CLI_MODEL` overrides it. At runtime, the
+unless `-m/--model` or `EVERRUNS_CLI_MODEL` overrides it. When the resolved
+provider has no saved model, the global `default_model` setting (if set) is
+applied as a cross-provider fallback. At runtime, the
 per-provider env var (`OPENAI_API_KEY`, etc.) always beats the saved token,
 so a per-run env override is always possible. `/model <id>` opens the model
 picker prefilled for the active provider. OpenAI, OpenRouter, and custom
@@ -317,6 +319,13 @@ or `/setup effort <level>` (for example, `high` or `medium`).
 file is written with `0o600` on Unix (owner-only) and stored token values are
 never echoed — but it is plain text on disk, so treat it the same way you
 would `~/.aws/credentials`.
+
+The settings file is also **schema-described**: every key carries a title,
+description, type, default, and examples (see `specs/configuration.md`). yolop
+itself can read and edit it through the `get_config` and `set_config` tools or
+the `yolop-config` skill — for example, "use anthropic by default", "store my
+OpenAI key", or "set the default model to gpt-5.5 high". Unknown keys in the
+file are ignored, never fatal, so the format stays forward-compatible.
 
 ### Session persistence
 
