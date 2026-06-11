@@ -40,11 +40,10 @@ Keys are addressed the way a human would name them:
 | `approval_mode`           | text   | Soft-approval paranoia level (`protective` / `normal` / `off`). |
 | `attribution`             | bool   | Commit/PR attribution on/off.                                  |
 
-`default_provider` and `default_model` are surfaced under those human-friendly
-names. On disk `default_provider` is the long-standing top-level `provider`
-key; `set_config` routes the alias to that one stored field so provider state
-never diverges. `default_model` is a real new top-level key, applied as a
-cross-provider fallback in `ProviderChoice::with_saved_model`.
+`default_provider` is persisted under that name on disk; the legacy `provider`
+key is still read (and accepted as an alias) so pre-rename settings files keep
+working. `default_model` is applied as a cross-provider fallback in
+`ProviderChoice::with_saved_model`.
 
 ### Tools
 
@@ -68,18 +67,23 @@ Configuration is exposed to the rest of the agent as a **service** so that
 capabilities can read it without re-parsing the TOML or reaching into store
 internals. `src/config_service.rs` defines the `ConfigService` trait:
 
-- typed getters (`default_provider`, `default_model`, `attribution_enabled`,
-  `token_present`, `model_for`, `base_url_for`), and
 - a generic `current(key)` that reads any value by its schema key (e.g.
-  `models.openai`), with secrets reduced to `stored`/`unset`.
+  `models.openai`), with secrets reduced to `stored`/`unset`, and
+- the two semantic getters that have dedicated consumers
+  (`attribution_enabled`, `approval_mode`).
+
+The surface is kept minimal: `current(key)` covers arbitrary reads, so a
+capability adds a typed getter only when it grows a real need rather than
+carrying speculative methods.
 
 `SettingsStore` implements `ConfigService`, so the single shared handle that
 backs writes also serves reads. Capabilities that only *read* config take an
 `Arc<dyn ConfigService>`; capabilities that *write* (setup, config) keep the
 concrete `SettingsStore`. `AttributionCapability` reads whether attribution is
-enabled through the service, and `ApprovalCapability` reads its soft-approval
-paranoia level (`approval_mode`) through `ConfigService::approval_mode()` each
-turn — it keeps the concrete store only for its `set_approval_mode` write tool.
+enabled through the service; `ApprovalCapability` reads its soft-approval
+paranoia level through `ConfigService::approval_mode()` each turn (keeping the
+concrete store only for its `set_approval_mode` write tool); and the `config`
+capability's `get_config` reads single values through `ConfigService::current`.
 `approval_mode` is also a first-class schema key, so `get_config`/`set_config`
 manage it alongside everything else.
 

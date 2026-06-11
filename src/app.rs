@@ -5883,7 +5883,7 @@ mod tests {
         // The pick persists, so the next run restores it (see
         // pick_provider_applies_saved_model_for_saved_provider in main.rs).
         let snapshot = app.settings.snapshot();
-        assert_eq!(snapshot.provider.as_deref(), Some("openai"));
+        assert_eq!(snapshot.default_provider.as_deref(), Some("openai"));
         assert_eq!(snapshot.model_for("openai"), Some("gpt-5.4 medium"));
     }
 
@@ -5994,7 +5994,7 @@ mod tests {
             snapshot.base_url_for("custom"),
             Some("http://localhost:8000/v1")
         );
-        assert_eq!(snapshot.provider.as_deref(), Some("custom"));
+        assert_eq!(snapshot.default_provider.as_deref(), Some("custom"));
         assert_eq!(snapshot.model_for("custom"), Some("qwen3-coder"));
     }
 

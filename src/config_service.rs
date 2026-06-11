@@ -20,51 +20,25 @@ use serde_json::Value;
 
 /// Read-only view of yolop configuration, injectable into capabilities.
 ///
-/// Typed getters cover the common cases; `current` reads any key by its schema
-/// name so a capability can consume configuration it does not own without
-/// knowing the storage layout. Secrets are never returned in the clear.
-///
-/// This is a deliberately broad service contract: some getters exist for future
-/// read-only consumers and are not yet wired into a caller, so `dead_code` is
-/// allowed on the trait surface.
-#[allow(dead_code)]
+/// `current` reads any value by its schema key so a capability can consume
+/// configuration it does not own without knowing the storage layout; the two
+/// semantic getters cover the prompt-shaping reads that have dedicated
+/// consumers. Secrets are never returned in the clear. Capabilities add a typed
+/// getter here when they grow a real need rather than carrying speculative
+/// surface.
 pub trait ConfigService: Send + Sync {
     /// Current in-memory settings snapshot (the source of truth in memory).
     fn snapshot(&self) -> Settings;
 
-    /// The soft-approval paranoia level.
+    /// The soft-approval paranoia level (consumed by `ApprovalCapability`).
     fn approval_mode(&self) -> ApprovalMode {
         self.snapshot().approval_mode()
     }
 
-    /// The configured default provider, if any.
-    fn default_provider(&self) -> Option<String> {
-        self.snapshot().provider
-    }
-
-    /// The global fallback model spec, if any.
-    fn default_model(&self) -> Option<String> {
-        self.snapshot().default_model
-    }
-
-    /// Whether commit/PR attribution is enabled.
+    /// Whether commit/PR attribution is enabled (consumed by
+    /// `AttributionCapability`).
     fn attribution_enabled(&self) -> bool {
         self.snapshot().attribution_enabled()
-    }
-
-    /// Whether an API token is stored for `provider` (presence only).
-    fn token_present(&self, provider: &str) -> bool {
-        self.snapshot().has_token(provider)
-    }
-
-    /// The per-provider model spec, if any.
-    fn model_for(&self, provider: &str) -> Option<String> {
-        self.snapshot().model_for(provider).map(str::to_string)
-    }
-
-    /// The per-provider endpoint base URL, if any.
-    fn base_url_for(&self, provider: &str) -> Option<String> {
-        self.snapshot().base_url_for(provider).map(str::to_string)
     }
 
     /// Read any configuration value by its schema key (e.g. `default_provider`,
@@ -86,7 +60,7 @@ impl ConfigService for SettingsStore {
 pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
     match target {
         KeyTarget::DefaultProvider => settings
-            .provider
+            .default_provider
             .clone()
             .map(Value::String)
             .unwrap_or(Value::Null),
@@ -149,37 +123,32 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn service_reads_typed_and_by_key() {
+    fn service_reads_semantic_getters_and_by_key() {
         let tmp = tempfile::tempdir().expect("tmp");
         let store = Arc::new(SettingsStore::open(tmp.path().join("settings.toml")));
-        store.set_provider(Some("anthropic".to_string())).unwrap();
         store
-            .set_default_model(Some("claude-sonnet-4-5".to_string()))
+            .set_default_provider(Some("anthropic".to_string()))
             .unwrap();
         store
             .set_token("openai".to_string(), "sk-secret".to_string())
             .unwrap();
         store
-            .set_model("openai".to_string(), "gpt-5.5 high".to_string())
-            .unwrap();
-        store
-            .set_base_url("custom".to_string(), "http://localhost:8000/v1".to_string())
+            .set_approval_mode(crate::settings::ApprovalMode::Protective)
             .unwrap();
 
         // Inject as the trait object capabilities would receive.
         let svc: Arc<dyn ConfigService> = store.clone();
-        assert_eq!(svc.default_provider().as_deref(), Some("anthropic"));
-        assert_eq!(svc.default_model().as_deref(), Some("claude-sonnet-4-5"));
-        assert!(svc.token_present("openai"));
+        // Semantic getters used by the prompt-shaping capabilities.
         assert!(svc.attribution_enabled());
-        assert_eq!(svc.model_for("openai").as_deref(), Some("gpt-5.5 high"));
         assert_eq!(
-            svc.base_url_for("custom").as_deref(),
-            Some("http://localhost:8000/v1")
+            svc.approval_mode(),
+            crate::settings::ApprovalMode::Protective
         );
 
-        // Generic schema-keyed read, with secrets reduced to presence.
+        // Generic schema-keyed read covers everything else, with secrets
+        // reduced to presence.
         assert_eq!(svc.current("default_provider").unwrap(), "anthropic");
+        assert_eq!(svc.current("approval_mode").unwrap(), "protective");
         assert_eq!(svc.current("tokens.openai").unwrap(), "stored");
         assert!(
             !svc.current("tokens.openai")

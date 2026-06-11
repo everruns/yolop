@@ -1882,7 +1882,7 @@ mod tests {
         assert_eq!(built.model.provider_label(), "custom/qwen3-coder");
         // Model switches persist so the choice survives a restart.
         let snapshot = settings_for_assert.snapshot();
-        assert_eq!(snapshot.provider.as_deref(), Some("custom"));
+        assert_eq!(snapshot.default_provider.as_deref(), Some("custom"));
         assert_eq!(snapshot.model_for("custom"), Some("qwen3-coder"));
 
         // With a model saved, the bare switch now works too.
