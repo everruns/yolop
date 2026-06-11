@@ -526,14 +526,14 @@ mod tests {
     async fn get_config_capabilities_show_effective_defaults() {
         let (_tmp, settings) = store();
         settings
-            .set_capability("current_time".to_string(), true)
+            .set_capability("session_storage".to_string(), true)
             .unwrap();
         let tool = GetConfigTool { settings };
 
         // The whole-catalog view renders effective values, including
         // untoggled entries at their defaults.
         let ToolExecutionResult::Success(value) = tool
-            .execute(json!({ "key": "capabilities.current_time" }))
+            .execute(json!({ "key": "capabilities.session_storage" }))
             .await
         else {
             panic!("expected success");
@@ -545,7 +545,7 @@ mod tests {
         );
         assert_eq!(
             value["field"]["table"]["session_storage"]["enabled"],
-            Value::Bool(false)
+            Value::Bool(true)
         );
         // The table carries the catalog semantics so get_config doubles as
         // the discovery surface for what each toggle does.

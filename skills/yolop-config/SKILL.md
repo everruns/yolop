@@ -43,9 +43,9 @@ Call `set_config` with a `key` and a `value`:
   for the OpenAI-compatible `custom` provider.
 - `set_config key=attribution value=off` — turn commit/PR attribution on/off.
 - `set_config key=capabilities.web_search value=off` — enable or disable an
-  optional capability (web search, web fetch, deferred tool loading, current
-  time, session storage). `get_config key=capabilities` lists every toggle
-  with its meaning and default; changes apply on the next run.
+  optional capability (web search, web fetch, deferred tool loading, session
+  storage). `get_config key=capabilities` lists every toggle with its meaning
+  and default; changes apply on the next run.
 
 Pass `value=clear` to unset an optional or secret key
 (e.g. `set_config key=tokens.openai value=clear`).

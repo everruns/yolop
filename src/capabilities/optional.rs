@@ -45,13 +45,6 @@ pub(crate) const OPTIONAL_CAPABILITIES: &[OptionalCapabilitySpec] = &[
         default_enabled: true,
     },
     OptionalCapabilitySpec {
-        name: "current_time",
-        title: "Current time",
-        description: "A `get_current_time` tool for time-of-day and timezone queries. Off by \
-                      default because the environment context already injects today's date.",
-        default_enabled: false,
-    },
-    OptionalCapabilitySpec {
         name: "session_storage",
         title: "Session storage",
         description: "Session-scoped `kv_store` and `secret_store` tools for scratch state \
@@ -95,7 +88,6 @@ mod tests {
         assert!(enabled(&settings, "web_search"));
         assert!(enabled(&settings, "web_fetch"));
         assert!(enabled(&settings, "tool_search"));
-        assert!(!enabled(&settings, "current_time"));
         assert!(!enabled(&settings, "session_storage"));
     }
 
@@ -107,9 +99,9 @@ mod tests {
             .insert("web_search".to_string(), false);
         settings
             .capabilities
-            .insert("current_time".to_string(), true);
+            .insert("session_storage".to_string(), true);
         assert!(!enabled(&settings, "web_search"));
-        assert!(enabled(&settings, "current_time"));
+        assert!(enabled(&settings, "session_storage"));
     }
 
     #[test]

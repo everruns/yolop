@@ -38,7 +38,6 @@ except by explicit opt-in/out):
 | `web_search`      | on      | `duckduckgo` (free web search, no API key)        |
 | `web_fetch`       | on      | `web_fetch` (URL fetch + file download)           |
 | `tool_search`     | on      | vendored `tool_search` (deferred tool loading)    |
-| `current_time`    | off     | `current_time` (date already in env context)      |
 | `session_storage` | off     | `session_storage` (`kv_store` / `secret_store`; in-memory, per-run) |
 
 ### Mechanism
@@ -81,8 +80,22 @@ in-process runtime changes:
   `ToolHints::supports_background`; none of yolop's tools do yet.
 - **`self_budget`** — prompt-only but depends on `get_session_info` from the
   `session` capability, which yolop does not enable.
+- **`current_time`** — redundant: the environment context injects today's
+  date every turn, and `bash` answers any finer-grained time/timezone
+  question (`date`).
+- **`session_sandbox`** — the most attractive future addition. The tool
+  surface (`sandbox_exec`, sandbox file I/O, pause/resume/delete lifecycle)
+  is provider-pluggable (`SessionSandboxProviderPlugin` via `inventory`), and
+  its state persists through `ToolContext::storage_store`, which the
+  in-process runtime wires. What's missing is a registered provider: the only
+  real one upstream (`daytona`, a cloud sandbox API) ships in the hosted
+  server, not in the published crates. Enabling it today would fail at tool
+  time with "provider not registered". The path in: yolop implements a local
+  provider (Docker/Podman) and registers it, then adds a `session_sandbox`
+  catalog entry — giving the agent an isolated executor next to the host
+  `bash`.
 - **Hosted-platform capabilities** (`budgeting`, `knowledge_base`,
-  `a2a_delegation`, `agent_handoff`, `workspace_volumes`, `session_sandbox`,
+  `a2a_delegation`, `agent_handoff`, `workspace_volumes`,
   `session_schedule`) — require server-side stores/services that have no
   in-process equivalent.
 

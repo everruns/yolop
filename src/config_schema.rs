@@ -182,7 +182,7 @@ pub fn schema() -> &'static [ConfigField] {
             kind: ValueKind::Bool,
             default: Some("per-capability default (get_config shows each)"),
             examples: &[
-                "capabilities.current_time = on",
+                "capabilities.session_storage = on",
                 "capabilities.web_search = off",
             ],
             scope: Some(KeyScope::Capability),
@@ -343,8 +343,8 @@ mod tests {
             KeyTarget::Capability("web_search".to_string())
         );
         assert_eq!(
-            parse_key("Capability.Current_Time").unwrap(),
-            KeyTarget::Capability("current_time".to_string())
+            parse_key("Capability.Session_Storage").unwrap(),
+            KeyTarget::Capability("session_storage".to_string())
         );
         assert!(
             parse_key("capabilities")

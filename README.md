@@ -78,7 +78,7 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   default.
 - **Optional capabilities** — a curated set of toggles adjusts the tool
   surface per user: web search and web fetch can be switched off (e.g. for
-  offline sessions), and extras like `get_current_time` and session-scoped
+  offline sessions), and extras like the session-scoped
   `kv_store`/`secret_store` switched on. Toggled via configuration ("disable
   web search") and persisted under `[capabilities]` in the settings file. See
   [`specs/capabilities.md`](./specs/capabilities.md).

@@ -18,11 +18,11 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, COMPACTION_CAPABILITY_ID,
-    CompactionCapability, CurrentTimeCapability, FileSystemCapability,
-    INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LoopDetectionCapability,
-    PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability, SKILLS_CAPABILITY_ID,
-    SessionStorageCapability, StatelessTodoListCapability, TOOL_SEARCH_CAPABILITY_ID,
-    ToolOutputPersistenceCapability, ToolSearchCapability, UserHooksCapability, WebFetchCapability,
+    CompactionCapability, FileSystemCapability, INFINITY_CONTEXT_CAPABILITY_ID,
+    InfinityContextCapability, LoopDetectionCapability, PROMPT_CACHING_CAPABILITY_ID,
+    PromptCachingCapability, SKILLS_CAPABILITY_ID, SessionStorageCapability,
+    StatelessTodoListCapability, TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability,
+    ToolSearchCapability, UserHooksCapability, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
@@ -1070,9 +1070,6 @@ fn coding_harness_capabilities(
             serde_json::json!({ "enable_file_download": true }),
         ));
     }
-    if optional("current_time") {
-        caps.push(AgentCapabilityConfig::new("current_time"));
-    }
     if optional("session_storage") {
         caps.push(AgentCapabilityConfig::new("session_storage"));
     }
@@ -1387,7 +1384,6 @@ pub async fn build_with_options(
     // are registered unconditionally — a registered id is inert until the
     // harness capability list enables it, so the `[capabilities]` toggles in
     // settings are the single switch.
-    capabilities.register(CurrentTimeCapability);
     capabilities.register(SessionStorageCapability);
     capabilities.register(CodingCliEnvironmentCapability::new(canonical_root.clone()));
     // Read-only consumer of the shared config service. `SettingsStore`
@@ -2688,7 +2684,6 @@ mod tests {
         assert!(has(&defaults, "duckduckgo"));
         assert!(has(&defaults, "web_fetch"));
         assert!(has(&defaults, TOOL_SEARCH_CAPABILITY_ID));
-        assert!(!has(&defaults, "current_time"));
         assert!(!has(&defaults, "session_storage"));
 
         // Toggles override defaults in both directions.
@@ -2699,15 +2694,11 @@ mod tests {
         settings.capabilities.insert("web_fetch".to_string(), false);
         settings
             .capabilities
-            .insert("current_time".to_string(), true);
-        settings
-            .capabilities
             .insert("session_storage".to_string(), true);
         let toggled = coding_harness_capabilities(false, None, &settings);
         assert!(!has(&toggled, "duckduckgo"));
         assert!(!has(&toggled, "web_fetch"));
         assert!(has(&toggled, TOOL_SEARCH_CAPABILITY_ID));
-        assert!(has(&toggled, "current_time"));
         assert!(has(&toggled, "session_storage"));
     }
 
@@ -2722,8 +2713,8 @@ mod tests {
             .set_capability("web_search".to_string(), false)
             .expect("toggle web_search");
         settings
-            .set_capability("current_time".to_string(), true)
-            .expect("toggle current_time");
+            .set_capability("session_storage".to_string(), true)
+            .expect("toggle session_storage");
 
         let built = build_with_options(
             workspace.path().to_path_buf(),
@@ -2742,15 +2733,11 @@ mod tests {
             "web_search off must remove the search tool: {tools:?}"
         );
         assert!(
-            tools.iter().any(|t| t == "get_current_time"),
-            "current_time on must add its tool: {tools:?}"
+            tools.iter().any(|t| t == "kv_store"),
+            "session_storage on must add its tools: {tools:?}"
         );
         // Untouched defaults still apply.
         assert!(tools.iter().any(|t| t == "web_fetch"), "tools: {tools:?}");
-        assert!(
-            !tools.iter().any(|t| t == "kv_store"),
-            "session_storage stays off by default: {tools:?}"
-        );
     }
 
     #[test]

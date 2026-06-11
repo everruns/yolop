@@ -677,7 +677,7 @@ mod tests {
             .set_capability("web_search".to_string(), false)
             .expect("save");
         store
-            .set_capability("current_time".to_string(), true)
+            .set_capability("session_storage".to_string(), true)
             .expect("save");
 
         let on_disk = std::fs::read_to_string(&path).expect("read");
@@ -692,7 +692,7 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            reloaded.snapshot().capability_enabled("current_time"),
+            reloaded.snapshot().capability_enabled("session_storage"),
             Some(true)
         );
 
