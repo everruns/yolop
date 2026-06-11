@@ -1,6 +1,7 @@
 // Host/example capabilities for yolop: local environment context, bash, and
 // TUI-facing slash commands that mutate this process's provider selection.
 
+use crate::config_service::ConfigService;
 use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS};
 use crate::settings::{ApprovalMode, SettingsStore};
 use crate::tools::{BashTool, Workspace};
@@ -94,7 +95,9 @@ impl Capability for CodingCliEnvironmentCapability {
 }
 
 pub(crate) struct AttributionCapability {
-    pub(crate) settings: Arc<SettingsStore>,
+    /// Reads through the shared config service rather than the concrete store —
+    /// it only needs to know whether attribution is enabled.
+    pub(crate) config: Arc<dyn ConfigService>,
 }
 
 #[async_trait]
@@ -115,8 +118,7 @@ impl Capability for AttributionCapability {
         Some("Examples")
     }
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        self.settings
-            .snapshot()
+        self.config
             .attribution_enabled()
             .then(yolop_attribution_prompt)
     }
@@ -1035,7 +1037,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let settings = Arc::new(SettingsStore::open(tmp.path().join("settings.toml")));
         let capability = AttributionCapability {
-            settings: settings.clone(),
+            config: settings.clone(),
         };
         let ctx =
             SystemPromptContext::without_file_store(everruns_core::typed_id::SessionId::new());

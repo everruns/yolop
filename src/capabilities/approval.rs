@@ -19,6 +19,7 @@
 // yolop in natural language ("yolop, be more careful") — with the
 // `set_approval_mode` tool.
 
+use crate::config_service::ConfigService;
 use crate::settings::{ApprovalMode, SettingsStore};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
@@ -80,6 +81,9 @@ asking\", \"yolo mode\"), call `set_approval_mode` to update the level.\n\
 }
 
 pub(crate) struct ApprovalCapability {
+    /// Reads the paranoia level through the shared config service each turn.
+    pub(crate) config: Arc<dyn ConfigService>,
+    /// Concrete store for the `set_approval_mode` write tool.
     pub(crate) settings: Arc<SettingsStore>,
 }
 
@@ -102,9 +106,10 @@ impl Capability for ApprovalCapability {
     }
 
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        // Read the level live each turn so `/setup approval` and
-        // `set_approval_mode` take effect on the very next turn.
-        render_approval_block(self.settings.snapshot().approval_mode())
+        // Read the level live each turn through the config service so
+        // `/setup approval`, `set_approval_mode`, and `set_config approval_mode`
+        // all take effect on the very next turn.
+        render_approval_block(self.config.approval_mode())
     }
 
     fn system_prompt_preview(&self) -> Option<String> {
@@ -284,7 +289,10 @@ mod tests {
     #[test]
     fn capability_exposes_both_tools() {
         let (_tmp, settings) = store_in_tmp();
-        let cap = ApprovalCapability { settings };
+        let cap = ApprovalCapability {
+            config: settings.clone(),
+            settings,
+        };
         let names: Vec<String> = cap.tools().iter().map(|t| t.name().to_string()).collect();
         assert_eq!(names, vec!["record_approval", "set_approval_mode"]);
         assert!(cap.commands().is_empty());
@@ -294,6 +302,7 @@ mod tests {
     async fn contribution_follows_settings() {
         let (_tmp, settings) = store_in_tmp();
         let cap = ApprovalCapability {
+            config: settings.clone(),
             settings: settings.clone(),
         };
         let ctx =
