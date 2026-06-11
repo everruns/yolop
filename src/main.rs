@@ -393,18 +393,34 @@ async fn run_tui(runtime: BuiltRuntime) -> Result<()> {
             viewport: Viewport::Inline(COMPOSER_VIEWPORT_HEIGHT),
         },
     )?;
-    anchor_inline_viewport_at_bottom(&mut terminal)?;
+    // Anchoring is cosmetic. Since ratatui 0.30.1 `insert_before` snapshots
+    // the cursor (via `Terminal::clear`) with a blocking `CSI 6n` query that
+    // slow emulators (ttyd / xterm.js) may not answer before crossterm's ~2s
+    // timeout. Start unanchored rather than dying.
+    if let Err(err) = anchor_inline_viewport_at_bottom(&mut terminal) {
+        tracing::warn!("inline viewport anchoring failed, starting unanchored: {err:#}");
+    }
 
     let mut app = App::new(runtime);
     let result = app.run(&mut terminal).await;
     let show_resume_hint = app.should_show_resume_hint();
     let session_id = app.session_id();
 
-    let cleanup_result = terminal.clear().and_then(|_| terminal.show_cursor());
+    // Cosmetic cleanup must not turn a successful session into an error
+    // exit: since ratatui 0.30.1 `Terminal::clear` issues the same blocking
+    // cursor query as anchoring above. The two steps are independent —
+    // restoring the cursor is a plain escape write that should still happen
+    // when the clear's query times out. Raw-mode restore below still fails
+    // hard — leaving the terminal unusable is worth a nonzero exit.
+    if let Err(err) = terminal.clear() {
+        tracing::warn!("terminal clear failed: {err:#}");
+    }
+    if let Err(err) = terminal.show_cursor() {
+        tracing::warn!("cursor restore failed: {err:#}");
+    }
     drop(terminal);
     keyboard_enhancements.disable();
     raw_mode.disable()?;
-    cleanup_result?;
 
     if show_resume_hint {
         println!();

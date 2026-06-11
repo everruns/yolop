@@ -1,6 +1,8 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,9 +13,10 @@ use portable_pty::{
 pub struct TuiHarness {
     pub child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     output_rx: Receiver<Vec<u8>>,
     output: Vec<u8>,
+    answer_cursor_queries: Arc<AtomicBool>,
     _session_dir: tempfile::TempDir,
     _home: tempfile::TempDir,
 }
@@ -23,6 +26,10 @@ pub struct TuiSpawnOptions {
     pub rows: u16,
     pub cols: u16,
     pub cursor_row: u16,
+    /// How many `CSI 6n` cursor-position queries the harness answers before
+    /// going silent, emulating an emulator that stops replying mid-session.
+    /// `usize::MAX` (the default) answers every query like a real terminal.
+    pub cursor_reply_budget: usize,
 }
 
 impl Default for TuiSpawnOptions {
@@ -31,14 +38,23 @@ impl Default for TuiSpawnOptions {
             rows: 24,
             cols: 80,
             cursor_row: 1,
+            cursor_reply_budget: usize::MAX,
         }
     }
 }
 
 impl TuiHarness {
     pub fn write_input(&mut self, bytes: &[u8]) {
-        self.writer.write_all(bytes).expect("write pty input");
-        self.writer.flush().expect("flush pty input");
+        let mut writer = self.writer.lock().expect("lock pty writer");
+        writer.write_all(bytes).expect("write pty input");
+        writer.flush().expect("flush pty input");
+    }
+
+    /// Pause or resume the harness answering `CSI 6n` cursor-position
+    /// queries. Pausing emulates a busy terminal emulator that stops
+    /// replying (see `tui_survives_slow_cursor_position_reply_after_resize`).
+    pub fn set_answer_cursor_queries(&self, answer: bool) {
+        self.answer_cursor_queries.store(answer, Ordering::SeqCst);
     }
 
     /// The settings.toml the spawned TUI reads and writes (Linux config
@@ -157,13 +173,56 @@ pub fn spawn_tui_llmsim_with_settings(
     let child = pair.slave.spawn_command(cmd).expect("spawn yolop TUI");
     drop(pair.slave);
 
+    let writer = Arc::new(Mutex::new(
+        pair.master.take_writer().expect("take pty writer"),
+    ));
+    let answer_cursor_queries = Arc::new(AtomicBool::new(true));
+
+    // Real terminals answer every `CSI 6n` cursor-position query; ratatui's
+    // inline viewport issues them at init, inside `insert_before` (via
+    // `Terminal::clear`), and on resize. The reader thread plays terminal:
+    // it scans the output stream for queries and replies with the configured
+    // cursor row, unless paused or out of budget.
     let (output_tx, output_rx) = mpsc::channel();
     let mut reader = pair.master.try_clone_reader().expect("clone pty reader");
+    let responder_writer = Arc::clone(&writer);
+    let responder_enabled = Arc::clone(&answer_cursor_queries);
+    let cursor_row = options.cursor_row.clamp(1, options.rows.max(1));
+    let reply_budget = AtomicUsize::new(options.cursor_reply_budget);
     thread::spawn(move || {
+        const QUERY: &[u8] = b"\x1b[6n";
         let mut buf = [0_u8; 4096];
+        // Carry the unmatched tail across reads so a query split between
+        // chunks is still recognized.
+        let mut pending: Vec<u8> = Vec::new();
         while let Ok(n) = reader.read(&mut buf) {
             if n == 0 {
                 break;
+            }
+            pending.extend_from_slice(&buf[..n]);
+            let mut queries = 0;
+            while let Some(at) = find_subsequence(&pending, QUERY) {
+                pending.drain(..at + QUERY.len());
+                queries += 1;
+            }
+            let keep = pending.len().min(QUERY.len() - 1);
+            let tail: Vec<u8> = pending[pending.len() - keep..].to_vec();
+            pending = tail;
+            for _ in 0..queries {
+                if !responder_enabled.load(Ordering::SeqCst) {
+                    continue;
+                }
+                if reply_budget
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |budget| {
+                        (budget > 0).then(|| budget.saturating_sub(1))
+                    })
+                    .is_err()
+                {
+                    continue;
+                }
+                let mut writer = responder_writer.lock().expect("lock pty writer");
+                let _ = writer.write_all(format!("\x1b[{cursor_row};1R").as_bytes());
+                let _ = writer.flush();
             }
             if output_tx.send(buf[..n].to_vec()).is_err() {
                 break;
@@ -171,21 +230,22 @@ pub fn spawn_tui_llmsim_with_settings(
         }
     });
 
-    let mut writer = pair.master.take_writer().expect("take pty writer");
-    let cursor_row = options.cursor_row.clamp(1, options.rows.max(1));
-    writer
-        .write_all(format!("\x1b[{cursor_row};1R").as_bytes())
-        .expect("seed cursor position response");
-    writer.flush().expect("flush cursor position response");
     TuiHarness {
         child,
         master: pair.master,
         writer,
         output_rx,
         output: Vec::new(),
+        answer_cursor_queries,
         _session_dir: session_dir,
         _home: home,
     }
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 pub fn wait_for_exit(child: &mut dyn Child, timeout: Duration) -> Option<ExitStatus> {

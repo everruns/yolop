@@ -383,6 +383,7 @@ fn tui_survives_slow_cursor_position_reply_after_resize() {
     // appears as the transcript first overflows. The harness deliberately
     // does NOT answer the cursor-position query this triggers, emulating a
     // busy emulator. crossterm's 2s query timeout fires at least once.
+    tui.set_answer_cursor_queries(false);
     tui.resize(79, 24);
     assert!(
         wait_for_exit(&mut *tui.child, Duration::from_secs(5)).is_none(),
@@ -390,15 +391,79 @@ fn tui_survives_slow_cursor_position_reply_after_resize() {
         tui.output_text()
     );
 
-    // The emulator catches up: answer the (retried) query, then Ctrl-C. The
-    // reply must come first — the event loop is blocked inside the cursor
-    // query until it arrives.
+    // The emulator catches up: answer the (retried) query by hand, resume
+    // answering future queries, then Ctrl-C. The manual reply must come
+    // first — the event loop is blocked inside the cursor query until it
+    // arrives, and the harness responder only answers queries it sees after
+    // being re-enabled.
     tui.write_input(b"\x1b[1;1R");
+    tui.set_answer_cursor_queries(true);
     tui.write_input(b"\x03");
     let status = tui.wait_or_kill(Duration::from_secs(10));
     assert!(
         status.success(),
         "Ctrl-C should exit cleanly after recovery, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
+// ratatui 0.30.1 `Terminal::clear` snapshots the cursor with a blocking
+// `CSI 6n` query, and the inline viewport calls `clear` inside
+// `insert_before` — so viewport anchoring, every transcript flush, and exit
+// cleanup all issue cursor-position queries beyond the one
+// `Terminal::with_options` always made. A slow emulator (ttyd / xterm.js,
+// see the resize test above) may answer the first query and then go silent.
+// These paths are cosmetic: crossterm's ~2s per-query timeout must degrade
+// the session, not kill it. The two tests below pin that down for startup
+// and for exit.
+
+#[test]
+fn tui_starts_when_emulator_answers_only_the_first_cursor_query() {
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            cursor_reply_budget: 1,
+            ..TuiSpawnOptions::default()
+        },
+    );
+    // Every unanswered query eats a ~2s crossterm timeout before yolop moves
+    // on, so the banner can take several stalls to appear. The point is that
+    // it appears at all instead of the process dying at anchor time.
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(20)),
+        "TUI did not render startup banner despite anchoring query going unanswered: {}",
+        tui.output_text()
+    );
+    assert!(
+        wait_for_exit(&mut *tui.child, Duration::from_millis(200)).is_none(),
+        "TUI exited after unanswered cursor-position queries: {}",
+        tui.output_text()
+    );
+}
+
+#[test]
+fn tui_exits_cleanly_when_emulator_stops_answering_cursor_queries() {
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    // The emulator goes silent after startup; Ctrl-C's terminal cleanup
+    // (`Terminal::clear`) gets no answer to its cursor query. The session
+    // was successful, so the exit must still be clean.
+    tui.set_answer_cursor_queries(false);
+    tui.write_input(b"\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(10));
+    assert!(
+        status.success(),
+        "Ctrl-C should exit cleanly despite cleanup query going unanswered, got {status:?}: {}",
+        tui.output_text()
+    );
+    assert!(
+        tui.output_text().contains("Resume with yolop --session"),
+        "cleanup should still print resume hint: {}",
         tui.output_text()
     );
 }
@@ -411,6 +476,7 @@ fn tui_startup_anchors_composer_from_top_in_tall_terminal() {
             rows: 40,
             cols: 100,
             cursor_row: 1,
+            ..TuiSpawnOptions::default()
         },
     );
     assert!(
@@ -430,6 +496,7 @@ fn tui_startup_anchors_composer_when_prompt_is_already_near_bottom() {
             rows: 24,
             cols: 80,
             cursor_row: 23,
+            ..TuiSpawnOptions::default()
         },
     );
     assert!(
@@ -449,6 +516,7 @@ fn tui_startup_anchors_composer_in_short_terminal() {
             rows: 8,
             cols: 80,
             cursor_row: 1,
+            ..TuiSpawnOptions::default()
         },
     );
     assert!(
