@@ -1369,6 +1369,7 @@ pub async fn build_with_options(
     capabilities.register(SetupCapability {
         provider: provider_state.clone(),
         provider_store: provider_store.clone(),
+        config: settings.clone(),
         settings: settings.clone(),
     });
     // Schema-described, human-friendly config editing (`get_config` /
