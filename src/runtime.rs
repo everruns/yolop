@@ -6,10 +6,10 @@
 
 use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability, YourStore};
 use crate::capabilities::{
-    ATTRIBUTION_CAPABILITY_ID, AttributionCapability, CLIENT_COMMANDS_CAPABILITY_ID,
-    ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
-    TOOL_SEARCH_CAPABILITY_ID, ToolSearchCapability,
+    APPROVAL_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability, AttributionCapability,
+    CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCapability, CodingBashCapability,
+    CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID,
+    SetupCapability, TOOL_SEARCH_CAPABILITY_ID, ToolSearchCapability,
 };
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
@@ -1043,6 +1043,9 @@ fn coding_harness_capabilities(
         ),
         AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
+        // Soft approval: injects spoken-consent guidance for critical actions,
+        // tuned by the central `approval_mode` setting (off contributes nothing).
+        AgentCapabilityConfig::new(APPROVAL_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
     ]);
     if let Some(config) = hook_config {
@@ -1364,6 +1367,11 @@ pub async fn build_with_options(
     capabilities.register(YourCapability {
         memory: Arc::new(YourStore::beside_settings(&settings)),
         hooks: hooks_store,
+    });
+    // Soft approval — spoken-consent guidance + audit tool, gated by the
+    // central `approval_mode` setting (read live each turn).
+    capabilities.register(ApprovalCapability {
+        settings: settings.clone(),
     });
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
