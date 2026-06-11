@@ -1597,6 +1597,11 @@ mod tests {
             "status: {}",
             status.message
         );
+        assert!(
+            status.message.contains("approval=normal"),
+            "status should report the default approval level: {}",
+            status.message
+        );
 
         let disable_attribution = built
             .handles
@@ -1629,6 +1634,47 @@ mod tests {
             .expect("enable setup attribution");
         assert!(enable_attribution.success);
         assert!(settings_for_assert.snapshot().attribution_enabled());
+
+        // `/setup approval <level>` drives the soft-approval level through the
+        // same command entry point and persists it.
+        let set_approval = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("approval protective".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("set setup approval");
+        assert!(set_approval.success);
+        assert_eq!(
+            settings_for_assert.snapshot().approval_mode(),
+            crate::settings::ApprovalMode::Protective
+        );
+
+        let bad_approval = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("approval whenever".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("reject bad approval level");
+        assert!(!bad_approval.success);
+        // An invalid level leaves the prior selection untouched.
+        assert_eq!(
+            settings_for_assert.snapshot().approval_mode(),
+            crate::settings::ApprovalMode::Protective
+        );
 
         let store_token = built
             .handles
