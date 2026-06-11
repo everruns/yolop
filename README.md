@@ -45,6 +45,12 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   into `.git/`, `node_modules/`, `target/`, `dist/`, `build/`, `.next/`,
   `.venv/`, `venv/`, `.tox/`, `.gradle/` at any depth; reads are unrestricted
   inside the workspace.
+- **Soft approval** — an optional spoken-consent layer for critical actions.
+  yolop batches the safe work and pauses to ask, in plain chat, only before
+  destructive or outward-facing steps; you approve by replying "yes". The
+  paranoia level (`protective` / `normal` / `off`) is shown in the status bar
+  and set with `/setup approval <level>` (or just by telling yolop to be more
+  or less careful). See [Soft approval](#soft-approval) below.
 - **TUI chat** (ratatui): scrolling transcript, multiline composer, status
   bar, slash commands (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`,
   `/effort`, `/clear`, `/quit`).
@@ -131,6 +137,31 @@ your git author/committer identity and appends
 `Co-Authored-By: yolop <yolop@everruns.com>` once. PR descriptions created or
 edited through `gh` get a `Generated with yolop` footer. Disable with
 `/setup attribution off`.
+
+### Soft approval
+
+Soft approval is prompt-engineering, not a hard gate: yolop is told, in its
+system prompt, to batch safe work and pause for **spoken** consent only at the
+critical moments. The model decides what is critical; you approve in plain
+language ("yes", "approved"); each granted approval is recorded to the session
+event log for audit (via the `record_approval` tool). There is no separate
+approval UI — consent lives in the conversation.
+
+A single central level, `approval_mode`, tunes how cautious yolop is:
+
+| Level        | yolop pauses before…                                                  |
+|--------------|------------------------------------------------------------------------|
+| `protective` | any state-changing action (writes, commits, pushes, installs)          |
+| `normal`     | only destructive/irreversible or outward-facing actions (the default)  |
+| `off`        | nothing — fully autonomous, no soft-approval prompt                     |
+
+The current level is always shown in the status bar. Change it with
+`/setup approval <protective\|normal\|off>`, or just ask yolop to be more or
+less careful ("stop asking me", "yolo mode") — it switches the level itself.
+The setting is saved to `settings.toml`, so it persists across sessions.
+
+Soft approval is judgement, not a guarantee. For deterministic enforcement
+(hard-blocking a tool), use [hooks](specs/hooks.md); the two compose.
 
 ## Editor integration (ACP)
 
@@ -240,8 +271,9 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 ### Settings
 
 A small TOML settings file persists the preferred provider, per-provider
-model picks, custom endpoint base URLs, and (optionally) provider API tokens
-across runs: `<config_dir>/yolop/settings.toml` —
+model picks, custom endpoint base URLs, the soft-approval level
+(`approval_mode`), and (optionally) provider API tokens across runs:
+`<config_dir>/yolop/settings.toml` —
 `~/.config/yolop/settings.toml` on Linux,
 `~/Library/Application Support/yolop/settings.toml` on macOS,
 `%APPDATA%\yolop\settings.toml` on Windows.

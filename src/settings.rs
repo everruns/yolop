@@ -20,6 +20,53 @@ use std::sync::Mutex;
 use toml::Table;
 use toml::Value;
 
+/// How aggressively yolop pauses for spoken ("soft") approval before
+/// running critical actions. Soft approval is prompt-engineering, not a
+/// hard gate: the chosen level is injected into the system prompt so the
+/// model itself decides when to ask, batches safe calls, and the user
+/// approves in plain text ("yes", "approved"). See `capabilities::approval`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApprovalMode {
+    /// Ask before any state-changing action — the lowest threshold.
+    Protective,
+    /// Ask only before clearly destructive, irreversible, or outward-facing
+    /// actions. The default.
+    #[default]
+    Normal,
+    /// Never pause for approval; act autonomously.
+    Off,
+}
+
+impl ApprovalMode {
+    /// Canonical lowercase name, as written to settings.toml and shown in
+    /// the status bar.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ApprovalMode::Protective => "protective",
+            ApprovalMode::Normal => "normal",
+            ApprovalMode::Off => "off",
+        }
+    }
+
+    /// Parse a user- or config-supplied level. Accepts the canonical names
+    /// plus a few intuitive aliases so natural-language requests ("be more
+    /// paranoid", "yolo mode") and config files both resolve.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "protective" | "strict" | "paranoid" | "high" | "careful" => Some(Self::Protective),
+            "normal" | "default" | "medium" | "standard" => Some(Self::Normal),
+            "off" | "none" | "yolo" | "disabled" | "low" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ApprovalMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub provider: Option<String>,
@@ -32,6 +79,9 @@ pub struct Settings {
     /// generic OpenAI-compatible provider) writes here.
     pub base_urls: BTreeMap<String, String>,
     pub attribution: bool,
+    /// Soft-approval paranoia level, injected into the system prompt each
+    /// turn. Central, cross-session, surfaced in the status bar.
+    pub approval_mode: ApprovalMode,
 }
 
 impl Default for Settings {
@@ -42,6 +92,7 @@ impl Default for Settings {
             models: BTreeMap::new(),
             base_urls: BTreeMap::new(),
             attribution: true,
+            approval_mode: ApprovalMode::Normal,
         }
     }
 }
@@ -56,6 +107,11 @@ impl Settings {
             .get("attribution")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        let approval_mode = table
+            .get("approval_mode")
+            .and_then(Value::as_str)
+            .and_then(ApprovalMode::parse)
+            .unwrap_or_default();
         let string_map = |key: &str| {
             let mut map = BTreeMap::new();
             if let Some(t) = table.get(key).and_then(Value::as_table) {
@@ -73,6 +129,7 @@ impl Settings {
             models: string_map("models"),
             base_urls: string_map("base_urls"),
             attribution,
+            approval_mode,
         }
     }
 
@@ -83,6 +140,13 @@ impl Settings {
         }
         if !self.attribution {
             table.insert("attribution".to_string(), Value::Boolean(false));
+        }
+        // Only persist a non-default level so settings.toml stays sparse.
+        if self.approval_mode != ApprovalMode::Normal {
+            table.insert(
+                "approval_mode".to_string(),
+                Value::String(self.approval_mode.as_str().to_string()),
+            );
         }
         let mut insert_map = |key: &str, map: &BTreeMap<String, String>| {
             if !map.is_empty() {
@@ -117,6 +181,10 @@ impl Settings {
 
     pub fn attribution_enabled(&self) -> bool {
         self.attribution
+    }
+
+    pub fn approval_mode(&self) -> ApprovalMode {
+        self.approval_mode
     }
 }
 
@@ -220,6 +288,12 @@ impl SettingsStore {
         save_to(&self.path, &guard)
     }
 
+    pub fn set_approval_mode(&self, mode: ApprovalMode) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.approval_mode = mode;
+        save_to(&self.path, &guard)
+    }
+
     pub fn set_token(&self, provider: String, token: String) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         guard.tokens.insert(provider, token);
@@ -302,6 +376,52 @@ mod tests {
 
         let reloaded = SettingsStore::open(path);
         assert!(!reloaded.snapshot().attribution_enabled());
+    }
+
+    #[test]
+    fn approval_mode_defaults_to_normal_and_is_omitted() {
+        let settings = Settings::from_table(&Table::new());
+        assert_eq!(settings.approval_mode(), ApprovalMode::Normal);
+        // The default level is not written, keeping settings.toml sparse.
+        assert!(!settings.to_table().contains_key("approval_mode"));
+    }
+
+    #[test]
+    fn approval_mode_roundtrips_via_disk() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store
+            .set_approval_mode(ApprovalMode::Protective)
+            .expect("save");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            on_disk.contains("approval_mode = \"protective\""),
+            "expected approval level, got: {on_disk}"
+        );
+
+        let reloaded = SettingsStore::open(path);
+        assert_eq!(
+            reloaded.snapshot().approval_mode(),
+            ApprovalMode::Protective
+        );
+    }
+
+    #[test]
+    fn approval_mode_parses_canonical_names_and_aliases() {
+        assert_eq!(
+            ApprovalMode::parse("protective"),
+            Some(ApprovalMode::Protective)
+        );
+        assert_eq!(
+            ApprovalMode::parse("Paranoid"),
+            Some(ApprovalMode::Protective)
+        );
+        assert_eq!(ApprovalMode::parse(" normal "), Some(ApprovalMode::Normal));
+        assert_eq!(ApprovalMode::parse("yolo"), Some(ApprovalMode::Off));
+        assert_eq!(ApprovalMode::parse("off"), Some(ApprovalMode::Off));
+        assert!(ApprovalMode::parse("sometimes").is_none());
     }
 
     #[test]

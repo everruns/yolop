@@ -2,7 +2,7 @@
 // TUI-facing slash commands that mutate this process's provider selection.
 
 use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS};
-use crate::settings::SettingsStore;
+use crate::settings::{ApprovalMode, SettingsStore};
 use crate::tools::{BashTool, Workspace};
 use async_trait::async_trait;
 use chrono::Local;
@@ -411,8 +411,9 @@ impl Capability for SetupCapability {
             "token" => self.change_token(rest),
             "url" => self.change_base_url(rest),
             "attribution" => self.change_attribution(rest),
+            "approval" => self.change_approval(rest),
             _ => Ok(failed_result(
-                "usage: /setup — run guided setup; internal forms: status, provider <name> [model], token <provider> <value|clear>, url <provider> <base-url|clear>, model <id> [reasoning-effort], effort <reasoning-effort>, attribution <on|off>".to_string(),
+                "usage: /setup — run guided setup; internal forms: status, provider <name> [model], token <provider> <value|clear>, url <provider> <base-url|clear>, model <id> [reasoning-effort], effort <reasoning-effort>, attribution <on|off>, approval <protective|normal|off>".to_string(),
             )),
         }
     }
@@ -424,6 +425,9 @@ fn setup_command_arg() -> CommandArg {
         "model".to_string(),
         "attribution on".to_string(),
         "attribution off".to_string(),
+        "approval protective".to_string(),
+        "approval normal".to_string(),
+        "approval off".to_string(),
     ];
     suggestions.extend(TOKEN_PROVIDERS.iter().flat_map(|provider| {
         [
@@ -457,7 +461,7 @@ fn setup_command_arg() -> CommandArg {
 
     CommandArg {
         name: "action".to_string(),
-        description: "status | provider <name> [model] | token <provider> <value|clear> | url <provider> <base-url|clear> | model <id> | effort <level> | attribution <on|off>".to_string(),
+        description: "status | provider <name> [model] | token <provider> <value|clear> | url <provider> <base-url|clear> | model <id> | effort <level> | attribution <on|off> | approval <protective|normal|off>".to_string(),
         required: false,
         suggestions,
     }
@@ -484,10 +488,11 @@ impl SetupCapability {
         CommandResult {
             success: true,
             message: format!(
-                "setup: provider={} model={} saved={saved} attribution={} stored tokens={stored_label} env keys present={}",
+                "setup: provider={} model={} saved={saved} attribution={} approval={} stored tokens={stored_label} env keys present={}",
                 current.provider_name(),
                 current.label(),
                 on_off(snapshot.attribution_enabled()),
+                snapshot.approval_mode(),
                 env_credential_present()
             ),
             error_code: None,
@@ -859,6 +864,40 @@ impl SetupCapability {
             Err(err) => Ok(failed_result(format!(
                 "setup attribution save failed: {err}"
             ))),
+        }
+    }
+
+    fn change_approval(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
+            return Ok(CommandResult {
+                success: true,
+                message: format!(
+                    "setup approval: {} (protective | normal | off) ({})",
+                    self.settings.snapshot().approval_mode(),
+                    self.settings.path().display()
+                ),
+                error_code: None,
+                error_fields: None,
+            });
+        }
+
+        let mode = match ApprovalMode::parse(trimmed) {
+            Some(mode) => mode,
+            None => {
+                return Ok(failed_result(
+                    "setup approval failed: expected protective, normal, or off".to_string(),
+                ));
+            }
+        };
+        match self.settings.set_approval_mode(mode) {
+            Ok(()) => Ok(CommandResult {
+                success: true,
+                message: format!("setup approval: {mode}"),
+                error_code: None,
+                error_fields: None,
+            }),
+            Err(err) => Ok(failed_result(format!("setup approval save failed: {err}"))),
         }
     }
 }

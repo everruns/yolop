@@ -6,10 +6,10 @@
 
 use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability, YourStore};
 use crate::capabilities::{
-    ATTRIBUTION_CAPABILITY_ID, AttributionCapability, CLIENT_COMMANDS_CAPABILITY_ID,
-    ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
-    TOOL_SEARCH_CAPABILITY_ID, ToolSearchCapability,
+    APPROVAL_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability, AttributionCapability,
+    CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCapability, CodingBashCapability,
+    CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID,
+    SetupCapability, TOOL_SEARCH_CAPABILITY_ID, ToolSearchCapability,
 };
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
@@ -1043,6 +1043,9 @@ fn coding_harness_capabilities(
         ),
         AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
+        // Soft approval: injects spoken-consent guidance for critical actions,
+        // tuned by the central `approval_mode` setting (off contributes nothing).
+        AgentCapabilityConfig::new(APPROVAL_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
     ]);
     if let Some(config) = hook_config {
@@ -1365,6 +1368,11 @@ pub async fn build_with_options(
         memory: Arc::new(YourStore::beside_settings(&settings)),
         hooks: hooks_store,
     });
+    // Soft approval — spoken-consent guidance + audit tool, gated by the
+    // central `approval_mode` setting (read live each turn).
+    capabilities.register(ApprovalCapability {
+        settings: settings.clone(),
+    });
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
     });
@@ -1589,6 +1597,11 @@ mod tests {
             "status: {}",
             status.message
         );
+        assert!(
+            status.message.contains("approval=normal"),
+            "status should report the default approval level: {}",
+            status.message
+        );
 
         let disable_attribution = built
             .handles
@@ -1621,6 +1634,47 @@ mod tests {
             .expect("enable setup attribution");
         assert!(enable_attribution.success);
         assert!(settings_for_assert.snapshot().attribution_enabled());
+
+        // `/setup approval <level>` drives the soft-approval level through the
+        // same command entry point and persists it.
+        let set_approval = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("approval protective".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("set setup approval");
+        assert!(set_approval.success);
+        assert_eq!(
+            settings_for_assert.snapshot().approval_mode(),
+            crate::settings::ApprovalMode::Protective
+        );
+
+        let bad_approval = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: Some("approval whenever".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("reject bad approval level");
+        assert!(!bad_approval.success);
+        // An invalid level leaves the prior selection untouched.
+        assert_eq!(
+            settings_for_assert.snapshot().approval_mode(),
+            crate::settings::ApprovalMode::Protective
+        );
 
         let store_token = built
             .handles

@@ -295,6 +295,9 @@ pub(crate) struct ViewState {
     pub workspace_root: std::path::PathBuf,
     pub session_id: SessionId,
     pub lines_count: usize,
+    /// Current soft-approval level (`protective` / `normal` / `off`), shown
+    /// in the session status bar so the paranoia level is always visible.
+    pub approval_mode: String,
 }
 
 /// What kind of delta is currently being streamed. Only the assistant
@@ -407,6 +410,12 @@ impl App {
             workspace_root: self.startup.workspace_root.clone(),
             session_id: self.handles.session_id,
             lines_count: self.lines.len(),
+            approval_mode: self
+                .settings
+                .snapshot()
+                .approval_mode()
+                .as_str()
+                .to_string(),
         }
     }
 
@@ -3964,6 +3973,8 @@ fn draw_session_status(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
                 format!("{} msgs", state.lines_count),
                 Style::default().fg(TEXT_MUTED),
             ),
+            Span::styled("  ·  approval ", Style::default().fg(TEXT_DIM)),
+            Span::styled(state.approval_mode.clone(), Style::default().fg(TEXT_MUTED)),
             Span::styled("  ·  session ", Style::default().fg(TEXT_DIM)),
             Span::styled(
                 state.session_id.to_string(),
@@ -4750,6 +4761,7 @@ mod tests {
             workspace_root: std::path::PathBuf::from("/tmp/ws"),
             session_id: SessionId::from_seed(770001),
             lines_count: 3,
+            approval_mode: "normal".to_string(),
         }
     }
 
@@ -6327,7 +6339,9 @@ mod tests {
             lines_count: 42,
             ..view_state_idle()
         };
-        let rows = render_chrome_lines(&state, 120, 5);
+        // Wide enough for the full status line (model · workspace · msgs ·
+        // approval · session <id>) without truncating the long session id.
+        let rows = render_chrome_lines(&state, 160, 5);
         let status = &rows[4];
         assert!(
             status.contains("anthropic/claude-sonnet-4-5"),
@@ -6340,6 +6354,10 @@ mod tests {
         assert!(
             status.contains("42 msgs"),
             "status should include message count: {status}"
+        );
+        assert!(
+            status.contains("approval normal"),
+            "status should include the soft-approval level: {status}"
         );
         assert!(
             status.contains("session "),
