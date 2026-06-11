@@ -520,8 +520,11 @@ impl SetupCapability {
             )));
         }
 
+        // One snapshot reused across both reads in this command: consistent and
+        // avoids cloning the full Settings (token strings included) twice.
+        let snapshot = self.config.snapshot();
         let next = match ProviderChoice::default_for_provider_name(name) {
-            Ok(n) => n.with_saved_model(&self.config.snapshot()),
+            Ok(n) => n.with_saved_model(&snapshot),
             Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
         };
         let next = if model_spec.is_empty() {
@@ -537,7 +540,7 @@ impl SetupCapability {
                 "setup provider failed: no model configured for {name}; pick one with /setup"
             )));
         }
-        let mw = match next.model_with_provider(&self.config.snapshot()) {
+        let mw = match next.model_with_provider(&snapshot) {
             Ok(m) => m,
             Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
         };
