@@ -11,9 +11,11 @@
 //! single source of truth those surfaces render.
 //!
 //! Keys are addressed the way a human would name them. Scalar keys are plain
-//! (`default_provider`, `attribution`); per-provider tables are addressed with
-//! a dotted provider segment (`tokens.openai`, `models.anthropic`).
+//! (`default_provider`, `attribution`); scoped tables are addressed with a
+//! dotted segment validated against the scope's known names
+//! (`tokens.openai`, `capabilities.web_search`).
 
+use crate::capabilities::optional;
 use crate::runtime::SUPPORTED_PROVIDERS;
 
 /// The kind of value a configuration key accepts. Drives validation in
@@ -39,11 +41,30 @@ impl ValueKind {
     }
 }
 
+/// What the dotted sub-segment of a `[table]` key is validated against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyScope {
+    /// Entries keyed by provider name (`tokens.openai`).
+    Provider,
+    /// Entries keyed by optional-capability name (`capabilities.web_search`),
+    /// validated against `crate::capabilities::optional`.
+    Capability,
+}
+
+impl KeyScope {
+    pub fn segment_label(self) -> &'static str {
+        match self {
+            KeyScope::Provider => "provider",
+            KeyScope::Capability => "capability",
+        }
+    }
+}
+
 /// One described configuration key. Every field is `&'static` so the whole
 /// schema is a compile-time constant.
 pub struct ConfigField {
-    /// Canonical name the agent/user addresses. For provider-scoped tables
-    /// this is the bare table name (e.g. `tokens`); see `provider_scoped`.
+    /// Canonical name the agent/user addresses. For scoped tables this is the
+    /// bare table name (e.g. `tokens`); see `scope`.
     pub key: &'static str,
     /// Alternative names accepted when reading or writing this key.
     pub aliases: &'static [&'static str],
@@ -53,9 +74,9 @@ pub struct ConfigField {
     /// Effective default when the key is unset — for display only.
     pub default: Option<&'static str>,
     pub examples: &'static [&'static str],
-    /// When true the key names a `[table]` whose entries are keyed by
-    /// provider, so it is addressed as `<key>.<provider>`.
-    pub provider_scoped: bool,
+    /// When set the key names a `[table]` addressed as `<key>.<segment>`,
+    /// with the segment validated per the scope.
+    pub scope: Option<KeyScope>,
 }
 
 /// The full configuration schema. Order is the user-facing display order.
@@ -72,7 +93,7 @@ pub fn schema() -> &'static [ConfigField] {
             kind: ValueKind::Text,
             default: Some("openai (auto-detected from available credentials)"),
             examples: &["anthropic", "openai", "google", "openrouter", "ollama"],
-            provider_scoped: false,
+            scope: None,
         },
         ConfigField {
             key: "default_model",
@@ -85,7 +106,7 @@ pub fn schema() -> &'static [ConfigField] {
             kind: ValueKind::Text,
             default: Some("the active provider's built-in default model"),
             examples: &["claude-sonnet-4-5", "gpt-5.5 high", "gemini-2.5-pro"],
-            provider_scoped: false,
+            scope: None,
         },
         ConfigField {
             key: "models",
@@ -99,7 +120,7 @@ pub fn schema() -> &'static [ConfigField] {
                 "models.openai = gpt-5.5 high",
                 "models.anthropic = claude-opus-4-5",
             ],
-            provider_scoped: true,
+            scope: Some(KeyScope::Provider),
         },
         ConfigField {
             key: "tokens",
@@ -111,7 +132,7 @@ pub fn schema() -> &'static [ConfigField] {
             kind: ValueKind::Secret,
             default: None,
             examples: &["tokens.openai = sk-…", "tokens.anthropic = …"],
-            provider_scoped: true,
+            scope: Some(KeyScope::Provider),
         },
         ConfigField {
             key: "base_urls",
@@ -123,7 +144,7 @@ pub fn schema() -> &'static [ConfigField] {
             kind: ValueKind::Text,
             default: None,
             examples: &["base_urls.custom = http://localhost:8000/v1"],
-            provider_scoped: true,
+            scope: Some(KeyScope::Provider),
         },
         ConfigField {
             key: "approval_mode",
@@ -136,7 +157,7 @@ pub fn schema() -> &'static [ConfigField] {
             kind: ValueKind::Text,
             default: Some("normal"),
             examples: &["protective", "normal", "off"],
-            provider_scoped: false,
+            scope: None,
         },
         ConfigField {
             key: "attribution",
@@ -147,7 +168,24 @@ pub fn schema() -> &'static [ConfigField] {
             kind: ValueKind::Bool,
             default: Some("on"),
             examples: &["on", "off"],
-            provider_scoped: false,
+            scope: None,
+        },
+        ConfigField {
+            key: "capabilities",
+            aliases: &["capability"],
+            title: "Optional capabilities",
+            description: "Enable or disable optional agent capabilities. Addressed as \
+                          `capabilities.<name>`; `get_config key=capabilities` lists every \
+                          toggleable capability with its effective state. `clear` removes the \
+                          toggle so the built-in default applies again. Changes take effect on \
+                          the next run.",
+            kind: ValueKind::Bool,
+            default: Some("per-capability default (get_config shows each)"),
+            examples: &[
+                "capabilities.current_time = on",
+                "capabilities.web_search = off",
+            ],
+            scope: Some(KeyScope::Capability),
         },
     ];
     FIELDS
@@ -167,6 +205,8 @@ pub enum KeyTarget {
     Token(String),
     /// Per-provider endpoint base URL.
     BaseUrl(String),
+    /// Optional-capability toggle, for the named catalog entry.
+    Capability(String),
 }
 
 impl KeyTarget {
@@ -180,6 +220,7 @@ impl KeyTarget {
             KeyTarget::Model(_) => "models",
             KeyTarget::Token(_) => "tokens",
             KeyTarget::BaseUrl(_) => "base_urls",
+            KeyTarget::Capability(_) => "capabilities",
         };
         schema()
             .iter()
@@ -188,8 +229,9 @@ impl KeyTarget {
     }
 }
 
-/// Parse a human-supplied key (with aliases) into a routable target. Provider
-/// segments are validated against the supported provider list.
+/// Parse a human-supplied key (with aliases) into a routable target. Dotted
+/// segments are validated against the scope's known names (providers or
+/// optional capabilities).
 pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
     let norm = input.trim().to_ascii_lowercase();
     if norm.is_empty() {
@@ -202,16 +244,18 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
 
     let scalar = |target: KeyTarget| -> Result<KeyTarget, String> {
         if sub.is_some() {
-            return Err(format!(
-                "`{head}` is a scalar key and takes no `.<provider>` segment"
-            ));
+            return Err(format!("`{head}` is a scalar key and takes no `.` segment"));
         }
         Ok(target)
     };
-    let scoped = |make: fn(String) -> KeyTarget| -> Result<KeyTarget, String> {
-        let provider = sub.filter(|s| !s.is_empty()).ok_or_else(|| {
-            format!("`{head}` is per-provider; address it as `{head}.<provider>`")
-        })?;
+    let segment = |scope: KeyScope| -> Result<&str, String> {
+        sub.filter(|s| !s.is_empty()).ok_or_else(|| {
+            let label = scope.segment_label();
+            format!("`{head}` is per-{label}; address it as `{head}.<{label}>`")
+        })
+    };
+    let provider_scoped = |make: fn(String) -> KeyTarget| -> Result<KeyTarget, String> {
+        let provider = segment(KeyScope::Provider)?;
         if !SUPPORTED_PROVIDERS.contains(&provider) {
             return Err(format!(
                 "unknown provider `{provider}`; expected one of {}",
@@ -220,15 +264,26 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         }
         Ok(make(provider.to_string()))
     };
+    let capability_scoped = || -> Result<KeyTarget, String> {
+        let name = segment(KeyScope::Capability)?;
+        if optional::find(name).is_none() {
+            return Err(format!(
+                "unknown capability `{name}`; expected one of {}",
+                optional::known_names()
+            ));
+        }
+        Ok(KeyTarget::Capability(name.to_string()))
+    };
 
     match head {
         "default_provider" | "provider" => scalar(KeyTarget::DefaultProvider),
         "default_model" | "model" => scalar(KeyTarget::DefaultModel),
         "attribution" => scalar(KeyTarget::Attribution),
         "approval_mode" | "approval" => scalar(KeyTarget::ApprovalMode),
-        "models" | "model_for" => scoped(KeyTarget::Model),
-        "tokens" | "token" => scoped(KeyTarget::Token),
-        "base_urls" | "base_url" | "url" => scoped(KeyTarget::BaseUrl),
+        "models" | "model_for" => provider_scoped(KeyTarget::Model),
+        "tokens" | "token" => provider_scoped(KeyTarget::Token),
+        "base_urls" | "base_url" | "url" => provider_scoped(KeyTarget::BaseUrl),
+        "capabilities" | "capability" => capability_scoped(),
         _ => Err(format!(
             "unknown config key `{input}`; known keys: {}",
             known_keys()
@@ -240,12 +295,9 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
 pub fn known_keys() -> String {
     schema()
         .iter()
-        .map(|f| {
-            if f.provider_scoped {
-                format!("{}.<provider>", f.key)
-            } else {
-                f.key.to_string()
-            }
+        .map(|f| match f.scope {
+            Some(scope) => format!("{}.<{}>", f.key, scope.segment_label()),
+            None => f.key.to_string(),
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -285,6 +337,26 @@ mod tests {
     }
 
     #[test]
+    fn capability_scoped_keys_parse_and_validate() {
+        assert_eq!(
+            parse_key("capabilities.web_search").unwrap(),
+            KeyTarget::Capability("web_search".to_string())
+        );
+        assert_eq!(
+            parse_key("Capability.Current_Time").unwrap(),
+            KeyTarget::Capability("current_time".to_string())
+        );
+        assert!(
+            parse_key("capabilities")
+                .unwrap_err()
+                .contains("per-capability")
+        );
+        let err = parse_key("capabilities.frobnicate").unwrap_err();
+        assert!(err.contains("unknown capability"));
+        assert!(err.contains("web_search"));
+    }
+
+    #[test]
     fn scalar_key_rejects_provider_segment() {
         assert!(parse_key("attribution.openai").is_err());
         assert!(parse_key("default_model.openai").is_err());
@@ -305,6 +377,7 @@ mod tests {
         let err = parse_key("frobnicate").unwrap_err();
         assert!(err.contains("default_provider"));
         assert!(err.contains("tokens.<provider>"));
+        assert!(err.contains("capabilities.<capability>"));
     }
 
     #[test]
@@ -317,6 +390,7 @@ mod tests {
             KeyTarget::Model("openai".into()),
             KeyTarget::Token("openai".into()),
             KeyTarget::BaseUrl("custom".into()),
+            KeyTarget::Capability("web_search".into()),
         ] {
             let _ = target.field();
         }

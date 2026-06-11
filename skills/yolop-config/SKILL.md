@@ -1,6 +1,6 @@
 ---
 name: yolop-config
-description: View and change yolop's own configuration — default provider and model, per-provider API tokens and models, endpoint base URLs, and attribution. Use when the user asks to configure yolop, set a default provider/model, store an API key, point at a custom endpoint, or asks "what is your config / what can you configure".
+description: View and change yolop's own configuration — default provider and model, per-provider API tokens and models, endpoint base URLs, attribution, and optional capability toggles. Use when the user asks to configure yolop, set a default provider/model, store an API key, point at a custom endpoint, or asks "what is your config / what can you configure".
 user-invocable: true
 ---
 
@@ -42,6 +42,10 @@ Call `set_config` with a `key` and a `value`:
 - `set_config key=base_urls.custom value=http://localhost:8000/v1` — endpoint
   for the OpenAI-compatible `custom` provider.
 - `set_config key=attribution value=off` — turn commit/PR attribution on/off.
+- `set_config key=capabilities.web_search value=off` — enable or disable an
+  optional capability (web search, web fetch, deferred tool loading, current
+  time, session storage). `get_config key=capabilities` lists every toggle
+  with its meaning and default; changes apply on the next run.
 
 Pass `value=clear` to unset an optional or secret key
 (e.g. `set_config key=tokens.openai value=clear`).

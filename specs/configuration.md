@@ -39,11 +39,17 @@ Keys are addressed the way a human would name them:
 | `base_urls.<provider>`    | text   | Endpoint base URL (used by the `custom` provider).             |
 | `approval_mode`           | text   | Soft-approval paranoia level (`protective` / `normal` / `off`). |
 | `attribution`             | bool   | Commit/PR attribution on/off.                                  |
+| `capabilities.<name>`     | bool   | Optional-capability toggle; `clear` restores the catalog default (see `specs/capabilities.md`). |
 
 `default_provider` is persisted under that name on disk; the legacy `provider`
 key is still read (and accepted as an alias) so pre-rename settings files keep
 working. `default_model` is applied as a cross-provider fallback in
 `ProviderChoice::with_saved_model`.
+
+Scoped keys carry a `KeyScope` that says what the dotted segment is validated
+against: `Provider` keys (`tokens`, `models`, `base_urls`) against the
+supported-provider list, `Capability` keys (`capabilities`) against the
+optional-capability catalog in `src/capabilities/optional.rs`.
 
 ### Tools
 

@@ -76,6 +76,12 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   runtime's curated allowlist of well-known public resources (package
   registries, source hosting, AI/cloud provider APIs, OS mirrors); off by
   default.
+- **Optional capabilities** — a curated set of toggles adjusts the tool
+  surface per user: web search and web fetch can be switched off (e.g. for
+  offline sessions), and extras like `get_current_time` and session-scoped
+  `kv_store`/`secret_store` switched on. Toggled via configuration ("disable
+  web search") and persisted under `[capabilities]` in the settings file. See
+  [`specs/capabilities.md`](./specs/capabilities.md).
 
 ### Context engineering
 
@@ -328,8 +334,9 @@ The settings file is also **schema-described**: every key carries a title,
 description, type, default, and examples (see `specs/configuration.md`). yolop
 itself can read and edit it through the `get_config` and `set_config` tools or
 the `yolop-config` skill — for example, "use anthropic by default", "store my
-OpenAI key", or "set the default model to gpt-5.5 high". Unknown keys in the
-file are ignored, never fatal, so the format stays forward-compatible.
+OpenAI key", "set the default model to gpt-5.5 high", or "turn off web
+search". Unknown keys in the file are ignored, never fatal, so the format
+stays forward-compatible.
 
 ### Session persistence
 

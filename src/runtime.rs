@@ -18,11 +18,11 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, COMPACTION_CAPABILITY_ID,
-    CompactionCapability, FileSystemCapability, INFINITY_CONTEXT_CAPABILITY_ID,
-    InfinityContextCapability, LoopDetectionCapability, PROMPT_CACHING_CAPABILITY_ID,
-    PromptCachingCapability, SKILLS_CAPABILITY_ID, StatelessTodoListCapability,
-    TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
-    UserHooksCapability, WebFetchCapability,
+    CompactionCapability, CurrentTimeCapability, FileSystemCapability,
+    INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LoopDetectionCapability,
+    PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability, SKILLS_CAPABILITY_ID,
+    SessionStorageCapability, StatelessTodoListCapability, TOOL_SEARCH_CAPABILITY_ID,
+    ToolOutputPersistenceCapability, ToolSearchCapability, UserHooksCapability, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
@@ -999,7 +999,13 @@ pub(crate) fn normalize_reasoning_effort(reasoning_effort: Option<String>) -> Op
 fn coding_harness_capabilities(
     client_commands: bool,
     hook_config: Option<serde_json::Value>,
+    settings: &Settings,
 ) -> Vec<AgentCapabilityConfig> {
+    // Resolved here (not at each push site) so the toggle source is obvious:
+    // settings `[capabilities]` toggles over catalog defaults, read once per
+    // build — toggling applies on the next run.
+    let optional = |name: &str| crate::capabilities::optional::enabled(settings, name);
+
     let mut caps = Vec::new();
     // Terminal-side commands lead the registry so the most-typed commands
     // (/help, !shell, /clear, /quit, …) surface first in the palette. Enabled only
@@ -1033,20 +1039,8 @@ fn coding_harness_capabilities(
         AgentCapabilityConfig::new("stateless_todo_list"),
         AgentCapabilityConfig::new("loop_detection"),
         AgentCapabilityConfig::new(PROMPT_CACHING_CAPABILITY_ID),
-        // Provider-agnostic deferred tool loading. Core tools stay fully
-        // loaded; the long tail is stubbed until the model loads it via the
-        // `tool_search` tool. Works on every model. Default threshold is 15
-        // tools (see DEFAULT_TOOL_SEARCH_THRESHOLD).
-        AgentCapabilityConfig::new(TOOL_SEARCH_CAPABILITY_ID),
         AgentCapabilityConfig::new("tool_output_persistence"),
-        AgentCapabilityConfig::new("duckduckgo"),
         AgentCapabilityConfig::new(ATTRIBUTION_CAPABILITY_ID),
-        // enable_file_download=true: saved responses land on disk through
-        // the platform filesystem stack, so the write blocklist applies.
-        AgentCapabilityConfig::with_config(
-            "web_fetch",
-            serde_json::json!({ "enable_file_download": true }),
-        ),
         AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
         AgentCapabilityConfig::new(CONFIG_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
@@ -1055,6 +1049,33 @@ fn coding_harness_capabilities(
         AgentCapabilityConfig::new(APPROVAL_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
     ]);
+    // Optional capabilities — every name below is a `[capabilities]` settings
+    // key described in `crate::capabilities::optional`. All implementations
+    // stay registered in the registry; only listed ids are active.
+    if optional("tool_search") {
+        // Provider-agnostic deferred tool loading. Core tools stay fully
+        // loaded; the long tail is stubbed until the model loads it via the
+        // `tool_search` tool. Works on every model. Default threshold is 15
+        // tools (see DEFAULT_TOOL_SEARCH_THRESHOLD).
+        caps.push(AgentCapabilityConfig::new(TOOL_SEARCH_CAPABILITY_ID));
+    }
+    if optional("web_search") {
+        caps.push(AgentCapabilityConfig::new("duckduckgo"));
+    }
+    if optional("web_fetch") {
+        // enable_file_download=true: saved responses land on disk through
+        // the platform filesystem stack, so the write blocklist applies.
+        caps.push(AgentCapabilityConfig::with_config(
+            "web_fetch",
+            serde_json::json!({ "enable_file_download": true }),
+        ));
+    }
+    if optional("current_time") {
+        caps.push(AgentCapabilityConfig::new("current_time"));
+    }
+    if optional("session_storage") {
+        caps.push(AgentCapabilityConfig::new("session_storage"));
+    }
     if let Some(config) = hook_config {
         caps.push(AgentCapabilityConfig::with_config("user_hooks", config));
     }
@@ -1362,6 +1383,12 @@ pub async fn build_with_options(
     capabilities.register(UserHooksCapability);
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebFetchCapability::from_env());
+    // Default-off optional capabilities (see `capabilities::optional`). They
+    // are registered unconditionally — a registered id is inert until the
+    // harness capability list enables it, so the `[capabilities]` toggles in
+    // settings are the single switch.
+    capabilities.register(CurrentTimeCapability);
+    capabilities.register(SessionStorageCapability);
     capabilities.register(CodingCliEnvironmentCapability::new(canonical_root.clone()));
     // Read-only consumer of the shared config service. `SettingsStore`
     // implements `ConfigService`, so the same handle that backs writes also
@@ -1452,8 +1479,11 @@ pub async fn build_with_options(
     // runtime owns. `session_id(...)` pins the id so resume can re-attach
     // to the same JSONL log (filename encodes the id).
     let session_title = format!("yolop @ {}", canonical_root.display());
-    let harness_capabilities =
-        coding_harness_capabilities(options.client_commands, hook_capability_config);
+    let harness_capabilities = coding_harness_capabilities(
+        options.client_commands,
+        hook_capability_config,
+        &settings_snapshot,
+    );
     let session_mcp_servers = mcp_servers.clone();
 
     let mut builder = InProcessRuntimeBuilder::new()
@@ -2592,7 +2622,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_tool_output_persistence() {
-        let ids = coding_harness_capabilities(false, None);
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
             ids.iter()
@@ -2605,7 +2635,7 @@ mod tests {
         // Deferred tool loading must be wired for every host configuration —
         // it works on every provider, so there is no reason to scope it.
         for client_commands in [false, true] {
-            let ids = coding_harness_capabilities(client_commands, None);
+            let ids = coding_harness_capabilities(client_commands, None, &Settings::default());
             assert!(
                 ids.iter()
                     .any(|cap| cap.capability_id() == TOOL_SEARCH_CAPABILITY_ID),
@@ -2648,8 +2678,84 @@ mod tests {
     }
 
     #[test]
+    fn optional_capabilities_follow_settings_toggles() {
+        let has = |caps: &[AgentCapabilityConfig], id: &str| {
+            caps.iter().any(|cap| cap.capability_id() == id)
+        };
+
+        // Defaults: web tools and tool_search on, the rest off.
+        let defaults = coding_harness_capabilities(false, None, &Settings::default());
+        assert!(has(&defaults, "duckduckgo"));
+        assert!(has(&defaults, "web_fetch"));
+        assert!(has(&defaults, TOOL_SEARCH_CAPABILITY_ID));
+        assert!(!has(&defaults, "current_time"));
+        assert!(!has(&defaults, "session_storage"));
+
+        // Toggles override defaults in both directions.
+        let mut settings = Settings::default();
+        settings
+            .capabilities
+            .insert("web_search".to_string(), false);
+        settings.capabilities.insert("web_fetch".to_string(), false);
+        settings
+            .capabilities
+            .insert("current_time".to_string(), true);
+        settings
+            .capabilities
+            .insert("session_storage".to_string(), true);
+        let toggled = coding_harness_capabilities(false, None, &settings);
+        assert!(!has(&toggled, "duckduckgo"));
+        assert!(!has(&toggled, "web_fetch"));
+        assert!(has(&toggled, TOOL_SEARCH_CAPABILITY_ID));
+        assert!(has(&toggled, "current_time"));
+        assert!(has(&toggled, "session_storage"));
+    }
+
+    /// End to end through `build`: the settings file drives which optional
+    /// tools the session actually exposes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_applies_optional_capability_toggles() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        settings
+            .set_capability("web_search".to_string(), false)
+            .expect("toggle web_search");
+        settings
+            .set_capability("current_time".to_string(), true)
+            .expect("toggle current_time");
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        let tools = &built.startup.tool_names;
+        assert!(
+            !tools.iter().any(|t| t == "duckduckgo_search"),
+            "web_search off must remove the search tool: {tools:?}"
+        );
+        assert!(
+            tools.iter().any(|t| t == "get_current_time"),
+            "current_time on must add its tool: {tools:?}"
+        );
+        // Untouched defaults still apply.
+        assert!(tools.iter().any(|t| t == "web_fetch"), "tools: {tools:?}");
+        assert!(
+            !tools.iter().any(|t| t == "kv_store"),
+            "session_storage stays off by default: {tools:?}"
+        );
+    }
+
+    #[test]
     fn coding_harness_enables_loop_detection() {
-        let ids = coding_harness_capabilities(false, None);
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
             ids.iter()
@@ -2659,7 +2765,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_yolop_attribution() {
-        let ids = coding_harness_capabilities(false, None);
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
             ids.iter()
@@ -2669,7 +2775,7 @@ mod tests {
 
     #[test]
     fn coding_harness_gates_client_commands_on_flag() {
-        let without = coding_harness_capabilities(false, None);
+        let without = coding_harness_capabilities(false, None, &Settings::default());
         assert!(
             !without
                 .iter()
@@ -2677,7 +2783,7 @@ mod tests {
             "client commands must stay off for hosts that can't apply them"
         );
 
-        let with = coding_harness_capabilities(true, None);
+        let with = coding_harness_capabilities(true, None, &Settings::default());
         assert!(
             with.iter()
                 .any(|cap| cap.capability_id() == CLIENT_COMMANDS_CAPABILITY_ID),

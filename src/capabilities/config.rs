@@ -50,7 +50,8 @@ impl Capability for ConfigCapability {
         Some(format!(
             "<capability id=\"{}\">\nyolop's settings live at {} and are schema-described \
              (default provider/model, per-provider API tokens and models, endpoint base URLs, \
-             attribution). To inspect or change any of it, call `get_config` (lists every key \
+             attribution, optional capability toggles). To inspect or change any of it, call \
+             `get_config` (lists every key \
              with its meaning and current value) and `set_config` (validates and persists a \
              key), or activate the `yolop-config` skill. Unknown keys in the file are ignored, \
              never fatal. Provider/model edits apply on the next run; use `/setup` to switch the \
@@ -89,7 +90,7 @@ impl Capability for ConfigCapability {
 
 /// JSON description of a schema field, optionally with its current value(s).
 fn field_json(settings: &Settings, field: &crate::config_schema::ConfigField) -> Value {
-    let current = if field.provider_scoped {
+    let current = if field.scope.is_some() {
         scoped_current(settings, field.key)
     } else {
         // Scalar fields map 1:1 to a target keyed by `field.key`.
@@ -103,7 +104,7 @@ fn field_json(settings: &Settings, field: &crate::config_schema::ConfigField) ->
         "description": field.description,
         "type": field.kind.as_str(),
         "secret": field.kind == ValueKind::Secret,
-        "provider_scoped": field.provider_scoped,
+        "scope": field.scope.map(crate::config_schema::KeyScope::segment_label),
         "default": field.default,
         "examples": field.examples,
         "current": current,
@@ -155,11 +156,11 @@ impl Tool for GetConfigTool {
                 let field = target.field();
                 let mut entry = field_json(&settings, field);
                 // Read the single value through the config service (the same
-                // path any capability uses), which narrows a provider-scoped
-                // key to the requested provider. For those keys, preserve the
+                // path any capability uses), which narrows a scoped key to
+                // the requested entry. For those keys, preserve the
                 // whole-table view that field_json seeded into `current`.
                 let value = self.settings.current(key).unwrap_or(Value::Null);
-                if field.provider_scoped
+                if field.scope.is_some()
                     && let Value::Object(map) = &mut entry
                 {
                     let table = map.get("current").cloned().unwrap_or(Value::Null);
@@ -368,6 +369,29 @@ impl SetConfigTool {
                     .map_err(map_err)?;
                 Ok(saved(format!("base_urls.{provider} = {value}")))
             }
+            KeyTarget::Capability(name) => {
+                if clearing {
+                    let existed = self.settings.clear_capability(name).map_err(map_err)?;
+                    let default = crate::capabilities::optional::find(name)
+                        .map(|spec| on_off(spec.default_enabled))
+                        .unwrap_or("off");
+                    return Ok(saved(if existed {
+                        format!("cleared capabilities.{name}; default ({default}) applies again")
+                    } else {
+                        format!("capabilities.{name} was already at its default ({default})")
+                    }));
+                }
+                let enabled = parse_on_off(value).ok_or_else(|| {
+                    format!("capabilities.{name} expects on/off (true/false, yes/no)")
+                })?;
+                self.settings
+                    .set_capability(name.clone(), enabled)
+                    .map_err(map_err)?;
+                Ok(saved(format!(
+                    "capabilities.{name} = {}; applies on the next run",
+                    on_off(enabled)
+                )))
+            }
         }
     }
 }
@@ -459,6 +483,78 @@ mod tests {
             .execute(json!({ "key": "approval_mode", "value": "whenever" }))
             .await;
         assert!(matches!(bad, ToolExecutionResult::ToolError(_)));
+    }
+
+    #[tokio::test]
+    async fn set_config_toggles_and_clears_capability() {
+        let (_tmp, settings) = store();
+        let tool = SetConfigTool {
+            settings: settings.clone(),
+        };
+
+        let ok = tool
+            .execute(json!({ "key": "capabilities.web_search", "value": "off" }))
+            .await;
+        assert!(matches!(ok, ToolExecutionResult::Success(_)));
+        assert_eq!(
+            settings.snapshot().capability_enabled("web_search"),
+            Some(false)
+        );
+
+        // `clear` removes the toggle so the catalog default applies again.
+        tool.execute(json!({ "key": "capabilities.web_search", "value": "clear" }))
+            .await;
+        assert!(
+            settings
+                .snapshot()
+                .capability_enabled("web_search")
+                .is_none()
+        );
+
+        let bad_name = tool
+            .execute(json!({ "key": "capabilities.frobnicate", "value": "on" }))
+            .await;
+        assert!(matches!(bad_name, ToolExecutionResult::ToolError(_)));
+
+        let bad_value = tool
+            .execute(json!({ "key": "capabilities.web_search", "value": "sometimes" }))
+            .await;
+        assert!(matches!(bad_value, ToolExecutionResult::ToolError(_)));
+    }
+
+    #[tokio::test]
+    async fn get_config_capabilities_show_effective_defaults() {
+        let (_tmp, settings) = store();
+        settings
+            .set_capability("current_time".to_string(), true)
+            .unwrap();
+        let tool = GetConfigTool { settings };
+
+        // The whole-catalog view renders effective values, including
+        // untoggled entries at their defaults.
+        let ToolExecutionResult::Success(value) = tool
+            .execute(json!({ "key": "capabilities.current_time" }))
+            .await
+        else {
+            panic!("expected success");
+        };
+        assert_eq!(value["field"]["current"], Value::Bool(true));
+        assert_eq!(
+            value["field"]["table"]["web_search"]["enabled"],
+            Value::Bool(true)
+        );
+        assert_eq!(
+            value["field"]["table"]["session_storage"]["enabled"],
+            Value::Bool(false)
+        );
+        // The table carries the catalog semantics so get_config doubles as
+        // the discovery surface for what each toggle does.
+        assert!(
+            value["field"]["table"]["web_search"]["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("DuckDuckGo")
+        );
     }
 
     #[tokio::test]

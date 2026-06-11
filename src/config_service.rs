@@ -13,6 +13,7 @@
 // concrete store. `SettingsStore` implements `ConfigService`, so the same
 // shared handle satisfies both.
 
+use crate::capabilities::optional;
 use crate::config_schema::{KeyTarget, parse_key};
 use crate::runtime::SUPPORTED_PROVIDERS;
 use crate::settings::{ApprovalMode, Settings, SettingsStore};
@@ -86,13 +87,19 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
             .base_url_for(p)
             .map(|s| Value::String(s.to_string()))
             .unwrap_or(Value::Null),
+        // Effective state: the persisted toggle when present, the catalog
+        // default otherwise — so reads never show "unset" for a capability
+        // that is in fact running.
+        KeyTarget::Capability(name) => Value::Bool(optional::enabled(settings, name)),
     }
 }
 
-/// Full current state of a provider-scoped table (secrets redacted). Only
-/// supported providers are listed, so reads stay consistent with the providers
-/// `set_config` can address — tolerant loading may leave unknown provider
-/// entries in the file, but they are not manageable here.
+/// Full current state of a scoped table (secrets redacted). Only known
+/// entries are listed, so reads stay consistent with what `set_config` can
+/// address — tolerant loading may leave unknown entries in the file, but they
+/// are not manageable here. The `capabilities` table renders the whole
+/// catalog with effective values, so defaults are visible even when no toggle
+/// is stored.
 pub(crate) fn scoped_current(settings: &Settings, key: &str) -> Value {
     let mut map = serde_json::Map::new();
     let supported = |provider: &String| SUPPORTED_PROVIDERS.contains(&provider.as_str());
@@ -110,6 +117,21 @@ pub(crate) fn scoped_current(settings: &Settings, key: &str) -> Value {
         "base_urls" => {
             for (provider, url) in settings.base_urls.iter().filter(|(p, _)| supported(p)) {
                 map.insert(provider.clone(), Value::String(url.clone()));
+            }
+        }
+        "capabilities" => {
+            // Rich entries (not bare bools) so `get_config` doubles as the
+            // discovery surface for what each toggle does and its default.
+            for spec in optional::OPTIONAL_CAPABILITIES {
+                map.insert(
+                    spec.name.to_string(),
+                    serde_json::json!({
+                        "enabled": optional::enabled(settings, spec.name),
+                        "default": spec.default_enabled,
+                        "title": spec.title,
+                        "description": spec.description,
+                    }),
+                );
             }
         }
         _ => {}

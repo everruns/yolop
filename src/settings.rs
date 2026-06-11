@@ -90,6 +90,10 @@ pub struct Settings {
     /// Soft-approval paranoia level, injected into the system prompt each
     /// turn. Central, cross-session, surfaced in the status bar.
     pub approval_mode: ApprovalMode,
+    /// Optional-capability toggles keyed by catalog name (see
+    /// `crate::capabilities::optional`). Absent names fall back to the
+    /// catalog default; toggles apply on the next run.
+    pub capabilities: BTreeMap<String, bool>,
 }
 
 impl Default for Settings {
@@ -102,6 +106,7 @@ impl Default for Settings {
             base_urls: BTreeMap::new(),
             attribution: true,
             approval_mode: ApprovalMode::Normal,
+            capabilities: BTreeMap::new(),
         }
     }
 }
@@ -139,6 +144,17 @@ impl Settings {
             }
             map
         };
+        let bool_map = |key: &str| {
+            let mut map = BTreeMap::new();
+            if let Some(t) = table.get(key).and_then(Value::as_table) {
+                for (k, v) in t {
+                    if let Some(b) = v.as_bool() {
+                        map.insert(k.clone(), b);
+                    }
+                }
+            }
+            map
+        };
         Self {
             default_provider,
             tokens: string_map("tokens"),
@@ -147,6 +163,7 @@ impl Settings {
             base_urls: string_map("base_urls"),
             attribution,
             approval_mode,
+            capabilities: bool_map("capabilities"),
         }
     }
 
@@ -180,6 +197,13 @@ impl Settings {
         insert_map("tokens", &self.tokens);
         insert_map("models", &self.models);
         insert_map("base_urls", &self.base_urls);
+        if !self.capabilities.is_empty() {
+            let mut t = Table::new();
+            for (k, v) in &self.capabilities {
+                t.insert(k.clone(), Value::Boolean(*v));
+            }
+            table.insert("capabilities".to_string(), Value::Table(t));
+        }
         table
     }
 
@@ -209,6 +233,13 @@ impl Settings {
 
     pub fn approval_mode(&self) -> ApprovalMode {
         self.approval_mode
+    }
+
+    /// The persisted toggle for an optional capability, if any. `None` means
+    /// "no entry" — the caller applies the catalog default
+    /// (`crate::capabilities::optional::enabled` wraps this).
+    pub fn capability_enabled(&self, name: &str) -> Option<bool> {
+        self.capabilities.get(name).copied()
     }
 }
 
@@ -363,6 +394,21 @@ impl SettingsStore {
     pub fn clear_base_url(&self, provider: &str) -> Result<bool> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         let existed = guard.base_urls.remove(provider).is_some();
+        save_to(&self.path, &guard)?;
+        Ok(existed)
+    }
+
+    pub fn set_capability(&self, name: String, enabled: bool) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.capabilities.insert(name, enabled);
+        save_to(&self.path, &guard)
+    }
+
+    /// Remove a capability toggle so the catalog default applies again.
+    /// Returns whether a toggle was actually present before removal.
+    pub fn clear_capability(&self, name: &str) -> Result<bool> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let existed = guard.capabilities.remove(name).is_some();
         save_to(&self.path, &guard)?;
         Ok(existed)
     }
@@ -618,6 +664,48 @@ mod tests {
             .expect("save");
         assert!(store.clear_base_url("custom").expect("clear present"));
         assert!(store.snapshot().base_url_for("custom").is_none());
+    }
+
+    #[test]
+    fn capability_toggles_roundtrip_and_clear_via_disk() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        assert!(store.snapshot().capability_enabled("web_search").is_none());
+
+        store
+            .set_capability("web_search".to_string(), false)
+            .expect("save");
+        store
+            .set_capability("current_time".to_string(), true)
+            .expect("save");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            on_disk.contains("[capabilities]") && on_disk.contains("web_search = false"),
+            "expected capabilities table, got: {on_disk}"
+        );
+
+        let reloaded = SettingsStore::open(path.clone());
+        assert_eq!(
+            reloaded.snapshot().capability_enabled("web_search"),
+            Some(false)
+        );
+        assert_eq!(
+            reloaded.snapshot().capability_enabled("current_time"),
+            Some(true)
+        );
+
+        assert!(reloaded.clear_capability("web_search").expect("clear"));
+        assert!(!reloaded.clear_capability("web_search").expect("idempotent"));
+        assert!(
+            reloaded
+                .snapshot()
+                .capability_enabled("web_search")
+                .is_none()
+        );
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(!on_disk.contains("web_search"), "got: {on_disk}");
     }
 
     #[test]

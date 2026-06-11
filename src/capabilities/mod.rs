@@ -8,6 +8,7 @@ pub(crate) mod client_commands;
 pub(crate) mod config;
 mod host;
 pub(crate) mod model_discovery;
+pub(crate) mod optional;
 pub mod skills;
 pub(crate) mod your;
 
