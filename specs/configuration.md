@@ -32,7 +32,7 @@ Keys are addressed the way a human would name them:
 
 | Key                       | Type   | Meaning                                                        |
 |---------------------------|--------|----------------------------------------------------------------|
-| `default_provider`        | text   | Provider used when neither `--provider` nor an env credential forces a choice. Stored on disk as `provider`. |
+| `default_provider`        | text   | Provider used when no `--provider` flag is given; takes precedence over env auto-detection. |
 | `default_model`           | text   | Global fallback model spec for the active provider; a per-provider pick wins over it. |
 | `models.<provider>`       | text   | Per-provider model spec, survives provider switches.           |
 | `tokens.<provider>`       | secret | Provider API token (owner-only on disk; env vars override).    |

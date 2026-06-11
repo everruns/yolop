@@ -69,8 +69,9 @@ impl std::fmt::Display for ApprovalMode {
 
 #[derive(Debug, Clone)]
 pub struct Settings {
-    /// The default provider used when neither `--provider` nor an env
-    /// credential forces a choice. Persisted as the `default_provider` key
+    /// The default provider, used when no `--provider` flag is given. A value
+    /// here takes precedence over environment-credential auto-detection, which
+    /// applies only when this is unset. Persisted as the `default_provider` key
     /// (the legacy `provider` key is still read for backward compatibility).
     pub default_provider: Option<String>,
     pub tokens: BTreeMap<String, String>,
