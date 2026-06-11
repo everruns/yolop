@@ -1906,6 +1906,16 @@ mod tests {
         assert_eq!(truncate_end_chars("hello", 99), "hello");
     }
 
+    #[test]
+    fn first_line_truncates_on_char_boundaries() {
+        // Regression: byte-index slicing panicked when `max` landed inside a
+        // multi-byte code point. "héllo" — the limit of 2 must split between
+        // 'h' and 'é' (a 2-byte char), not mid-codepoint.
+        assert_eq!(first_line("héllo", 2), "hé…");
+        // Only the first line is kept, and short non-ASCII text is untouched.
+        assert_eq!(first_line("résumé\nsecond", 99), "résumé");
+    }
+
     fn line_text(line: &Line<'_>) -> String {
         line.spans
             .iter()

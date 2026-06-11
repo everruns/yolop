@@ -6,7 +6,7 @@
 //! credential, base-URL, model, and effort input never echo through the normal
 //! chat composer. Provider/model discovery helpers live here too because they
 //! exist only to feed the picker steps. Rendering of the overlay lives in
-//! `draw.rs`; this module is state and transitions only.
+//! `render.rs`; this module is state and transitions only.
 
 use super::*;
 

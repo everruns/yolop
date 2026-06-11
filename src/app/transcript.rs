@@ -472,13 +472,9 @@ pub fn summarize_tool_result(data: &ToolCompletedData) -> String {
     }
 }
 
+/// First line of `s`, truncated to `max` characters with an ellipsis. Truncates
+/// on `char` boundaries (via [`truncate_chars`]) so non-ASCII error/status text
+/// never panics on a mid-codepoint byte index.
 pub(crate) fn first_line(s: &str, max: usize) -> String {
-    let l = s.lines().next().unwrap_or("");
-    if l.len() > max {
-        format!("{}…", &l[..max])
-    } else {
-        l.to_string()
-    }
+    truncate_chars(s.lines().next().unwrap_or(""), max)
 }
-
-// ---------- rendering ----------
