@@ -141,7 +141,9 @@ impl Tool for RecordApprovalTool {
     fn description(&self) -> &str {
         "Record that the user just gave spoken approval for a critical action, for the audit \
          trail. Call this immediately after the user says yes/approved and before carrying the \
-         action out. Pass a concise, specific description of exactly what was approved."
+         action out. Pass a concise, specific description of exactly what was approved. These \
+         arguments are written to the session log, so do NOT include secrets (API keys, tokens, \
+         passwords); describe the action and redact any sensitive values."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -149,11 +151,11 @@ impl Tool for RecordApprovalTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "The specific action the user approved, e.g. \"force-push branch feature/x to origin\"."
+                    "description": "The specific action the user approved, e.g. \"force-push branch feature/x to origin\". Do not embed secrets."
                 },
                 "detail": {
                     "type": "string",
-                    "description": "Optional extra context: the exact command, affected paths, or scope of the approval."
+                    "description": "Optional extra context: the command, affected paths, or scope of the approval. Redact any secrets (keys/tokens/passwords) before passing them — this is logged."
                 }
             },
             "required": ["action"],
@@ -208,10 +210,14 @@ impl Tool for SetApprovalModeTool {
         json!({
             "type": "object",
             "properties": {
+                // Kept as a free string (not an `enum`) so the lenient
+                // `ApprovalMode::parse` aliases — the same ones `/setup
+                // approval` and settings.toml accept — are reachable here too;
+                // a hard enum would silently shadow them. Unknown values are
+                // rejected in `execute`.
                 "mode": {
                     "type": "string",
-                    "enum": ["protective", "normal", "off"],
-                    "description": "The new approval level."
+                    "description": "The new approval level: 'protective', 'normal', or 'off' (common synonyms like 'paranoid' or 'yolo' are also accepted)."
                 }
             },
             "required": ["mode"],
@@ -323,7 +329,13 @@ mod tests {
             settings: settings.clone(),
         };
 
-        let res = tool.execute(json!({ "mode": "protective" })).await;
+        let res = tool.execute(json!({ "mode": "off" })).await;
+        assert!(res.is_success());
+        assert_eq!(settings.snapshot().approval_mode(), ApprovalMode::Off);
+
+        // Aliases accepted by `ApprovalMode::parse` reach the tool too, since
+        // the schema is a lenient string rather than a canonical-only enum.
+        let res = tool.execute(json!({ "mode": "paranoid" })).await;
         assert!(res.is_success());
         assert_eq!(
             settings.snapshot().approval_mode(),
