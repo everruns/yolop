@@ -117,6 +117,8 @@ pub struct App {
     pub busy: bool,
     pub should_quit: bool,
     ctrl_c_exit: bool,
+    /// First Ctrl+C armed exit; a second press quits.
+    ctrl_c_pending_exit: bool,
     busy_frame: u64,
     turn_activity: Option<String>,
     /// Live tail of streaming assistant text (and other delta events).
@@ -378,6 +380,7 @@ impl App {
             busy: false,
             should_quit: false,
             ctrl_c_exit: false,
+            ctrl_c_pending_exit: false,
             busy_frame: 0,
             turn_activity: None,
             stream_preview: None,
@@ -448,7 +451,7 @@ impl App {
                 .collect();
             self.push_system(format!("commands: {}", names.join(", ")));
         }
-        self.push_system("type /help for commands, Ctrl-C or Ctrl-D to exit".into());
+        self.push_system("type /help for commands, press Ctrl-C twice (or Ctrl-D) to exit".into());
     }
 
     fn push_user(&mut self, text: String) {
@@ -700,8 +703,7 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('c') => {
-                    self.ctrl_c_exit = true;
-                    self.should_quit = true;
+                    self.handle_ctrl_c();
                     return;
                 }
                 KeyCode::Char('d') => {
@@ -711,6 +713,8 @@ impl App {
                 _ => {}
             }
         }
+
+        self.ctrl_c_pending_exit = false;
 
         if self.busy {
             // Block only input editing while a turn is running.
@@ -874,7 +878,24 @@ impl App {
             "input: ←/→ edit · {} newline · scroll: use the terminal scrollback",
             newline_shortcut_hint()
         ));
-        self.push_system("exit: Ctrl-C / Ctrl-D".into());
+        self.push_system("exit: Ctrl-C twice / Ctrl-D".into());
+    }
+
+    fn handle_ctrl_c(&mut self) {
+        if !self.busy && !self.input_text().trim().is_empty() {
+            self.reset_input();
+            self.ctrl_c_pending_exit = false;
+            return;
+        }
+
+        if self.ctrl_c_pending_exit {
+            self.ctrl_c_exit = true;
+            self.should_quit = true;
+            return;
+        }
+
+        self.ctrl_c_pending_exit = true;
+        self.push_system("Press Ctrl+C again to exit".into());
     }
 
     /// Dispatch a capability-provided slash command.
@@ -2312,7 +2333,7 @@ mod tests {
                 .app
                 .lines
                 .iter()
-                .any(|line| line.text.contains("Ctrl-C or Ctrl-D to exit")),
+                .any(|line| line.text.contains("press Ctrl-C twice (or Ctrl-D) to exit")),
             "startup banner should name Ctrl-C/Ctrl-D exits: {:?}",
             fixture.app.lines
         );
@@ -2502,10 +2523,83 @@ mod tests {
         assert!(
             app.lines
                 .iter()
-                .any(|line| line.text.contains("exit: Ctrl-C / Ctrl-D")),
+                .any(|line| line.text.contains("exit: Ctrl-C twice / Ctrl-D")),
             "help output should name Ctrl-C/Ctrl-D exits: {:?}",
             app.lines
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn first_ctrl_c_prompts_for_second_press_to_exit() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+
+        assert!(!app.should_quit, "first Ctrl-C should not quit immediately");
+        assert!(app.ctrl_c_pending_exit, "first Ctrl-C should arm exit");
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| { line.text.contains("Press Ctrl+C again to exit") }),
+            "first Ctrl-C should invite a second press: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn second_ctrl_c_exits_after_prompt() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+        app.handle_key(ctrl_c).await;
+        app.handle_key(ctrl_c).await;
+
+        assert!(app.should_quit, "second Ctrl-C should quit");
+        assert!(app.ctrl_c_exit, "second Ctrl-C should count as Ctrl-C exit");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_c_clears_nonempty_input_without_exiting() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.set_input_text("draft prompt".into());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+
+        assert!(!app.should_quit, "Ctrl-C with draft input should not quit");
+        assert!(
+            app.input_text().trim().is_empty(),
+            "Ctrl-C should clear draft input"
+        );
+        assert!(
+            !app.ctrl_c_pending_exit,
+            "clearing input should not arm exit"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typing_after_first_ctrl_c_disarms_exit_prompt() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()))
+            .await;
+
+        assert!(
+            !app.ctrl_c_pending_exit,
+            "typing should disarm the pending exit prompt"
+        );
+        assert!(!app.should_quit);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
