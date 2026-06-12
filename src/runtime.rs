@@ -10,7 +10,6 @@ use crate::capabilities::{
     CLIENT_COMMANDS_CAPABILITY_ID, CONFIG_CAPABILITY_ID, ClientCommandsCapability,
     CodingBashCapability, CodingCliEnvironmentCapability, ConfigCapability,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
-    TOOL_SEARCH_CAPABILITY_ID, ToolSearchCapability,
 };
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
@@ -22,7 +21,8 @@ use everruns_core::capabilities::{
     CompactionCapability, FileSystemCapability, INFINITY_CONTEXT_CAPABILITY_ID,
     InfinityContextCapability, LoopDetectionCapability, PROMPT_CACHING_CAPABILITY_ID,
     PromptCachingCapability, SKILLS_CAPABILITY_ID, StatelessTodoListCapability,
-    ToolOutputPersistenceCapability, UserHooksCapability, WebFetchCapability,
+    TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
+    UserHooksCapability, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
@@ -1340,15 +1340,24 @@ pub async fn build_with_options(
     capabilities.register(StatelessTodoListCapability);
     capabilities.register(LoopDetectionCapability);
     capabilities.register(PromptCachingCapability::new());
-    // Provider-agnostic deferred tool loading (vendored, see
-    // `capabilities::tool_search`). Keeps core file/shell tools fully loaded
-    // and defers the long tail behind a `tool_search` tool, revealing real
-    // schemas progressively. Works on every provider/model — unlike the native
-    // `openai_tool_search`, whose Responses round-trip is broken (EVE-521).
-    // TODO(EVE-527): the upstream `ToolSearchCapability` (renamed from
-    // `GenericToolSearchCapability` in 0.9.0) still defers statelessly and lacks
-    // progressive disclosure; replace this vendor once upstream ships that fix.
-    capabilities.register(ToolSearchCapability::new());
+    // Provider-agnostic deferred tool loading (upstream `everruns-core`, 0.11.0+).
+    // Defers the long tail behind a `tool_search` tool and restores real schemas
+    // progressively (per-session reveal set). The `never_defer` allowlist keeps
+    // the hot-path file/shell tools fully loaded so the agent never needs a
+    // `tool_search` round-trip before its first read/edit/run — yolop does not
+    // own those tool definitions, so it sets the policy by name here. Works on
+    // every provider/model, unlike the native `openai_tool_search` (EVE-521).
+    // Progressive disclosure + this allowlist landed upstream in EVE-527 (#2130),
+    // which retired the previously vendored copy.
+    capabilities.register(ToolSearchCapability::new().with_never_defer([
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_directory",
+        "grep_files",
+        "bash",
+        "run_yolop_command",
+    ]));
     capabilities.register(ToolOutputPersistenceCapability);
     capabilities.register(UserHooksCapability);
     capabilities.register(DuckDuckGoCapability);
@@ -2612,7 +2621,7 @@ mod tests {
     /// helping and this test fails loudly so the threshold can be revisited.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tool_surface_exceeds_tool_search_threshold() {
-        use crate::capabilities::tool_search::DEFAULT_TOOL_SEARCH_THRESHOLD;
+        use everruns_core::capabilities::DEFAULT_TOOL_SEARCH_THRESHOLD;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");

@@ -9,7 +9,6 @@ pub(crate) mod config;
 mod host;
 pub(crate) mod model_discovery;
 pub mod skills;
-pub(crate) mod tool_search;
 pub(crate) mod your;
 
 pub(crate) use approval::{APPROVAL_CAPABILITY_ID, ApprovalCapability};
@@ -20,4 +19,3 @@ pub(crate) use host::{
     CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID,
     SetupCapability,
 };
-pub(crate) use tool_search::{TOOL_SEARCH_CAPABILITY_ID, ToolSearchCapability};
