@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn deferral_activates_strictly_above_threshold() {
-        let cap = ToolSearchCapability::with_threshold(15);
+        let cap = ToolSearchCapability::with_threshold(DEFAULT_TOOL_SEARCH_THRESHOLD);
         let hook = &cap.tool_definition_hooks()[0];
         // Exactly at the threshold: nothing defers.
         let at_threshold_extra = DEFAULT_TOOL_SEARCH_THRESHOLD - ALWAYS_FULL.len();
