@@ -602,7 +602,7 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
     while Instant::now() < deadline
         && !std::fs::read_to_string(tui.settings_path())
             .unwrap_or_default()
-            .contains("provider = \"openai\"")
+            .contains("default_provider = \"openai\"")
     {
         thread::sleep(Duration::from_millis(20));
     }
@@ -626,7 +626,7 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
     let settings =
         std::fs::read_to_string(tui.settings_path()).expect("read settings written by the TUI");
     assert!(
-        settings.contains("provider = \"openai\""),
+        settings.contains("default_provider = \"openai\""),
         "provider switch should persist: {settings}"
     );
     assert!(

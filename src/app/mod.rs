@@ -2399,6 +2399,31 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_viewport_does_not_mirror_flushed_transcript_lines() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.push_user("Do something".into());
+        app.lines.push(ChatLine {
+            author: Author::Assistant,
+            text: "Done.".into(),
+        });
+        app.printed_lines = app.lines.len();
+
+        let rows = render_app_lines(app, 96, COMPOSER_VIEWPORT_HEIGHT);
+
+        assert!(
+            !rows.iter().any(|row| row.contains("Do something")),
+            "flushed user transcript should stay in scrollback only: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("Done.")),
+            "flushed assistant transcript should stay in scrollback only: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn inline_viewport_uses_recent_transcript_tail() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
