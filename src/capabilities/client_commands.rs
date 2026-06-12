@@ -285,6 +285,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_yolop_command_rejects_shell_dispatch() {
+        let ui = Arc::new(RecordingUi::default());
+        let tool = RunYolopCommandTool { ui: ui.clone() };
+
+        let result = tool
+            .execute(json!({
+                "command": "shell",
+                "arguments": "echo should-not-run"
+            }))
+            .await;
+
+        assert!(result.is_error(), "tool result: {result:?}");
+        assert_eq!(ui.take(), Vec::<UiCommand>::new());
+    }
+
+    #[tokio::test]
     async fn run_yolop_command_preserves_model_argument() {
         let ui = Arc::new(RecordingUi::default());
         let tool = RunYolopCommandTool { ui: ui.clone() };
