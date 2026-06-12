@@ -801,7 +801,7 @@ impl App {
     }
 
     /// Dispatch a slash command. Every command — including the terminal-side
-    /// ones (help/tools/cwd/model/effort/clear/shell/quit) — is now a capability
+    /// ones (help/tools/mcp/cwd/model/effort/clear/shell/quit) — is now a capability
     /// command, so this is a single uniform lookup against the registry. The
     /// terminal-side commands take effect via `UiCommand`s their capability
     /// emits while executing (drained in the event loop); see

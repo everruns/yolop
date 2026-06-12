@@ -772,7 +772,7 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
         "!shell should not invoke llmsim/model turn: {transcript}"
     );
 
-    tui.write_input(b"");
+    tui.write_input(b"\x03");
     let status = tui.wait_or_kill(Duration::from_secs(3));
     assert!(
         status.success(),
