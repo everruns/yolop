@@ -365,18 +365,22 @@ mod tests {
         let res = tool
             .execute(json!({ "action": "force-push feature/x", "detail": "git push -f" }))
             .await;
-        assert!(res.is_success());
-        let text = format!("{res:?}");
-        assert!(text.contains("force-push feature/x"));
+        let ToolExecutionResult::Success(value) = res else {
+            panic!("expected success");
+        };
+        assert_eq!(value["action"], "force-push feature/x");
+        assert_eq!(value["detail"], "git push -f");
     }
 
     #[tokio::test]
     async fn record_approval_accepts_empty_arguments_after_spoken_consent() {
         let tool = RecordApprovalTool;
         let res = tool.execute(json!({})).await;
-        assert!(res.is_success());
-        let text = format!("{res:?}");
-        assert!(text.contains(FALLBACK_APPROVAL_ACTION));
+        let ToolExecutionResult::Success(value) = res else {
+            panic!("expected success");
+        };
+        assert_eq!(value["action"], FALLBACK_APPROVAL_ACTION);
+        assert!(value["detail"].is_null());
     }
 
     #[tokio::test]
