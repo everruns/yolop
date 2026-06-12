@@ -50,7 +50,6 @@
 
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, ToolDefinitionHook};
-use everruns_core::mcp_server::is_mcp_tool;
 use everruns_core::tool_types::{BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints};
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use everruns_core::traits::ToolContext;
@@ -183,14 +182,20 @@ fn deferred_stub_schema() -> Value {
 
 /// Returns true when a tool must always keep its full schema: the search tool
 /// itself, the core allowlist, tools that opt out via `DeferrablePolicy::Never`,
-/// MCP tools (executed via registry proxies built from these definitions), and
-/// any tool already revealed via `tool_search` this session.
+/// and any tool already revealed via `tool_search` this session.
+///
+/// MCP tools are deliberately *not* exempt: with many configured servers (we've
+/// seen setups with dozens) their full JSON schemas dominate the per-turn tool
+/// payload, yet most go unused on any given turn. Deferring them keeps only
+/// their name + description until the model loads the schema via `tool_search`,
+/// exactly like the built-in long tail. Deferral only rewrites the *advertised*
+/// schema; execution still routes through the real registry proxy, so stubbing
+/// an MCP tool never breaks its call once revealed.
 fn keep_full(tool: &ToolDefinition, revealed: &HashSet<String>) -> bool {
     let name = tool.name();
     name == TOOL_SEARCH_TOOL_NAME
         || ALWAYS_FULL.contains(&name)
         || matches!(tool.deferrable(), DeferrablePolicy::Never)
-        || is_mcp_tool(name)
         || revealed.contains(name)
 }
 
@@ -514,6 +519,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn mcp_tools_defer_above_threshold_and_reveal_after_search() {
+        let cap = ToolSearchCapability::new();
+        let hook = &cap.tool_definition_hooks()[0];
+        // 18 long-tail/core tools plus one MCP tool, above the threshold.
+        let build = || {
+            let mut tools = tool_set(12);
+            tools.push(builtin("mcp_docs__search", DeferrablePolicy::default()));
+            tools
+        };
+
+        // MCP tools defer like the rest of the long tail (no special exemption).
+        let before = hook.transform(build());
+        let mcp = before
+            .iter()
+            .find(|t| t.name() == "mcp_docs__search")
+            .unwrap();
+        assert!(is_stubbed(mcp), "MCP tool must defer above threshold");
+
+        // Once revealed via tool_search it regains its full schema next pass.
+        cap.revealed
+            .lock()
+            .unwrap()
+            .insert("mcp_docs__search".to_string());
+        let after = hook.transform(build());
+        let mcp = after
+            .iter()
+            .find(|t| t.name() == "mcp_docs__search")
+            .unwrap();
+        assert!(
+            !is_stubbed(mcp),
+            "revealed MCP tool must regain full schema"
+        );
     }
 
     #[test]

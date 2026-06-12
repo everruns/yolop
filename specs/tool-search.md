@@ -42,7 +42,11 @@ provider-agnostic) and adds the two things that make it actually work:
    `write_file`, `edit_file`, `list_directory`, `grep_files`, `bash`) always
    keep full schemas, so the agent is never crippled and common work needs no
    search. The long tail (search, web fetch, memory, skills, history, todos)
-   is deferred until requested.
+   is deferred until requested. **MCP server tools defer on the same footing**:
+   with many configured servers their schemas are the largest and least-used
+   part of the surface, so only their names and descriptions ride each turn
+   until `tool_search` loads a schema. (Execution still routes through the real
+   registry proxy, so a stubbed MCP tool call works once revealed.)
 
 Deferral activates only once the total tool count crosses
 `DEFAULT_TOOL_SEARCH_THRESHOLD` (15); below that, full schemas fit comfortably.
