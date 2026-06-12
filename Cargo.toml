@@ -37,13 +37,13 @@ tokio-util = { version = "0.7", features = ["compat"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-everruns-anthropic = "0.10.0"
-everruns-core = "0.10.0"
-everruns-openai = "0.10.0"
+everruns-anthropic = "0.11.0"
+everruns-core = "0.11.0"
+everruns-openai = "0.11.0"
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
 # everruns server/worker never enable it (specs/mcp.md, upstream runtime-mcp.md D2).
-everruns-runtime = { version = "0.10.0", features = ["mcp-stdio"] }
-everruns-integrations-duckduckgo = "0.10.0"
+everruns-runtime = { version = "0.11.0", features = ["mcp-stdio"] }
+everruns-integrations-duckduckgo = "0.11.0"
 futures = "0.3"
 
 [dev-dependencies]
