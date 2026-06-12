@@ -57,9 +57,16 @@ impl TuiHarness {
         self.answer_cursor_queries.store(answer, Ordering::SeqCst);
     }
 
-    /// The settings.toml the spawned TUI reads and writes (Linux config
-    /// layout; the harness seeds the macOS path with the same content).
+    /// The settings.toml the spawned TUI reads and writes.
     pub fn settings_path(&self) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            self._home
+                .path()
+                .join("Library/Application Support/yolop/settings.toml")
+        }
+
+        #[cfg(not(target_os = "macos"))]
         self._home.path().join(".config/yolop/settings.toml")
     }
 
