@@ -414,8 +414,8 @@ async fn handle_prompt<F: RuntimeFactory>(
         .ok_or_else(|| invalid_params("unknown session id"))?;
     let prompt = protocol::prompt_text(&params.prompt);
 
-    let stop_reason = match parse_slash_command(&prompt) {
-        Some((name, args)) => run_slash_command(peer, session, name, args).await,
+    let stop_reason = match parse_command_prompt(&prompt) {
+        Some(command) => run_slash_command(peer, session, command).await,
         None => run_prompt(peer, session, prompt).await,
     };
     Ok(PromptResult::new(stop_reason))
@@ -507,24 +507,65 @@ fn command_meta(command: &CommandDescriptor) -> Option<serde_json::Map<String, V
     }))
 }
 
-fn parse_slash_command(prompt: &str) -> Option<(String, String)> {
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedCommand {
+    name: String,
+    args: String,
+    title: String,
+}
+
+fn parse_command_prompt(prompt: &str) -> Option<ParsedCommand> {
     let trimmed = prompt.trim();
-    let rest = trimmed.strip_prefix('/')?.trim_start();
+    if let Some(rest) = trimmed.strip_prefix('/') {
+        return parse_slash_command(rest.trim_start());
+    }
+    if let Some(rest) = trimmed.strip_prefix('!') {
+        return Some(parse_shell_shortcut(rest));
+    }
+    None
+}
+
+fn parse_slash_command(rest: &str) -> Option<ParsedCommand> {
     let mut parts = rest.splitn(2, char::is_whitespace);
     let name = parts.next()?.trim();
     if name.is_empty() {
         return None;
     }
     let args = parts.next().unwrap_or_default().trim();
-    Some((name.to_string(), args.to_string()))
+    Some(ParsedCommand {
+        name: name.to_string(),
+        args: args.to_string(),
+        title: command_title("/", name, args),
+    })
+}
+
+fn parse_shell_shortcut(rest: &str) -> ParsedCommand {
+    let args = rest
+        .trim_start()
+        .strip_prefix("shell")
+        .and_then(|tail| {
+            tail.chars()
+                .next()
+                .is_none_or(char::is_whitespace)
+                .then_some(tail)
+        })
+        .unwrap_or(rest)
+        .trim();
+    ParsedCommand {
+        name: "shell".to_string(),
+        args: args.to_string(),
+        title: command_title("!", "shell", args),
+    }
 }
 
 async fn run_slash_command(
     peer: Arc<Peer>,
     session: Arc<Session>,
-    name: String,
-    args: String,
+    command: ParsedCommand,
 ) -> StopReason {
+    let name = command.name;
+    let args = command.args;
+    let title = command.title;
     let commands = session.commands.lock().unwrap().clone();
     let Some(descriptor) = commands.iter().find(|c| c.name == name).cloned() else {
         peer.session_update(
@@ -563,7 +604,7 @@ async fn run_slash_command(
             peer.session_update(
                 &session.acp_id,
                 SessionUpdate::ToolCall(
-                    ToolCall::new(tool_call_id.clone(), command_title(&descriptor.name, &args))
+                    ToolCall::new(tool_call_id.clone(), title)
                         .kind(ToolKind::Other)
                         .status(ToolCallStatus::InProgress)
                         .raw_input(json!({
@@ -627,11 +668,11 @@ async fn run_slash_command(
     }
 }
 
-fn command_title(name: &str, args: &str) -> String {
+fn command_title(prefix: &str, name: &str, args: &str) -> String {
     if args.is_empty() {
-        format!("/{name}")
+        format!("{prefix}{name}")
     } else {
-        format!("/{name} {args}")
+        format!("{prefix}{name} {args}")
     }
 }
 

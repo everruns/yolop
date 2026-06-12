@@ -23,7 +23,8 @@ top of the runtime's two, not a separate `CommandSource` variant.
 
 1. **System** — the **runtime** executes it via `runtime.execute_command`,
    returning a `CommandResult { success, message }` the host renders inline.
-   Example: `/setup` and its subcommands mutate provider/model/token settings.
+   Example: `/setup` and its subcommands mutate provider/model/token settings;
+   `/shell <command>` runs the existing bounded bash tool.
 
 2. **Skill** — the **LLM** executes it. The literal `/name args` text is
    forwarded as a chat turn so the model activates the skill. Skill commands are
@@ -64,6 +65,8 @@ portable case ever arises.
 2. **Uniform dispatch.** The host looks a typed command up in the registry and
    routes by `CommandSource`: `System`/client → `runtime.execute_command`;
    `Skill` → forward as a chat turn. `/exit` is an accepted alias for `/quit`.
+   Interactive hosts also accept `!<command>` and `!shell <command>` as
+   shortcuts for `/shell <command>`.
 3. **Client effects are host-applied.** A client command's `execute_command`
    returns an empty `CommandResult` and emits a `UiCommand`; the host applies
    every queued `UiCommand` before the next render. The `UiCommand` vocabulary

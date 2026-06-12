@@ -779,6 +779,10 @@ impl App {
         let raw = self.input_text();
         self.reset_input();
         let text = raw.trim().to_string();
+        if let Some(rest) = text.strip_prefix('!') {
+            self.handle_shell_shortcut(rest).await;
+            return;
+        }
         if let Some(rest) = text.strip_prefix('/') {
             self.handle_command(rest).await;
             return;
@@ -816,6 +820,32 @@ impl App {
         } else {
             self.push_system(format!("unknown command: /{head}"));
         }
+    }
+
+    async fn handle_shell_shortcut(&mut self, input: &str) {
+        let Some(descriptor) = self
+            .startup
+            .capability_commands
+            .iter()
+            .find(|c| c.name == "shell")
+            .cloned()
+        else {
+            self.push_system("shell command unavailable".to_string());
+            return;
+        };
+        let command = input
+            .trim_start()
+            .strip_prefix("shell")
+            .and_then(|rest| {
+                rest.chars()
+                    .next()
+                    .is_none_or(char::is_whitespace)
+                    .then_some(rest)
+            })
+            .unwrap_or(input)
+            .trim();
+        self.invoke_capability_command(descriptor, command.to_string())
+            .await;
     }
 
     /// Apply a terminal-side command emitted by a capability. This is the only
@@ -2258,6 +2288,60 @@ mod tests {
         );
         assert!(!app.busy);
         assert!(app.stream_preview.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bang_input_runs_shell_without_model_turn() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+
+        for ch in "!printf shell-ok".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert!(!app.busy, "shell shortcut should not start a model turn");
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| matches!(line.author, Author::System) && line.text == "shell-ok"),
+            "shell output should render inline: {:?}",
+            app.lines
+        );
+        assert!(
+            app.lines
+                .iter()
+                .all(|line| !matches!(line.author, Author::User)),
+            "shell shortcut should not echo as a chat turn: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bang_shell_input_accepts_named_form() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+
+        for ch in "!shell printf named-ok".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| matches!(line.author, Author::System) && line.text == "named-ok"),
+            "named shell shortcut should render output: {:?}",
+            app.lines
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
