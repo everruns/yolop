@@ -772,11 +772,11 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
         "!shell should not invoke llmsim/model turn: {transcript}"
     );
 
-    tui.write_input(b"\x03");
+    tui.write_input(b"\x03\x03");
     let status = tui.wait_or_kill(Duration::from_secs(3));
     assert!(
         status.success(),
-        "Ctrl-C should exit cleanly, got {status:?}: {}",
+        "double Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
     );
 }
