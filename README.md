@@ -67,8 +67,9 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   `grep_files`, `delete_file`, `stat_file`, backed by the real workspace disk.
 - **Shell** — `bash -lc` from the workspace root, with a 120 s wall-clock
   timeout and per-stream 1 MiB output cap; large output is spilled to disk
-  under the session folder and stays readable. Use `/shell <command>` or
-  `!<command>` in interactive sessions to run a command directly.
+  under the session folder and stays readable for model tool calls. Use
+  `/shell <command>` or `!<command>` in interactive sessions to run a command
+  directly with bounded inline output.
 - **Web** — `web_fetch` (HTTP GET/HEAD with markdown/text conversion, DNS-pinned
   SSRF protection) and `duckduckgo_search` (free, no API key). Setting
   `EVERRUNS_SYSTEM_ALLOWLIST_ENABLED=true` restricts `web_fetch` to the

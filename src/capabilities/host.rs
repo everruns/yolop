@@ -403,11 +403,19 @@ fn shell_command_result(result: ToolExecutionResult) -> CommandResult {
 
 fn format_shell_output(value: &serde_json::Value) -> String {
     let mut parts = Vec::new();
-    if let Some(stdout) = value["stdout"].as_str().filter(|text| !text.is_empty()) {
-        parts.push(stdout.trim_end().to_string());
+    if let Some(stdout) = value["stdout"]
+        .as_str()
+        .map(str::trim_end)
+        .filter(|text| !text.is_empty())
+    {
+        parts.push(stdout.to_string());
     }
-    if let Some(stderr) = value["stderr"].as_str().filter(|text| !text.is_empty()) {
-        parts.push(stderr.trim_end().to_string());
+    if let Some(stderr) = value["stderr"]
+        .as_str()
+        .map(str::trim_end)
+        .filter(|text| !text.is_empty())
+    {
+        parts.push(stderr.to_string());
     }
     if parts.is_empty() {
         let exit_code = value["exit_code"].as_i64().unwrap_or(0);
@@ -1151,6 +1159,17 @@ mod tests {
             .set_attribution(false)
             .expect("disable attribution");
         assert!(capability.system_prompt_contribution(&ctx).await.is_none());
+    }
+
+    #[test]
+    fn shell_output_format_ignores_whitespace_only_streams() {
+        let value = serde_json::json!({
+            "stdout": "\n",
+            "stderr": "   \n",
+            "exit_code": 0,
+        });
+
+        assert_eq!(format_shell_output(&value), "exit 0");
     }
 
     #[test]
