@@ -6,8 +6,10 @@
 use super::*;
 
 pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
-    let input_height = app.input_height();
     let area = f.area();
+    // Match `draw_input`: the `> ` prompt consumes two columns.
+    let input_width = area.width.saturating_sub(2);
+    let input_height = app.input_height(input_width);
     let state = app.view_state();
     let chrome_area = bottom_rect(area, chrome_height(input_height));
     let transcript_area = Rect {
