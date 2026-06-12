@@ -1,6 +1,6 @@
 # `tool_search` — deferred tool loading
 
-Status: v1 implemented (vendored, provider-agnostic).
+Status: implemented via upstream `everruns-core` (provider-agnostic).
 
 ## Why
 
@@ -14,39 +14,38 @@ callable.
 
 ## What
 
-The capability is **vendored** in `src/capabilities/tool_search.rs` (id
-`yolop_tool_search`) rather than taken from `everruns-core`, because neither
-upstream option works for yolop's models:
+Yolop registers the upstream `everruns_core::capabilities::ToolSearchCapability`
+(id `tool_search`, generic/provider-agnostic) in `runtime.rs`. It does **not**
+use the native `openai_tool_search` path, which fails with a `server_error` on
+the reasoning models that advertise it (gpt-5.4 family; gpt-5.5 gated off — see
+EVE-521).
 
-- `openai_tool_search` uses OpenAI's native Responses `tool_search`, which
-  fails with a `server_error` on the reasoning models that advertise it
-  (gpt-5.4 family; gpt-5.5 was gated off). See EVE-521.
-- `GenericToolSearchCapability` defers schemas client-side but its hook is
-  *stateless* — it re-stubs every deferrable tool on every iteration. Because
-  structured tool calling makes the model emit arguments against the
-  *registered* (stub) schema, the model calls every deferred tool with `{}`
-  and can never pass parameters. Verified live: 20+ iterations, all empty.
+Yolop previously shipped a *vendored* copy of this capability because the
+upstream client-side mechanism was stateless: it re-stubbed every deferrable
+tool each iteration, so structured tool callers emitted `{}` against the
+registered stub schema and could never pass parameters. Both fixes landed
+upstream in EVE-527 (everruns#2130, released in `everruns-core` 0.11.0), so the
+vendor was deleted and yolop now consumes upstream directly:
 
-The vendored version keeps the client-side approach (so it is
-provider-agnostic) and adds the two things that make it actually work:
+1. **Progressive disclosure.** When the model calls `tool_search`, the matched
+   tools are recorded as revealed for that session. Turn context is reassembled
+   (and the schema hook re-runs) each iteration, so on the *next* step the
+   revealed tools are advertised with their full, authoritative schemas on the
+   *registered* definition and the model can pass real arguments. Tool execution
+   always uses the real tools; only the advertised schema changes.
 
-1. **Progressive disclosure.** A shared "revealed" set is threaded through the
-   schema hook and the `tool_search` tool. When the model calls `tool_search`,
-   the matched tools are recorded as revealed. The reason atom re-assembles
-   turn context — and re-runs the hook — on every iteration, so on the *next*
-   step the revealed tools are advertised with their full, authoritative
-   schemas and the model can pass real arguments. Tool execution always uses
-   the real tools; only the advertised schema changes.
-
-2. **Core-tool allowlist.** The hot-path file/shell tools (`read_file`,
-   `write_file`, `edit_file`, `list_directory`, `grep_files`, `bash`) always
-   keep full schemas, so the agent is never crippled and common work needs no
-   search. The long tail (search, web fetch, memory, skills, history, todos)
-   is deferred until requested. **MCP server tools defer on the same footing**:
-   with many configured servers their schemas are the largest and least-used
-   part of the surface, so only their names and descriptions ride each turn
-   until `tool_search` loads a schema. (Execution still routes through the real
-   registry proxy, so a stubbed MCP tool call works once revealed.)
+2. **Never-defer allowlist.** Yolop passes its hot-path file/shell tools
+   (`read_file`, `write_file`, `edit_file`, `list_directory`, `grep_files`,
+   `bash`) to `ToolSearchCapability::with_never_defer([...])` so they always keep
+   full schemas and common work needs no `tool_search` round-trip. Yolop does
+   not own those tool definitions (they come from `FileSystemCapability` and
+   yolop's `bash` tool), so it sets the policy by name rather than via each
+   tool's `DeferrablePolicy`. The long tail (search, web fetch, memory, skills,
+   history, todos) defers until requested. **MCP server tools defer on the same
+   footing** — with many configured servers their schemas are the largest,
+   least-used part of the surface, so only names and descriptions ride each turn
+   until `tool_search` loads a schema (execution still routes through the real
+   registry proxy, so a stubbed MCP tool call works once revealed).
 
 Deferral activates only once the total tool count crosses
 `DEFAULT_TOOL_SEARCH_THRESHOLD` (15); below that, full schemas fit comfortably.
