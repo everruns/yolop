@@ -1002,7 +1002,7 @@ fn coding_harness_capabilities(
 ) -> Vec<AgentCapabilityConfig> {
     let mut caps = Vec::new();
     // Terminal-side commands lead the registry so the most-typed commands
-    // (/help, /clear, /quit, …) surface first in the palette. Enabled only
+    // (/help, !shell, /clear, /quit, …) surface first in the palette. Enabled only
     // when the host registered the capability that backs them (the TUI);
     // enabling an unregistered id would have nothing to dispatch to.
     if client_commands {
@@ -1095,9 +1095,10 @@ pub struct StartupInfo {
     /// `Capability::commands()`). Resolved once at startup against this
     /// session's harness/agent chain; this is the single source of truth for
     /// the command palette, `/help`, and completion. For the TUI host it
-    /// includes the terminal-side commands (`/help`, `/tools`, `/cwd`,
-    /// `/model`, `/effort`, `/clear`, `/quit`) contributed by
-    /// `ClientCommandsCapability`.
+    /// includes the terminal-side commands (`/help`, `/tools`, `/mcp`,
+    /// `/cwd`, `/model`, `/effort`, `/clear`, `/shell`, `/quit`) contributed by
+    /// `ClientCommandsCapability`; the TUI also accepts `!shell` as the local
+    /// shell alias for `/shell`.
     pub capability_commands: Vec<CommandDescriptor>,
     /// On-disk JSONL log for this session. Populated even for fresh ids
     /// so the startup banner can show where new events are being written.
@@ -1204,7 +1205,7 @@ impl ModelState {
 pub struct BuildOptions {
     pub llmsim_override: Option<LlmSimConfig>,
     /// Register [`ClientCommandsCapability`], which contributes the
-    /// terminal-side slash commands (help/tools/cwd/model/effort/clear/quit)
+    /// terminal-side commands (help/tools/mcp/cwd/model/effort/clear/shell/quit)
     /// and drives them through the host UI channel. Only a host that can apply
     /// the effects sets this: the interactive TUI (and the `app` unit tests
     /// that exercise it). ACP and `--print` leave it `false`.
@@ -1394,9 +1395,9 @@ pub async fn build_with_options(
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
     });
-    // Terminal-side slash commands. Registered only when the host can apply
-    // their effects (the TUI). The capability declares help/tools/cwd/model/
-    // effort/clear/quit and forwards each invocation as a `UiCommand` down
+    // Terminal-side commands. Registered only when the host can apply
+    // their effects (the TUI). The capability declares help/tools/mcp/cwd/model/
+    // effort/clear/shell/quit and forwards each invocation as a `UiCommand` down
     // `ui_tx`; the `App` event loop drains `ui_rx` and performs the effect.
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiCommand>();
     if options.client_commands {

@@ -1,8 +1,9 @@
 //! Host UI port for client-executed slash commands.
 //!
 //! A handful of slash commands act on the terminal client itself — clear the
-//! transcript, open the model/effort overlay, print local info, quit — rather
-//! than on the agent runtime. They are nonetheless ordinary capabilities (see
+//! transcript, open the model/effort overlay, run a local shell command, print
+//! local info, quit — rather than on the agent runtime. They are nonetheless
+//! ordinary capabilities (see
 //! [`crate::capabilities::ClientCommandsCapability`]) so that every command
 //! lives in one registry. Their `execute_command` runs on the runtime's task
 //! and cannot touch the TUI directly, so it instead calls this port, which
@@ -25,6 +26,8 @@ pub enum UiCommand {
     ShowCwd,
     /// Clear the transcript buffer.
     ClearTranscript,
+    /// Run a shell command from the workspace root.
+    RunShell { command: String },
     /// Exit the application.
     Quit,
     /// Open the interactive model picker. `arg` pre-seeds the selection.
