@@ -26,11 +26,13 @@ use std::sync::Arc;
 pub(crate) const CLIENT_COMMANDS_CAPABILITY_ID: &str = "yolop_client_commands";
 
 const CLIENT_COMMANDS_PROMPT: &str = r#"<capability id="yolop_client_commands">
-The interactive terminal has slash commands: `/help`, `/tools`, `/mcp`, `/cwd`,
-`/model [id]`, `/effort [level]`, `/clear`, and `/quit` (`/exit` is an alias).
-When the user asks in natural language for one of these terminal actions — for
-example "exit", "clear the screen", "show tools", or "switch model" — call
-`run_yolop_command`; do not merely tell the user to type the slash command.
+For natural-language requests, `run_yolop_command` can perform these TUI client
+commands: `/help`, `/tools`, `/mcp`, `/cwd`, `/model [id]`, `/effort [level]`,
+`/clear`, and `/quit` (`/exit` is an alias). The TUI may expose other slash
+commands, but only use `run_yolop_command` for this listed client-command set.
+When the user asks for one of these terminal actions — for example "exit",
+"clear the screen", "show tools", or "switch model" — call `run_yolop_command`;
+do not merely tell the user to type the slash command.
 </capability>"#;
 
 pub(crate) struct ClientCommandsCapability {
@@ -147,7 +149,7 @@ impl Tool for RunYolopCommandTool {
     fn description(&self) -> &str {
         "Run an interactive yolop slash command on behalf of a natural-language user request. \
          Use this when the user asks to exit, clear the transcript, show help/tools/MCP/cwd, \
-         or open/switch model or reasoning effort. Accepts command names without the leading \
+         or open/switch model or reasoning effort. Accepts command names with or without the leading \
          slash; `exit` is accepted as an alias for `quit`."
     }
 
@@ -158,7 +160,10 @@ impl Tool for RunYolopCommandTool {
                 "command": {
                     "type": "string",
                     "description": "Slash command name, with or without the leading slash.",
-                    "enum": ["help", "tools", "mcp", "cwd", "model", "effort", "clear", "quit", "exit"]
+                    "enum": [
+                        "help", "tools", "mcp", "cwd", "model", "effort", "clear", "quit", "exit",
+                        "/help", "/tools", "/mcp", "/cwd", "/model", "/effort", "/clear", "/quit", "/exit"
+                    ]
                 },
                 "arguments": {
                     "type": "string",
@@ -248,8 +253,26 @@ mod tests {
         let prompt = capability.system_prompt_addition().expect("prompt");
 
         assert!(prompt.contains("run_yolop_command"));
+        assert!(prompt.contains("TUI client"));
+        assert!(prompt.contains("only use `run_yolop_command` for this listed"));
         assert!(prompt.contains("/quit"));
         assert!(prompt.contains("/exit"));
+    }
+
+    #[test]
+    fn run_yolop_command_schema_accepts_slashed_aliases() {
+        let tool = RunYolopCommandTool {
+            ui: Arc::new(RecordingUi::default()),
+        };
+        let schema = tool.parameters_schema();
+        let variants = schema["properties"]["command"]["enum"]
+            .as_array()
+            .expect("command enum");
+
+        assert!(variants.contains(&json!("exit")));
+        assert!(variants.contains(&json!("/exit")));
+        assert!(variants.contains(&json!("quit")));
+        assert!(variants.contains(&json!("/quit")));
     }
 
     #[tokio::test]
