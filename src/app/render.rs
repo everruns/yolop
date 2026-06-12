@@ -86,10 +86,7 @@ pub(crate) fn recent_transcript_lines(
     // Already-flushed lines live in native scrollback; mirroring them here
     // makes prompts and outputs appear twice until the next redraw.
     let pending_start = app.printed_lines.min(app.lines.len());
-    for chat in app
-        .lines
-        .get(pending_start..)
-        .unwrap_or_default()
+    for chat in app.lines[pending_start..]
         .iter()
         .rev()
         .filter(|line| !matches!(line.author, Author::System))
