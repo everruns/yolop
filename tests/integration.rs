@@ -301,10 +301,22 @@ fn tui_escape_does_not_exit_and_ctrl_c_exits() {
     );
 
     tui.write_input(b"\x03");
+    assert!(
+        tui.wait_for_output("Press Ctrl+C again to exit", Duration::from_secs(3)),
+        "first Ctrl-C should invite a second press: {}",
+        tui.output_text()
+    );
+    assert!(
+        wait_for_exit(&mut *tui.child, Duration::from_millis(700)).is_none(),
+        "first Ctrl-C should not exit the TUI: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"\x03");
     let status = tui.wait_or_kill(Duration::from_secs(3));
     assert!(
         status.success(),
-        "Ctrl-C should exit cleanly, got {status:?}: {}",
+        "second Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
     );
     assert!(
@@ -347,11 +359,11 @@ fn tui_alt_enter_sequence_submits_like_enter() {
         "submitted text should render both turns: {after_submit}"
     );
 
-    tui.write_input(b"\x03");
+    tui.write_input(b"\x03\x03");
     let status = tui.wait_or_kill(Duration::from_secs(3));
     assert!(
         status.success(),
-        "Ctrl-C should exit cleanly, got {status:?}: {}",
+        "double Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
     );
 }
@@ -398,11 +410,11 @@ fn tui_survives_slow_cursor_position_reply_after_resize() {
     // being re-enabled.
     tui.write_input(b"\x1b[1;1R");
     tui.set_answer_cursor_queries(true);
-    tui.write_input(b"\x03");
+    tui.write_input(b"\x03\x03");
     let status = tui.wait_or_kill(Duration::from_secs(10));
     assert!(
         status.success(),
-        "Ctrl-C should exit cleanly after recovery, got {status:?}: {}",
+        "double Ctrl-C should exit cleanly after recovery, got {status:?}: {}",
         tui.output_text()
     );
 }
@@ -454,11 +466,11 @@ fn tui_exits_cleanly_when_emulator_stops_answering_cursor_queries() {
     // (`Terminal::clear`) gets no answer to its cursor query. The session
     // was successful, so the exit must still be clean.
     tui.set_answer_cursor_queries(false);
-    tui.write_input(b"\x03");
+    tui.write_input(b"\x03\x03");
     let status = tui.wait_or_kill(Duration::from_secs(10));
     assert!(
         status.success(),
-        "Ctrl-C should exit cleanly despite cleanup query going unanswered, got {status:?}: {}",
+        "double Ctrl-C should exit cleanly despite cleanup query going unanswered, got {status:?}: {}",
         tui.output_text()
     );
     assert!(
@@ -622,11 +634,11 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
         "picked model should persist under [models]: {settings}"
     );
 
-    tui.write_input(b"\x03");
+    tui.write_input(b"\x03\x03");
     let status = tui.wait_or_kill(Duration::from_secs(3));
     assert!(
         status.success(),
-        "Ctrl-C should exit cleanly, got {status:?}: {}",
+        "double Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
     );
 }
@@ -725,11 +737,11 @@ fn tui_submit_turn_renders_assistant_in_scrollback() {
         "scrollback should retain both user prompt and assistant reply: {transcript}"
     );
 
-    tui.write_input(b"\x03");
+    tui.write_input(b"\x03\x03");
     let status = tui.wait_or_kill(Duration::from_secs(3));
     assert!(
         status.success(),
-        "Ctrl-C should exit cleanly, got {status:?}: {}",
+        "double Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
     );
 }
