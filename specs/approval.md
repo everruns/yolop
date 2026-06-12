@@ -56,9 +56,10 @@ effect on the very next turn without a restart.
 Approvals are auditable through the existing per-session event log. The
 `record_approval` tool is called right after the user consents; because every
 tool call already persists a `tool.completed` line to the session's
-`events.jsonl`, the approval — its description, optional detail, and a
-timestamp — lands in that durable, owner-only log for free. No separate audit
-store is introduced.
+`events.jsonl`, the approval lands in that durable, owner-only log for free. It
+records a specific `action` description plus optional detail when provided, and
+uses a conservative fallback instead of failing if a model emits an empty audit
+call after spoken consent. No separate audit store is introduced.
 
 ### Configuration surfaces
 
