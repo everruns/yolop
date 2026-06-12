@@ -74,9 +74,10 @@ pub const DEFAULT_TOOL_SEARCH_THRESHOLD: usize = 15;
 const MAX_SEARCH_RESULTS: usize = 12;
 
 /// Hot-path tools that always keep their full schemas, so the agent can read,
-/// edit, search, and run commands without a `tool_search` round-trip. The long
-/// tail is deferred until the model asks for it. Keep this list small — every
-/// entry is a tool the model pays full-schema tokens for on every turn.
+/// edit, search, run shell commands, and invoke TUI commands without a
+/// `tool_search` round-trip. The long tail is deferred until the model asks for
+/// it. Keep this list small — every entry is a tool the model pays full-schema
+/// tokens for on every turn.
 const ALWAYS_FULL: &[&str] = &[
     "read_file",
     "write_file",
@@ -84,6 +85,7 @@ const ALWAYS_FULL: &[&str] = &[
     "list_directory",
     "grep_files",
     "bash",
+    "run_yolop_command",
 ];
 
 /// Names of tools the model has loaded via `tool_search` this session. Shared
@@ -452,8 +454,8 @@ mod tests {
             .is_none_or(|p| p.is_empty())
     }
 
-    /// Build a tool set above the threshold: the 6 core tools plus N long-tail
-    /// tools so deferral activates.
+    /// Build a tool set above the threshold: the always-full tools plus N
+    /// long-tail tools so deferral activates.
     fn tool_set(extra: usize) -> Vec<ToolDefinition> {
         let mut tools: Vec<ToolDefinition> = ALWAYS_FULL
             .iter()
@@ -472,8 +474,8 @@ mod tests {
     fn below_threshold_keeps_all_full_schemas() {
         let cap = ToolSearchCapability::new();
         let hook = &cap.tool_definition_hooks()[0];
-        // 6 core + 3 = 9 tools, below the default threshold of 15.
-        let out = hook.transform(tool_set(3));
+        let extra = DEFAULT_TOOL_SEARCH_THRESHOLD - ALWAYS_FULL.len() - 3;
+        let out = hook.transform(tool_set(extra));
         assert!(
             out.iter().all(|t| !is_stubbed(t)),
             "nothing should defer below threshold"
@@ -484,15 +486,16 @@ mod tests {
     fn deferral_activates_strictly_above_threshold() {
         let cap = ToolSearchCapability::with_threshold(15);
         let hook = &cap.tool_definition_hooks()[0];
-        // Exactly at the threshold (6 core + 9 = 15): nothing defers.
-        let at = hook.transform(tool_set(9));
-        assert_eq!(at.len(), 15);
+        // Exactly at the threshold: nothing defers.
+        let at_threshold_extra = DEFAULT_TOOL_SEARCH_THRESHOLD - ALWAYS_FULL.len();
+        let at = hook.transform(tool_set(at_threshold_extra));
+        assert_eq!(at.len(), DEFAULT_TOOL_SEARCH_THRESHOLD);
         assert!(
             at.iter().all(|t| !is_stubbed(t)),
             "at the threshold the full catalogue must fit; no deferral"
         );
-        // One over (16): the long tail defers.
-        let over = hook.transform(tool_set(10));
+        // One over: the long tail defers.
+        let over = hook.transform(tool_set(at_threshold_extra + 1));
         assert!(
             over.iter().any(is_stubbed),
             "strictly above the threshold the long tail must defer"
@@ -503,7 +506,7 @@ mod tests {
     fn core_tools_keep_full_schemas_long_tail_is_deferred() {
         let cap = ToolSearchCapability::new();
         let hook = &cap.tool_definition_hooks()[0];
-        let out = hook.transform(tool_set(12)); // 18 tools, above threshold
+        let out = hook.transform(tool_set(12));
         for t in &out {
             if ALWAYS_FULL.contains(&t.name()) {
                 assert!(
@@ -525,7 +528,7 @@ mod tests {
     fn mcp_tools_defer_above_threshold_and_reveal_after_search() {
         let cap = ToolSearchCapability::new();
         let hook = &cap.tool_definition_hooks()[0];
-        // 18 long-tail/core tools plus one MCP tool, above the threshold.
+        // Always-full/long-tail tools plus one MCP tool, above the threshold.
         let build = || {
             let mut tools = tool_set(12);
             tools.push(builtin("mcp_docs__search", DeferrablePolicy::default()));

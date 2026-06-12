@@ -35,8 +35,8 @@ top of the runtime's two, not a separate `CommandSource` variant.
    transcript, quit, print local info). These are declared as ordinary `System`
    commands; on execute, their capability emits a typed `UiCommand` through an
    injected host UI port instead of returning text. The host's event loop drains
-   the port and applies the effect. Commands: `/help`, `/tools`, `/cwd`,
-   `/model`, `/effort`, `/clear`, `/quit`.
+   the port and applies the effect. Commands: `/help`, `/tools`, `/mcp`,
+   `/cwd`, `/model`, `/effort`, `/clear`, `/quit`.
 
 ## Why client commands use a host port, not a new `CommandSource`
 
@@ -72,7 +72,14 @@ portable case ever arises.
    every queued `UiCommand` before the next render. The `UiCommand` vocabulary
    is the shared contract between client capabilities and the host — a genuinely
    new on-screen effect is a host change, not a drop-in.
-4. **Host gating.** Client commands are enabled only for a host that can apply
+4. **Natural-language dispatch.** In the interactive TUI, the same client
+   capability exposes a model-facing `run_yolop_command` tool and a prompt
+   contribution listing the terminal commands. When the user asks for a
+   terminal-side action in ordinary prose (for example, "exit"), the model
+   invokes that tool; the tool emits the same `UiCommand` as the slash-command
+   path. The tool is TUI-gated with the capability and does not create a
+   second command registry.
+5. **Host gating.** Client commands are enabled only for a host that can apply
    them. `BuildOptions::client_commands` registers `ClientCommandsCapability`
    and enables its harness id; the interactive TUI sets it, while ACP and
    `--print` leave it off and therefore neither advertise nor dispatch terminal

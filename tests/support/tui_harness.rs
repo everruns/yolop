@@ -60,13 +60,14 @@ impl TuiHarness {
     /// The settings.toml the spawned TUI reads and writes.
     pub fn settings_path(&self) -> PathBuf {
         #[cfg(target_os = "macos")]
-        let path = self
-            ._home
-            .path()
-            .join("Library/Application Support/yolop/settings.toml");
+        {
+            self._home
+                .path()
+                .join("Library/Application Support/yolop/settings.toml")
+        }
+
         #[cfg(not(target_os = "macos"))]
-        let path = self._home.path().join(".config/yolop/settings.toml");
-        path
+        self._home.path().join(".config/yolop/settings.toml")
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
