@@ -23,6 +23,7 @@ use crate::config_service::ConfigService;
 use crate::settings::{ApprovalMode, SettingsStore};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::tool_types::{BuiltinTool, DeferrablePolicy, ToolDefinition};
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -132,8 +133,43 @@ impl Capability for ApprovalCapability {
 /// Records that the user verbally approved a specific critical action. The
 /// tool itself only echoes the record back; the durable audit entry is the
 /// `tool.completed` event this call produces in the per-session `events.jsonl`
-/// log, which captures the arguments (what was approved) and a timestamp.
+/// log, which captures the arguments, output, and timestamp.
 struct RecordApprovalTool;
+
+const FALLBACK_APPROVAL_ACTION: &str = "the pending critical action approved in the conversation";
+
+fn non_deferrable_builtin(tool: &dyn Tool) -> ToolDefinition {
+    ToolDefinition::Builtin(BuiltinTool {
+        name: tool.name().to_string(),
+        display_name: tool.display_name().map(str::to_string),
+        description: tool.description().to_string(),
+        parameters: tool.parameters_schema(),
+        policy: tool.policy(),
+        category: None,
+        deferrable: DeferrablePolicy::Never,
+        hints: tool.hints(),
+        full_parameters: None,
+    })
+}
+
+fn non_empty_str(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn approval_action(arguments: &Value) -> &str {
+    if let Some(action) = arguments.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        return action;
+    }
+
+    let Some(object) = arguments.as_object() else {
+        return FALLBACK_APPROVAL_ACTION;
+    };
+
+    non_empty_str(object.get("action")).unwrap_or(FALLBACK_APPROVAL_ACTION)
+}
 
 #[async_trait]
 impl Tool for RecordApprovalTool {
@@ -163,24 +199,17 @@ impl Tool for RecordApprovalTool {
                     "description": "Optional extra context: the command, affected paths, or scope of the approval. Redact any secrets (keys/tokens/passwords) before passing them — this is logged."
                 }
             },
-            "required": ["action"],
             "additionalProperties": false
         })
     }
+
+    fn to_definition(&self) -> ToolDefinition {
+        non_deferrable_builtin(self)
+    }
+
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let action = match arguments.get("action").and_then(Value::as_str) {
-            Some(a) if !a.trim().is_empty() => a.trim(),
-            _ => {
-                return ToolExecutionResult::tool_error(
-                    "'action' is required and must describe what was approved",
-                );
-            }
-        };
-        let detail = arguments
-            .get("detail")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|d| !d.is_empty());
+        let action = approval_action(&arguments);
+        let detail = non_empty_str(arguments.get("detail"));
         ToolExecutionResult::success(json!({
             "ok": true,
             "recorded": true,
@@ -229,6 +258,11 @@ impl Tool for SetApprovalModeTool {
             "additionalProperties": false
         })
     }
+
+    fn to_definition(&self) -> ToolDefinition {
+        non_deferrable_builtin(self)
+    }
+
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
         let raw = match arguments.get("mode").and_then(Value::as_str) {
             Some(m) => m,
@@ -293,8 +327,14 @@ mod tests {
             config: settings.clone(),
             settings,
         };
-        let names: Vec<String> = cap.tools().iter().map(|t| t.name().to_string()).collect();
+        let tools = cap.tools();
+        let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
         assert_eq!(names, vec!["record_approval", "set_approval_mode"]);
+        assert!(
+            tools.iter().all(|tool| {
+                matches!(tool.to_definition().deferrable(), DeferrablePolicy::Never)
+            })
+        );
         assert!(cap.commands().is_empty());
     }
 
@@ -319,9 +359,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn record_approval_requires_action_and_echoes_it() {
+    async fn record_approval_echoes_action() {
         let tool = RecordApprovalTool;
-        assert!(tool.execute(json!({ "action": "  " })).await.is_error());
 
         let res = tool
             .execute(json!({ "action": "force-push feature/x", "detail": "git push -f" }))
@@ -329,6 +368,15 @@ mod tests {
         assert!(res.is_success());
         let text = format!("{res:?}");
         assert!(text.contains("force-push feature/x"));
+    }
+
+    #[tokio::test]
+    async fn record_approval_accepts_empty_arguments_after_spoken_consent() {
+        let tool = RecordApprovalTool;
+        let res = tool.execute(json!({})).await;
+        assert!(res.is_success());
+        let text = format!("{res:?}");
+        assert!(text.contains(FALLBACK_APPROVAL_ACTION));
     }
 
     #[tokio::test]
