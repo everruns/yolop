@@ -2,8 +2,10 @@
 
 ## Abstract
 
-yolop exposes user actions as **slash commands**. Every command is contributed
-by a **capability** (`Capability::commands()`), so each host's command surface
+yolop exposes user actions as **commands**. Most are slash commands; the TUI
+also accepts `!shell <command>` as the terminal-local shell alias for the same
+capability command as `/shell`. Every command is contributed by a **capability**
+(`Capability::commands()`), so each host's command surface
 is sourced solely from `runtime.list_commands(session_id)` — the source of
 truth for that host's palette, `/help`, and completion. There is no hard-coded
 command table on any host.
@@ -35,7 +37,8 @@ top of the runtime's two, not a separate `CommandSource` variant.
    commands; on execute, their capability emits a typed `UiCommand` through an
    injected host UI port instead of returning text. The host's event loop drains
    the port and applies the effect. Commands: `/help`, `/tools`, `/mcp`,
-   `/cwd`, `/model`, `/effort`, `/clear`, `/quit`.
+   `/cwd`, `/model`, `/effort`, `!shell <command>` (also accepted as
+   `/shell`), `/clear`, `/quit`.
 
 ## Why client commands use a host port, not a new `CommandSource`
 
@@ -63,7 +66,9 @@ portable case ever arises.
    keeps a parallel list.
 2. **Uniform dispatch.** The host looks a typed command up in the registry and
    routes by `CommandSource`: `System`/client → `runtime.execute_command`;
-   `Skill` → forward as a chat turn. `/exit` is an accepted alias for `/quit`.
+   `Skill` → forward as a chat turn. `/exit` is an accepted alias for `/quit`,
+   and `!shell <command>` is accepted as the TUI spelling of the client-side
+   `/shell <command>` descriptor.
 3. **Client effects are host-applied.** A client command's `execute_command`
    returns an empty `CommandResult` and emits a `UiCommand`; the host applies
    every queued `UiCommand` before the next render. The `UiCommand` vocabulary

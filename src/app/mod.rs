@@ -5,6 +5,7 @@
 
 use crate::host_ui::UiCommand;
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles, StartupInfo};
+use crate::tools::{BashTool, Workspace};
 use anyhow::Result;
 use crossterm::event::{
     self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
@@ -12,6 +13,7 @@ use crossterm::event::{
 use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_core::events::{Event as RuntimeEvent, EventData, ToolCompletedData};
 use everruns_core::message::{ContentPart, Message, MessageRole};
+use everruns_core::tools::{Tool, ToolExecutionResult};
 use everruns_core::typed_id::SessionId;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -448,7 +450,7 @@ impl App {
                 .startup
                 .capability_commands
                 .iter()
-                .map(|c| format!("/{}", c.name))
+                .map(capability_command_display_usage)
                 .collect();
             self.push_system(format!("commands: {}", names.join(", ")));
         }
@@ -779,6 +781,14 @@ impl App {
         let raw = self.input_text();
         self.reset_input();
         let text = raw.trim().to_string();
+        if let Some(command) = parse_bang_shell_command(&text) {
+            if command.is_empty() {
+                self.push_system("usage: !shell <command>".into());
+            } else {
+                self.handle_shell_alias(command.to_string()).await;
+            }
+            return;
+        }
         if let Some(rest) = text.strip_prefix('/') {
             self.handle_command(rest).await;
             return;
@@ -791,7 +801,7 @@ impl App {
     }
 
     /// Dispatch a slash command. Every command — including the terminal-side
-    /// ones (help/tools/cwd/model/effort/clear/quit) — is now a capability
+    /// ones (help/tools/cwd/model/effort/clear/shell/quit) — is now a capability
     /// command, so this is a single uniform lookup against the registry. The
     /// terminal-side commands take effect via `UiCommand`s their capability
     /// emits while executing (drained in the event loop); see
@@ -815,6 +825,23 @@ impl App {
                 .await;
         } else {
             self.push_system(format!("unknown command: /{head}"));
+        }
+    }
+
+    /// Dispatch the TUI's `!shell <command>` alias through the same capability
+    /// descriptor as `/shell`, so registration, required-arg validation, and
+    /// host gating keep one source of truth.
+    async fn handle_shell_alias(&mut self, command: String) {
+        if let Some(descriptor) = self
+            .startup
+            .capability_commands
+            .iter()
+            .find(|c| c.name == "shell")
+            .cloned()
+        {
+            self.invoke_capability_command(descriptor, command).await;
+        } else {
+            self.push_system("unknown command: !shell".into());
         }
     }
 
@@ -854,6 +881,7 @@ impl App {
                 self.printed_lines = 0;
                 self.emit_system_banner();
             }
+            UiCommand::RunShell { command } => self.start_shell_command(command),
             UiCommand::Quit => self.should_quit = true,
             UiCommand::OpenModelOverlay { arg } => match arg {
                 Some(arg) => self.start_model_setup_with_arg(&arg),
@@ -972,6 +1000,31 @@ impl App {
                 self.start_turn(text);
             }
         }
+    }
+
+    fn start_shell_command(&mut self, command: String) {
+        let workspace_root = self.startup.workspace_root.clone();
+        let display_command = command.clone();
+        let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
+        self.rx = Some(rx);
+        self.busy = true;
+        self.turn_activity = Some("running shell command".into());
+        self.stream_preview = None;
+        self.push_user(format!("!shell {display_command}"));
+
+        tokio::spawn(async move {
+            let tool = BashTool::new(Workspace::new(workspace_root));
+            let result = tool
+                .execute(serde_json::json!({
+                    "command": command,
+                    // Direct shell output is not persisted through a tool-call
+                    // lifecycle, so render a useful bounded window inline.
+                    "output": "normal",
+                }))
+                .await;
+            let _ = tx.send(TurnEvent::Lines(shell_result_lines(result)));
+            let _ = tx.send(TurnEvent::Done);
+        });
     }
 
     fn start_turn(&mut self, prompt: String) {
@@ -1122,10 +1175,97 @@ pub(crate) struct DeltaRouter {
     last_tool_call: Option<String>,
 }
 
+fn parse_bang_shell_command(input: &str) -> Option<&str> {
+    let rest = input.trim().strip_prefix("!shell")?;
+    if rest.is_empty() {
+        return Some("");
+    }
+    rest.chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+        .then(|| rest.trim())
+}
+
+fn shell_result_lines(result: ToolExecutionResult) -> Vec<ChatLine> {
+    match result {
+        ToolExecutionResult::Success(value) => shell_success_lines(&value),
+        ToolExecutionResult::SuccessWithImages { result, .. } => shell_success_lines(&result),
+        ToolExecutionResult::ToolError(message) => vec![ChatLine {
+            author: Author::System,
+            text: format!("shell failed: {message}"),
+        }],
+        ToolExecutionResult::InternalError(_) => vec![ChatLine {
+            author: Author::System,
+            text: "shell failed: internal error".into(),
+        }],
+        ToolExecutionResult::ConnectionRequired { provider } => vec![ChatLine {
+            author: Author::System,
+            text: format!("shell failed: connection required for {provider}"),
+        }],
+    }
+}
+
+fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
+    let exit_code = value.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
+    let success = value
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(exit_code == 0);
+    let mut out = vec![ChatLine {
+        author: Author::Tool,
+        text: format!("shell exited with code {exit_code}"),
+    }];
+
+    for (label, author) in [
+        ("stdout", Author::ToolDetail),
+        ("stderr", Author::ToolDetail),
+    ] {
+        if let Some(text) = value.get(label).and_then(Value::as_str) {
+            let text = text.trim_end();
+            if !text.is_empty() {
+                out.push(ChatLine {
+                    author,
+                    text: format!("{label}:\n{text}"),
+                });
+            }
+        }
+    }
+    if value
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || value
+            .get("output_limited")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        out.push(ChatLine {
+            author: Author::System,
+            text: "shell output was truncated".into(),
+        });
+    }
+    if out.len() == 1 {
+        out.push(ChatLine {
+            author: Author::ToolDetail,
+            text: "(no output)".into(),
+        });
+    }
+    if !success {
+        out.push(ChatLine {
+            author: Author::System,
+            text: "shell command exited non-zero".into(),
+        });
+    }
+    out
+}
+
 fn command_suggestions(
     input: &str,
     capability_commands: &[CommandDescriptor],
 ) -> Vec<CommandSuggestion> {
+    if let Some(rest) = input.strip_prefix('!') {
+        return bang_command_suggestions(rest, capability_commands);
+    }
     let Some(rest) = input.strip_prefix('/') else {
         return Vec::new();
     };
@@ -1176,15 +1316,46 @@ fn command_suggestions(
     }
 
     // Keep the dropdown bounded but large enough to show every built-in
-    // command (8 client commands + capability commands like /setup) for a
+    // command (9 client commands + capability commands like /setup) for a
     // bare `/`, so none is hidden behind the cap.
     out.truncate(12);
     out
 }
 
+fn bang_command_suggestions(
+    rest: &str,
+    capability_commands: &[CommandDescriptor],
+) -> Vec<CommandSuggestion> {
+    let Some(descriptor) = capability_commands.iter().find(|c| c.name == "shell") else {
+        return Vec::new();
+    };
+    if rest.contains(char::is_whitespace) || !descriptor.name.starts_with(rest) {
+        return Vec::new();
+    }
+    vec![CommandSuggestion {
+        completion: "!shell ".to_string(),
+        label: format!(
+            "{}    {}",
+            capability_command_display_usage(descriptor),
+            descriptor.description
+        ),
+    }]
+}
+
+fn capability_command_display_usage(descriptor: &CommandDescriptor) -> String {
+    capability_command_usage_with_prefix(
+        descriptor,
+        if descriptor.name == "shell" { "!" } else { "/" },
+    )
+}
+
 fn capability_command_usage(descriptor: &CommandDescriptor) -> String {
+    capability_command_usage_with_prefix(descriptor, "/")
+}
+
+fn capability_command_usage_with_prefix(descriptor: &CommandDescriptor, prefix: &str) -> String {
     if descriptor.args.is_empty() {
-        format!("/{}", descriptor.name)
+        format!("{prefix}{}", descriptor.name)
     } else {
         let args = descriptor
             .args
@@ -1198,7 +1369,7 @@ fn capability_command_usage(descriptor: &CommandDescriptor) -> String {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        format!("/{} {args}", descriptor.name)
+        format!("{prefix}{} {args}", descriptor.name)
     }
 }
 
@@ -1304,7 +1475,7 @@ mod tests {
     }
 
     /// The terminal-side command descriptors as declared by
-    /// `ClientCommandsCapability` (help/tools/cwd/model/effort/clear/quit).
+    /// `ClientCommandsCapability` (help/tools/cwd/model/effort/clear/shell/quit).
     /// These now flow through the same registry as every other command, so
     /// suggestion tests source them the same way the running TUI does.
     fn client_command_descriptors() -> Vec<CommandDescriptor> {
@@ -1415,6 +1586,30 @@ mod tests {
 
         let suggestions = command_suggestions("/echo hello", &caps);
         assert!(suggestions.is_empty(), "got: {suggestions:?}");
+    }
+
+    #[test]
+    fn bang_shell_parser_accepts_only_shell_command_alias() {
+        assert_eq!(parse_bang_shell_command("!shell"), Some(""));
+        assert_eq!(parse_bang_shell_command("  !shell   pwd  "), Some("pwd"));
+        assert_eq!(
+            parse_bang_shell_command("!shell	printf hi"),
+            Some("printf hi")
+        );
+        assert_eq!(parse_bang_shell_command("!shellshock echo no"), None);
+        assert_eq!(parse_bang_shell_command("!"), None);
+    }
+
+    #[test]
+    fn bang_shell_suggestions_use_client_command_registry() {
+        let caps = caps_with_client_commands(vec![setup_capability_command()]);
+        let suggestions = command_suggestions("!s", &caps);
+
+        assert_eq!(suggestions.len(), 1, "got: {suggestions:?}");
+        assert_eq!(suggestions[0].completion, "!shell ");
+        assert!(suggestions[0].label.starts_with("!shell <command>"));
+        assert!(command_suggestions("!shell echo", &caps).is_empty());
+        assert!(command_suggestions("!s", &[setup_capability_command()]).is_empty());
     }
 
     #[test]
@@ -2152,6 +2347,10 @@ mod tests {
         /// `handle_command`.
         async fn dispatch_command_for_test(&mut self, cmd: &str) {
             self.handle_command(cmd).await;
+            self.pump_ui_commands_for_test();
+        }
+
+        fn pump_ui_commands_for_test(&mut self) {
             while let Ok(command) = self.ui_rx.try_recv() {
                 self.apply_ui_command(command);
             }
@@ -2258,6 +2457,57 @@ mod tests {
         );
         assert!(!app.busy);
         assert!(app.stream_preview.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bang_shell_input_runs_shell_from_workspace_without_model_turn() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.set_input_text(
+            "!shell printf shell-output > shell-marker.txt && cat shell-marker.txt".into(),
+        );
+
+        app.submit_input().await;
+        app.pump_ui_commands_for_test();
+
+        assert!(
+            app.busy,
+            "!shell should run as a bounded background command"
+        );
+        app.pump_turn_until_idle_for_test().await;
+
+        let marker = app.startup.workspace_root.join("shell-marker.txt");
+        assert_eq!(
+            std::fs::read_to_string(marker).expect("shell marker"),
+            "shell-output"
+        );
+        assert!(
+            app.lines.iter().any(|line| {
+                matches!(line.author, Author::User)
+                    && line
+                        .text
+                        .starts_with("!shell printf shell-output > shell-marker.txt")
+            }),
+            "the submitted shell command should be echoed in the transcript: {:?}",
+            app.lines
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| matches!(line.author, Author::ToolDetail)
+                    && line.text.contains("shell-output")),
+            "shell stdout should render in the transcript: {:?}",
+            app.lines
+        );
+        assert!(
+            !app.lines
+                .iter()
+                .any(|line| matches!(line.author, Author::Assistant)),
+            "!shell should not start a model turn: {:?}",
+            app.lines
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

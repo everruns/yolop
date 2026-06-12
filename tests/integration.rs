@@ -747,6 +747,41 @@ fn tui_submit_turn_renders_assistant_in_scrollback() {
 }
 
 #[test]
+fn tui_bang_shell_runs_shell_without_model_turn() {
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"!shell printf shell-pty-output\r");
+    assert!(
+        tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
+        "!shell did not complete: {}",
+        tui.output_text()
+    );
+
+    let transcript = strip_ansi(&tui.output_text());
+    assert!(
+        transcript.contains("stdout:") && transcript.contains("shell-pty-output"),
+        "!shell stdout should render in scrollback: {transcript}"
+    );
+    assert!(
+        !transcript.contains("offline mode"),
+        "!shell should not invoke llmsim/model turn: {transcript}"
+    );
+
+    tui.write_input(b"");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(
+        status.success(),
+        "Ctrl-C should exit cleanly, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
+#[test]
 fn tui_double_ctrl_c_exits() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
