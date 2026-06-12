@@ -34,13 +34,16 @@ vendor was deleted and yolop now consumes upstream directly:
    *registered* definition and the model can pass real arguments. Tool execution
    always uses the real tools; only the advertised schema changes.
 
-2. **Never-defer allowlist.** Yolop passes its hot-path file/shell tools
-   (`read_file`, `write_file`, `edit_file`, `list_directory`, `grep_files`,
-   `bash`) to `ToolSearchCapability::with_never_defer([...])` so they always keep
-   full schemas and common work needs no `tool_search` round-trip. Yolop does
-   not own those tool definitions (they come from `FileSystemCapability` and
-   yolop's `bash` tool), so it sets the policy by name rather than via each
-   tool's `DeferrablePolicy`. The long tail (search, web fetch, memory, skills,
+2. **Never-defer allowlist.** Yolop passes its hot-path tools to
+   `ToolSearchCapability::new().with_never_defer([...])` so they always keep full
+   schemas and common work needs no `tool_search` round-trip: the file/shell
+   tools (`read_file`, `write_file`, `edit_file`, `list_directory`,
+   `grep_files`, `bash`) plus `run_yolop_command` (the client-command dispatch
+   tool, which requires a `command` argument and so must never be called against
+   a stub). Yolop does not own those tool definitions (they come from
+   `FileSystemCapability`, yolop's `bash` tool, and the `client_commands`
+   capability), so it sets the policy by name rather than via each tool's
+   `DeferrablePolicy`. The long tail (search, web fetch, memory, skills,
    history, todos) defers until requested. **MCP server tools defer on the same
    footing** — with many configured servers their schemas are the largest,
    least-used part of the surface, so only names and descriptions ride each turn

@@ -1356,6 +1356,7 @@ pub async fn build_with_options(
         "list_directory",
         "grep_files",
         "bash",
+        "run_yolop_command",
     ]));
     capabilities.register(ToolOutputPersistenceCapability);
     capabilities.register(UserHooksCapability);
