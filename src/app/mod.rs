@@ -15,6 +15,7 @@ use everruns_core::message::{ContentPart, Message, MessageRole};
 use everruns_core::typed_id::SessionId;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -765,8 +766,9 @@ impl App {
         self.input = new_input_area(vec![String::new()]);
     }
 
-    fn input_height(&self) -> u16 {
-        self.input.lines().len().clamp(1, MAX_INPUT_HEIGHT as usize) as u16
+    fn input_height(&self, input_width: u16) -> u16 {
+        wrapped_input_visual_lines(&self.input, input_width).clamp(1, MAX_INPUT_HEIGHT as usize)
+            as u16
     }
 
     async fn submit_input(&mut self) {
@@ -1186,6 +1188,22 @@ fn new_input_area(lines: Vec<String>) -> TextArea<'static> {
     input.set_cursor_line_style(Style::default());
     input.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
     input
+}
+
+/// Visual rows the composer needs at `width`, including soft-wrapped logical lines.
+fn wrapped_input_visual_lines(input: &TextArea<'_>, width: u16) -> usize {
+    let width = width.max(1);
+    let mut scratch = input.clone();
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width,
+        height: MAX_INPUT_HEIGHT,
+    };
+    let mut buf = Buffer::empty(area);
+    Widget::render(&scratch, area, &mut buf);
+    scratch.move_cursor(CursorMove::End);
+    scratch.screen_cursor().row + 1
 }
 
 fn normalize_printable_key(mut key: KeyEvent) -> KeyEvent {
@@ -2634,7 +2652,7 @@ mod tests {
         }
 
         assert_eq!(app.input_text(), "a\nb\nc");
-        assert_eq!(app.input_height(), 3);
+        assert_eq!(app.input_height(80), 3);
         assert!(
             app.lines
                 .iter()
@@ -2690,13 +2708,83 @@ mod tests {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
 
-        assert_eq!(app.input_height(), 1);
+        assert_eq!(app.input_height(80), 1);
         for expected in 2..=MAX_INPUT_HEIGHT {
             app.input.insert_newline();
-            assert_eq!(app.input_height(), expected);
+            assert_eq!(app.input_height(80), expected);
         }
         app.input.insert_newline();
-        assert_eq!(app.input_height(), MAX_INPUT_HEIGHT);
+        assert_eq!(app.input_height(80), MAX_INPUT_HEIGHT);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wrapped_single_line_input_grows_height_with_narrow_width() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        for word in ["hello", "world", "again", "here"] {
+            for ch in word.chars() {
+                app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                    .await;
+            }
+            app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::empty()))
+                .await;
+        }
+
+        assert_eq!(
+            app.input.lines().len(),
+            1,
+            "composer stays one logical line"
+        );
+        let input_width = 10;
+        let measured = app.input_height(input_width) as usize;
+        assert!(
+            measured >= 2,
+            "soft-wrapped composer should grow past one row (got {measured})"
+        );
+
+        let mut textarea = new_input_area(vec![app.input_text()]);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: input_width,
+            height: MAX_INPUT_HEIGHT,
+        };
+        let mut buf = Buffer::empty(area);
+        Widget::render(&textarea, area, &mut buf);
+        textarea.move_cursor(CursorMove::End);
+        let expected = textarea.screen_cursor().row as usize + 1;
+        assert_eq!(
+            measured, expected,
+            "composer height should match textarea wrap layout"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wrapped_input_allocates_multiple_render_rows() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.set_input_text("alpha beta gamma delta epsilon zeta".into());
+
+        let terminal_width: u16 = 16;
+        let input_width = terminal_width.saturating_sub(2);
+        let input_height = app.input_height(input_width);
+        assert!(
+            input_height >= 2,
+            "narrow composer should reserve multiple input rows (got {input_height})"
+        );
+
+        let rows = render_app_lines(app, terminal_width, COMPOSER_VIEWPORT_HEIGHT);
+        let input_rows: Vec<_> = rows
+            .iter()
+            .filter(|row| row.contains("alpha") || row.contains("beta") || row.contains("gamma"))
+            .collect();
+        assert!(
+            input_rows.len() >= 2,
+            "wrapped composer text should appear on multiple screen rows: {rows:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
