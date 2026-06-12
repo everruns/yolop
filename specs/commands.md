@@ -2,8 +2,11 @@
 
 ## Abstract
 
-yolop exposes user actions as **slash commands**. Every command is contributed
-by a **capability** (`Capability::commands()`), so each host's command surface
+yolop exposes user actions as **commands**. Most are slash commands; the TUI
+also accepts `!<command>` and `!shell <command>` as terminal-local shell
+aliases for the same capability command as `/shell`. Every command is
+contributed by a **capability** (`Capability::commands()`), so each host's
+command surface
 is sourced solely from `runtime.list_commands(session_id)` — the source of
 truth for that host's palette, `/help`, and completion. There is no hard-coded
 command table on any host.
@@ -36,7 +39,8 @@ top of the runtime's two, not a separate `CommandSource` variant.
    commands; on execute, their capability emits a typed `UiCommand` through an
    injected host UI port instead of returning text. The host's event loop drains
    the port and applies the effect. Commands: `/help`, `/tools`, `/mcp`,
-   `/cwd`, `/model`, `/effort`, `/clear`, `/quit`.
+   `/cwd`, `/model`, `/effort`, `!<command>` / `!shell <command>` (also
+   accepted as `/shell`), `/clear`, `/quit`.
 
 ## Why client commands use a host port, not a new `CommandSource`
 

@@ -298,6 +298,7 @@ fn git_output(workspace_root: &Path, args: &[&str]) -> Option<String> {
 
 pub(crate) struct CodingBashCapability {
     pub(crate) workspace: Workspace,
+    pub(crate) expose_command: bool,
 }
 
 #[async_trait]
@@ -327,6 +328,9 @@ impl Capability for CodingBashCapability {
         vec![Box::new(BashTool::new(self.workspace.clone()))]
     }
     fn commands(&self) -> Vec<CommandDescriptor> {
+        if !self.expose_command {
+            return Vec::new();
+        }
         vec![CommandDescriptor {
             name: "shell".to_string(),
             description: "run a shell command".to_string(),

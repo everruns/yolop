@@ -1,7 +1,7 @@
 //! Client-executed slash commands for the TUI host.
 //!
-//! `help`, `tools`, `cwd`, `model`, `effort`, `clear`, and `quit` act on the
-//! terminal, not the agent runtime. They are declared here as ordinary
+//! `help`, `tools`, `mcp`, `cwd`, `model`, `effort`, `clear`, `/shell`, and
+//! `quit` act on the terminal, not the agent runtime. They are declared here as ordinary
 //! capability commands so they share the single command registry — palette,
 //! `/help`, and completion all read `runtime.list_commands` — and dispatched
 //! through the injected [`HostUi`] port: `execute_command` translates each
@@ -52,7 +52,7 @@ impl Capability for ClientCommandsCapability {
         "Client Commands"
     }
     fn description(&self) -> &str {
-        "Terminal-side slash commands (help, tools, mcp, cwd, model, effort, clear, quit)."
+        "Terminal-side commands (help, tools, mcp, cwd, model, effort, clear, shell, quit)."
     }
     fn status(&self) -> CapabilityStatus {
         CapabilityStatus::Available
@@ -112,6 +112,11 @@ fn command_descriptors() -> Vec<CommandDescriptor> {
         cmd("model", "show or switch model", &[opt("id")]),
         cmd("effort", "show or set reasoning effort", &[opt("level")]),
         cmd("clear", "clear transcript", &[]),
+        cmd(
+            "shell",
+            "run shell command from workspace root",
+            &[required("command")],
+        ),
         cmd("quit", "exit", &[]),
     ]
 }
@@ -123,6 +128,9 @@ fn ui_command_for(name: &str, arg: Option<String>) -> Option<UiCommand> {
         "mcp" => Some(UiCommand::ShowMcp),
         "cwd" => Some(UiCommand::ShowCwd),
         "clear" => Some(UiCommand::ClearTranscript),
+        "shell" => Some(UiCommand::RunShell {
+            command: arg.unwrap_or_default(),
+        }),
         "quit" => Some(UiCommand::Quit),
         "model" => Some(UiCommand::OpenModelOverlay { arg }),
         "effort" => Some(UiCommand::OpenEffortOverlay { arg }),
@@ -177,6 +185,11 @@ impl Tool for RunYolopCommandTool {
         };
         let stripped = raw.trim_start_matches('/');
         let name = if stripped == "exit" { "quit" } else { stripped };
+        if name == "shell" {
+            return ToolExecutionResult::tool_error(
+                "shell commands must be typed directly as !shell <command> or /shell <command>",
+            );
+        }
         let arg = arguments
             .get("arguments")
             .and_then(Value::as_str)
@@ -211,10 +224,18 @@ fn cmd(name: &str, description: &str, args: &[CommandArg]) -> CommandDescriptor 
 }
 
 fn opt(name: &str) -> CommandArg {
+    arg(name, false)
+}
+
+fn required(name: &str) -> CommandArg {
+    arg(name, true)
+}
+
+fn arg(name: &str, required: bool) -> CommandArg {
     CommandArg {
         name: name.to_string(),
         description: name.to_string(),
-        required: false,
+        required,
         suggestions: Vec::new(),
     }
 }
@@ -261,6 +282,22 @@ mod tests {
 
         assert!(result.is_success(), "tool result: {result:?}");
         assert_eq!(ui.take(), vec![UiCommand::Quit]);
+    }
+
+    #[tokio::test]
+    async fn run_yolop_command_rejects_shell_dispatch() {
+        let ui = Arc::new(RecordingUi::default());
+        let tool = RunYolopCommandTool { ui: ui.clone() };
+
+        let result = tool
+            .execute(json!({
+                "command": "shell",
+                "arguments": "echo should-not-run"
+            }))
+            .await;
+
+        assert!(result.is_error(), "tool result: {result:?}");
+        assert_eq!(ui.take(), Vec::<UiCommand>::new());
     }
 
     #[tokio::test]
