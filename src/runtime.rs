@@ -1394,6 +1394,7 @@ pub async fn build_with_options(
     });
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
+        expose_command: !options.client_commands,
     });
     // Terminal-side commands. Registered only when the host can apply
     // their effects (the TUI). The capability declares help/tools/mcp/cwd/model/

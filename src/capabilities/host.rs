@@ -12,8 +12,9 @@ use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
-use everruns_core::tools::Tool;
+use everruns_core::tools::{Tool, ToolExecutionResult};
 use everruns_runtime::RuntimeProviderStore;
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
@@ -297,8 +298,10 @@ fn git_output(workspace_root: &Path, args: &[&str]) -> Option<String> {
 
 pub(crate) struct CodingBashCapability {
     pub(crate) workspace: Workspace,
+    pub(crate) expose_command: bool,
 }
 
+#[async_trait]
 impl Capability for CodingBashCapability {
     fn id(&self) -> &str {
         "yolop_bash"
@@ -323,6 +326,102 @@ impl Capability for CodingBashCapability {
     }
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![Box::new(BashTool::new(self.workspace.clone()))]
+    }
+    fn commands(&self) -> Vec<CommandDescriptor> {
+        if !self.expose_command {
+            return Vec::new();
+        }
+        vec![CommandDescriptor {
+            name: "shell".to_string(),
+            description: "run a shell command".to_string(),
+            source: CommandSource::System,
+            args: vec![CommandArg {
+                name: "command".to_string(),
+                description: "shell command".to_string(),
+                required: true,
+                suggestions: Vec::new(),
+            }],
+        }]
+    }
+    async fn execute_command(
+        &self,
+        request: &ExecuteCommandRequest,
+        _ctx: &CommandExecutionContext,
+    ) -> everruns_core::Result<CommandResult> {
+        if request.name != "shell" {
+            return Err(everruns_core::AgentLoopError::config(format!(
+                "{} cannot execute /{}",
+                self.id(),
+                request.name
+            )));
+        }
+        let command = request
+            .arguments
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+            .ok_or_else(|| everruns_core::AgentLoopError::config("/shell requires: command"))?;
+        let result = BashTool::new(self.workspace.clone())
+            .execute(json!({ "command": command, "output": "normal" }))
+            .await;
+        Ok(shell_command_result(result))
+    }
+}
+
+fn shell_command_result(result: ToolExecutionResult) -> CommandResult {
+    match result {
+        ToolExecutionResult::Success(value)
+        | ToolExecutionResult::SuccessWithImages { result: value, .. } => {
+            let success = value["success"].as_bool().unwrap_or(true);
+            CommandResult {
+                success,
+                message: format_shell_output(&value),
+                error_code: None,
+                error_fields: None,
+            }
+        }
+        ToolExecutionResult::ToolError(message) => CommandResult {
+            success: false,
+            message,
+            error_code: None,
+            error_fields: None,
+        },
+        ToolExecutionResult::InternalError(_) => CommandResult {
+            success: false,
+            message: "shell command failed internally".to_string(),
+            error_code: None,
+            error_fields: None,
+        },
+        ToolExecutionResult::ConnectionRequired { provider } => CommandResult {
+            success: false,
+            message: format!("shell command requires connection: {provider}"),
+            error_code: None,
+            error_fields: None,
+        },
+    }
+}
+
+fn format_shell_output(value: &serde_json::Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(stdout) = value["stdout"]
+        .as_str()
+        .map(str::trim_end)
+        .filter(|text| !text.is_empty())
+    {
+        parts.push(stdout.to_string());
+    }
+    if let Some(stderr) = value["stderr"]
+        .as_str()
+        .map(str::trim_end)
+        .filter(|text| !text.is_empty())
+    {
+        parts.push(stderr.to_string());
+    }
+    if parts.is_empty() {
+        let exit_code = value["exit_code"].as_i64().unwrap_or(0);
+        format!("exit {exit_code}")
+    } else {
+        parts.join("\n")
     }
 }
 
@@ -1060,6 +1159,17 @@ mod tests {
             .set_attribution(false)
             .expect("disable attribution");
         assert!(capability.system_prompt_contribution(&ctx).await.is_none());
+    }
+
+    #[test]
+    fn shell_output_format_ignores_whitespace_only_streams() {
+        let value = serde_json::json!({
+            "stdout": "\n",
+            "stderr": "   \n",
+            "exit_code": 0,
+        });
+
+        assert_eq!(format_shell_output(&value), "exit 0");
     }
 
     #[test]

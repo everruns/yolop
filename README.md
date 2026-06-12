@@ -52,9 +52,10 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   and set with `/setup approval <level>` (or just by telling yolop to be more
   or less careful). See [Soft approval](#soft-approval) below.
 - **TUI chat** (ratatui): scrolling transcript, multiline composer, status
-  bar, commands (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`,
-  `/effort`, `!shell <command>`, `/clear`, `/quit`) and natural-language
-  requests for terminal actions such as "exit" or "clear the screen".
+  bar, slash commands (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`,
+  `/effort`, `/shell`, `/clear`, `/quit`), `!<command>` as a direct shell
+  shortcut, and natural-language requests for terminal actions such as "exit"
+  or "clear the screen".
 - **Planning** — `write_todos` keeps multi-step tasks on track, and
   loop detection stops the model from retrying the same failing tool call.
 - **One-shot mode** — `--print` runs a single prompt non-interactively, for
@@ -66,7 +67,9 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   `grep_files`, `delete_file`, `stat_file`, backed by the real workspace disk.
 - **Shell** — `bash -lc` from the workspace root, with a 120 s wall-clock
   timeout and per-stream 1 MiB output cap; large output is spilled to disk
-  under the session folder and stays readable.
+  under the session folder and stays readable for model tool calls. Use
+  `/shell <command>` or `!<command>` in interactive sessions to run a command
+  directly with bounded inline output.
 - **Web** — `web_fetch` (HTTP GET/HEAD with markdown/text conversion, DNS-pinned
   SSRF protection) and `duckduckgo_search` (free, no API key). Setting
   `EVERRUNS_SYSTEM_ALLOWLIST_ENABLED=true` restricts `web_fetch` to the

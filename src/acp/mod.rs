@@ -522,6 +522,10 @@ mod tests {
             commands.iter().any(|c| c["name"] == "setup"),
             "expected /setup to be advertised, got: {commands:?}"
         );
+        assert!(
+            commands.iter().any(|c| c["name"] == "shell"),
+            "expected /shell to be advertised, got: {commands:?}"
+        );
         let setup = commands
             .iter()
             .find(|c| c["name"] == "setup")
@@ -574,6 +578,46 @@ mod tests {
             "slash command should not invoke the model"
         );
         assert!(!run.updates_of_kind("available_commands_update").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bang_shell_command_executes_without_model_turn() {
+        let run = with_sdk_client(fixed("model should not run"), |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "!printf acp-shell").await
+        })
+        .await;
+
+        assert_eq!(
+            run.stop_reason,
+            agent_client_protocol::schema::StopReason::EndTurn
+        );
+        let tool_calls = run.updates_of_kind("tool_call");
+        assert!(
+            tool_calls
+                .iter()
+                .any(|u| u["title"] == "!shell printf acp-shell"
+                    && u["rawInput"]["command"] == "shell"),
+            "expected shell command tool_call, got updates: {:?}",
+            run.updates
+        );
+        let tool_updates = run.updates_of_kind("tool_call_update");
+        let completed = tool_updates
+            .iter()
+            .find(|u| u["status"] == "completed")
+            .expect("completed command tool update");
+        assert!(
+            completed["content"][0]["content"]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("acp-shell")),
+            "expected shell output in command content, got: {completed:?}"
+        );
+        assert_eq!(completed["rawOutput"]["success"], true);
+        assert!(
+            !run.assistant_text().contains("model should not run"),
+            "bang shell command should not invoke the model"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

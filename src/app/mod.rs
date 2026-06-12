@@ -783,7 +783,7 @@ impl App {
         let text = raw.trim().to_string();
         if let Some(command) = parse_bang_shell_command(&text) {
             if command.is_empty() {
-                self.push_system("usage: !shell <command>".into());
+                self.push_system("usage: !<command>".into());
             } else {
                 self.handle_shell_alias(command.to_string()).await;
             }
@@ -1176,14 +1176,21 @@ pub(crate) struct DeltaRouter {
 }
 
 fn parse_bang_shell_command(input: &str) -> Option<&str> {
-    let rest = input.trim().strip_prefix("!shell")?;
+    let rest = input.trim().strip_prefix('!')?;
+    let rest = rest
+        .trim_start()
+        .strip_prefix("shell")
+        .and_then(|tail| {
+            tail.chars()
+                .next()
+                .is_none_or(char::is_whitespace)
+                .then_some(tail)
+        })
+        .unwrap_or(rest);
     if rest.is_empty() {
         return Some("");
     }
-    rest.chars()
-        .next()
-        .is_some_and(char::is_whitespace)
-        .then(|| rest.trim())
+    Some(rest.trim())
 }
 
 fn shell_result_lines(result: ToolExecutionResult) -> Vec<ChatLine> {
@@ -1589,15 +1596,22 @@ mod tests {
     }
 
     #[test]
-    fn bang_shell_parser_accepts_only_shell_command_alias() {
+    fn bang_shell_parser_accepts_shell_alias_and_bare_command() {
         assert_eq!(parse_bang_shell_command("!shell"), Some(""));
         assert_eq!(parse_bang_shell_command("  !shell   pwd  "), Some("pwd"));
         assert_eq!(
             parse_bang_shell_command("!shell	printf hi"),
             Some("printf hi")
         );
-        assert_eq!(parse_bang_shell_command("!shellshock echo no"), None);
-        assert_eq!(parse_bang_shell_command("!"), None);
+        assert_eq!(
+            parse_bang_shell_command("!printf shell-ok"),
+            Some("printf shell-ok")
+        );
+        assert_eq!(
+            parse_bang_shell_command("!shellshock echo yes"),
+            Some("shellshock echo yes")
+        );
+        assert_eq!(parse_bang_shell_command("!"), Some(""));
     }
 
     #[test]
@@ -2506,6 +2520,37 @@ mod tests {
                 .iter()
                 .any(|line| matches!(line.author, Author::Assistant)),
             "!shell should not start a model turn: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bang_input_runs_shell_without_model_turn() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.set_input_text("!printf bare-output".into());
+
+        app.submit_input().await;
+        app.pump_ui_commands_for_test();
+
+        assert!(app.busy, "! should run as a bounded background command");
+        app.pump_turn_until_idle_for_test().await;
+
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| matches!(line.author, Author::ToolDetail)
+                    && line.text.contains("bare-output")),
+            "shell stdout should render in the transcript: {:?}",
+            app.lines
+        );
+        assert!(
+            !app.lines
+                .iter()
+                .any(|line| matches!(line.author, Author::Assistant)),
+            "! should not start a model turn: {:?}",
             app.lines
         );
     }

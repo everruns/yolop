@@ -64,11 +64,12 @@ emitted as a chunk when no deltas streamed for it during the turn.
 After `session/new`, yolop sends `available_commands_update` with
 capability-sourced slash commands such as `/setup` and user-invocable skill
 commands. ACP clients run commands by sending their literal text in
-`session/prompt` (for example, `/setup status`). System commands execute
-through `runtime.execute_command` and stream a command-shaped `tool_call` /
-`tool_call_update` pair with structured `rawInput`, `rawOutput`, and text
-`content`; skill commands are forwarded as prompt text so the model can activate
-the skill.
+`session/prompt` (for example, `/setup status`). `!<command>` and
+`!shell <command>` are accepted shortcuts for `/shell <command>`. System
+commands execute through `runtime.execute_command` and stream a command-shaped
+`tool_call` / `tool_call_update` pair with structured `rawInput`, `rawOutput`,
+and text `content`; skill commands are forwarded as prompt text so the model
+can activate the skill.
 
 ACP v1 command input only standardises an unstructured `input.hint`. yolop also
 adds compatible extension metadata under `_meta["yolop.dev/command"]` so richer
