@@ -24,6 +24,7 @@ use std::time::Duration;
 use everruns_core::llmsim_driver::{LlmSimConfig, OnExhausted, SimError, SimToolCall, SimTurn};
 use serde_json::json;
 
+use crate::host_ui::UiCommand;
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
 use crate::settings::SettingsStore;
 
@@ -49,11 +50,24 @@ async fn build_scripted_runtime_with_workspace(
     config: LlmSimConfig,
     setup_workspace: impl FnOnce(&std::path::Path),
 ) -> (BuiltRuntime, std::path::PathBuf) {
+    build_scripted_runtime_with_workspace_and_options(
+        config,
+        setup_workspace,
+        BuildOptions::default(),
+    )
+    .await
+}
+
+async fn build_scripted_runtime_with_workspace_and_options(
+    config: LlmSimConfig,
+    setup_workspace: impl FnOnce(&std::path::Path),
+    mut options: BuildOptions,
+) -> (BuiltRuntime, std::path::PathBuf) {
     let workspace_root = tempfile::tempdir().expect("workspace tempdir").keep();
     let sessions_root = tempfile::tempdir().expect("sessions tempdir").keep();
     setup_workspace(&workspace_root);
 
-    let llmsim = config.with_model("llmsim-yolop");
+    options.llmsim_override = Some(config.with_model("llmsim-yolop"));
     let settings_path = sessions_root.join("settings.toml");
     let settings = Arc::new(SettingsStore::open(settings_path));
     let runtime = build_with_options(
@@ -62,10 +76,7 @@ async fn build_scripted_runtime_with_workspace(
         None,
         sessions_root,
         settings,
-        BuildOptions {
-            llmsim_override: Some(llmsim),
-            ..BuildOptions::default()
-        },
+        options,
     )
     .await
     .expect("build scripted llmsim runtime");
@@ -108,6 +119,39 @@ async fn scripted_assistant_text_returns_success_with_no_tools() {
         result.iterations >= 1,
         "agent loop must record at least one iteration: {result:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scripted_prompt_command_tool_queues_quit_ui_command() {
+    let (mut runtime, _ws) = build_scripted_runtime_with_workspace_and_options(
+        LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "run_yolop_command".to_string(),
+                arguments: json!({ "command": "exit" }),
+                id: None,
+            }]),
+            SimTurn::Assistant("exiting".to_string()),
+        ]),
+        |_| {},
+        BuildOptions {
+            client_commands: true,
+            ..BuildOptions::default()
+        },
+    )
+    .await;
+
+    let result = run_single_turn(&runtime, "exit").await;
+
+    assert!(
+        result.success,
+        "prompt command turn must succeed: {result:?}"
+    );
+    assert_eq!(
+        result.tool_calls_count, 1,
+        "natural-language command should run through the tool entry point"
+    );
+    let command = runtime.ui_rx.try_recv().expect("queued UI command");
+    assert_eq!(command, UiCommand::Quit);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

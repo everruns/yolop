@@ -53,7 +53,8 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   or less careful). See [Soft approval](#soft-approval) below.
 - **TUI chat** (ratatui): scrolling transcript, multiline composer, status
   bar, slash commands (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`,
-  `/effort`, `/clear`, `/quit`).
+  `/effort`, `/clear`, `/quit`) and natural-language requests for terminal
+  actions such as "exit" or "clear the screen".
 - **Planning** — `write_todos` keeps multi-step tasks on track, and
   loop detection stops the model from retrying the same failing tool call.
 - **One-shot mode** — `--print` runs a single prompt non-interactively, for
