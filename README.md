@@ -82,10 +82,13 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **`AGENTS.md`** — project instructions re-read every turn.
 - **Workspace context** — root, shell, local date/timezone, Git identity and
   branch injected automatically.
-- **Memory** — a central `MEMORY.md` of durable, cross-session user
-  preferences, edited in natural language ("remember that I prefer terse
-  answers") and injected every turn under a managed size budget. See
-  [`specs/your.md`](./specs/your.md).
+- **Memory** — a central, structured `MEMORY.md` of durable, cross-session
+  user memories, each with a title, timestamp, and body. Managed in natural
+  language ("remember that I prefer terse answers") via the `remember` /
+  `recall` / `forget` tools. Only memory *titles* are injected each turn
+  (progressive disclosure); bodies are recalled on demand, so the prompt stays
+  small however much you remember. Tunable via the `[memory]` table in
+  `settings.toml`. See [`specs/memory.md`](./specs/memory.md).
 - **Skills** — `SKILL.md` files discovered from workspace
   (`.agents/skills/`), global (`<config_dir>/yolop/skills/`), and system
   (bundled) scopes, exposed via `list_skills`, `read_skill`, `write_skill`,

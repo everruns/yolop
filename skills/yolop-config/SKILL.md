@@ -53,9 +53,10 @@ command instead.
 ## Related surfaces
 
 - **Durable preferences / memory** ("remember that I prefer terse answers"):
-  these are not config keys. Use the `remember_your_memory` /
-  `write_your_memory` tools (the `your` personalization layer), not
-  `set_config`.
+  these are not config keys. Use the `remember` / `recall` / `forget` tools
+  (the global `memory` capability), not `set_config`. Memory tuning lives in a
+  `[memory]` table in `settings.toml` (`disclosed_titles`, `recall_limit`,
+  `soft_cap`).
 - **Behavioral hooks** (block/allow/audit tool calls): use the `yolop-hooks`
   skill and the `*_your_hook` tools.
 - **Interactive provider/model setup**: the `/setup` command runs a guided
