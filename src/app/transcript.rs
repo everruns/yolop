@@ -65,10 +65,11 @@ pub(crate) fn handle_live_event(
         _ => {}
     }
 
+    remember_write_todos_args(event, router);
     if let Some(activity) = status_for_event(event) {
         let _ = tx.send(TurnEvent::Activity(activity));
     }
-    let lines = lines_for_event(event);
+    let lines = lines_for_event_with_router(event, router);
     if !lines.is_empty() {
         let _ = tx.send(TurnEvent::Lines(lines));
     }
@@ -82,6 +83,7 @@ pub(crate) async fn catch_up_events(
     handles: &RuntimeHandles,
     events_before: usize,
     emitted_events: &mut HashSet<String>,
+    router: &mut DeltaRouter,
     tx: &mpsc::UnboundedSender<TurnEvent>,
 ) {
     let events = handles.runtime.events().await.unwrap_or_default();
@@ -91,13 +93,33 @@ pub(crate) async fn catch_up_events(
         if !emitted_events.insert(event_id) {
             continue;
         }
+        remember_write_todos_args(event, router);
         if let Some(activity) = status_for_event(event) {
             let _ = tx.send(TurnEvent::Activity(activity));
         }
-        lines.extend(lines_for_event(event));
+        lines.extend(lines_for_event_with_router(event, router));
     }
     if !lines.is_empty() {
         let _ = tx.send(TurnEvent::Lines(lines));
+    }
+}
+
+fn remember_write_todos_args(event: &RuntimeEvent, router: &mut DeltaRouter) {
+    if let EventData::ToolStarted(data) = &event.data
+        && data.tool_call.name == "write_todos"
+    {
+        router
+            .write_todos_args
+            .insert(data.tool_call.id.clone(), data.tool_call.arguments.clone());
+    }
+}
+
+fn lines_for_event_with_router(event: &RuntimeEvent, router: &mut DeltaRouter) -> Vec<ChatLine> {
+    match &event.data {
+        EventData::ToolCompleted(data) if data.tool_name == "write_todos" => {
+            todo_lines_for_result_or_args(data, &mut router.write_todos_args)
+        }
+        _ => lines_for_event(event),
     }
 }
 
@@ -311,11 +333,28 @@ pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
 }
 
 pub(crate) fn todo_lines_for_result(data: &ToolCompletedData) -> Vec<ChatLine> {
-    let Some(v) = result_value(data) else {
+    todo_lines_for_result_or_args(data, &mut HashMap::new())
+}
+
+fn todo_lines_for_result_or_args(
+    data: &ToolCompletedData,
+    write_todos_args: &mut HashMap<String, Value>,
+) -> Vec<ChatLine> {
+    let cached_args = write_todos_args.remove(&data.tool_call_id);
+    let result = result_value(data);
+    let has_todos = |value: &&Value| value.get("todos").and_then(Value::as_array).is_some();
+    let Some(v) = result
+        .as_ref()
+        .filter(has_todos)
+        .or_else(|| cached_args.as_ref().filter(has_todos))
+        .or(result.as_ref())
+        .or(cached_args.as_ref())
+    else {
+        let marker = if data.success { "✓" } else { "✗" };
         return vec![ChatLine {
             author: Author::Tool,
             text: format!(
-                "✓ {}",
+                "{marker} {}",
                 data.display_name.as_deref().unwrap_or("Write Todos")
             ),
         }];
