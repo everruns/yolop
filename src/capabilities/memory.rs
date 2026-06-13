@@ -325,7 +325,7 @@ impl MemoryStore {
             .collect();
         // Primary: score desc. Secondary: updated desc (guard is already sorted
         // newest-first, so a stable sort by score keeps recency as the tiebreak).
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
         let total_matched = scored.len();
         let matches = scored
             .into_iter()
@@ -354,7 +354,7 @@ impl MemoryStore {
 // ---------- parsing / serialization ----------
 
 fn sort_newest_first(memories: &mut [Memory]) {
-    memories.sort_by(|a, b| b.updated.cmp(&a.updated));
+    memories.sort_by_key(|m| std::cmp::Reverse(m.updated));
 }
 
 /// Split case-insensitive query into deduped non-empty word tokens.
