@@ -1,12 +1,10 @@
 //! Registry of available connector providers.
 //!
-//! Yolop registers upstream [`ConnectionProvider`] implementations here. The
+//! Yolop registers upstream [`Connector`] implementations here. The
 //! catalog is the single place new sandbox backends (E2B, etc.) plug in.
 
-use everruns_core::connection_provider::{
-    ConnectionProvider, ConnectionProviderRegistry, ConnectionValidation,
-};
-use everruns_integrations_daytona::connection::DaytonaConnectionProvider;
+use everruns_core::connector::{Connector, ConnectorRegistry, ConnectorValidation};
+use everruns_integrations_daytona::connection::DaytonaConnector;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -19,13 +17,13 @@ pub struct ConnectorInfo {
     pub display_name: String,
     pub description: String,
     pub icon: String,
-    pub connection_type: everruns_core::connection_provider::ConnectionType,
-    pub form_schema: Option<everruns_core::connection_provider::ConnectionFormSchema>,
+    pub connection_type: everruns_core::connector::ConnectorType,
+    pub form_schema: Option<everruns_core::connector::ConnectorFormSchema>,
     pub connected: bool,
 }
 
 pub struct ConnectionCatalog {
-    providers: ConnectionProviderRegistry,
+    providers: ConnectorRegistry,
 }
 
 impl ConnectionCatalog {
@@ -36,25 +34,25 @@ impl ConnectionCatalog {
     /// Register an additional connector provider (e.g. future E2B integration).
     pub fn builder() -> ConnectionCatalogBuilder {
         ConnectionCatalogBuilder {
-            providers: ConnectionProviderRegistry::new(),
+            providers: ConnectorRegistry::new(),
         }
     }
 }
 
 pub struct ConnectionCatalogBuilder {
-    providers: ConnectionProviderRegistry,
+    providers: ConnectorRegistry,
 }
 
 impl ConnectionCatalogBuilder {
     #[allow(dead_code)] // used by tests and future sandbox provider wiring
-    pub fn register(mut self, provider: impl ConnectionProvider + 'static) -> Self {
+    pub fn register(mut self, provider: impl Connector + 'static) -> Self {
         self.providers.register(provider);
         self
     }
 
     pub fn build(mut self) -> ConnectionCatalog {
         if !self.providers.has("daytona") {
-            self.providers.register(DaytonaConnectionProvider);
+            self.providers.register(DaytonaConnector);
         }
         ConnectionCatalog {
             providers: self.providers,
@@ -64,21 +62,21 @@ impl ConnectionCatalogBuilder {
 
 impl ConnectionCatalog {
     #[allow(dead_code)]
-    pub fn register(&mut self, provider: impl ConnectionProvider + 'static) {
+    pub fn register(&mut self, provider: impl Connector + 'static) {
         self.providers.register(provider);
     }
 
-    pub fn get(&self, provider_id: &str) -> Option<&Arc<dyn ConnectionProvider>> {
+    pub fn get(&self, provider_id: &str) -> Option<&Arc<dyn Connector>> {
         self.providers.get(provider_id)
     }
 
-    pub fn list(&self) -> Vec<&Arc<dyn ConnectionProvider>> {
+    pub fn list(&self) -> Vec<&Arc<dyn Connector>> {
         self.providers.list()
     }
 
     pub fn connector_info(
         &self,
-        provider: &Arc<dyn ConnectionProvider>,
+        provider: &Arc<dyn Connector>,
         store: &ConnectionStore,
     ) -> ConnectorInfo {
         let provider_id = provider.provider_id().to_string();
@@ -109,7 +107,7 @@ impl ConnectionCatalog {
         store: &ConnectionStore,
         provider_id: &str,
         fields: HashMap<String, String>,
-    ) -> Result<ConnectionValidation, String> {
+    ) -> Result<ConnectorValidation, String> {
         let provider = self
             .get(provider_id)
             .ok_or_else(|| format!("unknown connector `{provider_id}`"))?;
@@ -132,12 +130,12 @@ impl ConnectionCatalog {
 #[cfg(test)]
 mod catalog_tests {
     use super::*;
-    use everruns_core::connection_provider::ConnectionType;
+    use everruns_core::connector::ConnectorType;
 
     struct StubProvider;
 
     #[async_trait::async_trait]
-    impl ConnectionProvider for StubProvider {
+    impl Connector for StubProvider {
         fn provider_id(&self) -> &str {
             "stub"
         }
@@ -150,14 +148,14 @@ mod catalog_tests {
         fn icon(&self) -> &str {
             "box"
         }
-        fn connection_type(&self) -> ConnectionType {
-            ConnectionType::ApiKey
+        fn connection_type(&self) -> ConnectorType {
+            ConnectorType::ApiKey
         }
-        fn form_schema(&self) -> Option<everruns_core::connection_provider::ConnectionFormSchema> {
+        fn form_schema(&self) -> Option<everruns_core::connector::ConnectorFormSchema> {
             None
         }
-        async fn validate(&self, _credential: &str) -> Result<ConnectionValidation, String> {
-            Ok(ConnectionValidation {
+        async fn validate(&self, _credential: &str) -> Result<ConnectorValidation, String> {
+            Ok(ConnectorValidation {
                 provider_username: None,
                 provider_metadata: None,
             })

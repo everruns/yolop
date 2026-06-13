@@ -5,7 +5,7 @@ use crate::connectors::catalog::{ConnectionCatalog, ConnectorInfo};
 use crate::connectors::store::ConnectionStore;
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
-use everruns_core::connection_provider::ConnectionType;
+use everruns_core::connector::ConnectorType;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -261,7 +261,7 @@ impl Tool for ConnectTool {
         let Some(entry) = self.inner.catalog.get(&provider) else {
             return ToolExecutionResult::tool_error(format!("Unknown connector `{provider}`"));
         };
-        if entry.connection_type() == ConnectionType::OAuth {
+        if entry.connection_type() == ConnectorType::OAuth {
             return ToolExecutionResult::tool_error(format!(
                 "Connector `{provider}` uses OAuth and cannot be configured through this tool yet"
             ));
