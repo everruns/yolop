@@ -76,21 +76,29 @@ impl MemoryConfig {
         let obj = config
             .as_object()
             .ok_or_else(|| "memory config must be an object".to_string())?;
-        let read = |key: &str, slot: &mut usize| -> Result<(), String> {
+        // `min` mirrors the JSON schema's per-key minimum so `validate_config`
+        // rejects exactly what the schema forbids. `try_from` avoids silently
+        // truncating an out-of-range value into `usize` on 32-bit targets.
+        let read = |key: &str, slot: &mut usize, min: usize| -> Result<(), String> {
             match obj.get(key) {
                 None | Some(Value::Null) => Ok(()),
                 Some(v) => {
                     let n = v
                         .as_u64()
                         .ok_or_else(|| format!("`{key}` must be a non-negative integer"))?;
-                    *slot = n as usize;
+                    let n = usize::try_from(n)
+                        .map_err(|_| format!("`{key}` is too large for this platform"))?;
+                    if n < min {
+                        return Err(format!("`{key}` must be at least {min}"));
+                    }
+                    *slot = n;
                     Ok(())
                 }
             }
         };
-        read("disclosed_titles", &mut cfg.disclosed_titles)?;
-        read("recall_limit", &mut cfg.recall_limit)?;
-        read("soft_cap", &mut cfg.soft_cap)?;
+        read("disclosed_titles", &mut cfg.disclosed_titles, 0)?;
+        read("recall_limit", &mut cfg.recall_limit, 1)?;
+        read("soft_cap", &mut cfg.soft_cap, 0)?;
         Ok(cfg)
     }
 
@@ -418,16 +426,18 @@ fn generate_id(existing: &[Memory], seed: &str, now: DateTime<Utc>) -> String {
 fn parse(content: &str) -> Vec<Memory> {
     let lines: Vec<&str> = content.lines().collect();
     let is_heading = |l: &str| l.starts_with("## ");
-    let is_meta = |l: &str| {
-        let t = l.trim();
-        t.starts_with("<!--") && t.contains("id:")
-    };
     // Prefer metadata-anchored headings so a `## ` line inside a body never
     // splits a memory. Fall back to every heading only when nothing is anchored.
     let anchored: Vec<usize> = lines
         .iter()
         .enumerate()
-        .filter(|(i, l)| is_heading(l) && lines.get(i + 1).map(|n| is_meta(n)).unwrap_or(false))
+        .filter(|(i, l)| {
+            is_heading(l)
+                && lines
+                    .get(i + 1)
+                    .map(|n| looks_like_metadata(n))
+                    .unwrap_or(false)
+        })
         .map(|(i, _)| i)
         .collect();
     let heads: Vec<usize> = if anchored.is_empty() {
@@ -454,9 +464,11 @@ fn parse(content: &str) -> Vec<Memory> {
         let mut updated = None;
         let mut body_lines: Vec<&str> = Vec::new();
         for &line in &lines[start + 1..end] {
-            let trimmed = line.trim();
-            if id.is_none() && trimmed.starts_with("<!--") && trimmed.ends_with("-->") {
-                let (i, c, u) = parse_meta(trimmed);
+            // Only consume a comment as metadata when it actually looks like our
+            // metadata line; a hand-authored body that opens with an unrelated
+            // HTML comment is kept verbatim rather than silently dropped.
+            if id.is_none() && created.is_none() && updated.is_none() && looks_like_metadata(line) {
+                let (i, c, u) = parse_meta(line.trim());
                 id = i;
                 created = c;
                 updated = u;
@@ -512,19 +524,50 @@ fn parse_ts(value: &str) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
+/// Whether a line is one of our memory metadata comments — an HTML comment that
+/// actually carries id/created/updated, not just any `<!-- … -->`.
+fn looks_like_metadata(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("<!--")
+        && t.ends_with("-->")
+        && (t.contains("id:") || t.contains("created:") || t.contains("updated:"))
+}
+
 /// Import a pre-structure file (flat bullets, free text) as one memory so an
-/// upgrade is lossless. Returns empty when there's nothing but a header.
+/// upgrade is lossless. Only the generated file header is dropped — a leading
+/// `# yolop memory` title and a leading HTML comment block (e.g. the header
+/// comment). Everything after the header, including any user headings, is kept
+/// verbatim. Returns empty when nothing but a header remains.
 fn import_legacy(lines: &[&str]) -> Vec<Memory> {
-    let body: String = lines
-        .iter()
-        .filter(|l| {
-            let t = l.trim();
-            !t.is_empty() && !t.starts_with('#') && !t.starts_with("<!--")
-        })
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n");
-    if body.trim().is_empty() {
+    let mut i = 0;
+    loop {
+        while i < lines.len() && lines[i].trim().is_empty() {
+            i += 1;
+        }
+        // Drop only the known generated H1 title, never an arbitrary `#` line.
+        if lines
+            .get(i)
+            .map(|l| l.trim().eq_ignore_ascii_case("# yolop memory"))
+            .unwrap_or(false)
+        {
+            i += 1;
+            continue;
+        }
+        // Drop a leading HTML comment block (single- or multi-line).
+        if lines.get(i).map(|l| l.trim_start().starts_with("<!--")) == Some(true) {
+            while i < lines.len() {
+                let closes = lines[i].contains("-->");
+                i += 1;
+                if closes {
+                    break;
+                }
+            }
+            continue;
+        }
+        break;
+    }
+    let body = lines[i..].join("\n").trim().to_string();
+    if body.is_empty() {
         return Vec::new();
     }
     let now = Utc::now();
@@ -533,7 +576,7 @@ fn import_legacy(lines: &[&str]) -> Vec<Memory> {
         title: "Imported notes".to_string(),
         created: now,
         updated: now,
-        body: body.trim().to_string(),
+        body,
     }]
 }
 
@@ -1135,6 +1178,50 @@ mod tests {
     }
 
     #[test]
+    fn hand_authored_body_keeps_non_metadata_html_comment() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join(MEMORY_FILE_NAME);
+        // A hand-authored section whose body opens with an unrelated HTML
+        // comment (no id/created/updated) must keep that comment in the body.
+        std::fs::write(
+            &path,
+            "# yolop memory\n\n## Note\n<!-- TODO: revisit this -->\nThe actual memory text.\n",
+        )
+        .expect("seed");
+        let store = MemoryStore::open(path);
+        assert_eq!(store.len(), 1);
+        let m = &store.recent(1).matches[0];
+        assert_eq!(m.title, "Note");
+        assert!(
+            m.body.contains("<!-- TODO: revisit this -->"),
+            "got: {}",
+            m.body
+        );
+        assert!(m.body.contains("The actual memory text."));
+    }
+
+    #[test]
+    fn legacy_import_preserves_user_headings() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join(MEMORY_FILE_NAME);
+        // Legacy free-text file (no `## ` sections) with a user heading: the
+        // generated `# yolop memory` title is dropped but the user's `#`
+        // heading and content are preserved.
+        std::fs::write(
+            &path,
+            "# yolop memory\n\n# My important note\n- detail one\n- detail two\n",
+        )
+        .expect("seed");
+        let store = MemoryStore::open(path);
+        assert_eq!(store.len(), 1);
+        let m = &store.recent(1).matches[0];
+        assert_eq!(m.title, "Imported notes");
+        assert!(m.body.contains("# My important note"), "got: {}", m.body);
+        assert!(m.body.contains("- detail one"));
+        assert!(!m.body.contains("# yolop memory"));
+    }
+
+    #[test]
     fn titles_disclosure_caps_and_reports_total() {
         let (_tmp, store) = store_in_tmp();
         for i in 0..20 {
@@ -1185,6 +1272,12 @@ mod tests {
         assert!(MemoryConfig::from_value(&json!({ "soft_cap": -1 })).is_err());
         assert!(MemoryConfig::from_value(&json!({ "recall_limit": "lots" })).is_err());
         assert!(MemoryConfig::from_value(&json!([1, 2, 3])).is_err());
+
+        // Per-key minimums match the schema: recall_limit must be >= 1, while
+        // disclosed_titles / soft_cap may be 0.
+        assert!(MemoryConfig::from_value(&json!({ "recall_limit": 0 })).is_err());
+        assert!(MemoryConfig::from_value(&json!({ "disclosed_titles": 0 })).is_ok());
+        assert!(MemoryConfig::from_value(&json!({ "soft_cap": 0 })).is_ok());
     }
 
     #[test]
