@@ -224,10 +224,6 @@ impl Settings {
         self.approval_mode
     }
 
-    pub fn capability_overrides(&self) -> &[CapabilityOverride] {
-        &self.capabilities
-    }
-
     pub fn capability_overrides_for(&self, id: &str) -> Vec<(usize, &CapabilityOverride)> {
         self.capabilities
             .iter()
@@ -401,15 +397,11 @@ impl SettingsStore {
         Ok(index)
     }
 
-    /// Remove a stored override by its index in `[[capabilities]]`.
-    pub fn remove_capability_override(&self, index: usize) -> Result<bool> {
+    /// Drop every stored `[[capabilities]]` override.
+    pub fn clear_capability_overrides(&self) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        let existed = index < guard.capabilities.len();
-        if existed {
-            guard.capabilities.remove(index);
-            save_to(&self.path, &guard)?;
-        }
-        Ok(existed)
+        guard.capabilities.clear();
+        save_to(&self.path, &guard)
     }
 }
 
@@ -663,18 +655,6 @@ mod tests {
             .expect("save");
         assert!(store.clear_base_url("custom").expect("clear present"));
         assert!(store.snapshot().base_url_for("custom").is_none());
-    }
-
-    #[test]
-    fn remove_capability_override_by_index() {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let path = tmp.path().join("settings.toml");
-        let store = SettingsStore::open(path);
-        let index = store
-            .append_capability_override(CapabilityOverride::remove("duckduckgo"))
-            .expect("append");
-        assert!(store.remove_capability_override(index).expect("remove"));
-        assert!(store.snapshot().capabilities.is_empty());
     }
 
     #[test]

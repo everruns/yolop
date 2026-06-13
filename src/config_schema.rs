@@ -27,6 +27,8 @@ pub enum ValueKind {
     /// A secret string (an API token). `get_config` never echoes the value,
     /// only whether one is stored.
     Secret,
+    /// An ordered list (harness capability overrides).
+    List,
 }
 
 impl ValueKind {
@@ -35,6 +37,7 @@ impl ValueKind {
             ValueKind::Text => "text",
             ValueKind::Bool => "bool",
             ValueKind::Secret => "secret",
+            ValueKind::List => "list",
         }
     }
 }
@@ -149,6 +152,26 @@ pub fn schema() -> &'static [ConfigField] {
             examples: &["on", "off"],
             provider_scoped: false,
         },
+        ConfigField {
+            key: "capabilities",
+            aliases: &["capability"],
+            title: "Harness capabilities",
+            description: "Ordered `[[capabilities]]` overrides applied on top of the default \
+                          harness. Each entry has a `ref` (capability id), optional \
+                          `enabled=false` to remove every instance with that ref, optional \
+                          `append=true` to add a duplicate instance, and capability-specific \
+                          config keys validated via `config_schema` / `validate_config`. Use \
+                          `get_config key=capabilities.<ref>` for per-capability schema \
+                          metadata. Append entries with `set_config key=capabilities json=…`; \
+                          pass `value=clear` to drop all stored overrides.",
+            kind: ValueKind::List,
+            default: None,
+            examples: &[
+                "capabilities.message_metadata",
+                "set_config key=capabilities json={\"ref\":\"message_metadata\",\"config\":{\"fields\":[\"timestamp\"]}}",
+            ],
+            provider_scoped: true,
+        },
     ];
     FIELDS
 }
@@ -167,6 +190,10 @@ pub enum KeyTarget {
     Token(String),
     /// Per-provider endpoint base URL.
     BaseUrl(String),
+    /// The ordered `[[capabilities]]` override list.
+    Capabilities,
+    /// Catalog metadata for one harness capability ref (`capabilities.<ref>`).
+    CapabilityRef(String),
 }
 
 impl KeyTarget {
@@ -180,6 +207,7 @@ impl KeyTarget {
             KeyTarget::Model(_) => "models",
             KeyTarget::Token(_) => "tokens",
             KeyTarget::BaseUrl(_) => "base_urls",
+            KeyTarget::Capabilities | KeyTarget::CapabilityRef(_) => "capabilities",
         };
         schema()
             .iter()
@@ -229,6 +257,13 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "models" | "model_for" => scoped(KeyTarget::Model),
         "tokens" | "token" => scoped(KeyTarget::Token),
         "base_urls" | "base_url" | "url" => scoped(KeyTarget::BaseUrl),
+        "capabilities" | "capability" => {
+            if let Some(cap_ref) = sub.filter(|s| !s.is_empty()) {
+                Ok(KeyTarget::CapabilityRef(cap_ref.to_string()))
+            } else {
+                Ok(KeyTarget::Capabilities)
+            }
+        }
         _ => Err(format!(
             "unknown config key `{input}`; known keys: {}",
             known_keys()
@@ -308,6 +343,15 @@ mod tests {
     }
 
     #[test]
+    fn capabilities_keys_parse() {
+        assert_eq!(parse_key("capabilities").unwrap(), KeyTarget::Capabilities);
+        assert_eq!(
+            parse_key("capabilities.message_metadata").unwrap(),
+            KeyTarget::CapabilityRef("message_metadata".to_string())
+        );
+    }
+
+    #[test]
     fn every_target_maps_to_a_field() {
         for target in [
             KeyTarget::DefaultProvider,
@@ -317,6 +361,8 @@ mod tests {
             KeyTarget::Model("openai".into()),
             KeyTarget::Token("openai".into()),
             KeyTarget::BaseUrl("custom".into()),
+            KeyTarget::Capabilities,
+            KeyTarget::CapabilityRef("message_metadata".into()),
         ] {
             let _ = target.field();
         }

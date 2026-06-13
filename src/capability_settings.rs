@@ -38,10 +38,6 @@ impl CapabilityCatalog {
         self.capabilities.get(id)
     }
 
-    pub fn list(&self) -> impl Iterator<Item = &Arc<dyn Capability>> {
-        self.capabilities.values()
-    }
-
     pub fn has(&self, id: &str) -> bool {
         self.capabilities.contains_key(id)
     }
@@ -94,11 +90,6 @@ pub fn parse_capabilities_table(table: &Table) -> Vec<CapabilityOverride> {
 
     match raw {
         TomlValue::Array(items) => items.iter().filter_map(parse_capability_entry).collect(),
-        // Legacy map form `[capabilities.<id>]` — converted to an ordered list.
-        TomlValue::Table(map) => map
-            .iter()
-            .filter_map(|(id, value)| parse_legacy_capability_entry(id, value))
-            .collect(),
         _ => Vec::new(),
     }
 }
@@ -132,20 +123,45 @@ fn parse_capability_entry(value: &TomlValue) -> Option<CapabilityOverride> {
     })
 }
 
-fn parse_legacy_capability_entry(id: &str, value: &TomlValue) -> Option<CapabilityOverride> {
-    let entry = value.as_table()?;
-    let enabled = entry.get("enabled").and_then(TomlValue::as_bool);
-    let mut config_table = entry.clone();
-    config_table.remove("enabled");
-    let config = if config_table.is_empty() {
+pub fn overrides_to_json(overrides: &[CapabilityOverride]) -> Value {
+    Value::Array(
+        overrides
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| stored_override_json(index, entry))
+            .collect(),
+    )
+}
+
+pub fn parse_override_from_json(value: &Value) -> Result<CapabilityOverride, String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "capabilities override must be a JSON object".to_string())?;
+    let capability_ref = obj
+        .get("ref")
+        .or_else(|| obj.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "override object requires `ref`".to_string())?
+        .trim()
+        .to_string();
+    if capability_ref.is_empty() {
+        return Err("override `ref` must not be empty".to_string());
+    }
+    let enabled = obj.get("enabled").and_then(Value::as_bool);
+    let append = obj.get("append").and_then(Value::as_bool).unwrap_or(false);
+    let mut config = obj.clone();
+    for key in ["ref", "id", "enabled", "append"] {
+        config.remove(key);
+    }
+    let config = if config.is_empty() {
         Value::Null
     } else {
-        toml_value_to_json(&TomlValue::Table(config_table))
+        Value::Object(config)
     };
-    Some(CapabilityOverride {
-        capability_ref: id.to_string(),
+    Ok(CapabilityOverride {
+        capability_ref,
         enabled,
-        append: false,
+        append,
         config,
     })
 }
@@ -442,35 +458,6 @@ mod tests {
 
         let parsed = parse_capabilities_table(&table);
         assert_eq!(parsed, overrides);
-    }
-
-    #[test]
-    fn legacy_map_form_is_converted_to_list() {
-        let mut legacy = Table::new();
-        let mut message = Table::new();
-        message.insert(
-            "fields".to_string(),
-            TomlValue::Array(vec![TomlValue::String("timestamp".to_string())]),
-        );
-        legacy.insert(
-            MESSAGE_METADATA_CAPABILITY_ID.to_string(),
-            TomlValue::Table(message),
-        );
-        let mut duck = Table::new();
-        duck.insert("enabled".to_string(), TomlValue::Boolean(false));
-        legacy.insert("duckduckgo".to_string(), TomlValue::Table(duck));
-
-        let mut table = Table::new();
-        table.insert("capabilities".to_string(), TomlValue::Table(legacy));
-
-        let parsed = parse_capabilities_table(&table);
-        assert_eq!(parsed.len(), 2);
-        assert!(
-            parsed
-                .iter()
-                .any(|entry| entry.capability_ref == MESSAGE_METADATA_CAPABILITY_ID)
-        );
-        assert!(parsed.iter().any(|entry| entry.is_remove()));
     }
 
     #[test]

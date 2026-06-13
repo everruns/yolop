@@ -86,6 +86,19 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
             .base_url_for(p)
             .map(|s| Value::String(s.to_string()))
             .unwrap_or(Value::Null),
+        KeyTarget::Capabilities => {
+            crate::capability_settings::overrides_to_json(&settings.capabilities)
+        }
+        KeyTarget::CapabilityRef(cap_ref) => {
+            let stored: Vec<Value> = settings
+                .capability_overrides_for(cap_ref)
+                .into_iter()
+                .map(|(index, entry)| {
+                    crate::capability_settings::stored_override_json(index, entry)
+                })
+                .collect();
+            Value::Array(stored)
+        }
     }
 }
 
