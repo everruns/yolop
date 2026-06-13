@@ -1,15 +1,18 @@
 //! Persisted harness capability overrides in `settings.toml`.
 //!
-//! The default coding harness is fixed at compile time; `[capabilities]` entries
-//! let users add optional capabilities, disable defaults, or override per-capability
-//! JSON config. Overrides are validated through each capability's
-//! `validate_config` before persisting.
+//! Overrides are stored as an ordered `[[capabilities]]` list — matching the
+//! runtime's `Vec<AgentCapabilityConfig>` — so the same capability can appear
+//! more than once with different configs. Each entry is applied in order:
+//! - `enabled = false` removes every harness instance with that `ref`
+//! - default (`append = false`) merges config into the first matching `ref`, or
+//!   appends when absent
+//! - `append = true` always appends a new harness instance (duplicates allowed)
 
 use everruns_core::capabilities::Capability;
 use everruns_core::{AgentCapabilityConfig, CapabilityInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use toml::Table;
 use toml::Value as TomlValue;
@@ -51,72 +54,125 @@ impl CapabilityCatalog {
     }
 }
 
-/// One persisted capability override under `[capabilities.<id>]` in settings.toml.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct CapabilitySetting {
-    /// `Some(false)` removes the capability from the harness. `Some(true)` forces
-    /// it on even when absent from defaults. `None` inherits default presence unless
-    /// `config` is non-empty (which implies an explicit override).
+/// One ordered harness override under `[[capabilities]]` in settings.toml.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityOverride {
+    /// Capability id (`ref` on disk, matching `AgentCapabilityConfig`).
+    #[serde(rename = "ref")]
+    pub capability_ref: String,
+    /// When `false`, removes every harness instance with this `ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// Per-capability JSON config merged over the harness default.
+    /// When `true`, always append a new harness instance instead of merging into
+    /// the first matching `ref`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub append: bool,
+    /// Per-capability JSON config (inline keys in TOML, or omitted when empty).
+    #[serde(default)]
     pub config: Value,
 }
 
-impl CapabilitySetting {
-    pub fn disabled() -> Self {
+impl CapabilityOverride {
+    pub fn remove(capability_ref: impl Into<String>) -> Self {
         Self {
+            capability_ref: capability_ref.into(),
             enabled: Some(false),
+            append: false,
             config: Value::Null,
         }
     }
 
-    pub fn is_explicitly_disabled(&self) -> bool {
+    pub fn is_remove(&self) -> bool {
         self.enabled == Some(false)
     }
 }
 
-pub fn parse_capabilities_table(table: &Table) -> BTreeMap<String, CapabilitySetting> {
-    let mut capabilities = BTreeMap::new();
-    let Some(caps) = table.get("capabilities").and_then(TomlValue::as_table) else {
-        return capabilities;
+pub fn parse_capabilities_table(table: &Table) -> Vec<CapabilityOverride> {
+    let Some(raw) = table.get("capabilities") else {
+        return Vec::new();
     };
-    for (id, entry) in caps {
-        let Some(entry_table) = entry.as_table() else {
-            continue;
-        };
-        let enabled = entry_table.get("enabled").and_then(TomlValue::as_bool);
-        let mut config_table = entry_table.clone();
-        config_table.remove("enabled");
-        let config = if config_table.is_empty() {
-            Value::Null
-        } else {
-            toml_value_to_json(&TomlValue::Table(config_table))
-        };
-        capabilities.insert(id.clone(), CapabilitySetting { enabled, config });
+
+    match raw {
+        TomlValue::Array(items) => items.iter().filter_map(parse_capability_entry).collect(),
+        // Legacy map form `[capabilities.<id>]` — converted to an ordered list.
+        TomlValue::Table(map) => map
+            .iter()
+            .filter_map(|(id, value)| parse_legacy_capability_entry(id, value))
+            .collect(),
+        _ => Vec::new(),
     }
-    capabilities
 }
 
-pub fn capabilities_to_table(capabilities: &BTreeMap<String, CapabilitySetting>) -> Table {
-    let mut caps = Table::new();
-    for (id, setting) in capabilities {
-        if setting.enabled.is_none() && setting.config.is_null() {
-            continue;
-        }
-        let mut entry = Table::new();
-        if let Some(enabled) = setting.enabled {
-            entry.insert("enabled".to_string(), TomlValue::Boolean(enabled));
-        }
-        if let TomlValue::Table(config) = json_to_toml(&setting.config) {
-            for (k, v) in config {
-                entry.insert(k, v);
-            }
-        }
-        if !entry.is_empty() {
-            caps.insert(id.clone(), TomlValue::Table(entry));
+fn parse_capability_entry(value: &TomlValue) -> Option<CapabilityOverride> {
+    let entry = value.as_table()?;
+    let capability_ref = entry
+        .get("ref")
+        .or_else(|| entry.get("id"))
+        .and_then(TomlValue::as_str)?
+        .to_string();
+    let enabled = entry.get("enabled").and_then(TomlValue::as_bool);
+    let append = entry
+        .get("append")
+        .and_then(TomlValue::as_bool)
+        .unwrap_or(false);
+    let mut config_table = entry.clone();
+    for key in ["ref", "id", "enabled", "append"] {
+        config_table.remove(key);
+    }
+    let config = if config_table.is_empty() {
+        Value::Null
+    } else {
+        toml_value_to_json(&TomlValue::Table(config_table))
+    };
+    Some(CapabilityOverride {
+        capability_ref,
+        enabled,
+        append,
+        config,
+    })
+}
+
+fn parse_legacy_capability_entry(id: &str, value: &TomlValue) -> Option<CapabilityOverride> {
+    let entry = value.as_table()?;
+    let enabled = entry.get("enabled").and_then(TomlValue::as_bool);
+    let mut config_table = entry.clone();
+    config_table.remove("enabled");
+    let config = if config_table.is_empty() {
+        Value::Null
+    } else {
+        toml_value_to_json(&TomlValue::Table(config_table))
+    };
+    Some(CapabilityOverride {
+        capability_ref: id.to_string(),
+        enabled,
+        append: false,
+        config,
+    })
+}
+
+pub fn capabilities_to_toml(overrides: &[CapabilityOverride]) -> TomlValue {
+    let items: Vec<TomlValue> = overrides.iter().map(override_to_toml).collect();
+    TomlValue::Array(items)
+}
+
+fn override_to_toml(entry: &CapabilityOverride) -> TomlValue {
+    let mut table = Table::new();
+    table.insert(
+        "ref".to_string(),
+        TomlValue::String(entry.capability_ref.clone()),
+    );
+    if let Some(enabled) = entry.enabled {
+        table.insert("enabled".to_string(), TomlValue::Boolean(enabled));
+    }
+    if entry.append {
+        table.insert("append".to_string(), TomlValue::Boolean(true));
+    }
+    if let TomlValue::Table(config) = json_to_toml(&entry.config) {
+        for (k, v) in config {
+            table.insert(k, v);
         }
     }
-    caps
+    TomlValue::Table(table)
 }
 
 fn toml_value_to_json(value: &TomlValue) -> Value {
@@ -165,35 +221,37 @@ fn json_to_toml(value: &Value) -> TomlValue {
     }
 }
 
-/// Merge user overrides into the compile-time default harness list.
+/// Apply ordered user overrides to the compile-time default harness list.
 pub fn apply_capability_settings(
     defaults: Vec<AgentCapabilityConfig>,
-    settings: &BTreeMap<String, CapabilitySetting>,
+    overrides: &[CapabilityOverride],
 ) -> Vec<AgentCapabilityConfig> {
-    let mut by_id: BTreeMap<String, AgentCapabilityConfig> = defaults
-        .into_iter()
-        .map(|cap| (cap.capability_id().to_string(), cap))
-        .collect();
-
-    for (id, setting) in settings {
-        if setting.is_explicitly_disabled() {
-            by_id.remove(id);
+    let mut caps = defaults;
+    for entry in overrides {
+        if entry.is_remove() {
+            caps.retain(|cap| cap.capability_id() != entry.capability_ref);
             continue;
         }
-        match by_id.get_mut(id) {
-            Some(existing) => {
-                existing.config = merge_config(&existing.config, &setting.config);
-            }
-            None => {
-                by_id.insert(
-                    id.clone(),
-                    AgentCapabilityConfig::with_config(id.clone(), setting.config.clone()),
-                );
-            }
+        if entry.append {
+            caps.push(AgentCapabilityConfig::with_config(
+                entry.capability_ref.clone(),
+                entry.config.clone(),
+            ));
+            continue;
+        }
+        if let Some(existing) = caps
+            .iter_mut()
+            .find(|cap| cap.capability_id() == entry.capability_ref)
+        {
+            existing.config = merge_config(&existing.config, &entry.config);
+        } else {
+            caps.push(AgentCapabilityConfig::with_config(
+                entry.capability_ref.clone(),
+                entry.config.clone(),
+            ));
         }
     }
-
-    by_id.into_values().collect()
+    caps
 }
 
 fn merge_config(default: &Value, override_config: &Value) -> Value {
@@ -212,88 +270,69 @@ fn merge_config(default: &Value, override_config: &Value) -> Value {
     }
 }
 
-pub fn effective_config(default: &Value, stored: &CapabilitySetting) -> Value {
-    if stored.is_explicitly_disabled() {
-        return Value::Null;
-    }
-    merge_config(default, &stored.config)
-}
-
-pub fn capability_entry_json(
-    catalog: &CapabilityCatalog,
-    id: &str,
-    default: Option<&AgentCapabilityConfig>,
-    stored: Option<&CapabilitySetting>,
-) -> Result<Value, String> {
+pub fn capability_catalog_json(catalog: &CapabilityCatalog, id: &str) -> Result<Value, String> {
     let cap = catalog
         .get(id)
         .ok_or_else(|| format!("unknown capability `{id}`"))?;
     let info = CapabilityInfo::from_core(cap.as_ref());
-    let default_config = default.map(|d| d.config.clone()).unwrap_or(json!({}));
-    let stored_setting = stored.cloned().unwrap_or_default();
-    let enabled = if stored_setting.is_explicitly_disabled() {
-        false
-    } else {
-        default.is_some()
-            || stored_setting.enabled == Some(true)
-            || !stored_setting.config.is_null()
-    };
     Ok(json!({
         "id": id,
         "name": info.name,
         "description": info.description,
         "category": info.category,
-        "default_in_harness": default.is_some(),
-        "enabled": enabled,
         "config_schema": info.config_schema,
         "config_ui_schema": info.config_ui_schema,
         "config_description": cap.describe_schema(None),
-        "default_config": default_config,
-        "stored": stored_setting,
-        "current_config": effective_config(&default_config, &stored_setting),
-        "note": "Changes apply on the next run. Use `set_capability` to add, remove, or reconfigure.",
     }))
 }
 
-pub fn validate_capability_mutation(
+pub fn stored_override_json(index: usize, entry: &CapabilityOverride) -> Value {
+    json!({
+        "index": index,
+        "ref": entry.capability_ref,
+        "enabled": entry.enabled,
+        "append": entry.append,
+        "config": entry.config,
+    })
+}
+
+pub fn effective_harness_json(caps: &[AgentCapabilityConfig]) -> Vec<Value> {
+    caps.iter()
+        .enumerate()
+        .map(|(index, cap)| {
+            json!({
+                "index": index,
+                "ref": cap.capability_id(),
+                "config": cap.config,
+            })
+        })
+        .collect()
+}
+
+pub fn build_capability_override(
     catalog: &CapabilityCatalog,
-    id: &str,
+    capability_ref: &str,
     enabled: Option<bool>,
+    append: bool,
     config: Option<&Value>,
-    defaults: &[AgentCapabilityConfig],
-    stored: &BTreeMap<String, CapabilitySetting>,
-) -> Result<CapabilitySetting, String> {
-    if !catalog.has(id) {
+) -> Result<CapabilityOverride, String> {
+    if !catalog.has(capability_ref) {
         return Err(format!(
-            "unknown capability `{id}`; call `get_capabilities` for registered ids"
+            "unknown capability `{capability_ref}`; call `get_capabilities` for registered ids"
         ));
     }
     if enabled == Some(false) {
-        return Ok(CapabilitySetting::disabled());
+        return Ok(CapabilityOverride::remove(capability_ref));
     }
-    let default = defaults.iter().find(|c| c.capability_id() == id);
-    let prior = stored.get(id);
-    let merged_config = match (config, prior) {
-        (Some(new), Some(old)) if !new.is_null() => merge_config(&old.config, new),
-        (Some(new), None) if !new.is_null() => {
-            let base = default.map(|d| d.config.clone()).unwrap_or(json!({}));
-            merge_config(&base, new)
-        }
-        (Some(new), _) if !new.is_null() => new.clone(),
-        (_, Some(old)) => old.config.clone(),
-        _ => default.map(|d| d.config.clone()).unwrap_or(json!({})),
-    };
-    catalog.validate(id, &merged_config)?;
-    let stored_enabled = match enabled {
-        Some(true) => Some(true),
-        Some(false) => Some(false),
-        None if prior.is_some_and(|p| p.enabled == Some(true)) => Some(true),
-        None if config.is_some() => None,
-        None => Some(true),
-    };
-    Ok(CapabilitySetting {
-        enabled: stored_enabled,
-        config: merged_config,
+    let config = config.cloned().unwrap_or(Value::Null);
+    if !config.is_null() {
+        catalog.validate(capability_ref, &config)?;
+    }
+    Ok(CapabilityOverride {
+        capability_ref: capability_ref.to_string(),
+        enabled,
+        append,
+        config,
     })
 }
 
@@ -303,23 +342,24 @@ mod tests {
     use everruns_core::capabilities::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
 
     fn defaults() -> Vec<AgentCapabilityConfig> {
-        vec![AgentCapabilityConfig::with_config(
-            "web_fetch",
-            json!({ "enable_file_download": true }),
-        )]
+        vec![
+            AgentCapabilityConfig::new("duckduckgo"),
+            AgentCapabilityConfig::with_config(
+                "web_fetch",
+                json!({ "enable_file_download": true }),
+            ),
+        ]
     }
 
     #[test]
     fn apply_adds_optional_capability() {
-        let mut settings = BTreeMap::new();
-        settings.insert(
-            MESSAGE_METADATA_CAPABILITY_ID.to_string(),
-            CapabilitySetting {
-                enabled: Some(true),
-                config: json!({ "fields": ["timestamp"] }),
-            },
-        );
-        let resolved = apply_capability_settings(defaults(), &settings);
+        let overrides = vec![CapabilityOverride {
+            capability_ref: MESSAGE_METADATA_CAPABILITY_ID.to_string(),
+            enabled: Some(true),
+            append: false,
+            config: json!({ "fields": ["timestamp"] }),
+        }];
+        let resolved = apply_capability_settings(defaults(), &overrides);
         assert!(
             resolved
                 .iter()
@@ -328,24 +368,30 @@ mod tests {
     }
 
     #[test]
-    fn apply_removes_disabled_default() {
-        let mut settings = BTreeMap::new();
-        settings.insert("web_fetch".to_string(), CapabilitySetting::disabled());
-        let resolved = apply_capability_settings(defaults(), &settings);
-        assert!(!resolved.iter().any(|c| c.capability_id() == "web_fetch"));
+    fn apply_removes_all_instances_with_ref() {
+        let mut base = defaults();
+        base.push(AgentCapabilityConfig::new("duckduckgo"));
+        let overrides = vec![CapabilityOverride::remove("duckduckgo")];
+        let resolved = apply_capability_settings(base, &overrides);
+        assert!(!resolved.iter().any(|c| c.capability_id() == "duckduckgo"));
     }
 
     #[test]
-    fn apply_merges_config_over_default() {
-        let mut settings = BTreeMap::new();
-        settings.insert(
-            "web_fetch".to_string(),
-            CapabilitySetting {
-                enabled: None,
-                config: json!({ "enable_file_download": false }),
-            },
+    fn apply_merges_config_into_first_match() {
+        let overrides = vec![CapabilityOverride {
+            capability_ref: "web_fetch".to_string(),
+            enabled: None,
+            append: false,
+            config: json!({ "enable_file_download": false }),
+        }];
+        let resolved = apply_capability_settings(defaults(), &overrides);
+        assert_eq!(
+            resolved
+                .iter()
+                .filter(|c| c.capability_id() == "web_fetch")
+                .count(),
+            1
         );
-        let resolved = apply_capability_settings(defaults(), &settings);
         let cap = resolved
             .iter()
             .find(|c| c.capability_id() == "web_fetch")
@@ -354,23 +400,77 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_table_roundtrip() {
-        let mut capabilities = BTreeMap::new();
-        capabilities.insert(
-            MESSAGE_METADATA_CAPABILITY_ID.to_string(),
-            CapabilitySetting {
+    fn apply_append_allows_duplicate_refs() {
+        let overrides = vec![
+            CapabilityOverride {
+                capability_ref: "duckduckgo".to_string(),
+                enabled: None,
+                append: true,
+                config: json!({}),
+            },
+            CapabilityOverride {
+                capability_ref: "duckduckgo".to_string(),
+                enabled: None,
+                append: true,
+                config: json!({}),
+            },
+        ];
+        let resolved = apply_capability_settings(defaults(), &overrides);
+        assert_eq!(
+            resolved
+                .iter()
+                .filter(|c| c.capability_id() == "duckduckgo")
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn capabilities_array_roundtrip() {
+        let overrides = vec![
+            CapabilityOverride {
+                capability_ref: MESSAGE_METADATA_CAPABILITY_ID.to_string(),
                 enabled: Some(true),
+                append: false,
                 config: json!({ "fields": ["timestamp"] }),
             },
-        );
-        capabilities.insert("duckduckgo".to_string(), CapabilitySetting::disabled());
+            CapabilityOverride::remove("duckduckgo"),
+        ];
 
         let mut table = Table::new();
-        let caps = capabilities_to_table(&capabilities);
-        table.insert("capabilities".to_string(), TomlValue::Table(caps));
+        table.insert("capabilities".to_string(), capabilities_to_toml(&overrides));
 
         let parsed = parse_capabilities_table(&table);
-        assert_eq!(parsed, capabilities);
+        assert_eq!(parsed, overrides);
+    }
+
+    #[test]
+    fn legacy_map_form_is_converted_to_list() {
+        let mut legacy = Table::new();
+        let mut message = Table::new();
+        message.insert(
+            "fields".to_string(),
+            TomlValue::Array(vec![TomlValue::String("timestamp".to_string())]),
+        );
+        legacy.insert(
+            MESSAGE_METADATA_CAPABILITY_ID.to_string(),
+            TomlValue::Table(message),
+        );
+        let mut duck = Table::new();
+        duck.insert("enabled".to_string(), TomlValue::Boolean(false));
+        legacy.insert("duckduckgo".to_string(), TomlValue::Table(duck));
+
+        let mut table = Table::new();
+        table.insert("capabilities".to_string(), TomlValue::Table(legacy));
+
+        let parsed = parse_capabilities_table(&table);
+        assert_eq!(parsed.len(), 2);
+        assert!(
+            parsed
+                .iter()
+                .any(|entry| entry.capability_ref == MESSAGE_METADATA_CAPABILITY_ID)
+        );
+        assert!(parsed.iter().any(|entry| entry.is_remove()));
     }
 
     #[test]
@@ -384,15 +484,5 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("invalid message_metadata config"), "{err}");
-    }
-
-    #[test]
-    fn capability_entry_json_includes_schema() {
-        let mut catalog = CapabilityCatalog::new();
-        catalog.register_arc(Arc::new(MessageMetadataCapability));
-        let entry = capability_entry_json(&catalog, MESSAGE_METADATA_CAPABILITY_ID, None, None)
-            .expect("entry");
-        assert!(entry["config_schema"].is_object());
-        assert_eq!(entry["enabled"], false);
     }
 }

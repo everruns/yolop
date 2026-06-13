@@ -13,7 +13,8 @@
 // the interactive `/setup` command to switch the *live* model mid-session.
 
 use crate::capability_settings::{
-    CapabilityCatalog, capability_entry_json, validate_capability_mutation,
+    CapabilityCatalog, apply_capability_settings, build_capability_override,
+    capability_catalog_json, effective_harness_json, stored_override_json,
 };
 use crate::config_schema::{KeyTarget, ValueKind, known_keys, parse_key, schema};
 use crate::config_service::{ConfigService, current_value, scoped_current};
@@ -414,9 +415,10 @@ impl Tool for GetCapabilitiesTool {
         Some("Get capabilities")
     }
     fn description(&self) -> &str {
-        "Inspect yolop harness capabilities. With no `id`, returns every registered capability \
-         with its description, JSON config schema, UI schema hints, default harness membership, \
-         stored override, and effective config. With an `id`, returns just that entry."
+        "Inspect yolop harness capabilities. With no `id`, returns the registered capability \
+         catalog, stored `[[capabilities]]` overrides, and the effective harness list. With an \
+         `id`, returns catalog metadata plus stored overrides and effective instances for that \
+         capability ref."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -424,7 +426,7 @@ impl Tool for GetCapabilitiesTool {
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": "Optional capability id, e.g. `message_metadata` or `web_fetch`."
+                    "description": "Optional capability ref, e.g. `message_metadata` or `web_fetch`."
                 }
             },
             "additionalProperties": false
@@ -434,51 +436,66 @@ impl Tool for GetCapabilitiesTool {
         let settings = self.settings.snapshot();
         let path = self.settings.path().display().to_string();
         let defaults = coding_harness_defaults(false);
-        let default_by_id = |id: &str| defaults.iter().find(|c| c.capability_id() == id);
+        let effective = apply_capability_settings(defaults, &settings.capabilities);
 
         if let Some(id) = arguments.get("id").and_then(Value::as_str) {
             let id = id.trim();
             if !id.is_empty() {
-                match capability_entry_json(
-                    &self.catalog,
-                    id,
-                    default_by_id(id),
-                    settings.capability_setting(id),
-                ) {
-                    Ok(entry) => {
-                        return ToolExecutionResult::success(json!({
-                            "settings_path": path,
-                            "capability": entry,
-                        }));
-                    }
+                let catalog = match capability_catalog_json(&self.catalog, id) {
+                    Ok(entry) => entry,
                     Err(err) => return ToolExecutionResult::tool_error(err),
-                }
+                };
+                let stored: Vec<Value> = settings
+                    .capability_overrides_for(id)
+                    .into_iter()
+                    .map(|(index, entry)| stored_override_json(index, entry))
+                    .collect();
+                let effective_for_id: Vec<Value> = effective
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cap)| cap.capability_id() == id)
+                    .map(|(index, cap)| {
+                        json!({
+                            "index": index,
+                            "ref": cap.capability_id(),
+                            "config": cap.config,
+                        })
+                    })
+                    .collect();
+                return ToolExecutionResult::success(json!({
+                    "settings_path": path,
+                    "capability": catalog,
+                    "stored_overrides": stored,
+                    "effective_instances": effective_for_id,
+                }));
             }
         }
 
-        let mut entries = Vec::new();
+        let mut catalog_entries = Vec::new();
         for cap in self.catalog.list() {
-            let id = cap.id();
-            match capability_entry_json(
-                &self.catalog,
-                id,
-                default_by_id(id),
-                settings.capability_setting(id),
-            ) {
-                Ok(entry) => entries.push(entry),
+            match capability_catalog_json(&self.catalog, cap.id()) {
+                Ok(entry) => catalog_entries.push(entry),
                 Err(err) => return ToolExecutionResult::tool_error(err),
             }
         }
-        entries.sort_by(|a, b| {
+        catalog_entries.sort_by(|a, b| {
             a["id"]
                 .as_str()
                 .unwrap_or_default()
                 .cmp(b["id"].as_str().unwrap_or_default())
         });
+        let stored: Vec<Value> = settings
+            .capability_overrides()
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| stored_override_json(index, entry))
+            .collect();
         ToolExecutionResult::success(json!({
             "settings_path": path,
-            "capabilities": entries,
-            "note": "Add, remove, or reconfigure with `set_capability`. Changes apply on the next run.",
+            "catalog": catalog_entries,
+            "stored_overrides": stored,
+            "effective_harness": effective_harness_json(&effective),
+            "note": "Overrides are an ordered [[capabilities]] list. Use `set_capability` to append an entry; changes apply on the next run.",
         }))
     }
 }
@@ -499,10 +516,10 @@ impl Tool for SetCapabilityTool {
         Some("Set capability")
     }
     fn description(&self) -> &str {
-        "Add, remove, or reconfigure a harness capability in settings.toml. Pass `id` and \
-         `enabled=false` to remove/disable, `enabled=true` to add/keep enabled, and optional \
-         `config` (JSON object) to override capability settings. Config is validated against \
-         the capability's schema via `validate_config`. Run `get_capabilities` first."
+        "Append a harness capability override to settings.toml. Pass `id` and `enabled=false` to \
+         remove every harness instance with that ref, `append=true` to add a duplicate instance, \
+         and optional `config` (JSON object) for per-instance settings. Config is validated \
+         against the capability's schema via `validate_config`. Run `get_capabilities` first."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -510,15 +527,23 @@ impl Tool for SetCapabilityTool {
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": "Capability id, e.g. `message_metadata`."
+                    "description": "Capability ref, e.g. `message_metadata`."
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "When false, removes the capability from the harness."
+                    "description": "When false, appends a remove entry for this ref."
+                },
+                "append": {
+                    "type": "boolean",
+                    "description": "When true, always append a new harness instance instead of merging into the first matching ref."
+                },
+                "remove_index": {
+                    "type": "integer",
+                    "description": "Optional index of a stored [[capabilities]] entry to delete before appending the new override."
                 },
                 "config": {
                     "type": "object",
-                    "description": "Per-capability JSON config merged over defaults."
+                    "description": "Per-capability JSON config for this override entry."
                 }
             },
             "required": ["id"],
@@ -531,53 +556,66 @@ impl Tool for SetCapabilityTool {
             _ => return ToolExecutionResult::tool_error("'id' is required".to_string()),
         };
         let enabled = arguments.get("enabled").and_then(Value::as_bool);
+        let append = arguments
+            .get("append")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let config = arguments.get("config");
-        if enabled.is_none() && config.is_none() {
+        let remove_index = arguments
+            .get("remove_index")
+            .and_then(Value::as_u64)
+            .map(|index| index as usize);
+        if enabled.is_none() && config.is_none() && !append && remove_index.is_none() {
             return ToolExecutionResult::tool_error(
-                "provide `enabled` and/or `config`; call `get_capabilities` to inspect".to_string(),
+                "provide `enabled`, `config`, `remove_index`, and/or `append=true`; call `get_capabilities` to inspect"
+                    .to_string(),
             );
         }
 
-        let snapshot = self.settings.snapshot();
-        let defaults = coding_harness_defaults(false);
-        let setting = match validate_capability_mutation(
-            &self.catalog,
-            id,
-            enabled,
-            config,
-            &defaults,
-            &snapshot.capabilities,
-        ) {
-            Ok(setting) => setting,
+        if let Some(index) = remove_index {
+            if let Err(err) = self.settings.remove_capability_override(index) {
+                return ToolExecutionResult::tool_error(format!("could not save settings: {err}"));
+            }
+            if enabled.is_none() && config.is_none() && !append {
+                return ToolExecutionResult::success(json!({
+                    "ok": true,
+                    "removed_index": index,
+                    "message": format!("removed stored override at index {index}"),
+                    "settings_path": self.settings.path().display().to_string(),
+                    "note": "Restart yolop for harness changes to take effect.",
+                }));
+            }
+        }
+
+        let entry = match build_capability_override(&self.catalog, id, enabled, append, config) {
+            Ok(entry) => entry,
             Err(err) => return ToolExecutionResult::tool_error(err),
         };
 
-        let clearing = setting.is_explicitly_disabled();
-        let save_result = if clearing {
-            self.settings.clear_capability(id)
-        } else {
-            self.settings
-                .set_capability(id.to_string(), setting.clone())
-                .map(|_| true)
+        let index = match self.settings.append_capability_override(entry.clone()) {
+            Ok(index) => index,
+            Err(err) => {
+                return ToolExecutionResult::tool_error(format!("could not save settings: {err}"));
+            }
         };
-        if let Err(err) = save_result {
-            return ToolExecutionResult::tool_error(format!("could not save settings: {err}"));
-        }
 
-        let message = if clearing {
-            format!("removed capability `{id}` from the harness (saved to settings)")
+        let message = if entry.is_remove() {
+            format!("appended remove entry for `{id}` at index {index}")
+        } else if append {
+            format!("appended new `{id}` harness instance at index {index}")
         } else if enabled == Some(true) && config.is_none() {
-            format!("enabled capability `{id}` with default config")
+            format!("appended enable entry for `{id}` at index {index}")
         } else {
-            format!("updated capability `{id}` config")
+            format!("appended config override for `{id}` at index {index}")
         };
 
         ToolExecutionResult::success(json!({
             "ok": true,
             "id": id,
+            "index": index,
             "message": message,
             "settings_path": self.settings.path().display().to_string(),
-            "stored": setting,
+            "stored": entry,
             "note": "Restart yolop for harness changes to take effect.",
         }))
     }
@@ -791,7 +829,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_capability_adds_message_metadata_to_settings() {
+    async fn set_capability_appends_message_metadata_override() {
         let (_tmp, settings) = store();
         let tool = SetCapabilityTool {
             settings: settings.clone(),
@@ -806,10 +844,15 @@ mod tests {
             .await;
         assert!(matches!(result, ToolExecutionResult::Success(_)));
         let snapshot = settings.snapshot();
-        let stored = snapshot
-            .capability_setting(MESSAGE_METADATA_CAPABILITY_ID)
-            .expect("stored");
-        assert_eq!(stored.config["fields"], json!(["timestamp"]));
+        assert_eq!(snapshot.capabilities.len(), 1);
+        assert_eq!(
+            snapshot.capabilities[0].capability_ref,
+            MESSAGE_METADATA_CAPABILITY_ID
+        );
+        assert_eq!(
+            snapshot.capabilities[0].config["fields"],
+            json!(["timestamp"])
+        );
     }
 
     #[tokio::test]
@@ -843,11 +886,11 @@ mod tests {
             panic!("expected success");
         };
         assert!(value["capability"]["config_schema"].is_object());
-        assert_eq!(value["capability"]["default_in_harness"], false);
+        assert!(value["stored_overrides"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn set_capability_disable_removes_override() {
+    async fn set_capability_disable_appends_remove_entry() {
         let (_tmp, settings) = store();
         let tool = SetCapabilityTool {
             settings: settings.clone(),
@@ -863,11 +906,8 @@ mod tests {
             "enabled": false
         }))
         .await;
-        assert!(
-            settings
-                .snapshot()
-                .capability_setting(MESSAGE_METADATA_CAPABILITY_ID)
-                .is_none()
-        );
+        let snapshot = settings.snapshot();
+        assert_eq!(snapshot.capabilities.len(), 2);
+        assert!(snapshot.capabilities[1].is_remove());
     }
 }

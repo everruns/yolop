@@ -53,19 +53,33 @@ command instead.
 ## Harness capabilities
 
 Optional harness capabilities (for example `message_metadata` from everruns-core)
-live under `[capabilities.<id>]` in the same `settings.toml`. Call
-`get_capabilities` to read each capability's `config_schema`, `config_ui_schema`,
-and current effective config. Call `set_capability` to add, remove
-(`enabled=false`), or override config (validated via `validate_config`).
+live in an ordered `[[capabilities]]` list in the same `settings.toml` — matching
+the runtime harness list, so the same ref can appear more than once with different
+configs. Call `get_capabilities` to read each capability's `config_schema`,
+`config_ui_schema`, stored overrides, and effective harness. Call
+`set_capability` to append an override entry (validated via `validate_config`).
 Changes apply on the **next run**.
 
 Examples:
 
+```toml
+[[capabilities]]
+ref = "message_metadata"
+fields = ["timestamp"]
+
+[[capabilities]]
+ref = "duckduckgo"
+enabled = false
+```
+
+Tool equivalents:
+
 - `set_capability id=message_metadata enabled=true config={"fields":["timestamp"]}`
   — annotate messages with UTC timestamps in the LLM view.
-- `set_capability id=duckduckgo enabled=false` — remove web search from the harness.
-- `set_capability id=web_fetch config={"enable_file_download":false}` — override
-  a default capability's config without disabling it.
+- `set_capability id=duckduckgo enabled=false` — append a remove entry for that ref.
+- `set_capability id=web_fetch config={"enable_file_download":false}` — merge config
+  into the first matching harness instance.
+- `set_capability id=some_cap append=true config={...}` — add a duplicate instance.
 
 ## Related surfaces
 

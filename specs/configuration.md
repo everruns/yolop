@@ -65,10 +65,11 @@ to switch the *live* model mid-session.
   with description, JSON config schema, UI schema hints, default harness
   membership, stored override, and effective config; with an `id`, returns one
   entry.
-- **`set_capability`** — add, remove (`enabled=false`), or reconfigure a harness
-  capability (`[capabilities.<id>]` in settings.toml). Config is validated
-  through each capability's `config_schema` / `validate_config`. Changes apply
-  on the next run.
+- **`set_capability`** — append an ordered harness override (`[[capabilities]]` in
+  settings.toml). `enabled=false` removes every instance with that `ref`;
+  `append=true` adds a duplicate instance; otherwise config merges into the
+  first matching `ref`. Config is validated through each capability's
+  `config_schema` / `validate_config`. Changes apply on the next run.
 
 ### Configuration as a service
 

@@ -13,7 +13,7 @@
 // per-run override is always possible.
 
 use crate::capability_settings::{
-    CapabilitySetting, capabilities_to_table, parse_capabilities_table,
+    CapabilityOverride, capabilities_to_toml, parse_capabilities_table,
 };
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -93,10 +93,8 @@ pub struct Settings {
     /// Soft-approval paranoia level, injected into the system prompt each
     /// turn. Central, cross-session, surfaced in the status bar.
     pub approval_mode: ApprovalMode,
-    /// Optional harness capability overrides (`[capabilities.<id>]` in
-    /// settings.toml): add optional capabilities, disable defaults, or override
-    /// per-capability JSON config.
-    pub capabilities: BTreeMap<String, CapabilitySetting>,
+    /// Ordered harness capability overrides (`[[capabilities]]` in settings.toml).
+    pub capabilities: Vec<CapabilityOverride>,
 }
 
 impl Default for Settings {
@@ -109,7 +107,7 @@ impl Default for Settings {
             base_urls: BTreeMap::new(),
             attribution: true,
             approval_mode: ApprovalMode::Normal,
-            capabilities: BTreeMap::new(),
+            capabilities: Vec::new(),
         }
     }
 }
@@ -189,9 +187,11 @@ impl Settings {
         insert_map("tokens", &self.tokens);
         insert_map("models", &self.models);
         insert_map("base_urls", &self.base_urls);
-        let caps = capabilities_to_table(&self.capabilities);
-        if !caps.is_empty() {
-            table.insert("capabilities".to_string(), toml::Value::Table(caps));
+        let caps = capabilities_to_toml(&self.capabilities);
+        if let Value::Array(items) = caps
+            && !items.is_empty()
+        {
+            table.insert("capabilities".to_string(), Value::Array(items));
         }
         table
     }
@@ -224,8 +224,16 @@ impl Settings {
         self.approval_mode
     }
 
-    pub fn capability_setting(&self, id: &str) -> Option<&CapabilitySetting> {
-        self.capabilities.get(id)
+    pub fn capability_overrides(&self) -> &[CapabilityOverride] {
+        &self.capabilities
+    }
+
+    pub fn capability_overrides_for(&self, id: &str) -> Vec<(usize, &CapabilityOverride)> {
+        self.capabilities
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.capability_ref == id)
+            .collect()
     }
 }
 
@@ -384,22 +392,23 @@ impl SettingsStore {
         Ok(existed)
     }
 
-    /// Persist a harness capability override (add, remove, or reconfigure).
-    pub fn set_capability(&self, id: String, setting: CapabilitySetting) -> Result<()> {
+    /// Append a harness capability override to the ordered settings list.
+    pub fn append_capability_override(&self, entry: CapabilityOverride) -> Result<usize> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        if setting.enabled == Some(false) && setting.config.is_null() {
-            guard.capabilities.remove(&id);
-        } else {
-            guard.capabilities.insert(id, setting);
-        }
-        save_to(&self.path, &guard)
+        guard.capabilities.push(entry);
+        let index = guard.capabilities.len() - 1;
+        save_to(&self.path, &guard)?;
+        Ok(index)
     }
 
-    /// Remove any persisted override for a capability id.
-    pub fn clear_capability(&self, id: &str) -> Result<bool> {
+    /// Remove a stored override by its index in `[[capabilities]]`.
+    pub fn remove_capability_override(&self, index: usize) -> Result<bool> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        let existed = guard.capabilities.remove(id).is_some();
-        save_to(&self.path, &guard)?;
+        let existed = index < guard.capabilities.len();
+        if existed {
+            guard.capabilities.remove(index);
+            save_to(&self.path, &guard)?;
+        }
         Ok(existed)
     }
 }
@@ -654,6 +663,18 @@ mod tests {
             .expect("save");
         assert!(store.clear_base_url("custom").expect("clear present"));
         assert!(store.snapshot().base_url_for("custom").is_none());
+    }
+
+    #[test]
+    fn remove_capability_override_by_index() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path);
+        let index = store
+            .append_capability_override(CapabilityOverride::remove("duckduckgo"))
+            .expect("append");
+        assert!(store.remove_capability_override(index).expect("remove"));
+        assert!(store.snapshot().capabilities.is_empty());
     }
 
     #[test]

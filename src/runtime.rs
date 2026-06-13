@@ -2715,17 +2715,16 @@ mod tests {
 
     #[test]
     fn harness_applies_message_metadata_from_settings() {
-        use crate::capability_settings::CapabilitySetting;
+        use crate::capability_settings::CapabilityOverride;
         use everruns_core::capabilities::MESSAGE_METADATA_CAPABILITY_ID;
 
         let mut settings = Settings::default();
-        settings.capabilities.insert(
-            MESSAGE_METADATA_CAPABILITY_ID.to_string(),
-            CapabilitySetting {
-                enabled: Some(true),
-                config: serde_json::json!({ "fields": ["timestamp"] }),
-            },
-        );
+        settings.capabilities.push(CapabilityOverride {
+            capability_ref: MESSAGE_METADATA_CAPABILITY_ID.to_string(),
+            enabled: Some(true),
+            append: false,
+            config: serde_json::json!({ "fields": ["timestamp"] }),
+        });
         let ids = coding_harness_capabilities(false, None, &settings);
         assert!(
             ids.iter()
