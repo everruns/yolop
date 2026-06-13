@@ -1897,7 +1897,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_live_event_renders_write_todos_from_started_args_when_result_is_compact() {
+    fn handle_live_event_renders_write_todos_from_started_args_when_result_is_counts_only() {
         use everruns_core::events::ToolStartedData;
         use everruns_core::tool_types::ToolCall;
 
@@ -1941,21 +1941,21 @@ mod tests {
         let completed = RuntimeEvent::new(
             session_id,
             EventContext::empty(),
-            ToolCompletedData {
-                tool_call_id: "call_todos".to_string(),
-                tool_name: "write_todos".to_string(),
-                tool_call_fingerprint: None,
-                tool_result_fingerprint: None,
-                display_name: Some("Write Todos".to_string()),
-                success: true,
-                status: "success".to_string(),
-                result: None,
-                error: None,
-                duration_ms: None,
-                capability_id: None,
-                capability_name: None,
-                narration: None,
-            },
+            ToolCompletedData::success(
+                "call_todos".to_string(),
+                "write_todos".to_string(),
+                vec![ContentPart::text(
+                    serde_json::json!({
+                        "success": true,
+                        "total_tasks": 3,
+                        "pending": 1,
+                        "in_progress": 1,
+                        "completed": 1
+                    })
+                    .to_string(),
+                )],
+                None,
+            ),
         );
 
         handle_live_event(&started, &mut emitted, &mut router, &tx);

@@ -342,11 +342,19 @@ fn todo_lines_for_result_or_args(
 ) -> Vec<ChatLine> {
     let cached_args = write_todos_args.remove(&data.tool_call_id);
     let result = result_value(data);
-    let Some(v) = result.as_ref().or(cached_args.as_ref()) else {
+    let has_todos = |value: &&Value| value.get("todos").and_then(Value::as_array).is_some();
+    let Some(v) = result
+        .as_ref()
+        .filter(has_todos)
+        .or_else(|| cached_args.as_ref().filter(has_todos))
+        .or(result.as_ref())
+        .or(cached_args.as_ref())
+    else {
+        let marker = if data.success { "✓" } else { "✗" };
         return vec![ChatLine {
             author: Author::Tool,
             text: format!(
-                "✓ {}",
+                "{marker} {}",
                 data.display_name.as_deref().unwrap_or("Write Todos")
             ),
         }];
