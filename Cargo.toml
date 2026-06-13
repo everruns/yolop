@@ -44,6 +44,7 @@ everruns-openai = "0.11.0"
 # everruns server/worker never enable it (specs/mcp.md, upstream runtime-mcp.md D2).
 everruns-runtime = { version = "0.11.0", features = ["mcp-stdio"] }
 everruns-integrations-duckduckgo = "0.11.0"
+everruns-integrations-daytona = "0.11.0"
 futures = "0.3"
 
 [dev-dependencies]

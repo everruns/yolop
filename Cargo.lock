@@ -1365,6 +1365,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "everruns-integrations-daytona"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fefcb04a4a5d5e8370afe6d9cf501f517b49de9f618bd2db100be0ed57b583b0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "everruns-core",
+ "inventory",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "everruns-integrations-duckduckgo"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5872,6 +5889,7 @@ dependencies = [
  "dirs",
  "everruns-anthropic",
  "everruns-core",
+ "everruns-integrations-daytona",
  "everruns-integrations-duckduckgo",
  "everruns-openai",
  "everruns-runtime",

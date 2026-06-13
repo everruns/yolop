@@ -13,6 +13,10 @@ use crate::capabilities::{
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
+use crate::connectors::{
+    CONNECTORS_CAPABILITY_ID, ConnectionCatalog, ConnectionStore, ConnectorsCapability,
+    YolopConnectionResolver, default_connections_path,
+};
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
@@ -23,8 +27,9 @@ use everruns_core::capabilities::{
     BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, FileSystemCapability,
     INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LoopDetectionCapability,
     MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability,
-    SKILLS_CAPABILITY_ID, StatelessTodoListCapability, TOOL_SEARCH_CAPABILITY_ID,
-    ToolOutputPersistenceCapability, ToolSearchCapability, UserHooksCapability, WebFetchCapability,
+    SKILLS_CAPABILITY_ID, SessionStorageCapability, StatelessTodoListCapability,
+    TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
+    UserHooksCapability, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
@@ -39,6 +44,7 @@ use everruns_core::{
     PlatformDefinition, ReasoningConfig, ScopedMcpServers, SessionFileSystem,
     SessionFileSystemFactory, SessionFileSystemFactoryContext,
 };
+use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_runtime::{
     InProcessRuntime, InProcessRuntimeBuilder, RealDiskFileStore, RuntimeBackends,
@@ -1048,6 +1054,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         ),
         AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
         AgentCapabilityConfig::new(CONFIG_CAPABILITY_ID),
+        AgentCapabilityConfig::new(CONNECTORS_CAPABILITY_ID),
         AgentCapabilityConfig::new(MEMORY_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
         // `/btw` — ephemeral side question, answered out-of-band with the
@@ -1065,6 +1072,16 @@ pub(crate) fn coding_harness_defaults(client_commands: bool) -> Vec<AgentCapabil
     default_coding_harness_capabilities(client_commands)
 }
 
+/// Daytona depends on `session_storage`. When enabled via `[[capabilities]]`,
+/// ensure that dependency is present on the harness.
+fn ensure_harness_capability_dependencies(caps: &mut Vec<AgentCapabilityConfig>) {
+    let daytona = caps.iter().any(|c| c.capability_id() == "daytona");
+    let storage = caps.iter().any(|c| c.capability_id() == "session_storage");
+    if daytona && !storage {
+        caps.push(AgentCapabilityConfig::new("session_storage"));
+    }
+}
+
 fn coding_harness_capabilities(
     client_commands: bool,
     hook_config: Option<serde_json::Value>,
@@ -1074,6 +1091,7 @@ fn coding_harness_capabilities(
         default_coding_harness_capabilities(client_commands),
         &settings.capabilities,
     );
+    ensure_harness_capability_dependencies(&mut caps);
     if let Some(config) = hook_config {
         caps.push(AgentCapabilityConfig::with_config("user_hooks", config));
     }
@@ -1277,6 +1295,11 @@ pub async fn build_with_options(
     let disabled_hook_contribution_count = effective_hooks.disabled_contributions.len();
     let hook_configured = !effective_hooks.is_empty();
     let hook_capability_config = hook_configured.then(|| effective_hooks.capability_config());
+    let connections_path =
+        default_connections_path().unwrap_or_else(|| PathBuf::from("connections.toml"));
+    let connections = Arc::new(ConnectionStore::open(connections_path));
+    let connection_catalog = Arc::new(ConnectionCatalog::with_defaults());
+    let connection_resolver = Arc::new(YolopConnectionResolver::new(connections.clone()));
 
     // Pin the SessionId so resume can re-attach to the same session folder
     // (directory name is the session id).
@@ -1318,7 +1341,8 @@ pub async fn build_with_options(
     // pre-seeded message store (so replayed history is available).
     let backends = RuntimeBackends::in_memory()
         .with_event_bus(event_bus)
-        .with_message_store(message_store);
+        .with_message_store(message_store)
+        .with_connection_resolver(connection_resolver);
     // Shared between `ModelState` (for banner labels) and
     // `SetupCapability` (which mutates it on a successful `/setup`).
     let provider_state = Arc::new(RwLock::new(provider.clone()));
@@ -1344,6 +1368,9 @@ pub async fn build_with_options(
     //   * loop_detection       — safety net against repeated identical tool calls
     //   * prompt_caching       — Anthropic prompt caching; free token savings
     //   * duckduckgo           — free web search (`duckduckgo_search`); no API key
+    //   * session_storage      — session kv/secret store (Daytona dependency)
+    //   * daytona              — remote cloud sandboxes (`daytona_*` tools)
+    //   * connectors           — connect/disconnect sandbox backends
     //   * user_hooks           — executes user-authored hook specs loaded from
     //                            global/workspace hook config
     let mut capabilities = CapabilityRegistry::new();
@@ -1378,6 +1405,8 @@ pub async fn build_with_options(
         "run_yolop_command",
     ]));
     capabilities.register(ToolOutputPersistenceCapability);
+    capabilities.register(SessionStorageCapability);
+    capabilities.register(DaytonaCapability);
     capabilities.register(UserHooksCapability);
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebFetchCapability::from_env());
@@ -1409,6 +1438,10 @@ pub async fn build_with_options(
     // into the system prompt. Persists to the same `settings.toml`; provider/
     // model edits take effect next run. Registered after the catalog is built
     // (see below).
+    capabilities.register(ConnectorsCapability {
+        catalog: connection_catalog,
+        store: connections,
+    });
     // `memory` — global, durable, structured user memory. Its MEMORY.md lives
     // beside settings.toml in the yolop config dir, so a tempdir settings path
     // in tests isolates memory automatically. Only titles are disclosed each
@@ -1479,6 +1512,11 @@ pub async fn build_with_options(
     let platform = PlatformDefinition::builder()
         .capability_registry(capabilities)
         .driver_registry(driver_registry)
+        .connection_providers(
+            everruns_core::ConnectionProviderRegistry::builder()
+                .provider(everruns_integrations_daytona::connection::DaytonaConnectionProvider)
+                .build(),
+        )
         .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
             workspace_root: canonical_root.clone(),
             session_dir: session_dir.clone(),
@@ -1579,6 +1617,86 @@ mod tests {
             err.to_string()
                 .contains("offline llmsim only supports llmsim-yolop")
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_exposes_connector_tools_by_default() {
+        use everruns_runtime::RuntimeHostAdapter;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        assert!(
+            !built
+                .startup
+                .tool_names
+                .contains(&"daytona_create_sandbox".to_string()),
+            "daytona is opt-in via [[capabilities]]: {:?}",
+            built.startup.tool_names
+        );
+        for connector_tool in ["list_connectors", "connect", "disconnect", "get_connector"] {
+            assert!(
+                built
+                    .startup
+                    .tool_names
+                    .contains(&connector_tool.to_string()),
+                "connector tools: {:?}",
+                built.startup.tool_names
+            );
+        }
+        assert!(
+            built
+                .handles
+                .runtime
+                .connection_resolver()
+                .expect("connection resolver")
+                .get_connection_token(built.handles.session_id, "daytona")
+                .await
+                .expect("resolve")
+                .is_none(),
+            "no credential configured yet"
+        );
+    }
+
+    #[test]
+    fn harness_applies_daytona_from_settings() {
+        use crate::capability_settings::CapabilityOverride;
+
+        let mut settings = Settings::default();
+        settings.capabilities.push(CapabilityOverride {
+            capability_ref: "daytona".to_string(),
+            enabled: Some(true),
+            append: false,
+            config: serde_json::json!({}),
+        });
+        let ids = coding_harness_capabilities(false, None, &settings);
+        assert!(ids.iter().any(|cap| cap.capability_id() == "daytona"));
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == "session_storage")
+        );
+    }
+
+    #[test]
+    fn coding_harness_enables_connectors_by_default() {
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == CONNECTORS_CAPABILITY_ID)
+        );
+        assert!(!ids.iter().any(|cap| cap.capability_id() == "daytona"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
