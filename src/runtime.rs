@@ -17,12 +17,12 @@ use crate::tools::Workspace;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use everruns_core::capabilities::{
-    AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, COMPACTION_CAPABILITY_ID,
-    CompactionCapability, FileSystemCapability, INFINITY_CONTEXT_CAPABILITY_ID,
-    InfinityContextCapability, LoopDetectionCapability, PROMPT_CACHING_CAPABILITY_ID,
-    PromptCachingCapability, SKILLS_CAPABILITY_ID, StatelessTodoListCapability,
-    TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
-    UserHooksCapability, WebFetchCapability,
+    AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
+    BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, FileSystemCapability,
+    INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LoopDetectionCapability,
+    PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability, SKILLS_CAPABILITY_ID,
+    StatelessTodoListCapability, TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability,
+    ToolSearchCapability, UserHooksCapability, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
@@ -1050,6 +1050,8 @@ fn coding_harness_capabilities(
         AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
         AgentCapabilityConfig::new(CONFIG_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
+        // `/btw` — ephemeral side question (see specs/btw.md).
+        AgentCapabilityConfig::new(BTW_CAPABILITY_ID),
         // Soft approval: injects spoken-consent guidance for critical actions,
         // tuned by the central `approval_mode` setting (off contributes nothing).
         AgentCapabilityConfig::new(APPROVAL_CAPABILITY_ID),
@@ -1369,13 +1371,14 @@ pub async fn build_with_options(
     capabilities.register(AttributionCapability {
         config: settings.clone(),
     });
+    // `/btw` — ephemeral side question. As of everruns 0.11.0 the upstream
+    // `BtwCapability` implements `execute_command` end to end through the
+    // runtime's `CommandHost` facilities (turn context + a session-scoped
+    // completion), so the embedded runtime dispatches it like any other
+    // capability command — no bespoke executor needed (see specs/btw.md).
+    capabilities.register(BtwCapability);
     // `/setup` (below) is the capability-sourced slash command. It implements
-    // `Capability::execute_command` end to end. We deliberately
-    // do NOT register `BtwCapability` here: the server's `/btw` flow has its
-    // own bespoke executor in `SessionCommandService::execute_btw` (see
-    // crates/server/src/domains/session_commands/service.rs) and the
-    // capability does not implement `execute_command`, so dispatching it
-    // through the embedded runtime would error.
+    // `Capability::execute_command` end to end.
     capabilities.register(SetupCapability {
         provider: provider_state.clone(),
         provider_store: provider_store.clone(),
@@ -1571,6 +1574,88 @@ mod tests {
             "mcp servers: {:?}",
             built.startup.mcp_server_names
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn btw_answers_a_side_question_without_persisting_it() {
+        // End-to-end check that the upstream `/btw` capability is enabled and
+        // dispatches through the embedded runtime's `CommandHost`: it must be
+        // listed, answer offline via llmsim, and leave history untouched.
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        let commands = built
+            .handles
+            .runtime
+            .list_commands(built.handles.session_id)
+            .await
+            .expect("commands");
+        let btw = commands
+            .iter()
+            .find(|c| c.name == "btw")
+            .expect("/btw surfaced in the command registry");
+        assert!(btw.args.iter().any(|a| a.name == "question" && a.required));
+
+        let result = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "btw".to_string(),
+                    arguments: Some("what model are you?".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("execute /btw");
+        assert!(result.success, "result: {}", result.message);
+        // Offline build → the llmsim fixed response answers the side question.
+        assert!(
+            result.message.contains("offline mode"),
+            "unexpected /btw answer: {}",
+            result.message
+        );
+
+        // Ephemeral: neither the question nor the answer lands in history.
+        let messages = built
+            .handles
+            .runtime
+            .messages(built.handles.session_id)
+            .await
+            .expect("messages");
+        assert!(
+            messages.is_empty(),
+            "history grew by {} message(s)",
+            messages.len()
+        );
+
+        // A missing question is rejected by the capability before any LLM call.
+        let missing = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "btw".to_string(),
+                    arguments: None,
+                    controls: None,
+                },
+            )
+            .await
+            .expect_err("missing question is an error");
+        assert!(missing.to_string().contains("requires a question"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

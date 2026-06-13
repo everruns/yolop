@@ -56,6 +56,9 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   `/effort`, `/shell`, `/clear`, `/quit`), `!<command>` as a direct shell
   shortcut, and natural-language requests for terminal actions such as "exit"
   or "clear the screen".
+- **Side questions** — `/btw <question>` answers a question about the current
+  session out-of-band: same context as the main task, no tools, and nothing
+  added to the conversation history.
 - **Planning** — `write_todos` keeps multi-step tasks on track, and
   loop detection stops the model from retrying the same failing tool call.
 - **One-shot mode** — `--print` runs a single prompt non-interactively, for
