@@ -87,8 +87,9 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   language ("remember that I prefer terse answers") via the `remember` /
   `recall` / `forget` tools. Only memory *titles* are injected each turn
   (progressive disclosure); bodies are recalled on demand, so the prompt stays
-  small however much you remember. Tunable via the `[memory]` table in
-  `settings.toml`. See [`specs/memory.md`](./specs/memory.md).
+  small however much you remember. Tunable through the generic capability-config
+  system (`disclosed_titles`, `recall_limit`, `soft_cap`). See
+  [`specs/memory.md`](./specs/memory.md).
 - **Skills** — `SKILL.md` files discovered from workspace
   (`.agents/skills/`), global (`<config_dir>/yolop/skills/`), and system
   (bundled) scopes, exposed via `list_skills`, `read_skill`, `write_skill`,

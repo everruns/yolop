@@ -76,15 +76,22 @@ to most-recent order.
 
 ## Configuration
 
-Tuning lives in an optional `[memory]` table in `settings.toml`. All keys are
-optional; defaults apply otherwise.
+Tuning flows through the **generic capability-config system**, not a bespoke
+settings key: the capability publishes a `config_schema()` and reads its values
+from the per-agent `AgentCapabilityConfig.config` (consumed via
+`tools_with_config` / `system_prompt_contribution_with_config`). This is the
+same mechanism `agent_instructions` and `user_hooks` use, so a generic settings
+editor can drive it without hard-coding `memory`.
 
-```toml
-[memory]
-disclosed_titles = 15   # memory titles injected into the prompt each turn
-recall_limit = 5        # default number of memories `recall` returns
-soft_cap = 200          # warn (never delete) once this many memories exist
-```
+| Key                | Default | Meaning                                                  |
+|--------------------|---------|----------------------------------------------------------|
+| `disclosed_titles` | 15      | Memory titles injected into the prompt each turn.        |
+| `recall_limit`     | 5       | Default number of memories `recall` returns.             |
+| `soft_cap`         | 200     | Warn (never delete) once more than this many exist.      |
+
+Missing or null config falls back to defaults; `validate_config` rejects wrong
+types on the write path, while the per-turn read paths fall back to defaults and
+log on bad input rather than dropping the capability.
 
 `soft_cap` is a **soft** limit: once memory grows past it, `remember`/`recall`
 nudge the model to `forget` stale memories or promote stable guidance to a

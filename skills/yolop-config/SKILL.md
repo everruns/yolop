@@ -54,9 +54,9 @@ command instead.
 
 - **Durable preferences / memory** ("remember that I prefer terse answers"):
   these are not config keys. Use the `remember` / `recall` / `forget` tools
-  (the global `memory` capability), not `set_config`. Memory tuning lives in a
-  `[memory]` table in `settings.toml` (`disclosed_titles`, `recall_limit`,
-  `soft_cap`).
+  (the global `memory` capability), not `set_config`. Memory tuning
+  (`disclosed_titles`, `recall_limit`, `soft_cap`) is per-capability config
+  exposed via the capability's `config_schema`, not a `settings.toml` key.
 - **Behavioral hooks** (block/allow/audit tool calls): use the `yolop-hooks`
   skill and the `*_your_hook` tools.
 - **Interactive provider/model setup**: the `/setup` command runs a guided

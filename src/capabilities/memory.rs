@@ -69,40 +69,67 @@ impl Default for MemoryConfig {
 }
 
 impl MemoryConfig {
-    /// Derive config from the `[memory]` table of the settings file backing
-    /// `settings`. Missing file / table / keys fall back to defaults, so this
-    /// never fails — the worst case is the default tuning.
-    pub(crate) fn from_settings(settings: &SettingsStore) -> Self {
-        Self::from_settings_file(settings.path())
+    /// Parse config from a capability config `Value` (from
+    /// `AgentCapabilityConfig.config`, the generic capability-config system).
+    /// `Null` / missing keys fall back to defaults. Strict on types so the same
+    /// parse backs `validate_config`: a present key must be a non-negative
+    /// integer or it is rejected.
+    pub(crate) fn from_value(config: &Value) -> Result<Self, String> {
+        let mut cfg = Self::default();
+        if config.is_null() {
+            return Ok(cfg);
+        }
+        let obj = config
+            .as_object()
+            .ok_or_else(|| "memory config must be an object".to_string())?;
+        let read = |key: &str, slot: &mut usize| -> Result<(), String> {
+            match obj.get(key) {
+                None | Some(Value::Null) => Ok(()),
+                Some(v) => {
+                    let n = v
+                        .as_u64()
+                        .ok_or_else(|| format!("`{key}` must be a non-negative integer"))?;
+                    *slot = n as usize;
+                    Ok(())
+                }
+            }
+        };
+        read("disclosed_titles", &mut cfg.disclosed_titles)?;
+        read("recall_limit", &mut cfg.recall_limit)?;
+        read("soft_cap", &mut cfg.soft_cap)?;
+        Ok(cfg)
     }
 
-    fn from_settings_file(path: &Path) -> Self {
-        let mut cfg = Self::default();
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return cfg;
-        };
-        let Ok(table) = toml::from_str::<toml::Table>(&text) else {
-            return cfg;
-        };
-        let Some(mem) = table.get("memory").and_then(toml::Value::as_table) else {
-            return cfg;
-        };
-        let read = |key: &str| {
-            mem.get(key)
-                .and_then(toml::Value::as_integer)
-                .filter(|v| *v >= 0)
-                .map(|v| v as usize)
-        };
-        if let Some(v) = read("disclosed_titles") {
-            cfg.disclosed_titles = v;
-        }
-        if let Some(v) = read("recall_limit") {
-            cfg.recall_limit = v;
-        }
-        if let Some(v) = read("soft_cap") {
-            cfg.soft_cap = v;
-        }
-        cfg
+    /// JSON Schema for the generic capability-config editor.
+    fn schema() -> Value {
+        let default = Self::default();
+        json!({
+            "type": "object",
+            "properties": {
+                "disclosed_titles": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "title": "Disclosed titles",
+                    "description": "How many memory titles to inject into the system prompt each turn (newest first).",
+                    "default": default.disclosed_titles,
+                },
+                "recall_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "title": "Recall limit",
+                    "description": "Default number of memories `recall` returns for a search or recent query.",
+                    "default": default.recall_limit,
+                },
+                "soft_cap": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "title": "Soft cap",
+                    "description": "Warn (never delete) once more than this many memories exist. 0 disables the warning.",
+                    "default": default.soft_cap,
+                }
+            },
+            "additionalProperties": false
+        })
     }
 }
 
@@ -602,7 +629,34 @@ fn render_memory_block(
 
 pub(crate) struct GlobalMemoryCapability {
     pub(crate) memory: Arc<MemoryStore>,
-    pub(crate) config: MemoryConfig,
+}
+
+impl GlobalMemoryCapability {
+    /// Resolve config leniently for the per-turn read paths: invalid config
+    /// falls back to defaults (and is logged) rather than dropping the whole
+    /// capability. `validate_config` is the strict guardrail on the write path.
+    fn resolved_config(config: &Value) -> MemoryConfig {
+        MemoryConfig::from_value(config).unwrap_or_else(|error| {
+            tracing::warn!(error = %error, "invalid memory config, using defaults");
+            MemoryConfig::default()
+        })
+    }
+
+    fn build_tools(&self, config: MemoryConfig) -> Vec<Box<dyn Tool>> {
+        vec![
+            Box::new(RememberTool {
+                memory: self.memory.clone(),
+                config,
+            }),
+            Box::new(RecallTool {
+                memory: self.memory.clone(),
+                config,
+            }),
+            Box::new(ForgetTool {
+                memory: self.memory.clone(),
+            }),
+        ]
+    }
 }
 
 #[async_trait]
@@ -624,8 +678,26 @@ impl Capability for GlobalMemoryCapability {
         Some("Personalization")
     }
 
-    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        let (titles, total) = self.memory.titles(self.config.disclosed_titles);
+    fn config_schema(&self) -> Option<Value> {
+        Some(MemoryConfig::schema())
+    }
+
+    fn validate_config(&self, config: &Value) -> Result<(), String> {
+        MemoryConfig::from_value(config).map(|_| ())
+    }
+
+    async fn system_prompt_contribution(&self, ctx: &SystemPromptContext) -> Option<String> {
+        self.system_prompt_contribution_with_config(ctx, &Value::Null)
+            .await
+    }
+
+    async fn system_prompt_contribution_with_config(
+        &self,
+        _ctx: &SystemPromptContext,
+        config: &Value,
+    ) -> Option<String> {
+        let cfg = Self::resolved_config(config);
+        let (titles, total) = self.memory.titles(cfg.disclosed_titles);
         Some(render_memory_block(self.memory.path(), &titles, total))
     }
 
@@ -643,19 +715,11 @@ known memories (most recent first, 1 of 1):
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![
-            Box::new(RememberTool {
-                memory: self.memory.clone(),
-                config: self.config,
-            }),
-            Box::new(RecallTool {
-                memory: self.memory.clone(),
-                config: self.config,
-            }),
-            Box::new(ForgetTool {
-                memory: self.memory.clone(),
-            }),
-        ]
+        self.build_tools(MemoryConfig::default())
+    }
+
+    fn tools_with_config(&self, config: &Value) -> Vec<Box<dyn Tool>> {
+        self.build_tools(Self::resolved_config(config))
     }
 }
 
@@ -1064,22 +1128,43 @@ mod tests {
     }
 
     #[test]
-    fn config_reads_memory_table_with_defaults() {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let path = tmp.path().join("settings.toml");
-
-        // Missing file → defaults.
+    fn config_parses_from_capability_config_value() {
+        // Null / empty → defaults.
         assert_eq!(
-            MemoryConfig::from_settings_file(&path),
+            MemoryConfig::from_value(&Value::Null).unwrap(),
+            MemoryConfig::default()
+        );
+        assert_eq!(
+            MemoryConfig::from_value(&json!({})).unwrap(),
             MemoryConfig::default()
         );
 
-        std::fs::write(&path, "[memory]\ndisclosed_titles = 5\nrecall_limit = 3\n").expect("seed");
-        let cfg = MemoryConfig::from_settings_file(&path);
+        // Present keys override; unset keys keep defaults.
+        let cfg = MemoryConfig::from_value(&json!({ "disclosed_titles": 5, "recall_limit": 3 }))
+            .expect("valid");
         assert_eq!(cfg.disclosed_titles, 5);
         assert_eq!(cfg.recall_limit, 3);
-        // Unset key keeps its default.
         assert_eq!(cfg.soft_cap, MemoryConfig::default().soft_cap);
+
+        // Wrong types are rejected — this is the `validate_config` guardrail.
+        assert!(MemoryConfig::from_value(&json!({ "soft_cap": -1 })).is_err());
+        assert!(MemoryConfig::from_value(&json!({ "recall_limit": "lots" })).is_err());
+        assert!(MemoryConfig::from_value(&json!([1, 2, 3])).is_err());
+    }
+
+    #[test]
+    fn capability_config_schema_validates_and_tools_read_config() {
+        let (_tmp, store) = store_in_tmp();
+        let cap = GlobalMemoryCapability {
+            memory: Arc::new(store),
+        };
+        assert!(cap.config_schema().is_some());
+        assert!(cap.validate_config(&json!({ "recall_limit": 2 })).is_ok());
+        assert!(cap.validate_config(&json!({ "recall_limit": -2 })).is_err());
+
+        // Config drives the tools built via the capability-config path.
+        let tools = cap.tools_with_config(&json!({ "recall_limit": 2 }));
+        assert_eq!(tools.len(), 3);
     }
 
     #[test]
@@ -1174,7 +1259,6 @@ mod tests {
         let (_tmp, store) = store_in_tmp();
         let capability = GlobalMemoryCapability {
             memory: Arc::new(store),
-            config: MemoryConfig::default(),
         };
         let names: Vec<String> = capability
             .tools()
