@@ -29,7 +29,7 @@ implementations. Daytona is registered by default; new providers add a
 
 ### Runtime wiring
 
-- **`yolop_connectors`** is enabled on the default harness — always available
+- **`connectors`** is enabled on the default harness — always available
   for listing providers and saving credentials.
 - **`daytona`** and **`session_storage`** are registered but **not** on the
   default harness. Opt in through the generic capability config in
@@ -62,7 +62,7 @@ enable_api_calling = true
 Inspect the registered catalog with `get_config key=capabilities` or
 `get_config key=capabilities.daytona`.
 
-### Tools (`yolop_connectors` capability, default on)
+### Tools (`connectors` capability, default on)
 
 | Tool | Purpose |
 |------|---------|

@@ -1,4 +1,4 @@
-//! The `yolop_connectors` capability — discover, connect, and disconnect sandbox
+//! The `connectors` capability — discover, connect, and disconnect sandbox
 //! and integration backends through a uniform tool surface.
 
 use crate::connectors::catalog::{ConnectionCatalog, ConnectorInfo};
@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub(crate) const CONNECTORS_CAPABILITY_ID: &str = "yolop_connectors";
+pub(crate) const CONNECTORS_CAPABILITY_ID: &str = "connectors";
 
 pub(crate) struct ConnectorsCapability {
     pub(crate) catalog: Arc<ConnectionCatalog>,

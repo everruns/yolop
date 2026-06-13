@@ -1370,7 +1370,7 @@ pub async fn build_with_options(
     //   * duckduckgo           — free web search (`duckduckgo_search`); no API key
     //   * session_storage      — session kv/secret store (Daytona dependency)
     //   * daytona              — remote cloud sandboxes (`daytona_*` tools)
-    //   * yolop_connectors     — connect/disconnect sandbox backends
+    //   * connectors           — connect/disconnect sandbox backends
     //   * user_hooks           — executes user-authored hook specs loaded from
     //                            global/workspace hook config
     let mut capabilities = CapabilityRegistry::new();
