@@ -85,6 +85,6 @@ command instead.
   (`disclosed_titles`, `recall_limit`, `soft_cap`) is per-capability config
   exposed via the capability's `config_schema`, not a `settings.toml` key.
 - **Behavioral hooks** (block/allow/audit tool calls): use the `yolop-hooks`
-  skill and the `*_your_hook` tools.
+  skill and the `hooks` capability tools.
 - **Interactive provider/model setup**: the `/setup` command runs a guided
   wizard and switches the live model immediately.

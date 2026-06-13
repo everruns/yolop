@@ -10,14 +10,15 @@ outside the model.
 
 Yolop uses the upstream `everruns-core` `user_hooks` capability. The local
 Yolop layer only discovers hook files, merges workspace and global scopes, and
-lets `your` configure those files from natural language.
+exposes a `hooks` capability to configure those files from natural language.
 
 ## How it works
 
 ```mermaid
 flowchart LR
   User["User: yolop setup a hook"] --> Your["your personalization"]
-  Your --> Tools["validate_your_hook / upsert_your_hook"]
+  Your --> Hooks["hooks capability"]
+  Hooks --> Tools["validate_hook / upsert_hook"]
   Tools --> Files["hooks.json"]
   Files --> Runtime["user_hooks capability"]
   Runtime --> Decision{"Hook decision"}
@@ -28,7 +29,7 @@ flowchart LR
 
 The model interprets the request, but it does not hand-edit hook JSON. The
 embedded `yolop-hooks` skill maps common requests to hook specs, and the
-`your` tools validate and write the config atomically.
+`hooks` tools validate and write the config atomically.
 
 ## Scopes
 
@@ -49,7 +50,7 @@ yolop setup a hook to prevent calls to git
 ```
 
 Yolop should translate that into a `pre_tool_use` hook and save it through
-`upsert_your_hook`. If the scope is ambiguous and the hook blocks a broad class
+`upsert_hook`. If the scope is ambiguous and the hook blocks a broad class
 of normal coding actions, Yolop should ask whether the hook is global or just
 for the current workspace.
 

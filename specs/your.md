@@ -1,7 +1,8 @@
 # `your` — personalization
 
-Status: implemented (framing + hooks). Durable memory now lives in the `memory`
-capability ([`memory.md`](./memory.md)); roadmap sections below are not yet built.
+Status: implemented (framing only). Durable memory now lives in the `memory`
+capability ([`memory.md`](./memory.md)); hook authoring lives in the `hooks`
+capability ([`hooks.md`](./hooks.md)); roadmap sections below are not yet built.
 
 ## Why
 
@@ -56,14 +57,15 @@ the store itself.
 
 Natural language is the user interface, but durable configuration changes
 should go through purpose-built tools. The `your` prompt decides whether a user
-is asking to configure yolop itself; embedded `your` skills can provide
-examples and recipes; tools perform validated writes to stable config files.
+is asking to configure yolop itself and routes to the capability that owns the
+specific state; embedded skills can provide examples and recipes; tools perform
+validated writes to stable config files.
 
 For example, "yolop setup a hook to prevent calls to git" is a
-self-configuration request. `your` should translate it into a hook spec,
-validate it, and write it through hook config tools rather than storing a
-memory note that says "avoid git". See [`hooks.md`](./hooks.md) for the hook
-tool design and scope rules.
+self-configuration request. `your` should route it to the `hooks` capability,
+which translates it into a hook spec, validates it, and writes it through hook
+config tools rather than storing a memory note that says "avoid git". See
+[`hooks.md`](./hooks.md) for the hook tool design and scope rules.
 
 ## Roadmap
 
@@ -83,8 +85,8 @@ yolop-specific formats.
   directly from `<config_dir>/yolop/skills`. A future declarative capability
   layer can also contribute skills into that same global personalization model.
   This is where memory that has outgrown a few bullets gets promoted to.
-- **Hooks** — `your` should configure global and workspace hooks through
-  structured hook tools, using the scope and merge contract in
+- **Hooks** — the `hooks` capability configures global and workspace hooks
+  through structured hook tools, using the scope and merge contract in
   [`hooks.md`](./hooks.md).
 - **General config** — map natural-language requests ("set yolop blue") onto
   real settings as those settings come to exist. Until a knob exists, the

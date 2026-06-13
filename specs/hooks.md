@@ -1,6 +1,6 @@
 # Hooks Specification
 
-Status: v1 implemented for scoped config loading, `your` self-configuration,
+Status: v1 implemented for scoped config loading, `hooks` self-configuration,
 and upstream `user_hooks` registration.
 
 ## Why
@@ -108,20 +108,20 @@ The reliable design is **prompt/skill for interpretation, tools for writes**:
   self-configuration requests.
 - The embedded `yolop-hooks` skill holds examples that map common intents to
   hook specs, so the prompt stays short and examples are loaded on demand.
-- Structured `your` tools perform the actual mutation. They read, validate,
-  merge, and atomically write `hooks.json`, then return the effective hook id
-  and scope. The model should not hand-edit hook JSON through generic file
-  tools for global self-configuration.
+- Structured `hooks` capability tools perform the actual mutation. They read,
+  validate, merge, and atomically write `hooks.json`, then return the effective
+  hook id and scope. The model should not hand-edit hook JSON through generic
+  file tools for global self-configuration.
 
 Initial tool surface:
 
-- `list_your_hooks` — show effective hooks, their scope, event, matcher, and
+- `list_hooks` — show effective hooks, their scope, event, matcher, and
   source file.
-- `upsert_your_hook` — create or replace one hook by `id`.
-- `remove_your_hook` — remove or disable one hook by `id`.
-- `validate_your_hook` — validate a candidate spec without writing it.
+- `upsert_hook` — create or replace one hook by `id`.
+- `remove_hook` — remove or disable one hook by `id`.
+- `validate_hook` — validate a candidate spec without writing it.
 
-`upsert_your_hook` accepts an explicit `scope`:
+`upsert_hook` accepts an explicit `scope`:
 
 - `global` writes `<config_dir>/yolop/hooks.json`.
 - `workspace` writes `<workspace>/.agents/hooks.json`.
@@ -236,16 +236,16 @@ Implemented:
    and enables it with `AgentCapabilityConfig::with_config("user_hooks", ...)`
    only when hooks are configured.
 3. `StartupInfo` includes effective hook counts; `--print` shows loaded hooks.
-4. `YourCapability` includes the hook self-configuration tools described in
+4. `HooksCapability` includes the hook self-configuration tools described in
    [Natural-Language Setup](#natural-language-setup).
 5. `skills/yolop-hooks/SKILL.md` ships the self-configuration recipes used for
    natural-language hook setup.
-6. Tests cover merge behavior, `your` hook tools, and a scripted llmsim
+6. Tests cover merge behavior, `hooks` tools, and a scripted llmsim
    `pre_tool_use` hook that blocks a matching `bash` tool call.
 
 Follow-up:
 
-- Add an embedded `your` skill with more hook recipes once the minimal tool
+- Add more embedded hook recipes once the minimal tool
   surface has settled.
 
 ## Non-goals

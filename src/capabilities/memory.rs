@@ -1,7 +1,7 @@
 // The `memory` capability — yolop's global, durable memory.
 //
-// Extracted from the `your` capability so personalization (hooks, framing) and
-// durable cross-session memory evolve independently. Memory is now *structured*:
+// Extracted from the `your` capability so personalization framing and durable
+// cross-session memory evolve independently. Memory is now *structured*:
 // a `MEMORY.md` where each `## ` section is one memory with a title (its
 // description), an id, created/updated timestamps, and a body (the memory text).
 //

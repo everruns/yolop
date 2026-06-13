@@ -15,13 +15,13 @@ hooks, for example:
 - "remove the hook that blocks cargo publish"
 
 Hooks are real configuration. Do not treat these requests as memory or as a
-soft preference. Use the `your` hook tools:
+soft preference. Use the `hooks` capability tools:
 
 1. Build a candidate hook spec.
-2. Call `validate_your_hook`.
-3. Call `upsert_your_hook` after validation succeeds.
-4. Use `list_your_hooks` to inspect current state or confirm effective config.
-5. Use `remove_your_hook` when the user asks to remove or disable a hook.
+2. Call `validate_hook`.
+3. Call `upsert_hook` after validation succeeds.
+4. Use `list_hooks` to inspect current state or confirm effective config.
+5. Use `remove_hook` when the user asks to remove or disable a hook.
 
 ## Scope
 

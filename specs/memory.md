@@ -15,8 +15,8 @@ matter how little of it is relevant, and a flat bullet list has no structure to
 search, timestamp, or address individual notes.
 
 `memory` is its own capability. It owns structured, durable memory and the
-tools to manage it; `your` keeps the personalization *framing* and hook
-self-configuration (see [`your.md`](./your.md)).
+tools to manage it; `your` keeps the personalization *framing*, while hook
+self-configuration lives in the `hooks` capability (see [`hooks.md`](./hooks.md)).
 
 ## What
 

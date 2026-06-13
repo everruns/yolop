@@ -15,6 +15,9 @@
 //
 // The OpenRouter tests default to a Nemotron 3 model and guard the OpenRouter
 // driver's tool-calling and turn-chaining path (everruns EVE-522 / EVE-523).
+// Provider quota exhaustion is treated as infrastructure and skipped after the
+// credential presence check, so an exhausted shared account does not turn an
+// otherwise healthy PR red.
 
 mod support;
 
@@ -1043,6 +1046,10 @@ fn acp_openai_handshake_smoke() {
         return;
     };
     let result = run_acp_handshake("openai", "Reply with exactly the single word: pong");
+    if looks_openai_quota_exhausted(&format!("{}{}", result.prompt, result.assistant_text)) {
+        eprintln!("skipping live test: OpenAI quota exhausted");
+        return;
+    }
     assert_eq!(
         result.prompt["result"]["stopReason"], "end_turn",
         "prompt response: {}",
@@ -1110,6 +1117,10 @@ fn openai_print_smoke() {
         .expect("spawn yolop --provider openai");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() && looks_openai_quota_exhausted(&format!("{stdout}{stderr}")) {
+        eprintln!("skipping live test: OpenAI quota exhausted");
+        return;
+    }
     assert!(
         output.status.success(),
         "yolop openai smoke failed: stdout={stdout} stderr={stderr}"
@@ -1131,6 +1142,14 @@ fn openai_print_smoke() {
 fn live_openrouter_model() -> String {
     std::env::var("YOLOP_LIVE_OPENROUTER_MODEL")
         .unwrap_or_else(|_| "nvidia/nemotron-3-ultra-550b-a55b".to_string())
+}
+
+/// True when OpenAI rejects a live smoke only because the shared credential has
+/// exhausted quota. The presence check above still fails CI when the key is
+/// missing; this only prevents account billing state from masking code health.
+fn looks_openai_quota_exhausted(combined: &str) -> bool {
+    let lower = combined.to_lowercase();
+    lower.contains("insufficient_quota") || lower.contains("exceeded your current quota")
 }
 
 /// True when a live run failed only because the upstream provider rate-limited
