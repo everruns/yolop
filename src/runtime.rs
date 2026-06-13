@@ -1050,7 +1050,8 @@ fn coding_harness_capabilities(
         AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
         AgentCapabilityConfig::new(CONFIG_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
-        // `/btw` — ephemeral side question (see specs/btw.md).
+        // `/btw` — ephemeral side question, answered out-of-band with the
+        // session's context (upstream `BtwCapability`).
         AgentCapabilityConfig::new(BTW_CAPABILITY_ID),
         // Soft approval: injects spoken-consent guidance for critical actions,
         // tuned by the central `approval_mode` setting (off contributes nothing).
@@ -1373,9 +1374,10 @@ pub async fn build_with_options(
     });
     // `/btw` — ephemeral side question. As of everruns 0.11.0 the upstream
     // `BtwCapability` implements `execute_command` end to end through the
-    // runtime's `CommandHost` facilities (turn context + a session-scoped
-    // completion), so the embedded runtime dispatches it like any other
-    // capability command — no bespoke executor needed (see specs/btw.md).
+    // runtime's `CommandHost` facilities (turn context + a session-scoped,
+    // tool-less completion that persists nothing), so the embedded runtime
+    // dispatches it like any other capability command — no bespoke executor
+    // needed. yolop owns no `/btw` logic; it only registers and enables it.
     capabilities.register(BtwCapability);
     // `/setup` (below) is the capability-sourced slash command. It implements
     // `Capability::execute_command` end to end.
@@ -1641,8 +1643,9 @@ mod tests {
             messages.len()
         );
 
-        // A missing question is rejected by the capability before any LLM call.
-        let missing = built
+        // A missing question is rejected (not silently answered). The exact
+        // wording lives upstream, so assert only that the call fails.
+        built
             .handles
             .runtime
             .execute_command(
@@ -1654,8 +1657,7 @@ mod tests {
                 },
             )
             .await
-            .expect_err("missing question is an error");
-        assert!(missing.to_string().contains("requires a question"));
+            .expect_err("missing question is rejected");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
