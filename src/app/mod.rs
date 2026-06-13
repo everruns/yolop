@@ -1086,6 +1086,7 @@ impl App {
                                 &handles,
                                 events_before,
                                 &mut emitted_events,
+                                &mut delta_router,
                                 &tx,
                             )
                             .await;
@@ -1102,7 +1103,14 @@ impl App {
 
             // Drain any tail events emitted between the last broadcast
             // poll and the turn's actual completion.
-            catch_up_events(&handles, events_before, &mut emitted_events, &tx).await;
+            catch_up_events(
+                &handles,
+                events_before,
+                &mut emitted_events,
+                &mut delta_router,
+                &tx,
+            )
+            .await;
             // Clear any in-flight streaming preview before we finalize.
             let _ = tx.send(TurnEvent::Stream(None));
 
@@ -1173,6 +1181,7 @@ pub(crate) struct DeltaRouter {
     last_assistant_turn: Option<everruns_core::typed_id::TurnId>,
     last_thinking_turn: Option<everruns_core::typed_id::TurnId>,
     last_tool_call: Option<String>,
+    write_todos_args: HashMap<String, Value>,
 }
 
 fn parse_bang_shell_command(input: &str) -> Option<&str> {
@@ -1885,6 +1894,87 @@ mod tests {
             "1 of 3 todos completed  ✓ Read current CLI renderer  › Rendering todos in transcript  ○ Run focused tests"
         );
         assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn handle_live_event_renders_write_todos_from_started_args_when_result_is_compact() {
+        use everruns_core::events::ToolStartedData;
+        use everruns_core::tool_types::ToolCall;
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
+        let mut emitted = HashSet::new();
+        let mut router = DeltaRouter::default();
+        let session_id = SessionId::new();
+
+        let started = RuntimeEvent::new(
+            session_id,
+            EventContext::empty(),
+            ToolStartedData {
+                tool_call: ToolCall {
+                    id: "call_todos".to_string(),
+                    name: "write_todos".to_string(),
+                    arguments: serde_json::json!({
+                        "todos": [
+                            {
+                                "content": "Read current CLI renderer",
+                                "activeForm": "Reading current CLI renderer",
+                                "status": "completed"
+                            },
+                            {
+                                "content": "Render todos in transcript",
+                                "activeForm": "Rendering todos in transcript",
+                                "status": "in_progress"
+                            },
+                            {
+                                "content": "Run focused tests",
+                                "activeForm": "Running focused tests",
+                                "status": "pending"
+                            }
+                        ]
+                    }),
+                },
+                tool_call_fingerprint: None,
+                display_name: Some("Write Todos".to_string()),
+                narration: None,
+            },
+        );
+        let completed = RuntimeEvent::new(
+            session_id,
+            EventContext::empty(),
+            ToolCompletedData {
+                tool_call_id: "call_todos".to_string(),
+                tool_name: "write_todos".to_string(),
+                tool_call_fingerprint: None,
+                tool_result_fingerprint: None,
+                display_name: Some("Write Todos".to_string()),
+                success: true,
+                status: "success".to_string(),
+                result: None,
+                error: None,
+                duration_ms: None,
+                capability_id: None,
+                capability_name: None,
+                narration: None,
+            },
+        );
+
+        handle_live_event(&started, &mut emitted, &mut router, &tx);
+        handle_live_event(&completed, &mut emitted, &mut router, &tx);
+
+        let mut lines = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let TurnEvent::Lines(batch) = event {
+                lines.extend(batch.into_iter().map(|line| line.text));
+            }
+        }
+
+        assert!(lines.iter().all(|line| line != "✓ Write Todos"));
+        assert_eq!(
+            lines,
+            vec![
+                "1 of 3 todos completed  ✓ Read current CLI renderer  › Rendering todos in transcript  ○ Run focused tests"
+            ]
+        );
     }
 
     #[test]
