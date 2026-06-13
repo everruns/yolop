@@ -39,6 +39,7 @@ Keys are addressed the way a human would name them:
 | `base_urls.<provider>`    | text   | Endpoint base URL (used by the `custom` provider).             |
 | `approval_mode`           | text   | Soft-approval paranoia level (`protective` / `normal` / `off`). |
 | `attribution`             | bool   | Commit/PR attribution on/off.                                  |
+| `capabilities`            | list   | Ordered `[[capabilities]]` harness overrides; `capabilities.<ref>` for schema metadata. |
 
 `default_provider` is persisted under that name on disk; the legacy `provider`
 key is still read (and accepted as an alias) so pre-rename settings files keep
@@ -52,14 +53,17 @@ by the schema:
 
 - **`get_config`** — with no argument, returns every key with its semantics and
   current value; with a `key`, returns just that entry. Secrets are reported as
-  `stored` / `unset`, never echoed.
-- **`set_config`** — validates a `key`/`value` against the schema and persists
-  through `SettingsStore` (atomic write, owner-only). `value=clear` unsets an
-  optional or secret key.
+  `stored` / `unset`, never echoed. Use `key=capabilities` for the registered
+  catalog plus stored overrides and effective harness, or `key=capabilities.<ref>`
+  for one capability's schema metadata (`config_schema`, `config_ui_schema`).
+- **`set_config`** — validates and persists scalar keys via `value` (`clear`
+  unsets). Harness overrides: `key=capabilities` with a `json` object appends one
+  `[[capabilities]]` entry; `value=clear` drops all stored overrides. Capability
+  config is validated through each capability's `validate_config`.
 
 Both honor aliases and validate provider segments against the supported-provider
-list. Provider/model edits take effect on the next run; `/setup` remains the way
-to switch the *live* model mid-session.
+list. Provider/model and capability edits take effect on the next run; `/setup`
+remains the way to switch the *live* model mid-session.
 
 ### Configuration as a service
 
@@ -110,5 +114,5 @@ The schema reaches the agent two ways:
 
 Configuration is distinct from the neighbouring personalization surfaces:
 durable preferences are `your` **memory**, behavioral rules are **hooks**, and
-interactive live provider/model switching is **`/setup`**. `set_config` is only
-for the typed settings keys above.
+interactive live provider/model switching is **`/setup`**. All settings keys,
+including harness capabilities, go through `get_config` / `set_config`.

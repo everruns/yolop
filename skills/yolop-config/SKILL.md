@@ -1,6 +1,6 @@
 ---
 name: yolop-config
-description: View and change yolop's own configuration — default provider and model, per-provider API tokens and models, endpoint base URLs, and attribution. Use when the user asks to configure yolop, set a default provider/model, store an API key, point at a custom endpoint, or asks "what is your config / what can you configure".
+description: View and change yolop's own configuration — default provider and model, per-provider API tokens and models, endpoint base URLs, attribution, and harness capabilities. Use when the user asks to configure yolop, set a default provider/model, store an API key, point at a custom endpoint, enable/disable capabilities, or asks "what is your config / what can you configure".
 user-invocable: true
 ---
 
@@ -22,6 +22,9 @@ values are validated and persisted atomically.
    tokens) are shown only as `stored` / `unset`, never echoed.
 2. Call `get_config` with a single `key` (e.g. `default_provider`,
    `models.anthropic`, `tokens.openai`) to focus on one entry.
+3. For harness capabilities, use `get_config key=capabilities` (registered catalog,
+   stored overrides, effective harness) or `get_config key=capabilities.<ref>`
+   (per-capability schema metadata from `config_schema` / `config_ui_schema`).
 
 Lead with `get_config` whenever you are unsure of the exact key name or the
 accepted values — the returned schema is the source of truth, so you never have
@@ -29,7 +32,7 @@ to guess.
 
 ## Change
 
-Call `set_config` with a `key` and a `value`:
+Call `set_config` with a `key` and a `value` for scalar settings:
 
 - `set_config key=default_provider value=anthropic` — the default provider when
   neither `--provider` nor an env credential forces a choice.
@@ -45,6 +48,30 @@ Call `set_config` with a `key` and a `value`:
 
 Pass `value=clear` to unset an optional or secret key
 (e.g. `set_config key=tokens.openai value=clear`).
+
+### Harness capabilities
+
+Overrides are an ordered `[[capabilities]]` list in the same file. Append
+entries with `set_config key=capabilities` and a `json` object (validated via each
+capability's `validate_config`). Pass `value=clear` to drop all stored overrides.
+
+```toml
+[[capabilities]]
+ref = "message_metadata"
+fields = ["timestamp"]
+
+[[capabilities]]
+ref = "duckduckgo"
+enabled = false
+```
+
+Tool equivalents:
+
+- `set_config key=capabilities json={"ref":"message_metadata","fields":["timestamp"]}`
+- `set_config key=capabilities json={"ref":"duckduckgo","enabled":false}`
+- `set_config key=capabilities json={"ref":"web_fetch","enable_file_download":false}`
+- `set_config key=capabilities json={"ref":"some_cap","append":true,...}` — duplicate instance
+- `set_config key=capabilities value=clear` — remove all stored overrides
 
 Provider and model edits are persisted and take effect on the **next run**. To
 switch the *live* model in the current session, use the interactive `/setup`

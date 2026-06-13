@@ -12,6 +12,7 @@ use crate::capabilities::{
     CodingBashCapability, CodingCliEnvironmentCapability, ConfigCapability,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
 };
+use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
@@ -21,9 +22,9 @@ use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
     BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, FileSystemCapability,
     INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LoopDetectionCapability,
-    PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability, SKILLS_CAPABILITY_ID,
-    StatelessTodoListCapability, TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability,
-    ToolSearchCapability, UserHooksCapability, WebFetchCapability,
+    MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability,
+    SKILLS_CAPABILITY_ID, StatelessTodoListCapability, TOOL_SEARCH_CAPABILITY_ID,
+    ToolOutputPersistenceCapability, ToolSearchCapability, UserHooksCapability, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
@@ -997,10 +998,7 @@ pub(crate) fn normalize_reasoning_effort(reasoning_effort: Option<String>) -> Op
         .filter(|effort| !effort.is_empty())
 }
 
-fn coding_harness_capabilities(
-    client_commands: bool,
-    hook_config: Option<serde_json::Value>,
-) -> Vec<AgentCapabilityConfig> {
+fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabilityConfig> {
     let mut caps = Vec::new();
     // Terminal-side commands lead the registry so the most-typed commands
     // (/help, !shell, /clear, /quit, …) surface first in the palette. Enabled only
@@ -1060,6 +1058,22 @@ fn coding_harness_capabilities(
         AgentCapabilityConfig::new(APPROVAL_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
     ]);
+    caps
+}
+
+pub(crate) fn coding_harness_defaults(client_commands: bool) -> Vec<AgentCapabilityConfig> {
+    default_coding_harness_capabilities(client_commands)
+}
+
+fn coding_harness_capabilities(
+    client_commands: bool,
+    hook_config: Option<serde_json::Value>,
+    settings: &Settings,
+) -> Vec<AgentCapabilityConfig> {
+    let mut caps = apply_capability_settings(
+        default_coding_harness_capabilities(client_commands),
+        &settings.capabilities,
+    );
     if let Some(config) = hook_config {
         caps.push(AgentCapabilityConfig::with_config("user_hooks", config));
     }
@@ -1367,6 +1381,7 @@ pub async fn build_with_options(
     capabilities.register(UserHooksCapability);
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebFetchCapability::from_env());
+    capabilities.register(MessageMetadataCapability);
     capabilities.register(CodingCliEnvironmentCapability::new(canonical_root.clone()));
     // Read-only consumer of the shared config service. `SettingsStore`
     // implements `ConfigService`, so the same handle that backs writes also
@@ -1390,11 +1405,10 @@ pub async fn build_with_options(
         settings: settings.clone(),
     });
     // Schema-described, human-friendly config editing (`get_config` /
-    // `set_config`) plus an always-on pointer into the system prompt. Persists
-    // to the same `settings.toml`; provider/model edits take effect next run.
-    capabilities.register(ConfigCapability {
-        settings: settings.clone(),
-    });
+    // `set_config`, including `key=capabilities`) plus an always-on pointer
+    // into the system prompt. Persists to the same `settings.toml`; provider/
+    // model edits take effect next run. Registered after the catalog is built
+    // (see below).
     // `memory` — global, durable, structured user memory. Its MEMORY.md lives
     // beside settings.toml in the yolop config dir, so a tempdir settings path
     // in tests isolates memory automatically. Only titles are disclosed each
@@ -1427,6 +1441,16 @@ pub async fn build_with_options(
         let ui: Arc<dyn HostUi> = Arc::new(TuiHandle::new(ui_tx));
         capabilities.register(ClientCommandsCapability::new(ui));
     }
+
+    let mut catalog = CapabilityCatalog::new();
+    for cap in capabilities.list() {
+        catalog.register_arc(cap.clone());
+    }
+
+    capabilities.register(ConfigCapability {
+        settings: settings.clone(),
+        catalog: Arc::new(catalog),
+    });
 
     let mut driver_registry = DriverRegistry::new();
     everruns_anthropic::register_driver(&mut driver_registry);
@@ -1465,8 +1489,11 @@ pub async fn build_with_options(
     // runtime owns. `session_id(...)` pins the id so resume can re-attach
     // to the same JSONL log (filename encodes the id).
     let session_title = format!("yolop @ {}", canonical_root.display());
-    let harness_capabilities =
-        coding_harness_capabilities(options.client_commands, hook_capability_config);
+    let harness_capabilities = coding_harness_capabilities(
+        options.client_commands,
+        hook_capability_config,
+        &settings_snapshot,
+    );
     let session_mcp_servers = mcp_servers.clone();
 
     let mut builder = InProcessRuntimeBuilder::new()
@@ -2686,8 +2713,27 @@ mod tests {
     }
 
     #[test]
+    fn harness_applies_message_metadata_from_settings() {
+        use crate::capability_settings::CapabilityOverride;
+        use everruns_core::capabilities::MESSAGE_METADATA_CAPABILITY_ID;
+
+        let mut settings = Settings::default();
+        settings.capabilities.push(CapabilityOverride {
+            capability_ref: MESSAGE_METADATA_CAPABILITY_ID.to_string(),
+            enabled: Some(true),
+            append: false,
+            config: serde_json::json!({ "fields": ["timestamp"] }),
+        });
+        let ids = coding_harness_capabilities(false, None, &settings);
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == MESSAGE_METADATA_CAPABILITY_ID)
+        );
+    }
+
+    #[test]
     fn coding_harness_enables_tool_output_persistence() {
-        let ids = coding_harness_capabilities(false, None);
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
             ids.iter()
@@ -2700,7 +2746,7 @@ mod tests {
         // Deferred tool loading must be wired for every host configuration —
         // it works on every provider, so there is no reason to scope it.
         for client_commands in [false, true] {
-            let ids = coding_harness_capabilities(client_commands, None);
+            let ids = coding_harness_capabilities(client_commands, None, &Settings::default());
             assert!(
                 ids.iter()
                     .any(|cap| cap.capability_id() == TOOL_SEARCH_CAPABILITY_ID),
@@ -2744,7 +2790,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_loop_detection() {
-        let ids = coding_harness_capabilities(false, None);
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
             ids.iter()
@@ -2754,7 +2800,7 @@ mod tests {
 
     #[test]
     fn coding_harness_enables_yolop_attribution() {
-        let ids = coding_harness_capabilities(false, None);
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
             ids.iter()
@@ -2764,7 +2810,7 @@ mod tests {
 
     #[test]
     fn coding_harness_gates_client_commands_on_flag() {
-        let without = coding_harness_capabilities(false, None);
+        let without = coding_harness_capabilities(false, None, &Settings::default());
         assert!(
             !without
                 .iter()
@@ -2772,7 +2818,7 @@ mod tests {
             "client commands must stay off for hosts that can't apply them"
         );
 
-        let with = coding_harness_capabilities(true, None);
+        let with = coding_harness_capabilities(true, None, &Settings::default());
         assert!(
             with.iter()
                 .any(|cap| cap.capability_id() == CLIENT_COMMANDS_CAPABILITY_ID),
