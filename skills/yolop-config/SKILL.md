@@ -50,6 +50,23 @@ Provider and model edits are persisted and take effect on the **next run**. To
 switch the *live* model in the current session, use the interactive `/setup`
 command instead.
 
+## Harness capabilities
+
+Optional harness capabilities (for example `message_metadata` from everruns-core)
+live under `[capabilities.<id>]` in the same `settings.toml`. Call
+`get_capabilities` to read each capability's `config_schema`, `config_ui_schema`,
+and current effective config. Call `set_capability` to add, remove
+(`enabled=false`), or override config (validated via `validate_config`).
+Changes apply on the **next run**.
+
+Examples:
+
+- `set_capability id=message_metadata enabled=true config={"fields":["timestamp"]}`
+  — annotate messages with UTC timestamps in the LLM view.
+- `set_capability id=duckduckgo enabled=false` — remove web search from the harness.
+- `set_capability id=web_fetch config={"enable_file_download":false}` — override
+  a default capability's config without disabling it.
+
 ## Related surfaces
 
 - **Durable preferences / memory** ("remember that I prefer terse answers"):

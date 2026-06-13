@@ -12,9 +12,12 @@
 // Provider/model edits are persisted here and take effect on the next run; use
 // the interactive `/setup` command to switch the *live* model mid-session.
 
+use crate::capability_settings::{
+    CapabilityCatalog, capability_entry_json, validate_capability_mutation,
+};
 use crate::config_schema::{KeyTarget, ValueKind, known_keys, parse_key, schema};
 use crate::config_service::{ConfigService, current_value, scoped_current};
-use crate::runtime::SUPPORTED_PROVIDERS;
+use crate::runtime::{SUPPORTED_PROVIDERS, coding_harness_defaults};
 use crate::settings::{ApprovalMode, Settings, SettingsStore};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
@@ -26,6 +29,7 @@ pub(crate) const CONFIG_CAPABILITY_ID: &str = "yolop_config";
 
 pub(crate) struct ConfigCapability {
     pub(crate) settings: Arc<SettingsStore>,
+    pub(crate) catalog: Arc<CapabilityCatalog>,
 }
 
 #[async_trait]
@@ -50,11 +54,12 @@ impl Capability for ConfigCapability {
         Some(format!(
             "<capability id=\"{}\">\nyolop's settings live at {} and are schema-described \
              (default provider/model, per-provider API tokens and models, endpoint base URLs, \
-             attribution). To inspect or change any of it, call `get_config` (lists every key \
-             with its meaning and current value) and `set_config` (validates and persists a \
-             key), or activate the `yolop-config` skill. Unknown keys in the file are ignored, \
-             never fatal. Provider/model edits apply on the next run; use `/setup` to switch the \
-             live model now.\n</capability>",
+             attribution, harness capabilities). To inspect or change settings keys, call \
+             `get_config` and `set_config`. To add, remove, or reconfigure harness capabilities, \
+             call `get_capabilities` and `set_capability` (schemas come from each capability's \
+             `config_schema` / `validate_config`). Or activate the `yolop-config` skill. Unknown \
+             keys in the file are ignored, never fatal. Provider/model and capability edits apply \
+             on the next run; use `/setup` to switch the live model now.\n</capability>",
             self.id(),
             self.settings.path().display()
         ))
@@ -62,8 +67,9 @@ impl Capability for ConfigCapability {
 
     fn system_prompt_preview(&self) -> Option<String> {
         Some(
-            "<capability id=\"yolop_config\">\nyolop's settings are schema-described; use \
-             `get_config` / `set_config` or the `yolop-config` skill to view and edit them.\n\
+            "<capability id=\"yolop_config\">\nyolop's settings and harness capabilities are \
+             schema-described; use `get_config` / `set_config` and `get_capabilities` / \
+             `set_capability`, or the `yolop-config` skill.\n\
              </capability>"
                 .to_string(),
         )
@@ -76,6 +82,14 @@ impl Capability for ConfigCapability {
             }),
             Box::new(SetConfigTool {
                 settings: self.settings.clone(),
+            }),
+            Box::new(GetCapabilitiesTool {
+                settings: self.settings.clone(),
+                catalog: self.catalog.clone(),
+            }),
+            Box::new(SetCapabilityTool {
+                settings: self.settings.clone(),
+                catalog: self.catalog.clone(),
             }),
         ]
     }
@@ -384,14 +398,206 @@ fn on_off(enabled: bool) -> &'static str {
     if enabled { "on" } else { "off" }
 }
 
+// ---------- get_capabilities ----------
+
+struct GetCapabilitiesTool {
+    settings: Arc<SettingsStore>,
+    catalog: Arc<CapabilityCatalog>,
+}
+
+#[async_trait]
+impl Tool for GetCapabilitiesTool {
+    fn name(&self) -> &str {
+        "get_capabilities"
+    }
+    fn display_name(&self) -> Option<&str> {
+        Some("Get capabilities")
+    }
+    fn description(&self) -> &str {
+        "Inspect yolop harness capabilities. With no `id`, returns every registered capability \
+         with its description, JSON config schema, UI schema hints, default harness membership, \
+         stored override, and effective config. With an `id`, returns just that entry."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Optional capability id, e.g. `message_metadata` or `web_fetch`."
+                }
+            },
+            "additionalProperties": false
+        })
+    }
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let settings = self.settings.snapshot();
+        let path = self.settings.path().display().to_string();
+        let defaults = coding_harness_defaults(false);
+        let default_by_id = |id: &str| defaults.iter().find(|c| c.capability_id() == id);
+
+        if let Some(id) = arguments.get("id").and_then(Value::as_str) {
+            let id = id.trim();
+            if !id.is_empty() {
+                match capability_entry_json(
+                    &self.catalog,
+                    id,
+                    default_by_id(id),
+                    settings.capability_setting(id),
+                ) {
+                    Ok(entry) => {
+                        return ToolExecutionResult::success(json!({
+                            "settings_path": path,
+                            "capability": entry,
+                        }));
+                    }
+                    Err(err) => return ToolExecutionResult::tool_error(err),
+                }
+            }
+        }
+
+        let mut entries = Vec::new();
+        for cap in self.catalog.list() {
+            let id = cap.id();
+            match capability_entry_json(
+                &self.catalog,
+                id,
+                default_by_id(id),
+                settings.capability_setting(id),
+            ) {
+                Ok(entry) => entries.push(entry),
+                Err(err) => return ToolExecutionResult::tool_error(err),
+            }
+        }
+        entries.sort_by(|a, b| {
+            a["id"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(b["id"].as_str().unwrap_or_default())
+        });
+        ToolExecutionResult::success(json!({
+            "settings_path": path,
+            "capabilities": entries,
+            "note": "Add, remove, or reconfigure with `set_capability`. Changes apply on the next run.",
+        }))
+    }
+}
+
+// ---------- set_capability ----------
+
+struct SetCapabilityTool {
+    settings: Arc<SettingsStore>,
+    catalog: Arc<CapabilityCatalog>,
+}
+
+#[async_trait]
+impl Tool for SetCapabilityTool {
+    fn name(&self) -> &str {
+        "set_capability"
+    }
+    fn display_name(&self) -> Option<&str> {
+        Some("Set capability")
+    }
+    fn description(&self) -> &str {
+        "Add, remove, or reconfigure a harness capability in settings.toml. Pass `id` and \
+         `enabled=false` to remove/disable, `enabled=true` to add/keep enabled, and optional \
+         `config` (JSON object) to override capability settings. Config is validated against \
+         the capability's schema via `validate_config`. Run `get_capabilities` first."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Capability id, e.g. `message_metadata`."
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "When false, removes the capability from the harness."
+                },
+                "config": {
+                    "type": "object",
+                    "description": "Per-capability JSON config merged over defaults."
+                }
+            },
+            "required": ["id"],
+            "additionalProperties": false
+        })
+    }
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let id = match arguments.get("id").and_then(Value::as_str) {
+            Some(id) if !id.trim().is_empty() => id.trim(),
+            _ => return ToolExecutionResult::tool_error("'id' is required".to_string()),
+        };
+        let enabled = arguments.get("enabled").and_then(Value::as_bool);
+        let config = arguments.get("config");
+        if enabled.is_none() && config.is_none() {
+            return ToolExecutionResult::tool_error(
+                "provide `enabled` and/or `config`; call `get_capabilities` to inspect".to_string(),
+            );
+        }
+
+        let snapshot = self.settings.snapshot();
+        let defaults = coding_harness_defaults(false);
+        let setting = match validate_capability_mutation(
+            &self.catalog,
+            id,
+            enabled,
+            config,
+            &defaults,
+            &snapshot.capabilities,
+        ) {
+            Ok(setting) => setting,
+            Err(err) => return ToolExecutionResult::tool_error(err),
+        };
+
+        let clearing = setting.is_explicitly_disabled();
+        let save_result = if clearing {
+            self.settings.clear_capability(id)
+        } else {
+            self.settings
+                .set_capability(id.to_string(), setting.clone())
+                .map(|_| true)
+        };
+        if let Err(err) = save_result {
+            return ToolExecutionResult::tool_error(format!("could not save settings: {err}"));
+        }
+
+        let message = if clearing {
+            format!("removed capability `{id}` from the harness (saved to settings)")
+        } else if enabled == Some(true) && config.is_none() {
+            format!("enabled capability `{id}` with default config")
+        } else {
+            format!("updated capability `{id}` config")
+        };
+
+        ToolExecutionResult::success(json!({
+            "ok": true,
+            "id": id,
+            "message": message,
+            "settings_path": self.settings.path().display().to_string(),
+            "stored": setting,
+            "note": "Restart yolop for harness changes to take effect.",
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_core::capabilities::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
 
     fn store() -> (tempfile::TempDir, Arc<SettingsStore>) {
         let tmp = tempfile::tempdir().expect("tmp");
         let store = Arc::new(SettingsStore::open(tmp.path().join("settings.toml")));
         (tmp, store)
+    }
+
+    fn catalog() -> Arc<CapabilityCatalog> {
+        let mut catalog = CapabilityCatalog::new();
+        catalog.register_arc(Arc::new(MessageMetadataCapability));
+        Arc::new(catalog)
     }
 
     #[tokio::test]
@@ -581,6 +787,87 @@ mod tests {
             models["current"].get("frobnicate").is_none(),
             "unsupported provider must be omitted: {}",
             models["current"]
+        );
+    }
+
+    #[tokio::test]
+    async fn set_capability_adds_message_metadata_to_settings() {
+        let (_tmp, settings) = store();
+        let tool = SetCapabilityTool {
+            settings: settings.clone(),
+            catalog: catalog(),
+        };
+        let result = tool
+            .execute(json!({
+                "id": MESSAGE_METADATA_CAPABILITY_ID,
+                "enabled": true,
+                "config": { "fields": ["timestamp"] }
+            }))
+            .await;
+        assert!(matches!(result, ToolExecutionResult::Success(_)));
+        let snapshot = settings.snapshot();
+        let stored = snapshot
+            .capability_setting(MESSAGE_METADATA_CAPABILITY_ID)
+            .expect("stored");
+        assert_eq!(stored.config["fields"], json!(["timestamp"]));
+    }
+
+    #[tokio::test]
+    async fn set_capability_rejects_invalid_config() {
+        let (_tmp, settings) = store();
+        let tool = SetCapabilityTool {
+            settings: settings.clone(),
+            catalog: catalog(),
+        };
+        let result = tool
+            .execute(json!({
+                "id": MESSAGE_METADATA_CAPABILITY_ID,
+                "enabled": true,
+                "config": { "fields": ["llm_model"] }
+            }))
+            .await;
+        assert!(matches!(result, ToolExecutionResult::ToolError(_)));
+    }
+
+    #[tokio::test]
+    async fn get_capabilities_exposes_schema_for_message_metadata() {
+        let (_tmp, settings) = store();
+        let tool = GetCapabilitiesTool {
+            settings,
+            catalog: catalog(),
+        };
+        let ToolExecutionResult::Success(value) = tool
+            .execute(json!({ "id": MESSAGE_METADATA_CAPABILITY_ID }))
+            .await
+        else {
+            panic!("expected success");
+        };
+        assert!(value["capability"]["config_schema"].is_object());
+        assert_eq!(value["capability"]["default_in_harness"], false);
+    }
+
+    #[tokio::test]
+    async fn set_capability_disable_removes_override() {
+        let (_tmp, settings) = store();
+        let tool = SetCapabilityTool {
+            settings: settings.clone(),
+            catalog: catalog(),
+        };
+        tool.execute(json!({
+            "id": MESSAGE_METADATA_CAPABILITY_ID,
+            "enabled": true
+        }))
+        .await;
+        tool.execute(json!({
+            "id": MESSAGE_METADATA_CAPABILITY_ID,
+            "enabled": false
+        }))
+        .await;
+        assert!(
+            settings
+                .snapshot()
+                .capability_setting(MESSAGE_METADATA_CAPABILITY_ID)
+                .is_none()
         );
     }
 }

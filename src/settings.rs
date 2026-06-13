@@ -12,6 +12,9 @@
 // (OPENAI_API_KEY, ANTHROPIC_API_KEY, …) continue to take precedence so a
 // per-run override is always possible.
 
+use crate::capability_settings::{
+    CapabilitySetting, capabilities_to_table, parse_capabilities_table,
+};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -90,6 +93,10 @@ pub struct Settings {
     /// Soft-approval paranoia level, injected into the system prompt each
     /// turn. Central, cross-session, surfaced in the status bar.
     pub approval_mode: ApprovalMode,
+    /// Optional harness capability overrides (`[capabilities.<id>]` in
+    /// settings.toml): add optional capabilities, disable defaults, or override
+    /// per-capability JSON config.
+    pub capabilities: BTreeMap<String, CapabilitySetting>,
 }
 
 impl Default for Settings {
@@ -102,6 +109,7 @@ impl Default for Settings {
             base_urls: BTreeMap::new(),
             attribution: true,
             approval_mode: ApprovalMode::Normal,
+            capabilities: BTreeMap::new(),
         }
     }
 }
@@ -147,6 +155,7 @@ impl Settings {
             base_urls: string_map("base_urls"),
             attribution,
             approval_mode,
+            capabilities: parse_capabilities_table(table),
         }
     }
 
@@ -180,6 +189,10 @@ impl Settings {
         insert_map("tokens", &self.tokens);
         insert_map("models", &self.models);
         insert_map("base_urls", &self.base_urls);
+        let caps = capabilities_to_table(&self.capabilities);
+        if !caps.is_empty() {
+            table.insert("capabilities".to_string(), toml::Value::Table(caps));
+        }
         table
     }
 
@@ -209,6 +222,10 @@ impl Settings {
 
     pub fn approval_mode(&self) -> ApprovalMode {
         self.approval_mode
+    }
+
+    pub fn capability_setting(&self, id: &str) -> Option<&CapabilitySetting> {
+        self.capabilities.get(id)
     }
 }
 
@@ -363,6 +380,25 @@ impl SettingsStore {
     pub fn clear_base_url(&self, provider: &str) -> Result<bool> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         let existed = guard.base_urls.remove(provider).is_some();
+        save_to(&self.path, &guard)?;
+        Ok(existed)
+    }
+
+    /// Persist a harness capability override (add, remove, or reconfigure).
+    pub fn set_capability(&self, id: String, setting: CapabilitySetting) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        if setting.enabled == Some(false) && setting.config.is_null() {
+            guard.capabilities.remove(&id);
+        } else {
+            guard.capabilities.insert(id, setting);
+        }
+        save_to(&self.path, &guard)
+    }
+
+    /// Remove any persisted override for a capability id.
+    pub fn clear_capability(&self, id: &str) -> Result<bool> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let existed = guard.capabilities.remove(id).is_some();
         save_to(&self.path, &guard)?;
         Ok(existed)
     }

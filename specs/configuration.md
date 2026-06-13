@@ -61,6 +61,15 @@ Both honor aliases and validate provider segments against the supported-provider
 list. Provider/model edits take effect on the next run; `/setup` remains the way
 to switch the *live* model mid-session.
 
+- **`get_capabilities`** — with no argument, returns every registered capability
+  with description, JSON config schema, UI schema hints, default harness
+  membership, stored override, and effective config; with an `id`, returns one
+  entry.
+- **`set_capability`** — add, remove (`enabled=false`), or reconfigure a harness
+  capability (`[capabilities.<id>]` in settings.toml). Config is validated
+  through each capability's `config_schema` / `validate_config`. Changes apply
+  on the next run.
+
 ### Configuration as a service
 
 Configuration is exposed to the rest of the agent as a **service** so that
@@ -111,4 +120,4 @@ The schema reaches the agent two ways:
 Configuration is distinct from the neighbouring personalization surfaces:
 durable preferences are `your` **memory**, behavioral rules are **hooks**, and
 interactive live provider/model switching is **`/setup`**. `set_config` is only
-for the typed settings keys above.
+for the typed settings keys above; harness capabilities use `set_capability`.
