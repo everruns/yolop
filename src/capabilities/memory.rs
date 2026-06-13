@@ -38,15 +38,9 @@ not by hand. -->\n";
 
 // ---------- configuration ----------
 
-/// Tunables for the memory capability, read from a `[memory]` table in
-/// `settings.toml` (all keys optional; sensible defaults otherwise).
-///
-/// ```toml
-/// [memory]
-/// disclosed_titles = 15   # memory titles injected into the prompt each turn
-/// recall_limit = 5        # default number of memories `recall` returns
-/// soft_cap = 200          # warn (never delete) once this many memories exist
-/// ```
+/// Tunables for the memory capability, supplied through the generic
+/// capability-config system (`AgentCapabilityConfig.config`) and described by
+/// [`MemoryConfig::schema`]. All keys are optional; defaults apply otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MemoryConfig {
     /// How many memory titles to inject into the system prompt each turn.
@@ -412,19 +406,40 @@ fn generate_id(existing: &[Memory], seed: &str, now: DateTime<Utc>) -> String {
     }
 }
 
-/// Parse the structured `MEMORY.md` into memories. Robust by design: a missing
-/// metadata comment gets a generated id and `now` timestamps, and a legacy
-/// flat-bullet file (no `## ` sections) is imported wholesale as a single
-/// "Imported notes" memory so an upgrade never loses a user's notes.
+/// Parse the structured `MEMORY.md` into memories. Robust by design:
+/// - Section boundaries are `## ` headings *anchored* by the `<!-- id: … -->`
+///   metadata line we always write directly beneath them. This keeps round-trips
+///   lossless even when a memory body itself contains a `## ` markdown heading —
+///   such a body line is not metadata-anchored, so it stays in the body.
+/// - If no heading is anchored (a hand-authored file), every `## ` is treated as
+///   a boundary, and a missing metadata comment gets a generated id / `now`.
+/// - A legacy flat-bullet file (no `## ` sections) is imported wholesale as a
+///   single "Imported notes" memory so an upgrade never loses a user's notes.
 fn parse(content: &str) -> Vec<Memory> {
     let lines: Vec<&str> = content.lines().collect();
-    // Indices of section heading lines ("## ...").
-    let heads: Vec<usize> = lines
+    let is_heading = |l: &str| l.starts_with("## ");
+    let is_meta = |l: &str| {
+        let t = l.trim();
+        t.starts_with("<!--") && t.contains("id:")
+    };
+    // Prefer metadata-anchored headings so a `## ` line inside a body never
+    // splits a memory. Fall back to every heading only when nothing is anchored.
+    let anchored: Vec<usize> = lines
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.starts_with("## "))
+        .filter(|(i, l)| is_heading(l) && lines.get(i + 1).map(|n| is_meta(n)).unwrap_or(false))
         .map(|(i, _)| i)
         .collect();
+    let heads: Vec<usize> = if anchored.is_empty() {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| is_heading(l))
+            .map(|(i, _)| i)
+            .collect()
+    } else {
+        anchored
+    };
 
     if heads.is_empty() {
         return import_legacy(&lines);
@@ -1097,6 +1112,26 @@ mod tests {
         assert_eq!(imported.title, "Imported notes");
         assert!(imported.body.contains("prefer terse answers"));
         assert!(imported.body.contains("name is Mike"));
+    }
+
+    #[test]
+    fn body_with_markdown_heading_survives_round_trip() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join(MEMORY_FILE_NAME);
+        let store = MemoryStore::open(path.clone());
+        // A body that itself contains a `## ` heading line must not be re-parsed
+        // into a second spurious memory on reload.
+        let body = "Commit style:\n\n## Heading rules\nUse `## ` for sections.";
+        let m = store
+            .remember("Markdown habits", body, None)
+            .expect("remember");
+
+        let reopened = MemoryStore::open(path);
+        assert_eq!(reopened.len(), 1);
+        let got = reopened.get(&m.memory.id).expect("single memory survives");
+        assert_eq!(got.title, "Markdown habits");
+        assert!(got.body.contains("## Heading rules"));
+        assert!(got.body.contains("Use `## ` for sections."));
     }
 
     #[test]
