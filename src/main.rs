@@ -8,6 +8,7 @@ mod capabilities;
 mod capability_settings;
 mod config_schema;
 mod config_service;
+mod connectors;
 mod hooks_config;
 mod host_ui;
 mod into;
@@ -30,6 +31,10 @@ mod mcp_e2e_tests;
 mod agent_scenarios;
 
 use anyhow::Result;
+
+// Force-link integration crates whose inventory registrations must survive
+// LTO/dead-code elimination when we register capabilities explicitly.
+extern crate everruns_integrations_daytona;
 use app::{App, COMPOSER_VIEWPORT_HEIGHT};
 use clap::{Args, Parser, Subcommand};
 use crossterm::event::{
