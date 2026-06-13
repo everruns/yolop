@@ -23,7 +23,7 @@ supported as overrides (`DAYTONA_API_KEY` for Daytona).
 
 ### Connector catalog
 
-`src/connectors/catalog.rs` registers upstream [`ConnectionProvider`]
+`src/connectors/catalog.rs` registers upstream [`Connector`]
 implementations. Daytona is registered by default; new providers add a
 `.register(...)` call there.
 
@@ -36,7 +36,7 @@ implementations. Daytona is registered by default; new providers add a
   `settings.toml` (see [`configuration.md`](./configuration.md)).
 - `YolopConnectionResolver` implements `UserConnectionResolver` and is injected
   through `RuntimeBackends::with_connection_resolver`.
-- `DaytonaConnectionProvider` is registered on `PlatformDefinition` for form
+- `DaytonaConnector` is registered on `PlatformDefinition` for form
   schema and validation.
 
 When `daytona` is enabled via `[[capabilities]]`, yolop automatically adds

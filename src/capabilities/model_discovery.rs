@@ -10,11 +10,9 @@
 use crate::runtime::ProviderChoice;
 use crate::settings::Settings;
 use anyhow::{Context, Result, anyhow};
+use everruns_core::DriverId;
 use everruns_core::get_model_profile;
-use everruns_core::llm_driver_registry::{
-    DiscoveredModel, DriverRegistry, ProviderConfig, ProviderType,
-};
-use everruns_core::llm_models::LlmProviderType;
+use everruns_core::llm_driver_registry::{DiscoveredModel, DriverRegistry, ProviderConfig};
 
 /// One model offered by a provider, ready for display: bare id plus
 /// human-readable metadata merged from the provider's API response and the
@@ -37,18 +35,12 @@ pub(crate) async fn discover_provider_models(
         return Ok(None);
     }
     let target = choice.model_with_provider(settings)?;
-    let provider_type = match target.provider_type {
-        LlmProviderType::Openai => ProviderType::OpenAI,
-        LlmProviderType::AzureOpenai => ProviderType::AzureOpenAI,
-        LlmProviderType::OpenaiCompletions => ProviderType::OpenAICompletions,
-        LlmProviderType::Anthropic => ProviderType::Anthropic,
-        LlmProviderType::Gemini => ProviderType::Gemini,
-        LlmProviderType::Openrouter => ProviderType::OpenRouter,
-        // Yolop never constructs Bedrock (no Bedrock driver is registered
-        // below); treat discovery as unsupported rather than erroring.
-        LlmProviderType::Bedrock | LlmProviderType::LlmSim => return Ok(None),
-    };
-    let mut config = ProviderConfig::new(provider_type);
+    // Yolop never registers Bedrock (no Bedrock driver below) or the llmsim
+    // discovery driver; treat discovery as unsupported rather than erroring.
+    if matches!(target.provider_type, DriverId::Bedrock | DriverId::LlmSim) {
+        return Ok(None);
+    }
+    let mut config = ProviderConfig::new(target.provider_type.clone());
     if let Some(key) = &target.api_key {
         config = config.with_api_key(key);
     }
@@ -59,7 +51,7 @@ pub(crate) async fn discover_provider_models(
     let mut registry = DriverRegistry::new();
     everruns_anthropic::register_driver(&mut registry);
     everruns_openai::register_driver(&mut registry);
-    let driver = registry.create_driver(&config)?;
+    let driver = registry.create_chat_driver(&config)?;
 
     let models = match driver.list_models().await? {
         Some(models) => Some(models),
@@ -99,7 +91,7 @@ pub(crate) async fn discover_provider_models(
 /// catalog best — e.g. OpenRouter's `name` field), with the core profile
 /// filling the gap for APIs that return bare ids (e.g. OpenAI).
 fn enrich_with_profiles(
-    provider_type: &LlmProviderType,
+    provider_type: &DriverId,
     models: Vec<DiscoveredModel>,
 ) -> Vec<DiscoveredProviderModel> {
     models
@@ -211,8 +203,7 @@ mod tests {
     fn enrichment_fills_names_and_descriptions_from_core_profiles() {
         // OpenAI's models API returns bare ids; the core profile registry
         // supplies the human-readable name and description.
-        let enriched =
-            enrich_with_profiles(&LlmProviderType::Openai, vec![bare_discovered("gpt-5.5")]);
+        let enriched = enrich_with_profiles(&DriverId::OpenAI, vec![bare_discovered("gpt-5.5")]);
 
         assert_eq!(enriched.len(), 1);
         assert_eq!(enriched[0].model_id, "gpt-5.5");
@@ -232,7 +223,7 @@ mod tests {
         let mut model = bare_discovered("gpt-5.5");
         model.display_name = Some("GPT-5.5 (via gateway)".to_string());
 
-        let enriched = enrich_with_profiles(&LlmProviderType::Openai, vec![model]);
+        let enriched = enrich_with_profiles(&DriverId::OpenAI, vec![model]);
 
         assert_eq!(
             enriched[0].display_name.as_deref(),
@@ -243,7 +234,7 @@ mod tests {
     #[test]
     fn enrichment_keeps_unknown_models_with_bare_ids() {
         let enriched = enrich_with_profiles(
-            &LlmProviderType::Openai,
+            &DriverId::OpenAI,
             vec![bare_discovered("totally-new-model")],
         );
 

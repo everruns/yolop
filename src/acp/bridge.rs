@@ -283,6 +283,7 @@ mod tests {
                 usage: None,
                 error_code: None,
                 error_fields: None,
+                error_disclosure: None,
             },
         )));
         assert!(
@@ -301,6 +302,7 @@ mod tests {
                 usage: None,
                 error_code: None,
                 error_fields: None,
+                error_disclosure: None,
             },
         )));
         assert_eq!(

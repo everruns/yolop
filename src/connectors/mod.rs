@@ -1,6 +1,6 @@
 //! Generic connector (user connection) support for yolop.
 //!
-//! Connectors wrap upstream [`ConnectionProvider`] implementations so sandbox and
+//! Connectors wrap upstream [`Connector`] implementations so sandbox and
 //! integration capabilities (Daytona today; E2B and others later) can resolve
 //! credentials lazily at tool time through [`YolopConnectionResolver`].
 

@@ -23,6 +23,7 @@ use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
+use everruns_core::DriverId;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
     BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, FileSystemCapability,
@@ -36,14 +37,13 @@ use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
 use everruns_core::in_memory::InMemoryMessageRetriever;
 use everruns_core::llm_driver_registry::DriverRegistry;
-use everruns_core::llm_models::LlmProviderType;
 use everruns_core::llmsim_driver::LlmSimConfig;
 use everruns_core::session_file::{FileInfo, FileStat, GrepMatch, InitialFile, SessionFile};
 use everruns_core::typed_id::SessionId;
 use everruns_core::{
-    AgentCapabilityConfig, CapabilityRegistry, Controls, InputMessage, ModelWithProvider,
-    PlatformDefinition, ReasoningConfig, ScopedMcpServers, SessionFileSystem,
-    SessionFileSystemFactory, SessionFileSystemFactoryContext,
+    AgentCapabilityConfig, CapabilityRegistry, Controls, InputMessage, PlatformDefinition,
+    ReasoningConfig, ResolvedModel, ScopedMcpServers, SessionFileSystem, SessionFileSystemFactory,
+    SessionFileSystemFactoryContext,
 };
 use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
@@ -789,14 +789,15 @@ impl ProviderChoice {
         REASONING_EFFORT_SUGGESTIONS
     }
 
-    pub(crate) fn model_with_provider(&self, settings: &Settings) -> Result<ModelWithProvider> {
+    pub(crate) fn model_with_provider(&self, settings: &Settings) -> Result<ResolvedModel> {
         match self {
             ProviderChoice::Anthropic { model } => {
                 let key = resolve_token(settings, "anthropic", &["ANTHROPIC_API_KEY"])
                     .ok_or_else(|| anyhow!("ANTHROPIC_API_KEY not set (and no token stored)"))?;
-                Ok(ModelWithProvider {
+                Ok(ResolvedModel {
                     model: model.clone(),
-                    provider_type: LlmProviderType::Anthropic,
+                    provider_type: DriverId::Anthropic,
+                    provider_metadata: None,
                     api_key: Some(key),
                     base_url: None,
                 })
@@ -804,9 +805,10 @@ impl ProviderChoice {
             ProviderChoice::OpenAi { model, .. } => {
                 let key = resolve_token(settings, "openai", &["OPENAI_API_KEY"])
                     .ok_or_else(|| anyhow!("OPENAI_API_KEY not set (and no token stored)"))?;
-                Ok(ModelWithProvider {
+                Ok(ResolvedModel {
                     model: model.clone(),
-                    provider_type: LlmProviderType::Openai,
+                    provider_type: DriverId::OpenAI,
+                    provider_metadata: None,
                     api_key: Some(key),
                     base_url: None,
                 })
@@ -816,9 +818,10 @@ impl ProviderChoice {
                     .ok_or_else(|| {
                         anyhow!("GEMINI_API_KEY (or GOOGLE_API_KEY) not set (and no token stored)")
                     })?;
-                Ok(ModelWithProvider {
+                Ok(ResolvedModel {
                     model: model.clone(),
-                    provider_type: LlmProviderType::Openai,
+                    provider_type: DriverId::OpenAI,
+                    provider_metadata: None,
                     api_key: Some(key),
                     base_url: Some(base_url.clone()),
                 })
@@ -828,7 +831,7 @@ impl ProviderChoice {
             } => {
                 let key = resolve_token(settings, "openrouter", &["OPENROUTER_API_KEY"])
                     .ok_or_else(|| anyhow!("OPENROUTER_API_KEY not set (and no token stored)"))?;
-                Ok(ModelWithProvider {
+                Ok(ResolvedModel {
                     model: model.clone(),
                     // First-class OpenRouter driver (everruns 0.10+). It speaks
                     // OpenRouter's OpenAI-compatible Responses API but knows the
@@ -839,7 +842,8 @@ impl ProviderChoice {
                     // extensions (native phases, hosted tool_search) are never
                     // sent to the gateway. This replaces the earlier Chat
                     // Completions workaround for the stateless endpoint.
-                    provider_type: LlmProviderType::Openrouter,
+                    provider_type: DriverId::OpenRouter,
+                    provider_metadata: None,
                     api_key: Some(key),
                     base_url: Some(base_url.clone()),
                 })
@@ -847,9 +851,10 @@ impl ProviderChoice {
             ProviderChoice::Ollama { model, base_url } => {
                 let key = resolve_token(settings, "ollama", &["OLLAMA_API_KEY"])
                     .unwrap_or_else(|| DEFAULT_OLLAMA_API_KEY.to_string());
-                Ok(ModelWithProvider {
+                Ok(ResolvedModel {
                     model: model.clone(),
-                    provider_type: LlmProviderType::Openai,
+                    provider_type: DriverId::OpenAI,
+                    provider_metadata: None,
                     api_key: Some(key),
                     base_url: Some(base_url.clone()),
                 })
@@ -866,39 +871,44 @@ impl ProviderChoice {
                 // Responses driver would break on most of them.
                 let key = resolve_token(settings, "custom", &["CUSTOM_API_KEY"])
                     .unwrap_or_else(|| DEFAULT_CUSTOM_API_KEY.to_string());
-                Ok(ModelWithProvider {
+                Ok(ResolvedModel {
                     model: model.clone(),
-                    provider_type: LlmProviderType::OpenaiCompletions,
+                    provider_type: DriverId::OpenAICompletions,
+                    provider_metadata: None,
                     api_key: Some(key),
                     base_url: Some(base_url),
                 })
             }
-            ProviderChoice::Sim => Ok(ModelWithProvider {
+            ProviderChoice::Sim => Ok(ResolvedModel {
                 model: "llmsim-yolop".into(),
-                provider_type: LlmProviderType::LlmSim,
+                provider_type: DriverId::LlmSim,
+                provider_metadata: None,
                 api_key: Some("fake-key".into()),
                 base_url: None,
             }),
         }
     }
 
-    fn model_without_stored_key(&self) -> ModelWithProvider {
+    fn model_without_stored_key(&self) -> ResolvedModel {
         match self {
-            ProviderChoice::Anthropic { model } => ModelWithProvider {
+            ProviderChoice::Anthropic { model } => ResolvedModel {
                 model: model.clone(),
-                provider_type: LlmProviderType::Anthropic,
+                provider_type: DriverId::Anthropic,
+                provider_metadata: None,
                 api_key: None,
                 base_url: None,
             },
-            ProviderChoice::OpenAi { model, .. } => ModelWithProvider {
+            ProviderChoice::OpenAi { model, .. } => ResolvedModel {
                 model: model.clone(),
-                provider_type: LlmProviderType::Openai,
+                provider_type: DriverId::OpenAI,
+                provider_metadata: None,
                 api_key: None,
                 base_url: None,
             },
-            ProviderChoice::Google { model, base_url } => ModelWithProvider {
+            ProviderChoice::Google { model, base_url } => ResolvedModel {
                 model: model.clone(),
-                provider_type: LlmProviderType::Openai,
+                provider_type: DriverId::OpenAI,
+                provider_metadata: None,
                 api_key: None,
                 base_url: Some(base_url.clone()),
             },
@@ -906,27 +916,31 @@ impl ProviderChoice {
             // `model_with_provider` for the full rationale.
             ProviderChoice::OpenRouter {
                 model, base_url, ..
-            } => ModelWithProvider {
+            } => ResolvedModel {
                 model: model.clone(),
-                provider_type: LlmProviderType::Openrouter,
+                provider_type: DriverId::OpenRouter,
+                provider_metadata: None,
                 api_key: None,
                 base_url: Some(base_url.clone()),
             },
-            ProviderChoice::Ollama { model, base_url } => ModelWithProvider {
+            ProviderChoice::Ollama { model, base_url } => ResolvedModel {
                 model: model.clone(),
-                provider_type: LlmProviderType::Openai,
+                provider_type: DriverId::OpenAI,
+                provider_metadata: None,
                 api_key: Some(DEFAULT_OLLAMA_API_KEY.to_string()),
                 base_url: Some(base_url.clone()),
             },
-            ProviderChoice::Custom { model, .. } => ModelWithProvider {
+            ProviderChoice::Custom { model, .. } => ResolvedModel {
                 model: model.clone(),
-                provider_type: LlmProviderType::OpenaiCompletions,
+                provider_type: DriverId::OpenAICompletions,
+                provider_metadata: None,
                 api_key: None,
                 base_url: env_non_empty("CUSTOM_BASE_URL"),
             },
-            ProviderChoice::Sim => ModelWithProvider {
+            ProviderChoice::Sim => ResolvedModel {
                 model: "llmsim-yolop".into(),
-                provider_type: LlmProviderType::LlmSim,
+                provider_type: DriverId::LlmSim,
+                provider_metadata: None,
                 api_key: Some("fake-key".into()),
                 base_url: None,
             },
@@ -1506,9 +1520,10 @@ pub async fn build_with_options(
             Err(_) if setup_recommended => provider.model_without_stored_key(),
             Err(err) => return Err(err),
         },
-        ProviderChoice::Sim => ModelWithProvider {
+        ProviderChoice::Sim => ResolvedModel {
             model: "llmsim-yolop".into(),
-            provider_type: LlmProviderType::LlmSim,
+            provider_type: DriverId::LlmSim,
+            provider_metadata: None,
             api_key: Some("fake-key".into()),
             base_url: None,
         },
@@ -1517,11 +1532,7 @@ pub async fn build_with_options(
     let platform = PlatformDefinition::builder()
         .capability_registry(capabilities)
         .driver_registry(driver_registry)
-        .connection_providers(
-            everruns_core::ConnectionProviderRegistry::builder()
-                .provider(everruns_integrations_daytona::connection::DaytonaConnectionProvider)
-                .build(),
-        )
+        .connector(everruns_integrations_daytona::connection::DaytonaConnector)
         .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
             workspace_root: canonical_root.clone(),
             session_dir: session_dir.clone(),
@@ -2553,7 +2564,7 @@ mod tests {
             std::env::remove_var("OPENROUTER_API_KEY");
         }
 
-        assert_eq!(model.provider_type, LlmProviderType::Openrouter);
+        assert_eq!(model.provider_type, DriverId::OpenRouter);
         assert_eq!(model.api_key, Some("test-or-key".to_string()));
         assert_eq!(
             model.base_url,
@@ -2564,7 +2575,7 @@ mod tests {
         // silently fall back to a different driver.
         assert_eq!(
             provider.model_without_stored_key().provider_type,
-            LlmProviderType::Openrouter
+            DriverId::OpenRouter
         );
     }
 
@@ -2581,7 +2592,7 @@ mod tests {
 
         let model = provider.model_with_provider(&Settings::default()).unwrap();
 
-        assert_eq!(model.provider_type, LlmProviderType::Openai);
+        assert_eq!(model.provider_type, DriverId::OpenAI);
         assert_eq!(model.api_key, Some(DEFAULT_OLLAMA_API_KEY.to_string()));
         assert_eq!(model.base_url, Some(DEFAULT_OLLAMA_BASE_URL.to_string()));
     }
