@@ -1,222 +1,44 @@
-// The `your` capability — yolop's personalization layer.
+// The `your` capability — yolop's personalization framing + self-configuration.
 //
-// "your" is how a user addresses yolop itself: "what is your config?",
-// "update your memory", "set yolop blue", "remember that I prefer terse
-// answers". These are GLOBAL personalization requests about yolop the tool,
-// distinct from changes to the current project (which belong in the repo's
-// AGENTS.md, source, and tests).
+// "your" is how a user addresses yolop itself: "what is your config?", "set
+// yolop blue", "remember that I prefer terse answers". These are GLOBAL
+// personalization requests about yolop the tool, distinct from changes to the
+// current project (which belong in the repo's AGENTS.md, source, and tests).
 //
-// v1 owns a single piece of state: a central MEMORY.md of durable, cross-
-// session user preferences. It is injected into every turn under a managed
-// byte budget, with a soft limit that nudges bulky guidance toward skills.
-// The model edits it through natural-language tools (`remember_your_memory`,
-// `read_your_memory`, `write_your_memory`).
+// Durable, cross-session user memory now lives in its own `memory` capability
+// (`remember` / `recall` / `forget` — see capabilities::memory). `your` keeps
+// the personalization framing — pointing the model at those memory tools — and
+// owns hook self-configuration: translating requests like "yolop setup a hook
+// to prevent calls to git" into validated hook specs.
 //
 // See specs/your.md for the full vision (global skills, hooks, user-defined
 // capabilities) — all of which hang off the same central config dir.
 
 use crate::hooks_config::{HookScope, HooksStore};
-use crate::settings::SettingsStore;
-use anyhow::{Context, Result};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub(crate) const YOUR_CAPABILITY_ID: &str = "your";
 
-/// Central memory file name, co-located with `settings.toml` in the yolop
-/// config dir.
-pub(crate) const MEMORY_FILE_NAME: &str = "MEMORY.md";
-
-/// Hard cap on how many bytes of memory are injected into a turn. Beyond
-/// this the injection is truncated (at a char boundary) with a notice; the
-/// full file is still reachable via `read_your_memory`.
-const MEMORY_INJECT_BUDGET_BYTES: usize = 8 * 1024;
-
-/// Soft limit: once memory exceeds this, both the injected block and tool
-/// results suggest extracting stable, topic-specific guidance into a skill
-/// rather than letting memory grow unbounded.
-const MEMORY_SUGGEST_SKILL_BYTES: usize = 4 * 1024;
-
-const MEMORY_HEADER: &str = "# yolop memory\n\nDurable, global user preferences. Edit via the `remember_your_memory` / `write_your_memory` tools or by chatting with yolop (\"remember that …\", \"what is your config?\").\n";
-
-/// Thread-safe handle to the central `MEMORY.md`. Mirrors `SettingsStore`:
-/// the cached string is the in-memory source of truth and mutations flush to
-/// disk via an atomic temp-file + rename, so readers and crashes never see a
-/// half-written file.
-pub(crate) struct YourStore {
-    path: PathBuf,
-    inner: Mutex<String>,
-}
-
-impl YourStore {
-    pub(crate) fn open(path: PathBuf) -> Self {
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
-        Self {
-            path,
-            inner: Mutex::new(content),
-        }
-    }
-
-    /// Derive the memory path from the settings file's directory so memory
-    /// lives next to `settings.toml` and tests that point settings at a
-    /// tempdir get an isolated memory file for free.
-    pub(crate) fn beside_settings(settings: &SettingsStore) -> Self {
-        let path = settings
-            .path()
-            .parent()
-            .map(|p| p.join(MEMORY_FILE_NAME))
-            .unwrap_or_else(|| PathBuf::from(MEMORY_FILE_NAME));
-        Self::open(path)
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub(crate) fn snapshot(&self) -> String {
-        self.inner.lock().expect("memory lock poisoned").clone()
-    }
-
-    /// Append a single durable note as a markdown bullet, seeding the header
-    /// on first write. Returns the new byte length.
-    pub(crate) fn append_note(&self, note: &str) -> Result<usize> {
-        let note = note.trim();
-        let mut guard = self.inner.lock().expect("memory lock poisoned");
-        if guard.trim().is_empty() {
-            *guard = MEMORY_HEADER.to_string();
-        }
-        if !guard.ends_with('\n') {
-            guard.push('\n');
-        }
-        guard.push_str("- ");
-        guard.push_str(note);
-        guard.push('\n');
-        save_to(&self.path, &guard)?;
-        Ok(guard.len())
-    }
-
-    /// Replace the entire memory file. Returns the new byte length.
-    pub(crate) fn write(&self, content: &str) -> Result<usize> {
-        let mut guard = self.inner.lock().expect("memory lock poisoned");
-        *guard = content.to_string();
-        save_to(&self.path, &guard)?;
-        Ok(guard.len())
-    }
-}
-
-/// Atomic write: stage into a sibling temp file, `fsync`, then `rename` over
-/// the target (POSIX rename is atomic). The temp file is created 0o600 on
-/// Unix so memory — which may hold personal facts — stays owner-only. Mirrors
-/// `settings::save_to`.
-fn save_to(path: &Path, content: &str) -> Result<()> {
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    std::fs::create_dir_all(&parent)
-        .with_context(|| format!("create memory dir {}", parent.display()))?;
-
-    let file_name = path
-        .file_name()
-        .with_context(|| format!("memory path has no file name: {}", path.display()))?;
-    let mut tmp_name = std::ffi::OsString::from(".");
-    tmp_name.push(file_name);
-    tmp_name.push(format!(".tmp.{}", std::process::id()));
-    let tmp_path = parent.join(tmp_name);
-
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let write_result = (|| -> Result<()> {
-        let mut file = opts
-            .open(&tmp_path)
-            .with_context(|| format!("open temp memory {}", tmp_path.display()))?;
-        file.write_all(content.as_bytes())
-            .with_context(|| format!("write temp memory {}", tmp_path.display()))?;
-        file.sync_all()
-            .with_context(|| format!("sync temp memory {}", tmp_path.display()))?;
-        Ok(())
-    })();
-    if let Err(e) = write_result {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-    std::fs::rename(&tmp_path, path)
-        .with_context(|| format!("rename {} -> {}", tmp_path.display(), path.display()))?;
-    Ok(())
-}
-
-/// Truncate to at most `budget` bytes, snapping back to a char boundary so we
-/// never split a UTF-8 sequence. Returns the slice and whether it was clipped.
-fn clip_to_budget(content: &str, budget: usize) -> (&str, bool) {
-    if content.len() <= budget {
-        return (content, false);
-    }
-    let mut end = budget;
-    while end > 0 && !content.is_char_boundary(end) {
-        end -= 1;
-    }
-    (&content[..end], true)
-}
-
-/// One-line nudge appended to tool results / status once memory is large.
-fn skill_suggestion(byte_len: usize) -> Option<&'static str> {
-    (byte_len > MEMORY_SUGGEST_SKILL_BYTES).then_some(
-        "Memory is getting large — consider moving stable, topic-specific \
-         guidance into a skill so it loads on demand instead of every turn.",
-    )
-}
-
-/// Render the `<your>` system-prompt block: the framing, the memory file
-/// path, and the (budget-clipped) memory contents with truncation /
-/// skill-suggestion notices. Pure so the branch logic is unit-testable
-/// without constructing a `SystemPromptContext`.
-fn render_memory_block(memory_path: &Path, content: &str) -> String {
+/// Render the `<your>` system-prompt block: personalization framing that routes
+/// "remember that…" to the `memory` capability and hook requests to the hook
+/// tools. Pure so it is unit-testable without a `SystemPromptContext`.
+fn render_your_block() -> String {
     let mut out = String::new();
     out.push_str("<your>\n");
     out.push_str(
         "yolop's personalization layer. When the user addresses \"you\" or \"yolop\" itself \
          — e.g. \"what is your config?\", \"update your settings\", \"set yolop blue\", \
          \"remember that I prefer X\" — treat it as a GLOBAL personalization request about \
-         yolop, NOT a change to the current project. Persist durable user preferences with \
-         the `remember_your_memory` tool, reorganize with `write_your_memory`, and read the \
-         full set with `read_your_memory`. Configure hook requests such as \"yolop setup a \
-         hook to prevent calls to git\" with `validate_your_hook` and `upsert_your_hook`, not \
-         by adding a memory note. Project-specific guidance belongs in the repo's AGENTS.md, \
-         not here.\n",
+         yolop, NOT a change to the current project. Persist durable user preferences and facts \
+         with the `remember` tool and read them back with `recall` (the global `memory` \
+         capability); project-specific guidance belongs in the repo's AGENTS.md instead. \
+         Configure hook requests such as \"yolop setup a hook to prevent calls to git\" with \
+         `validate_your_hook` and `upsert_your_hook`, not by storing a memory note.\n",
     );
-    out.push_str(&format!("memory file: {}\n", memory_path.display()));
-
-    if content.trim().is_empty() {
-        out.push_str("memory is empty.\n");
-    } else {
-        let (shown, clipped) = clip_to_budget(content, MEMORY_INJECT_BUDGET_BYTES);
-        out.push_str("<your_memory>\n");
-        out.push_str(shown);
-        if !shown.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str("</your_memory>\n");
-        if clipped {
-            out.push_str(
-                "(memory truncated to fit the prompt budget — call `read_your_memory` for the full text.)\n",
-            );
-        }
-        if let Some(note) = skill_suggestion(content.len()) {
-            out.push_str(note);
-            out.push('\n');
-        }
-    }
     out.push_str("</your>");
     out
 }
@@ -224,7 +46,6 @@ fn render_memory_block(memory_path: &Path, content: &str) -> String {
 // ---------- capability ----------
 
 pub(crate) struct YourCapability {
-    pub(crate) memory: Arc<YourStore>,
     pub(crate) hooks: Arc<HooksStore>,
 }
 
@@ -237,7 +58,8 @@ impl Capability for YourCapability {
         "Your (personalization)"
     }
     fn description(&self) -> &str {
-        "Global yolop personalization: durable user memory, injected every turn, edited in natural language."
+        "Global yolop personalization framing and hook self-configuration. Routes durable user \
+         memory to the `memory` capability and translates hook requests into validated hook specs."
     }
     fn status(&self) -> CapabilityStatus {
         CapabilityStatus::Available
@@ -247,21 +69,15 @@ impl Capability for YourCapability {
     }
 
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        Some(render_memory_block(
-            self.memory.path(),
-            &self.memory.snapshot(),
-        ))
+        Some(render_your_block())
     }
 
     fn system_prompt_preview(&self) -> Option<String> {
         Some(
             "\
 <your>
-yolop's personalization layer (global). Use `remember_your_memory` / `read_your_memory` /
-`write_your_memory` for durable user preferences.
-<your_memory>
-- example: prefer terse answers
-</your_memory>
+yolop's personalization layer (global). Persist durable user preferences with `remember` /
+`recall` (the memory capability); configure hooks with the `*_your_hook` tools.
 </your>"
                 .to_string(),
         )
@@ -269,15 +85,6 @@ yolop's personalization layer (global). Use `remember_your_memory` / `read_your_
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
-            Box::new(RememberTool {
-                memory: self.memory.clone(),
-            }),
-            Box::new(ReadMemoryTool {
-                memory: self.memory.clone(),
-            }),
-            Box::new(WriteMemoryTool {
-                memory: self.memory.clone(),
-            }),
             Box::new(ListHooksTool {
                 hooks: self.hooks.clone(),
             }),
@@ -295,137 +102,6 @@ yolop's personalization layer (global). Use `remember_your_memory` / `read_your_
 }
 
 // ---------- tools ----------
-
-struct RememberTool {
-    memory: Arc<YourStore>,
-}
-
-#[async_trait]
-impl Tool for RememberTool {
-    fn name(&self) -> &str {
-        "remember_your_memory"
-    }
-    fn display_name(&self) -> Option<&str> {
-        Some("Remember")
-    }
-    fn description(&self) -> &str {
-        "Persist a durable, GLOBAL user preference or fact about how yolop should behave across \
-         all projects (e.g. \"prefer terse answers\"). Appends one note to yolop's central \
-         memory, which is injected every turn. Use for personalization requests about yolop \
-         itself — NOT for project-specific guidance (that belongs in AGENTS.md)."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "note": {
-                    "type": "string",
-                    "description": "A single durable preference or fact, phrased so it stands alone on later turns."
-                }
-            },
-            "required": ["note"],
-            "additionalProperties": false
-        })
-    }
-    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let note = match arguments.get("note").and_then(Value::as_str) {
-            Some(n) if !n.trim().is_empty() => n,
-            _ => {
-                return ToolExecutionResult::tool_error("'note' is required and must be non-empty");
-            }
-        };
-        match self.memory.append_note(note) {
-            Ok(len) => {
-                let mut msg = format!("remembered ({len} bytes total)");
-                if let Some(note) = skill_suggestion(len) {
-                    msg.push_str(". ");
-                    msg.push_str(note);
-                }
-                ToolExecutionResult::success(json!({ "ok": true, "message": msg }))
-            }
-            Err(e) => ToolExecutionResult::tool_error(format!("could not save memory: {e}")),
-        }
-    }
-}
-
-struct ReadMemoryTool {
-    memory: Arc<YourStore>,
-}
-
-#[async_trait]
-impl Tool for ReadMemoryTool {
-    fn name(&self) -> &str {
-        "read_your_memory"
-    }
-    fn display_name(&self) -> Option<&str> {
-        Some("Read memory")
-    }
-    fn description(&self) -> &str {
-        "Read the full contents of yolop's central personalization memory. Use this to answer \
-         \"what is your config?\"-style questions, or before `write_your_memory` when the injected \
-         copy may have been truncated."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({ "type": "object", "properties": {}, "additionalProperties": false })
-    }
-    async fn execute(&self, _arguments: Value) -> ToolExecutionResult {
-        let content = self.memory.snapshot();
-        ToolExecutionResult::success(json!({
-            "path": self.memory.path().display().to_string(),
-            "bytes": content.len(),
-            "content": content,
-        }))
-    }
-}
-
-struct WriteMemoryTool {
-    memory: Arc<YourStore>,
-}
-
-#[async_trait]
-impl Tool for WriteMemoryTool {
-    fn name(&self) -> &str {
-        "write_your_memory"
-    }
-    fn display_name(&self) -> Option<&str> {
-        Some("Write memory")
-    }
-    fn description(&self) -> &str {
-        "Replace yolop's entire central personalization memory with new markdown. Use to edit, \
-         remove, or reorganize preferences — read the current contents first with `read_your_memory`. \
-         Appending a single new preference is better done with `remember_your_memory`."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The full new memory file contents (markdown)."
-                }
-            },
-            "required": ["content"],
-            "additionalProperties": false
-        })
-    }
-    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let content = match arguments.get("content").and_then(Value::as_str) {
-            Some(c) => c,
-            None => return ToolExecutionResult::tool_error("'content' is required"),
-        };
-        match self.memory.write(content) {
-            Ok(len) => {
-                let mut msg = format!("memory updated ({len} bytes)");
-                if let Some(note) = skill_suggestion(len) {
-                    msg.push_str(". ");
-                    msg.push_str(note);
-                }
-                ToolExecutionResult::success(json!({ "ok": true, "message": msg }))
-            }
-            Err(e) => ToolExecutionResult::tool_error(format!("could not save memory: {e}")),
-        }
-    }
-}
 
 struct ListHooksTool {
     hooks: Arc<HooksStore>,
@@ -631,13 +307,6 @@ fn hook_value_schema() -> Value {
 mod tests {
     use super::*;
 
-    fn store_in_tmp() -> (tempfile::TempDir, YourStore) {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let path = tmp.path().join("MEMORY.md");
-        let store = YourStore::open(path);
-        (tmp, store)
-    }
-
     fn hooks_in_tmp() -> (tempfile::TempDir, HooksStore) {
         let tmp = tempfile::tempdir().expect("hooks tmp");
         let store = HooksStore::new(tmp.path().join("hooks.json"), tmp.path().join("workspace"));
@@ -645,67 +314,9 @@ mod tests {
     }
 
     #[test]
-    fn append_seeds_header_then_bullets() {
-        let (_tmp, store) = store_in_tmp();
-        assert!(store.snapshot().trim().is_empty());
-        store.append_note("prefer terse answers").expect("append");
-        store.append_note("name is Mike").expect("append");
-
-        let content = store.snapshot();
-        assert!(content.starts_with("# yolop memory"));
-        assert!(content.contains("- prefer terse answers\n"));
-        assert!(content.contains("- name is Mike\n"));
-        assert!(!store.snapshot().trim().is_empty());
-    }
-
-    #[test]
-    fn append_persists_across_reopen() {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let path = tmp.path().join("nested").join("MEMORY.md");
-        let store = YourStore::open(path.clone());
-        store.append_note("likes blue").expect("append");
-
-        let reopened = YourStore::open(path);
-        assert!(reopened.snapshot().contains("- likes blue\n"));
-    }
-
-    #[test]
-    fn write_replaces_whole_file() {
-        let (_tmp, store) = store_in_tmp();
-        store.append_note("old fact").expect("append");
-        store.write("# fresh\n\n- only this\n").expect("write");
-        let content = store.snapshot();
-        assert!(!content.contains("old fact"));
-        assert!(content.contains("- only this"));
-    }
-
-    #[test]
-    fn clip_respects_budget_and_char_boundaries() {
-        let (short, clipped) = clip_to_budget("hello", 100);
-        assert_eq!(short, "hello");
-        assert!(!clipped);
-
-        // Multi-byte chars: budget falls mid-sequence, must snap back.
-        let s = "héllo wörld"; // é and ö are 2 bytes each
-        let (slice, clipped) = clip_to_budget(s, 2);
-        assert!(clipped);
-        assert!(s.starts_with(slice));
-        // Did not panic and produced valid UTF-8 (guaranteed by &str type).
-        assert!(slice.len() <= 2);
-    }
-
-    #[test]
-    fn skill_suggestion_only_past_soft_limit() {
-        assert!(skill_suggestion(10).is_none());
-        assert!(skill_suggestion(MEMORY_SUGGEST_SKILL_BYTES + 1).is_some());
-    }
-
-    #[test]
-    fn capability_exposes_your_named_tools_without_slash_command() {
-        let (_tmp, store) = store_in_tmp();
+    fn capability_exposes_hook_tools_without_slash_command() {
         let (_hooks_tmp, hooks) = hooks_in_tmp();
         let capability = YourCapability {
-            memory: Arc::new(store),
             hooks: Arc::new(hooks),
         };
 
@@ -718,9 +329,6 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "remember_your_memory",
-                "read_your_memory",
-                "write_your_memory",
                 "list_your_hooks",
                 "validate_your_hook",
                 "upsert_your_hook",
@@ -747,75 +355,6 @@ mod tests {
             "on_error": "block",
             "description": "Block git"
         })
-    }
-
-    #[tokio::test]
-    async fn remember_tool_appends_and_reports() {
-        let (_tmp, store) = store_in_tmp();
-        let tool = RememberTool {
-            memory: Arc::new(store),
-        };
-        let res = tool.execute(json!({ "note": "use spaces not tabs" })).await;
-        assert!(res.is_success());
-        assert!(tool.memory.snapshot().contains("- use spaces not tabs"));
-    }
-
-    #[tokio::test]
-    async fn remember_tool_rejects_empty_note() {
-        let (_tmp, store) = store_in_tmp();
-        let tool = RememberTool {
-            memory: Arc::new(store),
-        };
-        let res = tool.execute(json!({ "note": "   " })).await;
-        assert!(res.is_error());
-    }
-
-    #[tokio::test]
-    async fn read_memory_tool_returns_content() {
-        let (_tmp, store) = store_in_tmp();
-        store.append_note("fact one").expect("append");
-        let tool = ReadMemoryTool {
-            memory: Arc::new(store),
-        };
-        let res = tool.execute(json!({})).await;
-        assert!(res.is_success());
-    }
-
-    #[tokio::test]
-    async fn write_memory_tool_replaces_and_reports() {
-        let (_tmp, store) = store_in_tmp();
-        let tool = WriteMemoryTool {
-            memory: Arc::new(store),
-        };
-        let res = tool.execute(json!({ "content": "# x\n- one\n" })).await;
-        assert!(res.is_success());
-        assert_eq!(tool.memory.snapshot(), "# x\n- one\n");
-    }
-
-    #[tokio::test]
-    async fn write_memory_tool_requires_content() {
-        let (_tmp, store) = store_in_tmp();
-        let tool = WriteMemoryTool {
-            memory: Arc::new(store),
-        };
-        let res = tool.execute(json!({})).await;
-        assert!(res.is_error());
-    }
-
-    #[tokio::test]
-    async fn remember_tool_suggests_skill_when_large() {
-        let (_tmp, store) = store_in_tmp();
-        // Seed past the soft limit so the next append crosses it.
-        store
-            .write(&format!("# m\n{}", "- x\n".repeat(1200)))
-            .expect("seed");
-        let tool = RememberTool {
-            memory: Arc::new(store),
-        };
-        let res = tool.execute(json!({ "note": "one more" })).await;
-        assert!(res.is_success());
-        let text = format!("{res:?}");
-        assert!(text.contains("Memory is getting large"), "got: {text}");
     }
 
     #[tokio::test]
@@ -853,31 +392,14 @@ mod tests {
     }
 
     #[test]
-    fn render_block_reports_empty_memory() {
-        let block = render_memory_block(Path::new("/cfg/MEMORY.md"), "   \n");
+    fn your_block_frames_personalization_and_routes_memory_and_hooks() {
+        let block = render_your_block();
         assert!(block.starts_with("<your>\n"));
-        assert!(block.contains("memory file: /cfg/MEMORY.md"));
-        assert!(block.contains("memory is empty."));
-        assert!(!block.contains("<your_memory>"));
         assert!(block.ends_with("</your>"));
-    }
-
-    #[test]
-    fn render_block_wraps_small_memory_without_notices() {
-        let block = render_memory_block(Path::new("/cfg/MEMORY.md"), "- prefer terse\n");
-        assert!(block.contains("<your_memory>\n- prefer terse\n</your_memory>\n"));
-        assert!(!block.contains("truncated"));
-        assert!(!block.contains("Memory is getting large"));
-    }
-
-    #[test]
-    fn render_block_truncates_and_suggests_when_oversized() {
-        let big = "a".repeat(MEMORY_INJECT_BUDGET_BYTES + 100);
-        let block = render_memory_block(Path::new("/cfg/MEMORY.md"), &big);
-        assert!(block.contains("truncated to fit the prompt budget"));
-        // Over the inject budget is also over the soft limit, so both fire.
-        assert!(block.contains("Memory is getting large"));
-        // The injected slice itself is capped at the budget.
-        assert!(!block.contains(&"a".repeat(MEMORY_INJECT_BUDGET_BYTES + 1)));
+        // Routes durable memory to the memory capability tools, not a local note.
+        assert!(block.contains("`remember`"));
+        assert!(block.contains("`recall`"));
+        // Still owns hook self-configuration framing.
+        assert!(block.contains("upsert_your_hook"));
     }
 }

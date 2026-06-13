@@ -7,6 +7,7 @@ pub(crate) mod approval;
 pub(crate) mod client_commands;
 pub(crate) mod config;
 mod host;
+pub(crate) mod memory;
 pub(crate) mod model_discovery;
 pub mod skills;
 pub(crate) mod your;

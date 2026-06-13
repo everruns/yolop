@@ -1,6 +1,7 @@
 # `your` — personalization
 
-Status: v1 implemented (memory core). Roadmap sections below are not yet built.
+Status: implemented (framing + hooks). Durable memory now lives in the `memory`
+capability ([`memory.md`](./memory.md)); roadmap sections below are not yet built.
 
 ## Why
 
@@ -33,7 +34,7 @@ existing `settings.toml`:
 ```
 <config_dir>/yolop/
   settings.toml      # provider + tokens (pre-existing)
-  MEMORY.md          # v1: durable cross-session user memory
+  MEMORY.md          # durable cross-session user memory (owned by the `memory` capability)
   skills/            # global, always-available skills
 ```
 
@@ -42,38 +43,14 @@ its state lives, and what it can currently do — to the model through the syste
 prompt and tools, and to the user through natural-language questions such as
 "what is your config?"
 
-## v1 — central memory
+## Memory
 
-`MEMORY.md` is a single markdown file of durable, global user preferences and
-facts ("I prefer terse answers", "always run `cargo fmt` before committing",
-"my name is Mike"). It is **injected into every turn** so the model honors
-preferences without being reminded.
-
-Distinct from `AGENTS.md`: `AGENTS.md` is per-project guidance committed to a
-repo; `MEMORY.md` is per-user, global, and never committed.
-
-### Managed size
-
-Unbounded memory would bloat every prompt. So:
-
-- A **byte budget** caps how much is injected. Beyond it, injection is
-  truncated at a char boundary with a visible notice — the model is told the
-  memory was clipped and to use `read_your_memory` for the full text.
-- A **soft limit** (below the hard budget) triggers a standing suggestion, in
-  both the injected block and tool results, to extract stable, topic-specific
-  guidance into a **skill** rather than letting memory grow without bound.
-  Skills are the pressure-release valve for memory that has outgrown a few
-  bullet points.
-
-### Natural-language configuration
-
-The model configures memory through tools, driven by ordinary chat — no slash
-syntax required:
-
-- `remember_your_memory` — append a durable preference/fact.
-- `read_your_memory` — read the full file (needed when injection was truncated,
-  or to edit precisely).
-- `write_your_memory` — replace the whole file, for reorganizing or removing.
+Durable, cross-session user memory has moved into its own `memory` capability —
+structured `MEMORY.md`, progressive disclosure, and the `remember` / `recall` /
+`forget` tools. See [`memory.md`](./memory.md). `your` keeps only the
+personalization *framing*: it decides when a request is global personalization
+and routes "remember that I prefer X" to the `remember` tool, rather than owning
+the store itself.
 
 ## Self-Configuration Pattern
 
@@ -117,4 +94,5 @@ yolop-specific formats.
 
 - Not a secret store — tokens stay in `settings.toml` under `/token`.
 - Not project memory — repo-scoped guidance stays in `AGENTS.md`.
-- No retention/rotation policy; `MEMORY.md` is a plain file the user owns.
+- Not the memory store itself — durable memory is the `memory` capability's
+  job ([`memory.md`](./memory.md)).

@@ -4,7 +4,8 @@
 // actual workspace. Only the `bash` tool is custom — it shells out to the host
 // instead of running against the VFS.
 
-use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability, YourStore};
+use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, MemoryStore};
+use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability};
 use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability, AttributionCapability,
     CLIENT_COMMANDS_CAPABILITY_ID, CONFIG_CAPABILITY_ID, ClientCommandsCapability,
@@ -1049,6 +1050,7 @@ fn coding_harness_capabilities(
         ),
         AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
         AgentCapabilityConfig::new(CONFIG_CAPABILITY_ID),
+        AgentCapabilityConfig::new(MEMORY_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
         // `/btw` — ephemeral side question, answered out-of-band with the
         // session's context (upstream `BtwCapability`).
@@ -1393,13 +1395,19 @@ pub async fn build_with_options(
     capabilities.register(ConfigCapability {
         settings: settings.clone(),
     });
-    // `your` — global personalization. Its MEMORY.md lives beside
-    // settings.toml in the yolop config dir, so a tempdir settings path in
-    // tests isolates memory automatically.
-    capabilities.register(YourCapability {
-        memory: Arc::new(YourStore::beside_settings(&settings)),
-        hooks: hooks_store,
+    // `memory` — global, durable, structured user memory. Its MEMORY.md lives
+    // beside settings.toml in the yolop config dir, so a tempdir settings path
+    // in tests isolates memory automatically. Only titles are disclosed each
+    // turn; bodies are recalled on demand. Tuning (disclosed_titles,
+    // recall_limit, soft_cap) flows through the generic capability-config
+    // system — see its `config_schema()` and the `AgentCapabilityConfig` for
+    // MEMORY_CAPABILITY_ID below.
+    capabilities.register(GlobalMemoryCapability {
+        memory: Arc::new(MemoryStore::beside_settings(&settings)),
     });
+    // `your` — global personalization framing + hook self-configuration.
+    // Durable memory now lives in the `memory` capability above.
+    capabilities.register(YourCapability { hooks: hooks_store });
     // Soft approval — spoken-consent guidance + audit tool, gated by the
     // central `approval_mode` setting (read live each turn).
     capabilities.register(ApprovalCapability {
