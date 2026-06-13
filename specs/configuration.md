@@ -108,11 +108,11 @@ The schema reaches the agent two ways:
 2. The `yolop-config` built-in skill (`skills/yolop-config/SKILL.md`) is the
    detailed, on-demand reference. It instructs the agent to read the live schema
    via `get_config` rather than duplicating key lists, and points at the
-   adjacent surfaces (`your` memory, `yolop-hooks`, `/setup`).
+   adjacent surfaces (`memory`, `yolop-hooks`, `/setup`).
 
 ## Boundaries
 
 Configuration is distinct from the neighbouring personalization surfaces:
-durable preferences are `your` **memory**, behavioral rules are **hooks**, and
+durable preferences are **memory**, behavioral rules are **hooks**, and
 interactive live provider/model switching is **`/setup`**. All settings keys,
 including harness capabilities, go through `get_config` / `set_config`.

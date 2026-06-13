@@ -1,7 +1,7 @@
 //! Workspace/global hook config loading for yolop.
 //!
 //! The hook engine itself lives in `everruns-core` (`user_hooks`). yolop owns
-//! only local config discovery, scope merge, and the `your` tools that write
+//! only local config discovery, scope merge, and the `hooks` tools that write
 //! those config files.
 
 use crate::settings::SettingsStore;

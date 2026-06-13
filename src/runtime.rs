@@ -10,7 +10,8 @@ use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability, AttributionCapability,
     CLIENT_COMMANDS_CAPABILITY_ID, CONFIG_CAPABILITY_ID, ClientCommandsCapability,
     CodingBashCapability, CodingCliEnvironmentCapability, ConfigCapability,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
+    ENVIRONMENT_CONTEXT_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HooksCapability, SETUP_CAPABILITY_ID,
+    SetupCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::connectors::{
@@ -1056,6 +1057,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new(CONFIG_CAPABILITY_ID),
         AgentCapabilityConfig::new(CONNECTORS_CAPABILITY_ID),
         AgentCapabilityConfig::new(MEMORY_CAPABILITY_ID),
+        AgentCapabilityConfig::new(HOOKS_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
         // `/btw` — ephemeral side question, answered out-of-band with the
         // session's context (upstream `BtwCapability`).
@@ -1452,9 +1454,12 @@ pub async fn build_with_options(
     capabilities.register(GlobalMemoryCapability {
         memory: Arc::new(MemoryStore::beside_settings(&settings)),
     });
-    // `your` — global personalization framing + hook self-configuration.
-    // Durable memory now lives in the `memory` capability above.
-    capabilities.register(YourCapability { hooks: hooks_store });
+    // `hooks` — global/workspace hook self-configuration tools. Runtime
+    // execution is still upstream `user_hooks`, registered above.
+    capabilities.register(HooksCapability { hooks: hooks_store });
+    // `your` — global personalization framing. Durable memory and hooks live in
+    // their own capabilities above.
+    capabilities.register(YourCapability);
     // Soft approval — spoken-consent guidance + audit tool, gated by the
     // central `approval_mode` setting (read live each turn).
     capabilities.register(ApprovalCapability {
@@ -2871,6 +2876,22 @@ mod tests {
                 "tool_search must be enabled (client_commands={client_commands})"
             );
         }
+    }
+
+    #[test]
+    fn coding_harness_enables_hooks_authoring_separately_from_your() {
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == HOOKS_CAPABILITY_ID),
+            "hook authoring should be a dedicated capability"
+        );
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == YOUR_CAPABILITY_ID),
+            "your should remain available for personalization routing"
+        );
     }
 
     /// Tool search only activates once the tool surface crosses
