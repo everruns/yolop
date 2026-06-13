@@ -161,7 +161,8 @@ pub fn schema() -> &'static [ConfigField] {
                           `enabled=false` to remove every instance with that ref, optional \
                           `append=true` to add a duplicate instance, and capability-specific \
                           config keys validated via `config_schema` / `validate_config`. Use \
-                          `get_config key=capabilities.<ref>` for per-capability schema \
+                          `get_config key=capabilities` for the full registered catalog, or \
+                          `get_config key=capabilities.<ref>` for one capability's schema \
                           metadata. Append entries with `set_config key=capabilities json=…`; \
                           pass `value=clear` to drop all stored overrides.",
             kind: ValueKind::List,

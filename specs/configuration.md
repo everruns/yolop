@@ -53,9 +53,9 @@ by the schema:
 
 - **`get_config`** — with no argument, returns every key with its semantics and
   current value; with a `key`, returns just that entry. Secrets are reported as
-  `stored` / `unset`, never echoed. Use `key=capabilities` or
-  `key=capabilities.<ref>` for harness overrides and per-capability schema
-  metadata (`config_schema`, `config_ui_schema`).
+  `stored` / `unset`, never echoed. Use `key=capabilities` for the registered
+  catalog plus stored overrides and effective harness, or `key=capabilities.<ref>`
+  for one capability's schema metadata (`config_schema`, `config_ui_schema`).
 - **`set_config`** — validates and persists scalar keys via `value` (`clear`
   unsets). Harness overrides: `key=capabilities` with a `json` object appends one
   `[[capabilities]]` entry; `value=clear` drops all stored overrides. Capability

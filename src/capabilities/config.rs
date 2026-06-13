@@ -14,8 +14,8 @@
 
 use crate::capability_settings::{
     CapabilityCatalog, apply_capability_settings, build_capability_override,
-    capability_catalog_json, effective_harness_json, overrides_to_json, parse_override_from_json,
-    stored_override_json,
+    capability_catalog_json, capability_catalog_list, effective_harness_json, overrides_to_json,
+    parse_override_from_json, stored_override_json,
 };
 use crate::config_schema::{KeyTarget, ValueKind, known_keys, parse_key, schema};
 use crate::config_service::{ConfigService, current_value, scoped_current};
@@ -139,8 +139,9 @@ impl Tool for GetConfigTool {
     fn description(&self) -> &str {
         "Inspect yolop configuration. With no `key`, returns every configuration key with its \
          title, description, type, default, examples, and current value (secrets redacted). \
-         With a `key`, returns just that entry. Use `key=capabilities` or \
-         `key=capabilities.<ref>` for harness capability overrides and schema metadata."
+         With a `key`, returns just that entry. Use `key=capabilities` for the full \
+         registered catalog plus stored overrides, or `key=capabilities.<ref>` for one \
+         capability's schema metadata."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -173,9 +174,12 @@ impl Tool for GetConfigTool {
                         ToolExecutionResult::success(json!({
                             "settings_path": path,
                             "field": field_json(&settings, field),
+                            "catalog": capability_catalog_list(&self.catalog),
                             "stored_overrides": overrides_to_json(&settings.capabilities),
                             "effective_harness": effective_harness_json(&effective),
-                            "note": "Append with `set_config key=capabilities json=…`; `value=clear` drops all overrides.",
+                            "note": "Use `catalog` for registered refs and schema metadata; \
+                                     `capabilities.<ref>` narrows to one entry. Append with \
+                                     `set_config key=capabilities json=…`; `value=clear` drops all overrides.",
                         }))
                     }
                     KeyTarget::CapabilityRef(cap_ref) => {
@@ -771,6 +775,31 @@ mod tests {
             }))
             .await;
         assert!(matches!(result, ToolExecutionResult::ToolError(_)));
+    }
+
+    #[tokio::test]
+    async fn get_config_capabilities_includes_catalog() {
+        let (_tmp, settings) = store();
+        let tool = get_config_tool(settings);
+        let ToolExecutionResult::Success(value) =
+            tool.execute(json!({ "key": "capabilities" })).await
+        else {
+            panic!("expected success");
+        };
+        let catalog = value["catalog"].as_array().expect("catalog array");
+        assert!(
+            catalog
+                .iter()
+                .any(|entry| entry["id"] == MESSAGE_METADATA_CAPABILITY_ID),
+            "catalog must list registered capabilities: {catalog:?}"
+        );
+        let meta = catalog
+            .iter()
+            .find(|entry| entry["id"] == MESSAGE_METADATA_CAPABILITY_ID)
+            .expect("message_metadata entry");
+        assert!(meta["config_schema"].is_object());
+        assert!(value["stored_overrides"].as_array().unwrap().is_empty());
+        assert!(!value["effective_harness"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

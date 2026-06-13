@@ -42,6 +42,13 @@ impl CapabilityCatalog {
         self.capabilities.contains_key(id)
     }
 
+    /// Registered capability ids in stable sorted order.
+    pub fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<_> = self.capabilities.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
     pub fn validate(&self, id: &str, config: &Value) -> Result<(), String> {
         let cap = self
             .get(id)
@@ -286,6 +293,15 @@ fn merge_config(default: &Value, override_config: &Value) -> Value {
     }
 }
 
+/// Full catalog entries (`id`, schema metadata) for every registered capability.
+pub fn capability_catalog_list(catalog: &CapabilityCatalog) -> Vec<Value> {
+    catalog
+        .ids()
+        .into_iter()
+        .filter_map(|id| capability_catalog_json(catalog, &id).ok())
+        .collect()
+}
+
 pub fn capability_catalog_json(catalog: &CapabilityCatalog, id: &str) -> Result<Value, String> {
     let cap = catalog
         .get(id)
@@ -334,7 +350,7 @@ pub fn build_capability_override(
 ) -> Result<CapabilityOverride, String> {
     if !catalog.has(capability_ref) {
         return Err(format!(
-            "unknown capability `{capability_ref}`; call `get_capabilities` for registered ids"
+            "unknown capability `{capability_ref}`; call `get_config key=capabilities` for registered ids"
         ));
     }
     if enabled == Some(false) {
@@ -365,6 +381,16 @@ mod tests {
                 json!({ "enable_file_download": true }),
             ),
         ]
+    }
+
+    #[test]
+    fn capability_catalog_list_returns_sorted_entries() {
+        let mut catalog = CapabilityCatalog::new();
+        catalog.register_arc(Arc::new(MessageMetadataCapability));
+        let list = capability_catalog_list(&catalog);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["id"], MESSAGE_METADATA_CAPABILITY_ID);
+        assert!(list[0]["config_schema"].is_object());
     }
 
     #[test]

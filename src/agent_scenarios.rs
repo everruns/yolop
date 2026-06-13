@@ -99,6 +99,30 @@ async fn run_single_turn(runtime: &BuiltRuntime, user_text: &str) -> everruns_ru
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scripted_get_config_capabilities_smoke() {
+    let (runtime, _ws) = build_scripted_runtime(LlmSimConfig::scripted(vec![
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "get_config".to_string(),
+            arguments: json!({ "key": "capabilities" }),
+            id: None,
+        }]),
+        SimTurn::Assistant("listed capabilities".to_string()),
+    ]))
+    .await;
+
+    let result = run_single_turn(&runtime, "what capabilities can I configure?").await;
+
+    assert!(
+        result.success,
+        "get_config capabilities smoke must succeed: {result:?}"
+    );
+    assert_eq!(
+        result.tool_calls_count, 1,
+        "scripted get_config must run exactly once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scripted_assistant_text_returns_success_with_no_tools() {
     let (runtime, _ws) = build_scripted_runtime(LlmSimConfig::scripted(vec![SimTurn::Assistant(
         "hello from scripted llmsim".to_string(),

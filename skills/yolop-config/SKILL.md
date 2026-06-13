@@ -22,9 +22,9 @@ values are validated and persisted atomically.
    tokens) are shown only as `stored` / `unset`, never echoed.
 2. Call `get_config` with a single `key` (e.g. `default_provider`,
    `models.anthropic`, `tokens.openai`) to focus on one entry.
-3. For harness capabilities, use `get_config key=capabilities` (stored overrides
-   + effective harness) or `get_config key=capabilities.<ref>` (per-capability
-   schema metadata from `config_schema` / `config_ui_schema`).
+3. For harness capabilities, use `get_config key=capabilities` (registered catalog,
+   stored overrides, effective harness) or `get_config key=capabilities.<ref>`
+   (per-capability schema metadata from `config_schema` / `config_ui_schema`).
 
 Lead with `get_config` whenever you are unsure of the exact key name or the
 accepted values — the returned schema is the source of truth, so you never have
