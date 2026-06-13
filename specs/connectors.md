@@ -23,7 +23,7 @@ supported as overrides (`DAYTONA_API_KEY` for Daytona).
 
 ### Connector catalog
 
-`src/connectors/catalog.rs` registers upstream [`Connector`]
+`src/connectors/catalog.rs` registers upstream `Connector`
 implementations. Daytona is registered by default; new providers add a
 `.register(...)` call there.
 
