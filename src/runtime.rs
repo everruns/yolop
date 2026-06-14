@@ -48,8 +48,8 @@ use everruns_core::{
 use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_runtime::{
-    InProcessRuntime, InProcessRuntimeBuilder, RealDiskFileStore, RuntimeBackends,
-    WriteBlocklistFileStore,
+    AgentBuilder, HarnessBuilder, InProcessRuntime, InProcessRuntimeBuilder, RealDiskFileStore,
+    RuntimeBackends, SessionBuilder, WriteBlocklistFileStore,
 };
 
 use crate::session_log::{
@@ -1542,9 +1542,8 @@ pub async fn build_with_options(
         }))
         .build();
 
-    // SingleSessionBuilder bundles harness/agent/session with defaults the
-    // runtime owns. `session_id(...)` pins the id so resume can re-attach
-    // to the same JSONL log (filename encodes the id).
+    // Seed harness/agent/session explicitly so Yolop can attach harness
+    // metadata that Everruns forwards to LLM calls and observability.
     let session_title = format!("yolop @ {}", canonical_root.display());
     let harness_capabilities = coding_harness_capabilities(
         options.client_commands,
@@ -1553,28 +1552,44 @@ pub async fn build_with_options(
     );
     let session_mcp_servers = mcp_servers.clone();
 
+    let mut harness_builder = HarnessBuilder::new("yolop", HARNESS_PROMPT)
+        .metadata_entry("app", "yolop")
+        .metadata_entry("yolop_version", env!("CARGO_PKG_VERSION"))
+        .metadata_entry(
+            "everruns_runtime_version",
+            env!("YOLOP_EVERRUNS_RUNTIME_VERSION"),
+        )
+        .display_name("Coding CLI")
+        .description("Embedded terminal coding agent.")
+        .tag("example")
+        .tag("coding");
+    for cap in harness_capabilities {
+        harness_builder = harness_builder.capability(cap);
+    }
+    let harness_id = harness_builder.harness_id();
+
+    let agent_builder = AgentBuilder::new("coding-agent", AGENT_PROMPT)
+        .display_name("Coding Agent")
+        .description("Reads, edits, and runs commands inside a project workspace.")
+        .tag("example")
+        .tag("coding");
+    let agent_id = agent_builder.agent_id();
+
+    let session_builder = SessionBuilder::new(harness_id)
+        .agent(agent_id)
+        .id(session_id)
+        .title(session_title)
+        .mcp_servers(session_mcp_servers)
+        .tag("example")
+        .tag("coding");
+
     let mut builder = InProcessRuntimeBuilder::new()
         .platform_definition(platform)
         .default_model(default_model)
         .backends(backends)
-        .single_session(move |s| {
-            let mut s = s
-                .harness("yolop", HARNESS_PROMPT)
-                .harness_display_name("Coding CLI")
-                .harness_description("Embedded terminal coding agent.")
-                .agent("coding-agent", AGENT_PROMPT)
-                .agent_display_name("Coding Agent")
-                .agent_description("Reads, edits, and runs commands inside a project workspace.")
-                .session_id(session_id)
-                .session_title(session_title.clone())
-                .session_mcp_servers(session_mcp_servers.clone())
-                .tag("example")
-                .tag("coding");
-            for cap in harness_capabilities {
-                s = s.harness_capability(cap);
-            }
-            s
-        });
+        .harness(harness_builder.build())
+        .agent(agent_builder.build())
+        .session(session_builder.build());
     // Always register the llmsim driver so `/setup` can switch to offline mode.
     // mid-session, even if the user started with anthropic or openai.
     let llmsim_config = options.llmsim_override.unwrap_or_else(|| {
@@ -1686,6 +1701,49 @@ mod tests {
                 .expect("resolve")
                 .is_none(),
             "no credential configured yet"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_attaches_yolop_embedder_metadata() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        let context = built
+            .handles
+            .runtime
+            .load_context(built.handles.session_id)
+            .await
+            .expect("load context");
+        assert_eq!(
+            context.embedder_metadata.get("app").map(String::as_str),
+            Some("yolop")
+        );
+        assert_eq!(
+            context
+                .embedder_metadata
+                .get("yolop_version")
+                .map(String::as_str),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            context
+                .embedder_metadata
+                .get("everruns_runtime_version")
+                .map(String::as_str),
+            Some(env!("YOLOP_EVERRUNS_RUNTIME_VERSION"))
         );
     }
 
