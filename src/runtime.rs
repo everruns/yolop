@@ -33,9 +33,9 @@ use everruns_core::capabilities::{
     BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, FileSystemCapability,
     INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LoopDetectionCapability,
     MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability,
-    SKILLS_CAPABILITY_ID, SessionStorageCapability, StatelessTodoListCapability,
-    TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
-    UserHooksCapability, WebFetchCapability,
+    SKILLS_CAPABILITY_ID, ScopedSkillsCapability, SessionStorageCapability,
+    StatelessTodoListCapability, TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability,
+    ToolSearchCapability, UserHooksCapability, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::driver_registry::{DriverRegistry, ProviderMetadata};
@@ -129,6 +129,8 @@ const AGENT_PROMPT: &str = "Investigate before editing. Cite paths and line numb
 struct CodingCliSessionFileSystemFactory {
     workspace_root: PathBuf,
     session_dir: PathBuf,
+    skill_global: Option<PathBuf>,
+    skill_system: Option<PathBuf>,
 }
 
 #[async_trait]
@@ -147,9 +149,22 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
                 self.session_dir.display()
             ))
         })?;
+        // The writable global skills dir may not exist yet; create it so a skill
+        // installed mid-session is discoverable. (System skills are already
+        // materialized by `SkillDirs::resolve`.)
+        for dir in [self.skill_global.as_ref(), self.skill_system.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            std::fs::create_dir_all(dir).map_err(|e| {
+                AgentLoopError::config(format!("create skills dir {}: {e}", dir.display()))
+            })?;
+        }
         let disk: Arc<dyn SessionFileSystem> = Arc::new(CodingCliSessionFileStore::new(
             self.workspace_root.clone(),
             self.session_dir.clone(),
+            self.skill_global.clone(),
+            self.skill_system.clone(),
         )?);
         Ok(Arc::new(WriteBlocklistFileStore::new(disk)))
     }
@@ -158,14 +173,29 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
 struct CodingCliSessionFileStore {
     workspace: RealDiskFileStore,
     session: RealDiskFileStore,
+    // Backing stores for the global/system skill scope VFS roots, served from
+    // real directories outside the workspace (see `capabilities::skills`).
+    skill_global: Option<RealDiskFileStore>,
+    skill_system: Option<RealDiskFileStore>,
     session_dir: PathBuf,
 }
 
 impl CodingCliSessionFileStore {
-    fn new(workspace_root: PathBuf, session_dir: PathBuf) -> everruns_core::Result<Self> {
+    fn new(
+        workspace_root: PathBuf,
+        session_dir: PathBuf,
+        skill_global: Option<PathBuf>,
+        skill_system: Option<PathBuf>,
+    ) -> everruns_core::Result<Self> {
+        let skill_store =
+            |dir: Option<PathBuf>| -> everruns_core::Result<Option<RealDiskFileStore>> {
+                dir.map(RealDiskFileStore::new).transpose()
+            };
         Ok(Self {
             workspace: RealDiskFileStore::new(workspace_root)?,
             session: RealDiskFileStore::new(session_dir.clone())?,
+            skill_global: skill_store(skill_global)?,
+            skill_system: skill_store(skill_system)?,
             session_dir,
         })
     }
@@ -199,6 +229,20 @@ impl CodingCliSessionFileStore {
     }
 
     fn store_for_path(&self, path: &str) -> (&RealDiskFileStore, String) {
+        // Synthetic skill-scope roots route to dirs outside the workspace so the
+        // upstream skills capability can discover global/system skills through
+        // the VFS. Workspace skills fall through to the normal workspace store.
+        use crate::capabilities::skills::{GLOBAL_SKILLS_VFS, SYSTEM_SKILLS_VFS, relative_under};
+        if let Some(store) = &self.skill_global
+            && let Some(rest) = relative_under(path, GLOBAL_SKILLS_VFS)
+        {
+            return (store, rest);
+        }
+        if let Some(store) = &self.skill_system
+            && let Some(rest) = relative_under(path, SYSTEM_SKILLS_VFS)
+        {
+            return (store, rest);
+        }
         match Self::session_output_path(path) {
             Some(path) => (&self.session, path),
             None => (&self.workspace, path.to_string()),
@@ -1688,6 +1732,11 @@ pub async fn build_with_options(
         .with_context(|| format!("canonicalize workspace: {}", workspace_root.display()))?;
     let workspace = Workspace::new(canonical_root.clone());
 
+    // Resolve the workspace/global/system skill directories once (this also
+    // materializes the embedded system skills). Shared by the skills capability
+    // config and the file-store factory's scope routing.
+    let skill_dirs = crate::capabilities::skills::SkillDirs::resolve(&canonical_root);
+
     // MCP servers from `.mcp.json` (global + workspace, merged). Loading is
     // best-effort per scope: a malformed file is warned about and skipped, so
     // it never sinks the session or masks the other scope.
@@ -1767,9 +1816,10 @@ pub async fn build_with_options(
     //   * agent_instructions   — re-reads AGENTS.md every turn
     //   * session_file_system  — read/write/edit/list/grep/delete/stat tools
     //
-    // Skills (vendored in `crate::capabilities::skills`, reads real folders):
+    // Skills (upstream `ScopedSkillsCapability`, wired in `crate::capabilities::skills`):
     //   * skills               — discovers SKILL.md across workspace / global /
-    //                            system scopes; list_skills + activate_skill
+    //                            system scopes via the session file store;
+    //                            list_skills + activate_skill + read/write_skill
     //
     // Non-filesystem, but useful for a coding agent:
     //   * repo_map            - on-demand multi-language symbol map for broad codebase orientation
@@ -1788,10 +1838,12 @@ pub async fn build_with_options(
     let mut capabilities = CapabilityRegistry::new();
     capabilities.register(AgentInstructionsCapability);
     capabilities.register(FileSystemCapability);
-    // Vendored, multi-scope skills capability: discovers SKILL.md across the
-    // workspace, the user's global config, and skills pre-packed with yolop.
-    capabilities.register(crate::capabilities::skills::YolopSkillsCapability::new(
-        crate::capabilities::skills::SkillSources::resolve(&canonical_root),
+    // Upstream multi-scope skills capability (everruns-core 0.12.0+),
+    // configured with yolop's workspace/global/system scopes and a host-path
+    // resolver so `${SKILL_DIR}` reaches real files. The file store maps the
+    // scope VFS roots onto disk (see `capabilities::skills`).
+    capabilities.register(ScopedSkillsCapability::new(
+        crate::capabilities::skills::skills_config(&skill_dirs),
     ));
     capabilities.register(RepoMapCapability::new(canonical_root.clone()));
     capabilities.register(AstGrepCapability::new(canonical_root.clone()));
@@ -1960,6 +2012,8 @@ pub async fn build_with_options(
         .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
             workspace_root: canonical_root.clone(),
             session_dir: session_dir.clone(),
+            skill_global: skill_dirs.global.clone(),
+            skill_system: skill_dirs.system.clone(),
         }))
         .build();
 
@@ -3446,8 +3500,13 @@ mod tests {
     async fn yolop_file_store_routes_workspace_files_to_workspace_root() {
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = CodingCliSessionFileStore::new(workspace.path().into(), session.path().into())
-            .expect("store");
+        let store = CodingCliSessionFileStore::new(
+            workspace.path().into(),
+            session.path().into(),
+            None,
+            None,
+        )
+        .expect("store");
         let session_id = SessionId::from_seed(1);
 
         store
@@ -3466,8 +3525,13 @@ mod tests {
     async fn yolop_file_store_routes_outputs_to_session_dir() {
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = CodingCliSessionFileStore::new(workspace.path().into(), session.path().into())
-            .expect("store");
+        let store = CodingCliSessionFileStore::new(
+            workspace.path().into(),
+            session.path().into(),
+            None,
+            None,
+        )
+        .expect("store");
         let session_id = SessionId::from_seed(2);
 
         store
@@ -3528,8 +3592,13 @@ mod tests {
     fn yolop_file_store_displays_workspace_and_session_paths() {
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = CodingCliSessionFileStore::new(workspace.path().into(), session.path().into())
-            .expect("store");
+        let store = CodingCliSessionFileStore::new(
+            workspace.path().into(),
+            session.path().into(),
+            None,
+            None,
+        )
+        .expect("store");
         let workspace_root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
         let session_root = std::fs::canonicalize(session.path()).expect("canonical session");
 
@@ -3547,6 +3616,118 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn yolop_file_store_routes_skill_scope_roots_outside_workspace() {
+        use crate::capabilities::skills::{GLOBAL_SKILLS_VFS, SYSTEM_SKILLS_VFS};
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let global = tempfile::tempdir().expect("global");
+        let system = tempfile::tempdir().expect("system");
+        let store = CodingCliSessionFileStore::new(
+            workspace.path().into(),
+            session.path().into(),
+            Some(global.path().into()),
+            Some(system.path().into()),
+        )
+        .expect("store");
+        let session_id = SessionId::from_seed(7);
+
+        // write_skill into the global scope lands in the global dir, not the workspace.
+        store
+            .write_file(
+                session_id,
+                &format!("{GLOBAL_SKILLS_VFS}/greeter/SKILL.md"),
+                "global skill",
+                "text",
+            )
+            .await
+            .expect("write global skill");
+        assert_eq!(
+            std::fs::read_to_string(global.path().join("greeter/SKILL.md")).expect("global skill"),
+            "global skill"
+        );
+        assert!(!workspace.path().join(".yolop").exists());
+
+        // A skill placed in the system dir is discoverable via the system VFS root.
+        std::fs::create_dir_all(system.path().join("joke")).unwrap();
+        std::fs::write(system.path().join("joke/SKILL.md"), "system skill").unwrap();
+        let listed = store
+            .list_directory(session_id, SYSTEM_SKILLS_VFS)
+            .await
+            .expect("list system skills");
+        assert!(listed.iter().any(|e| e.is_directory && e.name == "joke"));
+        let read = store
+            .read_file(session_id, &format!("{SYSTEM_SKILLS_VFS}/joke/SKILL.md"))
+            .await
+            .expect("read system skill")
+            .expect("system skill exists");
+        assert_eq!(read.content.as_deref(), Some("system skill"));
+    }
+
+    #[tokio::test]
+    async fn skills_capability_discovers_routed_skill_with_host_path() {
+        // End-to-end: the upstream ScopedSkillsCapability, configured by yolop and
+        // driven against yolop's routed file store, discovers a system skill and
+        // reports a real host path (so the agent's host `bash` can read it).
+        use crate::capabilities::skills::{SkillDirs, skills_config};
+        use everruns_core::ToolContext;
+        use everruns_core::capabilities::Capability;
+        use everruns_core::tools::ToolExecutionResult;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let system = tempfile::tempdir().expect("system");
+        std::fs::create_dir_all(system.path().join("joke")).unwrap();
+        std::fs::write(
+            system.path().join("joke/SKILL.md"),
+            "---\nname: joke\ndescription: Tell a joke\n---\nBe funny.",
+        )
+        .unwrap();
+
+        let dirs = SkillDirs {
+            workspace: workspace.path().join(".agents").join("skills"),
+            global: None,
+            system: Some(system.path().to_path_buf()),
+        };
+        let store: Arc<dyn SessionFileSystem> = Arc::new(
+            CodingCliSessionFileStore::new(
+                workspace.path().into(),
+                session.path().into(),
+                None,
+                Some(system.path().into()),
+            )
+            .expect("store"),
+        );
+        let cap = ScopedSkillsCapability::new(skills_config(&dirs));
+        let tools = cap.tools();
+        let list = tools
+            .iter()
+            .find(|t| t.name() == "list_skills")
+            .expect("list_skills tool");
+        let ctx = ToolContext::with_file_store(SessionId::from_seed(8), store);
+
+        match list.execute_with_context(serde_json::json!({}), &ctx).await {
+            ToolExecutionResult::Success(val) => {
+                let skills = val["skills"].as_array().expect("skills array");
+                let joke = skills
+                    .iter()
+                    .find(|s| s["name"] == "joke")
+                    .expect("joke discovered");
+                assert_eq!(joke["scope"], "system");
+                // The reported path is a real host path under the system dir,
+                // not a VFS path — that is what `${SKILL_DIR}`/bash needs.
+                // Compare as paths so separators are platform-correct.
+                let path = joke["path"].as_str().unwrap();
+                assert_eq!(
+                    std::path::PathBuf::from(path),
+                    system.path().join("joke").join("SKILL.md"),
+                    "expected the real host path to the skill"
+                );
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn yolop_file_store_secures_output_permissions() {
@@ -3554,8 +3735,13 @@ mod tests {
 
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = CodingCliSessionFileStore::new(workspace.path().into(), session.path().into())
-            .expect("store");
+        let store = CodingCliSessionFileStore::new(
+            workspace.path().into(),
+            session.path().into(),
+            None,
+            None,
+        )
+        .expect("store");
         let session_id = SessionId::from_seed(3);
 
         store
@@ -3590,8 +3776,13 @@ mod tests {
 
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = CodingCliSessionFileStore::new(workspace.path().into(), session.path().into())
-            .expect("store");
+        let store = CodingCliSessionFileStore::new(
+            workspace.path().into(),
+            session.path().into(),
+            None,
+            None,
+        )
+        .expect("store");
         let session_id = SessionId::from_seed(4);
 
         store

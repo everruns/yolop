@@ -6,34 +6,48 @@ Skills are instruction packages (`SKILL.md` files) the agent can discover,
 activate, and manage at runtime via skills tools, plus a system-prompt listing
 of what's available.
 
-yolop **vendors** the upstream `skills` capability from `everruns-core`. The
-upstream capability scans a single virtual-filesystem path (`/.agents/skills`)
-through the session filesystem; that is too narrow for global and system scopes,
-and the embedded in-process runtime does not apply the `mounts()` mechanism the
-server uses to inject extra skills. yolop therefore owns the discovery loop and
-reads the scope folders directly from disk, while **reusing** the upstream
-`SKILL.md` parser, validator, and argument/variable substitution verbatim
-(`everruns_core::skill`). This spec owns the scope set and behavior; the
-`SKILL.md` format is owned upstream.
+yolop uses the upstream `ScopedSkillsCapability` from `everruns-core` (0.12.0+).
+That capability owns discovery, precedence, the skills tools (`list_skills`,
+`activate_skill`, `read_skill`, `write_skill`), validation, and `SKILL.md`
+substitution — all driven strictly through the session `SessionFileSystem`. yolop
+supplies only the embedder-specific glue (`crate::capabilities::skills`):
 
-> Forward plan: once this multi-source resolver is stable, the intent is to push
-> it upstream (a capability that accepts multiple labeled skill sources, and/or
-> the planned in-process "mount-overlay resolver") so the vendoring can be
-> retired and duplication removed.
+1. **The scope set and writability** — workspace, global, system (below), passed
+   as `SkillScope`s with labeled **VFS roots** (never host paths).
+2. **A host-path `SkillDirResolver`** — so `${SKILL_DIR}` and the displayed paths
+   expand to real on-disk paths the host `bash` tool can read. (The core default
+   keeps them in the VFS, which is correct only when the shell shares that
+   namespace; yolop's `bash` runs on the host.)
+3. **Bundled system skills** — pre-packed in the binary and materialized once.
+4. **File-store routing** — `CodingCliSessionFileStore` maps each scope's VFS root
+   onto the real directory below, so the capability reaches global/system skills
+   through the VFS without ever being handed a host path.
+
+This spec owns the scope set and the yolop wiring; the capability contract and
+`SKILL.md` format are owned upstream (see `everruns` `specs/skills-registry.md`).
+
+> History: yolop previously **vendored** the whole capability because the
+> upstream `SkillsCapability` scanned a single VFS path and the embedded runtime
+> could not inject multi-scope sources. The multi-source resolver was pushed
+> upstream as `ScopedSkillsCapability` (everruns#2185), so the vendored copy was
+> retired and only the glue above remains.
 
 ## Scopes
 
-A skill is a directory named for the skill, containing `SKILL.md`. Every scope
-resolves to a **real on-disk directory**:
+A skill is a directory named for the skill, containing `SKILL.md`. Each scope is
+a labeled VFS root that yolop's file store maps to a **real on-disk directory**:
 
-1. **Workspace** — `<workspace>/.agents/skills/<name>/`. Lives in the project
-   under version control; ships with the repo it belongs to.
+1. **Workspace** — `<workspace>/.agents/skills/<name>/` (VFS `/.agents/skills`).
+   Lives in the project under version control; ships with the repo it belongs to.
+   Writable.
 2. **Global** — `<config_dir>/yolop/skills/<name>/` (e.g.
-   `~/.config/yolop/skills/` on Linux), installed once per user and shared
-   across every workspace. Overridable with `YOLOP_GLOBAL_SKILLS_DIR`.
+   `~/.config/yolop/skills/` on Linux; VFS `/.yolop/global-skills`), installed
+   once per user and shared across every workspace. Writable. Overridable with
+   `YOLOP_GLOBAL_SKILLS_DIR`.
 3. **System** — pre-packed inside the yolop binary and materialized once to
-   `<data_dir>/yolop/system-skills/<name>/`. Always available. Overridable with
-   `YOLOP_SYSTEM_SKILLS_DIR` (used verbatim, no materialization).
+   `<data_dir>/yolop/system-skills/<name>/` (VFS `/.yolop/system-skills`). Always
+   available, **read-only**. Overridable with `YOLOP_SYSTEM_SKILLS_DIR` (used
+   verbatim, no materialization).
 
 ## Required Behavior
 
@@ -75,7 +89,13 @@ resolves to a **real on-disk directory**:
 
 ## Ownership Boundary
 
-- This spec and `crate::skills` own scope resolution, discovery, precedence, and
-  the skills tools.
+- `everruns_core::capabilities::ScopedSkillsCapability` owns discovery,
+  precedence, the skills tools, validation, and substitution — all through the
+  session `SessionFileSystem`.
+- `crate::capabilities::skills` owns the yolop wiring: the scope set, the
+  host-path `SkillDirResolver`, the embedded system skills + materialization, and
+  the VFS-root constants the file store routes on.
+- `crate::runtime` (`CodingCliSessionFileStore`) owns mapping the scope VFS roots
+  to real on-disk directories.
 - `everruns_core::skill` owns the `SKILL.md` format, parsing, validation, and
   substitution.
