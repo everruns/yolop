@@ -27,8 +27,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 mod render;
 mod setup;
@@ -122,12 +121,15 @@ pub struct App {
     ctrl_c_exit: bool,
     /// First Ctrl+C armed exit; a second press quits.
     ctrl_c_pending_exit: bool,
+    /// First Esc during a busy turn armed cancellation; a second press cancels.
+    esc_pending_cancel: bool,
     busy_frame: u64,
     turn_activity: Option<String>,
     /// Live tail of streaming assistant text (and other delta events).
     /// Cleared on turn completion; never enters the persistent transcript.
     stream_preview: Option<StreamPreview>,
     rx: Option<mpsc::UnboundedReceiver<TurnEvent>>,
+    turn_cancel: Option<oneshot::Sender<()>>,
     /// Active setup overlay, if any. The overlay owns its own keyboard
     /// handling so provider, token, and model setup never echo through the
     /// normal chat composer.
@@ -384,10 +386,12 @@ impl App {
             should_quit: false,
             ctrl_c_exit: false,
             ctrl_c_pending_exit: false,
+            esc_pending_cancel: false,
             busy_frame: 0,
             turn_activity: None,
             stream_preview: None,
             rx: None,
+            turn_cancel: None,
             setup: None,
             ui_rx: runtime.ui_rx,
             settings: runtime.settings,
@@ -551,28 +555,17 @@ impl App {
                     return Ok(());
                 }
                 Ok(TurnEvent::Done) => {
-                    self.busy = false;
-                    self.busy_frame = 0;
-                    self.turn_activity = None;
-                    self.stream_preview = None;
-                    self.rx = None;
+                    self.finish_busy();
                     return Ok(());
                 }
                 Ok(TurnEvent::Failed(err)) => {
-                    self.busy = false;
-                    self.busy_frame = 0;
-                    self.turn_activity = None;
-                    self.stream_preview = None;
-                    self.rx = None;
+                    self.finish_busy();
                     self.push_system(format!("turn failed: {err}"));
                     return Ok(());
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => {
-                    self.busy = false;
-                    self.turn_activity = None;
-                    self.stream_preview = None;
-                    self.rx = None;
+                    self.finish_busy();
                 }
             }
         }
@@ -633,10 +626,16 @@ impl App {
                     .await;
                 Ok(true)
             }
-            CrosstermEvent::Key(next) => {
+            CrosstermEvent::Key(next) if next.code == KeyCode::Esc => {
                 self.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
                     .await;
                 self.handle_key(next).await;
+                Ok(true)
+            }
+            CrosstermEvent::Key(next) => {
+                let mut alt = next;
+                alt.modifiers.insert(KeyModifiers::ALT);
+                self.handle_key(alt).await;
                 Ok(true)
             }
             _ => {
@@ -721,6 +720,7 @@ impl App {
 
         if self.busy {
             // Block only input editing while a turn is running.
+            self.handle_busy_key(key);
             return;
         }
         if self.setup.is_some() {
@@ -928,6 +928,38 @@ impl App {
         self.push_system("Press Ctrl+C again to exit".into());
     }
 
+    fn handle_busy_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc if self.esc_pending_cancel => self.cancel_current_turn(),
+            KeyCode::Esc if self.turn_cancel.is_some() => {
+                self.esc_pending_cancel = true;
+                self.push_system("Press Esc again to cancel current turn".into());
+            }
+            _ => {
+                self.esc_pending_cancel = false;
+            }
+        }
+    }
+
+    fn cancel_current_turn(&mut self) {
+        self.esc_pending_cancel = false;
+        if let Some(cancel) = self.turn_cancel.take() {
+            let _ = cancel.send(());
+            self.turn_activity = Some("cancelling".into());
+            self.stream_preview = None;
+        }
+    }
+
+    fn finish_busy(&mut self) {
+        self.busy = false;
+        self.busy_frame = 0;
+        self.turn_activity = None;
+        self.stream_preview = None;
+        self.rx = None;
+        self.turn_cancel = None;
+        self.esc_pending_cancel = false;
+    }
+
     /// Dispatch a capability-provided slash command.
     ///
     /// `System` commands execute through `runtime.execute_command` — the
@@ -1006,7 +1038,10 @@ impl App {
         let workspace_root = self.startup.workspace_root.clone();
         let display_command = command.clone();
         let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
         self.rx = Some(rx);
+        self.turn_cancel = Some(cancel_tx);
+        self.esc_pending_cancel = false;
         self.busy = true;
         self.turn_activity = Some("running shell command".into());
         self.stream_preview = None;
@@ -1014,15 +1049,23 @@ impl App {
 
         tokio::spawn(async move {
             let tool = BashTool::new(Workspace::new(workspace_root));
-            let result = tool
-                .execute(serde_json::json!({
-                    "command": command,
-                    // Direct shell output is not persisted through a tool-call
-                    // lifecycle, so render a useful bounded window inline.
-                    "output": "normal",
-                }))
-                .await;
-            let _ = tx.send(TurnEvent::Lines(shell_result_lines(result)));
+            let run = tool.execute(serde_json::json!({
+                "command": command,
+                // Direct shell output is not persisted through a tool-call
+                // lifecycle, so render a useful bounded window inline.
+                "output": "normal",
+            }));
+            tokio::select! {
+                result = run => {
+                    let _ = tx.send(TurnEvent::Lines(shell_result_lines(result)));
+                }
+                _ = &mut cancel_rx => {
+                    let _ = tx.send(TurnEvent::Lines(vec![ChatLine {
+                        author: Author::System,
+                        text: "turn cancelled".into(),
+                    }]));
+                }
+            }
             let _ = tx.send(TurnEvent::Done);
         });
     }
@@ -1031,7 +1074,10 @@ impl App {
         let handles = self.handles.clone();
         let model = self.model.clone();
         let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
         self.rx = Some(rx);
+        self.turn_cancel = Some(cancel_tx);
+        self.esc_pending_cancel = false;
         self.busy = true;
         self.turn_activity = None;
         self.stream_preview = None;
@@ -1062,9 +1108,15 @@ impl App {
 
             let mut emitted_events = HashSet::new();
             let mut delta_router = DeltaRouter::default();
+            let mut cancelled = false;
             loop {
                 tokio::select! {
                     biased;
+                    _ = &mut cancel_rx => {
+                        cancelled = true;
+                        turn.abort();
+                        break;
+                    }
                     recv = live.recv() => match recv {
                         Ok(event) => {
                             if event.session_id != session_id {
@@ -1099,6 +1151,16 @@ impl App {
                         }
                     }
                 }
+            }
+
+            if cancelled {
+                let _ = tx.send(TurnEvent::Stream(None));
+                let _ = tx.send(TurnEvent::Lines(vec![ChatLine {
+                    author: Author::System,
+                    text: "turn cancelled".into(),
+                }]));
+                let _ = tx.send(TurnEvent::Done);
+                return;
             }
 
             // Drain any tail events emitted between the last broadcast
@@ -2483,26 +2545,15 @@ mod tests {
                         }
                         Ok(TurnEvent::Stream(preview)) => self.stream_preview = preview,
                         Ok(TurnEvent::Done) => {
-                            self.busy = false;
-                            self.busy_frame = 0;
-                            self.turn_activity = None;
-                            self.stream_preview = None;
-                            self.rx = None;
+                            self.finish_busy();
                         }
                         Ok(TurnEvent::Failed(err)) => {
-                            self.busy = false;
-                            self.busy_frame = 0;
-                            self.turn_activity = None;
-                            self.stream_preview = None;
-                            self.rx = None;
+                            self.finish_busy();
                             self.push_system(format!("turn failed: {err}"));
                         }
                         Err(mpsc::error::TryRecvError::Empty) => {}
                         Err(mpsc::error::TryRecvError::Disconnected) => {
-                            self.busy = false;
-                            self.turn_activity = None;
-                            self.stream_preview = None;
-                            self.rx = None;
+                            self.finish_busy();
                         }
                     }
                 }
@@ -3028,6 +3079,150 @@ mod tests {
             "typing should disarm the pending exit prompt"
         );
         assert!(!app.should_quit);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn first_esc_while_busy_prompts_for_second_press_to_cancel() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        app.setup = None;
+        app.busy = true;
+        app.turn_cancel = Some(cancel_tx);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert!(!app.should_quit, "first Esc should not quit");
+        assert!(app.busy, "first Esc should keep the turn running");
+        assert!(
+            app.esc_pending_cancel,
+            "first Esc should arm turn cancellation"
+        );
+        assert!(
+            cancel_rx.try_recv().is_err(),
+            "first Esc should not send cancellation yet"
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("Press Esc again to cancel current turn")),
+            "first Esc should invite a second press: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn second_esc_while_busy_sends_turn_cancel() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+        app.setup = None;
+        app.busy = true;
+        app.turn_cancel = Some(cancel_tx);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert!(
+            !app.esc_pending_cancel,
+            "second Esc should disarm cancellation prompt"
+        );
+        assert!(
+            app.turn_cancel.is_none(),
+            "second Esc should consume the active cancel sender"
+        );
+        assert!(
+            cancel_rx.await.is_ok(),
+            "second Esc should notify the turn worker"
+        );
+        assert_eq!(app.turn_activity.as_deref(), Some("cancelling"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn second_esc_while_busy_clears_stream_preview_immediately() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        let (cancel_tx, _cancel_rx) = oneshot::channel::<()>();
+        app.setup = None;
+        app.busy = true;
+        app.turn_cancel = Some(cancel_tx);
+        app.stream_preview = Some(StreamPreview {
+            kind: StreamKind::Assistant,
+            text: "partial answer".into(),
+        });
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert!(
+            app.stream_preview.is_none(),
+            "cancellation confirmation should clear stale streaming text immediately"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn esc_after_cancel_requested_does_not_reprompt() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        let (cancel_tx, _cancel_rx) = oneshot::channel::<()>();
+        app.setup = None;
+        app.busy = true;
+        app.turn_cancel = Some(cancel_tx);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+        let prompt_count = app
+            .lines
+            .iter()
+            .filter(|line| line.text.contains("Press Esc again to cancel current turn"))
+            .count();
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert!(
+            !app.esc_pending_cancel,
+            "Esc after cancellation was requested should not re-arm"
+        );
+        assert_eq!(
+            app.lines
+                .iter()
+                .filter(|line| line.text.contains("Press Esc again to cancel current turn"))
+                .count(),
+            prompt_count,
+            "Esc after cancellation was requested should not add another prompt"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn non_esc_while_busy_disarms_cancel_prompt() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        app.setup = None;
+        app.busy = true;
+        app.turn_cancel = Some(cancel_tx);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()))
+            .await;
+
+        assert!(
+            !app.esc_pending_cancel,
+            "non-Esc busy input should disarm cancellation prompt"
+        );
+        assert!(
+            cancel_rx.try_recv().is_err(),
+            "non-Esc busy input should not cancel the turn"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
