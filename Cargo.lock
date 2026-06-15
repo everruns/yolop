@@ -1434,6 +1434,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "everruns-openrouter"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f3ae89085eedf0f6b366303a5e99d69d190d92d319b610e279aaffb30cadb6"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "everruns-core",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "everruns-runtime"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5892,6 +5906,7 @@ dependencies = [
  "everruns-integrations-daytona",
  "everruns-integrations-duckduckgo",
  "everruns-openai",
+ "everruns-openrouter",
  "everruns-runtime",
  "futures",
  "include_dir",

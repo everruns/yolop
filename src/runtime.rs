@@ -1507,6 +1507,9 @@ pub async fn build_with_options(
     let mut driver_registry = DriverRegistry::new();
     everruns_anthropic::register_driver(&mut driver_registry);
     everruns_openai::register_driver(&mut driver_registry);
+    // OpenRouter moved to its own crate in everruns 0.13.0; register its
+    // first-class DriverId::OpenRouter driver here (was bundled with openai).
+    everruns_openrouter::register_driver(&mut driver_registry);
     let settings_snapshot = settings.snapshot();
     let setup_recommended = SetupCapability::needs_onboarding(&settings_snapshot);
     let default_model = match &provider {
