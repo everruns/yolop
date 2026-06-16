@@ -455,6 +455,11 @@ impl SetConfigTool {
                 Ok(saved(format!("attribution = {}", on_off(enabled))))
             }
             KeyTarget::ProactiveWake => {
+                // `clear` reverts to the default (on), keeping settings.toml sparse.
+                if clearing {
+                    self.settings.set_proactive_wake(true).map_err(map_err)?;
+                    return Ok(saved("cleared proactive_wake (default on)".to_string()));
+                }
                 let enabled = parse_on_off(value).ok_or_else(|| {
                     "proactive_wake expects on/off (true/false, yes/no)".to_string()
                 })?;
@@ -658,6 +663,34 @@ mod tests {
 
         let bad = tool
             .execute(json!({ "key": "approval_mode", "value": "whenever" }))
+            .await;
+        assert!(matches!(bad, ToolExecutionResult::ToolError(_)));
+    }
+
+    #[tokio::test]
+    async fn set_config_routes_proactive_wake_with_alias_and_clear() {
+        let (_tmp, settings) = store();
+        let tool = set_config_tool(settings.clone());
+
+        tool.execute(json!({ "key": "proactive_wake", "value": "off" }))
+            .await;
+        assert!(!settings.snapshot().proactive_wake_enabled());
+
+        // Alias routes through the same target.
+        tool.execute(json!({ "key": "wake", "value": "on" })).await;
+        assert!(settings.snapshot().proactive_wake_enabled());
+
+        // `clear` reverts to the default (on).
+        tool.execute(json!({ "key": "proactive_wake", "value": "off" }))
+            .await;
+        let cleared = tool
+            .execute(json!({ "key": "proactive_wake", "value": "clear" }))
+            .await;
+        assert!(matches!(cleared, ToolExecutionResult::Success(_)));
+        assert!(settings.snapshot().proactive_wake_enabled());
+
+        let bad = tool
+            .execute(json!({ "key": "proactive_wake", "value": "maybe" }))
             .await;
         assert!(matches!(bad, ToolExecutionResult::ToolError(_)));
     }
