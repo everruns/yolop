@@ -146,7 +146,7 @@ pub struct App {
     /// Models discovered from each provider's models API, keyed by provider
     /// name. Once populated, replaces the curated fallback list in the
     /// model picker.
-    model_catalog: HashMap<String, Vec<ModelOption>>,
+    model_catalog: HashMap<String, ModelPickerCatalog>,
     /// Providers with an in-flight models API fetch.
     model_fetches_in_flight: HashSet<String>,
     /// Disabled in unit tests so opening the picker never spawns real
@@ -160,7 +160,15 @@ pub struct App {
 /// does not support listing; the picker keeps the curated fallback list.
 pub(crate) struct ModelDiscovery {
     provider: String,
-    result: Result<Option<Vec<ModelOption>>, String>,
+    result: Result<Option<ModelPickerCatalog>, String>,
+}
+
+/// One provider's model picker list: selectable rows plus how many leading
+/// rows belong in the recommended section (before the "more models" divider).
+#[derive(Clone, Debug)]
+pub(crate) struct ModelPickerCatalog {
+    pub options: Vec<ModelOption>,
+    pub recommended_count: usize,
 }
 
 /// State of the first-run / `/setup` overlay. This enum *is* the overlay's
@@ -3772,25 +3780,33 @@ mod tests {
 
     #[test]
     fn discovered_models_convert_to_options_with_custom_escape_hatch() {
-        let mut described = discovered("openai/gpt-5.2", Some("OpenAI: GPT-5.2"));
-        described.description = Some("optimized for long-running agents".to_string());
-        let options = model_options_from_discovered(vec![
-            described,
-            discovered("nvidia/nemotron-3-super-120b-a12b", None),
-        ]);
+        let mut described = discovered("openai/gpt-5.5", Some("OpenAI: GPT-5.5"));
+        described.description = Some("frontier model for complex coding".to_string());
+        let catalog = model_options_from_discovered(
+            "openrouter",
+            vec![
+                described,
+                discovered("nvidia/nemotron-3-super-120b-a12b", None),
+            ],
+            2,
+        );
 
-        assert_eq!(options.len(), 3);
-        assert_eq!(options[0].spec.as_deref(), Some("openai/gpt-5.2"));
-        assert_eq!(options[0].label, "openai/gpt-5.2");
+        assert_eq!(catalog.options.len(), 3);
+        assert_eq!(catalog.recommended_count, 2);
+        assert_eq!(catalog.options[0].spec.as_deref(), Some("openai/gpt-5.5"));
+        assert_eq!(catalog.options[0].label, "openai/gpt-5.5");
         assert_eq!(
-            options[0].hint,
-            "OpenAI: GPT-5.2 · optimized for long-running agents"
+            catalog.options[0].hint,
+            "OpenAI: GPT-5.5 · frontier model for complex coding"
         );
         assert_eq!(
-            options[1].spec.as_deref(),
+            catalog.options[1].spec.as_deref(),
             Some("nvidia/nemotron-3-super-120b-a12b")
         );
-        assert!(options[2].spec.is_none(), "last option must stay Custom...");
+        assert!(
+            catalog.options[2].spec.is_none(),
+            "last option must stay Custom..."
+        );
     }
 
     #[test]
@@ -3798,14 +3814,91 @@ mod tests {
         let mut model = discovered("verbose/model", None);
         model.description = Some("x".repeat(200));
 
-        let options = model_options_from_discovered(vec![model]);
+        let catalog = model_options_from_discovered("openrouter", vec![model], 1);
 
         assert!(
-            options[0].hint.chars().count() <= 72,
+            catalog.options[0].hint.chars().count() <= 72,
             "hint must fit one picker row: {} chars",
-            options[0].hint.chars().count()
+            catalog.options[0].hint.chars().count()
         );
-        assert!(options[0].hint.ends_with('…'));
+        assert!(catalog.options[0].hint.ends_with('…'));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn openrouter_model_picker_shows_recommended_divider() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = Some(SetupStep::PickModel {
+            provider: "openrouter".to_string(),
+            selected: 0,
+            custom: None,
+            error: None,
+        });
+
+        let ranked = crate::capabilities::model_ranking::rank_discovered_models(
+            "openrouter",
+            vec![
+                discovered("zai/glm-5", None),
+                discovered("openai/gpt-5.5", None),
+                discovered("anthropic/claude-opus-4-8", None),
+            ],
+            None,
+        );
+        app.apply_model_discovery(ModelDiscovery {
+            provider: "openrouter".to_string(),
+            result: Ok(Some(model_options_from_discovered(
+                "openrouter",
+                ranked.models,
+                ranked.recommended_count,
+            ))),
+        });
+
+        let options = app.model_options("openrouter");
+        assert_eq!(options[0].spec.as_deref(), Some("openai/gpt-5.5"));
+        assert_eq!(
+            options[1].spec.as_deref(),
+            Some("anthropic/claude-opus-4-8")
+        );
+        assert_eq!(options[2].spec.as_deref(), Some("zai/glm-5"));
+        assert_eq!(app.model_recommended_count("openrouter"), 2);
+
+        let rendered = setup_overlay_text(app);
+        assert!(
+            rendered.iter().any(|line| line.contains("more models")),
+            "recommended section should be separated from the full catalog: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn openrouter_ranking_applies_curated_order_and_alphabetical_rest() {
+        use crate::capabilities::model_ranking::rank_discovered_models;
+
+        let ranked = rank_discovered_models(
+            "openrouter",
+            vec![
+                discovered("zai/glm-5", None),
+                discovered("openai/gpt-5.5", None),
+                discovered("anthropic/claude-opus-4-8", None),
+                discovered("moon/kimi-k3", None),
+            ],
+            None,
+        );
+
+        assert_eq!(ranked.recommended_count, 2);
+        let ids: Vec<&str> = ranked
+            .models
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            &[
+                "openai/gpt-5.5",
+                "anthropic/claude-opus-4-8",
+                "moon/kimi-k3",
+                "zai/glm-5",
+            ]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3821,10 +3914,14 @@ mod tests {
 
         app.apply_model_discovery(ModelDiscovery {
             provider: "openrouter".to_string(),
-            result: Ok(Some(model_options_from_discovered(vec![
-                discovered("zai/glm-5", None),
-                discovered("moon/kimi-k3", None),
-            ]))),
+            result: Ok(Some(model_options_from_discovered(
+                "openrouter",
+                vec![
+                    discovered("zai/glm-5", None),
+                    discovered("moon/kimi-k3", None),
+                ],
+                0,
+            ))),
         });
 
         let options = app.model_options("openrouter");

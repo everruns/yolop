@@ -755,13 +755,22 @@ impl SetupCapability {
             && !models.is_empty()
         {
             let provider = current.provider_name();
-            let shown: Vec<&str> = models
+            let ranked = super::model_ranking::rank_discovered_models(
+                provider,
+                models,
+                Some(current.model_id()),
+            );
+            let shown: Vec<&str> = ranked
+                .models
                 .iter()
                 .take(MODEL_SUGGESTION_LIMIT)
                 .map(|model| model.model_id.as_str())
                 .collect();
-            let suffix = if models.len() > MODEL_SUGGESTION_LIMIT {
-                format!(" … and {} more", models.len() - MODEL_SUGGESTION_LIMIT)
+            let suffix = if ranked.models.len() > MODEL_SUGGESTION_LIMIT {
+                format!(
+                    " … and {} more",
+                    ranked.models.len() - MODEL_SUGGESTION_LIMIT
+                )
             } else {
                 String::new()
             };

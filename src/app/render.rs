@@ -358,6 +358,7 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
                     lines.push(setup_hint("fetching models from the provider API…"));
                 }
                 let total = options.len();
+                let recommended_count = app.model_recommended_count(provider);
                 let (start, end) = model_window(*selected, total, MAX_VISIBLE_MODEL_ROWS);
                 if start > 0 {
                     lines.push(setup_hint(&format!("↑ {start} more")));
@@ -366,6 +367,12 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
                 // id (the same anchor `model_index_for_label` uses).
                 let current = app.model.model_id();
                 for (idx, option) in options.iter().enumerate().take(end).skip(start) {
+                    if recommended_count > 0
+                        && idx == recommended_count
+                        && recommended_count < total.saturating_sub(1)
+                    {
+                        lines.push(setup_divider("─── more models ───"));
+                    }
                     let mut hint = option.hint.to_string();
                     if option.spec.as_deref() == Some(current.as_str()) {
                         hint.push_str(" · current");
@@ -430,6 +437,13 @@ pub(crate) fn setup_hint(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
         Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+    ))
+}
+
+pub(crate) fn setup_divider(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default().fg(ACCENT_BLUE).bg(PANEL_BG),
     ))
 }
 
@@ -1055,8 +1069,10 @@ pub(crate) fn custom_model_option() -> ModelOption {
 /// with core profile names/descriptions) into picker options, keeping the
 /// trailing "Custom..." escape hatch.
 pub(crate) fn model_options_from_discovered(
+    _provider: &str,
     models: Vec<crate::capabilities::model_discovery::DiscoveredProviderModel>,
-) -> Vec<ModelOption> {
+    recommended_count: usize,
+) -> ModelPickerCatalog {
     /// OpenRouter descriptions run to paragraphs; the hint shares one row
     /// with the model id, so keep it short.
     const MAX_HINT_CHARS: usize = 72;
@@ -1081,7 +1097,10 @@ pub(crate) fn model_options_from_discovered(
         })
         .collect();
     options.push(custom_model_option());
-    options
+    ModelPickerCatalog {
+        recommended_count,
+        options,
+    }
 }
 
 /// Discovered model lists can be hundreds of entries (OpenRouter), far more

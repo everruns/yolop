@@ -379,7 +379,7 @@ const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
 // `everruns_openai`. (OpenRouter has its own first-class driver since
 // everruns 0.10 — see `model_with_provider`.)
 const DEFAULT_GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
-const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-5.2";
+const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-5.5";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
@@ -658,9 +658,9 @@ impl ProviderChoice {
             ],
             "google" => &["gemini-2.5-flash", "gemini-2.5-pro"],
             "openrouter" => &[
-                "openai/gpt-5.2",
+                "openai/gpt-5.5",
+                "anthropic/claude-opus-4-8",
                 "nvidia/nemotron-3-super-120b-a12b high",
-                "anthropic/claude-sonnet-4-5",
             ],
             "ollama" => &["llama3.2"],
             "llmsim" => &["llmsim-yolop"],
