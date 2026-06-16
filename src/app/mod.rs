@@ -545,7 +545,10 @@ impl App {
                 .collect();
             self.push_system(format!("commands: {}", names.join(", ")));
         }
-        self.push_system("type /help for commands, press Ctrl-C twice (or Ctrl-D) to exit".into());
+        self.push_system(
+            "type /help for commands, Ctrl+V to paste an image, press Ctrl-C twice (or Ctrl-D) to exit"
+                .into(),
+        );
     }
 
     fn push_user(&mut self, text: String) {
@@ -826,6 +829,10 @@ impl App {
                     self.toggle_background_panel();
                     return;
                 }
+                KeyCode::Char('v') => {
+                    self.try_paste_clipboard_image();
+                    return;
+                }
                 _ => {}
             }
         }
@@ -896,6 +903,27 @@ impl App {
     fn input_height(&self, input_width: u16) -> u16 {
         wrapped_input_visual_lines(&self.input, input_width).clamp(1, MAX_INPUT_HEIGHT as usize)
             as u16
+    }
+
+    fn try_paste_clipboard_image(&mut self) {
+        if self.busy || self.setup.is_some() || self.background_panel.is_some() {
+            return;
+        }
+        match crate::clipboard_paste::paste_image_content_part() {
+            Ok((part, info)) => {
+                self.pending_images.push(part);
+                let index = self.pending_images.len();
+                self.push_system(format!(
+                    "attached clipboard image #{index} ({}x{} PNG)",
+                    info.width, info.height
+                ));
+            }
+            Err(crate::clipboard_paste::PasteImageError::NoImage(_)) => {}
+            Err(err) => {
+                tracing::debug!("clipboard image paste failed: {err}");
+                self.push_system(format!("clipboard image paste failed: {err}"));
+            }
+        }
     }
 
     async fn submit_input(&mut self) {
@@ -3556,6 +3584,15 @@ mod tests {
     async fn startup_banner_names_ctrl_c_and_ctrl_d_as_exit_keys() {
         let fixture = app_with_llmsim().await;
 
+        assert!(
+            fixture
+                .app
+                .lines
+                .iter()
+                .any(|line| line.text.contains("Ctrl+V to paste an image")),
+            "startup banner should mention image paste: {:?}",
+            fixture.app.lines
+        );
         assert!(
             fixture
                 .app

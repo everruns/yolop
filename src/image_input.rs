@@ -21,25 +21,26 @@ pub fn load_image_parts(paths: &[PathBuf]) -> Result<Vec<ContentPart>> {
         .collect::<Result<Vec<_>>>()
 }
 
-/// Read a single image file and return a base64 `ContentPart::Image`.
-pub fn load_image_part(path: &Path) -> Result<ContentPart> {
-    let bytes = std::fs::read(path).with_context(|| format!("read image {}", path.display()))?;
+/// Build a `ContentPart::Image` from already-encoded image bytes.
+pub fn image_part_from_encoded(bytes: &[u8], media_type: &str) -> Result<ContentPart> {
     if bytes.is_empty() {
-        bail!("image {} is empty", path.display());
+        bail!("image is empty");
     }
     if bytes.len() > MAX_IMAGE_BYTES {
-        bail!(
-            "image {} is {} bytes (max {})",
-            path.display(),
-            bytes.len(),
-            MAX_IMAGE_BYTES
-        );
+        bail!("image is {} bytes (max {})", bytes.len(), MAX_IMAGE_BYTES);
     }
-    let media_type = detect_media_type(path, &bytes)?;
-    let base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(ContentPart::Image(ImageContentPart::from_base64(
         base64, media_type,
     )))
+}
+
+/// Read a single image file and return a base64 `ContentPart::Image`.
+pub fn load_image_part(path: &Path) -> Result<ContentPart> {
+    let bytes = std::fs::read(path).with_context(|| format!("read image {}", path.display()))?;
+    let media_type = detect_media_type(path, &bytes)?;
+    image_part_from_encoded(&bytes, &media_type)
+        .with_context(|| format!("image {}", path.display()))
 }
 
 /// Build user-facing transcript text that mentions attached images.
