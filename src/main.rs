@@ -6,6 +6,7 @@ mod acp;
 mod app;
 mod capabilities;
 mod capability_settings;
+mod clipboard_paste;
 mod codex_auth;
 mod codex_driver;
 mod config_schema;
