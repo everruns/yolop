@@ -215,7 +215,13 @@ pub(crate) fn lines_for_replayed_event(event: &RuntimeEvent) -> Vec<ChatLine> {
 }
 
 pub(crate) fn message_line(author: Author, message: &Message) -> Option<ChatLine> {
-    let text = message.text()?;
+    let image_count = message
+        .content
+        .iter()
+        .filter(|part| matches!(part, ContentPart::Image(_)))
+        .count();
+    let text = message.text().unwrap_or_default();
+    let text = crate::image_input::user_display_text(text, image_count);
     let text = text.trim();
     if text.is_empty() {
         return None;

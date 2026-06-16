@@ -58,6 +58,7 @@ fn help_flag_succeeds() {
         "help output missing --provider"
     );
     assert!(stdout.contains("--print"), "help output missing --print");
+    assert!(stdout.contains("--image"), "help output missing --image");
 }
 
 #[test]
@@ -754,6 +755,95 @@ fn print_mode_sends_saved_model_selection_to_endpoint() {
     assert_eq!(
         request["model"], "picked-model-x",
         "request must carry the saved model id: {request}"
+    );
+}
+
+/// `--image` should base64-encode local files and send them as multimodal
+/// user content to OpenAI-compatible chat/completions endpoints.
+#[test]
+fn print_mode_attaches_images_to_provider_request() {
+    let mock = MockOpenAiServer::spawn("saw the image");
+    let home = tempfile::tempdir().expect("home tempdir");
+    let sessions = tempfile::tempdir().expect("sessions tempdir");
+    let image_dir = tempfile::tempdir().expect("image tempdir");
+    let image_path = image_dir.path().join("pixel.png");
+    // 1x1 PNG (68 bytes)
+    let png: [u8; 67] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    std::fs::write(&image_path, png).expect("write png");
+
+    let settings_toml = format!(
+        "provider = \"custom\"\n\n[base_urls]\ncustom = \"{}\"\n\n[models]\ncustom = \"vision-model\"\n",
+        mock.base_url
+    );
+    for settings_dir in [
+        home.path().join(".config/yolop"),
+        home.path().join("Library/Application Support/yolop"),
+    ] {
+        std::fs::create_dir_all(&settings_dir).expect("create settings dir");
+        std::fs::write(settings_dir.join("settings.toml"), &settings_toml).expect("write settings");
+    }
+
+    let output = Command::new(yolop_binary())
+        .args([
+            "--session-dir",
+            sessions.path().to_str().unwrap(),
+            "-p",
+            "describe the image",
+            "--image",
+            image_path.to_str().unwrap(),
+        ])
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("XDG_DATA_HOME", home.path().join(".local/share"))
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("GEMINI_API_KEY")
+        .env_remove("GOOGLE_API_KEY")
+        .env_remove("OLLAMA_BASE_URL")
+        .env_remove("OLLAMA_API_KEY")
+        .env_remove("CUSTOM_BASE_URL")
+        .env_remove("CUSTOM_API_KEY")
+        .env_remove("EVERRUNS_CLI_MODEL")
+        .env_remove("EVERRUNS_CLI_REASONING_EFFORT")
+        .output()
+        .expect("spawn yolop with --image");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "image attach run failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("[Image #1]"),
+        "prompt banner should mention attached image: {stdout}"
+    );
+
+    let request = mock.next_request(Duration::from_secs(5));
+    let messages = request["messages"]
+        .as_array()
+        .expect("messages array in request");
+    let user = messages
+        .iter()
+        .find(|msg| msg["role"] == "user")
+        .expect("user message in request");
+    let content = user["content"].as_array().expect("multimodal user content");
+    let image_part = content
+        .iter()
+        .find(|part| part["type"] == "image_url")
+        .expect("image_url content part");
+    let url = image_part["image_url"]["url"]
+        .as_str()
+        .expect("image data url");
+    assert!(
+        url.starts_with("data:image/png;base64,"),
+        "expected png data url, got {url}"
     );
 }
 
