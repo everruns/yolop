@@ -13,6 +13,7 @@ use anyhow::{Context, Result, anyhow};
 use everruns_core::DriverId;
 use everruns_core::get_model_profile;
 use everruns_core::llm_driver_registry::{DiscoveredModel, DriverRegistry, ProviderConfig};
+use std::collections::HashSet;
 
 /// One model offered by a provider, ready for display: bare id plus
 /// human-readable metadata merged from the provider's API response and the
@@ -84,6 +85,78 @@ pub(crate) async fn discover_provider_models(
             .then_with(|| a.model_id.cmp(&b.model_id))
     });
     Ok(Some(enrich_with_profiles(&target.provider_type, models)))
+}
+
+const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn bare_model_id_from_spec(spec: &str) -> &str {
+    spec.split_whitespace().next().unwrap_or(spec)
+}
+
+/// When the provider exposes a models catalog, verify the resolved model id
+/// is still offered. Falls back to the provider default, a curated pick, or
+/// the newest discovered model, and returns a human-readable note.
+pub(crate) async fn reconcile_provider_with_catalog(
+    choice: ProviderChoice,
+    settings: &Settings,
+) -> (ProviderChoice, Vec<String>) {
+    let discovered = tokio::time::timeout(
+        DISCOVERY_TIMEOUT,
+        discover_provider_models(&choice, settings),
+    )
+    .await;
+
+    let Ok(Ok(Some(models))) = discovered else {
+        return (choice, vec![]);
+    };
+    if models.is_empty() {
+        return (choice, vec![]);
+    }
+
+    let ids: HashSet<String> = models.iter().map(|m| m.model_id.clone()).collect();
+    let model_id = choice.model_id().to_string();
+    if ids.contains(&model_id) {
+        return (choice, vec![]);
+    }
+
+    let fallback = pick_catalog_fallback(&choice, &ids, &models);
+    let note = format!(
+        "model \"{model_id}\" not available on {}; using {} instead",
+        choice.provider_name(),
+        fallback.label()
+    );
+    (fallback, vec![note])
+}
+
+fn pick_catalog_fallback(
+    choice: &ProviderChoice,
+    ids: &HashSet<String>,
+    models: &[DiscoveredProviderModel],
+) -> ProviderChoice {
+    let provider = choice.provider_name();
+    let default =
+        ProviderChoice::default_for_provider_name(provider).unwrap_or_else(|_| choice.clone());
+
+    if ids.contains(default.model_id()) {
+        return default;
+    }
+
+    for suggestion in ProviderChoice::model_suggestions_for_provider(provider) {
+        let bare = bare_model_id_from_spec(suggestion);
+        if ids.contains(bare)
+            && let Ok(resolved) = default.resolve_model_spec(suggestion)
+        {
+            return resolved;
+        }
+    }
+
+    if let Some(first) = models.first()
+        && let Ok(resolved) = default.resolve_model_spec(&first.model_id)
+    {
+        return resolved;
+    }
+
+    default
 }
 
 /// Merge each discovered model with metadata from the everruns-core model
@@ -230,6 +303,37 @@ mod tests {
             enriched[0].display_name.as_deref(),
             Some("GPT-5.5 (via gateway)")
         );
+    }
+
+    #[test]
+    fn pick_catalog_fallback_prefers_provider_default_when_available() {
+        use super::pick_catalog_fallback;
+        use std::collections::HashSet;
+
+        let choice = ProviderChoice::default_for_provider_name("openai").unwrap();
+        let ids: HashSet<String> = ["gpt-5.5", "gpt-4o"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let models = vec![
+            DiscoveredProviderModel {
+                model_id: "gpt-4o".to_string(),
+                display_name: None,
+                description: None,
+            },
+            DiscoveredProviderModel {
+                model_id: "gpt-5.5".to_string(),
+                display_name: None,
+                description: None,
+            },
+        ];
+
+        let unavailable = ProviderChoice::OpenAi {
+            model: "gpt-4o-mini".to_string(),
+            reasoning_effort: Some("medium".to_string()),
+        };
+        let fallback = pick_catalog_fallback(&unavailable, &ids, &models);
+        assert_eq!(fallback.label(), choice.label());
     }
 
     #[test]

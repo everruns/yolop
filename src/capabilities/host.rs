@@ -2,7 +2,7 @@
 // TUI-facing slash commands that mutate this process's provider selection.
 
 use crate::config_service::ConfigService;
-use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS};
+use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS, resolve_for_settings};
 use crate::settings::{ApprovalMode, SettingsStore};
 use crate::tools::{BashTool, Workspace};
 use async_trait::async_trait;
@@ -630,18 +630,22 @@ impl SetupCapability {
         // One snapshot reused across both reads in this command: consistent and
         // avoids cloning the full Settings (token strings included) twice.
         let snapshot = self.config.snapshot();
-        let next = match ProviderChoice::default_for_provider_name(name) {
-            Ok(n) => n.with_saved_model(&snapshot),
+        let resolved = match resolve_for_settings(name, &snapshot) {
+            Ok(resolved) => resolved,
             Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
         };
+        let mut notes = resolved.notes;
         let next = if model_spec.is_empty() {
-            next
+            resolved.choice
         } else {
-            match next.resolve_model_spec(model_spec) {
+            match resolved.choice.resolve_model_spec(model_spec) {
                 Ok(n) => n,
                 Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
             }
         };
+        let (next, reconcile_notes) =
+            super::model_discovery::reconcile_provider_with_catalog(next, &snapshot).await;
+        notes.extend(reconcile_notes);
         if next.model_id().trim().is_empty() {
             return Ok(failed_result(format!(
                 "setup provider failed: no model configured for {name}; pick one with /setup"
@@ -674,7 +678,14 @@ impl SetupCapability {
         };
         Ok(CommandResult {
             success: true,
-            message: format!("setup provider changed: {label} ({persist_note})"),
+            message: format!(
+                "setup provider changed: {label} ({persist_note}){}",
+                if notes.is_empty() {
+                    String::new()
+                } else {
+                    format!("; {}", notes.join("; "))
+                }
+            ),
             error_code: None,
             error_fields: None,
         })
