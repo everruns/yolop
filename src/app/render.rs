@@ -1320,6 +1320,7 @@ fn status_contributions(state: &ViewState) -> Vec<StatusContribution> {
         StatusContribution::new(
             vec![
                 status_value(toggle_label),
+                status_value(state.provider_name.clone()),
                 status_value(state.model_id.clone()),
             ],
             vec![

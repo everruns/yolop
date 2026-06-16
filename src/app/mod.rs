@@ -4693,8 +4693,9 @@ mod tests {
     }
 
     #[test]
-    fn chrome_session_status_compact_shows_model_effort_approval_and_messages() {
+    fn chrome_session_status_compact_shows_provider_model_effort_approval_and_messages() {
         let state = ViewState {
+            provider_name: "openrouter".to_string(),
             lines_count: 42,
             ..view_state_idle()
         };
@@ -4703,6 +4704,10 @@ mod tests {
         assert!(
             status.contains("[expand ↓]"),
             "compact status should include expand affordance: {status}"
+        );
+        assert!(
+            status.contains("openrouter"),
+            "compact status should include provider: {status}"
         );
         assert!(
             status.contains("gpt-5.5"),
