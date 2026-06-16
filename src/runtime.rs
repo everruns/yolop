@@ -8,7 +8,8 @@ use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, 
 use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability};
 use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability,
-    AstGrepCapability, AttributionCapability, CLIENT_COMMANDS_CAPABILITY_ID, CONFIG_CAPABILITY_ID,
+    AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID, BackgroundCapability,
+    BackgroundRegistry, CLIENT_COMMANDS_CAPABILITY_ID, CONFIG_CAPABILITY_ID,
     ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
     ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HooksCapability,
     REPO_MAP_CAPABILITY_ID, RepoMapCapability, SETUP_CAPABILITY_ID, SetupCapability,
@@ -1320,6 +1321,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         // tuned by the central `approval_mode` setting (off contributes nothing).
         AgentCapabilityConfig::new(APPROVAL_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
+        AgentCapabilityConfig::new(BACKGROUND_CAPABILITY_ID),
     ]);
     caps
 }
@@ -1744,6 +1746,17 @@ pub async fn build_with_options(
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
         expose_command: !options.client_commands,
+    });
+    // `background` — generic background execution. Tasks (v1: scripted shell
+    // commands, e.g. waiting for CI) run detached from the turn and persist
+    // their state to `<session_dir>/background/` so results survive a restart.
+    // Reuses this session's folder, the same durability substrate as the JSONL
+    // event log. See specs/background.md.
+    capabilities.register(BackgroundCapability {
+        registry: Arc::new(BackgroundRegistry::load(
+            &session_dir,
+            canonical_root.clone(),
+        )),
     });
     // Terminal-side commands. Registered only when the host can apply
     // their effects (the TUI). The capability declares help/tools/mcp/cwd/model/
