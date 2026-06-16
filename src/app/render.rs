@@ -1548,6 +1548,16 @@ fn status_contributions(state: &ViewState) -> Vec<StatusContribution> {
             ],
         ),
         StatusContribution::new(
+            vec![status_field(
+                "goal",
+                state.goal_indicator.clone().unwrap_or_else(|| "—".into()),
+            )],
+            vec![status_field(
+                "goal",
+                state.goal_indicator.clone().unwrap_or_else(|| "—".into()),
+            )],
+        ),
+        StatusContribution::new(
             {
                 let mut compact = vec![status_value(message_count_label(state.lines_count))];
                 if let Some(bg) = background_label(state.background) {

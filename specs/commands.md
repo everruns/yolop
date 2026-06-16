@@ -27,7 +27,8 @@ top of the runtime's two, not a separate `CommandSource` variant.
 1. **System** — the **runtime** executes it via `runtime.execute_command`,
    returning a `CommandResult { success, message }` the host renders inline.
    Example: `/setup` and its subcommands mutate provider/model/token settings;
-   `/shell <command>` runs the existing bounded bash tool.
+   `/shell <command>` runs the existing bounded bash tool; `/goal <condition>`
+   starts an autonomous completion loop (see [`goal.md`](./goal.md)).
 
 2. **Skill** — the **LLM** executes it. The literal `/name args` text is
    forwarded as a chat turn so the model activates the skill. Skill commands are
