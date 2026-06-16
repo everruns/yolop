@@ -349,17 +349,23 @@ data directory:
 | macOS   | `~/Library/Application Support/yolop/sessions/<session_id>/` |
 | Windows | `%APPDATA%\yolop\sessions\<session_id>\`                   |
 
-The event log lives at `<session_folder>/events.jsonl`; large tool output is
-spilled under `<session_folder>/outputs/`. On Unix the session folder is
-`0o700` and the log `0o600` (owner-only). The log keeps everything needed to
-restore the transcript and provider continuation state on resume — including
-prompts, tool arguments and output, and reasoning artifacts.
+The event log lives at `<session_folder>/events.jsonl`; the workspace root is
+stored in `<session_folder>/workspace.json`; large tool output is spilled under
+`<session_folder>/outputs/`. On Unix the session folder is `0o700` and the log
+and workspace metadata are `0o600` (owner-only). The log keeps everything
+needed to restore the transcript and provider continuation state on resume —
+including prompts, tool arguments and output, and reasoning artifacts.
 
 To continue a previous conversation:
 
 ```bash
 yolop --session session_019e3db018a17450aba5407af5777237
 ```
+
+When no `-C/--cwd` is supplied, resume uses the workspace root saved for that
+session instead of the shell's current directory. Pass `-C <PATH>` with
+`--session` to intentionally move the resumed session to a different
+workspace.
 
 `--session-dir <PATH>` overrides the parent storage location (useful for
 keeping per-workspace session histories in `<workspace>/.yolop/sessions/`).

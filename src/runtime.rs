@@ -54,6 +54,7 @@ use everruns_runtime::{
 
 use crate::session_log::{
     JsonlEventEmitter, migrate_legacy_session_log, replay, session_dir_path, session_log_path,
+    write_session_workspace,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -235,28 +236,19 @@ impl CodingCliSessionFileStore {
     fn secure_session_artifact_path(&self, _path: &str) -> everruns_core::Result<()> {
         Ok(())
     }
-
-    fn grep_filter_path(path: &str) -> Option<String> {
-        let normalized = if path.is_empty() {
-            String::new()
-        } else if let Some(stripped) = path.strip_prefix("/workspace/") {
-            stripped.to_string()
-        } else if path == "/workspace" {
-            String::new()
-        } else {
-            path.trim_start_matches('/').to_string()
-        };
-
-        if normalized.is_empty() {
-            None
-        } else {
-            Some(normalized)
-        }
-    }
 }
 
 #[async_trait]
 impl SessionFileSystem for CodingCliSessionFileStore {
+    fn display_root(&self) -> String {
+        self.workspace.display_root()
+    }
+
+    fn display_path(&self, path: &str) -> String {
+        let (store, path) = self.store_for_path(path);
+        store.display_path(&path)
+    }
+
     async fn read_file(
         &self,
         session_id: SessionId,
@@ -348,9 +340,8 @@ impl SessionFileSystem for CodingCliSessionFileStore {
                     .await
             }
             None => {
-                let normalized_filter = path_pattern.and_then(Self::grep_filter_path);
                 self.workspace
-                    .grep_files(session_id, pattern, normalized_filter.as_deref())
+                    .grep_files(session_id, pattern, path_pattern)
                     .await
             }
         }
@@ -1323,6 +1314,7 @@ pub async fn build_with_options(
     let session_dir = session_dir_path(&sessions_dir, session_id);
     let log_path = session_log_path(&session_dir);
     let _legacy_log = migrate_legacy_session_log(&sessions_dir, &session_dir, session_id)?;
+    write_session_workspace(&session_dir, &canonical_root)?;
 
     // Replay anything already on disk for this id. Missing file → empty.
     // Pass `session_id` so events for any other session get skipped
@@ -1745,6 +1737,29 @@ mod tests {
                 .map(String::as_str),
             Some(env!("YOLOP_EVERRUNS_RUNTIME_VERSION"))
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_persists_workspace_root_for_session_resume() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        let saved = crate::session_log::read_session_workspace(&built.startup.session_dir)
+            .expect("read workspace metadata")
+            .expect("workspace metadata");
+        assert_eq!(saved, built.startup.workspace_root);
     }
 
     #[test]
@@ -2798,6 +2813,37 @@ mod tests {
             .expect("grep workspace");
         assert_eq!(workspace_grep.len(), 1);
         assert_eq!(workspace_grep[0].path, "/src/lib.rs");
+
+        let host_filter = store.display_path("/src");
+        let host_path_grep = store
+            .grep_files(session_id, "grep target", Some(&host_filter))
+            .await
+            .expect("grep workspace via host display path");
+        assert_eq!(host_path_grep.len(), 1);
+        assert_eq!(host_path_grep[0].path, "/src/lib.rs");
+    }
+
+    #[test]
+    fn yolop_file_store_displays_workspace_and_session_paths() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let store = CodingCliSessionFileStore::new(workspace.path().into(), session.path().into())
+            .expect("store");
+        let workspace_root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
+        let session_root = std::fs::canonicalize(session.path()).expect("canonical session");
+
+        assert_eq!(store.display_root(), workspace_root.display().to_string());
+        assert_eq!(
+            store.display_path("/src/lib.rs"),
+            workspace_root.join("src/lib.rs").display().to_string()
+        );
+        assert_eq!(
+            store.display_path("/outputs/call.stdout"),
+            session_root
+                .join("outputs/call.stdout")
+                .display()
+                .to_string()
+        );
     }
 
     #[cfg(unix)]
