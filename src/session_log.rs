@@ -125,12 +125,28 @@ pub fn read_session_workspace(session_dir: &Path) -> Result<Option<PathBuf>> {
     if !path.exists() {
         return Ok(None);
     }
-    let bytes = std::fs::read(&path).map_err(|e| {
-        AgentLoopError::config(format!("read session workspace {}: {e}", path.display()))
-    })?;
-    let metadata: SessionWorkspaceMetadata = serde_json::from_slice(&bytes).map_err(|e| {
-        AgentLoopError::config(format!("parse session workspace {}: {e}", path.display()))
-    })?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "ignoring unreadable session workspace metadata"
+            );
+            return Ok(None);
+        }
+    };
+    let metadata: SessionWorkspaceMetadata = match serde_json::from_slice(&bytes) {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "ignoring malformed session workspace metadata"
+            );
+            return Ok(None);
+        }
+    };
     Ok(Some(metadata.workspace_root))
 }
 
@@ -689,6 +705,20 @@ mod tests {
             std::fs::read_to_string(&current_path).expect("read current"),
             "current event\n"
         );
+    }
+
+    #[test]
+    fn read_session_workspace_ignores_malformed_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(48202);
+        let session_dir = session_dir_path(dir.path(), session_id);
+        std::fs::create_dir_all(&session_dir).expect("create session dir");
+        std::fs::write(session_workspace_path(&session_dir), "{not json")
+            .expect("write malformed metadata");
+
+        let workspace = read_session_workspace(&session_dir).expect("read workspace metadata");
+
+        assert!(workspace.is_none());
     }
 
     #[cfg(unix)]

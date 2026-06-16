@@ -30,7 +30,7 @@ mod mcp_e2e_tests;
 #[cfg(test)]
 mod agent_scenarios;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 // Force-link integration crates whose inventory registrations must survive
 // LTO/dead-code elimination when we register capabilities explicitly.
@@ -354,7 +354,7 @@ fn resolve_workspace_root(
             return Ok(saved);
         }
     }
-    Ok(std::env::current_dir().expect("cwd"))
+    std::env::current_dir().context("resolve current workspace directory")
 }
 
 fn run_command(command: Commands) -> Result<()> {
