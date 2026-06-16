@@ -52,10 +52,11 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   and set with `/setup approval <level>` (or just by telling yolop to be more
   or less careful). See [Soft approval](#soft-approval) below.
 - **TUI chat** (ratatui): scrolling transcript, multiline composer, status
-  bar, slash commands (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`,
-  `/effort`, `/shell`, `/clear`, `/quit`), `!<command>` as a direct shell
-  shortcut, and natural-language requests for terminal actions such as "exit"
-  or "clear the screen".
+  bar (with a `bg` count when background tasks are running), slash commands
+  (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`, `/effort`, `/shell`,
+  `/background`, `/clear`, `/quit`), `!<command>` as a direct shell shortcut,
+  and natural-language requests for terminal actions such as "exit" or "clear
+  the screen".
 - **Side questions** — `/btw <question>` answers a question about the current
   session out-of-band: same context as the main task, no tools, and nothing
   added to the conversation history.

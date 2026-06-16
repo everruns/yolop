@@ -1,7 +1,8 @@
 # Background execution — background tasks and background agents
 
-Status: scripted background tasks and background sub-agents implemented. A live
-TUI panel and proactive wake remain follow-up phases.
+Status: scripted background tasks, background sub-agents, and user surfaces
+(status-bar indicator + `/background` command) implemented. Proactive wake
+remains a follow-up phase.
 
 ## Why
 
@@ -113,7 +114,21 @@ Each task streams stdout+stderr into `<session_dir>/background/<id>.log`
 (owner-only) as it runs, so `background_output` can show partial progress while
 the task is still running. A per-task output cap (256 KiB) and a wall-clock
 safety ceiling (30 min, → `timed_out`) keep a runaway background command from
-filling the disk or living forever; both are generous for the CI-wait case.
+filling the disk or living forever; both are generous for the CI-wait case. The
+same cap and ceiling apply to sub-agents (a `timed_out` sub-agent abandons its
+child turn).
+
+### User surfaces
+
+Background work is visible to the *user*, not just the model:
+
+- The TUI status bar shows a compact `bg <running>▸/<total>` segment whenever
+  the session has background tasks (hidden otherwise). The `App` reads the
+  shared registry (exposed on `BuiltRuntime`) each frame via a cheap `counts()`.
+- `/background` is a `System` command (contributed by the capability) that lists
+  every task with its kind, status, exit code, summary, and — for sub-agents —
+  the child session id. It works over the TUI and ACP uniformly because it
+  returns a plain `CommandResult`.
 
 ## Phased plan
 
@@ -124,11 +139,12 @@ filling the disk or living forever; both are generous for the CI-wait case.
    child session and drives one turn on a detached task; the parent reads the
    child's result via `background_output`. Each sub-agent is a real session
    folder, so its transcript is resumable. Depth is bounded at one level.
-3. **Phase 3 — live TUI panel.** A background-tasks region in the TUI, fed by a
-   status channel drained in the existing `App` event loop (alongside
-   `TurnEvent`/`UiCommand`), plus a `/background` command. Today background work
-   surfaces through the agent and tool results; this makes it a first-class user
-   view (status, peek, cancel) the way Claude Code's agent view does.
+3. **User surfaces (implemented).** A compact `bg` count in the TUI status bar
+   and a `/background` command listing all tasks (see
+   [User surfaces](#user-surfaces)). A richer interactive view (per-task peek,
+   in-place cancel, a dedicated panel à la Claude Code's agent view) remains a
+   possible enhancement, but the status indicator + command cover the
+   at-a-glance and detail needs.
 4. **Phase 4 — proactive wake.** Optionally inject a turn when a watched task
    finishes, instead of waiting for the user's next prompt, for true
    fire-and-forget CI monitoring.
