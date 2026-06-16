@@ -7,10 +7,10 @@
 use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, MemoryStore};
 use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability};
 use crate::capabilities::{
-    APPROVAL_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability, AttributionCapability,
-    CLIENT_COMMANDS_CAPABILITY_ID, CONFIG_CAPABILITY_ID, ClientCommandsCapability,
-    CodingBashCapability, CodingCliEnvironmentCapability, ConfigCapability,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HooksCapability,
+    APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability,
+    AstGrepCapability, AttributionCapability, CLIENT_COMMANDS_CAPABILITY_ID, CONFIG_CAPABILITY_ID,
+    ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
+    ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HooksCapability,
     REPO_MAP_CAPABILITY_ID, RepoMapCapability, SETUP_CAPABILITY_ID, SetupCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
@@ -1276,6 +1276,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new("session_file_system"),
         AgentCapabilityConfig::new(SKILLS_CAPABILITY_ID),
         AgentCapabilityConfig::new(REPO_MAP_CAPABILITY_ID),
+        AgentCapabilityConfig::new(AST_GREP_CAPABILITY_ID),
         AgentCapabilityConfig::new(INFINITY_CONTEXT_CAPABILITY_ID),
         AgentCapabilityConfig::with_config(
             COMPACTION_CAPABILITY_ID,
@@ -1635,6 +1636,7 @@ pub async fn build_with_options(
     //
     // Non-filesystem, but useful for a coding agent:
     //   * repo_map            - on-demand multi-language symbol map for broad codebase orientation
+    //   * ast_grep            - read-only structural code search with ast-grep patterns
     //   * infinity_context     — keeps long sessions usable; adds query_history
     //   * compaction           — proactively masks older large tool outputs
     //   * stateless_todo_list  — write_todos tool for multi-step tasks
@@ -1655,6 +1657,7 @@ pub async fn build_with_options(
         crate::capabilities::skills::SkillSources::resolve(&canonical_root),
     ));
     capabilities.register(RepoMapCapability::new(canonical_root.clone()));
+    capabilities.register(AstGrepCapability::new(canonical_root.clone()));
     capabilities.register(InfinityContextCapability);
     capabilities.register(CompactionCapability);
     capabilities.register(StatelessTodoListCapability);
@@ -3383,6 +3386,17 @@ mod tests {
             ids.iter()
                 .any(|cap| cap.capability_id() == REPO_MAP_CAPABILITY_ID),
             "repo_map should be available for on-demand codebase orientation"
+        );
+    }
+
+    #[test]
+    fn coding_harness_enables_ast_grep() {
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == AST_GREP_CAPABILITY_ID),
+            "ast_grep should be available for structural code search"
         );
     }
 

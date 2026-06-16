@@ -71,6 +71,9 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **Repo map** — `repo_map` and `repo_symbols` build an on-demand
   multi-language symbol overview for broad codebase orientation before
   targeted grep/read.
+- **AST grep** — `ast_grep` runs read-only structural pattern search with
+  ast-grep syntax across Rust, Python, TypeScript/TSX, JavaScript/JSX, C#,
+  Go, CSS, HTML, and Bash.
 - **Shell** — `bash -lc` from the workspace root, with a 120 s wall-clock
   timeout and per-stream 1 MiB output cap; large output is spilled to disk
   under the session folder and stays readable for model tool calls. Use

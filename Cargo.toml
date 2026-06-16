@@ -20,6 +20,18 @@ path = "src/main.rs"
 [dependencies]
 agent-client-protocol = "0.14.0"
 anyhow = "1.0"
+ast-grep-core = "0.43"
+ast-grep-language = { version = "0.43", default-features = false, features = [
+    "tree-sitter-bash",
+    "tree-sitter-c-sharp",
+    "tree-sitter-css",
+    "tree-sitter-go",
+    "tree-sitter-html",
+    "tree-sitter-javascript",
+    "tree-sitter-python",
+    "tree-sitter-rust",
+    "tree-sitter-typescript",
+] }
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
