@@ -585,8 +585,16 @@ impl SetupCapability {
             .unwrap_or_else(|| "<unset>".to_string());
         let stored: Vec<&str> = snapshot.tokens.keys().map(String::as_str).collect();
         let stored_label = if stored.is_empty() {
-            "none".to_string()
+            if snapshot.has_codex_auth() {
+                "codex_auth".to_string()
+            } else {
+                "none".to_string()
+            }
         } else {
+            let mut stored = stored;
+            if snapshot.has_codex_auth() {
+                stored.push("codex_auth");
+            }
             stored.join(", ")
         };
         CommandResult {
@@ -1051,13 +1059,14 @@ impl SetupCapability {
         if env_credential_present() {
             return false;
         }
-        settings.tokens.is_empty()
+        settings.tokens.is_empty() && !settings.has_codex_auth()
     }
 }
 
 fn env_credential_present() -> bool {
     const VARS: &[&str] = &[
         "OPENAI_API_KEY",
+        "CODEX_ACCESS_TOKEN",
         "ANTHROPIC_API_KEY",
         "OPENROUTER_API_KEY",
         "GEMINI_API_KEY",

@@ -74,7 +74,14 @@ pub fn schema() -> &'static [ConfigField] {
                           legacy `provider` key is still read, and accepted as an alias).",
             kind: ValueKind::Text,
             default: Some("openai (auto-detected from available credentials)"),
-            examples: &["anthropic", "openai", "google", "openrouter", "ollama"],
+            examples: &[
+                "anthropic",
+                "codex",
+                "openai",
+                "google",
+                "openrouter",
+                "ollama",
+            ],
             provider_scoped: false,
         },
         ConfigField {
@@ -100,6 +107,7 @@ pub fn schema() -> &'static [ConfigField] {
             default: None,
             examples: &[
                 "models.openai = gpt-5.5 high",
+                "models.codex = gpt-5.5 high",
                 "models.anthropic = claude-opus-4-5",
             ],
             provider_scoped: true,

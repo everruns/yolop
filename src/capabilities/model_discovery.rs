@@ -31,7 +31,7 @@ pub(crate) async fn discover_provider_models(
     choice: &ProviderChoice,
     settings: &Settings,
 ) -> Result<Option<Vec<DiscoveredProviderModel>>> {
-    if matches!(choice, ProviderChoice::Sim) {
+    if matches!(choice, ProviderChoice::Sim | ProviderChoice::Codex { .. }) {
         return Ok(None);
     }
     let target = choice.model_with_provider(settings)?;

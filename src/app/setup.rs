@@ -69,6 +69,7 @@ impl App {
     pub(crate) fn current_effort_index(&self) -> usize {
         let label = self.model.provider_label();
         if !label.starts_with("openai/")
+            && !label.starts_with("codex/")
             && !label.starts_with("openrouter/")
             && !label.starts_with("custom/")
         {
@@ -110,6 +111,7 @@ impl App {
     pub(crate) fn provider_env_names(provider: &str) -> &'static [&'static str] {
         match provider {
             "openai" => &["OPENAI_API_KEY"],
+            "codex" => &["CODEX_ACCESS_TOKEN"],
             "anthropic" => &["ANTHROPIC_API_KEY"],
             "google" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
             "openrouter" => &["OPENROUTER_API_KEY"],
@@ -133,6 +135,15 @@ impl App {
                     (true, "✓ base URL set".to_string())
                 } else {
                     (false, "needs base URL".to_string())
+                }
+            }
+            "codex" => {
+                if let Some(env) = Self::detected_env_var(provider) {
+                    (true, format!("✓ {env}"))
+                } else if settings.has_codex_auth() {
+                    (true, "✓ signed in".to_string())
+                } else {
+                    (false, "needs ChatGPT login".to_string())
                 }
             }
             _ => {
@@ -159,6 +170,42 @@ impl App {
     }
 
     pub(crate) fn credential_options(provider: &str) -> Vec<CredentialOption> {
+        if provider == "codex" {
+            return vec![
+                CredentialOption {
+                    id: CredentialAction::BrowserLogin,
+                    label: "Sign in with browser".to_string(),
+                    hint: "uses your ChatGPT Codex subscription".to_string(),
+                },
+                CredentialOption {
+                    id: CredentialAction::DeviceLogin,
+                    label: "Sign in with device code".to_string(),
+                    hint: "works on headless terminals".to_string(),
+                },
+                CredentialOption {
+                    id: CredentialAction::UseEnv,
+                    label: "Use CODEX_ACCESS_TOKEN".to_string(),
+                    hint: Self::detected_env_var(provider)
+                        .map(|name| format!("{name} detected"))
+                        .unwrap_or_else(|| "not detected yet".to_string()),
+                },
+                CredentialOption {
+                    id: CredentialAction::PasteKey,
+                    label: "Paste access token".to_string(),
+                    hint: "saved without refresh token".to_string(),
+                },
+                CredentialOption {
+                    id: CredentialAction::Skip,
+                    label: "Skip for now".to_string(),
+                    hint: "leave setup unchanged".to_string(),
+                },
+                CredentialOption {
+                    id: CredentialAction::ClearSaved,
+                    label: "Clear saved login".to_string(),
+                    hint: "remove Codex OAuth tokens".to_string(),
+                },
+            ];
+        }
         let env_names = Self::provider_env_names(provider);
         // The custom endpoint treats a key as optional: most local servers
         // accept any bearer token, so the first option proceeds with the env
@@ -254,6 +301,33 @@ impl App {
                     hint: "optimized for long-running agents".to_string(),
                 },
             ],
+            "codex" => vec![
+                ModelOption {
+                    spec: Some("gpt-5.5".to_string()),
+                    label: "gpt-5.5".to_string(),
+                    hint: "frontier Codex model".to_string(),
+                },
+                ModelOption {
+                    spec: Some("gpt-5.4".to_string()),
+                    label: "gpt-5.4".to_string(),
+                    hint: "strong everyday Codex model".to_string(),
+                },
+                ModelOption {
+                    spec: Some("gpt-5.4-mini".to_string()),
+                    label: "gpt-5.4-mini".to_string(),
+                    hint: "fast Codex model".to_string(),
+                },
+                ModelOption {
+                    spec: Some("gpt-5.3-codex".to_string()),
+                    label: "gpt-5.3-codex".to_string(),
+                    hint: "coding-optimized model".to_string(),
+                },
+                ModelOption {
+                    spec: Some("gpt-5.3-codex-spark".to_string()),
+                    label: "gpt-5.3-codex-spark".to_string(),
+                    hint: "fast coding-optimized model".to_string(),
+                },
+            ],
             "anthropic" => vec![
                 ModelOption {
                     spec: Some("claude-sonnet-4-5".to_string()),
@@ -339,6 +413,7 @@ impl App {
     pub(crate) fn request_model_discovery(&mut self, provider: &str) {
         if !self.model_discovery_enabled
             || provider == "llmsim"
+            || provider == "codex"
             || self.model_catalog.contains_key(provider)
             || self.model_fetches_in_flight.contains(provider)
         {
@@ -749,6 +824,90 @@ impl App {
                     }
                 }
             }
+            CredentialAction::BrowserLogin => {
+                if provider != "codex" {
+                    return;
+                }
+                self.push_system("opening browser for Codex login...".into());
+                match crate::codex_auth::login_with_browser().await {
+                    Ok(auth) => {
+                        if let Err(error) = self.settings.set_codex_auth(auth) {
+                            self.setup = Some(SetupStep::Credential {
+                                provider,
+                                selected,
+                                error: Some(error.to_string()),
+                            });
+                            return;
+                        }
+                        if let Err(error) = self.run_setup_command(Some("provider codex")).await {
+                            self.setup = Some(SetupStep::Credential {
+                                provider,
+                                selected,
+                                error: Some(error),
+                            });
+                            return;
+                        }
+                        self.open_model_step("codex");
+                    }
+                    Err(error) => {
+                        self.setup = Some(SetupStep::Credential {
+                            provider,
+                            selected,
+                            error: Some(error.to_string()),
+                        });
+                    }
+                }
+            }
+            CredentialAction::DeviceLogin => {
+                if provider != "codex" {
+                    return;
+                }
+                match crate::codex_auth::start_device_login().await {
+                    Ok(login) => {
+                        self.push_system(format!(
+                            "Codex device login: open {} and enter code {}",
+                            login.verification_uri, login.user_code
+                        ));
+                        match crate::codex_auth::complete_device_login(login).await {
+                            Ok(auth) => {
+                                if let Err(error) = self.settings.set_codex_auth(auth) {
+                                    self.setup = Some(SetupStep::Credential {
+                                        provider,
+                                        selected,
+                                        error: Some(error.to_string()),
+                                    });
+                                    return;
+                                }
+                                if let Err(error) =
+                                    self.run_setup_command(Some("provider codex")).await
+                                {
+                                    self.setup = Some(SetupStep::Credential {
+                                        provider,
+                                        selected,
+                                        error: Some(error),
+                                    });
+                                    return;
+                                }
+                                self.open_model_step("codex");
+                            }
+                            Err(error) => {
+                                self.setup = Some(SetupStep::Credential {
+                                    provider,
+                                    selected,
+                                    error: Some(error.to_string()),
+                                });
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.setup = Some(SetupStep::Credential {
+                            provider,
+                            selected,
+                            error: Some(error.to_string()),
+                        });
+                    }
+                }
+            }
             CredentialAction::PasteKey => {
                 self.setup = Some(SetupStep::TokenInput {
                     provider,
@@ -761,6 +920,22 @@ impl App {
                 self.push_system("setup skipped".into());
             }
             CredentialAction::ClearSaved => {
+                if provider == "codex" {
+                    match self.settings.clear_codex_auth() {
+                        Ok(_) => {
+                            self.setup = None;
+                            self.push_system("setup complete: cleared saved Codex login".into());
+                        }
+                        Err(error) => {
+                            self.setup = Some(SetupStep::Credential {
+                                provider,
+                                selected,
+                                error: Some(error.to_string()),
+                            });
+                        }
+                    }
+                    return;
+                }
                 let result = self
                     .run_setup_command(Some(&format!("token {provider} clear")))
                     .await;
@@ -800,11 +975,40 @@ impl App {
             KeyCode::Enter => {
                 let trimmed = token.trim().to_string();
                 if trimmed.is_empty() {
+                    let error = if provider == "codex" {
+                        "access token is empty — paste a token, or press Esc".to_string()
+                    } else {
+                        "API key is empty — paste a key, or press Esc".to_string()
+                    };
                     self.setup = Some(SetupStep::TokenInput {
                         provider,
                         token,
-                        error: Some("API key is empty — paste a key, or press Esc".to_string()),
+                        error: Some(error),
                     });
+                    return;
+                }
+                if provider == "codex" {
+                    if let Err(error) = self
+                        .settings
+                        .set_codex_auth(crate::codex_auth::auth_from_access_token(trimmed))
+                    {
+                        self.setup = Some(SetupStep::TokenInput {
+                            provider,
+                            token: String::new(),
+                            error: Some(error.to_string()),
+                        });
+                        return;
+                    }
+                    match self.run_setup_command(Some("provider codex")).await {
+                        Ok(()) => self.open_model_step("codex"),
+                        Err(error) => {
+                            self.setup = Some(SetupStep::TokenInput {
+                                provider,
+                                token: String::new(),
+                                error: Some(error),
+                            });
+                        }
+                    }
                     return;
                 }
                 let save_arg = format!("token {provider} {trimmed}");

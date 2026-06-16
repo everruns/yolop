@@ -23,6 +23,17 @@ use std::sync::Mutex;
 use toml::Table;
 use toml::Value;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexAuth {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    /// Unix epoch milliseconds. OAuth token responses are relative, but the
+    /// driver needs an absolute expiry so it can refresh before a turn starts.
+    pub expires_at: Option<i64>,
+    pub account_id: Option<String>,
+    pub email: Option<String>,
+}
+
 /// How aggressively yolop pauses for spoken ("soft") approval before
 /// running critical actions. Soft approval is prompt-engineering, not a
 /// hard gate: the chosen level is injected into the system prompt so the
@@ -89,6 +100,9 @@ pub struct Settings {
     /// Endpoint base URLs keyed by provider. Today only `custom` (the
     /// generic OpenAI-compatible provider) writes here.
     pub base_urls: BTreeMap<String, String>,
+    /// ChatGPT/Codex OAuth credentials. Kept separate from `[tokens]` because
+    /// subscription auth needs refresh/account metadata, not just a bearer key.
+    pub codex_auth: Option<CodexAuth>,
     pub attribution: bool,
     /// Soft-approval paranoia level, injected into the system prompt each
     /// turn. Central, cross-session, surfaced in the status bar.
@@ -105,6 +119,7 @@ impl Default for Settings {
             models: BTreeMap::new(),
             default_model: None,
             base_urls: BTreeMap::new(),
+            codex_auth: None,
             attribution: true,
             approval_mode: ApprovalMode::Normal,
             capabilities: Vec::new(),
@@ -145,12 +160,17 @@ impl Settings {
             }
             map
         };
+        let codex_auth = table
+            .get("codex_auth")
+            .and_then(Value::as_table)
+            .and_then(parse_codex_auth);
         Self {
             default_provider,
             tokens: string_map("tokens"),
             models: string_map("models"),
             default_model,
             base_urls: string_map("base_urls"),
+            codex_auth,
             attribution,
             approval_mode,
             capabilities: parse_capabilities_table(table),
@@ -187,6 +207,12 @@ impl Settings {
         insert_map("tokens", &self.tokens);
         insert_map("models", &self.models);
         insert_map("base_urls", &self.base_urls);
+        if let Some(auth) = &self.codex_auth {
+            table.insert(
+                "codex_auth".to_string(),
+                Value::Table(codex_auth_to_table(auth)),
+            );
+        }
         let caps = capabilities_to_toml(&self.capabilities);
         if let Value::Array(items) = caps
             && !items.is_empty()
@@ -216,6 +242,16 @@ impl Settings {
         self.base_urls.get(provider).map(String::as_str)
     }
 
+    pub fn codex_auth(&self) -> Option<&CodexAuth> {
+        self.codex_auth.as_ref()
+    }
+
+    pub fn has_codex_auth(&self) -> bool {
+        self.codex_auth
+            .as_ref()
+            .is_some_and(|auth| !auth.access_token.is_empty())
+    }
+
     pub fn attribution_enabled(&self) -> bool {
         self.attribution
     }
@@ -231,6 +267,57 @@ impl Settings {
             .filter(|(_, entry)| entry.capability_ref == id)
             .collect()
     }
+}
+
+fn parse_codex_auth(table: &Table) -> Option<CodexAuth> {
+    let access_token = table
+        .get("access_token")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    Some(CodexAuth {
+        access_token,
+        refresh_token: table
+            .get("refresh_token")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        expires_at: table.get("expires_at").and_then(Value::as_integer),
+        account_id: table
+            .get("account_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        email: table
+            .get("email")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    })
+}
+
+fn codex_auth_to_table(auth: &CodexAuth) -> Table {
+    let mut table = Table::new();
+    table.insert(
+        "access_token".to_string(),
+        Value::String(auth.access_token.clone()),
+    );
+    if let Some(refresh_token) = &auth.refresh_token {
+        table.insert(
+            "refresh_token".to_string(),
+            Value::String(refresh_token.clone()),
+        );
+    }
+    if let Some(expires_at) = auth.expires_at {
+        table.insert("expires_at".to_string(), Value::Integer(expires_at));
+    }
+    if let Some(account_id) = &auth.account_id {
+        table.insert("account_id".to_string(), Value::String(account_id.clone()));
+    }
+    if let Some(email) = &auth.email {
+        table.insert("email".to_string(), Value::String(email.clone()));
+    }
+    table
 }
 
 pub fn default_settings_path() -> Option<PathBuf> {
@@ -388,6 +475,20 @@ impl SettingsStore {
         Ok(existed)
     }
 
+    pub fn set_codex_auth(&self, auth: CodexAuth) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.codex_auth = Some(auth);
+        save_to(&self.path, &guard)
+    }
+
+    /// Returns whether a Codex login was actually present before removal.
+    pub fn clear_codex_auth(&self) -> Result<bool> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let existed = guard.codex_auth.take().is_some();
+        save_to(&self.path, &guard)?;
+        Ok(existed)
+    }
+
     /// Append a harness capability override to the ordered settings list.
     pub fn append_capability_override(&self, entry: CapabilityOverride) -> Result<usize> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
@@ -541,6 +642,36 @@ mod tests {
             Some("anthropic-key")
         );
         assert!(reloaded.snapshot().token_for("google").is_none());
+    }
+
+    #[test]
+    fn codex_auth_roundtrips_via_disk() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store
+            .set_codex_auth(CodexAuth {
+                access_token: "access-token".to_string(),
+                refresh_token: Some("refresh-token".to_string()),
+                expires_at: Some(1_771_000_000_000),
+                account_id: Some("acc_123".to_string()),
+                email: Some("user@example.com".to_string()),
+            })
+            .expect("save codex auth");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(on_disk.contains("[codex_auth]"), "got: {on_disk}");
+        assert!(
+            on_disk.contains("refresh_token = \"refresh-token\""),
+            "got: {on_disk}"
+        );
+
+        let reloaded = SettingsStore::open(path);
+        let snapshot = reloaded.snapshot();
+        let auth = snapshot.codex_auth().expect("codex auth");
+        assert_eq!(auth.access_token, "access-token");
+        assert_eq!(auth.account_id.as_deref(), Some("acc_123"));
+        assert!(snapshot.has_codex_auth());
     }
 
     #[test]
