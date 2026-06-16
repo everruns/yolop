@@ -394,6 +394,16 @@ const DEFAULT_OLLAMA_API_KEY: &str = "ollama";
 // Generic OpenAI-compatible servers usually ignore the bearer token, but the
 // OpenAI client requires one — same trick as Ollama's placeholder key.
 const DEFAULT_CUSTOM_API_KEY: &str = "unused";
+const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_directory",
+    "grep_files",
+    "bash",
+    "write_todos",
+    "run_yolop_command",
+];
 
 #[derive(Clone, Debug)]
 pub enum ProviderChoice {
@@ -1789,21 +1799,15 @@ pub async fn build_with_options(
     // Provider-agnostic deferred tool loading (upstream `everruns-core`, 0.11.0+).
     // Defers the long tail behind a `tool_search` tool and restores real schemas
     // progressively (per-session reveal set). The `never_defer` allowlist keeps
-    // the hot-path file/shell tools fully loaded so the agent never needs a
-    // `tool_search` round-trip before its first read/edit/run — yolop does not
+    // hot-path file/shell/planning tools fully loaded so the agent never needs a
+    // `tool_search` round-trip before its first read/edit/run/todo call — yolop does not
     // own those tool definitions, so it sets the policy by name here. Works on
     // every provider/model, unlike the native `openai_tool_search` (EVE-521).
     // Progressive disclosure + this allowlist landed upstream in EVE-527 (#2130),
     // which retired the previously vendored copy.
-    capabilities.register(ToolSearchCapability::new().with_never_defer([
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_directory",
-        "grep_files",
-        "bash",
-        "run_yolop_command",
-    ]));
+    capabilities.register(
+        ToolSearchCapability::new().with_never_defer(YOLOP_NEVER_DEFER_TOOLS.iter().copied()),
+    );
     capabilities.register(ToolOutputPersistenceCapability);
     capabilities.register(SessionStorageCapability);
     capabilities.register(DaytonaCapability);
@@ -3665,6 +3669,76 @@ mod tests {
                 "tool_search must be enabled (client_commands={client_commands})"
             );
         }
+    }
+
+    #[test]
+    fn tool_search_keeps_write_todos_schema_loaded() {
+        use everruns_core::capabilities::{Capability, DEFAULT_TOOL_SEARCH_THRESHOLD};
+        use everruns_core::tool_types::{
+            BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy,
+        };
+
+        fn fake_tool(name: impl Into<String>) -> ToolDefinition {
+            ToolDefinition::Builtin(BuiltinTool {
+                name: name.into(),
+                display_name: None,
+                description: "fake tool".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "value": { "type": "string" } },
+                    "required": ["value"]
+                }),
+                policy: ToolPolicy::Auto,
+                category: None,
+                deferrable: DeferrablePolicy::Automatic,
+                hints: ToolHints::default(),
+                full_parameters: None,
+            })
+        }
+
+        let mut tools = vec![ToolDefinition::Builtin(BuiltinTool {
+            name: "write_todos".to_string(),
+            display_name: None,
+            description: "write todos".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "todos": { "type": "array" } },
+                "required": ["todos"]
+            }),
+            policy: ToolPolicy::Auto,
+            category: None,
+            deferrable: DeferrablePolicy::Automatic,
+            hints: ToolHints::default(),
+            full_parameters: None,
+        })];
+        tools
+            .extend((0..DEFAULT_TOOL_SEARCH_THRESHOLD).map(|idx| fake_tool(format!("fake_{idx}"))));
+
+        let hook = ToolSearchCapability::new()
+            .with_never_defer(YOLOP_NEVER_DEFER_TOOLS.iter().copied())
+            .tool_definition_hooks()
+            .into_iter()
+            .next()
+            .expect("tool_search hook");
+        let transformed = hook.transform(tools);
+
+        let write_todos = transformed
+            .iter()
+            .find(|tool| tool.name() == "write_todos")
+            .expect("write_todos definition");
+        assert!(
+            write_todos.parameters().get("properties").is_some(),
+            "write_todos must keep its full schema so models pass the required todos field"
+        );
+
+        let fake = transformed
+            .iter()
+            .find(|tool| tool.name() == "fake_0")
+            .expect("fake tool definition");
+        assert!(
+            fake.parameters().get("properties").is_none(),
+            "precondition: deferral should be active for non-allowlisted tools"
+        );
     }
 
     #[test]

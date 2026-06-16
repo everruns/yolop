@@ -38,13 +38,14 @@ vendor was deleted and yolop now consumes upstream directly:
    `ToolSearchCapability::new().with_never_defer([...])` so they always keep full
    schemas and common work needs no `tool_search` round-trip: the file/shell
    tools (`read_file`, `write_file`, `edit_file`, `list_directory`,
-   `grep_files`, `bash`) plus `run_yolop_command` (the client-command dispatch
-   tool, which requires a `command` argument and so must never be called against
-   a stub). Yolop does not own those tool definitions (they come from
-   `FileSystemCapability`, yolop's `bash` tool, and the `client_commands`
-   capability), so it sets the policy by name rather than via each tool's
-   `DeferrablePolicy`. The long tail (search, web fetch, memory, skills,
-   history, todos) defers until requested. **MCP server tools defer on the same
+   `grep_files`, `bash`), the planning tool (`write_todos`), plus
+   `run_yolop_command` (the client-command dispatch tool, which requires a
+   `command` argument and so must never be called against a stub). Yolop does
+   not own those tool definitions (they come from `FileSystemCapability`,
+   `StatelessTodoListCapability`, yolop's `bash` tool, and the
+   `client_commands` capability), so it sets the policy by name rather than via
+   each tool's `DeferrablePolicy`. The long tail (search, web fetch, memory,
+   skills, history) defers until requested. **MCP server tools defer on the same
    footing** — with many configured servers their schemas are the largest,
    least-used part of the surface, so only names and descriptions ride each turn
    until `tool_search` loads a schema (execution still routes through the real
