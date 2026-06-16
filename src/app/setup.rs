@@ -210,9 +210,16 @@ impl App {
     /// fallback list.
     pub(crate) fn model_options(&self, provider: &str) -> Vec<ModelOption> {
         match self.model_catalog.get(provider) {
-            Some(options) => options.clone(),
+            Some(catalog) => catalog.options.clone(),
             None => Self::fallback_model_options(provider),
         }
+    }
+
+    pub(crate) fn model_recommended_count(&self, provider: &str) -> usize {
+        self.model_catalog
+            .get(provider)
+            .map(|catalog| catalog.recommended_count)
+            .unwrap_or(0)
     }
 
     /// Curated static list, used until (or instead of) live discovery —
@@ -351,6 +358,11 @@ impl App {
         let tx = self.models_tx.clone();
         let settings = self.settings.clone();
         let provider_name = provider.to_string();
+        let current_model = if self.current_provider_name() == provider {
+            Some(self.model.model_id())
+        } else {
+            None
+        };
         tokio::spawn(async move {
             let result = match tokio::time::timeout(
                 Duration::from_secs(10),
@@ -361,7 +373,18 @@ impl App {
             )
             .await
             {
-                Ok(Ok(Some(models))) => Ok(Some(model_options_from_discovered(models))),
+                Ok(Ok(Some(models))) => {
+                    let ranked = crate::capabilities::model_ranking::rank_discovered_models(
+                        &provider_name,
+                        models,
+                        current_model.as_deref(),
+                    );
+                    Ok(Some(model_options_from_discovered(
+                        &provider_name,
+                        ranked.models,
+                        ranked.recommended_count,
+                    )))
+                }
                 Ok(Ok(None)) => Ok(None),
                 Ok(Err(err)) => Err(err.to_string()),
                 Err(_) => Err("models API request timed out".to_string()),
@@ -379,9 +402,9 @@ impl App {
         self.model_fetches_in_flight.remove(&discovery.provider);
         match discovery.result {
             // > 1 because the list always ends with the "Custom..." entry.
-            Ok(Some(options)) if options.len() > 1 => {
+            Ok(Some(catalog)) if catalog.options.len() > 1 => {
                 self.model_catalog
-                    .insert(discovery.provider.clone(), options);
+                    .insert(discovery.provider.clone(), catalog);
                 if let Some(SetupStep::PickModel {
                     provider,
                     custom,
@@ -409,7 +432,10 @@ impl App {
             Ok(_) => {
                 self.model_catalog.insert(
                     discovery.provider.clone(),
-                    Self::fallback_model_options(&discovery.provider),
+                    ModelPickerCatalog {
+                        options: Self::fallback_model_options(&discovery.provider),
+                        recommended_count: 0,
+                    },
                 );
             }
             Err(mut err) => {

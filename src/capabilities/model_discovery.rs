@@ -17,7 +17,7 @@ use everruns_core::llm_driver_registry::{DiscoveredModel, DriverRegistry, Provid
 /// One model offered by a provider, ready for display: bare id plus
 /// human-readable metadata merged from the provider's API response and the
 /// everruns-core profile registry.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DiscoveredProviderModel {
     pub model_id: String,
     pub display_name: Option<String>,
@@ -51,6 +51,7 @@ pub(crate) async fn discover_provider_models(
     let mut registry = DriverRegistry::new();
     everruns_anthropic::register_driver(&mut registry);
     everruns_openai::register_driver(&mut registry);
+    everruns_openrouter::register_driver(&mut registry);
     let driver = registry.create_chat_driver(&config)?;
 
     let models = match driver.list_models().await? {
