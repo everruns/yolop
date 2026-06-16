@@ -1512,7 +1512,7 @@ fn status_contributions(state: &ViewState) -> Vec<StatusContribution> {
 }
 
 /// Status-bar label for background tasks, e.g. `2▸/3` (2 running of 3), or
-/// `0/2` when none are running. `None` when there are no tasks (segment hidden).
+/// `0▸/2` when none are running. `None` when there are no tasks (segment hidden).
 fn background_label(counts: Option<(usize, usize)>) -> Option<String> {
     let (running, total) = counts?;
     if total == 0 {

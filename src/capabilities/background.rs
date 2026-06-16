@@ -271,9 +271,12 @@ impl BackgroundRegistry {
     }
 
     /// Cheap `(running, total)` task counts for the status bar — avoids cloning
-    /// the whole record set every render frame.
+    /// the whole record set every render frame. The TUI polls this every frame,
+    /// so it also prunes finished handles here (as `list()` does) to keep the
+    /// handle map bounded even on turns where `list()` is never called.
     pub fn counts(&self) -> (usize, usize) {
-        let guard = self.inner.lock().expect("background lock poisoned");
+        let mut guard = self.inner.lock().expect("background lock poisoned");
+        guard.handles.retain(|_, handle| !handle.is_finished());
         let running = guard
             .records
             .iter()
@@ -282,7 +285,8 @@ impl BackgroundRegistry {
         (running, guard.records.len())
     }
 
-    /// Human-readable task list for the `/background` command. Newest first.
+    /// Human-readable task list for the `/background` command, most-recently-
+    /// updated first (same ordering as `list`).
     pub fn render_task_list(&self) -> String {
         let records = self.list();
         if records.is_empty() {
