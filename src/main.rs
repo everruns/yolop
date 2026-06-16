@@ -14,6 +14,7 @@ mod connectors;
 mod goal;
 mod hooks_config;
 mod host_ui;
+mod image_input;
 mod into;
 mod mcp_config;
 mod runtime;
@@ -46,7 +47,7 @@ use crossterm::event::{
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
 use everruns_core::command::ExecuteCommandRequest;
-use everruns_core::message::MessageRole;
+use everruns_core::message::{ContentPart, MessageRole};
 use everruns_core::typed_id::SessionId;
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
@@ -85,6 +86,17 @@ struct Cli {
     /// Run a single prompt non-interactively and print the result. Useful for CI smoke tests.
     #[arg(short = 'p', long)]
     print: Option<String>,
+
+    /// Attach one or more image files to the prompt. Separate multiple paths
+    /// with commas or repeat the flag. Supported formats: png, jpeg, gif, webp.
+    #[arg(
+        long = "image",
+        short = 'i',
+        value_name = "FILE",
+        value_delimiter = ',',
+        num_args = 1..
+    )]
+    images: Vec<PathBuf>,
 
     /// Speak the Agent Client Protocol (ACP) over stdio instead of launching
     /// the TUI. Editors such as Zed spawn `yolop --acp` and drive it as an
@@ -383,9 +395,11 @@ async fn main() -> Result<()> {
     .await?;
 
     if let Some(prompt) = cli.print {
-        return run_print_mode(runtime, prompt).await;
+        let image_parts = image_input::load_image_parts(&cli.images)?;
+        return run_print_mode(runtime, prompt, image_parts).await;
     }
-    run_tui(runtime).await
+    let pending_images = image_input::load_image_parts(&cli.images)?;
+    run_tui(runtime, pending_images).await
 }
 
 fn resolve_workspace_root(
@@ -453,7 +467,7 @@ fn run_command(command: Commands) -> Result<()> {
     }
 }
 
-async fn run_tui(runtime: BuiltRuntime) -> Result<()> {
+async fn run_tui(runtime: BuiltRuntime, pending_images: Vec<ContentPart>) -> Result<()> {
     let mut raw_mode = RawModeGuard::new()?;
     let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
     let stdout = io::stdout();
@@ -472,7 +486,7 @@ async fn run_tui(runtime: BuiltRuntime) -> Result<()> {
         tracing::warn!("inline viewport anchoring failed, starting unanchored: {err:#}");
     }
 
-    let mut app = App::new(runtime);
+    let mut app = App::new(runtime, pending_images);
     let result = app.run(&mut terminal).await;
     let show_resume_hint = app.should_show_resume_hint();
     let session_id = app.session_id();
@@ -604,7 +618,11 @@ fn print_centered_ukraine_banner() {
     );
 }
 
-async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
+async fn run_print_mode(
+    runtime: BuiltRuntime,
+    prompt: String,
+    images: Vec<ContentPart>,
+) -> Result<()> {
     let BuiltRuntime {
         handles,
         startup,
@@ -613,7 +631,8 @@ async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
         ..
     } = runtime;
     let color = io::stdout().is_terminal();
-    println!("{}", paint(color, "90", &format!("› {prompt}")));
+    let display_prompt = image_input::user_display_text(&prompt, images.len());
+    println!("{}", paint(color, "90", &format!("› {display_prompt}")));
     println!();
     println!(
         "{} {}",
@@ -660,7 +679,7 @@ async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
         return run_print_goal(&handles, &model, &goal_store, goal_args.trim(), color).await;
     }
 
-    let result = run_print_turn(&handles, &model, trimmed, color).await?;
+    let result = run_print_turn(&handles, &model, trimmed, images, color).await?;
     if !result.success {
         std::process::exit(1);
     }
@@ -704,7 +723,7 @@ async fn run_print_goal(
     loop {
         println!();
         println!("{}", paint(color, "90", &format!("› {turn_prompt}")));
-        let turn = run_print_turn(handles, model, &turn_prompt, color).await?;
+        let turn = run_print_turn(handles, model, &turn_prompt, vec![], color).await?;
         if !turn.success {
             std::process::exit(1);
         }
@@ -749,6 +768,7 @@ async fn run_print_turn(
     handles: &runtime::RuntimeHandles,
     model: &runtime::ModelState,
     prompt: &str,
+    images: Vec<ContentPart>,
     color: bool,
 ) -> Result<everruns_runtime::TurnResult> {
     let before_events = handles.runtime.events().await.map(|e| e.len()).unwrap_or(0);
@@ -759,7 +779,7 @@ async fn run_print_turn(
         .map(|m| m.len())
         .unwrap_or(0);
 
-    let input = model.input_message(prompt.to_string());
+    let input = model.input_message_with_images(prompt, images);
     let result = handles.runtime.run_turn(handles.session_id, input).await?;
     let events = handles.runtime.events().await.unwrap_or_default();
     let messages = handles
@@ -871,6 +891,7 @@ mod tests {
             model: Some("nvidia/nemotron-3-super-120b-a12b".to_string()),
             reasoning_effort: reasoning_effort.map(str::to_string),
             print: None,
+            images: vec![],
             acp: false,
             session: None,
             session_dir: None,
@@ -925,6 +946,7 @@ mod tests {
             model: None,
             reasoning_effort: None,
             print: None,
+            images: vec![],
             acp: false,
             session: None,
             session_dir: None,

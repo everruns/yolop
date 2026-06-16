@@ -43,6 +43,7 @@ use everruns_core::get_model_profile;
 use everruns_core::in_memory::InMemoryMessageRetriever;
 use everruns_core::llm_driver_registry::{DriverRegistry, ProviderMetadata};
 use everruns_core::llmsim_driver::LlmSimConfig;
+use everruns_core::message::{ContentPart, MessageRole};
 use everruns_core::session_file::{FileInfo, FileStat, GrepMatch, InitialFile, SessionFile};
 use everruns_core::typed_id::SessionId;
 use everruns_core::{
@@ -1187,8 +1188,22 @@ impl ProviderChoice {
     }
 
     fn input_message(&self, text: impl Into<String>) -> InputMessage {
-        let mut input = InputMessage::user(text);
-        let reasoning_effort = match self {
+        self.input_message_with_parts(vec![ContentPart::text(text)])
+    }
+
+    fn input_message_with_parts(&self, mut parts: Vec<ContentPart>) -> InputMessage {
+        parts.retain(|part| match part {
+            ContentPart::Text(text) => !text.text.trim().is_empty(),
+            _ => true,
+        });
+        let mut input = InputMessage {
+            role: MessageRole::User,
+            content: parts,
+            controls: None,
+            metadata: None,
+            tags: vec![],
+        };
+        if let Some(effort) = match self {
             Self::OpenAi {
                 reasoning_effort, ..
             }
@@ -1200,18 +1215,30 @@ impl ProviderChoice {
             }
             | Self::Custom {
                 reasoning_effort, ..
-            } => reasoning_effort.as_ref(),
+            } => reasoning_effort.as_deref(),
             _ => None,
-        };
-        if let Some(effort) = reasoning_effort {
+        } {
             input.controls = Some(Controls {
                 reasoning: Some(ReasoningConfig {
-                    effort: Some(effort.clone()),
+                    effort: Some(effort.to_string()),
                 }),
                 ..Default::default()
             });
         }
         input
+    }
+
+    fn input_message_with_images(
+        &self,
+        text: impl Into<String>,
+        images: Vec<ContentPart>,
+    ) -> InputMessage {
+        let mut parts = images;
+        let text = text.into();
+        if !text.trim().is_empty() {
+            parts.push(ContentPart::text(text));
+        }
+        self.input_message_with_parts(parts)
     }
 }
 
@@ -1513,6 +1540,17 @@ impl ModelState {
             .read()
             .expect("provider lock poisoned")
             .input_message(text)
+    }
+
+    pub fn input_message_with_images(
+        &self,
+        text: impl Into<String>,
+        images: Vec<ContentPart>,
+    ) -> InputMessage {
+        self.provider
+            .read()
+            .expect("provider lock poisoned")
+            .input_message_with_images(text, images)
     }
 }
 

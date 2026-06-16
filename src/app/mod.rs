@@ -166,6 +166,8 @@ pub struct App {
     /// `None` when closed. Toggled with Ctrl+B; read-only view of the registry.
     background_panel: Option<usize>,
     goal_store: Arc<GoalStore>,
+    /// Images from `--image` / `-i` on the CLI, consumed on the first turn.
+    pending_images: Vec<ContentPart>,
 }
 
 /// Result of one background models API fetch. `Ok(None)` means the provider
@@ -421,7 +423,7 @@ pub(crate) enum TurnEvent {
 }
 
 impl App {
-    pub fn new(runtime: BuiltRuntime) -> Self {
+    pub fn new(runtime: BuiltRuntime, pending_images: Vec<ContentPart>) -> Self {
         let should_setup = runtime.startup.setup_recommended;
         let goal_store = runtime.goal_store.clone();
         let session_id = runtime.handles.session_id;
@@ -456,6 +458,7 @@ impl App {
             background: runtime.background,
             background_panel: None,
             goal_store,
+            pending_images,
         };
         app.emit_system_banner();
         if should_setup {
@@ -911,10 +914,12 @@ impl App {
             self.handle_command(rest).await;
             return;
         }
-        if text.is_empty() {
+        if text.is_empty() && self.pending_images.is_empty() {
             return;
         }
-        self.push_user(text.clone());
+        let image_count = self.pending_images.len();
+        let display = crate::image_input::user_display_text(&text, image_count);
+        self.push_user(display);
         self.start_turn(text);
     }
 
@@ -1382,6 +1387,7 @@ impl App {
     fn start_turn(&mut self, prompt: String) {
         let handles = self.handles.clone();
         let model = self.model.clone();
+        let images = std::mem::take(&mut self.pending_images);
         let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
         let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
         self.rx = Some(rx);
@@ -1411,7 +1417,7 @@ impl App {
                 Err(_) => 0,
             };
 
-            let input = model.input_message(prompt);
+            let input = model.input_message_with_images(prompt, images);
             let runtime = handles.runtime.clone();
             let turn = tokio::spawn(async move { runtime.run_turn(session_id, input).await });
 
@@ -3091,7 +3097,7 @@ mod tests {
         )
         .await
         .expect("build llmsim runtime");
-        let mut app = App::new(runtime);
+        let mut app = App::new(runtime, vec![]);
         // Never let unit tests hit real provider models APIs.
         app.model_discovery_enabled = false;
         TestApp {
@@ -3525,7 +3531,7 @@ mod tests {
             "resume should report replayed events"
         );
 
-        let mut app = App::new(resumed);
+        let mut app = App::new(resumed, vec![]);
         app.setup = None;
         app.lines.clear();
         app.replay_transcript_for_test().await;
@@ -3743,7 +3749,7 @@ mod tests {
         )
         .await
         .expect("build resumed runtime");
-        let mut app = App::new(runtime);
+        let mut app = App::new(runtime, vec![]);
         app.setup = None;
 
         app.emit_replayed_transcript().await;
