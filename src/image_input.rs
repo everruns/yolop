@@ -40,6 +40,7 @@ pub fn load_image_part(path: &Path) -> Result<ContentPart> {
     let bytes = std::fs::read(path).with_context(|| format!("read image {}", path.display()))?;
     let media_type = detect_media_type(path, &bytes)?;
     image_part_from_encoded(&bytes, &media_type)
+        .with_context(|| format!("image {}", path.display()))
 }
 
 /// Build user-facing transcript text that mentions attached images.

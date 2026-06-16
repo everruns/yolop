@@ -36,14 +36,18 @@ impl std::fmt::Display for PasteImageError {
 
 impl std::error::Error for PasteImageError {}
 
+fn part_from_encoded(bytes: &[u8], media_type: &str) -> Result<ContentPart, PasteImageError> {
+    image_input::image_part_from_encoded(bytes, media_type)
+        .map_err(|err| PasteImageError::EncodeFailed(err.to_string()))
+}
+
 /// Read an image from the clipboard and return a PNG content part plus dimensions.
 #[cfg(not(target_os = "android"))]
 pub fn paste_image_content_part() -> Result<(ContentPart, PastedImageInfo), PasteImageError> {
     match paste_image_as_png() {
         Ok(result) => {
             let (png, info) = result;
-            let part = image_input::image_part_from_encoded(&png, "image/png")
-                .map_err(|err| PasteImageError::IoError(err.to_string()))?;
+            let part = part_from_encoded(&png, "image/png")?;
             Ok((part, info))
         }
         Err(err) => {
@@ -56,8 +60,7 @@ pub fn paste_image_content_part() -> Result<(ContentPart, PastedImageInfo), Past
                 {
                     let bytes = std::fs::read(&path)
                         .map_err(|io| PasteImageError::IoError(io.to_string()))?;
-                    let part = image_input::image_part_from_encoded(&bytes, "image/png")
-                        .map_err(|io| PasteImageError::IoError(io.to_string()))?;
+                    let part = part_from_encoded(&bytes, "image/png")?;
                     return Ok((part, info));
                 }
             }
@@ -121,7 +124,7 @@ fn encode_dynamic_image_png(
         .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|err| PasteImageError::EncodeFailed(err.to_string()))?;
     if png.len() > MAX_IMAGE_BYTES {
-        return Err(PasteImageError::IoError(format!(
+        return Err(PasteImageError::EncodeFailed(format!(
             "clipboard image exceeds {} byte limit",
             MAX_IMAGE_BYTES
         )));
@@ -144,7 +147,7 @@ pub(crate) fn try_wsl_clipboard_png() -> Result<(PathBuf, PastedImageInfo), Past
         ));
     }
 
-    let script = r#"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $img = Get-Clipboard -Format Image; if ($img -ne $null) { $p=[System.IO.Path]::GetTempFileName(); $p = [System.IO.Path]::ChangeExtension($p,'png'); $img.Save($p,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output $p } else { exit 1 }"#;
+    let script = r#"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $img = Get-Clipboard -Format Image; if ($img -ne $null) { $p = Join-Path $env:TEMP ("yolop-clipboard-" + [guid]::NewGuid().ToString() + ".png"); $img.Save($p,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output $p } else { exit 1 }"#;
 
     for cmd in ["powershell.exe", "pwsh", "powershell"] {
         let Ok(output) = std::process::Command::new(cmd)
