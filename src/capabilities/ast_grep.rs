@@ -557,7 +557,7 @@ fn bounded_usize(value: Option<&Value>, default: usize, max: usize, name: &str) 
     let Some(number) = value.as_u64() else {
         bail!("`{name}` must be a positive integer");
     };
-    if number == 0 || number as usize > max {
+    if number == 0 || number > max as u64 {
         bail!("`{name}` must be between 1 and {max}");
     }
     Ok(number as usize)
@@ -567,7 +567,7 @@ fn resolve_scope(root: &Path, path: Option<&str>) -> Result<PathBuf> {
     let Some(path) = path else {
         return Ok(root.to_path_buf());
     };
-    let relative = path.trim();
+    let relative = path.trim().trim_start_matches('/');
     if relative.is_empty() || relative == "." {
         return Ok(root.to_path_buf());
     }
@@ -731,7 +731,7 @@ mod tests {
             dir.path(),
             AstGrepOptions {
                 pattern: "console.log($A)".to_string(),
-                path: Some("web".to_string()),
+                path: Some("/web".to_string()),
                 language: Some("typescript".to_string()),
                 limit: 20,
                 max_file_bytes: DEFAULT_MAX_FILE_BYTES,
@@ -794,6 +794,21 @@ mod tests {
         .expect_err("outside path should fail");
 
         assert!(err.to_string().contains("inside the workspace"));
+    }
+
+    #[test]
+    fn rejects_oversized_numeric_limits_before_casting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = ast_grep_from_arguments(
+            dir.path(),
+            &json!({
+                "pattern": "fn $NAME() {}",
+                "limit": u64::MAX,
+            }),
+        )
+        .expect_err("oversized limit should fail");
+
+        assert!(err.to_string().contains("between 1 and"));
     }
 
     #[cfg(unix)]
