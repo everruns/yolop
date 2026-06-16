@@ -158,6 +158,9 @@ pub struct App {
     model_discovery_enabled: bool,
     models_tx: mpsc::UnboundedSender<ModelDiscovery>,
     models_rx: mpsc::UnboundedReceiver<ModelDiscovery>,
+    /// This session's background task registry, polled each frame for the
+    /// status-bar task count. Same registry the `background` capability owns.
+    background: Arc<crate::capabilities::BackgroundRegistry>,
 }
 
 /// Result of one background models API fetch. `Ok(None)` means the provider
@@ -341,6 +344,9 @@ pub(crate) struct ViewState {
     /// Current soft-approval level (`protective` / `normal` / `off`), shown
     /// in the session status bar so the paranoia level is always visible.
     pub approval_mode: String,
+    /// `(running, total)` background task counts, shown in the status bar only
+    /// when there is at least one task this session. `None` hides the segment.
+    pub background: Option<(usize, usize)>,
 }
 
 /// What kind of delta is currently being streamed. Only the assistant
@@ -438,6 +444,7 @@ impl App {
             model_discovery_enabled: true,
             models_tx,
             models_rx,
+            background: runtime.background,
         };
         app.emit_system_banner();
         if should_setup {
@@ -481,6 +488,10 @@ impl App {
                 .approval_mode()
                 .as_str()
                 .to_string(),
+            background: match self.background.counts() {
+                (_, 0) => None,
+                counts => Some(counts),
+            },
         }
     }
 
@@ -2772,7 +2783,40 @@ mod tests {
             status_layout: StatusLayout::Compact,
             hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),
+            background: None,
         }
+    }
+
+    #[test]
+    fn status_bar_shows_background_task_count() {
+        let state = ViewState {
+            status_layout: StatusLayout::Expanded,
+            background: Some((1, 2)),
+            ..view_state_idle()
+        };
+        let lines = render_chrome_lines(&state, 120, 8).join("\n");
+        assert!(
+            lines.contains("bg"),
+            "status should show bg segment: {lines}"
+        );
+        assert!(
+            lines.contains("1▸/2"),
+            "status should show running/total: {lines}"
+        );
+    }
+
+    #[test]
+    fn status_bar_hides_background_segment_when_no_tasks() {
+        let state = ViewState {
+            status_layout: StatusLayout::Expanded,
+            background: None,
+            ..view_state_idle()
+        };
+        let lines = render_chrome_lines(&state, 120, 8).join("\n");
+        assert!(
+            !lines.contains("▸"),
+            "no background segment expected when there are no tasks: {lines}"
+        );
     }
 
     /// Render `draw_chrome` into a TestBackend and collect the buffer

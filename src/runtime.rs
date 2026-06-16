@@ -1372,6 +1372,10 @@ pub struct BuiltRuntime {
     /// other hosts ignore it. Empty/never-written when
     /// [`BuildOptions::client_commands`] is `false`.
     pub ui_rx: mpsc::UnboundedReceiver<UiCommand>,
+    /// Shared handle to this session's background task registry, so the TUI can
+    /// show a live task count in the status bar (the same registry the
+    /// `background` capability owns).
+    pub background: Arc<BackgroundRegistry>,
 }
 
 #[derive(Clone)]
@@ -1839,8 +1843,9 @@ pub async fn build_with_options(
         });
         background_registry = background_registry.with_spawner(spawner);
     }
+    let background_registry = Arc::new(background_registry);
     capabilities.register(BackgroundCapability {
-        registry: Arc::new(background_registry),
+        registry: background_registry.clone(),
     });
     // Terminal-side commands. Registered only when the host can apply
     // their effects (the TUI). The capability declares help/tools/mcp/cwd/model/
@@ -1994,6 +1999,7 @@ pub async fn build_with_options(
         model: ModelState::new(provider_state),
         settings,
         ui_rx,
+        background: background_registry,
     })
 }
 

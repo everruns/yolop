@@ -1489,14 +1489,36 @@ fn status_contributions(state: &ViewState) -> Vec<StatusContribution> {
             ],
         ),
         StatusContribution::new(
-            vec![status_value(message_count_label(state.lines_count))],
-            vec![
-                status_value(message_count_label(state.lines_count)),
-                status_field("tokens", token_label(state.session_tokens)),
-                status_field("session", short_session_id(&state.session_id)),
-            ],
+            {
+                let mut compact = vec![status_value(message_count_label(state.lines_count))];
+                if let Some(bg) = background_label(state.background) {
+                    compact.push(status_field("bg", bg));
+                }
+                compact
+            },
+            {
+                let mut expanded = vec![
+                    status_value(message_count_label(state.lines_count)),
+                    status_field("tokens", token_label(state.session_tokens)),
+                    status_field("session", short_session_id(&state.session_id)),
+                ];
+                if let Some(bg) = background_label(state.background) {
+                    expanded.push(status_field("bg", bg));
+                }
+                expanded
+            },
         ),
     ]
+}
+
+/// Status-bar label for background tasks, e.g. `2▸/3` (2 running of 3), or
+/// `0▸/2` when none are running. `None` when there are no tasks (segment hidden).
+fn background_label(counts: Option<(usize, usize)>) -> Option<String> {
+    let (running, total) = counts?;
+    if total == 0 {
+        return None;
+    }
+    Some(format!("{running}▸/{total}"))
 }
 
 pub(crate) fn status_value(value: impl Into<String>) -> StatusField {

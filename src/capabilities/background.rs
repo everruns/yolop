@@ -18,6 +18,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::command::{
+    CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource, ExecuteCommandRequest,
+};
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -265,6 +268,63 @@ impl BackgroundRegistry {
     pub fn get(&self, id: &str) -> Option<BackgroundRecord> {
         let guard = self.inner.lock().expect("background lock poisoned");
         guard.records.iter().find(|r| r.id == id).cloned()
+    }
+
+    /// Cheap `(running, total)` task counts for the status bar — avoids cloning
+    /// the whole record set every render frame. The TUI polls this every frame,
+    /// so it also prunes finished handles here (as `list()` does) to keep the
+    /// handle map bounded even on turns where `list()` is never called.
+    pub fn counts(&self) -> (usize, usize) {
+        let mut guard = self.inner.lock().expect("background lock poisoned");
+        guard.handles.retain(|_, handle| !handle.is_finished());
+        let running = guard
+            .records
+            .iter()
+            .filter(|r| r.status == BackgroundStatus::Running)
+            .count();
+        (running, guard.records.len())
+    }
+
+    /// Human-readable task list for the `/background` command, most-recently-
+    /// updated first (same ordering as `list`).
+    pub fn render_task_list(&self) -> String {
+        let records = self.list();
+        if records.is_empty() {
+            return "No background tasks in this session.".to_string();
+        }
+        let (running, total) = (
+            records
+                .iter()
+                .filter(|r| r.status == BackgroundStatus::Running)
+                .count(),
+            records.len(),
+        );
+        let mut out = format!("{total} background task(s), {running} running:\n");
+        for r in &records {
+            let exit = r
+                .exit_code
+                .map(|c| format!(" exit={c}"))
+                .unwrap_or_default();
+            let summary = r
+                .summary
+                .as_deref()
+                .map(|s| format!(" — {s}"))
+                .unwrap_or_default();
+            let child = r
+                .child_session_id
+                .as_deref()
+                .map(|s| format!(" (session {s})"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  [{id}] {kind} {status}{exit}: {label}{summary}{child}\n",
+                id = r.id,
+                kind = r.kind.label(),
+                status = r.status.as_str(),
+                label = r.label,
+            ));
+        }
+        out.push_str("\nRead full output with the background_output tool.");
+        out
     }
 
     /// Start a scripted background task. Returns the new record immediately; the
@@ -924,6 +984,35 @@ impl Capability for BackgroundCapability {
         Some("Execution")
     }
 
+    fn commands(&self) -> Vec<CommandDescriptor> {
+        vec![CommandDescriptor {
+            name: "background".to_string(),
+            description: "list background tasks and their status".to_string(),
+            source: CommandSource::System,
+            args: Vec::new(),
+        }]
+    }
+
+    async fn execute_command(
+        &self,
+        request: &ExecuteCommandRequest,
+        _ctx: &CommandExecutionContext,
+    ) -> everruns_core::Result<CommandResult> {
+        if request.name != "background" {
+            return Err(everruns_core::AgentLoopError::config(format!(
+                "{} cannot execute /{}",
+                self.id(),
+                request.name
+            )));
+        }
+        Ok(CommandResult {
+            success: true,
+            message: self.registry.render_task_list(),
+            error_code: None,
+            error_fields: None,
+        })
+    }
+
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
         self.registry.system_prompt_block()
     }
@@ -1417,6 +1506,34 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let reg = registry_in(tmp.path());
         assert!(reg.system_prompt_block().is_none());
+    }
+
+    #[tokio::test]
+    async fn counts_and_render_task_list_reflect_tasks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = registry_in(tmp.path());
+        assert_eq!(reg.counts(), (0, 0));
+        assert!(reg.render_task_list().contains("No background tasks"));
+
+        let record = reg.spawn_script(Some("ci".into()), "echo hi".into());
+        wait_terminal(&reg, &record.id, 100).await;
+
+        let (running, total) = reg.counts();
+        assert_eq!((running, total), (0, 1));
+        let listed = reg.render_task_list();
+        assert!(listed.contains(&record.id), "got: {listed}");
+        assert!(listed.contains("script"), "got: {listed}");
+        assert!(listed.contains("completed"), "got: {listed}");
+    }
+
+    #[test]
+    fn capability_contributes_background_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cap = BackgroundCapability {
+            registry: Arc::new(registry_in(tmp.path())),
+        };
+        let names: Vec<String> = cap.commands().iter().map(|c| c.name.clone()).collect();
+        assert_eq!(names, vec!["background"]);
     }
 
     #[tokio::test]
