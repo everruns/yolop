@@ -10,8 +10,8 @@ use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability, AttributionCapability,
     CLIENT_COMMANDS_CAPABILITY_ID, CONFIG_CAPABILITY_ID, ClientCommandsCapability,
     CodingBashCapability, CodingCliEnvironmentCapability, ConfigCapability,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HooksCapability, SETUP_CAPABILITY_ID,
-    SetupCapability,
+    ENVIRONMENT_CONTEXT_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HooksCapability,
+    REPO_MAP_CAPABILITY_ID, RepoMapCapability, SETUP_CAPABILITY_ID, SetupCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::connectors::{
@@ -1275,6 +1275,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         ),
         AgentCapabilityConfig::new("session_file_system"),
         AgentCapabilityConfig::new(SKILLS_CAPABILITY_ID),
+        AgentCapabilityConfig::new(REPO_MAP_CAPABILITY_ID),
         AgentCapabilityConfig::new(INFINITY_CONTEXT_CAPABILITY_ID),
         AgentCapabilityConfig::with_config(
             COMPACTION_CAPABILITY_ID,
@@ -1633,6 +1634,7 @@ pub async fn build_with_options(
     //                            system scopes; list_skills + activate_skill
     //
     // Non-filesystem, but useful for a coding agent:
+    //   * repo_map            - on-demand multi-language symbol map for broad codebase orientation
     //   * infinity_context     — keeps long sessions usable; adds query_history
     //   * compaction           — proactively masks older large tool outputs
     //   * stateless_todo_list  — write_todos tool for multi-step tasks
@@ -1652,6 +1654,7 @@ pub async fn build_with_options(
     capabilities.register(crate::capabilities::skills::YolopSkillsCapability::new(
         crate::capabilities::skills::SkillSources::resolve(&canonical_root),
     ));
+    capabilities.register(RepoMapCapability::new(canonical_root.clone()));
     capabilities.register(InfinityContextCapability);
     capabilities.register(CompactionCapability);
     capabilities.register(StatelessTodoListCapability);
@@ -1897,6 +1900,7 @@ pub async fn build_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::REPO_MAP_CAPABILITY_ID;
     use everruns_core::command::ExecuteCommandRequest;
 
     #[test]
@@ -3369,6 +3373,17 @@ mod tests {
                 "tool_search must be enabled (client_commands={client_commands})"
             );
         }
+    }
+
+    #[test]
+    fn coding_harness_enables_repo_map() {
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == REPO_MAP_CAPABILITY_ID),
+            "repo_map should be available for on-demand codebase orientation"
+        );
     }
 
     #[test]

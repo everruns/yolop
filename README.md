@@ -68,6 +68,9 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 
 - **Filesystem** — `read_file`, `write_file`, `edit_file`, `list_directory`,
   `grep_files`, `delete_file`, `stat_file`, backed by the real workspace disk.
+- **Repo map** — `repo_map` and `repo_symbols` build an on-demand
+  multi-language symbol overview for broad codebase orientation before
+  targeted grep/read.
 - **Shell** — `bash -lc` from the workspace root, with a 120 s wall-clock
   timeout and per-stream 1 MiB output cap; large output is spilled to disk
   under the session folder and stays readable for model tool calls. Use
