@@ -2,10 +2,11 @@
 //
 // A *background task* is a unit of work that runs detached from the foreground
 // turn: it has an id, a kind, a lifecycle status, captured output, and is
-// cancellable and observable. v1 ships one kind — `script` (a shell command
-// that outlives the turn, e.g. `gh pr checks --watch` waiting on CI). Background
-// sub-agents are a planned second kind that reuses this same registry, record,
-// and surfaces (see specs/background.md).
+// cancellable and observable. Two kinds share this one registry, record, status
+// model, persistence, and surfaces: `script` (a shell command that outlives the
+// turn, e.g. `gh pr checks --watch` waiting on CI) and `agent` (a child session
+// that runs one focused turn and returns its final message). See
+// specs/background.md.
 //
 // Durability reuses the per-session folder that `session_log.rs` already owns:
 // the registry persists an index to `<session_dir>/background/index.json` and
@@ -368,9 +369,10 @@ impl BackgroundRegistry {
         let inner = self.inner.clone();
         let index_path = self.index_path.clone();
         let dir = self.dir.clone();
+        let max_runtime = self.max_runtime_secs;
         let task_id = id.clone();
         let handle = tokio::spawn(async move {
-            let outcome = run_agent(spawner, &dir, &log_file, task).await;
+            let outcome = run_agent(spawner, &dir, &log_file, task, max_runtime).await;
             update_record(&inner, &index_path, &task_id, |r| {
                 // Don't clobber a status a concurrent `cancel` already set.
                 if r.status != BackgroundStatus::Running {
@@ -702,26 +704,46 @@ struct AgentOutcome {
 }
 
 /// Drive a background sub-agent to completion: run the child turn via the
-/// spawner, write its final message (and child session id) to the task log, and
-/// return the terminal state.
+/// spawner under a wall-clock ceiling, write its final message to the task log,
+/// and return the terminal state. Mirrors `run_script`'s timeout/cap discipline.
 async fn run_agent(
     spawner: Arc<dyn AgentSpawner>,
     dir: &Path,
     log_file: &str,
     task: String,
+    max_runtime_secs: u64,
 ) -> AgentOutcome {
-    match spawner.run(task).await {
-        Ok(run) => {
+    let timeout = std::time::Duration::from_secs(max_runtime_secs);
+    match tokio::time::timeout(timeout, spawner.run(task)).await {
+        // Timed out: the spawner future (and the child turn it owns) is dropped,
+        // abandoning the run. Match `run_script`'s `timed_out` semantics.
+        Err(_) => {
+            write_log(
+                dir,
+                log_file,
+                &format!("sub-agent timed out after {max_runtime_secs}s\n"),
+            )
+            .await;
+            AgentOutcome {
+                status: BackgroundStatus::TimedOut,
+                summary: format!("timed out after {max_runtime_secs}s"),
+                child_session_id: None,
+            }
+        }
+        Ok(Ok(run)) => {
             let final_text = run.final_text.unwrap_or_default();
+            let shown = if final_text.trim().is_empty() {
+                "(sub-agent produced no final message)"
+            } else {
+                &final_text
+            };
+            // Header AND footer carry the child session id, so it stays visible
+            // even when `background_output` returns only the tail of a long log.
             let body = format!(
-                "background sub-agent\nchild session: {sid}\nsuccess: {ok}\n\n{text}\n",
+                "background sub-agent\nchild session: {sid}\nsuccess: {ok}\n\n{shown}\n\n\
+                 [child session: {sid}]\n",
                 sid = run.session_id,
                 ok = run.success,
-                text = if final_text.trim().is_empty() {
-                    "(sub-agent produced no final message)"
-                } else {
-                    &final_text
-                },
             );
             write_log(dir, log_file, &body).await;
             let summary = if final_text.trim().is_empty() {
@@ -743,7 +765,7 @@ async fn run_agent(
                 child_session_id: Some(run.session_id),
             }
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             write_log(dir, log_file, &format!("sub-agent failed to run: {e}\n")).await;
             AgentOutcome {
                 status: BackgroundStatus::Failed,
@@ -755,13 +777,15 @@ async fn run_agent(
 }
 
 /// Write a complete log file for a task (used by sub-agents, which produce their
-/// output all at once). Owner-only on Unix, like the script log.
+/// output all at once). Capped at [`MAX_OUTPUT_BYTES`] like the script log so a
+/// verbose sub-agent can't bloat the session folder; owner-only on Unix.
 async fn write_log(dir: &Path, log_file: &str, body: &str) {
     if tokio::fs::create_dir_all(dir).await.is_err() {
         return;
     }
+    let capped = cap_bytes(body, MAX_OUTPUT_BYTES);
     let path = dir.join(log_file);
-    if tokio::fs::write(&path, body).await.is_err() {
+    if tokio::fs::write(&path, capped.as_ref()).await.is_err() {
         return;
     }
     #[cfg(unix)]
@@ -769,6 +793,23 @@ async fn write_log(dir: &Path, log_file: &str, body: &str) {
         use std::os::unix::fs::PermissionsExt;
         let _ = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await;
     }
+}
+
+/// Truncate `s` to at most `max` bytes on a char boundary, appending a note when
+/// truncation happens. Borrows when no truncation is needed.
+fn cap_bytes(s: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    if s.len() <= max {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    std::borrow::Cow::Owned(format!(
+        "{}\n[background: output truncated at {} KiB]\n",
+        &s[..end],
+        max / 1024
+    ))
 }
 
 fn summarize(last_line: &str, exit_code: Option<i32>, success: bool) -> String {
@@ -1130,6 +1171,9 @@ impl Tool for BackgroundOutputTool {
                 "status": record.status.as_str(),
                 "exit_code": record.exit_code,
                 "summary": record.summary,
+                // Reported structurally so a sub-agent's child session id is
+                // always available even if the log tail truncated the header.
+                "child_session_id": record.child_session_id,
                 "output": output,
                 "truncated": truncated,
             })),
@@ -1212,6 +1256,17 @@ mod tests {
                 final_text: self.final_text.clone(),
                 success: self.success,
             })
+        }
+    }
+
+    /// Spawner that never finishes in time, to exercise the agent timeout path.
+    struct SlowSpawner;
+
+    #[async_trait]
+    impl AgentSpawner for SlowSpawner {
+        async fn run(&self, _prompt: String) -> Result<AgentRunResult, String> {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            unreachable!("should be cancelled by the timeout")
         }
     }
 
@@ -1397,6 +1452,21 @@ mod tests {
         let (_, output, _) = reg.read_output(&record.id, 64 * 1024).unwrap();
         assert!(output.contains("found 3 risks"), "got: {output}");
         assert!(output.contains("session_child_test"), "got: {output}");
+    }
+
+    #[tokio::test]
+    async fn agent_times_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = registry_in(tmp.path())
+            .with_max_runtime(1)
+            .with_spawner(Arc::new(SlowSpawner));
+        let record = reg
+            .spawn_agent(None, "slow task".into())
+            .expect("spawner present");
+        let done = wait_terminal(&reg, &record.id, 100).await;
+        assert_eq!(done.status, BackgroundStatus::TimedOut);
+        let (_, output, _) = reg.read_output(&record.id, 64 * 1024).unwrap();
+        assert!(output.contains("timed out"), "got: {output}");
     }
 
     #[tokio::test]
