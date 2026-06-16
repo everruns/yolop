@@ -128,8 +128,8 @@ mod tests {
         let ranked = rank_openrouter_models(
             vec![
                 model("zai/glm-5"),
-                model("openai/gpt-5.2"),
-                model("anthropic/claude-sonnet-4-5"),
+                model("openai/gpt-5.5"),
+                model("anthropic/claude-opus-4-8"),
                 model("moon/kimi-k3"),
             ],
             Some("moon/kimi-k3"),
@@ -140,8 +140,8 @@ mod tests {
         assert_eq!(
             ids,
             &[
-                "openai/gpt-5.2",
-                "anthropic/claude-sonnet-4-5",
+                "openai/gpt-5.5",
+                "anthropic/claude-opus-4-8",
                 "moon/kimi-k3",
                 "zai/glm-5",
             ]

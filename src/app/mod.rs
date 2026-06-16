@@ -3780,8 +3780,8 @@ mod tests {
 
     #[test]
     fn discovered_models_convert_to_options_with_custom_escape_hatch() {
-        let mut described = discovered("openai/gpt-5.2", Some("OpenAI: GPT-5.2"));
-        described.description = Some("optimized for long-running agents".to_string());
+        let mut described = discovered("openai/gpt-5.5", Some("OpenAI: GPT-5.5"));
+        described.description = Some("frontier model for complex coding".to_string());
         let catalog = model_options_from_discovered(
             "openrouter",
             vec![
@@ -3793,11 +3793,11 @@ mod tests {
 
         assert_eq!(catalog.options.len(), 3);
         assert_eq!(catalog.recommended_count, 2);
-        assert_eq!(catalog.options[0].spec.as_deref(), Some("openai/gpt-5.2"));
-        assert_eq!(catalog.options[0].label, "openai/gpt-5.2");
+        assert_eq!(catalog.options[0].spec.as_deref(), Some("openai/gpt-5.5"));
+        assert_eq!(catalog.options[0].label, "openai/gpt-5.5");
         assert_eq!(
             catalog.options[0].hint,
-            "OpenAI: GPT-5.2 · optimized for long-running agents"
+            "OpenAI: GPT-5.5 · frontier model for complex coding"
         );
         assert_eq!(
             catalog.options[1].spec.as_deref(),
@@ -3839,8 +3839,8 @@ mod tests {
             "openrouter",
             vec![
                 discovered("zai/glm-5", None),
-                discovered("openai/gpt-5.2", None),
-                discovered("anthropic/claude-sonnet-4-5", None),
+                discovered("openai/gpt-5.5", None),
+                discovered("anthropic/claude-opus-4-8", None),
             ],
             None,
         );
@@ -3854,10 +3854,10 @@ mod tests {
         });
 
         let options = app.model_options("openrouter");
-        assert_eq!(options[0].spec.as_deref(), Some("openai/gpt-5.2"));
+        assert_eq!(options[0].spec.as_deref(), Some("openai/gpt-5.5"));
         assert_eq!(
             options[1].spec.as_deref(),
-            Some("anthropic/claude-sonnet-4-5")
+            Some("anthropic/claude-opus-4-8")
         );
         assert_eq!(options[2].spec.as_deref(), Some("zai/glm-5"));
         assert_eq!(app.model_recommended_count("openrouter"), 2);
@@ -3877,8 +3877,8 @@ mod tests {
             "openrouter",
             vec![
                 discovered("zai/glm-5", None),
-                discovered("openai/gpt-5.2", None),
-                discovered("anthropic/claude-sonnet-4-5", None),
+                discovered("openai/gpt-5.5", None),
+                discovered("anthropic/claude-opus-4-8", None),
                 discovered("moon/kimi-k3", None),
             ],
             None,
@@ -3893,8 +3893,8 @@ mod tests {
         assert_eq!(
             ids,
             &[
-                "openai/gpt-5.2",
-                "anthropic/claude-sonnet-4-5",
+                "openai/gpt-5.5",
+                "anthropic/claude-opus-4-8",
                 "moon/kimi-k3",
                 "zai/glm-5",
             ]

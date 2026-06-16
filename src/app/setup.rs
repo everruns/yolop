@@ -295,19 +295,19 @@ impl App {
             ],
             "openrouter" => vec![
                 ModelOption {
-                    spec: Some("openai/gpt-5.2".to_string()),
-                    label: "openai/gpt-5.2".to_string(),
-                    hint: "default OpenRouter model".to_string(),
+                    spec: Some("openai/gpt-5.5".to_string()),
+                    label: "openai/gpt-5.5".to_string(),
+                    hint: "frontier OpenAI model through OpenRouter".to_string(),
+                },
+                ModelOption {
+                    spec: Some("anthropic/claude-opus-4-8".to_string()),
+                    label: "anthropic/claude-opus-4-8".to_string(),
+                    hint: "most capable Claude through OpenRouter".to_string(),
                 },
                 ModelOption {
                     spec: Some("nvidia/nemotron-3-super-120b-a12b high".to_string()),
                     label: "nvidia/nemotron-3-super-120b-a12b".to_string(),
                     hint: "reasoning model through OpenRouter".to_string(),
-                },
-                ModelOption {
-                    spec: Some("anthropic/claude-sonnet-4-5".to_string()),
-                    label: "anthropic/claude-sonnet-4-5".to_string(),
-                    hint: "Claude through OpenRouter".to_string(),
                 },
             ],
             "ollama" => vec![ModelOption {
