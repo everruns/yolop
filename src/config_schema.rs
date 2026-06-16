@@ -91,7 +91,8 @@ pub fn schema() -> &'static [ConfigField] {
             description: "Global fallback model spec applied to the active provider when that \
                           provider has no per-provider entry under `models`. Provider-relative, \
                           same `model [reasoning-effort]` form `/setup model` accepts. A \
-                          per-provider `models.<provider>` pick always wins over this.",
+                          per-provider `models.<provider>` pick always wins over this. Applied \
+                          only when the model id is recognized for the active provider.",
             kind: ValueKind::Text,
             default: Some("the active provider's built-in default model"),
             examples: &["claude-sonnet-4-5", "gpt-5.5 high", "gemini-2.5-pro"],

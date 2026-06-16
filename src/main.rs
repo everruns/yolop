@@ -49,7 +49,7 @@ use everruns_core::message::MessageRole;
 use everruns_core::typed_id::SessionId;
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
-use runtime::{BuiltRuntime, ProviderChoice};
+use runtime::{BuiltRuntime, ProviderChoice, ResolvedProviderChoice, resolve_for_settings};
 use settings::SettingsStore;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -177,26 +177,40 @@ fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
 /// Resolution order: explicit `--provider` flag > persisted settings >
 /// env-var auto-detection. Model and reasoning-effort flags layer on top
 /// of whichever base was chosen.
-fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
+fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<String>) {
     let snapshot = settings.snapshot();
     let cli_reasoning_effort = runtime::normalize_reasoning_effort(cli.reasoning_effort.clone());
-    let base = if let Some(arg) = cli.provider {
-        ProviderChoice::default_for_provider_name(provider_name_for_arg(arg))
+    let mut notes = Vec::new();
+
+    let resolved = if let Some(arg) = cli.provider {
+        resolve_for_settings(provider_name_for_arg(arg), &snapshot)
             .expect("ProviderArg names are always valid")
     } else if let Some(saved) = snapshot.default_provider.as_deref() {
-        match ProviderChoice::default_for_provider_name(saved) {
-            Ok(choice) => choice,
+        match resolve_for_settings(saved, &snapshot) {
+            Ok(resolved) => resolved,
             Err(err) => {
                 eprintln!("yolop: ignoring saved provider `{saved}`: {err}");
-                ProviderChoice::from_env_or_settings(&snapshot)
+                let auto = ProviderChoice::from_env_or_settings(&snapshot);
+                resolve_for_settings(auto.provider_name(), &snapshot).unwrap_or(
+                    ResolvedProviderChoice {
+                        choice: auto,
+                        source: runtime::ModelResolutionSource::ProviderDefault,
+                        notes: vec![],
+                    },
+                )
             }
         }
     } else {
-        ProviderChoice::from_env_or_settings(&snapshot)
+        let auto = ProviderChoice::from_env_or_settings(&snapshot);
+        resolve_for_settings(auto.provider_name(), &snapshot).unwrap_or(ResolvedProviderChoice {
+            choice: auto,
+            source: runtime::ModelResolutionSource::ProviderDefault,
+            notes: vec![],
+        })
     };
-    // A model persisted by `/setup model` for the chosen provider wins over
-    // the provider default; CLI flags still override it below.
-    let base = base.with_saved_model(&snapshot);
+
+    notes.extend(resolved.notes);
+    let base = resolved.choice;
     let selected = match (base, cli.model.clone()) {
         (ProviderChoice::Anthropic { .. }, Some(m)) => ProviderChoice::Anthropic { model: m },
         (
@@ -246,7 +260,7 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
         },
         (other, _) => other,
     };
-    match (selected, cli_reasoning_effort) {
+    let selected = match (selected, cli_reasoning_effort) {
         (
             ProviderChoice::OpenAi {
                 model,
@@ -290,7 +304,8 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
             reasoning_effort: effort.or(reasoning_effort),
         },
         (other, _) => other,
-    }
+    };
+    (selected, notes)
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -320,7 +335,15 @@ async fn main() -> Result<()> {
         std::path::PathBuf::from("/dev/null/yolop/settings.toml")
     });
     let settings = Arc::new(SettingsStore::open(settings_path));
-    let provider = pick_provider(&cli, &settings);
+    let (mut provider, mut notes) = pick_provider(&cli, &settings);
+    let snapshot = settings.snapshot();
+    let (reconciled, catalog_notes) =
+        capabilities::model_discovery::reconcile_provider_with_catalog(provider, &snapshot).await;
+    provider = reconciled;
+    notes.extend(catalog_notes);
+    for note in notes {
+        eprintln!("yolop: {note}");
+    }
 
     let resume_session_id = match cli.session.as_deref() {
         Some(raw) => Some(
@@ -791,7 +814,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("settings tempdir");
         let settings = SettingsStore::open(tmp.path().join("settings.toml"));
 
-        let provider = pick_provider(&cli_with_reasoning_effort(Some(" HIGH ")), &settings);
+        let (provider, _notes) =
+            pick_provider(&cli_with_reasoning_effort(Some(" HIGH ")), &settings);
 
         assert_eq!(
             provider.label(),
@@ -804,7 +828,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("settings tempdir");
         let settings = SettingsStore::open(tmp.path().join("settings.toml"));
 
-        let provider = pick_provider(&cli_with_reasoning_effort(Some("  ")), &settings);
+        let (provider, _notes) = pick_provider(&cli_with_reasoning_effort(Some("  ")), &settings);
 
         assert_eq!(
             provider.label(),
@@ -838,7 +862,7 @@ mod tests {
             session_dir: None,
         };
 
-        let provider = pick_provider(&cli, &settings);
+        let (provider, _notes) = pick_provider(&cli, &settings);
 
         assert_eq!(provider.label(), "openai/gpt-5.4 high");
     }

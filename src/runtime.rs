@@ -35,6 +35,7 @@ use everruns_core::capabilities::{
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
+use everruns_core::get_model_profile;
 use everruns_core::in_memory::InMemoryMessageRetriever;
 use everruns_core::llm_driver_registry::{DriverRegistry, ProviderMetadata};
 use everruns_core::llmsim_driver::LlmSimConfig;
@@ -485,7 +486,7 @@ impl ProviderChoice {
         // The custom endpoint has no default model, so it is auto-selected
         // only when a model is also known (env override or a persisted
         // `[models].custom` pick — applied by the caller's
-        // `with_saved_model`). Otherwise a non-interactive run would send a
+        // `resolve_for_settings`). Otherwise a non-interactive run would send a
         // Chat Completions request with an empty model id.
         if (env_non_empty("CUSTOM_BASE_URL").is_some() || settings.base_url_for("custom").is_some())
             && (env_non_empty("EVERRUNS_CLI_MODEL").is_some()
@@ -615,29 +616,180 @@ impl ProviderChoice {
         }
     }
 
-    /// Overlay the model spec persisted for this provider in settings, if
-    /// any. `EVERRUNS_CLI_MODEL` keeps precedence (env beats settings,
-    /// matching token resolution); a stored spec that fails to parse is
-    /// ignored rather than fatal. Specs are provider-relative
-    /// (`gpt-5.5 medium`), matching `/setup model`.
-    pub fn with_saved_model(self, settings: &Settings) -> Self {
-        if env_non_empty("EVERRUNS_CLI_MODEL").is_some() {
-            return self;
-        }
-        // A per-provider pick wins; the global `default_model` is the
-        // cross-provider fallback when this provider has no saved model.
-        let Some(spec) = settings
-            .model_for(self.provider_name())
-            .or_else(|| settings.default_model())
-        else {
-            return self;
+    /// Provider name used when previewing config changes before the next run.
+    pub fn preview_provider_name(settings: &Settings) -> String {
+        settings.default_provider.clone().unwrap_or_else(|| {
+            Self::from_env_or_settings(settings)
+                .provider_name()
+                .to_string()
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModelResolutionSource {
+    ProviderDefault,
+    PerProviderModel,
+    DefaultModel,
+    EnvOverride,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedProviderChoice {
+    pub choice: ProviderChoice,
+    pub source: ModelResolutionSource,
+    pub notes: Vec<String>,
+}
+
+impl ResolvedProviderChoice {
+    pub fn next_run_preview(&self) -> String {
+        let label = self.choice.label();
+        let mut preview = match self.source {
+            ModelResolutionSource::PerProviderModel => {
+                let provider = self.choice.provider_name();
+                format!("→ next run: {label} (from models.{provider})")
+            }
+            ModelResolutionSource::DefaultModel => {
+                format!("→ next run: {label} (from default_model)")
+            }
+            ModelResolutionSource::EnvOverride => {
+                format!("→ next run: {label} (EVERRUNS_CLI_MODEL env)")
+            }
+            ModelResolutionSource::ProviderDefault => {
+                format!("→ next run: {label} (provider default)")
+            }
         };
-        match self.resolve_model_spec(spec) {
-            Ok(saved) => saved,
-            Err(_) => self,
+        for note in &self.notes {
+            preview.push('\n');
+            preview.push_str("→ ");
+            preview.push_str(note);
         }
+        preview
+    }
+}
+
+fn bare_model_id_from_spec(spec: &str) -> &str {
+    spec.split_whitespace().next().unwrap_or(spec)
+}
+
+fn driver_id_for_provider_name(provider: &str) -> Option<DriverId> {
+    match provider {
+        "anthropic" => Some(DriverId::Anthropic),
+        "openai" => Some(DriverId::OpenAI),
+        "google" => Some(DriverId::OpenAI),
+        "openrouter" => Some(DriverId::OpenRouter),
+        _ => None,
+    }
+}
+
+/// Whether a bare model id plausibly belongs to the given provider. Used to
+/// gate the cross-provider `default_model` fallback so an OpenAI pick is not
+/// silently applied after switching to Anthropic.
+pub fn model_compatible_with_provider(model_id: &str, provider: &str) -> bool {
+    match provider {
+        "openrouter" | "ollama" | "custom" => true,
+        "llmsim" => model_id == "llmsim-yolop",
+        "anthropic" | "openai" | "google" => {
+            let bare = model_id.strip_suffix("[1m]").unwrap_or(model_id);
+            if ProviderChoice::model_suggestions_for_provider(provider)
+                .iter()
+                .any(|s| bare_model_id_from_spec(s) == bare)
+            {
+                return true;
+            }
+            if let Some(driver) = driver_id_for_provider_name(provider)
+                && get_model_profile(&driver, bare).is_some()
+            {
+                return true;
+            }
+            match provider {
+                "anthropic" => bare.starts_with("claude-"),
+                "openai" => {
+                    bare.starts_with("gpt-")
+                        || bare.starts_with("o1")
+                        || bare.starts_with("o3")
+                        || bare.starts_with("o4")
+                        || bare.starts_with("codex")
+                }
+                "google" => bare.starts_with("gemini-"),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Resolve a provider plus its model from persisted settings.
+///
+/// Priority: `EVERRUNS_CLI_MODEL` env → `models.<provider>` → compatible
+/// `default_model` → the provider's built-in default.
+pub fn resolve_for_settings(provider: &str, settings: &Settings) -> Result<ResolvedProviderChoice> {
+    let base = ProviderChoice::default_for_provider_name(provider)?;
+    let base_label = base.label();
+    if env_non_empty("EVERRUNS_CLI_MODEL").is_some() {
+        return Ok(ResolvedProviderChoice {
+            choice: base,
+            source: ModelResolutionSource::EnvOverride,
+            notes: vec![],
+        });
     }
 
+    let provider_name = base.provider_name();
+
+    if let Some(spec) = settings.model_for(provider_name) {
+        return match base.resolve_model_spec(spec) {
+            Ok(choice) => Ok(ResolvedProviderChoice {
+                choice,
+                source: ModelResolutionSource::PerProviderModel,
+                notes: vec![],
+            }),
+            Err(err) => Ok(ResolvedProviderChoice {
+                choice: base,
+                source: ModelResolutionSource::ProviderDefault,
+                notes: vec![format!(
+                    "ignored models.{provider_name} \"{spec}\": {err}; using {base_label}"
+                )],
+            }),
+        };
+    }
+
+    if let Some(spec) = settings.default_model() {
+        let model_id = bare_model_id_from_spec(spec);
+        if !model_compatible_with_provider(model_id, provider_name) {
+            return Ok(ResolvedProviderChoice {
+                choice: base,
+                source: ModelResolutionSource::ProviderDefault,
+                notes: vec![format!(
+                    "default_model \"{spec}\" ignored for {provider_name} (not a recognized \
+                     {provider_name} model); using {base_label}"
+                )],
+            });
+        }
+        return match base.resolve_model_spec(spec) {
+            Ok(choice) => Ok(ResolvedProviderChoice {
+                choice,
+                source: ModelResolutionSource::DefaultModel,
+                notes: vec![],
+            }),
+            Err(err) => Ok(ResolvedProviderChoice {
+                choice: base,
+                source: ModelResolutionSource::ProviderDefault,
+                notes: vec![format!(
+                    "default_model \"{spec}\" ignored for {provider_name}: {err}; using \
+                     {base_label}"
+                )],
+            }),
+        };
+    }
+
+    Ok(ResolvedProviderChoice {
+        choice: base,
+        source: ModelResolutionSource::ProviderDefault,
+        notes: vec![],
+    })
+}
+
+impl ProviderChoice {
     pub fn model_id(&self) -> &str {
         match self {
             Self::Anthropic { model }
@@ -2540,14 +2692,17 @@ mod tests {
         assert_eq!(provider.provider_name(), "openai");
 
         // With a persisted model the custom endpoint is auto-selected (the
-        // caller's `with_saved_model` fills the model in).
+        // caller's `resolve_for_settings` fills the model in).
         settings
             .models
             .insert("custom".to_string(), "qwen3-coder".to_string());
         let provider = ProviderChoice::from_env_or_settings(&settings);
         assert_eq!(provider.provider_name(), "custom");
         assert_eq!(
-            provider.with_saved_model(&settings).label(),
+            resolve_for_settings(provider.provider_name(), &settings)
+                .expect("resolve")
+                .choice
+                .label(),
             "custom/qwen3-coder"
         );
     }
@@ -2618,7 +2773,7 @@ mod tests {
     }
 
     #[test]
-    fn with_saved_model_overlays_persisted_spec_for_same_provider() {
+    fn resolve_for_settings_overlays_persisted_spec_for_same_provider() {
         let _guard = crate::test_env::lock();
         unsafe {
             std::env::remove_var("EVERRUNS_CLI_MODEL");
@@ -2633,19 +2788,19 @@ mod tests {
             .models
             .insert("anthropic".to_string(), "claude-opus-4-5 high".to_string());
 
-        let openai = ProviderChoice::default_for_provider_name("openai")
-            .unwrap()
-            .with_saved_model(&settings);
+        let openai = resolve_for_settings("openai", &settings)
+            .expect("resolve")
+            .choice;
         assert_eq!(openai.label(), "openai/gpt-5.4 high");
 
-        let anthropic = ProviderChoice::default_for_provider_name("anthropic")
-            .unwrap()
-            .with_saved_model(&settings);
+        let anthropic = resolve_for_settings("anthropic", &settings)
+            .expect("resolve")
+            .choice;
         assert_eq!(anthropic.label(), "anthropic/claude-sonnet-4-5");
     }
 
     #[test]
-    fn with_saved_model_falls_back_to_global_default_model() {
+    fn resolve_for_settings_falls_back_to_global_default_model() {
         let _guard = crate::test_env::lock();
         unsafe {
             std::env::remove_var("EVERRUNS_CLI_MODEL");
@@ -2656,19 +2811,83 @@ mod tests {
         };
 
         // No per-provider entry, so the global default_model is applied.
-        let anthropic = ProviderChoice::default_for_provider_name("anthropic")
-            .unwrap()
-            .with_saved_model(&settings);
+        let anthropic = resolve_for_settings("anthropic", &settings)
+            .expect("resolve")
+            .choice;
         assert_eq!(anthropic.label(), "anthropic/claude-opus-4-5");
 
         // A per-provider pick still wins over the global default.
         settings
             .models
             .insert("anthropic".to_string(), "claude-haiku-4-5".to_string());
-        let anthropic = ProviderChoice::default_for_provider_name("anthropic")
-            .unwrap()
-            .with_saved_model(&settings);
+        let anthropic = resolve_for_settings("anthropic", &settings)
+            .expect("resolve")
+            .choice;
         assert_eq!(anthropic.label(), "anthropic/claude-haiku-4-5");
+    }
+
+    #[test]
+    fn resolve_for_settings_ignores_cross_provider_default_model() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("EVERRUNS_CLI_MODEL");
+        }
+        let settings = Settings {
+            default_provider: Some("anthropic".to_string()),
+            default_model: Some("gpt-5.5".to_string()),
+            ..Default::default()
+        };
+
+        let resolved = resolve_for_settings("anthropic", &settings).expect("resolve");
+        assert_eq!(resolved.choice.label(), "anthropic/claude-sonnet-4-5");
+        assert_eq!(resolved.source, ModelResolutionSource::ProviderDefault);
+        assert!(
+            resolved.notes.iter().any(|n| n.contains("default_model")),
+            "expected warning about ignored default_model, got {:?}",
+            resolved.notes
+        );
+    }
+
+    #[test]
+    fn resolve_for_settings_uses_per_provider_model() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("EVERRUNS_CLI_MODEL");
+        }
+        let mut settings = Settings::default();
+        settings
+            .models
+            .insert("openai".to_string(), "gpt-5.4 high".to_string());
+
+        let resolved = resolve_for_settings("openai", &settings).expect("resolve");
+        assert_eq!(resolved.choice.label(), "openai/gpt-5.4 high");
+        assert_eq!(resolved.source, ModelResolutionSource::PerProviderModel);
+    }
+
+    #[test]
+    fn model_compatible_with_provider_rejects_obvious_mismatches() {
+        assert!(model_compatible_with_provider(
+            "claude-opus-4-5",
+            "anthropic"
+        ));
+        assert!(model_compatible_with_provider("gpt-5.5", "openai"));
+        assert!(!model_compatible_with_provider("gpt-5.5", "anthropic"));
+        assert!(model_compatible_with_provider(
+            "anthropic/claude-sonnet-4-5",
+            "openrouter"
+        ));
+    }
+
+    #[test]
+    fn next_run_preview_includes_resolution_notes() {
+        let resolved = ResolvedProviderChoice {
+            choice: ProviderChoice::default_for_provider_name("anthropic").unwrap(),
+            source: ModelResolutionSource::ProviderDefault,
+            notes: vec!["default_model \"gpt-5.5\" ignored for anthropic".to_string()],
+        };
+        let preview = resolved.next_run_preview();
+        assert!(preview.contains("provider default"));
+        assert!(preview.contains("default_model"));
     }
 
     #[test]

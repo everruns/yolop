@@ -19,7 +19,9 @@ use crate::capability_settings::{
 };
 use crate::config_schema::{KeyTarget, ValueKind, known_keys, parse_key, schema};
 use crate::config_service::{ConfigService, current_value, scoped_current};
-use crate::runtime::{SUPPORTED_PROVIDERS, coding_harness_defaults};
+use crate::runtime::{
+    ProviderChoice, SUPPORTED_PROVIDERS, coding_harness_defaults, resolve_for_settings,
+};
 use crate::settings::{ApprovalMode, Settings, SettingsStore};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
@@ -422,8 +424,11 @@ impl SetConfigTool {
                 self.settings
                     .set_default_provider(Some(provider.clone()))
                     .map_err(map_err)?;
+                let preview = resolve_for_settings(&provider, &self.settings.snapshot())
+                    .map(|resolved| resolved.next_run_preview())
+                    .unwrap_or_else(|err| format!("→ next run: could not resolve model: {err}"));
                 Ok(saved(format!(
-                    "default_provider = {provider}; applies on the next run (use /setup to switch now)"
+                    "default_provider = {provider}; applies on the next run (use /setup to switch now)\n{preview}"
                 )))
             }
             KeyTarget::DefaultModel => {
@@ -434,8 +439,13 @@ impl SetConfigTool {
                 self.settings
                     .set_default_model(Some(value.to_string()))
                     .map_err(map_err)?;
+                let preview_provider =
+                    ProviderChoice::preview_provider_name(&self.settings.snapshot());
+                let preview = resolve_for_settings(&preview_provider, &self.settings.snapshot())
+                    .map(|resolved| resolved.next_run_preview())
+                    .unwrap_or_else(|err| format!("→ next run: could not resolve model: {err}"));
                 Ok(saved(format!(
-                    "default_model = {value}; applies on the next run (use /setup to switch now)"
+                    "default_model = {value}; applies on the next run (use /setup to switch now)\n{preview}"
                 )))
             }
             KeyTarget::Attribution => {
@@ -560,7 +570,14 @@ mod tests {
         let r = tool
             .execute(json!({ "key": "default_provider", "value": "anthropic" }))
             .await;
-        assert!(matches!(r, ToolExecutionResult::Success(_)));
+        match &r {
+            ToolExecutionResult::Success(msg) => {
+                let text = msg.to_string();
+                assert!(text.contains("→ next run:"), "{text}");
+                assert!(text.contains("anthropic/"), "{text}");
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
         assert_eq!(
             settings.snapshot().default_provider.as_deref(),
             Some("anthropic")
@@ -570,6 +587,29 @@ mod tests {
         tool.execute(json!({ "key": "model", "value": "claude-opus-4-5" }))
             .await;
         assert_eq!(settings.snapshot().default_model(), Some("claude-opus-4-5"));
+    }
+
+    #[tokio::test]
+    async fn set_config_warns_when_default_model_mismatches_provider() {
+        let (_tmp, settings) = store();
+        settings
+            .set_default_model(Some("gpt-5.5".to_string()))
+            .expect("seed default_model");
+        let tool = set_config_tool(settings.clone());
+
+        let r = tool
+            .execute(json!({ "key": "default_provider", "value": "anthropic" }))
+            .await;
+        match &r {
+            ToolExecutionResult::Success(msg) => {
+                let text = msg.to_string();
+                assert!(
+                    text.contains("default_model") && text.contains("ignored"),
+                    "{text}"
+                );
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
     }
 
     #[tokio::test]
