@@ -131,6 +131,10 @@ Background work is visible to the *user*, not just the model:
   every task with its kind, status, exit code, summary, and — for sub-agents —
   the child session id. It works over the TUI and ACP uniformly because it
   returns a plain `CommandResult`.
+- The TUI also has a **read-only panel overlay** (toggle with `Ctrl+B`, ↑/↓ to
+  scroll, `Esc` to close) showing the same `/background` listing live. It mirrors
+  the setup-overlay modal pattern, is suppressed while the setup overlay is open,
+  and captures keys even mid-turn so tasks can be watched during a turn.
 
 ### Proactive wake
 
@@ -163,12 +167,11 @@ without a user prompt.
    child session and drives one turn on a detached task; the parent reads the
    child's result via `background_output`. Each sub-agent is a real session
    folder, so its transcript is resumable. Depth is bounded at one level.
-3. **User surfaces (implemented).** A compact `bg` count in the TUI status bar
-   and a `/background` command listing all tasks (see
-   [User surfaces](#user-surfaces)). A richer interactive view (per-task peek,
-   in-place cancel, a dedicated panel à la Claude Code's agent view) remains a
-   possible enhancement, but the status indicator + command cover the
-   at-a-glance and detail needs.
+3. **User surfaces (implemented).** A compact `bg` count in the TUI status bar,
+   a `/background` command, and a read-only `Ctrl+B` panel overlay (see
+   [User surfaces](#user-surfaces)). Interactive per-task actions in the panel
+   (peek into a task's output, in-place cancel) à la Claude Code's agent view
+   remain a possible enhancement; the current panel is view-only.
 4. **Proactive wake (implemented).** When a task finishes while the TUI session
    is idle, yolop auto-starts a turn so the agent reacts immediately rather than
    waiting for the next user prompt (see [Proactive wake](#proactive-wake)).
