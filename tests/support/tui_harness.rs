@@ -111,6 +111,11 @@ impl TuiHarness {
         String::from_utf8_lossy(&self.output).into_owned()
     }
 
+    pub fn clear_output(&mut self) {
+        while self.output_rx.try_recv().is_ok() {}
+        self.output.clear();
+    }
+
     fn drain_output(&mut self) {
         while let Ok(chunk) = self.output_rx.try_recv() {
             self.output.extend_from_slice(&chunk);
@@ -278,7 +283,11 @@ pub fn assert_cursor_near_bottom(tui: &mut TuiHarness, rows: u16) {
 }
 
 pub fn max_absolute_cursor_row(output: &[u8]) -> Option<u16> {
-    let mut row = None;
+    max_absolute_cursor_position(output).map(|(row, _)| row)
+}
+
+pub fn max_absolute_cursor_position(output: &[u8]) -> Option<(u16, u16)> {
+    let mut position = None;
     let mut i = 0;
     while i + 2 < output.len() {
         if output[i] != 0x1b || output[i + 1] != b'[' {
@@ -297,19 +306,29 @@ pub fn max_absolute_cursor_row(output: &[u8]) -> Option<u16> {
         if matches!(final_byte, b'H' | b'f') {
             let params = std::str::from_utf8(&output[start..end]).ok()?;
             if !params.starts_with('?') {
-                let parsed = params
-                    .split(';')
+                let mut parts = params.split(';');
+                let row = parts
                     .next()
                     .filter(|value| !value.is_empty())
                     .unwrap_or("1")
                     .parse::<u16>()
                     .ok();
-                if let Some(parsed) = parsed {
-                    row = Some(row.map_or(parsed, |current: u16| current.max(parsed)));
+                let col = parts
+                    .next()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("1")
+                    .parse::<u16>()
+                    .ok();
+                if let (Some(row), Some(col)) = (row, col) {
+                    position = Some(
+                        position.map_or((row, col), |(max_row, max_col): (u16, u16)| {
+                            (max_row.max(row), max_col.max(col))
+                        }),
+                    );
                 }
             }
         }
         i = end + 1;
     }
-    row
+    position
 }

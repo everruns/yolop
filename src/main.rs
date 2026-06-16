@@ -40,8 +40,7 @@ extern crate everruns_integrations_daytona;
 use app::{App, COMPOSER_VIEWPORT_HEIGHT};
 use clap::{Args, Parser, Subcommand};
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
@@ -455,7 +454,6 @@ fn run_command(command: Commands) -> Result<()> {
 async fn run_tui(runtime: BuiltRuntime) -> Result<()> {
     let mut raw_mode = RawModeGuard::new()?;
     let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
-    let mut mouse_capture = MouseCaptureGuard::new();
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::with_options(
@@ -490,7 +488,6 @@ async fn run_tui(runtime: BuiltRuntime) -> Result<()> {
         tracing::warn!("cursor restore failed: {err:#}");
     }
     drop(terminal);
-    mouse_capture.disable();
     keyboard_enhancements.disable();
     raw_mode.disable()?;
 
@@ -558,33 +555,6 @@ impl Drop for RawModeGuard {
 
 struct KeyboardEnhancementGuard {
     active: bool,
-}
-
-struct MouseCaptureGuard {
-    active: bool,
-}
-
-impl MouseCaptureGuard {
-    fn new() -> Self {
-        let mut stdout = io::stdout();
-        let active = execute!(stdout, EnableMouseCapture).is_ok();
-        Self { active }
-    }
-
-    fn disable(&mut self) {
-        if self.active {
-            let mut stdout = io::stdout();
-            let _ = queue!(stdout, DisableMouseCapture);
-            let _ = stdout.flush();
-            self.active = false;
-        }
-    }
-}
-
-impl Drop for MouseCaptureGuard {
-    fn drop(&mut self) {
-        self.disable();
-    }
 }
 
 impl KeyboardEnhancementGuard {
