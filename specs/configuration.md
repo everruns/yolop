@@ -39,6 +39,7 @@ Keys are addressed the way a human would name them:
 | `base_urls.<provider>`    | text   | Endpoint base URL (used by the `custom` provider).             |
 | `approval_mode`           | text   | Soft-approval paranoia level (`protective` / `normal` / `off`). |
 | `attribution`             | bool   | Commit/PR attribution on/off.                                  |
+| `proactive_wake`          | bool   | Auto-start a turn when a background task finishes (TUI); on by default. |
 | `capabilities`            | list   | Ordered `[[capabilities]]` harness overrides; `capabilities.<ref>` for schema metadata. |
 
 `default_provider` is persisted under that name on disk; the legacy `provider`

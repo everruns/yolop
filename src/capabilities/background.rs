@@ -49,6 +49,11 @@ const DISCLOSED_TASKS: usize = 10;
 /// Default tail size returned by `background_output` when the caller does not
 /// ask for a specific window.
 const DEFAULT_OUTPUT_TAIL_BYTES: usize = 16 * 1024;
+/// Cap on concurrently-running background tasks (scripts + sub-agents). A
+/// model-facing guardrail against unbounded fan-out — `background_run` /
+/// `background_agent` refuse past this until a running task finishes or is
+/// cancelled. Generous enough for normal parallel work.
+const MAX_CONCURRENT_TASKS: usize = 8;
 
 // ---------- data model ----------
 
@@ -313,6 +318,18 @@ impl BackgroundRegistry {
             guard.notified.insert(r.id.clone());
         }
         finished
+    }
+
+    /// `Some(error)` when too many tasks are already running, for the spawn
+    /// tools to reject new work. `None` when there is capacity.
+    pub fn capacity_error(&self) -> Option<String> {
+        let (running, _) = self.counts();
+        (running >= MAX_CONCURRENT_TASKS).then(|| {
+            format!(
+                "too many background tasks already running ({running}/{MAX_CONCURRENT_TASKS}); \
+                 wait for one to finish or cancel one with `background_cancel`"
+            )
+        })
     }
 
     /// Human-readable task list for the `/background` command, most-recently-
@@ -1178,6 +1195,9 @@ impl Tool for BackgroundRunTool {
                 );
             }
         };
+        if let Some(err) = self.registry.capacity_error() {
+            return ToolExecutionResult::tool_error(err);
+        }
         let label = arguments
             .get("label")
             .and_then(Value::as_str)
@@ -1241,6 +1261,9 @@ impl Tool for BackgroundAgentTool {
                 return ToolExecutionResult::tool_error("'task' is required and must be non-empty");
             }
         };
+        if let Some(err) = self.registry.capacity_error() {
+            return ToolExecutionResult::tool_error(err);
+        }
         let label = arguments
             .get("label")
             .and_then(Value::as_str)
@@ -1665,6 +1688,35 @@ mod tests {
             "got: {many}"
         );
         assert!(many.contains("2 background tasks"), "got: {many}");
+    }
+
+    #[tokio::test]
+    async fn capacity_error_blocks_spawn_at_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(tmp.path()));
+        assert!(reg.capacity_error().is_none());
+
+        // Fill to the cap with long-running scripts (Running synchronously).
+        for _ in 0..MAX_CONCURRENT_TASKS {
+            reg.spawn_script(None, "sleep 30".into());
+        }
+        assert_eq!(reg.counts().0, MAX_CONCURRENT_TASKS);
+        assert!(reg.capacity_error().is_some());
+
+        // The spawn tool refuses past the cap.
+        let run = BackgroundRunTool {
+            registry: reg.clone(),
+        };
+        assert!(
+            run.execute(json!({ "command": "echo hi" }))
+                .await
+                .is_error()
+        );
+
+        // Cancelling a running task frees a slot.
+        let any_id = reg.list()[0].id.clone();
+        assert!(reg.cancel(&any_id));
+        assert!(reg.capacity_error().is_none());
     }
 
     #[test]

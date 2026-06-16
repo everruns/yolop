@@ -162,6 +162,18 @@ pub fn schema() -> &'static [ConfigField] {
             provider_scoped: false,
         },
         ConfigField {
+            key: "proactive_wake",
+            aliases: &["background_wake", "wake"],
+            title: "Proactive background wake",
+            description: "When on, the TUI auto-starts a turn so the agent reacts as soon as a \
+                          background task finishes (instead of waiting for your next prompt). Turn \
+                          off for a quieter session where you review finished tasks yourself.",
+            kind: ValueKind::Bool,
+            default: Some("on"),
+            examples: &["on", "off"],
+            provider_scoped: false,
+        },
+        ConfigField {
             key: "capabilities",
             aliases: &["capability"],
             title: "Harness capabilities",
@@ -194,6 +206,7 @@ pub enum KeyTarget {
     DefaultModel,
     Attribution,
     ApprovalMode,
+    ProactiveWake,
     /// Per-provider model spec, for the named provider.
     Model(String),
     /// Per-provider API token.
@@ -214,6 +227,7 @@ impl KeyTarget {
             KeyTarget::DefaultModel => "default_model",
             KeyTarget::Attribution => "attribution",
             KeyTarget::ApprovalMode => "approval_mode",
+            KeyTarget::ProactiveWake => "proactive_wake",
             KeyTarget::Model(_) => "models",
             KeyTarget::Token(_) => "tokens",
             KeyTarget::BaseUrl(_) => "base_urls",
@@ -264,6 +278,7 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "default_model" | "model" => scalar(KeyTarget::DefaultModel),
         "attribution" => scalar(KeyTarget::Attribution),
         "approval_mode" | "approval" => scalar(KeyTarget::ApprovalMode),
+        "proactive_wake" | "background_wake" | "wake" => scalar(KeyTarget::ProactiveWake),
         "models" | "model_for" => scoped(KeyTarget::Model),
         "tokens" | "token" => scoped(KeyTarget::Token),
         "base_urls" | "base_url" | "url" => scoped(KeyTarget::BaseUrl),

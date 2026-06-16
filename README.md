@@ -89,7 +89,8 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   restart (a task still running when yolop exits is restored as `interrupted`; a
   sub-agent's child session is resumable with `--session`). When a task finishes
   while the TUI is idle, yolop proactively wakes the agent with a turn so it
-  reacts without waiting for your next prompt.
+  reacts without waiting for your next prompt (turn off with the `proactive_wake`
+  setting). Concurrent tasks are capped to keep fan-out bounded.
   See [`specs/background.md`](./specs/background.md).
 - **Web** — `web_fetch` (HTTP GET/HEAD with markdown/text conversion, DNS-pinned
   SSRF protection) and `duckduckgo_search` (free, no API key). Setting

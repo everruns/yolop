@@ -116,7 +116,9 @@ the task is still running. A per-task output cap (256 KiB) and a wall-clock
 safety ceiling (30 min, → `timed_out`) keep a runaway background command from
 filling the disk or living forever; both are generous for the CI-wait case. The
 same cap and ceiling apply to sub-agents (a `timed_out` sub-agent abandons its
-child turn).
+child turn). A cap on concurrently-running tasks (8, scripts + sub-agents
+combined) guards against unbounded fan-out: `background_run` / `background_agent`
+refuse new work past the cap until a running task finishes or is cancelled.
 
 ### User surfaces
 
@@ -146,6 +148,9 @@ without a user prompt.
 - It only fires when idle, so it never interrupts an in-flight turn; each task
   wakes at most once; and tasks restored from a previous run are pre-marked, so
   a resumed session never wakes for work that finished before the restart.
+- Opt-out: the `proactive_wake` setting (on by default) disables the auto-turn.
+  With it off, a finished task still prints a one-line notice (drained once) but
+  the agent waits for the user's next prompt.
 - Scope: the interactive TUI only (the loop that owns turn submission).
   `--print` is one-shot and ACP turns are editor-driven, so neither auto-wakes.
 
