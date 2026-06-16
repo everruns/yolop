@@ -8,7 +8,8 @@ use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles, StartupInfo};
 use crate::tools::{BashTool, Workspace};
 use anyhow::Result;
 use crossterm::event::{
-    self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
+    MouseEvent, MouseEventKind,
 };
 use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_core::events::{Event as RuntimeEvent, EventData, ToolCompletedData};
@@ -96,6 +97,7 @@ pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
 const MAX_TERMINAL_IO_FAILURES: usize = 5;
 const COMPACT_CHROME_HEIGHT: u16 = 5;
 const MAX_INPUT_HEIGHT: u16 = 12;
+const EXPANDED_STATUS_ROWS: u16 = 3;
 const RECENT_TRANSCRIPT_SOURCE_LINES: usize = 80;
 const RECENT_TRANSCRIPT_MAX_TEXT_BYTES: usize = 4_000;
 const ACCENT_BLUE: Color = Color::Rgb(45, 91, 158);
@@ -134,6 +136,8 @@ pub struct App {
     /// handling so provider, token, and model setup never echo through the
     /// normal chat composer.
     setup: Option<SetupStep>,
+    status_layout: StatusLayout,
+    session_tokens: Option<u64>,
     /// Terminal-side commands emitted by `ClientCommandsCapability` (via
     /// `runtime.execute_command`). Drained in the event loop; see
     /// [`App::apply_ui_command`].
@@ -319,10 +323,14 @@ pub(crate) struct ViewState {
     pub busy: bool,
     pub busy_frame: u64,
     pub turn_activity: Option<String>,
-    pub model_label: String,
-    pub workspace_root: std::path::PathBuf,
+    pub model_id: String,
+    pub provider_name: String,
+    pub reasoning_effort: Option<String>,
     pub session_id: SessionId,
     pub lines_count: usize,
+    pub session_tokens: Option<u64>,
+    pub status_layout: StatusLayout,
+    pub hooks_summary: String,
     /// Current soft-approval level (`protective` / `normal` / `off`), shown
     /// in the session status bar so the paranoia level is always visible.
     pub approval_mode: String,
@@ -365,6 +373,21 @@ pub struct ActivityStatus {
     fallback: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StatusLayout {
+    Compact,
+    Expanded,
+}
+
+impl StatusLayout {
+    pub(crate) fn row_count(self) -> u16 {
+        match self {
+            Self::Compact => 1,
+            Self::Expanded => EXPANDED_STATUS_ROWS,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum TurnEvent {
     Lines(Vec<ChatLine>),
@@ -372,6 +395,7 @@ pub(crate) enum TurnEvent {
     /// Replace the live streaming preview shown above the input.
     /// `None` clears the preview.
     Stream(Option<StreamPreview>),
+    Tokens(u64),
     Done,
     Failed(String),
 }
@@ -398,6 +422,8 @@ impl App {
             rx: None,
             turn_cancel: None,
             setup: None,
+            status_layout: StatusLayout::Compact,
+            session_tokens: None,
             ui_rx: runtime.ui_rx,
             settings: runtime.settings,
             model_catalog: HashMap::new(),
@@ -434,10 +460,14 @@ impl App {
             busy: self.busy,
             busy_frame: self.busy_frame,
             turn_activity: self.turn_activity.clone(),
-            model_label: self.model.provider_label(),
-            workspace_root: self.startup.workspace_root.clone(),
+            model_id: self.model.model_id(),
+            provider_name: self.model.provider_name(),
+            reasoning_effort: self.model.reasoning_effort(),
             session_id: self.handles.session_id,
             lines_count: self.lines.len(),
+            session_tokens: self.session_tokens,
+            status_layout: self.status_layout,
+            hooks_summary: self.startup.hook_summary(),
             approval_mode: self
                 .settings
                 .snapshot()
@@ -559,6 +589,11 @@ impl App {
                     self.stream_preview = preview;
                     return Ok(());
                 }
+                Ok(TurnEvent::Tokens(tokens)) => {
+                    self.session_tokens =
+                        Some(self.session_tokens.unwrap_or(0).saturating_add(tokens));
+                    return Ok(());
+                }
                 Ok(TurnEvent::Done) => {
                     self.finish_busy();
                     return Ok(());
@@ -598,19 +633,27 @@ impl App {
             return Ok(());
         }
 
-        // 4) keystrokes. Mouse wheel/drag stays native terminal behavior
-        // because the transcript lives in scrollback, not in this viewport.
+        // 4) direct terminal input.
         let mut poll_timeout = Duration::from_millis(80);
         while event::poll(poll_timeout)? {
             poll_timeout = Duration::ZERO;
-            if let CrosstermEvent::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Release {
-                    continue;
+            match event::read()? {
+                CrosstermEvent::Key(key) => {
+                    if key.kind == KeyEventKind::Release {
+                        continue;
+                    }
+                    if key.code == KeyCode::Esc && self.handle_escape_prefixed_enter().await? {
+                        continue;
+                    }
+                    self.handle_key(key).await;
                 }
-                if key.code == KeyCode::Esc && self.handle_escape_prefixed_enter().await? {
-                    continue;
+                CrosstermEvent::Mouse(mouse) => {
+                    let area = terminal.get_frame().area();
+                    if self.handle_mouse(mouse, area) {
+                        return Ok(());
+                    }
                 }
-                self.handle_key(key).await;
+                _ => {}
             }
             if self.should_quit {
                 break;
@@ -881,6 +924,7 @@ impl App {
                     self.startup.workspace_root.display()
                 ));
             }
+            UiCommand::SetStatusLayout { arg } => self.set_status_layout(arg.as_deref()),
             UiCommand::ClearTranscript => {
                 self.lines.clear();
                 self.printed_lines = 0;
@@ -914,6 +958,57 @@ impl App {
             newline_shortcut_hint()
         ));
         self.push_system("exit: Ctrl-C twice / Ctrl-D".into());
+    }
+
+    fn set_status_layout(&mut self, raw: Option<&str>) {
+        let layout = match raw.map(str::trim).filter(|s| !s.is_empty()) {
+            None | Some("toggle") => match self.status_layout {
+                StatusLayout::Compact => StatusLayout::Expanded,
+                StatusLayout::Expanded => StatusLayout::Compact,
+            },
+            Some("compact") => StatusLayout::Compact,
+            Some("expanded") => StatusLayout::Expanded,
+            Some(other) => {
+                self.push_system(format!(
+                    "usage: /status [compact|expanded|toggle] (unknown layout: {other})"
+                ));
+                return;
+            }
+        };
+        self.status_layout = layout;
+    }
+
+    fn toggle_status_layout(&mut self) {
+        self.status_layout = match self.status_layout {
+            StatusLayout::Compact => StatusLayout::Expanded,
+            StatusLayout::Expanded => StatusLayout::Compact,
+        };
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent, terminal_area: Rect) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+        if self.mouse_is_on_status(mouse, terminal_area) {
+            self.toggle_status_layout();
+            return true;
+        }
+        false
+    }
+
+    fn mouse_is_on_status(&self, mouse: MouseEvent, terminal_area: Rect) -> bool {
+        let input_width = terminal_area.width.saturating_sub(2);
+        let input_height = self.input_height(input_width);
+        let chrome = bottom_rect(
+            terminal_area,
+            chrome_height(input_height, self.status_layout),
+        );
+        let status_rows = self.status_layout.row_count();
+        if status_rows == 0 || chrome.height < status_rows {
+            return false;
+        }
+        let status_y = chrome.y + chrome.height.saturating_sub(status_rows);
+        mouse.row >= status_y && mouse.row < status_y.saturating_add(status_rows)
     }
 
     fn handle_ctrl_c(&mut self) {
@@ -1398,7 +1493,7 @@ fn command_suggestions(
     }
 
     // Keep the dropdown bounded but large enough to show every built-in
-    // command (9 client commands + capability commands like /setup) for a
+    // command (10 client commands + capability commands like /setup) for a
     // bare `/`, so none is hidden behind the cap.
     out.truncate(12);
     out
@@ -1769,6 +1864,16 @@ mod tests {
     #[test]
     fn newline_shortcut_hint_uses_shift_enter_only() {
         assert_eq!(newline_shortcut_hint(), "Shift-Enter");
+    }
+
+    #[test]
+    fn chrome_height_reserves_three_expanded_status_rows() {
+        assert_eq!(chrome_height(1, StatusLayout::Compact), 5);
+        assert_eq!(chrome_height(1, StatusLayout::Expanded), 7);
+        assert_eq!(chrome_height(3, StatusLayout::Compact), 5);
+        assert_eq!(chrome_height(3, StatusLayout::Expanded), 7);
+        assert_eq!(chrome_height(4, StatusLayout::Compact), 6);
+        assert_eq!(chrome_height(4, StatusLayout::Expanded), 8);
     }
 
     #[test]
@@ -2321,6 +2426,38 @@ mod tests {
     }
 
     #[test]
+    fn handle_live_event_emits_known_token_counts() {
+        use everruns_core::events::ReasonItemData;
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
+        let mut emitted = HashSet::new();
+        let mut router = DeltaRouter::default();
+
+        let event = RuntimeEvent::new(
+            SessionId::new(),
+            EventContext::empty(),
+            ReasonItemData {
+                turn_id: TurnId::new(),
+                provider: "openai".to_string(),
+                model: Some("gpt-5".to_string()),
+                item_id: "rs_tokens".to_string(),
+                encrypted_content: None,
+                summary: Vec::new(),
+                token_count: Some(120),
+            },
+        );
+        handle_live_event(&event, &mut emitted, &mut router, &tx);
+
+        let mut tokens = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let TurnEvent::Tokens(count) = event {
+                tokens.push(count);
+            }
+        }
+        assert_eq!(tokens, vec![120]);
+    }
+
+    #[test]
     fn truncate_tail_keeps_visible_cursor() {
         assert_eq!(truncate_tail_chars("hello", 10), "hello");
         let out = truncate_tail_chars("0123456789abcdef", 8);
@@ -2441,10 +2578,14 @@ mod tests {
             busy: false,
             busy_frame: 0,
             turn_activity: None,
-            model_label: "openai/gpt-5.5".to_string(),
-            workspace_root: std::path::PathBuf::from("/tmp/ws"),
+            model_id: "gpt-5.5".to_string(),
+            provider_name: "openai".to_string(),
+            reasoning_effort: Some("medium".to_string()),
             session_id: SessionId::from_seed(770001),
             lines_count: 3,
+            session_tokens: None,
+            status_layout: StatusLayout::Compact,
+            hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),
         }
     }
@@ -2454,14 +2595,20 @@ mod tests {
     /// height are minimums; if the chrome layout would need more space
     /// it will be silently clipped, which is fine for substring asserts.
     fn render_chrome_lines(state: &ViewState, width: u16, height: u16) -> Vec<String> {
+        render_chrome_lines_with_input_height(state, width, height, 1)
+    }
+
+    fn render_chrome_lines_with_input_height(
+        state: &ViewState,
+        width: u16,
+        height: u16,
+        input_height: u16,
+    ) -> Vec<String> {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
             .draw(|f| {
-                // Production input slot height is 1; tests don't
-                // exercise the input row so the value only matters
-                // because it shifts the status rows by that amount.
-                let _input_rect = draw_chrome(f, f.area(), 1, state);
+                let _input_rect = draw_chrome(f, f.area(), input_height, state);
             })
             .expect("draw");
         let buffer = terminal.backend().buffer();
@@ -2576,6 +2723,10 @@ mod tests {
                             }
                         }
                         Ok(TurnEvent::Stream(preview)) => self.stream_preview = preview,
+                        Ok(TurnEvent::Tokens(tokens)) => {
+                            self.session_tokens =
+                                Some(self.session_tokens.unwrap_or(0).saturating_add(tokens));
+                        }
                         Ok(TurnEvent::Done) => {
                             self.finish_busy();
                         }
@@ -3273,6 +3424,67 @@ mod tests {
             "cwd should print the workspace root: {:?}",
             app.lines
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn status_command_switches_between_compact_and_expanded_layouts() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+
+        assert_eq!(app.status_layout, StatusLayout::Compact);
+        app.dispatch_command_for_test("status expanded").await;
+        assert_eq!(app.status_layout, StatusLayout::Expanded);
+
+        app.dispatch_command_for_test("status compact").await;
+        assert_eq!(app.status_layout, StatusLayout::Compact);
+
+        app.dispatch_command_for_test("status nonsense").await;
+        assert_eq!(app.status_layout, StatusLayout::Compact);
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("usage: /status")),
+            "invalid status layout should render usage: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clicking_status_rows_toggles_layout() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        let area = Rect {
+            x: 0,
+            y: 10,
+            width: 120,
+            height: 24,
+        };
+
+        assert_eq!(app.status_layout, StatusLayout::Compact);
+        assert!(app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 3,
+                row: 33,
+                modifiers: KeyModifiers::empty(),
+            },
+            area,
+        ));
+        assert_eq!(app.status_layout, StatusLayout::Expanded);
+
+        assert!(app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 3,
+                row: 31,
+                modifiers: KeyModifiers::empty(),
+            },
+            area,
+        ));
+        assert_eq!(app.status_layout, StatusLayout::Compact);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4474,76 +4686,109 @@ mod tests {
     }
 
     #[test]
-    fn chrome_session_status_shows_model_workspace_msgs_and_session() {
+    fn chrome_session_status_compact_shows_model_effort_approval_and_messages() {
         let state = ViewState {
-            model_label: "anthropic/claude-sonnet-4-5".to_string(),
-            workspace_root: std::path::PathBuf::from("/tmp/some-workspace"),
-            session_id: SessionId::from_seed(99887766),
             lines_count: 42,
-            ..view_state_idle()
-        };
-        // Wide enough for the full status line (model · workspace · msgs ·
-        // approval · session <id>) without truncating the long session id.
-        let rows = render_chrome_lines(&state, 160, 5);
-        let status = &rows[4];
-        assert!(
-            status.contains("anthropic/claude-sonnet-4-5"),
-            "status should include model label: {status}"
-        );
-        assert!(
-            status.contains("/tmp/some-workspace"),
-            "status should include workspace path: {status}"
-        );
-        assert!(
-            status.contains("42 msgs"),
-            "status should include message count: {status}"
-        );
-        assert!(
-            status.contains("approval normal"),
-            "status should include the soft-approval level: {status}"
-        );
-        assert!(
-            status.contains("session "),
-            "status should include 'session' label: {status}"
-        );
-        let session_id_str = state.session_id.to_string();
-        assert!(
-            status.contains(&session_id_str),
-            "status should include the session id ({session_id_str}): {status}"
-        );
-    }
-
-    #[test]
-    fn chrome_session_status_collapses_home_prefix_with_tilde() {
-        // `display_path` rewrites $HOME-prefixed paths to start with '~'.
-        // Save / restore the env var so this test doesn't leak.
-        // SAFETY: env mutation in tests is racy across threads. cargo
-        // test by default runs tests in parallel; we accept the tiny
-        // window of cross-test contamination here because the assertion
-        // is on the rendered output of THIS state alone, and a parallel
-        // mutation can only widen the substring we check for, not narrow
-        // it. (`display_path` returns plain `path.display()` if $HOME
-        // doesn't prefix; tilde replacement is opt-in per path.)
-        let prior = std::env::var("HOME").ok();
-        unsafe {
-            std::env::set_var("HOME", "/tmp/fake-home");
-        }
-        let state = ViewState {
-            workspace_root: std::path::PathBuf::from("/tmp/fake-home/projects/yolop"),
             ..view_state_idle()
         };
         let rows = render_chrome_lines(&state, 120, 5);
         let status = &rows[4];
         assert!(
-            status.contains("~/projects/yolop"),
-            "status should collapse $HOME to ~: {status}"
+            status.contains("[expand ↓]"),
+            "compact status should include expand affordance: {status}"
         );
-        unsafe {
-            match prior {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-        }
+        assert!(
+            status.contains("gpt-5.5"),
+            "compact status should include model id: {status}"
+        );
+        assert!(
+            status.contains("effort medium"),
+            "compact status should include effort: {status}"
+        );
+        assert!(
+            status.contains("approval normal"),
+            "compact status should include approval: {status}"
+        );
+        assert!(
+            status.contains("42 msgs"),
+            "compact status should include message count: {status}"
+        );
+        assert!(
+            !status.contains("session "),
+            "compact status should keep session id for expanded layout: {status}"
+        );
+    }
+
+    #[test]
+    fn chrome_session_status_expanded_groups_details_across_three_lines() {
+        let state = ViewState {
+            model_id: "nvidia/nemotron-3-super-120b-a12b".to_string(),
+            provider_name: "openrouter".to_string(),
+            reasoning_effort: Some("high".to_string()),
+            session_id: SessionId::from_seed(99887766),
+            lines_count: 42,
+            session_tokens: Some(1234),
+            status_layout: StatusLayout::Expanded,
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 180, 7);
+        assert!(
+            rows[4].contains("[collapse ↑]")
+                && rows[4].contains("nvidia/nemotron-3-super-120b-a12b")
+                && rows[4].contains("provider openrouter"),
+            "expanded model row should include selected model and provider: {:?}",
+            rows[4]
+        );
+        assert!(
+            !rows[4].contains("full "),
+            "expanded model row should not duplicate model/provider as a full label: {:?}",
+            rows[4]
+        );
+        assert!(
+            rows[5].contains("effort high")
+                && rows[5].contains("approval normal")
+                && rows[5].contains("hooks none"),
+            "expanded controls row should include effort, approval, and hooks: {:?}",
+            rows[5]
+        );
+        let session_id_str = state.session_id.to_string();
+        assert!(
+            rows[6].contains("42 msgs")
+                && rows[6].contains("tokens 1234")
+                && rows[6].contains("session ")
+                && rows[6].contains('…'),
+            "expanded counts row should include messages, tokens, and shortened session: {:?}",
+            rows[6]
+        );
+        assert!(
+            !rows[6].contains(&session_id_str),
+            "expanded counts row should not show the full session id: {:?}",
+            rows[6]
+        );
+    }
+
+    #[test]
+    fn chrome_session_status_stays_visible_with_multiline_input() {
+        let state = ViewState {
+            status_layout: StatusLayout::Expanded,
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines_with_input_height(&state, 120, 7, 3);
+        assert!(
+            rows[4].contains("[collapse ↑]") && rows[4].contains("provider openai"),
+            "expanded model row should remain visible with multiline input: {:?}",
+            rows
+        );
+        assert!(
+            rows[5].contains("effort medium") && rows[5].contains("hooks none"),
+            "expanded controls row should remain visible with multiline input: {:?}",
+            rows
+        );
+        assert!(
+            rows[6].contains("3 msgs") && rows[6].contains("tokens n/a"),
+            "expanded counts row should remain visible with multiline input: {:?}",
+            rows
+        );
     }
 
     #[test]

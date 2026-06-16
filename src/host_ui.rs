@@ -24,6 +24,8 @@ pub enum UiCommand {
     ShowMcp,
     /// Print the workspace root.
     ShowCwd,
+    /// Change the inline session status layout.
+    SetStatusLayout { arg: Option<String> },
     /// Clear the transcript buffer.
     ClearTranscript,
     /// Run a shell command from the workspace root.

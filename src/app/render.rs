@@ -11,7 +11,7 @@ pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let input_width = area.width.saturating_sub(2);
     let input_height = app.input_height(input_width);
     let state = app.view_state();
-    let chrome_area = bottom_rect(area, chrome_height(input_height));
+    let chrome_area = bottom_rect(area, chrome_height(input_height, state.status_layout));
     let transcript_area = Rect {
         height: area.height.saturating_sub(chrome_area.height),
         ..area
@@ -35,8 +35,14 @@ pub(crate) fn bottom_rect(area: Rect, height: u16) -> Rect {
     }
 }
 
-pub(crate) fn chrome_height(input_height: u16) -> u16 {
-    COMPACT_CHROME_HEIGHT.max(input_height.saturating_add(2))
+pub(crate) fn chrome_height(input_height: u16, status_layout: StatusLayout) -> u16 {
+    let preview_height = u16::from(input_height == 1);
+    let status_separator_height = u16::from(input_height < 3);
+    let fixed_rows = preview_height
+        .saturating_add(1)
+        .saturating_add(status_separator_height)
+        .saturating_add(status_layout.row_count());
+    COMPACT_CHROME_HEIGHT.max(input_height.saturating_add(fixed_rows))
 }
 
 pub(crate) fn clear_transcript_viewport(f: &mut ratatui::Frame, area: Rect) {
@@ -143,6 +149,7 @@ pub(crate) fn draw_chrome(
 ) -> Rect {
     let preview_height = u16::from(input_height == 1);
     let status_height = u16::from(input_height < 3);
+    let status_rows = state.status_layout.row_count();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -150,7 +157,7 @@ pub(crate) fn draw_chrome(
             Constraint::Length(1),              // message separator
             Constraint::Length(input_height),   // input (left to the caller)
             Constraint::Length(status_height),  // status separator
-            Constraint::Length(1),              // session status
+            Constraint::Length(status_rows),    // session status
         ])
         .split(area);
 
@@ -1259,42 +1266,150 @@ pub(crate) fn draw_status_separator(f: &mut ratatui::Frame, area: Rect) {
 }
 
 pub(crate) fn draw_session_status(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(state.model_label.clone(), Style::default().fg(TEXT_MUTED)),
-            Span::styled("  ·  ", Style::default().fg(TEXT_DIM)),
-            Span::styled(
-                display_path(&state.workspace_root),
-                Style::default().fg(TEXT_MUTED),
-            ),
-            Span::styled("  ·  ", Style::default().fg(TEXT_DIM)),
-            Span::styled(
-                format!("{} msgs", state.lines_count),
-                Style::default().fg(TEXT_MUTED),
-            ),
-            Span::styled("  ·  approval ", Style::default().fg(TEXT_DIM)),
-            Span::styled(state.approval_mode.clone(), Style::default().fg(TEXT_MUTED)),
-            Span::styled("  ·  session ", Style::default().fg(TEXT_DIM)),
-            Span::styled(
-                state.session_id.to_string(),
-                Style::default().fg(TEXT_MUTED),
-            ),
-            Span::styled(" ", Style::default().fg(TEXT_MUTED)),
-        ])),
-        area,
-    );
+    let lines = match state.status_layout {
+        StatusLayout::Compact => compact_status_lines(state),
+        StatusLayout::Expanded => expanded_status_lines(state),
+    };
+    f.render_widget(Paragraph::new(lines), area);
 }
 
-pub(crate) fn display_path(path: &std::path::Path) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        let home = std::path::Path::new(&home);
-        if let Ok(rest) = path.strip_prefix(home) {
-            if rest.as_os_str().is_empty() {
-                return "~".to_string();
-            }
-            return format!("~/{}", rest.display());
-        }
+#[derive(Clone, Debug)]
+pub(crate) struct StatusContribution {
+    compact: Vec<StatusField>,
+    expanded: Vec<StatusField>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StatusField {
+    label: Option<&'static str>,
+    value: String,
+}
+
+impl StatusContribution {
+    pub(crate) fn new(compact: Vec<StatusField>, expanded: Vec<StatusField>) -> Self {
+        Self { compact, expanded }
     }
-    path.display().to_string()
+}
+
+fn compact_status_lines(state: &ViewState) -> Vec<Line<'static>> {
+    vec![status_line(
+        status_contributions(state)
+            .iter()
+            .flat_map(|section| section.compact.iter()),
+    )]
+}
+
+fn expanded_status_lines(state: &ViewState) -> Vec<Line<'static>> {
+    status_contributions(state)
+        .iter()
+        .map(|section| status_line(section.expanded.iter()))
+        .collect()
+}
+
+fn status_contributions(state: &ViewState) -> Vec<StatusContribution> {
+    let toggle_label = match state.status_layout {
+        StatusLayout::Compact => "[expand ↓]",
+        StatusLayout::Expanded => "[collapse ↑]",
+    };
+    vec![
+        StatusContribution::new(
+            vec![
+                status_value(toggle_label),
+                status_value(state.model_id.clone()),
+            ],
+            vec![
+                status_value(toggle_label),
+                status_value(state.model_id.clone()),
+                status_field("provider", state.provider_name.clone()),
+            ],
+        ),
+        StatusContribution::new(
+            vec![
+                status_field("effort", effort_label(state)),
+                status_field("approval", state.approval_mode.clone()),
+            ],
+            vec![
+                status_field("effort", effort_label(state)),
+                status_field("approval", state.approval_mode.clone()),
+                status_field("hooks", state.hooks_summary.clone()),
+            ],
+        ),
+        StatusContribution::new(
+            vec![status_value(message_count_label(state.lines_count))],
+            vec![
+                status_value(message_count_label(state.lines_count)),
+                status_field("tokens", token_label(state.session_tokens)),
+                status_field("session", short_session_id(&state.session_id)),
+            ],
+        ),
+    ]
+}
+
+pub(crate) fn status_value(value: impl Into<String>) -> StatusField {
+    StatusField {
+        label: None,
+        value: value.into(),
+    }
+}
+
+pub(crate) fn status_field(label: &'static str, value: impl Into<String>) -> StatusField {
+    StatusField {
+        label: Some(label),
+        value: value.into(),
+    }
+}
+
+fn status_line<'a>(fields: impl IntoIterator<Item = &'a StatusField>) -> Line<'static> {
+    let mut spans = vec![Span::styled(" ", Style::default().fg(TEXT_MUTED))];
+    let mut first = true;
+    for field in fields {
+        if !first {
+            spans.push(Span::styled("  ·  ", Style::default().fg(TEXT_DIM)));
+        }
+        first = false;
+        if let Some(label) = field.label {
+            spans.push(Span::styled(
+                format!("{label} "),
+                Style::default().fg(TEXT_DIM),
+            ));
+        }
+        spans.push(Span::styled(
+            field.value.clone(),
+            Style::default().fg(TEXT_MUTED),
+        ));
+    }
+    spans.push(Span::styled(" ", Style::default().fg(TEXT_MUTED)));
+    Line::from(spans)
+}
+
+fn effort_label(state: &ViewState) -> String {
+    state
+        .reasoning_effort
+        .clone()
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn token_label(tokens: Option<u64>) -> String {
+    tokens
+        .map(|tokens| tokens.to_string())
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn message_count_label(count: usize) -> String {
+    format!("{count} msgs")
+}
+
+fn short_session_id(session_id: &SessionId) -> String {
+    let raw = session_id.to_string();
+    let id = raw.strip_prefix("session_").unwrap_or(&raw);
+    let chars = id.chars().collect::<Vec<_>>();
+    if chars.len() <= 16 {
+        return id.to_string();
+    }
+    let head = chars.iter().take(8).collect::<String>();
+    let tail = chars
+        .iter()
+        .skip(chars.len().saturating_sub(4))
+        .collect::<String>();
+    format!("{head}…{tail}")
 }

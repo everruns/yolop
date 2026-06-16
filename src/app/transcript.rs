@@ -53,6 +53,9 @@ pub(crate) fn handle_live_event(
         _ => {}
     }
 
+    if let Some(tokens) = tokens_for_event(event) {
+        let _ = tx.send(TurnEvent::Tokens(tokens));
+    }
     remember_write_todos_args(event, router);
     if let Some(activity) = status_for_event(event) {
         let _ = tx.send(TurnEvent::Activity(activity));
@@ -81,6 +84,9 @@ pub(crate) async fn catch_up_events(
         if !emitted_events.insert(event_id) {
             continue;
         }
+        if let Some(tokens) = tokens_for_event(event) {
+            let _ = tx.send(TurnEvent::Tokens(tokens));
+        }
         remember_write_todos_args(event, router);
         if let Some(activity) = status_for_event(event) {
             let _ = tx.send(TurnEvent::Activity(activity));
@@ -99,6 +105,13 @@ fn remember_write_todos_args(event: &RuntimeEvent, router: &mut DeltaRouter) {
         router
             .write_todos_args
             .insert(data.tool_call.id.clone(), data.tool_call.arguments.clone());
+    }
+}
+
+pub(crate) fn tokens_for_event(event: &RuntimeEvent) -> Option<u64> {
+    match &event.data {
+        EventData::ReasonItem(data) => data.token_count.map(u64::from),
+        _ => None,
     }
 }
 
