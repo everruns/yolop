@@ -2949,6 +2949,10 @@ mod tests {
     async fn proactive_wake_starts_turn_when_background_task_finishes() {
         let mut test = app_with_llmsim().await;
         let app = &mut test.app;
+        // The setup/onboarding overlay opens when no provider credentials are
+        // configured (the case in CI, which has no API keys). Wake is correctly
+        // suppressed while it's open, so clear it to exercise the idle path.
+        app.setup = None;
 
         // Idle with no tasks: nothing to wake for.
         assert!(!app.maybe_wake_for_background());
@@ -2979,6 +2983,32 @@ mod tests {
                 .any(|l| l.text.contains(&record.id) && l.text.contains("waking")),
             "a notice explaining the auto-wake should be shown"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn proactive_wake_suppressed_during_setup_overlay() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        // With the setup overlay open, a finished task must NOT auto-start a turn.
+        app.setup = None;
+        let record = app.background.spawn_script(None, "echo hi".to_string());
+        for _ in 0..100 {
+            if app.background.counts() == (0, 1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // Re-open the overlay, then confirm wake is suppressed and the task is
+        // left undrained (so it can still wake once the overlay closes).
+        app.setup = Some(SetupStep::Provider { selected: 0 });
+        assert!(!app.maybe_wake_for_background(), "no wake during setup");
+        assert!(!app.busy);
+        app.setup = None;
+        assert!(
+            app.maybe_wake_for_background(),
+            "wake should fire once the overlay closes — the task wasn't consumed"
+        );
+        assert!(app.background.get(&record.id).is_some());
     }
 
     impl App {
