@@ -141,9 +141,10 @@ struct IndexFile {
 
 struct Inner {
     records: Vec<BackgroundRecord>,
-    /// Live task handles, keyed by id. Only present while a task is in-process;
-    /// a finished handle is harmless to keep but `cancel` removes it. Not
-    /// persisted — handles cannot outlive the process.
+    /// Live task handles, keyed by id, used to cancel a running task. Finished
+    /// handles are pruned in [`BackgroundRegistry::list`] (and removed by
+    /// `cancel`), so this stays bounded by the live task count. Not persisted —
+    /// handles cannot outlive the process.
     handles: HashMap<String, JoinHandle<()>>,
 }
 
@@ -201,11 +202,14 @@ impl BackgroundRegistry {
         self
     }
 
-    /// Snapshot of all tasks, most-recently-updated first.
+    /// Snapshot of all tasks, most-recently-updated first. Opportunistically
+    /// prunes finished task handles (this is called every turn) so completed
+    /// `JoinHandle`s don't accumulate over a long session.
     pub fn list(&self) -> Vec<BackgroundRecord> {
-        let guard = self.inner.lock().expect("background lock poisoned");
+        let mut guard = self.inner.lock().expect("background lock poisoned");
+        guard.handles.retain(|_, handle| !handle.is_finished());
         let mut records = guard.records.clone();
-        records.sort_by(|a, b| b.updated.cmp(&a.updated));
+        records.sort_by_key(|r| std::cmp::Reverse(r.updated));
         records
     }
 
@@ -253,9 +257,17 @@ impl BackgroundRegistry {
         let handle = tokio::spawn(async move {
             let outcome = run_script(&dir, &log_file, &workspace_root, &command, max_runtime).await;
             update_record(&inner, &index_path, &task_id, |r| {
+                // Only apply the outcome if the task is still running. A
+                // concurrent `cancel` may have already marked it `cancelled`
+                // after the child exited but before this update ran; do not
+                // clobber that terminal status.
+                if r.status != BackgroundStatus::Running {
+                    return false;
+                }
                 r.status = outcome.status;
                 r.exit_code = outcome.exit_code;
                 r.summary = Some(outcome.summary.clone());
+                true
             });
         });
 
@@ -324,8 +336,9 @@ impl BackgroundRegistry {
         let mut out = String::from("<background_tasks>\n");
         out.push_str(
             "Background tasks run detached from this turn. Start one with `background_run`, \
-             list with `background_list`, read full output with `background_output`, cancel with \
-             `background_cancel`. A `completed`/`failed` task's result is ready to read NOW.\n",
+             list with `background_list`, read a task's output (most recent tail) with \
+             `background_output`, cancel with `background_cancel`. A `completed`/`failed` task's \
+             result is ready to read NOW.\n",
         );
         out.push_str(&format!(
             "{total} task(s), {running} running (most recent first):\n"
@@ -378,18 +391,31 @@ impl BackgroundRegistry {
     }
 }
 
-/// Mutate one record under the lock, stamp `updated`, and persist.
+/// Mutate one record under the lock and, only when the mutator reports a change
+/// (returns `true`), stamp `updated` and persist. The bool guard lets a caller
+/// no-op when the record is no longer in the expected state (e.g. it was
+/// cancelled out from under a finishing task) without a redundant write.
 fn update_record(
     inner: &Arc<Mutex<Inner>>,
     index_path: &Path,
     id: &str,
-    f: impl FnOnce(&mut BackgroundRecord),
+    f: impl FnOnce(&mut BackgroundRecord) -> bool,
 ) {
     let records = {
         let mut guard = inner.lock().expect("background lock poisoned");
-        if let Some(record) = guard.records.iter_mut().find(|r| r.id == id) {
-            f(record);
-            record.updated = Utc::now();
+        let changed = match guard.records.iter_mut().find(|r| r.id == id) {
+            Some(record) => {
+                let changed = f(record);
+                if changed {
+                    record.updated = Utc::now();
+                }
+                changed
+            }
+            None => false,
+        };
+        // Record missing, or the mutator made no change — nothing to persist.
+        if !changed {
+            return;
         }
         guard.records.clone()
     };
@@ -432,6 +458,14 @@ async fn run_script(
             };
         }
     };
+    // Owner-only: the log can echo workspace contents, so keep it as private as
+    // the session JSONL and the background index. `File::create` would leave the
+    // OS default (often 0o644).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tokio::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600)).await;
+    }
 
     let mut child = match Command::new("bash")
         .arg("-lc")
@@ -570,6 +604,9 @@ fn truncate(s: &str, max: usize) -> String {
 
 // ---------- persistence ----------
 
+/// Process-wide counter for unique index staging-file names. See `write_index`.
+static WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn read_index(path: &Path) -> Vec<BackgroundRecord> {
     let Ok(bytes) = std::fs::read(path) else {
         return Vec::new();
@@ -599,7 +636,12 @@ fn write_index(path: &Path, records: &[BackgroundRecord]) -> std::io::Result<()>
     let bytes = serde_json::to_vec_pretty(&index)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    let tmp = parent.join(format!(".{INDEX_FILE}.tmp.{}", std::process::id()));
+    // Per-write unique temp name: tasks finish concurrently and each persists
+    // outside the lock, so a pid-only temp path would let two writes collide on
+    // the same file. A process-wide counter keeps each staging file distinct;
+    // the atomic rename then makes the last consistent snapshot win.
+    let seq = WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = parent.join(format!(".{INDEX_FILE}.tmp.{}.{seq}", std::process::id()));
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -607,9 +649,17 @@ fn write_index(path: &Path, records: &[BackgroundRecord]) -> std::io::Result<()>
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let mut file = opts.open(&tmp)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
+    // Clean up the staging file if any step fails, so a write error never leaves
+    // a stray temp behind.
+    let staged = (|| -> std::io::Result<()> {
+        let mut file = opts.open(&tmp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()
+    })();
+    if let Err(e) = staged {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     std::fs::rename(&tmp, path)
 }
 
@@ -931,6 +981,13 @@ mod tests {
         assert_eq!(got.status, BackgroundStatus::Cancelled);
         // Cancelling again is a no-op (already terminal).
         assert!(!reg.cancel(&record.id));
+        // The aborted task must not race back and clobber `cancelled` with a
+        // terminal script outcome — give it time to (not) do so.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            reg.get(&record.id).unwrap().status,
+            BackgroundStatus::Cancelled
+        );
     }
 
     #[tokio::test]
