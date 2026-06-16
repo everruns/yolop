@@ -11,6 +11,7 @@ mod host;
 pub(crate) mod memory;
 pub(crate) mod model_discovery;
 pub(crate) mod model_ranking;
+pub(crate) mod repo_map;
 pub mod skills;
 pub(crate) mod your;
 
@@ -23,3 +24,4 @@ pub(crate) use host::{
     CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID,
     SetupCapability,
 };
+pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
