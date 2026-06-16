@@ -220,7 +220,7 @@ fn scan_schema(query_description: &str) -> Value {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": MAX_FILE_BYTES,
-                "description": "Skip Rust files larger than this many bytes. Defaults to 524288."
+                "description": "Skip supported source files larger than this many bytes. Defaults to 524288."
             }
         },
         "additionalProperties": false
@@ -778,13 +778,16 @@ fn collect_supported_files(
 
     let mut entries = fs::read_dir(path)
         .with_context(|| format!("read directory {}", path.display()))?
-        .collect::<std::io::Result<Vec<_>>>()
-        .with_context(|| format!("read directory entries for {}", path.display()))?;
+        .filter_map(std::result::Result::ok)
+        .collect::<Vec<_>>();
     entries.sort_by_key(|entry| entry.path());
 
     for entry in entries {
         let path = entry.path();
-        if path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
             if path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -793,7 +796,7 @@ fn collect_supported_files(
                 continue;
             }
             collect_supported_files(&path, language_filter, files, skipped_unsupported_files)?;
-        } else {
+        } else if file_type.is_file() {
             match language_for_path(&path, language_filter) {
                 Some(language) => files.push(SourceFile { path, language }),
                 None => *skipped_unsupported_files += 1,
@@ -1271,6 +1274,45 @@ trait Named {
         assert_eq!(value["count"], json!(1));
         assert_eq!(value["symbols"][0]["language"], json!("python"));
         assert_eq!(value["symbols"][0]["name"], json!("py_fn"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_symlinked_directories_during_recursive_scan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        write(&dir.path().join("src/lib.rs"), "pub fn inside_fn() {}\n");
+        write(
+            &outside.path().join("outside.rs"),
+            "pub fn outside_fn() {}\n",
+        );
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked_outside"))
+            .expect("symlink outside dir");
+
+        let report = collect_repo_symbols(
+            dir.path(),
+            SymbolScanOptions {
+                path: None,
+                query: None,
+                language: Some("rust".to_string()),
+                limit: 20,
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
+        )
+        .expect("scan");
+
+        assert!(
+            report
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == "inside_fn")
+        );
+        assert!(
+            !report
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == "outside_fn")
+        );
     }
 
     #[test]
