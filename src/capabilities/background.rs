@@ -24,7 +24,7 @@ use everruns_core::command::{
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -108,7 +108,6 @@ pub enum BackgroundStatus {
 
 impl BackgroundStatus {
     /// Terminal statuses never transition again.
-    #[cfg(test)]
     fn is_terminal(self) -> bool {
         !matches!(self, BackgroundStatus::Running)
     }
@@ -180,6 +179,11 @@ struct Inner {
     /// `cancel`), so this stays bounded by the live task count. Not persisted —
     /// handles cannot outlive the process.
     handles: HashMap<String, JoinHandle<()>>,
+    /// Task ids whose terminal transition has already been reported to the host
+    /// for a proactive wake (see [`BackgroundRegistry::drain_finished_for_wake`]).
+    /// Pre-seeded on load with every restored task so historical results don't
+    /// trigger a wake on resume — only live transitions this process do.
+    notified: HashSet<String>,
 }
 
 /// Per-session owner of background tasks. Cheap to clone via the inner `Arc`.
@@ -217,10 +221,16 @@ impl BackgroundRegistry {
             }
         }
 
+        // Pre-seed `notified` with every restored task so a resumed session
+        // doesn't fire a proactive wake for work that finished before restart;
+        // only transitions that happen live this process should wake the host.
+        let notified: HashSet<String> = records.iter().map(|r| r.id.clone()).collect();
+
         let registry = Self {
             inner: Arc::new(Mutex::new(Inner {
                 records,
                 handles: HashMap::new(),
+                notified,
             })),
             dir,
             index_path,
@@ -283,6 +293,26 @@ impl BackgroundRegistry {
             .filter(|r| r.status == BackgroundStatus::Running)
             .count();
         (running, guard.records.len())
+    }
+
+    /// Return tasks that have reached a terminal status since the last call and
+    /// have not yet been reported for a proactive wake, marking them reported.
+    /// The host (TUI) polls this while idle and, when non-empty, wakes the agent
+    /// so it can react to finished background work without a user prompt. Tasks
+    /// restored from a previous run are pre-marked, so only live transitions
+    /// this process trigger a wake.
+    pub fn drain_finished_for_wake(&self) -> Vec<BackgroundRecord> {
+        let mut guard = self.inner.lock().expect("background lock poisoned");
+        let finished: Vec<BackgroundRecord> = guard
+            .records
+            .iter()
+            .filter(|r| r.status.is_terminal() && !guard.notified.contains(&r.id))
+            .cloned()
+            .collect();
+        for r in &finished {
+            guard.notified.insert(r.id.clone());
+        }
+        finished
     }
 
     /// Human-readable task list for the `/background` command, most-recently-
@@ -887,6 +917,51 @@ fn summarize(last_line: &str, exit_code: Option<i32>, success: bool) -> String {
 fn first_line(s: &str, max: usize) -> String {
     let line = s.lines().next().unwrap_or("").trim();
     truncate(line, max)
+}
+
+/// One-line description of a finished task for the wake prompt.
+fn wake_line(t: &BackgroundRecord) -> String {
+    let exit = t
+        .exit_code
+        .map(|c| format!(", exit {c}"))
+        .unwrap_or_default();
+    let summary = t.summary.as_deref().unwrap_or("(no summary)");
+    format!(
+        "[{id}] {kind} {status}{exit} — {summary}",
+        id = t.id,
+        kind = t.kind.label(),
+        status = t.status.as_str(),
+    )
+}
+
+/// Compose the synthetic turn prompt used to proactively wake the agent when
+/// background work finishes. Phrased as an automatic notification (not a user
+/// message) and points the model at `background_output` for full results.
+pub(crate) fn wake_prompt(finished: &[BackgroundRecord]) -> String {
+    if let [t] = finished {
+        format!(
+            "[automatic] A background task you started has finished: {line}. This is not a user \
+             message. Read its full output with `background_output` (id {id}) if useful, then \
+             continue the work it was for or report the result.",
+            line = wake_line(t),
+            id = t.id,
+        )
+    } else {
+        let mut out = format!(
+            "[automatic] {} background tasks you started have finished:\n",
+            finished.len()
+        );
+        for t in finished {
+            out.push_str("- ");
+            out.push_str(&wake_line(t));
+            out.push('\n');
+        }
+        out.push_str(
+            "This is not a user message. Use `background_output` to read any result, then continue \
+             the work or report back.",
+        );
+        out
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -1524,6 +1599,72 @@ mod tests {
         assert!(listed.contains(&record.id), "got: {listed}");
         assert!(listed.contains("script"), "got: {listed}");
         assert!(listed.contains("completed"), "got: {listed}");
+    }
+
+    #[tokio::test]
+    async fn drain_finished_for_wake_returns_each_task_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = registry_in(tmp.path());
+        assert!(reg.drain_finished_for_wake().is_empty());
+
+        let record = reg.spawn_script(None, "echo hi".into());
+        wait_terminal(&reg, &record.id, 100).await;
+
+        let first = reg.drain_finished_for_wake();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].id, record.id);
+        // A given terminal task only wakes once.
+        assert!(reg.drain_finished_for_wake().is_empty());
+    }
+
+    #[tokio::test]
+    async fn restored_terminal_tasks_do_not_wake_on_resume() {
+        let tmp = tempfile::tempdir().unwrap();
+        let id = {
+            let reg = registry_in(tmp.path());
+            let record = reg.spawn_script(None, "echo hi".into());
+            wait_terminal(&reg, &record.id, 100).await;
+            record.id
+        };
+        // Fresh registry over the same folder = a restart.
+        let reg = registry_in(tmp.path());
+        assert!(reg.get(&id).is_some(), "result survives restart");
+        assert!(
+            reg.drain_finished_for_wake().is_empty(),
+            "historical results must not trigger a proactive wake on resume"
+        );
+    }
+
+    #[test]
+    fn wake_prompt_describes_single_and_multiple_tasks() {
+        let now = Utc::now();
+        let rec = |id: &str, kind: BackgroundKind| BackgroundRecord {
+            id: id.to_string(),
+            kind,
+            label: "x".into(),
+            command: None,
+            status: BackgroundStatus::Completed,
+            created: now,
+            updated: now,
+            exit_code: Some(0),
+            summary: Some("done".into()),
+            log_file: None,
+            child_session_id: None,
+        };
+        let one = wake_prompt(&[rec("bg-1", BackgroundKind::Script)]);
+        assert!(one.contains("bg-1"), "got: {one}");
+        assert!(one.contains("automatic"), "got: {one}");
+        assert!(one.contains("background_output"), "got: {one}");
+
+        let many = wake_prompt(&[
+            rec("bg-1", BackgroundKind::Script),
+            rec("bg-2", BackgroundKind::Agent),
+        ]);
+        assert!(
+            many.contains("bg-1") && many.contains("bg-2"),
+            "got: {many}"
+        );
+        assert!(many.contains("2 background tasks"), "got: {many}");
     }
 
     #[test]

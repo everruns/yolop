@@ -1,8 +1,8 @@
 # Background execution — background tasks and background agents
 
-Status: scripted background tasks, background sub-agents, and user surfaces
-(status-bar indicator + `/background` command) implemented. Proactive wake
-remains a follow-up phase.
+Status: implemented — scripted background tasks, background sub-agents, user
+surfaces (status-bar indicator + `/background` command), and proactive wake
+(auto-run a turn when a task finishes).
 
 ## Why
 
@@ -130,6 +130,25 @@ Background work is visible to the *user*, not just the model:
   the child session id. It works over the TUI and ACP uniformly because it
   returns a plain `CommandResult`.
 
+### Proactive wake
+
+The system-prompt disclosure lets the agent notice a finished task *on its next
+turn*. Proactive wake closes the gap for true fire-and-forget: when a task
+reaches a terminal state while the TUI session is **idle**, yolop automatically
+starts a turn so the agent reacts (reads the result, continues, or reports)
+without a user prompt.
+
+- The registry tracks which terminal tasks have been reported
+  (`drain_finished_for_wake`); the TUI's idle event loop polls it and, on a
+  non-empty result, prints a one-line notice and starts a turn with a synthetic
+  `[automatic]` prompt (`wake_prompt`). The prompt is explicitly framed as *not*
+  a user message and points at `background_output`.
+- It only fires when idle, so it never interrupts an in-flight turn; each task
+  wakes at most once; and tasks restored from a previous run are pre-marked, so
+  a resumed session never wakes for work that finished before the restart.
+- Scope: the interactive TUI only (the loop that owns turn submission).
+  `--print` is one-shot and ACP turns are editor-driven, so neither auto-wakes.
+
 ## Phased plan
 
 1. **Scripted background tasks (implemented).** The core registry, persistence +
@@ -145,9 +164,9 @@ Background work is visible to the *user*, not just the model:
    in-place cancel, a dedicated panel à la Claude Code's agent view) remains a
    possible enhancement, but the status indicator + command cover the
    at-a-glance and detail needs.
-4. **Phase 4 — proactive wake.** Optionally inject a turn when a watched task
-   finishes, instead of waiting for the user's next prompt, for true
-   fire-and-forget CI monitoring.
+4. **Proactive wake (implemented).** When a task finishes while the TUI session
+   is idle, yolop auto-starts a turn so the agent reacts immediately rather than
+   waiting for the next user prompt (see [Proactive wake](#proactive-wake)).
 
 ## Non-goals (for now)
 
