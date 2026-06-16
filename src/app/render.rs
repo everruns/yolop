@@ -345,6 +345,9 @@ pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &Ap
 /// Lines for the background panel: a fixed header followed by the scrolled body
 /// (the `/background` text), clipped to `height` rows. Pure for testability.
 pub(crate) fn background_panel_lines(body: &str, offset: usize, height: usize) -> Vec<String> {
+    if height == 0 {
+        return Vec::new();
+    }
     let mut out = vec!["Background tasks — ↑/↓ scroll · Ctrl+B/Esc to close".to_string()];
     let body_rows = height.saturating_sub(1);
     for line in body.lines().skip(offset).take(body_rows) {

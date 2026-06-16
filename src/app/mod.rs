@@ -789,6 +789,9 @@ impl App {
                     return;
                 }
                 KeyCode::Char('b') => {
+                    // Clear the armed single-Ctrl+C exit ourselves, since this
+                    // branch returns before the shared reset below.
+                    self.ctrl_c_pending_exit = false;
                     self.toggle_background_panel();
                     return;
                 }
@@ -887,11 +890,6 @@ impl App {
         self.start_turn(text);
     }
 
-    /// Proactive wake (Phase 4): when background tasks reach a terminal state
-    /// while the session is idle, automatically start a turn so the agent reacts
-    /// to the result (reads output, continues, or reports) without waiting for a
-    /// user prompt. Returns true if it started a turn. Only fires when idle, so
-    /// it never interrupts an in-flight turn; each task wakes at most once.
     /// Open the background-tasks panel (read-only) or close it if already open.
     /// Suppressed while the setup overlay is up so two modals never stack.
     fn toggle_background_panel(&mut self) {
@@ -926,6 +924,11 @@ impl App {
         }
     }
 
+    /// Proactive wake (Phase 4): when background tasks reach a terminal state
+    /// while the session is idle, automatically start a turn so the agent reacts
+    /// to the result (reads output, continues, or reports) without waiting for a
+    /// user prompt. Returns true if it started a turn. Only fires when idle, so
+    /// it never interrupts an in-flight turn; each task wakes at most once.
     fn maybe_wake_for_background(&mut self) -> bool {
         if self.busy || self.rx.is_some() || self.setup.is_some() {
             return false;
@@ -3118,6 +3121,23 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_b_clears_armed_ctrl_c_exit() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.setup = None;
+        app.handle_ctrl_c(); // first Ctrl+C arms the pending exit
+        assert!(app.ctrl_c_pending_exit);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL))
+            .await;
+        assert!(
+            !app.ctrl_c_pending_exit,
+            "Ctrl+B must disarm the pending Ctrl+C exit"
+        );
+        assert_eq!(app.background_panel, Some(0));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn background_panel_not_opened_over_setup_overlay() {
         let mut test = app_with_llmsim().await;
         let app = &mut test.app;
@@ -3155,6 +3175,8 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[1], "row-b");
         assert_eq!(lines[2], "row-c");
+        // A zero-height rect yields no lines (not even the header).
+        assert!(render::background_panel_lines(body, 0, 0).is_empty());
     }
 
     impl App {
