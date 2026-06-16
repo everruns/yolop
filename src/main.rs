@@ -6,6 +6,8 @@ mod acp;
 mod app;
 mod capabilities;
 mod capability_settings;
+mod codex_auth;
+mod codex_driver;
 mod config_schema;
 mod config_service;
 mod connectors;
@@ -148,6 +150,7 @@ struct ZedIntoArgs {
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
 enum ProviderArg {
     Anthropic,
+    Codex,
     Openai,
     Google,
     Openrouter,
@@ -161,6 +164,7 @@ enum ProviderArg {
 fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
     match arg {
         ProviderArg::Anthropic => "anthropic",
+        ProviderArg::Codex => "codex",
         ProviderArg::Openai => "openai",
         ProviderArg::Google => "google",
         ProviderArg::Openrouter => "openrouter",
@@ -204,6 +208,15 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
             model: m,
             reasoning_effort: cli_reasoning_effort.clone().or(reasoning_effort),
         },
+        (
+            ProviderChoice::Codex {
+                reasoning_effort, ..
+            },
+            Some(m),
+        ) => ProviderChoice::Codex {
+            model: m,
+            reasoning_effort: cli_reasoning_effort.clone().or(reasoning_effort),
+        },
         (ProviderChoice::Google { base_url, .. }, Some(m)) => {
             ProviderChoice::Google { model: m, base_url }
         }
@@ -241,6 +254,16 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> ProviderChoice {
             },
             effort,
         ) => ProviderChoice::OpenAi {
+            model,
+            reasoning_effort: effort.or(reasoning_effort),
+        },
+        (
+            ProviderChoice::Codex {
+                model,
+                reasoning_effort,
+            },
+            effort,
+        ) => ProviderChoice::Codex {
             model,
             reasoning_effort: effort.or(reasoning_effort),
         },

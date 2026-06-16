@@ -26,7 +26,7 @@ yolop
 ```
 
 First launch with no credentials opens a guided, keyboard-driven setup:
-provider → API key → model. Or set a provider key and go:
+provider → credentials → model. Or set a provider key and go:
 
 ```bash
 OPENAI_API_KEY=sk-… yolop
@@ -129,6 +129,7 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 | Provider   | Credential                            | Default model     |
 | ---------- | ------------------------------------- | ----------------- |
 | OpenAI     | `OPENAI_API_KEY`                      | `gpt-5.5`         |
+| Codex subscription | browser/device ChatGPT login or `CODEX_ACCESS_TOKEN` | `gpt-5.5` |
 | Anthropic  | `ANTHROPIC_API_KEY`                   | `claude-sonnet-4-5` |
 | OpenRouter | `OPENROUTER_API_KEY`                  | `openai/gpt-5.5`  |
 | Google     | `GEMINI_API_KEY` / `GOOGLE_API_KEY`   | `gemini-2.5-flash` |
@@ -137,6 +138,8 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 | llmsim     | none (offline simulator)              | —                 |
 
 Pick explicitly with `--provider`, override the model with `-m/--model`.
+**Codex subscription** signs in through ChatGPT and uses the Codex backend
+directly; it does not shell out to the Codex CLI.
 **Custom** is any OpenAI-compatible Chat Completions endpoint (vLLM,
 llama.cpp, LM Studio, hosted gateways, …): point `CUSTOM_BASE_URL` at it or
 configure the base URL, optional key, and model interactively via `/setup`.
@@ -245,13 +248,13 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 | Flag                       | Description                                                          |
 | -------------------------- | -------------------------------------------------------------------- |
 | `-C, --cwd <PATH>`         | Workspace root (default: current dir)                                |
-| `--provider <P>`           | Force `anthropic`, `openai`, `google`, `openrouter`, `ollama`, `custom`, or `llmsim` |
+| `--provider <P>`           | Force `anthropic`, `codex`, `openai`, `google`, `openrouter`, `ollama`, `custom`, or `llmsim` |
 | `-m, --model <ID>`         | Override the model id for the chosen provider                        |
 | `-p, --print <PROMPT>`     | Run one prompt non-interactively and print the result                |
 | `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
 | `--session <ID>`           | Resume a previous session by id                                      |
 | `--session-dir <PATH>`     | Override the parent directory for session folders                    |
-| `--reasoning-effort <E>`   | OpenAI/OpenRouter/custom reasoning effort (`minimal` / `low` / `medium` / `high`) |
+| `--reasoning-effort <E>`   | OpenAI/Codex/OpenRouter/custom reasoning effort (`minimal` / `low` / `medium` / `high`) |
 
 ### Commands
 
@@ -267,6 +270,7 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 | Env var                         | Effect                                                       |
 | ------------------------------- | ------------------------------------------------------------ |
 | `OPENAI_API_KEY`                | Select OpenAI unless `--provider` overrides                  |
+| `CODEX_ACCESS_TOKEN`            | Select Codex subscription auth unless a higher-priority provider is configured |
 | `ANTHROPIC_API_KEY`             | Select Anthropic when OpenAI is not configured               |
 | `OPENROUTER_API_KEY`            | Select OpenRouter when OpenAI/Anthropic are not configured   |
 | `OPENROUTER_BASE_URL`           | Optional, defaults to `https://openrouter.ai/api/v1`         |
@@ -277,13 +281,14 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 | `CUSTOM_BASE_URL`               | Select the custom OpenAI-compatible endpoint (beats the saved base URL) |
 | `CUSTOM_API_KEY`                | Optional key for the custom endpoint (a placeholder is sent otherwise) |
 | `EVERRUNS_CLI_MODEL`            | Override the auto-selected default model (beats the saved model) |
-| `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI/OpenRouter/custom reasoning effort override           |
+| `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI/Codex/OpenRouter/custom reasoning effort override     |
 
 ### Settings
 
 A small TOML settings file persists the preferred provider, per-provider
 model picks, custom endpoint base URLs, the soft-approval level
-(`approval_mode`), and (optionally) provider API tokens across runs:
+(`approval_mode`), Codex subscription login metadata, and (optionally)
+provider API tokens across runs:
 `<config_dir>/yolop/settings.toml` —
 `~/.config/yolop/settings.toml` on Linux,
 `~/Library/Application Support/yolop/settings.toml` on macOS,
@@ -292,7 +297,7 @@ model picks, custom endpoint base URLs, the soft-approval level
 The TUI's `/setup`, `/model`, and `/effort` commands update the active
 provider, saved API keys, current model, reasoning effort, or offline demo
 mode. The `/setup` provider picker shows which providers are already
-connected (env key, saved key, or no key needed); selecting a connected one
+connected (env key, saved key/login, or no key needed); selecting a connected one
 jumps straight to model selection, and `c` opens key/base-URL configuration
 for any provider. Provider, model, and custom base URL choices are written
 to this file.
@@ -309,9 +314,10 @@ Provider resolution at startup:
 
 1. `--provider` flag (always wins)
 2. Saved `default_provider` setting (the legacy `provider` key is still read)
-3. Auto-detect: the first provider in the order **OpenAI → Anthropic →
+3. Auto-detect: the first provider in the order **OpenAI → Codex →
+   Anthropic →
    OpenRouter → Google → Ollama → Custom** with either a matching env var or
-   a saved token/base URL (the provider order decides the tiebreak, not the
+   a saved token/login/base URL (the provider order decides the tiebreak, not the
    credential source)
 4. Fall back to OpenAI's default model and open setup so a provider/API key
    can be configured
@@ -322,11 +328,12 @@ provider has no saved model, the global `default_model` setting (if set) is
 applied as a cross-provider fallback. At runtime, the
 per-provider env var (`OPENAI_API_KEY`, etc.) always beats the saved token,
 so a per-run env override is always possible. `/model <id>` opens the model
-picker prefilled for the active provider. OpenAI, OpenRouter, and custom
+picker prefilled for the active provider. OpenAI, Codex, OpenRouter, and custom
 endpoint reasoning effort can be changed at runtime with the `/effort` modal
 or `/setup effort <level>` (for example, `high` or `medium`).
 
 `/setup` can store an API token under `[tokens]` in the settings file. The
+Codex subscription provider stores OAuth data under `[codex_auth]` instead.
 file is written with `0o600` on Unix (owner-only) and stored token values are
 never echoed — but it is plain text on disk, so treat it the same way you
 would `~/.aws/credentials`.

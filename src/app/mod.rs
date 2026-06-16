@@ -223,6 +223,11 @@ const PROVIDER_OPTIONS: &[ProviderOption] = &[
         hint: "GPT models",
     },
     ProviderOption {
+        name: "codex",
+        label: "Codex subscription",
+        hint: "ChatGPT Plus/Pro login",
+    },
+    ProviderOption {
         name: "anthropic",
         label: "Anthropic",
         hint: "Claude",
@@ -263,6 +268,8 @@ pub(crate) struct CredentialOption {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CredentialAction {
     UseEnv,
+    BrowserLogin,
+    DeviceLogin,
     PasteKey,
     Skip,
     ClearSaved,

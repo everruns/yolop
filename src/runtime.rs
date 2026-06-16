@@ -36,7 +36,7 @@ use everruns_core::capabilities::{
 use everruns_core::command::CommandDescriptor;
 use everruns_core::error::AgentLoopError;
 use everruns_core::in_memory::InMemoryMessageRetriever;
-use everruns_core::llm_driver_registry::DriverRegistry;
+use everruns_core::llm_driver_registry::{DriverRegistry, ProviderMetadata};
 use everruns_core::llmsim_driver::LlmSimConfig;
 use everruns_core::session_file::{FileInfo, FileStat, GrepMatch, InitialFile, SessionFile};
 use everruns_core::typed_id::SessionId;
@@ -372,6 +372,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
 
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.5";
 const DEFAULT_OPENAI_REASONING_EFFORT: &str = "medium";
+const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
 const REASONING_EFFORT_SUGGESTIONS: &[&str] = &["minimal", "low", "medium", "high"];
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
@@ -394,6 +395,10 @@ pub enum ProviderChoice {
         model: String,
     },
     OpenAi {
+        model: String,
+        reasoning_effort: Option<String>,
+    },
+    Codex {
         model: String,
         reasoning_effort: Option<String>,
     },
@@ -427,6 +432,7 @@ pub enum ProviderChoice {
 /// is the user-visible suggestion order.
 pub const SUPPORTED_PROVIDERS: &[&str] = &[
     "openai",
+    "codex",
     "anthropic",
     "google",
     "openrouter",
@@ -443,6 +449,9 @@ impl ProviderChoice {
     pub fn from_env_or_settings(settings: &Settings) -> Self {
         if env_non_empty("OPENAI_API_KEY").is_some() || settings.has_token("openai") {
             return Self::default_openai();
+        }
+        if env_non_empty("CODEX_ACCESS_TOKEN").is_some() || settings.has_codex_auth() {
+            return Self::default_codex();
         }
         if env_non_empty("ANTHROPIC_API_KEY").is_some() || settings.has_token("anthropic") {
             return Self::Anthropic {
@@ -502,6 +511,16 @@ impl ProviderChoice {
         }
     }
 
+    fn default_codex() -> Self {
+        Self::Codex {
+            model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_CODEX_MODEL),
+            reasoning_effort: Some(env_or_default(
+                "EVERRUNS_CLI_REASONING_EFFORT",
+                DEFAULT_OPENAI_REASONING_EFFORT,
+            )),
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::Anthropic { model } => format!("anthropic/{model}"),
@@ -511,6 +530,13 @@ impl ProviderChoice {
             } => match reasoning_effort {
                 Some(effort) => format!("openai/{model} {effort}"),
                 None => format!("openai/{model}"),
+            },
+            Self::Codex {
+                model,
+                reasoning_effort,
+            } => match reasoning_effort {
+                Some(effort) => format!("codex/{model} {effort}"),
+                None => format!("codex/{model}"),
             },
             Self::Google { model, .. } => format!("google/{model}"),
             Self::OpenRouter {
@@ -538,6 +564,7 @@ impl ProviderChoice {
         match self {
             Self::Anthropic { .. } => "anthropic",
             Self::OpenAi { .. } => "openai",
+            Self::Codex { .. } => "codex",
             Self::Google { .. } => "google",
             Self::OpenRouter { .. } => "openrouter",
             Self::Ollama { .. } => "ollama",
@@ -552,6 +579,7 @@ impl ProviderChoice {
     pub fn default_for_provider_name(name: &str) -> Result<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
             "openai" => Ok(Self::default_openai()),
+            "codex" => Ok(Self::default_codex()),
             "anthropic" => Ok(Self::Anthropic {
                 model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL),
             }),
@@ -614,6 +642,7 @@ impl ProviderChoice {
         match self {
             Self::Anthropic { model }
             | Self::OpenAi { model, .. }
+            | Self::Codex { model, .. }
             | Self::Google { model, .. }
             | Self::OpenRouter { model, .. }
             | Self::Ollama { model, .. }
@@ -655,6 +684,13 @@ impl ProviderChoice {
                 "gpt-5.4-mini",
                 "gpt-5.3-codex",
                 "gpt-5.2",
+            ],
+            "codex" => &[
+                "gpt-5.5",
+                "gpt-5.4",
+                "gpt-5.4-mini",
+                "gpt-5.3-codex",
+                "gpt-5.3-codex-spark",
             ],
             "anthropic" => &[
                 "claude-sonnet-4-5",
@@ -712,6 +748,10 @@ impl ProviderChoice {
                 Ok(Self::Anthropic { model })
             }
             Self::OpenAi { .. } => Ok(Self::OpenAi {
+                model,
+                reasoning_effort: normalize_openai_reasoning_effort(reasoning_effort),
+            }),
+            Self::Codex { .. } => Ok(Self::Codex {
                 model,
                 reasoning_effort: normalize_openai_reasoning_effort(reasoning_effort),
             }),
@@ -773,6 +813,10 @@ impl ProviderChoice {
                 model: model.clone(),
                 reasoning_effort: normalize_openai_reasoning_effort(Some(effort.to_string())),
             }),
+            Self::Codex { model, .. } => Ok(Self::Codex {
+                model: model.clone(),
+                reasoning_effort: normalize_openai_reasoning_effort(Some(effort.to_string())),
+            }),
             Self::OpenRouter {
                 model, base_url, ..
             } => Ok(Self::OpenRouter {
@@ -785,7 +829,7 @@ impl ProviderChoice {
                 reasoning_effort: normalize_reasoning_effort(Some(effort.to_string())),
             }),
             other => Err(anyhow!(
-                "reasoning effort only applies to OpenAI, OpenRouter, and custom models (current provider: {})",
+                "reasoning effort only applies to OpenAI, Codex, OpenRouter, and custom models (current provider: {})",
                 other.provider_name()
             )),
         }
@@ -816,6 +860,32 @@ impl ProviderChoice {
                     provider_type: DriverId::OpenAI,
                     provider_metadata: None,
                     api_key: Some(key),
+                    base_url: None,
+                })
+            }
+            ProviderChoice::Codex { model, .. } => {
+                let auth_from_settings = settings.codex_auth();
+                let access_token = env_non_empty("CODEX_ACCESS_TOKEN")
+                    .or_else(|| auth_from_settings.map(|auth| auth.access_token.clone()))
+                    .ok_or_else(|| {
+                        anyhow!("CODEX_ACCESS_TOKEN not set and no Codex login stored")
+                    })?;
+                let account_id = auth_from_settings
+                    .and_then(|auth| auth.account_id.clone())
+                    .or_else(|| crate::codex_auth::extract_account_id(&access_token));
+                let refresh_token = auth_from_settings.and_then(|auth| auth.refresh_token.clone());
+                let expires_at = auth_from_settings.and_then(|auth| auth.expires_at);
+                Ok(ResolvedModel {
+                    model: model.clone(),
+                    provider_type: DriverId::external(crate::codex_driver::CODEX_DRIVER_ID),
+                    provider_metadata: Some(ProviderMetadata {
+                        refresh_token,
+                        account_id,
+                        extra: Some(serde_json::json!({
+                            "expires_at": expires_at,
+                        })),
+                    }),
+                    api_key: Some(access_token),
                     base_url: None,
                 })
             }
@@ -911,6 +981,13 @@ impl ProviderChoice {
                 api_key: None,
                 base_url: None,
             },
+            ProviderChoice::Codex { model, .. } => ResolvedModel {
+                model: model.clone(),
+                provider_type: DriverId::external(crate::codex_driver::CODEX_DRIVER_ID),
+                provider_metadata: None,
+                api_key: None,
+                base_url: None,
+            },
             ProviderChoice::Google { model, base_url } => ResolvedModel {
                 model: model.clone(),
                 provider_type: DriverId::OpenAI,
@@ -957,6 +1034,9 @@ impl ProviderChoice {
         let mut input = InputMessage::user(text);
         let reasoning_effort = match self {
             Self::OpenAi {
+                reasoning_effort, ..
+            }
+            | Self::Codex {
                 reasoning_effort, ..
             }
             | Self::OpenRouter {
@@ -1533,11 +1613,13 @@ pub async fn build_with_options(
     // OpenRouter moved to its own crate in everruns 0.13.0; register its
     // first-class DriverId::OpenRouter driver here (was bundled with openai).
     everruns_openrouter::register_driver(&mut driver_registry);
+    crate::codex_driver::register_driver(&mut driver_registry);
     let settings_snapshot = settings.snapshot();
     let setup_recommended = SetupCapability::needs_onboarding(&settings_snapshot);
     let default_model = match &provider {
         ProviderChoice::Anthropic { .. }
         | ProviderChoice::OpenAi { .. }
+        | ProviderChoice::Codex { .. }
         | ProviderChoice::Google { .. }
         | ProviderChoice::OpenRouter { .. }
         | ProviderChoice::Ollama { .. }
@@ -2400,6 +2482,9 @@ mod tests {
         let openai = ProviderChoice::default_for_provider_name("openai").unwrap();
         assert!(openai.label().starts_with("openai/gpt-5.5"));
 
+        let codex = ProviderChoice::default_for_provider_name("codex").unwrap();
+        assert!(codex.label().starts_with("codex/gpt-5.5"));
+
         let anthropic = ProviderChoice::default_for_provider_name("anthropic").unwrap();
         assert_eq!(anthropic.label(), "anthropic/claude-sonnet-4-5");
 
@@ -2415,6 +2500,7 @@ mod tests {
         let _guard = crate::test_env::lock();
         unsafe {
             std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("CODEX_ACCESS_TOKEN");
             std::env::remove_var("ANTHROPIC_API_KEY");
             std::env::remove_var("OPENROUTER_API_KEY");
             std::env::remove_var("GEMINI_API_KEY");
@@ -2734,6 +2820,45 @@ mod tests {
     }
 
     #[test]
+    fn codex_model_with_provider_uses_external_driver_metadata() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("CODEX_ACCESS_TOKEN");
+        }
+        let mut settings = Settings::default();
+        settings.codex_auth = Some(crate::settings::CodexAuth {
+            access_token: "access-token".to_string(),
+            refresh_token: Some("refresh-token".to_string()),
+            expires_at: Some(1_771_000_000_000),
+            account_id: Some("acc_123".to_string()),
+            email: None,
+        });
+        let provider = ProviderChoice::Codex {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: Some("high".to_string()),
+        };
+
+        let model = provider.model_with_provider(&settings).unwrap();
+
+        assert_eq!(
+            model.provider_type,
+            DriverId::external(crate::codex_driver::CODEX_DRIVER_ID)
+        );
+        assert_eq!(model.api_key.as_deref(), Some("access-token"));
+        let metadata = model.provider_metadata.expect("metadata");
+        assert_eq!(metadata.refresh_token.as_deref(), Some("refresh-token"));
+        assert_eq!(metadata.account_id.as_deref(), Some("acc_123"));
+        assert_eq!(
+            metadata
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.get("expires_at"))
+                .and_then(serde_json::Value::as_i64),
+            Some(1_771_000_000_000)
+        );
+    }
+
+    #[test]
     fn reasoning_effort_can_update_current_openai_model() {
         let provider = ProviderChoice::OpenAi {
             model: "gpt-5.4".to_string(),
@@ -2768,7 +2893,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("only applies to OpenAI, OpenRouter, and custom")
+                .contains("only applies to OpenAI, Codex, OpenRouter, and custom")
         );
     }
 

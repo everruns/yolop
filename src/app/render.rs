@@ -303,12 +303,17 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
             error,
             ..
         }) => {
+            let secret_label = if provider == "codex" {
+                "Access Token"
+            } else {
+                "API Key"
+            };
             lines.push(setup_title(&format!(
-                "Paste API Key for {}",
+                "Paste {secret_label} for {}",
                 App::provider_label(provider)
             )));
             lines.push(setup_hint(
-                "The key is masked and is never written to the transcript.",
+                "The secret is masked and is never written to the transcript.",
             ));
             lines.push(Line::from(""));
             let masked = if token.is_empty() {
@@ -396,11 +401,11 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
         Some(SetupStep::PickEffort { selected, error }) => {
             lines.push(setup_title("Select Reasoning Effort"));
             lines.push(setup_hint(
-                "Applies to OpenAI, OpenRouter, and custom endpoints — this session and future sessions.",
+                "Applies to OpenAI, Codex, OpenRouter, and custom endpoints — this session and future sessions.",
             ));
             lines.push(Line::from(""));
             let label = app.model.provider_label();
-            let current = if label.starts_with("openai/") {
+            let current = if label.starts_with("openai/") || label.starts_with("codex/") {
                 label
                     .split_whitespace()
                     .nth(1)
