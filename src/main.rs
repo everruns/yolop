@@ -11,6 +11,7 @@ mod codex_driver;
 mod config_schema;
 mod config_service;
 mod connectors;
+mod goal;
 mod hooks_config;
 mod host_ui;
 mod into;
@@ -44,6 +45,7 @@ use crossterm::event::{
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
+use everruns_core::command::ExecuteCommandRequest;
 use everruns_core::message::MessageRole;
 use everruns_core::typed_id::SessionId;
 use ratatui::backend::CrosstermBackend;
@@ -607,6 +609,7 @@ async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
         handles,
         startup,
         model,
+        goal_store,
         ..
     } = runtime;
     let color = io::stdout().is_terminal();
@@ -652,6 +655,102 @@ async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
     }
     println!();
 
+    let trimmed = prompt.trim();
+    if let Some(goal_args) = trimmed.strip_prefix("/goal") {
+        return run_print_goal(&handles, &model, &goal_store, goal_args.trim(), color).await;
+    }
+
+    let result = run_print_turn(&handles, &model, trimmed, color).await?;
+    if !result.success {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run_print_goal(
+    handles: &runtime::RuntimeHandles,
+    model: &runtime::ModelState,
+    goal_store: &goal::GoalStore,
+    arguments: &str,
+    color: bool,
+) -> Result<()> {
+    let session_id = handles.session_id;
+    let request = ExecuteCommandRequest {
+        name: "goal".to_string(),
+        arguments: if arguments.is_empty() {
+            None
+        } else {
+            Some(arguments.to_string())
+        },
+        controls: None,
+    };
+    let result = handles.runtime.execute_command(session_id, request).await?;
+    if !result.message.is_empty() {
+        println!("{}", paint(color, "90", &result.message));
+    }
+    if !result.success {
+        eprintln!("goal command failed: {}", result.message);
+        std::process::exit(1);
+    }
+
+    if !goal_store.take_pending_turn(session_id) {
+        return Ok(());
+    }
+
+    let Some(mut turn_prompt) = goal_store.active_condition(session_id) else {
+        return Ok(());
+    };
+
+    loop {
+        println!();
+        println!("{}", paint(color, "90", &format!("› {turn_prompt}")));
+        let turn = run_print_turn(handles, model, &turn_prompt, color).await?;
+        if !turn.success {
+            std::process::exit(1);
+        }
+        if !goal_store.is_active(session_id) {
+            return Ok(());
+        }
+
+        let evaluation = handles
+            .runtime
+            .execute_command(
+                session_id,
+                ExecuteCommandRequest {
+                    name: "goal".to_string(),
+                    arguments: Some(goal::GOAL_EVALUATE_ARG.to_string()),
+                    controls: None,
+                },
+            )
+            .await?;
+        if !evaluation.success {
+            eprintln!("goal evaluation failed: {}", evaluation.message);
+            std::process::exit(1);
+        }
+        let parsed = goal::parse_evaluation_response(&evaluation.message)?;
+        if parsed.met {
+            println!(
+                "{}",
+                paint(color, "92", &format!("goal achieved: {}", parsed.reason))
+            );
+            return Ok(());
+        }
+        println!(
+            "{}",
+            paint(color, "94", &format!("goal: {}", parsed.reason))
+        );
+        turn_prompt = goal_store
+            .continuation_prompt(session_id)
+            .unwrap_or_else(|| turn_prompt.clone());
+    }
+}
+
+async fn run_print_turn(
+    handles: &runtime::RuntimeHandles,
+    model: &runtime::ModelState,
+    prompt: &str,
+    color: bool,
+) -> Result<everruns_runtime::TurnResult> {
     let before_events = handles.runtime.events().await.map(|e| e.len()).unwrap_or(0);
     let before_msgs = handles
         .runtime
@@ -660,7 +759,7 @@ async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
         .map(|m| m.len())
         .unwrap_or(0);
 
-    let input = model.input_message(prompt);
+    let input = model.input_message(prompt.to_string());
     let result = handles.runtime.run_turn(handles.session_id, input).await?;
     let events = handles.runtime.events().await.unwrap_or_default();
     let messages = handles
@@ -703,12 +802,11 @@ async fn run_print_mode(runtime: BuiltRuntime, prompt: String) -> Result<()> {
         result.tool_calls_count
     );
     if !result.success
-        && let Some(err) = result.error
+        && let Some(err) = &result.error
     {
         eprintln!("turn error: {err}");
-        std::process::exit(1);
     }
-    Ok(())
+    Ok(result)
 }
 
 fn print_transcript_line(line: &app::ChatLine, color: bool) {

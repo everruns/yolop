@@ -3,6 +3,7 @@
 // native terminal scrollback; ratatui owns only a short inline composer at the
 // bottom.
 
+use crate::goal::{GOAL_EVALUATE_ARG, GoalStore, parse_evaluation_response};
 use crate::host_ui::UiCommand;
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles, StartupInfo};
 use crate::tools::{BashTool, Workspace};
@@ -11,7 +12,7 @@ use crossterm::event::{
     self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
 };
-use everruns_core::command::{CommandDescriptor, CommandSource};
+use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
 use everruns_core::events::{Event as RuntimeEvent, EventData, ToolCompletedData};
 use everruns_core::message::{ContentPart, Message, MessageRole};
 use everruns_core::tools::{Tool, ToolExecutionResult};
@@ -97,7 +98,7 @@ pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
 const MAX_TERMINAL_IO_FAILURES: usize = 5;
 const COMPACT_CHROME_HEIGHT: u16 = 5;
 const MAX_INPUT_HEIGHT: u16 = 12;
-const EXPANDED_STATUS_ROWS: u16 = 3;
+const EXPANDED_STATUS_ROWS: u16 = 4;
 const RECENT_TRANSCRIPT_SOURCE_LINES: usize = 80;
 const RECENT_TRANSCRIPT_MAX_TEXT_BYTES: usize = 4_000;
 const ACCENT_BLUE: Color = Color::Rgb(45, 91, 158);
@@ -164,6 +165,7 @@ pub struct App {
     /// Open background-tasks panel overlay, holding its scroll offset (in lines).
     /// `None` when closed. Toggled with Ctrl+B; read-only view of the registry.
     background_panel: Option<usize>,
+    goal_store: Arc<GoalStore>,
 }
 
 /// Result of one background models API fetch. `Ok(None)` means the provider
@@ -350,6 +352,8 @@ pub(crate) struct ViewState {
     /// `(running, total)` background task counts, shown in the status bar only
     /// when there is at least one task this session. `None` hides the segment.
     pub background: Option<(usize, usize)>,
+    /// Short label when a `/goal` loop is active (for example `◎ goal`).
+    pub goal_indicator: Option<String>,
 }
 
 /// What kind of delta is currently being streamed. Only the assistant
@@ -419,6 +423,8 @@ pub(crate) enum TurnEvent {
 impl App {
     pub fn new(runtime: BuiltRuntime) -> Self {
         let should_setup = runtime.startup.setup_recommended;
+        let goal_store = runtime.goal_store.clone();
+        let session_id = runtime.handles.session_id;
         let (models_tx, models_rx) = mpsc::unbounded_channel::<ModelDiscovery>();
         let mut app = Self {
             handles: runtime.handles,
@@ -449,10 +455,17 @@ impl App {
             models_rx,
             background: runtime.background,
             background_panel: None,
+            goal_store,
         };
         app.emit_system_banner();
         if should_setup {
             app.start_first_run_setup();
+        } else if app.goal_store.take_pending_turn(session_id)
+            && let Some(condition) = app.goal_store.active_condition(session_id)
+        {
+            app.push_system(format!("restored active goal: {condition}"));
+            app.push_user(condition.clone());
+            app.start_turn(condition);
         }
         app
     }
@@ -496,7 +509,21 @@ impl App {
                 (_, 0) => None,
                 counts => Some(counts),
             },
+            goal_indicator: self.goal_indicator(),
         }
+    }
+
+    fn goal_indicator(&self) -> Option<String> {
+        if !self.goal_store.is_active(self.handles.session_id) {
+            return None;
+        }
+        let turns = self
+            .goal_store
+            .status(self.handles.session_id, self.session_tokens)
+            .active
+            .map(|active| active.evaluated_turns)
+            .unwrap_or(0);
+        Some(format!("◎ goal ({turns})"))
     }
 
     fn emit_system_banner(&mut self) {
@@ -618,6 +645,7 @@ impl App {
                 }
                 Ok(TurnEvent::Done) => {
                     self.finish_busy();
+                    self.after_turn_goal_check().await;
                     return Ok(());
                 }
                 Ok(TurnEvent::Failed(err)) => {
@@ -1044,6 +1072,7 @@ impl App {
             UiCommand::ClearTranscript => {
                 self.lines.clear();
                 self.printed_lines = 0;
+                self.goal_store.clear_active(self.handles.session_id);
                 self.emit_system_banner();
             }
             UiCommand::RunShell { command } => self.start_shell_command(command),
@@ -1180,6 +1209,63 @@ impl App {
         self.esc_pending_cancel = false;
     }
 
+    fn maybe_start_goal_turn(&mut self) {
+        let session_id = self.handles.session_id;
+        if !self.goal_store.take_pending_turn(session_id) {
+            return;
+        }
+        let Some(condition) = self.goal_store.active_condition(session_id) else {
+            return;
+        };
+        self.push_user(condition.clone());
+        self.start_turn(condition);
+    }
+
+    async fn after_turn_goal_check(&mut self) {
+        let session_id = self.handles.session_id;
+        if !self.goal_store.is_active(session_id) {
+            return;
+        }
+        let request = ExecuteCommandRequest {
+            name: "goal".to_string(),
+            arguments: Some(GOAL_EVALUATE_ARG.to_string()),
+            controls: None,
+        };
+        let result = match self
+            .handles
+            .runtime
+            .execute_command(session_id, request)
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                self.push_system(format!("goal evaluation failed: {err}"));
+                return;
+            }
+        };
+        if !result.success {
+            self.push_system(format!("goal evaluation failed: {}", result.message));
+            return;
+        }
+        let evaluation = match parse_evaluation_response(&result.message) {
+            Ok(evaluation) => evaluation,
+            Err(err) => {
+                self.push_system(format!("goal evaluation failed: {err}"));
+                return;
+            }
+        };
+        if evaluation.met {
+            self.push_system(format!("goal achieved: {}", evaluation.reason));
+            return;
+        }
+        self.push_system(format!("goal: {}", evaluation.reason));
+        let Some(prompt) = self.goal_store.continuation_prompt(session_id) else {
+            return;
+        };
+        self.push_user(prompt.clone());
+        self.start_turn(prompt);
+    }
+
     /// Dispatch a capability-provided slash command.
     ///
     /// `System` commands execute through `runtime.execute_command` — the
@@ -1237,6 +1323,9 @@ impl App {
                         if !result.message.is_empty() {
                             let prefix = if result.success { "" } else { "error: " };
                             self.push_system(format!("{prefix}{}", result.message));
+                        }
+                        if descriptor.name == "goal" && result.success {
+                            self.maybe_start_goal_turn();
                         }
                     }
                     Err(err) => self.push_system(format!("/{} failed: {err}", descriptor.name)),
@@ -1987,20 +2076,20 @@ mod tests {
     }
 
     #[test]
-    fn chrome_height_reserves_three_expanded_status_rows() {
+    fn chrome_height_reserves_four_expanded_status_rows() {
         assert_eq!(chrome_height(1, StatusLayout::Compact), 5);
-        assert_eq!(chrome_height(1, StatusLayout::Expanded), 7);
+        assert_eq!(chrome_height(1, StatusLayout::Expanded), 8);
         assert_eq!(chrome_height(3, StatusLayout::Compact), 5);
-        assert_eq!(chrome_height(3, StatusLayout::Expanded), 7);
+        assert_eq!(chrome_height(3, StatusLayout::Expanded), 8);
         assert_eq!(chrome_height(4, StatusLayout::Compact), 6);
-        assert_eq!(chrome_height(4, StatusLayout::Expanded), 8);
+        assert_eq!(chrome_height(4, StatusLayout::Expanded), 9);
     }
 
     #[test]
     fn chrome_dimensions_clamp_input_to_visible_frame() {
         assert_eq!(
             chrome_dimensions(7, MAX_INPUT_HEIGHT, StatusLayout::Expanded),
-            (7, 3)
+            (7, 1)
         );
         assert_eq!(
             chrome_dimensions(5, MAX_INPUT_HEIGHT, StatusLayout::Compact),
@@ -2882,6 +2971,7 @@ mod tests {
             hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),
             background: None,
+            goal_indicator: None,
         }
     }
 
@@ -5231,7 +5321,7 @@ mod tests {
             status_layout: StatusLayout::Expanded,
             ..view_state_idle()
         };
-        let rows = render_chrome_lines(&state, 180, 7);
+        let rows = render_chrome_lines(&state, 180, 8);
         assert!(
             rows[4].contains("[collapse ↑]")
                 && rows[4].contains("nvidia/nemotron-3-super-120b-a12b")
@@ -5251,19 +5341,24 @@ mod tests {
             "expanded controls row should include effort, approval, and hooks: {:?}",
             rows[5]
         );
-        let session_id_str = state.session_id.to_string();
         assert!(
-            rows[6].contains("42 msgs")
-                && rows[6].contains("tokens 1234")
-                && rows[6].contains("session ")
-                && rows[6].contains('…'),
-            "expanded counts row should include messages, tokens, and shortened session: {:?}",
+            rows[6].contains("goal"),
+            "expanded goal row should be present: {:?}",
             rows[6]
         );
+        let session_id_str = state.session_id.to_string();
         assert!(
-            !rows[6].contains(&session_id_str),
+            rows[7].contains("42 msgs")
+                && rows[7].contains("tokens 1234")
+                && rows[7].contains("session ")
+                && rows[7].contains('…'),
+            "expanded counts row should include messages, tokens, and shortened session: {:?}",
+            rows[7]
+        );
+        assert!(
+            !rows[7].contains(&session_id_str),
             "expanded counts row should not show the full session id: {:?}",
-            rows[6]
+            rows[7]
         );
     }
 
@@ -5273,7 +5368,7 @@ mod tests {
             status_layout: StatusLayout::Expanded,
             ..view_state_idle()
         };
-        let rows = render_chrome_lines_with_input_height(&state, 120, 7, 3);
+        let rows = render_chrome_lines_with_input_height(&state, 120, 8, 3);
         assert!(
             rows[4].contains("[collapse ↑]") && rows[4].contains("provider openai"),
             "expanded model row should remain visible with multiline input: {:?}",
@@ -5285,7 +5380,12 @@ mod tests {
             rows
         );
         assert!(
-            rows[6].contains("3 msgs") && rows[6].contains("tokens n/a"),
+            rows[6].contains("goal"),
+            "expanded goal row should remain visible with multiline input: {:?}",
+            rows
+        );
+        assert!(
+            rows[7].contains("3 msgs") && rows[7].contains("tokens n/a"),
             "expanded counts row should remain visible with multiline input: {:?}",
             rows
         );

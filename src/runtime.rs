@@ -12,14 +12,16 @@ use crate::capabilities::{
     BACKGROUND_CAPABILITY_ID, BackgroundCapability, BackgroundRegistry,
     CLIENT_COMMANDS_CAPABILITY_ID, CONFIG_CAPABILITY_ID, ClientCommandsCapability,
     CodingBashCapability, CodingCliEnvironmentCapability, ConfigCapability,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HooksCapability,
-    REPO_MAP_CAPABILITY_ID, RepoMapCapability, SETUP_CAPABILITY_ID, SetupCapability,
+    ENVIRONMENT_CONTEXT_CAPABILITY_ID, GOAL_CAPABILITY_ID, GoalCapability, HOOKS_CAPABILITY_ID,
+    HooksCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability, SETUP_CAPABILITY_ID,
+    SetupCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::connectors::{
     CONNECTORS_CAPABILITY_ID, ConnectionCatalog, ConnectionStore, ConnectorsCapability,
     YolopConnectionResolver, default_connections_path,
 };
+use crate::goal::GoalStore;
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
@@ -1318,6 +1320,8 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         // `/btw` — ephemeral side question, answered out-of-band with the
         // session's context (upstream `BtwCapability`).
         AgentCapabilityConfig::new(BTW_CAPABILITY_ID),
+        // `/goal` — keep working across turns until a model-evaluated condition holds.
+        AgentCapabilityConfig::new(GOAL_CAPABILITY_ID),
         // Soft approval: injects spoken-consent guidance for critical actions,
         // tuned by the central `approval_mode` setting (off contributes nothing).
         AgentCapabilityConfig::new(APPROVAL_CAPABILITY_ID),
@@ -1363,6 +1367,7 @@ pub struct BuiltRuntime {
     pub handles: RuntimeHandles,
     pub startup: StartupInfo,
     pub model: ModelState,
+    pub goal_store: Arc<GoalStore>,
     /// Settings store shared with the runtime capabilities. The TUI uses it
     /// to resolve credentials when querying provider models APIs and to show
     /// per-provider connection status in the setup overlay.
@@ -1782,6 +1787,11 @@ pub async fn build_with_options(
     // dispatches it like any other capability command — no bespoke executor
     // needed. yolop owns no `/btw` logic; it only registers and enables it.
     capabilities.register(BtwCapability);
+    let goal_store = Arc::new(GoalStore::open(session_dir.clone()));
+    goal_store.load_session(session_id)?;
+    capabilities.register(GoalCapability {
+        store: goal_store.clone(),
+    });
     // `/setup` (below) is the capability-sourced slash command. It implements
     // `Capability::execute_command` end to end.
     capabilities.register(SetupCapability {
@@ -2000,6 +2010,7 @@ pub async fn build_with_options(
         settings,
         ui_rx,
         background: background_registry,
+        goal_store,
     })
 }
 
@@ -2358,6 +2369,63 @@ mod tests {
             )
             .await
             .expect_err("missing question is rejected");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn goal_command_is_registered_and_sets_active_condition() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        let commands = built
+            .handles
+            .runtime
+            .list_commands(built.handles.session_id)
+            .await
+            .expect("commands");
+        let goal = commands
+            .iter()
+            .find(|c| c.name == "goal")
+            .expect("/goal surfaced in the command registry");
+
+        let result = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "goal".to_string(),
+                    arguments: Some("cargo test exits 0".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("execute /goal");
+        assert!(result.success, "result: {}", result.message);
+        assert!(built.goal_store.is_active(built.handles.session_id));
+        assert!(built.goal_store.take_pending_turn(built.handles.session_id));
+        assert_eq!(
+            built
+                .goal_store
+                .active_condition(built.handles.session_id)
+                .as_deref(),
+            Some("cargo test exits 0")
+        );
+        assert!(
+            goal.description.contains("completion"),
+            "descriptor: {}",
+            goal.description
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

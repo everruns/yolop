@@ -53,13 +53,17 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   or less careful). See [Soft approval](#soft-approval) below.
 - **TUI chat** (ratatui): scrolling transcript, multiline composer, status
   bar (with a `bg` count whenever the session has background tasks), slash commands
-  (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`, `/effort`, `/shell`,
-  `/background`, `/clear`, `/quit`), a read-only background-tasks panel toggled
-  with `Ctrl+B`, `!<command>` as a direct shell shortcut, and natural-language
-  requests for terminal actions such as "exit" or "clear the screen".
+  (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`, `/effort`, `/goal`,
+  `/shell`, `/background`, `/clear`, `/quit`), a read-only background-tasks panel
+  toggled with `Ctrl+B`, `!<command>` as a direct shell shortcut, and
+  natural-language requests for terminal actions such as "exit" or "clear the screen".
 - **Side questions** — `/btw <question>` answers a question about the current
   session out-of-band: same context as the main task, no tools, and nothing
   added to the conversation history.
+- **Goal loops** — `/goal <condition>` keeps working across turns until a
+  separate evaluator model confirms the condition from the transcript; use
+  `/goal` for status and `/goal clear` to stop early. Works in `--print` mode
+  (`yolop -p "/goal …"`). See [`specs/goal.md`](./specs/goal.md).
 - **Planning** — `write_todos` keeps multi-step tasks on track, and
   loop detection stops the model from retrying the same failing tool call.
 - **One-shot mode** — `--print` runs a single prompt non-interactively, for

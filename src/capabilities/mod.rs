@@ -8,6 +8,7 @@ pub(crate) mod ast_grep;
 pub(crate) mod background;
 pub(crate) mod client_commands;
 pub(crate) mod config;
+pub(crate) mod goal;
 pub(crate) mod hooks;
 mod host;
 pub(crate) mod memory;
@@ -17,6 +18,7 @@ pub(crate) mod repo_map;
 pub mod skills;
 pub(crate) mod your;
 
+pub(crate) use crate::goal::GOAL_CAPABILITY_ID;
 pub(crate) use approval::{APPROVAL_CAPABILITY_ID, ApprovalCapability};
 pub(crate) use ast_grep::{AST_GREP_CAPABILITY_ID, AstGrepCapability};
 pub(crate) use background::{
@@ -25,6 +27,7 @@ pub(crate) use background::{
 };
 pub(crate) use client_commands::{CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCapability};
 pub(crate) use config::{CONFIG_CAPABILITY_ID, ConfigCapability};
+pub(crate) use goal::GoalCapability;
 pub(crate) use hooks::{HOOKS_CAPABILITY_ID, HooksCapability};
 pub(crate) use host::{
     ATTRIBUTION_CAPABILITY_ID, AttributionCapability, CodingBashCapability,
