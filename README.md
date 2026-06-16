@@ -54,9 +54,9 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **TUI chat** (ratatui): scrolling transcript, multiline composer, status
   bar (with a `bg` count whenever the session has background tasks), slash commands
   (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`, `/effort`, `/shell`,
-  `/background`, `/clear`, `/quit`), `!<command>` as a direct shell shortcut,
-  and natural-language requests for terminal actions such as "exit" or "clear
-  the screen".
+  `/background`, `/clear`, `/quit`), a read-only background-tasks panel toggled
+  with `Ctrl+B`, `!<command>` as a direct shell shortcut, and natural-language
+  requests for terminal actions such as "exit" or "clear the screen".
 - **Side questions** — `/btw <question>` answers a question about the current
   session out-of-band: same context as the main task, no tools, and nothing
   added to the conversation history.

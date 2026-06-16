@@ -161,6 +161,9 @@ pub struct App {
     /// This session's background task registry, polled each frame for the
     /// status-bar task count. Same registry the `background` capability owns.
     background: Arc<crate::capabilities::BackgroundRegistry>,
+    /// Open background-tasks panel overlay, holding its scroll offset (in lines).
+    /// `None` when closed. Toggled with Ctrl+B; read-only view of the registry.
+    background_panel: Option<usize>,
 }
 
 /// Result of one background models API fetch. `Ok(None)` means the provider
@@ -445,6 +448,7 @@ impl App {
             models_tx,
             models_rx,
             background: runtime.background,
+            background_panel: None,
         };
         app.emit_system_banner();
         if should_setup {
@@ -784,11 +788,25 @@ impl App {
                     self.should_quit = true;
                     return;
                 }
+                KeyCode::Char('b') => {
+                    // Clear the armed single-Ctrl+C exit ourselves, since this
+                    // branch returns before the shared reset below.
+                    self.ctrl_c_pending_exit = false;
+                    self.toggle_background_panel();
+                    return;
+                }
                 _ => {}
             }
         }
 
         self.ctrl_c_pending_exit = false;
+
+        // The background panel overlay captures navigation keys (even mid-turn,
+        // so you can watch tasks while a turn runs).
+        if self.background_panel.is_some() {
+            self.handle_background_panel_key(key);
+            return;
+        }
 
         if self.busy {
             // Block only input editing while a turn is running.
@@ -870,6 +888,40 @@ impl App {
         }
         self.push_user(text.clone());
         self.start_turn(text);
+    }
+
+    /// Open the background-tasks panel (read-only) or close it if already open.
+    /// Suppressed while the setup overlay is up so two modals never stack.
+    fn toggle_background_panel(&mut self) {
+        if self.background_panel.is_some() {
+            self.background_panel = None;
+        } else if self.setup.is_none() {
+            self.background_panel = Some(0);
+        }
+    }
+
+    /// Navigation for the open background panel: Esc/q closes, Up/Down scroll.
+    fn handle_background_panel_key(&mut self, key: KeyEvent) {
+        let Some(offset) = self.background_panel else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.background_panel = None,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.background_panel = Some(offset.saturating_sub(1));
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                // Clamp so scrolling can't run past the last line of content.
+                let max = self
+                    .background
+                    .render_task_list()
+                    .lines()
+                    .count()
+                    .saturating_sub(1);
+                self.background_panel = Some(offset.saturating_add(1).min(max));
+            }
+            _ => {}
+        }
     }
 
     /// Proactive wake (Phase 4): when background tasks reach a terminal state
@@ -3048,6 +3100,83 @@ mod tests {
             app.lines.iter().any(|l| l.text.contains(&record.id)),
             "finished task should still be surfaced as a notice"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn background_panel_toggle_scroll_and_close() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.setup = None;
+        assert!(app.background_panel.is_none());
+
+        app.toggle_background_panel();
+        assert_eq!(app.background_panel, Some(0));
+
+        // With no tasks the body is a single line, so Down can't scroll past it.
+        app.handle_background_panel_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+        assert_eq!(app.background_panel, Some(0));
+
+        app.handle_background_panel_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
+        assert!(app.background_panel.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_b_clears_armed_ctrl_c_exit() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.setup = None;
+        app.handle_ctrl_c(); // first Ctrl+C arms the pending exit
+        assert!(app.ctrl_c_pending_exit);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL))
+            .await;
+        assert!(
+            !app.ctrl_c_pending_exit,
+            "Ctrl+B must disarm the pending Ctrl+C exit"
+        );
+        assert_eq!(app.background_panel, Some(0));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn background_panel_not_opened_over_setup_overlay() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.setup = Some(SetupStep::Provider { selected: 0 });
+        app.toggle_background_panel();
+        assert!(
+            app.background_panel.is_none(),
+            "panel must not stack on top of the setup overlay"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn background_panel_renders_task_rows() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.setup = None;
+        app.background
+            .spawn_script(Some("ci".into()), "echo hi".into());
+        app.background_panel = Some(0);
+
+        let lines = render_app_lines(app, 120, 20).join("\n");
+        assert!(lines.contains("Background tasks"), "panel header: {lines}");
+        assert!(
+            lines.contains("script"),
+            "panel should list the task: {lines}"
+        );
+    }
+
+    #[test]
+    fn background_panel_lines_header_and_scroll() {
+        let body = "row-a\nrow-b\nrow-c\nrow-d";
+        let lines = render::background_panel_lines(body, 1, 3);
+        assert!(lines[0].contains("Background tasks"));
+        // height 3 ⇒ 1 header + 2 body rows, starting at offset 1.
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1], "row-b");
+        assert_eq!(lines[2], "row-c");
+        // A zero-height rect yields no lines (not even the header).
+        assert!(render::background_panel_lines(body, 0, 0).is_empty());
     }
 
     impl App {

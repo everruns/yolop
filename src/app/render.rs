@@ -20,6 +20,7 @@ pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
     draw_chrome_layout(f, layout.chrome, &state);
     draw_input(f, layout.chrome.input, app);
     draw_setup_overlay(f, area, app);
+    draw_background_panel(f, area, app);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -295,6 +296,64 @@ pub(crate) fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
                 .saturating_add((row as u16).min(inner.height.saturating_sub(1))),
         ));
     }
+}
+
+/// Read-only background-tasks panel overlay (toggled with Ctrl+B). Reuses the
+/// registry's `/background` rendering for the body, scrolled by the stored
+/// offset, inside the same centered panel as the setup overlay.
+pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let Some(offset) = app.background_panel else {
+        return;
+    };
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let panel = setup_panel_rect(area);
+    if panel.width == 0 || panel.height == 0 {
+        return;
+    }
+    f.render_widget(Clear, panel);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
+    f.render_widget(block, panel);
+    let inner = Rect {
+        x: panel.x.saturating_add(2),
+        y: panel.y.saturating_add(1),
+        width: panel.width.saturating_sub(4),
+        height: panel.height.saturating_sub(2),
+    };
+    let body = app.background.render_task_list();
+    let texts = background_panel_lines(&body, offset, inner.height as usize);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(texts.len());
+    for (i, text) in texts.into_iter().enumerate() {
+        if i == 0 {
+            lines.push(Line::from(Span::styled(
+                text,
+                Style::default().fg(DIFF_META).add_modifier(Modifier::BOLD),
+            )));
+        } else {
+            lines.push(Line::raw(text));
+        }
+    }
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(PANEL_BG)),
+        inner,
+    );
+}
+
+/// Lines for the background panel: a fixed header followed by the scrolled body
+/// (the `/background` text), clipped to `height` rows. Pure for testability.
+pub(crate) fn background_panel_lines(body: &str, offset: usize, height: usize) -> Vec<String> {
+    if height == 0 {
+        return Vec::new();
+    }
+    let mut out = vec!["Background tasks — ↑/↓ scroll · Ctrl+B/Esc to close".to_string()];
+    let body_rows = height.saturating_sub(1);
+    for line in body.lines().skip(offset).take(body_rows) {
+        out.push(line.to_string());
+    }
+    out
 }
 
 pub(crate) fn setup_panel_rect(area: Rect) -> Rect {
