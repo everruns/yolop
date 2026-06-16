@@ -1,6 +1,6 @@
 //! Client-executed slash commands for the TUI host.
 //!
-//! `help`, `tools`, `mcp`, `cwd`, `model`, `effort`, `clear`, `/shell`, and
+//! `help`, `tools`, `mcp`, `cwd`, `status`, `model`, `effort`, `clear`, `/shell`, and
 //! `quit` act on the terminal, not the agent runtime. They are declared here as ordinary
 //! capability commands so they share the single command registry — palette,
 //! `/help`, and completion all read `runtime.list_commands` — and dispatched
@@ -27,10 +27,12 @@ pub(crate) const CLIENT_COMMANDS_CAPABILITY_ID: &str = "yolop_client_commands";
 
 const CLIENT_COMMANDS_PROMPT: &str = r#"<capability id="yolop_client_commands">
 The interactive terminal has slash commands: `/help`, `/tools`, `/mcp`, `/cwd`,
-`/model [id]`, `/effort [level]`, `/clear`, and `/quit` (`/exit` is an alias).
+`/status [compact|expanded|toggle]`, `/model [id]`, `/effort [level]`,
+`/clear`, and `/quit` (`/exit` is an alias).
 When the user asks in natural language for one of these terminal actions — for
-example "exit", "clear the screen", "show tools", or "switch model" — call
-`run_yolop_command`; do not merely tell the user to type the slash command.
+example "exit", "clear the screen", "show tools", "switch model", or "expand
+the status bar" — call `run_yolop_command`; do not merely tell the user to type
+the slash command.
 </capability>"#;
 
 pub(crate) struct ClientCommandsCapability {
@@ -52,7 +54,7 @@ impl Capability for ClientCommandsCapability {
         "Client Commands"
     }
     fn description(&self) -> &str {
-        "Terminal-side commands (help, tools, mcp, cwd, model, effort, clear, shell, quit)."
+        "Terminal-side commands (help, tools, mcp, cwd, status, model, effort, clear, shell, quit)."
     }
     fn status(&self) -> CapabilityStatus {
         CapabilityStatus::Available
@@ -109,6 +111,14 @@ fn command_descriptors() -> Vec<CommandDescriptor> {
         cmd("tools", "list available tools", &[]),
         cmd("mcp", "list configured MCP servers", &[]),
         cmd("cwd", "show workspace root", &[]),
+        cmd(
+            "status",
+            "toggle compact or expanded session status",
+            &[opt_with_suggestions(
+                "layout",
+                &["compact", "expanded", "toggle"],
+            )],
+        ),
         cmd("model", "show or switch model", &[opt("id")]),
         cmd("effort", "show or set reasoning effort", &[opt("level")]),
         cmd("clear", "clear transcript", &[]),
@@ -127,6 +137,7 @@ fn ui_command_for(name: &str, arg: Option<String>) -> Option<UiCommand> {
         "tools" => Some(UiCommand::ShowTools),
         "mcp" => Some(UiCommand::ShowMcp),
         "cwd" => Some(UiCommand::ShowCwd),
+        "status" => Some(UiCommand::SetStatusLayout { arg }),
         "clear" => Some(UiCommand::ClearTranscript),
         "shell" => Some(UiCommand::RunShell {
             command: arg.unwrap_or_default(),
@@ -155,7 +166,7 @@ impl Tool for RunYolopCommandTool {
     fn description(&self) -> &str {
         "Run an interactive yolop slash command on behalf of a natural-language user request. \
          Use this when the user asks to exit, clear the transcript, show help/tools/MCP/cwd, \
-         or open/switch model or reasoning effort. Accepts command names without the leading \
+         show or change the status layout, or open/switch model or reasoning effort. Accepts command names without the leading \
          slash; `exit` is accepted as an alias for `quit`."
     }
 
@@ -166,7 +177,7 @@ impl Tool for RunYolopCommandTool {
                 "command": {
                     "type": "string",
                     "description": "Slash command name, with or without the leading slash.",
-                    "enum": ["help", "tools", "mcp", "cwd", "model", "effort", "clear", "quit", "exit"]
+                    "enum": ["help", "tools", "mcp", "cwd", "status", "model", "effort", "clear", "quit", "exit"]
                 },
                 "arguments": {
                     "type": "string",
@@ -225,6 +236,13 @@ fn cmd(name: &str, description: &str, args: &[CommandArg]) -> CommandDescriptor 
 
 fn opt(name: &str) -> CommandArg {
     arg(name, false)
+}
+
+fn opt_with_suggestions(name: &str, suggestions: &[&str]) -> CommandArg {
+    CommandArg {
+        suggestions: suggestions.iter().map(|s| (*s).to_string()).collect(),
+        ..arg(name, false)
+    }
 }
 
 fn required(name: &str) -> CommandArg {
@@ -317,6 +335,27 @@ mod tests {
             ui.take(),
             vec![UiCommand::OpenModelOverlay {
                 arg: Some("openai/gpt-5.4".to_string())
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn run_yolop_command_preserves_status_layout_argument() {
+        let ui = Arc::new(RecordingUi::default());
+        let tool = RunYolopCommandTool { ui: ui.clone() };
+
+        let result = tool
+            .execute(json!({
+                "command": "status",
+                "arguments": "expanded"
+            }))
+            .await;
+
+        assert!(result.is_success(), "tool result: {result:?}");
+        assert_eq!(
+            ui.take(),
+            vec![UiCommand::SetStatusLayout {
+                arg: Some("expanded".to_string())
             }]
         );
     }

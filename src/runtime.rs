@@ -622,6 +622,21 @@ impl ProviderChoice {
         }
     }
 
+    pub fn reasoning_effort(&self) -> Option<&str> {
+        match self {
+            Self::OpenAi {
+                reasoning_effort, ..
+            }
+            | Self::OpenRouter {
+                reasoning_effort, ..
+            }
+            | Self::Custom {
+                reasoning_effort, ..
+            } => reasoning_effort.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Provider-relative model spec (`<model> [effort]`) — the label without
     /// the `provider/` prefix. This is the form `/setup model` accepts and
     /// the form persisted under `[models]` in settings.
@@ -1214,12 +1229,28 @@ impl ModelState {
             .label()
     }
 
+    pub fn provider_name(&self) -> String {
+        self.provider
+            .read()
+            .expect("provider lock poisoned")
+            .provider_name()
+            .to_string()
+    }
+
     pub fn model_id(&self) -> String {
         self.provider
             .read()
             .expect("provider lock poisoned")
             .model_id()
             .to_string()
+    }
+
+    pub fn reasoning_effort(&self) -> Option<String> {
+        self.provider
+            .read()
+            .expect("provider lock poisoned")
+            .reasoning_effort()
+            .map(str::to_string)
     }
 
     /// Snapshot of the current provider choice (including any custom base
