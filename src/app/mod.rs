@@ -885,6 +885,20 @@ impl App {
         if finished.is_empty() {
             return false;
         }
+        // Honor the `proactive_wake` setting: when off, surface a notice but do
+        // not auto-start a turn (the tasks are already drained, so this reports
+        // each finished task exactly once without waking).
+        if !self.settings.snapshot().proactive_wake_enabled() {
+            let ids = finished
+                .iter()
+                .map(|t| t.id.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.push_system(format!(
+                "✓ background task finished ({ids}) — see /background (proactive wake off)"
+            ));
+            return false;
+        }
         let ids = finished
             .iter()
             .map(|t| t.id.clone())
@@ -3009,6 +3023,31 @@ mod tests {
             "wake should fire once the overlay closes — the task wasn't consumed"
         );
         assert!(app.background.get(&record.id).is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn proactive_wake_disabled_by_setting_does_not_start_turn() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.setup = None;
+        app.settings
+            .set_proactive_wake(false)
+            .expect("disable wake");
+
+        let record = app.background.spawn_script(None, "echo hi".to_string());
+        for _ in 0..100 {
+            if app.background.counts() == (0, 1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // Setting off: no turn, but the completion is still surfaced once.
+        assert!(!app.maybe_wake_for_background());
+        assert!(!app.busy, "wake setting off must not start a turn");
+        assert!(
+            app.lines.iter().any(|l| l.text.contains(&record.id)),
+            "finished task should still be surfaced as a notice"
+        );
     }
 
     impl App {

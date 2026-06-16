@@ -454,6 +454,13 @@ impl SetConfigTool {
                 self.settings.set_attribution(enabled).map_err(map_err)?;
                 Ok(saved(format!("attribution = {}", on_off(enabled))))
             }
+            KeyTarget::ProactiveWake => {
+                let enabled = parse_on_off(value).ok_or_else(|| {
+                    "proactive_wake expects on/off (true/false, yes/no)".to_string()
+                })?;
+                self.settings.set_proactive_wake(enabled).map_err(map_err)?;
+                Ok(saved(format!("proactive_wake = {}", on_off(enabled))))
+            }
             KeyTarget::ApprovalMode => {
                 let mode = ApprovalMode::parse(value).ok_or_else(|| {
                     "approval_mode expects protective, normal, or off".to_string()

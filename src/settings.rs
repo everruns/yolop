@@ -107,6 +107,9 @@ pub struct Settings {
     /// Soft-approval paranoia level, injected into the system prompt each
     /// turn. Central, cross-session, surfaced in the status bar.
     pub approval_mode: ApprovalMode,
+    /// Whether the TUI auto-starts a turn when a background task finishes while
+    /// idle (proactive wake). On by default; disable for a quieter session.
+    pub proactive_wake: bool,
     /// Ordered harness capability overrides (`[[capabilities]]` in settings.toml).
     pub capabilities: Vec<CapabilityOverride>,
 }
@@ -122,6 +125,7 @@ impl Default for Settings {
             codex_auth: None,
             attribution: true,
             approval_mode: ApprovalMode::Normal,
+            proactive_wake: true,
             capabilities: Vec::new(),
         }
     }
@@ -149,6 +153,10 @@ impl Settings {
             .and_then(Value::as_str)
             .and_then(ApprovalMode::parse)
             .unwrap_or_default();
+        let proactive_wake = table
+            .get("proactive_wake")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         let string_map = |key: &str| {
             let mut map = BTreeMap::new();
             if let Some(t) = table.get(key).and_then(Value::as_table) {
@@ -173,6 +181,7 @@ impl Settings {
             codex_auth,
             attribution,
             approval_mode,
+            proactive_wake,
             capabilities: parse_capabilities_table(table),
         }
     }
@@ -187,6 +196,10 @@ impl Settings {
         }
         if !self.attribution {
             table.insert("attribution".to_string(), Value::Boolean(false));
+        }
+        // Only persist when disabled so settings.toml stays sparse.
+        if !self.proactive_wake {
+            table.insert("proactive_wake".to_string(), Value::Boolean(false));
         }
         // Only persist a non-default level so settings.toml stays sparse.
         if self.approval_mode != ApprovalMode::Normal {
@@ -258,6 +271,10 @@ impl Settings {
 
     pub fn approval_mode(&self) -> ApprovalMode {
         self.approval_mode
+    }
+
+    pub fn proactive_wake_enabled(&self) -> bool {
+        self.proactive_wake
     }
 
     pub fn capability_overrides_for(&self, id: &str) -> Vec<(usize, &CapabilityOverride)> {
@@ -420,6 +437,12 @@ impl SettingsStore {
         save_to(&self.path, &guard)
     }
 
+    pub fn set_proactive_wake(&self, enabled: bool) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.proactive_wake = enabled;
+        save_to(&self.path, &guard)
+    }
+
     pub fn set_approval_mode(&self, mode: ApprovalMode) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         guard.approval_mode = mode;
@@ -552,6 +575,26 @@ mod tests {
 
         assert!(settings.attribution_enabled());
         assert!(!settings.to_table().contains_key("attribution"));
+    }
+
+    #[test]
+    fn proactive_wake_defaults_on_and_round_trips_when_disabled() {
+        let settings = Settings::from_table(&Table::new());
+        assert!(settings.proactive_wake_enabled());
+        // Default stays out of the file to keep it sparse.
+        assert!(!settings.to_table().contains_key("proactive_wake"));
+
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store.set_proactive_wake(false).expect("save");
+        assert!(!store.snapshot().proactive_wake_enabled());
+        // Survives a reopen.
+        assert!(
+            !SettingsStore::open(path)
+                .snapshot()
+                .proactive_wake_enabled()
+        );
     }
 
     #[test]
