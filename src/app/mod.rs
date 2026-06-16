@@ -332,6 +332,7 @@ pub struct StreamPreview {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamKind {
     Assistant,
+    Thinking,
     Tool,
 }
 
@@ -339,6 +340,7 @@ impl StreamKind {
     fn label(self) -> &'static str {
         match self {
             StreamKind::Assistant => "agent",
+            StreamKind::Thinking => "thinking",
             StreamKind::Tool => "tool",
         }
     }
@@ -346,6 +348,7 @@ impl StreamKind {
     fn color(self) -> Color {
         match self {
             StreamKind::Assistant => ACCENT_GOLD,
+            StreamKind::Thinking => TEXT_MUTED,
             StreamKind::Tool => TEXT_MUTED,
         }
     }
@@ -1238,6 +1241,7 @@ impl App {
 #[derive(Default)]
 pub(crate) struct DeltaRouter {
     last_assistant_turn: Option<everruns_core::typed_id::TurnId>,
+    last_thinking_turn: Option<everruns_core::typed_id::TurnId>,
     last_tool_call: Option<String>,
     write_todos_args: HashMap<String, Value>,
 }
@@ -2257,34 +2261,6 @@ mod tests {
                 );
             }
             None => panic!("expected tool delta to surface preview"),
-        }
-    }
-
-    #[test]
-    fn handle_live_event_hides_thinking_delta_from_stream_preview() {
-        use everruns_core::events::ReasonThinkingDeltaData;
-        use everruns_core::typed_id::TurnId;
-
-        let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
-        let mut emitted = HashSet::new();
-        let mut router = DeltaRouter::default();
-
-        let event = RuntimeEvent::new(
-            SessionId::new(),
-            EventContext::empty(),
-            ReasonThinkingDeltaData {
-                turn_id: TurnId::new(),
-                delta: "private chain".to_string(),
-                accumulated: "private chain".to_string(),
-            },
-        );
-        handle_live_event(&event, &mut emitted, &mut router, &tx);
-
-        while let Ok(event) = rx.try_recv() {
-            assert!(
-                !matches!(event, TurnEvent::Stream(_)),
-                "private thinking must not create a stream preview: {event:?}"
-            );
         }
     }
 
@@ -4372,6 +4348,23 @@ mod tests {
         assert!(
             !rows[0].contains("first line"),
             "stream preview should not show earlier lines: {}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn chrome_stream_preview_thinking_uses_thinking_label() {
+        let state = ViewState {
+            stream_preview: Some(StreamPreview {
+                kind: StreamKind::Thinking,
+                text: "weighing options".to_string(),
+            }),
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 80, 5);
+        assert!(
+            rows[0].contains("thinking"),
+            "thinking-kind preview should use 'thinking' label: {}",
             rows[0]
         );
     }
