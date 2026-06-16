@@ -65,6 +65,7 @@ use everruns_core::traits::EventEmitter;
 use everruns_core::typed_id::EventId;
 use everruns_core::typed_id::SessionId;
 use everruns_runtime::EventBus;
+use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -106,8 +107,89 @@ pub fn session_log_path(session_dir: &Path) -> PathBuf {
     session_dir.join("events.jsonl")
 }
 
+fn session_workspace_path(session_dir: &Path) -> PathBuf {
+    session_dir.join("workspace.json")
+}
+
 pub fn legacy_session_log_path(sessions_dir: &Path, session_id: SessionId) -> PathBuf {
     sessions_dir.join(format!("{session_id}.jsonl"))
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SessionWorkspaceMetadata {
+    workspace_root: PathBuf,
+}
+
+pub fn read_session_workspace(session_dir: &Path) -> Result<Option<PathBuf>> {
+    let path = session_workspace_path(session_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&path).map_err(|e| {
+        AgentLoopError::config(format!("read session workspace {}: {e}", path.display()))
+    })?;
+    let metadata: SessionWorkspaceMetadata = serde_json::from_slice(&bytes).map_err(|e| {
+        AgentLoopError::config(format!("parse session workspace {}: {e}", path.display()))
+    })?;
+    Ok(Some(metadata.workspace_root))
+}
+
+pub fn write_session_workspace(session_dir: &Path, workspace_root: &Path) -> Result<()> {
+    std::fs::create_dir_all(session_dir).map_err(|e| {
+        AgentLoopError::config(format!("create session dir {}: {e}", session_dir.display()))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(session_dir, std::fs::Permissions::from_mode(0o700)).map_err(
+            |e| {
+                AgentLoopError::config(format!(
+                    "tighten session dir permissions on {}: {e}",
+                    session_dir.display()
+                ))
+            },
+        )?;
+    }
+    let path = session_workspace_path(session_dir);
+    let metadata = SessionWorkspaceMetadata {
+        workspace_root: workspace_root.to_path_buf(),
+    };
+    let bytes = serde_json::to_vec_pretty(&metadata)
+        .map_err(|e| AgentLoopError::config(format!("serialize session workspace: {e}")))?;
+    write_private_file(&path, &bytes)
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut opts = OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path).map_err(|e| {
+        AgentLoopError::config(format!("open private file {}: {e}", path.display()))
+    })?;
+    file.write_all(bytes).map_err(|e| {
+        AgentLoopError::config(format!("write private file {}: {e}", path.display()))
+    })?;
+    file.write_all(b"\n").map_err(|e| {
+        AgentLoopError::config(format!("write private file {}: {e}", path.display()))
+    })?;
+    file.flush().map_err(|e| {
+        AgentLoopError::config(format!("flush private file {}: {e}", path.display()))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+            AgentLoopError::config(format!(
+                "tighten private file permissions on {}: {e}",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 /// Copy a pre-folder-layout session log into the current session folder.

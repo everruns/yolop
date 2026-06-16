@@ -43,12 +43,13 @@ use crossterm::event::{
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
 use everruns_core::message::MessageRole;
+use everruns_core::typed_id::SessionId;
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use runtime::{BuiltRuntime, ProviderChoice};
 use settings::SettingsStore;
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
@@ -283,10 +284,6 @@ async fn main() -> Result<()> {
         return run_command(command);
     }
 
-    let cwd = cli
-        .cwd
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
     // Fall back to an unwritable scratch path when no platform config dir
     // is resolvable (minimal containers, CI without HOME). `SettingsStore`
     // loads to defaults when the file does not exist, and writes will
@@ -312,6 +309,7 @@ async fn main() -> Result<()> {
         Some(p) => p,
         None => session_log::default_sessions_dir()?,
     };
+    let cwd = resolve_workspace_root(cli.cwd.clone(), resume_session_id, &sessions_dir)?;
 
     // ACP mode builds runtimes per session (cwd arrives via `session/new`), so
     // it bypasses the up-front runtime build and the TUI.
@@ -340,6 +338,23 @@ async fn main() -> Result<()> {
         return run_print_mode(runtime, prompt).await;
     }
     run_tui(runtime).await
+}
+
+fn resolve_workspace_root(
+    cli_cwd: Option<PathBuf>,
+    resume_session_id: Option<SessionId>,
+    sessions_dir: &Path,
+) -> Result<PathBuf> {
+    if let Some(cwd) = cli_cwd {
+        return Ok(cwd);
+    }
+    if let Some(session_id) = resume_session_id {
+        let session_dir = session_log::session_dir_path(sessions_dir, session_id);
+        if let Some(saved) = session_log::read_session_workspace(&session_dir)? {
+            return Ok(saved);
+        }
+    }
+    Ok(std::env::current_dir().expect("cwd"))
 }
 
 fn run_command(command: Commands) -> Result<()> {
@@ -773,6 +788,41 @@ mod tests {
         let provider = pick_provider(&cli, &settings);
 
         assert_eq!(provider.label(), "openai/gpt-5.4 high");
+    }
+
+    #[test]
+    fn resolve_workspace_root_uses_saved_session_workspace() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let session_id = SessionId::from_seed(42);
+        let session_dir = session_log::session_dir_path(sessions.path(), session_id);
+        session_log::write_session_workspace(&session_dir, workspace.path())
+            .expect("write workspace metadata");
+
+        let resolved =
+            resolve_workspace_root(None, Some(session_id), sessions.path()).expect("resolve");
+
+        assert_eq!(resolved, workspace.path());
+    }
+
+    #[test]
+    fn resolve_workspace_root_prefers_explicit_cwd() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let saved = tempfile::tempdir().expect("saved workspace tempdir");
+        let explicit = tempfile::tempdir().expect("explicit workspace tempdir");
+        let session_id = SessionId::from_seed(43);
+        let session_dir = session_log::session_dir_path(sessions.path(), session_id);
+        session_log::write_session_workspace(&session_dir, saved.path())
+            .expect("write workspace metadata");
+
+        let resolved = resolve_workspace_root(
+            Some(explicit.path().to_path_buf()),
+            Some(session_id),
+            sessions.path(),
+        )
+        .expect("resolve");
+
+        assert_eq!(resolved, explicit.path());
     }
 
     #[test]
