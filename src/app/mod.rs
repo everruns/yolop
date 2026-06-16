@@ -651,6 +651,12 @@ impl App {
             return Ok(());
         }
 
+        // 3b) proactive wake: when background tasks finish while the session is
+        // idle, auto-start a turn so the agent reacts without a user prompt.
+        if self.maybe_wake_for_background() {
+            return Ok(());
+        }
+
         // 4) direct terminal input.
         let mut poll_timeout = Duration::from_millis(80);
         while event::poll(poll_timeout)? {
@@ -864,6 +870,32 @@ impl App {
         }
         self.push_user(text.clone());
         self.start_turn(text);
+    }
+
+    /// Proactive wake (Phase 4): when background tasks reach a terminal state
+    /// while the session is idle, automatically start a turn so the agent reacts
+    /// to the result (reads output, continues, or reports) without waiting for a
+    /// user prompt. Returns true if it started a turn. Only fires when idle, so
+    /// it never interrupts an in-flight turn; each task wakes at most once.
+    fn maybe_wake_for_background(&mut self) -> bool {
+        if self.busy || self.rx.is_some() || self.setup.is_some() {
+            return false;
+        }
+        let finished = self.background.drain_finished_for_wake();
+        if finished.is_empty() {
+            return false;
+        }
+        let ids = finished
+            .iter()
+            .map(|t| t.id.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.push_system(format!(
+            "↻ background task finished ({ids}) — waking agent to review"
+        ));
+        let prompt = crate::capabilities::background::wake_prompt(&finished);
+        self.start_turn(prompt);
+        true
     }
 
     /// Dispatch a slash command. Every command — including the terminal-side
@@ -2911,6 +2943,42 @@ mod tests {
             _workspace: workspace,
             _sessions: sessions,
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn proactive_wake_starts_turn_when_background_task_finishes() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+
+        // Idle with no tasks: nothing to wake for.
+        assert!(!app.maybe_wake_for_background());
+
+        // Start a quick background script and wait for it to finish.
+        let record = app.background.spawn_script(None, "echo hi".to_string());
+        for _ in 0..100 {
+            if app.background.counts() == (0, 1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            app.background.counts(),
+            (0, 1),
+            "background script should finish"
+        );
+
+        // Idle + a freshly-finished task ⇒ a turn is auto-started.
+        assert!(
+            app.maybe_wake_for_background(),
+            "a finished background task should wake the agent"
+        );
+        assert!(app.busy, "proactive wake must start a turn");
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains(&record.id) && l.text.contains("waking")),
+            "a notice explaining the auto-wake should be shown"
+        );
     }
 
     impl App {
