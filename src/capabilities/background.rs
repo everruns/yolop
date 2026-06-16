@@ -2,10 +2,11 @@
 //
 // A *background task* is a unit of work that runs detached from the foreground
 // turn: it has an id, a kind, a lifecycle status, captured output, and is
-// cancellable and observable. v1 ships one kind — `script` (a shell command
-// that outlives the turn, e.g. `gh pr checks --watch` waiting on CI). Background
-// sub-agents are a planned second kind that reuses this same registry, record,
-// and surfaces (see specs/background.md).
+// cancellable and observable. Two kinds share this one registry, record, status
+// model, persistence, and surfaces: `script` (a shell command that outlives the
+// turn, e.g. `gh pr checks --watch` waiting on CI) and `agent` (a child session
+// that runs one focused turn and returns its final message). See
+// specs/background.md.
 //
 // Durability reuses the per-session folder that `session_log.rs` already owns:
 // the registry persists an index to `<session_dir>/background/index.json` and
@@ -53,14 +54,40 @@ const DEFAULT_OUTPUT_TAIL_BYTES: usize = 16 * 1024;
 pub enum BackgroundKind {
     /// A shell command run via `bash -lc` from the workspace root.
     Script,
+    /// A sub-agent: a child session that runs one focused turn detached from
+    /// the parent turn and returns its final message as the result.
+    Agent,
 }
 
 impl BackgroundKind {
     fn label(self) -> &'static str {
         match self {
             BackgroundKind::Script => "script",
+            BackgroundKind::Agent => "agent",
         }
     }
+}
+
+/// Result of running a background sub-agent to completion.
+#[derive(Debug)]
+pub struct AgentRunResult {
+    /// The child session's id — resume its full transcript with `--session <id>`.
+    pub session_id: String,
+    /// The sub-agent's final assistant message, if any.
+    pub final_text: Option<String>,
+    /// Whether the child turn completed successfully.
+    pub success: bool,
+}
+
+/// Builds and drives a child sub-agent session. Implemented in `runtime.rs`
+/// (where `build` and the provider live) and injected into the registry, so the
+/// background module stays free of runtime-construction details. Absent in
+/// child sessions, which is what prevents a sub-agent from spawning its own
+/// sub-agents (bounded depth).
+#[async_trait]
+pub trait AgentSpawner: Send + Sync {
+    /// Run a one-shot sub-agent with `prompt` and return its outcome.
+    async fn run(&self, prompt: String) -> Result<AgentRunResult, String>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +141,9 @@ pub struct BackgroundRecord {
     /// File name (relative to the background dir) holding full output.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub log_file: Option<String>,
+    /// For `agent` tasks: the child session id, resumable with `--session <id>`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub child_session_id: Option<String>,
 }
 
 impl BackgroundRecord {
@@ -127,6 +157,7 @@ impl BackgroundRecord {
             "updated": self.updated.to_rfc3339(),
             "exit_code": self.exit_code,
             "summary": self.summary,
+            "child_session_id": self.child_session_id,
         })
     }
 }
@@ -155,6 +186,9 @@ pub struct BackgroundRegistry {
     index_path: PathBuf,
     workspace_root: PathBuf,
     max_runtime_secs: u64,
+    /// Present only when this session may spawn sub-agents (absent in child
+    /// sessions — see [`AgentSpawner`]).
+    spawner: Option<Arc<dyn AgentSpawner>>,
 }
 
 impl BackgroundRegistry {
@@ -189,11 +223,25 @@ impl BackgroundRegistry {
             index_path,
             workspace_root,
             max_runtime_secs: DEFAULT_MAX_RUNTIME_SECS,
+            spawner: None,
         };
         if corrected {
             registry.persist();
         }
         registry
+    }
+
+    /// Enable sub-agent spawning by attaching the spawner. Top-level sessions
+    /// set this; child sessions do not, which bounds sub-agent depth.
+    pub fn with_spawner(mut self, spawner: Arc<dyn AgentSpawner>) -> Self {
+        self.spawner = Some(spawner);
+        self
+    }
+
+    /// Whether this session can spawn sub-agents (the `background_agent` tool is
+    /// only offered when true).
+    pub fn can_spawn_agents(&self) -> bool {
+        self.spawner.is_some()
     }
 
     #[cfg(test)]
@@ -240,6 +288,7 @@ impl BackgroundRegistry {
             exit_code: None,
             summary: None,
             log_file: Some(log_file.clone()),
+            child_session_id: None,
         };
 
         {
@@ -274,6 +323,71 @@ impl BackgroundRegistry {
         let mut guard = self.inner.lock().expect("background lock poisoned");
         guard.handles.insert(id, handle);
         record
+    }
+
+    /// Start a background sub-agent: a child session that runs one focused turn
+    /// with `task` and returns its final message. Returns the new record
+    /// immediately; the agent runs detached. Errors if this session can't spawn
+    /// sub-agents (no spawner — e.g. inside another sub-agent).
+    pub fn spawn_agent(
+        &self,
+        label: Option<String>,
+        task: String,
+    ) -> Result<BackgroundRecord, String> {
+        let spawner = self
+            .spawner
+            .clone()
+            .ok_or_else(|| "background sub-agents are not available in this session".to_string())?;
+
+        let now = Utc::now();
+        let id = self.next_id();
+        let log_file = format!("{id}.log");
+        let label = label
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| first_line(&task, 60));
+        let record = BackgroundRecord {
+            id: id.clone(),
+            kind: BackgroundKind::Agent,
+            label,
+            command: Some(task.clone()),
+            status: BackgroundStatus::Running,
+            created: now,
+            updated: now,
+            exit_code: None,
+            summary: None,
+            log_file: Some(log_file.clone()),
+            child_session_id: None,
+        };
+
+        {
+            let mut guard = self.inner.lock().expect("background lock poisoned");
+            guard.records.push(record.clone());
+        }
+        self.persist();
+
+        let inner = self.inner.clone();
+        let index_path = self.index_path.clone();
+        let dir = self.dir.clone();
+        let max_runtime = self.max_runtime_secs;
+        let task_id = id.clone();
+        let handle = tokio::spawn(async move {
+            let outcome = run_agent(spawner, &dir, &log_file, task, max_runtime).await;
+            update_record(&inner, &index_path, &task_id, |r| {
+                // Don't clobber a status a concurrent `cancel` already set.
+                if r.status != BackgroundStatus::Running {
+                    return false;
+                }
+                r.status = outcome.status;
+                r.summary = Some(outcome.summary.clone());
+                r.child_session_id = outcome.child_session_id.clone();
+                true
+            });
+        });
+
+        let mut guard = self.inner.lock().expect("background lock poisoned");
+        guard.handles.insert(id, handle);
+        Ok(record)
     }
 
     /// Read a task's captured output (the tail of its log), capped at `max_bytes`.
@@ -340,6 +454,12 @@ impl BackgroundRegistry {
              `background_output`, cancel with `background_cancel`. A `completed`/`failed` task's \
              result is ready to read NOW.\n",
         );
+        if self.can_spawn_agents() {
+            out.push_str(
+                "Spin off a focused sub-agent with `background_agent` for a self-contained piece \
+                 of work (analysis, drafting); read its result the same way.\n",
+            );
+        }
         out.push_str(&format!(
             "{total} task(s), {running} running (most recent first):\n"
         ));
@@ -576,6 +696,122 @@ async fn run_script(
     }
 }
 
+/// Terminal state of a finished sub-agent task.
+struct AgentOutcome {
+    status: BackgroundStatus,
+    summary: String,
+    child_session_id: Option<String>,
+}
+
+/// Drive a background sub-agent to completion: run the child turn via the
+/// spawner under a wall-clock ceiling, write its final message to the task log,
+/// and return the terminal state. Mirrors `run_script`'s timeout/cap discipline.
+async fn run_agent(
+    spawner: Arc<dyn AgentSpawner>,
+    dir: &Path,
+    log_file: &str,
+    task: String,
+    max_runtime_secs: u64,
+) -> AgentOutcome {
+    let timeout = std::time::Duration::from_secs(max_runtime_secs);
+    match tokio::time::timeout(timeout, spawner.run(task)).await {
+        // Timed out: the spawner future (and the child turn it owns) is dropped,
+        // abandoning the run. Match `run_script`'s `timed_out` semantics.
+        Err(_) => {
+            write_log(
+                dir,
+                log_file,
+                &format!("sub-agent timed out after {max_runtime_secs}s\n"),
+            )
+            .await;
+            AgentOutcome {
+                status: BackgroundStatus::TimedOut,
+                summary: format!("timed out after {max_runtime_secs}s"),
+                child_session_id: None,
+            }
+        }
+        Ok(Ok(run)) => {
+            let final_text = run.final_text.unwrap_or_default();
+            let shown = if final_text.trim().is_empty() {
+                "(sub-agent produced no final message)"
+            } else {
+                &final_text
+            };
+            // Header AND footer carry the child session id, so it stays visible
+            // even when `background_output` returns only the tail of a long log.
+            let body = format!(
+                "background sub-agent\nchild session: {sid}\nsuccess: {ok}\n\n{shown}\n\n\
+                 [child session: {sid}]\n",
+                sid = run.session_id,
+                ok = run.success,
+            );
+            write_log(dir, log_file, &body).await;
+            let summary = if final_text.trim().is_empty() {
+                if run.success {
+                    "sub-agent finished".to_string()
+                } else {
+                    "sub-agent failed".to_string()
+                }
+            } else {
+                first_line(&final_text, 200)
+            };
+            AgentOutcome {
+                status: if run.success {
+                    BackgroundStatus::Completed
+                } else {
+                    BackgroundStatus::Failed
+                },
+                summary,
+                child_session_id: Some(run.session_id),
+            }
+        }
+        Ok(Err(e)) => {
+            write_log(dir, log_file, &format!("sub-agent failed to run: {e}\n")).await;
+            AgentOutcome {
+                status: BackgroundStatus::Failed,
+                summary: truncate(&format!("error: {e}"), 200),
+                child_session_id: None,
+            }
+        }
+    }
+}
+
+/// Write a complete log file for a task (used by sub-agents, which produce their
+/// output all at once). Capped at [`MAX_OUTPUT_BYTES`] like the script log so a
+/// verbose sub-agent can't bloat the session folder; owner-only on Unix.
+async fn write_log(dir: &Path, log_file: &str, body: &str) {
+    if tokio::fs::create_dir_all(dir).await.is_err() {
+        return;
+    }
+    let capped = cap_bytes(body, MAX_OUTPUT_BYTES);
+    let path = dir.join(log_file);
+    if tokio::fs::write(&path, capped.as_ref()).await.is_err() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await;
+    }
+}
+
+/// Truncate `s` to at most `max` bytes on a char boundary, appending a note when
+/// truncation happens. Borrows when no truncation is needed.
+fn cap_bytes(s: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    if s.len() <= max {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    std::borrow::Cow::Owned(format!(
+        "{}\n[background: output truncated at {} KiB]\n",
+        &s[..end],
+        max / 1024
+    ))
+}
+
 fn summarize(last_line: &str, exit_code: Option<i32>, success: bool) -> String {
     let tail = last_line.trim();
     if !tail.is_empty() {
@@ -706,7 +942,7 @@ background_output / background_cancel).
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![
+        let mut tools: Vec<Box<dyn Tool>> = vec![
             Box::new(BackgroundRunTool {
                 registry: self.registry.clone(),
             }),
@@ -719,7 +955,15 @@ background_output / background_cancel).
             Box::new(BackgroundCancelTool {
                 registry: self.registry.clone(),
             }),
-        ]
+        ];
+        // The sub-agent tool is only offered when this session can spawn agents
+        // (i.e. it is not itself a sub-agent) — this bounds sub-agent depth.
+        if self.registry.can_spawn_agents() {
+            tools.push(Box::new(BackgroundAgentTool {
+                registry: self.registry.clone(),
+            }));
+        }
+        tools
     }
 }
 
@@ -785,6 +1029,71 @@ impl Tool for BackgroundRunTool {
                 record.id
             ),
         }))
+    }
+}
+
+struct BackgroundAgentTool {
+    registry: Arc<BackgroundRegistry>,
+}
+
+#[async_trait]
+impl Tool for BackgroundAgentTool {
+    fn name(&self) -> &str {
+        "background_agent"
+    }
+    fn display_name(&self) -> Option<&str> {
+        Some("Run sub-agent in background")
+    }
+    fn description(&self) -> &str {
+        "Spin off a focused sub-agent that runs DETACHED from this turn in its own session, with \
+         the same tools and workspace, and returns its final message. Use to parallelize a \
+         self-contained piece of work whose intermediate output would otherwise flood your context \
+         (e.g. \"analyze the auth module and summarize the risks\", \"draft an integration test for \
+         X\"). Give it a complete, standalone instruction — it does not see this conversation. \
+         Returns a task id; read its result later with `background_output` (status also shows at \
+         the top of later turns). The sub-agent cannot spawn further sub-agents."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Complete, standalone instruction for the sub-agent. It does not see this conversation, so include all needed context."
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Optional short human label (e.g. \"analyze auth module\"). Defaults to the task."
+                }
+            },
+            "required": ["task"],
+            "additionalProperties": false
+        })
+    }
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let task = match arguments.get("task").and_then(Value::as_str) {
+            Some(t) if !t.trim().is_empty() => t.to_string(),
+            _ => {
+                return ToolExecutionResult::tool_error("'task' is required and must be non-empty");
+            }
+        };
+        let label = arguments
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        match self.registry.spawn_agent(label, task) {
+            Ok(record) => ToolExecutionResult::success(json!({
+                "ok": true,
+                "id": record.id,
+                "status": record.status.as_str(),
+                "label": record.label,
+                "message": format!(
+                    "started background sub-agent {} — read its result with `background_output` or watch later turns.",
+                    record.id
+                ),
+            })),
+            Err(e) => ToolExecutionResult::tool_error(e),
+        }
     }
 }
 
@@ -862,6 +1171,9 @@ impl Tool for BackgroundOutputTool {
                 "status": record.status.as_str(),
                 "exit_code": record.exit_code,
                 "summary": record.summary,
+                // Reported structurally so a sub-agent's child session id is
+                // always available even if the log tail truncated the header.
+                "child_session_id": record.child_session_id,
                 "output": output,
                 "truncated": truncated,
             })),
@@ -927,6 +1239,35 @@ mod tests {
 
     fn registry_in(dir: &Path) -> BackgroundRegistry {
         BackgroundRegistry::load(dir, dir.to_path_buf())
+    }
+
+    /// Test spawner that returns a canned outcome, so the registry's sub-agent
+    /// bookkeeping can be tested without building a real child runtime.
+    struct MockSpawner {
+        final_text: Option<String>,
+        success: bool,
+    }
+
+    #[async_trait]
+    impl AgentSpawner for MockSpawner {
+        async fn run(&self, _prompt: String) -> Result<AgentRunResult, String> {
+            Ok(AgentRunResult {
+                session_id: "session_child_test".to_string(),
+                final_text: self.final_text.clone(),
+                success: self.success,
+            })
+        }
+    }
+
+    /// Spawner that never finishes in time, to exercise the agent timeout path.
+    struct SlowSpawner;
+
+    #[async_trait]
+    impl AgentSpawner for SlowSpawner {
+        async fn run(&self, _prompt: String) -> Result<AgentRunResult, String> {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            unreachable!("should be cancelled by the timeout")
+        }
     }
 
     /// Poll until a task reaches a terminal status, or panic after `tries`.
@@ -1026,6 +1367,7 @@ mod tests {
             exit_code: None,
             summary: None,
             log_file: None,
+            child_session_id: None,
         });
         write_index(&index_path, &tasks).unwrap();
 
@@ -1084,5 +1426,91 @@ mod tests {
         let tool = BackgroundRunTool { registry: reg };
         assert!(tool.execute(json!({})).await.is_error());
         assert!(tool.execute(json!({ "command": "  " })).await.is_error());
+    }
+
+    #[tokio::test]
+    async fn agent_task_records_result_and_child_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = registry_in(tmp.path()).with_spawner(Arc::new(MockSpawner {
+            final_text: Some("found 3 risks in the auth module".into()),
+            success: true,
+        }));
+        let record = reg
+            .spawn_agent(
+                Some("analyze auth".into()),
+                "analyze the auth module".into(),
+            )
+            .expect("spawner present");
+        assert_eq!(record.kind, BackgroundKind::Agent);
+
+        let done = wait_terminal(&reg, &record.id, 100).await;
+        assert_eq!(done.status, BackgroundStatus::Completed);
+        assert_eq!(done.child_session_id.as_deref(), Some("session_child_test"));
+        assert!(done.summary.as_deref().unwrap_or("").contains("3 risks"));
+
+        // The sub-agent's final message and child session id are in the log.
+        let (_, output, _) = reg.read_output(&record.id, 64 * 1024).unwrap();
+        assert!(output.contains("found 3 risks"), "got: {output}");
+        assert!(output.contains("session_child_test"), "got: {output}");
+    }
+
+    #[tokio::test]
+    async fn agent_times_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = registry_in(tmp.path())
+            .with_max_runtime(1)
+            .with_spawner(Arc::new(SlowSpawner));
+        let record = reg
+            .spawn_agent(None, "slow task".into())
+            .expect("spawner present");
+        let done = wait_terminal(&reg, &record.id, 100).await;
+        assert_eq!(done.status, BackgroundStatus::TimedOut);
+        let (_, output, _) = reg.read_output(&record.id, 64 * 1024).unwrap();
+        assert!(output.contains("timed out"), "got: {output}");
+    }
+
+    #[tokio::test]
+    async fn agent_failure_marks_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = registry_in(tmp.path()).with_spawner(Arc::new(MockSpawner {
+            final_text: None,
+            success: false,
+        }));
+        let record = reg
+            .spawn_agent(None, "do a thing".into())
+            .expect("spawner present");
+        let done = wait_terminal(&reg, &record.id, 100).await;
+        assert_eq!(done.status, BackgroundStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn agent_unavailable_without_spawner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = registry_in(tmp.path());
+        // No spawner attached → spawning a sub-agent errors and the tool is hidden.
+        assert!(!reg.can_spawn_agents());
+        assert!(reg.spawn_agent(None, "x".into()).is_err());
+
+        let cap = BackgroundCapability {
+            registry: Arc::new(reg),
+        };
+        let names: Vec<String> = cap.tools().iter().map(|t| t.name().to_string()).collect();
+        assert!(!names.contains(&"background_agent".to_string()));
+        assert_eq!(names.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn agent_tool_offered_when_spawner_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = registry_in(tmp.path()).with_spawner(Arc::new(MockSpawner {
+            final_text: None,
+            success: true,
+        }));
+        let cap = BackgroundCapability {
+            registry: Arc::new(reg),
+        };
+        let names: Vec<String> = cap.tools().iter().map(|t| t.name().to_string()).collect();
+        assert!(names.contains(&"background_agent".to_string()));
+        assert_eq!(names.len(), 5);
     }
 }

@@ -1,7 +1,7 @@
 # Background execution — background tasks and background agents
 
-Status: v1 (scripted background tasks) implemented. Background sub-agents and a
-live TUI panel are specified here as follow-up phases.
+Status: scripted background tasks and background sub-agents implemented. A live
+TUI panel and proactive wake remain follow-up phases.
 
 ## Why
 
@@ -62,22 +62,40 @@ The index is the durable record. On `BackgroundRegistry::load`:
   it. The corrected index is re-persisted immediately.
 
 This is the honest contract: *results* survive a restart; *in-flight OS
-processes* do not. Background **agents** (Phase 2) are different — an agent is
-itself a `session_id` with its own `events.jsonl`, so an interrupted agent can
-be genuinely resumed by rebuilding its session (Phase 2 detail).
+processes* do not. Background **agents** are different — an agent is itself a
+`session_id` with its own `events.jsonl`, so even an interrupted agent's
+transcript is durable and its child session id is recorded for resume.
 
 ## Surfaces
 
-### Tools (v1)
+### Tools
 
-The `background` capability contributes four tools:
+The `background` capability contributes:
 
 - `background_run` — start a scripted task. `command` (required), `label`
   (optional human tag). Returns the new task id and status. Non-blocking.
+- `background_agent` — spin off a sub-agent. `task` (required, a complete
+  standalone instruction — the sub-agent does not see the parent conversation),
+  `label` (optional). Returns the new task id. Offered only when the session can
+  spawn agents (see [Sub-agents](#sub-agents)).
 - `background_list` — list every task with its status and one-line summary.
 - `background_output` — read a task's captured output by `id` (tail-capped),
   with its status and exit code.
 - `background_cancel` — cancel a running task by `id`.
+
+### Sub-agents
+
+A sub-agent (`background_agent`) is a real child yolop session built with
+`runtime::build` (the pattern the ACP server already uses to run N concurrent
+runtimes), reusing the parent's workspace, live provider, and settings. The
+registry runs one turn on a detached task and records the final assistant
+message as the result; the child's full transcript lives in its own session
+folder (`background_output` reports the child session id for `--session` resume).
+
+The capability holds an injected `AgentSpawner` only in top-level sessions;
+child sessions are built with sub-agent spawning disabled, so the
+`background_agent` tool is absent there. That bounds sub-agent depth at one
+level — a sub-agent cannot recursively spawn its own sub-agents.
 
 ### System-prompt disclosure
 
@@ -99,25 +117,23 @@ filling the disk or living forever; both are generous for the CI-wait case.
 
 ## Phased plan
 
-1. **v1 — scripted background tasks (this spec, implemented).** The core
-   registry, persistence + restore, the four tools, and system-prompt
-   disclosure. Delivers the CI-wait use case end to end.
-2. **Phase 2 — background sub-agents.** A `background_agent` tool that builds a
-   child session (`runtime::build(cwd, fresh_session_id)`, the pattern the ACP
-   server already uses for N concurrent runtimes) and drives its turns on a
-   detached task. The parent reads the child's summary via `background_output`;
-   because each agent is a real session folder, an interrupted agent is
-   resumable, not just re-launchable.
+1. **Scripted background tasks (implemented).** The core registry, persistence +
+   restore, the script tools, and system-prompt disclosure. Delivers the CI-wait
+   use case end to end.
+2. **Background sub-agents (implemented).** The `background_agent` tool builds a
+   child session and drives one turn on a detached task; the parent reads the
+   child's result via `background_output`. Each sub-agent is a real session
+   folder, so its transcript is resumable. Depth is bounded at one level.
 3. **Phase 3 — live TUI panel.** A background-tasks region in the TUI, fed by a
    status channel drained in the existing `App` event loop (alongside
-   `TurnEvent`/`UiCommand`), plus a `/background` command. Today v1 surfaces
-   through the agent and tool results; Phase 3 makes it a first-class user view
-   (status, peek, cancel) the way Claude Code's agent view does.
+   `TurnEvent`/`UiCommand`), plus a `/background` command. Today background work
+   surfaces through the agent and tool results; this makes it a first-class user
+   view (status, peek, cancel) the way Claude Code's agent view does.
 4. **Phase 4 — proactive wake.** Optionally inject a turn when a watched task
    finishes, instead of waiting for the user's next prompt, for true
    fire-and-forget CI monitoring.
 
-## Non-goals (v1)
+## Non-goals (for now)
 
 - No resurrection of an interrupted OS process — only its captured output and
   final state survive a restart.

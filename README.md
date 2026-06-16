@@ -81,9 +81,12 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   directly with bounded inline output.
 - **Background tasks** — `background_run` starts a shell command that runs
   detached from the current turn (e.g. `gh pr checks <pr> --watch` waiting on
-  CI); `background_list`, `background_output`, and `background_cancel` track and
-  read it. Output streams to the session folder and a task's *result* survives a
-  restart (a task still running when yolop exits is restored as `interrupted`).
+  CI), and `background_agent` spins off a focused sub-agent (its own child
+  session, same tools and workspace) for a self-contained piece of work;
+  `background_list`, `background_output`, and `background_cancel` track and read
+  them. Output streams to the session folder and a task's *result* survives a
+  restart (a task still running when yolop exits is restored as `interrupted`; a
+  sub-agent's child session is resumable with `--session`).
   See [`specs/background.md`](./specs/background.md).
 - **Web** — `web_fetch` (HTTP GET/HEAD with markdown/text conversion, DNS-pinned
   SSRF protection) and `duckduckgo_search` (free, no API key). Setting
