@@ -19,7 +19,10 @@ pub(crate) mod your;
 
 pub(crate) use approval::{APPROVAL_CAPABILITY_ID, ApprovalCapability};
 pub(crate) use ast_grep::{AST_GREP_CAPABILITY_ID, AstGrepCapability};
-pub(crate) use background::{BACKGROUND_CAPABILITY_ID, BackgroundCapability, BackgroundRegistry};
+pub(crate) use background::{
+    AgentRunResult, AgentSpawner, BACKGROUND_CAPABILITY_ID, BackgroundCapability,
+    BackgroundRegistry,
+};
 pub(crate) use client_commands::{CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCapability};
 pub(crate) use config::{CONFIG_CAPABILITY_ID, ConfigCapability};
 pub(crate) use hooks::{HOOKS_CAPABILITY_ID, HooksCapability};
