@@ -1005,17 +1005,21 @@ impl App {
 
     fn mouse_is_on_status(&self, mouse: MouseEvent, terminal_area: Rect) -> bool {
         let input_width = terminal_area.width.saturating_sub(2);
-        let input_height = self.input_height(input_width);
-        let chrome = bottom_rect(
+        let layout = app_layout_for_frame(
             terminal_area,
-            chrome_height(input_height, self.status_layout),
+            self.input_height(input_width),
+            self.status_layout,
         );
-        let status_rows = self.status_layout.row_count();
-        if status_rows == 0 || chrome.height < status_rows {
+        if layout.chrome.session_status.height == 0 {
             return false;
         }
-        let status_y = chrome.y + chrome.height.saturating_sub(status_rows);
-        mouse.row >= status_y && mouse.row < status_y.saturating_add(status_rows)
+        mouse.row >= layout.chrome.session_status.y
+            && mouse.row
+                < layout
+                    .chrome
+                    .session_status
+                    .y
+                    .saturating_add(layout.chrome.session_status.height)
     }
 
     fn handle_ctrl_c(&mut self) {
@@ -1884,6 +1888,92 @@ mod tests {
     }
 
     #[test]
+    fn chrome_dimensions_clamp_input_to_visible_frame() {
+        assert_eq!(
+            chrome_dimensions(7, MAX_INPUT_HEIGHT, StatusLayout::Expanded),
+            (7, 3)
+        );
+        assert_eq!(
+            chrome_dimensions(5, MAX_INPUT_HEIGHT, StatusLayout::Compact),
+            (5, 3)
+        );
+        assert_eq!(
+            chrome_dimensions(0, MAX_INPUT_HEIGHT, StatusLayout::Compact),
+            (0, 0)
+        );
+    }
+
+    fn rect_inside(parent: Rect, child: Rect) -> bool {
+        let parent_right = parent.x as u32 + parent.width as u32;
+        let parent_bottom = parent.y as u32 + parent.height as u32;
+        let child_right = child.x as u32 + child.width as u32;
+        let child_bottom = child.y as u32 + child.height as u32;
+        child.x >= parent.x
+            && child.y >= parent.y
+            && child_right <= parent_right
+            && child_bottom <= parent_bottom
+    }
+
+    #[test]
+    fn app_layout_rectangles_stay_inside_frame_across_sizes() {
+        let widths = [0, 1, 2, 4, 8, 16, 40, 120];
+        let heights = [0, 1, 2, 3, 4, 5, 7, 12, 24, 60];
+        let desired_inputs = [0, 1, 2, 3, MAX_INPUT_HEIGHT, MAX_INPUT_HEIGHT + 8];
+        for status_layout in [StatusLayout::Compact, StatusLayout::Expanded] {
+            for width in widths {
+                for height in heights {
+                    for desired_input in desired_inputs {
+                        let frame = Rect {
+                            x: 2,
+                            y: 3,
+                            width,
+                            height,
+                        };
+                        let layout = app_layout_for_frame(frame, desired_input, status_layout);
+                        assert_eq!(layout.frame, frame);
+                        assert!(
+                            rect_inside(frame, layout.transcript),
+                            "transcript escaped frame: {layout:?}"
+                        );
+                        assert!(
+                            rect_inside(frame, layout.chrome.area),
+                            "chrome escaped frame: {layout:?}"
+                        );
+                        assert!(
+                            rect_inside(layout.chrome.area, layout.chrome.preview),
+                            "preview escaped chrome: {layout:?}"
+                        );
+                        assert!(
+                            rect_inside(layout.chrome.area, layout.chrome.message_separator),
+                            "message separator escaped chrome: {layout:?}"
+                        );
+                        assert!(
+                            rect_inside(layout.chrome.area, layout.chrome.input),
+                            "input escaped chrome: {layout:?}"
+                        );
+                        assert!(
+                            rect_inside(layout.chrome.area, layout.chrome.status_separator),
+                            "status separator escaped chrome: {layout:?}"
+                        );
+                        assert!(
+                            rect_inside(layout.chrome.area, layout.chrome.session_status),
+                            "session status escaped chrome: {layout:?}"
+                        );
+                        assert!(
+                            layout.chrome.area.height <= frame.height,
+                            "chrome taller than frame: {layout:?}"
+                        );
+                        assert!(
+                            layout.chrome.input_height <= MAX_INPUT_HEIGHT,
+                            "input height exceeded cap: {layout:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn replayed_events_render_user_assistant_and_tool_lines() {
         let session_id = SessionId::new();
         let user_event = RuntimeEvent::new(
@@ -2541,6 +2631,94 @@ mod tests {
         );
         assert_eq!(lines[0].spans[0].style.fg, Some(TEXT_MUTED));
         assert_eq!(line_content_color(&lines[0]), Some(TEXT_MUTED));
+    }
+
+    #[test]
+    fn markdown_lines_wrap_styled_content_to_available_width() {
+        let width = 32;
+        let mut lines = Vec::new();
+        append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::Assistant,
+                text: "Use `very-long-command-name` before continuing with the next operation."
+                    .to_string(),
+            },
+            width,
+        );
+
+        assert!(
+            lines.len() > 1,
+            "styled markdown should wrap into multiple rows: {lines:?}"
+        );
+        assert!(
+            lines.iter().all(|line| line_width(line) <= width),
+            "all rendered rows should fit width {width}: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.style.bg == Some(CODE_BG)),
+            "wrapped inline-code spans should keep code styling: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn wrapped_plain_lines_do_not_use_wider_than_view_floor() {
+        let width = 14;
+        let mut lines = Vec::new();
+        append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::User,
+                text: "supercalifragilistic".to_string(),
+            },
+            width,
+        );
+
+        assert!(
+            lines.iter().all(|line| line_width(line) <= width),
+            "hard-wrapped rows should fit narrow width {width}: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn rendered_chat_lines_fit_available_width_across_authors() {
+        let chats = [
+            ChatLine {
+                author: Author::User,
+                text: "this is a deliberately long user prompt with one-super-long-token".into(),
+            },
+            ChatLine {
+                author: Author::Assistant,
+                text: "Use `cargo test --all-features` before resizing the terminal again.".into(),
+            },
+            ChatLine {
+                author: Author::Narration,
+                text: "reviewing layout constraints before drawing bottom chrome".into(),
+            },
+            ChatLine {
+                author: Author::Diff,
+                text: "+changed line with a very long path /workspace/src/app/render.rs".into(),
+            },
+            ChatLine {
+                author: Author::ToolDetail,
+                text: "stdout: output with a long uninterrupted token abcdefghijklmnopqrstuvwxyz"
+                    .into(),
+            },
+        ];
+
+        for width in [12, 16, 24, 40, 80] {
+            for chat in &chats {
+                let mut lines = Vec::new();
+                append_chat_lines(&mut lines, chat, width);
+                assert!(
+                    lines.iter().all(|line| line_width(line) <= width),
+                    "rendered line escaped width {width} for {chat:?}: {lines:?}"
+                );
+            }
+        }
     }
 
     #[test]

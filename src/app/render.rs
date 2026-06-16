@@ -9,21 +9,79 @@ pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
     // Match `draw_input`: the `> ` prompt consumes two columns.
     let input_width = area.width.saturating_sub(2);
-    let input_height = app.input_height(input_width);
+    let desired_input_height = app.input_height(input_width);
     let state = app.view_state();
-    let chrome_area = bottom_rect(area, chrome_height(input_height, state.status_layout));
-    let transcript_area = Rect {
-        height: area.height.saturating_sub(chrome_area.height),
-        ..area
-    };
+    let layout = TuiLayout::new(area, desired_input_height, state.status_layout);
 
     // Chrome renders the non-input rows; we then layer the input field
     // on top into the chrome-reserved input slot.
-    clear_transcript_viewport(f, transcript_area);
-    draw_recent_transcript(f, transcript_area, app);
-    let input_rect = draw_chrome(f, chrome_area, input_height, &state);
-    draw_input(f, input_rect, app);
+    clear_transcript_viewport(f, layout.transcript);
+    draw_recent_transcript(f, layout.transcript, app);
+    draw_chrome_layout(f, layout.chrome, &state);
+    draw_input(f, layout.chrome.input, app);
     draw_setup_overlay(f, area, app);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TuiLayout {
+    pub frame: Rect,
+    pub transcript: Rect,
+    pub chrome: ChromeLayout,
+}
+
+impl TuiLayout {
+    pub(crate) fn new(frame: Rect, desired_input_height: u16, status_layout: StatusLayout) -> Self {
+        let (chrome_height, input_height) =
+            chrome_dimensions(frame.height, desired_input_height, status_layout);
+        let chrome_area = bottom_rect(frame, chrome_height);
+        let transcript = Rect {
+            height: frame.height.saturating_sub(chrome_area.height),
+            ..frame
+        };
+        Self {
+            frame,
+            transcript,
+            chrome: ChromeLayout::new(chrome_area, input_height, status_layout),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ChromeLayout {
+    pub area: Rect,
+    pub preview: Rect,
+    pub message_separator: Rect,
+    pub input: Rect,
+    pub status_separator: Rect,
+    pub session_status: Rect,
+    pub input_height: u16,
+}
+
+impl ChromeLayout {
+    pub(crate) fn new(area: Rect, input_height: u16, status_layout: StatusLayout) -> Self {
+        let preview_height = u16::from(input_height == 1);
+        let status_height = u16::from(input_height < 3);
+        let status_rows = status_layout.row_count();
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(preview_height),
+                Constraint::Length(1),
+                Constraint::Length(input_height),
+                Constraint::Length(status_height),
+                Constraint::Length(status_rows),
+            ])
+            .split(area);
+        Self {
+            area,
+            preview: chunks[0],
+            message_separator: chunks[1],
+            input: chunks[2],
+            status_separator: chunks[3],
+            session_status: chunks[4],
+            input_height,
+        }
+    }
 }
 
 pub(crate) fn bottom_rect(area: Rect, height: u16) -> Rect {
@@ -43,6 +101,42 @@ pub(crate) fn chrome_height(input_height: u16, status_layout: StatusLayout) -> u
         .saturating_add(status_separator_height)
         .saturating_add(status_layout.row_count());
     COMPACT_CHROME_HEIGHT.max(input_height.saturating_add(fixed_rows))
+}
+
+pub(crate) fn chrome_dimensions(
+    frame_height: u16,
+    desired_input_height: u16,
+    status_layout: StatusLayout,
+) -> (u16, u16) {
+    if frame_height == 0 {
+        return (0, 0);
+    }
+
+    let desired_input_height = desired_input_height.clamp(1, MAX_INPUT_HEIGHT);
+    let chrome_height = chrome_height(desired_input_height, status_layout).min(frame_height);
+    let mut input_height = desired_input_height.min(chrome_height);
+    while input_height > 1
+        && input_height.saturating_add(chrome_fixed_rows(input_height, status_layout))
+            > chrome_height
+    {
+        input_height -= 1;
+    }
+    (chrome_height, input_height)
+}
+
+pub(crate) fn app_layout_for_frame(
+    frame: Rect,
+    desired_input_height: u16,
+    status_layout: StatusLayout,
+) -> TuiLayout {
+    TuiLayout::new(frame, desired_input_height, status_layout)
+}
+
+fn chrome_fixed_rows(input_height: u16, status_layout: StatusLayout) -> u16 {
+    u16::from(input_height == 1)
+        .saturating_add(1)
+        .saturating_add(u16::from(input_height < 3))
+        .saturating_add(status_layout.row_count())
 }
 
 pub(crate) fn clear_transcript_viewport(f: &mut ratatui::Frame, area: Rect) {
@@ -141,36 +235,27 @@ pub(crate) fn bounded_recent_chat_line(chat: &ChatLine) -> ChatLine {
 /// Snapshot tests call this against a `TestBackend` and ignore the
 /// returned input rect — the buffer's other rows are what they assert
 /// against.
+#[cfg(test)]
 pub(crate) fn draw_chrome(
     f: &mut ratatui::Frame,
     area: Rect,
     input_height: u16,
     state: &ViewState,
 ) -> Rect {
-    let preview_height = u16::from(input_height == 1);
-    let status_height = u16::from(input_height < 3);
-    let status_rows = state.status_layout.row_count();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(preview_height), // suggestions / stream preview
-            Constraint::Length(1),              // message separator
-            Constraint::Length(input_height),   // input (left to the caller)
-            Constraint::Length(status_height),  // status separator
-            Constraint::Length(status_rows),    // session status
-        ])
-        .split(area);
+    let layout = ChromeLayout::new(area, input_height, state.status_layout);
+    draw_chrome_layout(f, layout, state);
+    layout.input
+}
 
+pub(crate) fn draw_chrome_layout(f: &mut ratatui::Frame, layout: ChromeLayout, state: &ViewState) {
     if state.command_suggestions.is_empty() {
-        draw_stream_preview(f, chunks[0], state);
+        draw_stream_preview(f, layout.preview, state);
     } else {
-        draw_suggestions(f, chunks[0], &state.command_suggestions);
+        draw_suggestions(f, layout.preview, &state.command_suggestions);
     }
-    draw_message_separator(f, chunks[1], state);
-    draw_status_separator(f, chunks[3]);
-    draw_session_status(f, chunks[4], state);
-
-    chunks[2]
+    draw_message_separator(f, layout.message_separator, state);
+    draw_status_separator(f, layout.status_separator);
+    draw_session_status(f, layout.session_status, state);
 }
 
 pub(crate) fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -728,10 +813,15 @@ pub(crate) fn append_wrapped_styled<'a>(
     let continuation = " ".repeat(first_prefix.chars().count());
     let wrap_width = inner_width
         .saturating_sub(first_prefix.chars().count())
-        .max(20);
+        .max(1);
     let mut emitted = false;
     for raw in text.lines() {
-        let wrapped = textwrap::wrap(raw, wrap_width);
+        let wrapped = textwrap::wrap(
+            raw,
+            textwrap::Options::new(wrap_width)
+                .break_words(true)
+                .word_separator(textwrap::WordSeparator::AsciiSpace),
+        );
         if wrapped.is_empty() {
             let prefix = if emitted {
                 continuation.as_str()
@@ -776,11 +866,16 @@ pub(crate) fn append_wrapped_diff<'a>(
     let continuation = " ".repeat(first_prefix.chars().count());
     let wrap_width = inner_width
         .saturating_sub(first_prefix.chars().count())
-        .max(20);
+        .max(1);
     let mut emitted = false;
     for raw in text.lines() {
         let content_style = diff_line_style(raw);
-        let wrapped = textwrap::wrap(raw, wrap_width);
+        let wrapped = textwrap::wrap(
+            raw,
+            textwrap::Options::new(wrap_width)
+                .break_words(true)
+                .word_separator(textwrap::WordSeparator::AsciiSpace),
+        );
         if wrapped.is_empty() {
             let prefix = if emitted {
                 continuation.as_str()
@@ -838,7 +933,7 @@ pub(crate) fn append_markdown_lines<'a>(
     let continuation = " ".repeat(first_prefix.chars().count());
     let wrap_width = inner_width
         .saturating_sub(first_prefix.chars().count())
-        .max(20);
+        .max(1);
     let mut first = true;
     let mut in_code = false;
 
@@ -876,7 +971,12 @@ pub(crate) fn append_markdown_lines<'a>(
             markdown_text_spans(trimmed)
         };
         let plain = spans_plain_text(&content_spans);
-        let wrapped = textwrap::wrap(&plain, wrap_width);
+        let wrapped = textwrap::wrap(
+            &plain,
+            textwrap::Options::new(wrap_width)
+                .break_words(true)
+                .word_separator(textwrap::WordSeparator::AsciiSpace),
+        );
         if wrapped.is_empty() {
             push_markdown_line(
                 lines,
@@ -888,26 +988,19 @@ pub(crate) fn append_markdown_lines<'a>(
             );
             continue;
         }
-        if content_spans.len() == 1 {
-            let style = content_spans[0].style;
-            for piece in wrapped {
-                push_markdown_line(
-                    lines,
-                    first_prefix,
-                    &continuation,
-                    prefix_style,
-                    &mut first,
-                    vec![Span::styled(piece.into_owned(), style)],
-                );
-            }
-        } else {
+        let mut search_from = 0;
+        for piece in wrapped {
+            let piece = piece.into_owned();
+            let piece_spans =
+                styled_piece_for_wrapped_text(&plain, &content_spans, &piece, &mut search_from)
+                    .unwrap_or_else(|| vec![Span::raw(piece)]);
             push_markdown_line(
                 lines,
                 first_prefix,
                 &continuation,
                 prefix_style,
                 &mut first,
-                content_spans,
+                piece_spans,
             );
         }
     }
@@ -1051,6 +1144,61 @@ pub(crate) fn numbered_marker(text: &str) -> Option<(String, &str)> {
 
 pub(crate) fn spans_plain_text(spans: &[Span]) -> String {
     spans.iter().map(|span| span.content.as_ref()).collect()
+}
+
+pub(crate) fn styled_piece_for_wrapped_text(
+    plain: &str,
+    spans: &[Span],
+    piece: &str,
+    search_from: &mut usize,
+) -> Option<Vec<Span<'static>>> {
+    let offset = plain.get(*search_from..)?.find(piece)?;
+    let start_byte = search_from.saturating_add(offset);
+    let start_char = plain.get(..start_byte)?.chars().count();
+    *search_from = start_byte.saturating_add(piece.len());
+    Some(spans_for_char_range(
+        spans,
+        start_char,
+        piece.chars().count(),
+    ))
+}
+
+pub(crate) fn spans_for_char_range(
+    spans: &[Span],
+    start_char: usize,
+    len_chars: usize,
+) -> Vec<Span<'static>> {
+    if len_chars == 0 {
+        return Vec::new();
+    }
+
+    let end_char = start_char.saturating_add(len_chars);
+    let mut span_start = 0usize;
+    let mut out = Vec::new();
+    for span in spans {
+        let content = span.content.as_ref();
+        let span_len = content.chars().count();
+        let span_end = span_start.saturating_add(span_len);
+        let overlap_start = start_char.max(span_start);
+        let overlap_end = end_char.min(span_end);
+        if overlap_start < overlap_end {
+            let local_start = overlap_start.saturating_sub(span_start);
+            let local_len = overlap_end.saturating_sub(overlap_start);
+            out.push(Span::styled(
+                content
+                    .chars()
+                    .skip(local_start)
+                    .take(local_len)
+                    .collect::<String>(),
+                span.style,
+            ));
+        }
+        span_start = span_end;
+        if span_start >= end_char {
+            break;
+        }
+    }
+    out
 }
 
 pub(crate) fn digit_index(ch: char, len: usize) -> Option<usize> {

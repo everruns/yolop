@@ -31,8 +31,8 @@ use std::time::{Duration, Instant};
 use support::mock_openai::MockOpenAiServer;
 use support::strip_ansi;
 use support::tui_harness::{
-    TuiSpawnOptions, assert_cursor_near_bottom, spawn_tui_llmsim, spawn_tui_llmsim_with,
-    spawn_tui_llmsim_with_settings, wait_for_exit,
+    TuiSpawnOptions, assert_cursor_near_bottom, max_absolute_cursor_position, spawn_tui_llmsim,
+    spawn_tui_llmsim_with, spawn_tui_llmsim_with_settings, wait_for_exit,
 };
 
 fn yolop_binary() -> PathBuf {
@@ -422,6 +422,50 @@ fn tui_survives_slow_cursor_position_reply_after_resize() {
     );
 }
 
+#[test]
+fn tui_resize_with_wrapped_input_keeps_cursor_inside_new_frame() {
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(
+        b"alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron",
+    );
+    assert!(
+        tui.wait_for_output("omicron", Duration::from_secs(3)),
+        "long draft did not render before resize: {}",
+        tui.output_text()
+    );
+
+    tui.clear_output();
+    tui.resize(32, 10);
+    tui.write_input(b" ");
+    assert!(
+        tui.wait_for_output("[expand", Duration::from_secs(3)),
+        "TUI did not redraw after resize: {}",
+        tui.output_text()
+    );
+
+    let output = tui.output_text();
+    let (max_row, max_col) = max_absolute_cursor_position(output.as_bytes())
+        .unwrap_or_else(|| panic!("missing absolute cursor move after resize: {output:?}"));
+    assert!(
+        max_row <= 10 && max_col <= 32,
+        "cursor moved outside resized frame ({max_row}, {max_col}) for 32x10 output: {output:?}"
+    );
+
+    tui.write_input(b"\x03\x03\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(
+        status.success(),
+        "Ctrl-C should clear the draft and then exit cleanly after resize, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
 // ratatui 0.30.1 `Terminal::clear` snapshots the cursor with a blocking
 // `CSI 6n` query, and the inline viewport calls `clear` inside
 // `insert_before` — so viewport anchoring, every transcript flush, and exit
@@ -792,6 +836,32 @@ fn tui_double_ctrl_c_exits() {
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
+
+    tui.write_input(b"\x03\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(
+        status.success(),
+        "double Ctrl-C should exit cleanly, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
+#[test]
+fn tui_startup_does_not_enable_mouse_capture() {
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    let output = tui.output_text();
+    for sequence in ["\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h"] {
+        assert!(
+            !output.contains(sequence),
+            "TUI should leave terminal text selection to the emulator; found mouse capture sequence {sequence:?}: {output:?}"
+        );
+    }
 
     tui.write_input(b"\x03\x03");
     let status = tui.wait_or_kill(Duration::from_secs(3));
