@@ -30,18 +30,6 @@ pub(crate) fn handle_live_event(
             router.last_assistant_turn = None;
             let _ = tx.send(TurnEvent::Stream(None));
         }
-        EventData::ReasonThinkingDelta(data) => {
-            router.last_thinking_turn = Some(data.turn_id);
-            let _ = tx.send(TurnEvent::Stream(Some(StreamPreview {
-                kind: StreamKind::Thinking,
-                text: data.accumulated.clone(),
-            })));
-            return;
-        }
-        EventData::ReasonThinkingCompleted(_) if router.last_thinking_turn.is_some() => {
-            router.last_thinking_turn = None;
-            let _ = tx.send(TurnEvent::Stream(None));
-        }
         EventData::ToolOutputDelta(data) => {
             router.last_tool_call = Some(data.tool_call_id.clone());
             let text = format!(
