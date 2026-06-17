@@ -30,8 +30,8 @@ pub(crate) const CLIENT_COMMANDS_CAPABILITY_ID: &str = "yolop_client_commands";
 const CLIENT_COMMANDS_PROMPT: &str = r#"For natural-language requests, `run_yolop_command` can perform these TUI client
 commands: `/help`, `/tools`, `/mcp`, `/cwd`, `/status [compact|expanded|toggle]`,
 `/model [id]`, `/effort [level]`, `/clear`, and `/quit` (`/exit` is an alias).
-The TUI may expose other slash commands, but only use `run_yolop_command` for
-this listed client-command set. When the user asks for one of these terminal
+The TUI may expose other slash commands, but only use `run_yolop_command` for this listed
+client-command set. When the user asks for one of these terminal
 actions — for example "exit", "clear the screen", "show tools", "switch model",
 or "expand the status bar" — call `run_yolop_command`; do not merely tell the
 user to type the slash command."#;
