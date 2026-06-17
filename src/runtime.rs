@@ -81,13 +81,17 @@ Read before editing. Test after changing behavior. When a command fails,
 read the full output, fix the root cause, and re-run — do not retry the
 identical command. If stuck after two attempts, explain and ask.
 
-## Tools at a glance
+## Permanent Tools
 
-Tool descriptions and JSON schemas cover what each tool does and its
-parameters. Pick the smallest tool that answers the question. For broad
-read-only questions (dependency freshness, repo health, git state),
-prefer one targeted `bash` script over many sequential file/grep calls,
-and stop once you have enough evidence to answer.
+Use loaded tool descriptions and JSON schemas. Pick the smallest tool that
+answers the question.
+
+## Searchable Tools
+
+Some tool schemas are hidden until loaded. If a visible tool name or description matches but its schema is missing, call `tool_search` with a short query before use.
+
+For broad read-only questions (dependency freshness, repo health, git state),
+prefer one targeted `bash` script and stop once you have enough evidence.
 
 `bash` output is summarized inline and saved under `/outputs/` when
 large; commands are killed past 2 MiB combined output or 120s wall time.
@@ -3654,6 +3658,27 @@ mod tests {
         assert!(
             ids.iter()
                 .any(|cap| cap.capability_id() == "tool_output_persistence")
+        );
+    }
+
+    #[test]
+    fn harness_prompt_splits_permanent_and_searchable_tools() {
+        let permanent = HARNESS_PROMPT
+            .find("## Permanent Tools")
+            .expect("permanent tools section should be present");
+        let searchable = HARNESS_PROMPT
+            .find("## Searchable Tools")
+            .expect("searchable tools section should be present");
+
+        assert!(
+            permanent < searchable,
+            "permanent tools should be described before searchable tools"
+        );
+        assert!(HARNESS_PROMPT.contains("descriptions and JSON schemas"));
+        assert!(HARNESS_PROMPT.contains("`tool_search`"));
+        assert!(
+            !HARNESS_PROMPT.contains("## Tools at a glance"),
+            "the old combined section should stay split"
         );
     }
 
