@@ -1,12 +1,12 @@
 use crate::codex_auth::{self, CODEX_ORIGINATOR};
 use async_trait::async_trait;
 use eventsource_stream::Eventsource;
-use everruns_core::error::{AgentLoopError, Result as EverrunsResult};
-use everruns_core::llm_driver_registry::{
+use everruns_core::driver_registry::{
     ChatDriver, DriverConfig, LlmCallConfig, LlmCompletionMetadata, LlmContentPart, LlmMessage,
     LlmMessageContent, LlmMessageRole, LlmResponseStream, LlmStreamEvent, ProviderMetadata,
 };
-use everruns_core::llm_driver_registry::{DiscoveredModel, DriverRegistry};
+use everruns_core::driver_registry::{DiscoveredModel, DriverRegistry};
+use everruns_core::error::{AgentLoopError, Result as EverrunsResult};
 use everruns_core::tool_types::{ToolCall, ToolDefinition};
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -659,7 +659,7 @@ fn metadata_extra_i64(metadata: &ProviderMetadata, key: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::llm_driver_registry::{LlmMessage, LlmMessageRole};
+    use everruns_core::driver_registry::{LlmMessage, LlmMessageRole};
 
     #[test]
     fn converts_tool_result_to_function_call_output() {
