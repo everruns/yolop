@@ -38,10 +38,10 @@ use everruns_core::capabilities::{
     UserHooksCapability, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
+use everruns_core::driver_registry::{DriverRegistry, ProviderMetadata};
 use everruns_core::error::AgentLoopError;
 use everruns_core::get_model_profile;
 use everruns_core::in_memory::InMemoryMessageRetriever;
-use everruns_core::llm_driver_registry::{DriverRegistry, ProviderMetadata};
 use everruns_core::llmsim_driver::LlmSimConfig;
 use everruns_core::message::{ContentPart, MessageRole};
 use everruns_core::session_file::{FileInfo, FileStat, GrepMatch, InitialFile, SessionFile};
@@ -1982,6 +1982,10 @@ pub async fn build_with_options(
         )
         .display_name("Coding CLI")
         .description("Embedded terminal coding agent.")
+        // Attribute LLM calls routed through OpenRouter so they show up under
+        // Yolop on OpenRouter's app dashboards. The driver forwards these as
+        // the `HTTP-Referer` and `X-Title` headers (everruns 0.14+).
+        .openrouter_attribution("https://github.com/everruns/yolop", "Yolop")
         .tag("example")
         .tag("coding");
     for cap in harness_capabilities {
@@ -2248,6 +2252,24 @@ mod tests {
                 .get("everruns_runtime_version")
                 .map(String::as_str),
             Some(env!("YOLOP_EVERRUNS_RUNTIME_VERSION"))
+        );
+        // OpenRouter attribution headers flow through embedder metadata.
+        use everruns_core::driver_registry::{
+            OPENROUTER_HTTP_REFERER_METADATA_KEY, OPENROUTER_X_TITLE_METADATA_KEY,
+        };
+        assert_eq!(
+            context
+                .embedder_metadata
+                .get(OPENROUTER_HTTP_REFERER_METADATA_KEY)
+                .map(String::as_str),
+            Some("https://github.com/everruns/yolop")
+        );
+        assert_eq!(
+            context
+                .embedder_metadata
+                .get(OPENROUTER_X_TITLE_METADATA_KEY)
+                .map(String::as_str),
+            Some("Yolop")
         );
     }
 
