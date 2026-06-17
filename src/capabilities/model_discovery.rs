@@ -11,8 +11,8 @@ use crate::runtime::ProviderChoice;
 use crate::settings::Settings;
 use anyhow::{Context, Result, anyhow};
 use everruns_core::DriverId;
+use everruns_core::driver_registry::{DiscoveredModel, DriverRegistry, ProviderConfig};
 use everruns_core::get_model_profile;
-use everruns_core::llm_driver_registry::{DiscoveredModel, DriverRegistry, ProviderConfig};
 use std::collections::HashSet;
 
 /// One model offered by a provider, ready for display: bare id plus
