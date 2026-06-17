@@ -4,6 +4,7 @@
 //! state these consume) is defined in the parent module.
 
 use super::*;
+use everruns_core::events::ToolStartedData;
 
 pub(crate) fn handle_live_event(
     event: &RuntimeEvent,
@@ -261,13 +262,9 @@ pub fn status_for_event(event: &RuntimeEvent) -> Option<ActivityStatus> {
                 ))
             })
             .map(activity_status),
-        EventData::ToolStarted(data) => Some(activity_status(format!(
-            "→ {}",
-            data.narration
-                .as_deref()
-                .or(data.display_name.as_deref())
-                .unwrap_or(data.tool_call.name.as_str())
-        ))),
+        EventData::ToolStarted(data) => {
+            Some(activity_status(format!("→ {}", tool_started_label(data))))
+        }
         EventData::ToolProgress(data) => Some(activity_status(format!(
             "… {}: {}",
             data.display_name
@@ -441,6 +438,66 @@ fn todo_lines_for_result_or_args(
     lines
 }
 
+fn tool_started_label(data: &ToolStartedData) -> String {
+    data.narration
+        .as_deref()
+        .map(ToOwned::to_owned)
+        .or_else(|| tool_display_name_with_arguments(data))
+        .or_else(|| data.display_name.clone())
+        .unwrap_or_else(|| data.tool_call.name.clone())
+}
+
+// TODO: Remove this Yolop-side fallback once everruns lets capabilities/tools
+// provide their own argument-aware narration. Until then, this only fills gaps
+// after everruns-provided `data.narration` is missing.
+fn tool_display_name_with_arguments(data: &ToolStartedData) -> Option<String> {
+    let (prefix, field) = match data.tool_call.name.as_str() {
+        "tool_search" => ("Search tools", "query"),
+        "activate_skill" => ("Activate skill", "name"),
+        "read_skill" => ("Read skill", "name"),
+        "run_yolop_command" => ("Run command", "command"),
+        "duckduckgo_search" => ("Search DuckDuckGo", "query"),
+        "web_fetch" => ("Fetch URL", "url"),
+        "grep_files" | "ast_grep" => ("Search files", "pattern"),
+        "repo_symbols" => ("Search symbols", "query"),
+        "read_file" => ("Read file", "path"),
+        "list_directory" => ("List directory", "path"),
+        "write_file" | "edit_file" | "delete_file" | "stat_file" => (
+            data.display_name
+                .as_deref()
+                .unwrap_or(data.tool_call.name.as_str()),
+            "path",
+        ),
+        _ => return None,
+    };
+
+    let value = data
+        .tool_call
+        .arguments
+        .get(field)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(format!("{prefix}: {}", compact_tool_argument(value)))
+}
+
+fn compact_tool_argument(value: &str) -> String {
+    const MAX_CHARS: usize = 80;
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = normalized.chars();
+    let mut compact = String::new();
+    for _ in 0..MAX_CHARS {
+        match chars.next() {
+            Some(ch) => compact.push(ch),
+            None => return normalized,
+        }
+    }
+    if chars.next().is_some() {
+        compact.push('…');
+    }
+    compact
+}
+
 /// One-line summary of a tool result, used in the transcript and `--print` output.
 pub fn summarize_tool_result(data: &ToolCompletedData) -> String {
     let Some(v) = result_value(data) else {
@@ -523,4 +580,46 @@ pub fn summarize_tool_result(data: &ToolCompletedData) -> String {
 /// never panics on a mid-codepoint byte index.
 pub(crate) fn first_line(s: &str, max: usize) -> String {
     truncate_chars(s.lines().next().unwrap_or(""), max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use everruns_core::{events::ToolStartedData, tool_types::ToolCall};
+    use serde_json::json;
+
+    fn started_tool(name: &str, arguments: serde_json::Value) -> ToolStartedData {
+        ToolStartedData {
+            tool_call: ToolCall {
+                id: "call-1".to_owned(),
+                name: name.to_owned(),
+                arguments,
+            },
+            display_name: Some("Hardcoded label".to_owned()),
+            narration: None,
+            tool_call_fingerprint: None,
+        }
+    }
+
+    #[test]
+    fn tool_started_label_prefers_runtime_narration() {
+        let mut data = started_tool("tool_search", json!({ "query": "hooks" }));
+        data.narration = Some("Runtime narration".to_owned());
+
+        assert_eq!(tool_started_label(&data), "Runtime narration");
+    }
+
+    #[test]
+    fn tool_started_label_includes_search_query() {
+        let data = started_tool("tool_search", json!({ "query": "schema metadata" }));
+
+        assert_eq!(tool_started_label(&data), "Search tools: schema metadata");
+    }
+
+    #[test]
+    fn tool_started_label_includes_skill_name() {
+        let data = started_tool("activate_skill", json!({ "name": "ship" }));
+
+        assert_eq!(tool_started_label(&data), "Activate skill: ship");
+    }
 }
