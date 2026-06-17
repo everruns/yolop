@@ -34,7 +34,43 @@ pub struct CodexAuth {
     pub email: Option<String>,
 }
 
-/// How aggressively yolop pauses for spoken ("soft") approval before
+/// When yolop provisions an isolated git worktree for code changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorktreesMode {
+    /// Create a worktree when the user prompt looks like implementation work.
+    #[default]
+    Auto,
+    /// Always use a worktree in git repositories.
+    Always,
+    /// Never create worktrees; operate in the resolved cwd.
+    Off,
+}
+
+impl WorktreesMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorktreesMode::Auto => "auto",
+            WorktreesMode::Always => "always",
+            WorktreesMode::Off => "off",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" | "default" => Some(Self::Auto),
+            "always" | "on" => Some(Self::Always),
+            "off" | "none" | "disabled" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for WorktreesMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// running critical actions. Soft approval is prompt-engineering, not a
 /// hard gate: the chosen level is injected into the system prompt so the
 /// model itself decides when to ask, batches safe calls, and the user
@@ -110,6 +146,8 @@ pub struct Settings {
     /// Whether the TUI auto-starts a turn when a background task finishes while
     /// idle (proactive wake). On by default; disable for a quieter session.
     pub proactive_wake: bool,
+    /// Git worktree isolation for code changes (`auto`, `always`, `off`).
+    pub worktrees: WorktreesMode,
     /// Ordered harness capability overrides (`[[capabilities]]` in settings.toml).
     pub capabilities: Vec<CapabilityOverride>,
 }
@@ -126,6 +164,7 @@ impl Default for Settings {
             attribution: true,
             approval_mode: ApprovalMode::Normal,
             proactive_wake: true,
+            worktrees: WorktreesMode::Auto,
             capabilities: Vec::new(),
         }
     }
@@ -157,6 +196,11 @@ impl Settings {
             .get("proactive_wake")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        let worktrees = table
+            .get("worktrees")
+            .and_then(Value::as_str)
+            .and_then(WorktreesMode::parse)
+            .unwrap_or_default();
         let string_map = |key: &str| {
             let mut map = BTreeMap::new();
             if let Some(t) = table.get(key).and_then(Value::as_table) {
@@ -182,6 +226,7 @@ impl Settings {
             attribution,
             approval_mode,
             proactive_wake,
+            worktrees,
             capabilities: parse_capabilities_table(table),
         }
     }
@@ -206,6 +251,12 @@ impl Settings {
             table.insert(
                 "approval_mode".to_string(),
                 Value::String(self.approval_mode.as_str().to_string()),
+            );
+        }
+        if self.worktrees != WorktreesMode::Auto {
+            table.insert(
+                "worktrees".to_string(),
+                Value::String(self.worktrees.as_str().to_string()),
             );
         }
         let mut insert_map = |key: &str, map: &BTreeMap<String, String>| {
@@ -275,6 +326,10 @@ impl Settings {
 
     pub fn proactive_wake_enabled(&self) -> bool {
         self.proactive_wake
+    }
+
+    pub fn worktrees_mode(&self) -> WorktreesMode {
+        self.worktrees
     }
 
     pub fn capability_overrides_for(&self, id: &str) -> Vec<(usize, &CapabilityOverride)> {
@@ -446,6 +501,12 @@ impl SettingsStore {
     pub fn set_approval_mode(&self, mode: ApprovalMode) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         guard.approval_mode = mode;
+        save_to(&self.path, &guard)
+    }
+
+    pub fn set_worktrees_mode(&self, mode: WorktreesMode) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.worktrees = mode;
         save_to(&self.path, &guard)
     }
 

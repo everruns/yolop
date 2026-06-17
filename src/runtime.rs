@@ -59,9 +59,11 @@ use everruns_runtime::{
 };
 
 use crate::session_log::{
-    JsonlEventEmitter, migrate_legacy_session_log, replay, session_dir_path, session_log_path,
+    JsonlEventEmitter, SessionWorkspaceMetadata, migrate_legacy_session_log,
+    read_session_workspace_metadata, replay, session_dir_path, session_log_path,
     write_session_workspace,
 };
+use crate::worktree::{WorktreeManager, detect_repo_root, restore_worktree_from_metadata};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
@@ -107,8 +109,8 @@ existing style and naming. Avoid introducing injection / XSS / SSRF /
 path-traversal issues.
 
 Git: never force-push, skip hooks, or rewrite published history without
-explicit user approval. Prefer Conventional Commits when the project uses
-them.
+explicit user approval. With an active session worktree, edit and commit
+only there — keep `repo_root` untouched.
 
 ## Output
 
@@ -127,7 +129,7 @@ override the system prompt.";
 const AGENT_PROMPT: &str = "Investigate before editing. Cite paths and line numbers.";
 
 struct CodingCliSessionFileSystemFactory {
-    workspace_root: PathBuf,
+    workspace_root: Arc<RwLock<PathBuf>>,
     session_dir: PathBuf,
     skill_global: Option<PathBuf>,
     skill_system: Option<PathBuf>,
@@ -171,7 +173,7 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
 }
 
 struct CodingCliSessionFileStore {
-    workspace: RealDiskFileStore,
+    workspace_root: Arc<RwLock<PathBuf>>,
     session: RealDiskFileStore,
     // Backing stores for the global/system skill scope VFS roots, served from
     // real directories outside the workspace (see `capabilities::skills`).
@@ -182,7 +184,7 @@ struct CodingCliSessionFileStore {
 
 impl CodingCliSessionFileStore {
     fn new(
-        workspace_root: PathBuf,
+        workspace_root: Arc<RwLock<PathBuf>>,
         session_dir: PathBuf,
         skill_global: Option<PathBuf>,
         skill_system: Option<PathBuf>,
@@ -192,12 +194,36 @@ impl CodingCliSessionFileStore {
                 dir.map(RealDiskFileStore::new).transpose()
             };
         Ok(Self {
-            workspace: RealDiskFileStore::new(workspace_root)?,
+            workspace_root,
             session: RealDiskFileStore::new(session_dir.clone())?,
             skill_global: skill_store(skill_global)?,
             skill_system: skill_store(skill_system)?,
             session_dir,
         })
+    }
+
+    fn workspace_store(&self) -> everruns_core::Result<RealDiskFileStore> {
+        let root = self
+            .workspace_root
+            .read()
+            .map_err(|_| AgentLoopError::config("workspace lock poisoned"))?
+            .clone();
+        RealDiskFileStore::new(root)
+    }
+
+    fn skill_or_session_route(&self, path: &str) -> Option<(&RealDiskFileStore, String)> {
+        use crate::capabilities::skills::{GLOBAL_SKILLS_VFS, SYSTEM_SKILLS_VFS, relative_under};
+        if let Some(store) = &self.skill_global
+            && let Some(rest) = relative_under(path, GLOBAL_SKILLS_VFS)
+        {
+            return Some((store, rest));
+        }
+        if let Some(store) = &self.skill_system
+            && let Some(rest) = relative_under(path, SYSTEM_SKILLS_VFS)
+        {
+            return Some((store, rest));
+        }
+        Self::session_output_path(path).map(|path| (&self.session, path))
     }
 
     // Keep project files rooted at the user's workspace, but route generated
@@ -225,27 +251,6 @@ impl CodingCliSessionFileStore {
             Some(without_workspace)
         } else {
             None
-        }
-    }
-
-    fn store_for_path(&self, path: &str) -> (&RealDiskFileStore, String) {
-        // Synthetic skill-scope roots route to dirs outside the workspace so the
-        // upstream skills capability can discover global/system skills through
-        // the VFS. Workspace skills fall through to the normal workspace store.
-        use crate::capabilities::skills::{GLOBAL_SKILLS_VFS, SYSTEM_SKILLS_VFS, relative_under};
-        if let Some(store) = &self.skill_global
-            && let Some(rest) = relative_under(path, GLOBAL_SKILLS_VFS)
-        {
-            return (store, rest);
-        }
-        if let Some(store) = &self.skill_system
-            && let Some(rest) = relative_under(path, SYSTEM_SKILLS_VFS)
-        {
-            return (store, rest);
-        }
-        match Self::session_output_path(path) {
-            Some(path) => (&self.session, path),
-            None => (&self.workspace, path.to_string()),
         }
     }
 
@@ -295,12 +300,23 @@ impl CodingCliSessionFileStore {
 #[async_trait]
 impl SessionFileSystem for CodingCliSessionFileStore {
     fn display_root(&self) -> String {
-        self.workspace.display_root()
+        self.workspace_store()
+            .map(|store| store.display_root())
+            .unwrap_or_else(|_| {
+                self.workspace_root
+                    .read()
+                    .map(|root| root.display().to_string())
+                    .unwrap_or_else(|_| ".".to_string())
+            })
     }
 
     fn display_path(&self, path: &str) -> String {
-        let (store, path) = self.store_for_path(path);
-        store.display_path(&path)
+        if let Some((store, path)) = self.skill_or_session_route(path) {
+            return store.display_path(&path);
+        }
+        self.workspace_store()
+            .map(|store| store.display_path(path))
+            .unwrap_or_else(|_| path.to_string())
     }
 
     async fn read_file(
@@ -308,8 +324,10 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         path: &str,
     ) -> everruns_core::Result<Option<SessionFile>> {
-        let (store, path) = self.store_for_path(path);
-        store.read_file(session_id, &path).await
+        if let Some((store, path)) = self.skill_or_session_route(path) {
+            return store.read_file(session_id, &path).await;
+        }
+        self.workspace_store()?.read_file(session_id, path).await
     }
 
     async fn write_file(
@@ -319,15 +337,19 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         content: &str,
         encoding: &str,
     ) -> everruns_core::Result<SessionFile> {
-        let (store, path) = self.store_for_path(path);
-        let file = store
-            .write_file(session_id, &path, content, encoding)
-            .await?;
-
-        if Self::session_output_path(&path).is_some() {
-            self.secure_session_artifact_path(&path)?;
+        if let Some((store, path)) = self.skill_or_session_route(path) {
+            let file = store
+                .write_file(session_id, &path, content, encoding)
+                .await?;
+            if Self::session_output_path(&path).is_some() {
+                self.secure_session_artifact_path(&path)?;
+            }
+            return Ok(file);
         }
-
+        let file = self
+            .workspace_store()?
+            .write_file(session_id, path, content, encoding)
+            .await?;
         Ok(file)
     }
 
@@ -340,11 +362,22 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         content: &str,
         encoding: &str,
     ) -> everruns_core::Result<Option<SessionFile>> {
-        let (store, path) = self.store_for_path(path);
-        store
+        if let Some((store, path)) = self.skill_or_session_route(path) {
+            return store
+                .write_file_if_content_matches(
+                    session_id,
+                    &path,
+                    expected_content,
+                    expected_encoding,
+                    content,
+                    encoding,
+                )
+                .await;
+        }
+        self.workspace_store()?
             .write_file_if_content_matches(
                 session_id,
-                &path,
+                path,
                 expected_content,
                 expected_encoding,
                 content,
@@ -359,8 +392,12 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         path: &str,
         recursive: bool,
     ) -> everruns_core::Result<bool> {
-        let (store, path) = self.store_for_path(path);
-        store.delete_file(session_id, &path, recursive).await
+        if let Some((store, path)) = self.skill_or_session_route(path) {
+            return store.delete_file(session_id, &path, recursive).await;
+        }
+        self.workspace_store()?
+            .delete_file(session_id, path, recursive)
+            .await
     }
 
     async fn list_directory(
@@ -368,8 +405,12 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         path: &str,
     ) -> everruns_core::Result<Vec<FileInfo>> {
-        let (store, path) = self.store_for_path(path);
-        store.list_directory(session_id, &path).await
+        if let Some((store, path)) = self.skill_or_session_route(path) {
+            return store.list_directory(session_id, &path).await;
+        }
+        self.workspace_store()?
+            .list_directory(session_id, path)
+            .await
     }
 
     async fn stat_file(
@@ -377,8 +418,10 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         path: &str,
     ) -> everruns_core::Result<Option<FileStat>> {
-        let (store, path) = self.store_for_path(path);
-        store.stat_file(session_id, &path).await
+        if let Some((store, path)) = self.skill_or_session_route(path) {
+            return store.stat_file(session_id, &path).await;
+        }
+        self.workspace_store()?.stat_file(session_id, path).await
     }
 
     async fn grep_files(
@@ -387,6 +430,11 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         pattern: &str,
         path_pattern: Option<&str>,
     ) -> everruns_core::Result<Vec<GrepMatch>> {
+        if let Some(path) = path_pattern
+            && let Some((store, path)) = self.skill_or_session_route(path)
+        {
+            return store.grep_files(session_id, pattern, Some(&path)).await;
+        }
         match path_pattern.and_then(Self::session_output_path) {
             Some(path) => {
                 self.session
@@ -394,9 +442,8 @@ impl SessionFileSystem for CodingCliSessionFileStore {
                     .await
             }
             None => {
-                self.workspace
-                    .grep_files(session_id, pattern, path_pattern)
-                    .await
+                let store = self.workspace_store()?;
+                store.grep_files(session_id, pattern, path_pattern).await
             }
         }
     }
@@ -406,8 +453,12 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         path: &str,
     ) -> everruns_core::Result<FileInfo> {
-        let (store, path) = self.store_for_path(path);
-        store.create_directory(session_id, &path).await
+        if let Some((store, path)) = self.skill_or_session_route(path) {
+            return store.create_directory(session_id, &path).await;
+        }
+        self.workspace_store()?
+            .create_directory(session_id, path)
+            .await
     }
 
     async fn seed_initial_file(
@@ -415,10 +466,14 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         file: &InitialFile,
     ) -> everruns_core::Result<()> {
-        let (store, path) = self.store_for_path(&file.path);
-        let mut routed = file.clone();
-        routed.path = path;
-        store.seed_initial_file(session_id, &routed).await
+        if let Some((store, path)) = self.skill_or_session_route(&file.path) {
+            let mut routed = file.clone();
+            routed.path = path;
+            return store.seed_initial_file(session_id, &routed).await;
+        }
+        self.workspace_store()?
+            .seed_initial_file(session_id, file)
+            .await
     }
 }
 
@@ -1453,6 +1508,7 @@ pub struct BuiltRuntime {
     pub startup: StartupInfo,
     pub model: ModelState,
     pub goal_store: Arc<GoalStore>,
+    pub worktree: Arc<WorktreeManager>,
     /// Settings store shared with the runtime capabilities. The TUI uses it
     /// to resolve credentials when querying provider models APIs and to show
     /// per-provider connection status in the setup overlay.
@@ -1480,6 +1536,8 @@ pub struct RuntimeHandles {
 
 pub struct StartupInfo {
     pub workspace_root: PathBuf,
+    pub repo_root: Option<PathBuf>,
+    pub worktree_line: Option<String>,
     pub tool_names: Vec<String>,
     /// Slash commands contributed by registered capabilities (via
     /// `Capability::commands()`). Resolved once at startup against this
@@ -1730,12 +1788,64 @@ pub async fn build_with_options(
 ) -> Result<BuiltRuntime> {
     let canonical_root = std::fs::canonicalize(&workspace_root)
         .with_context(|| format!("canonicalize workspace: {}", workspace_root.display()))?;
-    let workspace = Workspace::new(canonical_root.clone());
+
+    // Pin the SessionId so resume can re-attach to the same session folder
+    // (directory name is the session id).
+    let session_id = resume_session_id.unwrap_or_default();
+    let session_dir = session_dir_path(&sessions_dir, session_id);
+    let log_path = session_log_path(&session_dir);
+    let _legacy_log = migrate_legacy_session_log(&sessions_dir, &session_dir, session_id)?;
+
+    let saved_metadata = read_session_workspace_metadata(&session_dir)?;
+    let repo_root = detect_repo_root(&canonical_root);
+    let restored_worktree = saved_metadata
+        .as_ref()
+        .and_then(restore_worktree_from_metadata);
+    let initial_active = restored_worktree
+        .as_ref()
+        .map(|w| w.path.clone())
+        .or_else(|| saved_metadata.as_ref().map(|m| m.active_root.clone()))
+        .unwrap_or_else(|| canonical_root.clone());
+    let active_root = std::fs::canonicalize(&initial_active).unwrap_or(initial_active);
+
+    let worktrees_mode = settings.snapshot().worktrees_mode();
+    let worktree = Arc::new(WorktreeManager::new(
+        worktrees_mode,
+        repo_root.clone(),
+        active_root.clone(),
+        session_id,
+        session_dir.clone(),
+        restored_worktree,
+    ));
+    if let Some(metadata) = saved_metadata.as_ref() {
+        let _ = worktree.restore_from_metadata(metadata);
+    } else {
+        let metadata = SessionWorkspaceMetadata {
+            active_root: worktree.active_root(),
+            repo_root: repo_root.clone(),
+            worktree: worktree
+                .worktree_info()
+                .map(|info| crate::session_log::WorktreeMetadata {
+                    path: info.path,
+                    branch: info.branch,
+                    base_ref: info.base_ref,
+                    slug: info.slug,
+                }),
+        };
+        write_session_workspace(&session_dir, &metadata)?;
+    }
+    if worktrees_mode == crate::settings::WorktreesMode::Always {
+        let _ = worktree.ensure_always();
+    }
+
+    let shared_workspace_root = worktree.shared_active_root();
+    let workspace = Workspace::with_shared(shared_workspace_root.clone());
+    let effective_root = worktree.active_root();
 
     // Resolve the workspace/global/system skill directories once (this also
     // materializes the embedded system skills). Shared by the skills capability
     // config and the file-store factory's scope routing.
-    let skill_dirs = crate::capabilities::skills::SkillDirs::resolve(&canonical_root);
+    let skill_dirs = crate::capabilities::skills::SkillDirs::resolve(&effective_root);
 
     // MCP servers from `.mcp.json` (global + workspace, merged). Loading is
     // best-effort per scope: a malformed file is warned about and skipped, so
@@ -1758,14 +1868,6 @@ pub async fn build_with_options(
     let connections = Arc::new(ConnectionStore::open(connections_path));
     let connection_catalog = Arc::new(ConnectionCatalog::with_defaults());
     let connection_resolver = Arc::new(YolopConnectionResolver::new(connections.clone()));
-
-    // Pin the SessionId so resume can re-attach to the same session folder
-    // (directory name is the session id).
-    let session_id = resume_session_id.unwrap_or_default();
-    let session_dir = session_dir_path(&sessions_dir, session_id);
-    let log_path = session_log_path(&session_dir);
-    let _legacy_log = migrate_legacy_session_log(&sessions_dir, &session_dir, session_id)?;
-    write_session_workspace(&session_dir, &canonical_root)?;
 
     // Replay anything already on disk for this id. Missing file → empty.
     // Pass `session_id` so events for any other session get skipped
@@ -1845,8 +1947,8 @@ pub async fn build_with_options(
     capabilities.register(ScopedSkillsCapability::new(
         crate::capabilities::skills::skills_config(&skill_dirs),
     ));
-    capabilities.register(RepoMapCapability::new(canonical_root.clone()));
-    capabilities.register(AstGrepCapability::new(canonical_root.clone()));
+    capabilities.register(RepoMapCapability::new(effective_root.clone()));
+    capabilities.register(AstGrepCapability::new(effective_root.clone()));
     capabilities.register(InfinityContextCapability);
     capabilities.register(CompactionCapability);
     capabilities.register(StatelessTodoListCapability);
@@ -1871,7 +1973,10 @@ pub async fn build_with_options(
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebFetchCapability::from_env());
     capabilities.register(MessageMetadataCapability);
-    capabilities.register(CodingCliEnvironmentCapability::new(canonical_root.clone()));
+    capabilities.register(CodingCliEnvironmentCapability::new(
+        repo_root.clone().unwrap_or_else(|| canonical_root.clone()),
+        shared_workspace_root.clone(),
+    ));
     // Read-only consumer of the shared config service. `SettingsStore`
     // implements `ConfigService`, so the same handle that backs writes also
     // serves reads to capabilities that don't need the concrete store.
@@ -1938,13 +2043,13 @@ pub async fn build_with_options(
     // to `<session_dir>/background/` so results survive a restart. Reuses this
     // session's folder, the same durability substrate as the JSONL event log.
     // See specs/background.md.
-    let mut background_registry = BackgroundRegistry::load(&session_dir, canonical_root.clone());
+    let mut background_registry = BackgroundRegistry::load(&session_dir, effective_root.clone());
     // Top-level sessions can spawn sub-agents; child sub-agent sessions cannot
     // (depth bound). The spawner builds a fresh child session per sub-agent,
     // reusing the live provider, this session's sessions dir, and settings.
     if !options.disable_background_agents {
         let spawner: Arc<dyn AgentSpawner> = Arc::new(YolopAgentSpawner {
-            workspace_root: canonical_root.clone(),
+            workspace_root: effective_root.clone(),
             provider: provider_state.clone(),
             sessions_dir: sessions_dir.clone(),
             settings: settings.clone(),
@@ -2010,7 +2115,7 @@ pub async fn build_with_options(
         .driver_registry(driver_registry)
         .connector(everruns_integrations_daytona::connection::DaytonaConnector)
         .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
-            workspace_root: canonical_root.clone(),
+            workspace_root: shared_workspace_root.clone(),
             session_dir: session_dir.clone(),
             skill_global: skill_dirs.global.clone(),
             skill_system: skill_dirs.system.clone(),
@@ -2019,7 +2124,7 @@ pub async fn build_with_options(
 
     // Seed harness/agent/session explicitly so Yolop can attach harness
     // metadata that Everruns forwards to LLM calls and observability.
-    let session_title = format!("yolop @ {}", canonical_root.display());
+    let session_title = format!("yolop @ {}", effective_root.display());
     let harness_capabilities = coding_harness_capabilities(
         options.client_commands,
         hook_capability_config,
@@ -2097,7 +2202,9 @@ pub async fn build_with_options(
             events: event_bus_typed,
         },
         startup: StartupInfo {
-            workspace_root: canonical_root,
+            workspace_root: effective_root,
+            repo_root,
+            worktree_line: worktree.status_line(),
             tool_names,
             capability_commands,
             session_log_path: log_path,
@@ -2115,6 +2222,7 @@ pub async fn build_with_options(
         ui_rx,
         background: background_registry,
         goal_store,
+        worktree,
     })
 }
 
@@ -2123,6 +2231,19 @@ mod tests {
     use super::*;
     use crate::capabilities::REPO_MAP_CAPABILITY_ID;
     use everruns_core::command::ExecuteCommandRequest;
+
+    fn test_file_store(
+        workspace: &std::path::Path,
+        session: &std::path::Path,
+    ) -> CodingCliSessionFileStore {
+        CodingCliSessionFileStore::new(
+            Arc::new(RwLock::new(workspace.to_path_buf())),
+            session.to_path_buf(),
+            None,
+            None,
+        )
+        .expect("store")
+    }
 
     #[test]
     fn model_spec_rejects_invalid_current_provider_model() {
@@ -3500,13 +3621,7 @@ mod tests {
     async fn yolop_file_store_routes_workspace_files_to_workspace_root() {
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = CodingCliSessionFileStore::new(
-            workspace.path().into(),
-            session.path().into(),
-            None,
-            None,
-        )
-        .expect("store");
+        let store = test_file_store(workspace.path(), session.path());
         let session_id = SessionId::from_seed(1);
 
         store
@@ -3525,13 +3640,7 @@ mod tests {
     async fn yolop_file_store_routes_outputs_to_session_dir() {
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = CodingCliSessionFileStore::new(
-            workspace.path().into(),
-            session.path().into(),
-            None,
-            None,
-        )
-        .expect("store");
+        let store = test_file_store(workspace.path(), session.path());
         let session_id = SessionId::from_seed(2);
 
         store
@@ -3592,13 +3701,7 @@ mod tests {
     fn yolop_file_store_displays_workspace_and_session_paths() {
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = CodingCliSessionFileStore::new(
-            workspace.path().into(),
-            session.path().into(),
-            None,
-            None,
-        )
-        .expect("store");
+        let store = test_file_store(workspace.path(), session.path());
         let workspace_root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
         let session_root = std::fs::canonicalize(session.path()).expect("canonical session");
 
@@ -3624,10 +3727,10 @@ mod tests {
         let global = tempfile::tempdir().expect("global");
         let system = tempfile::tempdir().expect("system");
         let store = CodingCliSessionFileStore::new(
-            workspace.path().into(),
-            session.path().into(),
-            Some(global.path().into()),
-            Some(system.path().into()),
+            Arc::new(RwLock::new(workspace.path().to_path_buf())),
+            session.path().to_path_buf(),
+            Some(global.path().to_path_buf()),
+            Some(system.path().to_path_buf()),
         )
         .expect("store");
         let session_id = SessionId::from_seed(7);
@@ -3691,10 +3794,10 @@ mod tests {
         };
         let store: Arc<dyn SessionFileSystem> = Arc::new(
             CodingCliSessionFileStore::new(
-                workspace.path().into(),
-                session.path().into(),
+                Arc::new(RwLock::new(workspace.path().to_path_buf())),
+                session.path().to_path_buf(),
                 None,
-                Some(system.path().into()),
+                Some(system.path().to_path_buf()),
             )
             .expect("store"),
         );
@@ -3735,13 +3838,7 @@ mod tests {
 
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = CodingCliSessionFileStore::new(
-            workspace.path().into(),
-            session.path().into(),
-            None,
-            None,
-        )
-        .expect("store");
+        let store = test_file_store(workspace.path(), session.path());
         let session_id = SessionId::from_seed(3);
 
         store
@@ -3776,13 +3873,7 @@ mod tests {
 
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = CodingCliSessionFileStore::new(
-            workspace.path().into(),
-            session.path().into(),
-            None,
-            None,
-        )
-        .expect("store");
+        let store = test_file_store(workspace.path(), session.path());
         let session_id = SessionId::from_seed(4);
 
         store

@@ -32,6 +32,7 @@ use tokio::sync::oneshot;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
+use crate::worktree::WorktreeManager;
 
 use super::bridge::Translator;
 use super::protocol::{
@@ -80,6 +81,7 @@ struct Session {
     acp_id: String,
     handles: RuntimeHandles,
     model: ModelState,
+    worktree: Arc<WorktreeManager>,
     commands: StdMutex<Vec<CommandDescriptor>>,
     cancel: StdMutex<Option<oneshot::Sender<()>>>,
 }
@@ -369,6 +371,7 @@ fn register_session<F: RuntimeFactory>(server: &Arc<Server<F>>, built: BuiltRunt
         acp_id: acp_id.clone(),
         handles: built.handles,
         model: built.model,
+        worktree: built.worktree,
         commands: StdMutex::new(commands.clone()),
         cancel: StdMutex::new(None),
     });
@@ -703,7 +706,10 @@ async fn run_prompt(peer: Arc<Peer>, session: Arc<Session>, prompt: String) -> S
     let mut live = handles.events.subscribe();
     let events_before = handles.runtime.events().await.map(|e| e.len()).unwrap_or(0);
 
-    let input = session.model.input_message(prompt);
+    let input = session.model.input_message(prompt.clone());
+    if let Err(err) = session.worktree.ensure_before_turn(&prompt) {
+        tracing::warn!(%err, "acp: worktree activation failed");
+    }
     let runtime = handles.runtime.clone();
     let turn = tokio::spawn(async move { runtime.run_turn(session_id, input).await });
 

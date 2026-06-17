@@ -115,12 +115,28 @@ pub fn legacy_session_log_path(sessions_dir: &Path, session_id: SessionId) -> Pa
     sessions_dir.join(format!("{session_id}.jsonl"))
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct SessionWorkspaceMetadata {
-    workspace_root: PathBuf,
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WorktreeMetadata {
+    pub path: PathBuf,
+    pub branch: String,
+    pub base_ref: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub slug: String,
 }
 
-pub fn read_session_workspace(session_dir: &Path) -> Result<Option<PathBuf>> {
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SessionWorkspaceMetadata {
+    #[serde(alias = "workspace_root")]
+    pub active_root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeMetadata>,
+}
+
+pub fn read_session_workspace_metadata(
+    session_dir: &Path,
+) -> Result<Option<SessionWorkspaceMetadata>> {
     let path = session_workspace_path(session_dir);
     if !path.exists() {
         return Ok(None);
@@ -147,10 +163,17 @@ pub fn read_session_workspace(session_dir: &Path) -> Result<Option<PathBuf>> {
             return Ok(None);
         }
     };
-    Ok(Some(metadata.workspace_root))
+    Ok(Some(metadata))
 }
 
-pub fn write_session_workspace(session_dir: &Path, workspace_root: &Path) -> Result<()> {
+pub fn read_session_workspace(session_dir: &Path) -> Result<Option<PathBuf>> {
+    Ok(read_session_workspace_metadata(session_dir)?.map(|m| m.active_root))
+}
+
+pub fn write_session_workspace(
+    session_dir: &Path,
+    metadata: &SessionWorkspaceMetadata,
+) -> Result<()> {
     std::fs::create_dir_all(session_dir).map_err(|e| {
         AgentLoopError::config(format!("create session dir {}: {e}", session_dir.display()))
     })?;
@@ -167,10 +190,7 @@ pub fn write_session_workspace(session_dir: &Path, workspace_root: &Path) -> Res
         )?;
     }
     let path = session_workspace_path(session_dir);
-    let metadata = SessionWorkspaceMetadata {
-        workspace_root: workspace_root.to_path_buf(),
-    };
-    let bytes = serde_json::to_vec_pretty(&metadata)
+    let bytes = serde_json::to_vec_pretty(metadata)
         .map_err(|e| AgentLoopError::config(format!("serialize session workspace: {e}")))?;
     write_private_file(&path, &bytes)
 }

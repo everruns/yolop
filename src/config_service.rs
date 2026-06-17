@@ -71,6 +71,7 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
         KeyTarget::Attribution => Value::Bool(settings.attribution_enabled()),
         KeyTarget::ApprovalMode => Value::String(settings.approval_mode().as_str().to_string()),
         KeyTarget::ProactiveWake => Value::Bool(settings.proactive_wake_enabled()),
+        KeyTarget::Worktrees => Value::String(settings.worktrees_mode().as_str().to_string()),
         KeyTarget::Model(p) => settings
             .model_for(p)
             .map(|s| Value::String(s.to_string()))

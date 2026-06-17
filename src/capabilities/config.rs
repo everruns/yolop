@@ -476,6 +476,21 @@ impl SetConfigTool {
                     mode.as_str()
                 )))
             }
+            KeyTarget::Worktrees => {
+                if clearing {
+                    self.settings
+                        .set_worktrees_mode(crate::settings::WorktreesMode::Auto)
+                        .map_err(map_err)?;
+                    return Ok(saved("cleared worktrees (default auto)".to_string()));
+                }
+                let mode = crate::settings::WorktreesMode::parse(value)
+                    .ok_or_else(|| "worktrees expects auto, always, or off".to_string())?;
+                self.settings.set_worktrees_mode(mode).map_err(map_err)?;
+                Ok(saved(format!(
+                    "worktrees = {}; applies to new sessions and future turns",
+                    mode.as_str()
+                )))
+            }
             KeyTarget::Model(provider) => {
                 if clearing {
                     let existed = self.settings.clear_model(provider).map_err(map_err)?;

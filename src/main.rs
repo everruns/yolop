@@ -25,6 +25,7 @@ mod settings;
 mod test_env;
 mod tools;
 mod version;
+mod worktree;
 
 #[cfg(test)]
 mod streaming_tests;
@@ -626,15 +627,20 @@ async fn run_print_mode(
 ) -> Result<()> {
     let BuiltRuntime {
         handles,
-        startup,
+        mut startup,
         model,
         goal_store,
+        worktree,
         ..
     } = runtime;
     let color = io::stdout().is_terminal();
     let display_prompt = image_input::user_display_text(&prompt, images.len());
     println!("{}", paint(color, "90", &format!("› {display_prompt}")));
     println!();
+    if let Err(err) = worktree.ensure_before_turn(prompt.trim()) {
+        eprintln!("worktree: {err}");
+    }
+    startup.workspace_root = worktree.active_root();
     println!(
         "{} {}",
         paint(color, "90", "workspace"),
@@ -677,10 +683,18 @@ async fn run_print_mode(
 
     let trimmed = prompt.trim();
     if let Some(goal_args) = trimmed.strip_prefix("/goal") {
-        return run_print_goal(&handles, &model, &goal_store, goal_args.trim(), color).await;
+        return run_print_goal(
+            &handles,
+            &worktree,
+            &model,
+            &goal_store,
+            goal_args.trim(),
+            color,
+        )
+        .await;
     }
 
-    let result = run_print_turn(&handles, &model, trimmed, images, color).await?;
+    let result = run_print_turn(&handles, &worktree, &model, trimmed, images, color).await?;
     if !result.success {
         std::process::exit(1);
     }
@@ -689,6 +703,7 @@ async fn run_print_mode(
 
 async fn run_print_goal(
     handles: &runtime::RuntimeHandles,
+    worktree: &crate::worktree::WorktreeManager,
     model: &runtime::ModelState,
     goal_store: &goal::GoalStore,
     arguments: &str,
@@ -724,7 +739,7 @@ async fn run_print_goal(
     loop {
         println!();
         println!("{}", paint(color, "90", &format!("› {turn_prompt}")));
-        let turn = run_print_turn(handles, model, &turn_prompt, vec![], color).await?;
+        let turn = run_print_turn(handles, worktree, model, &turn_prompt, vec![], color).await?;
         if !turn.success {
             std::process::exit(1);
         }
@@ -767,11 +782,15 @@ async fn run_print_goal(
 
 async fn run_print_turn(
     handles: &runtime::RuntimeHandles,
+    worktree: &crate::worktree::WorktreeManager,
     model: &runtime::ModelState,
     prompt: &str,
     images: Vec<ContentPart>,
     color: bool,
 ) -> Result<everruns_runtime::TurnResult> {
+    if let Err(err) = worktree.ensure_before_turn(prompt) {
+        eprintln!("worktree: {err}");
+    }
     let before_events = handles.runtime.events().await.map(|e| e.len()).unwrap_or(0);
     let before_msgs = handles
         .runtime
@@ -964,8 +983,15 @@ mod tests {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let session_id = SessionId::from_seed(42);
         let session_dir = session_log::session_dir_path(sessions.path(), session_id);
-        session_log::write_session_workspace(&session_dir, workspace.path())
-            .expect("write workspace metadata");
+        session_log::write_session_workspace(
+            &session_dir,
+            &session_log::SessionWorkspaceMetadata {
+                active_root: workspace.path().to_path_buf(),
+                repo_root: None,
+                worktree: None,
+            },
+        )
+        .expect("write workspace metadata");
 
         let resolved =
             resolve_workspace_root(None, Some(session_id), sessions.path()).expect("resolve");
@@ -980,8 +1006,15 @@ mod tests {
         let explicit = tempfile::tempdir().expect("explicit workspace tempdir");
         let session_id = SessionId::from_seed(43);
         let session_dir = session_log::session_dir_path(sessions.path(), session_id);
-        session_log::write_session_workspace(&session_dir, saved.path())
-            .expect("write workspace metadata");
+        session_log::write_session_workspace(
+            &session_dir,
+            &session_log::SessionWorkspaceMetadata {
+                active_root: saved.path().to_path_buf(),
+                repo_root: None,
+                worktree: None,
+            },
+        )
+        .expect("write workspace metadata");
 
         let resolved = resolve_workspace_root(
             Some(explicit.path().to_path_buf()),
