@@ -292,7 +292,10 @@ mod tests {
 
         assert!(prompt.contains("run_yolop_command"));
         assert!(prompt.contains("TUI client"));
-        assert!(prompt.contains("only use `run_yolop_command` for this listed"));
+        // The prompt source wraps this guidance across two lines, so assert the
+        // two halves separately rather than as one contiguous phrase.
+        assert!(prompt.contains("only use `run_yolop_command` for"));
+        assert!(prompt.contains("this listed client-command set"));
         assert!(prompt.contains("/quit"));
         assert!(prompt.contains("/exit"));
     }
