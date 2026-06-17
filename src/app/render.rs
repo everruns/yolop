@@ -11,7 +11,12 @@ pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let input_width = area.width.saturating_sub(2);
     let desired_input_height = app.input_height(input_width);
     let state = app.view_state();
-    let layout = TuiLayout::new(area, desired_input_height, state.status_layout);
+    let layout = TuiLayout::new(
+        area,
+        desired_input_height,
+        state.status_layout,
+        chrome_preview_visible(&state),
+    );
 
     // Chrome renders the non-input rows; we then layer the input field
     // on top into the chrome-reserved input slot.
@@ -31,9 +36,18 @@ pub(crate) struct TuiLayout {
 }
 
 impl TuiLayout {
-    pub(crate) fn new(frame: Rect, desired_input_height: u16, status_layout: StatusLayout) -> Self {
-        let (chrome_height, input_height) =
-            chrome_dimensions(frame.height, desired_input_height, status_layout);
+    pub(crate) fn new(
+        frame: Rect,
+        desired_input_height: u16,
+        status_layout: StatusLayout,
+        preview_visible: bool,
+    ) -> Self {
+        let (chrome_height, input_height) = chrome_dimensions(
+            frame.height,
+            desired_input_height,
+            status_layout,
+            preview_visible,
+        );
         let chrome_area = bottom_rect(frame, chrome_height);
         let transcript = Rect {
             height: frame.height.saturating_sub(chrome_area.height),
@@ -42,7 +56,7 @@ impl TuiLayout {
         Self {
             frame,
             transcript,
-            chrome: ChromeLayout::new(chrome_area, input_height, status_layout),
+            chrome: ChromeLayout::new(chrome_area, input_height, status_layout, preview_visible),
         }
     }
 }
@@ -59,8 +73,13 @@ pub(crate) struct ChromeLayout {
 }
 
 impl ChromeLayout {
-    pub(crate) fn new(area: Rect, input_height: u16, status_layout: StatusLayout) -> Self {
-        let preview_height = u16::from(input_height == 1);
+    pub(crate) fn new(
+        area: Rect,
+        input_height: u16,
+        status_layout: StatusLayout,
+        preview_visible: bool,
+    ) -> Self {
+        let preview_height = u16::from(input_height == 1 && preview_visible);
         let status_height = u16::from(input_height < 3);
         let status_rows = status_layout.row_count();
         let chunks = Layout::default()
@@ -94,31 +113,40 @@ pub(crate) fn bottom_rect(area: Rect, height: u16) -> Rect {
     }
 }
 
-pub(crate) fn chrome_height(input_height: u16, status_layout: StatusLayout) -> u16 {
-    let preview_height = u16::from(input_height == 1);
+pub(crate) fn chrome_height(
+    input_height: u16,
+    status_layout: StatusLayout,
+    preview_visible: bool,
+) -> u16 {
+    let preview_height = u16::from(input_height == 1 && preview_visible);
     let status_separator_height = u16::from(input_height < 3);
     let fixed_rows = preview_height
         .saturating_add(1)
         .saturating_add(status_separator_height)
         .saturating_add(status_layout.row_count());
-    COMPACT_CHROME_HEIGHT.max(input_height.saturating_add(fixed_rows))
+    input_height.saturating_add(fixed_rows)
 }
 
 pub(crate) fn chrome_dimensions(
     frame_height: u16,
     desired_input_height: u16,
     status_layout: StatusLayout,
+    preview_visible: bool,
 ) -> (u16, u16) {
     if frame_height == 0 {
         return (0, 0);
     }
 
     let desired_input_height = desired_input_height.clamp(1, MAX_INPUT_HEIGHT);
-    let chrome_height = chrome_height(desired_input_height, status_layout).min(frame_height);
+    let chrome_height =
+        chrome_height(desired_input_height, status_layout, preview_visible).min(frame_height);
     let mut input_height = desired_input_height.min(chrome_height);
     while input_height > 1
-        && input_height.saturating_add(chrome_fixed_rows(input_height, status_layout))
-            > chrome_height
+        && input_height.saturating_add(chrome_fixed_rows(
+            input_height,
+            status_layout,
+            preview_visible,
+        )) > chrome_height
     {
         input_height -= 1;
     }
@@ -129,12 +157,13 @@ pub(crate) fn app_layout_for_frame(
     frame: Rect,
     desired_input_height: u16,
     status_layout: StatusLayout,
+    preview_visible: bool,
 ) -> TuiLayout {
-    TuiLayout::new(frame, desired_input_height, status_layout)
+    TuiLayout::new(frame, desired_input_height, status_layout, preview_visible)
 }
 
-fn chrome_fixed_rows(input_height: u16, status_layout: StatusLayout) -> u16 {
-    u16::from(input_height == 1)
+fn chrome_fixed_rows(input_height: u16, status_layout: StatusLayout, preview_visible: bool) -> u16 {
+    u16::from(input_height == 1 && preview_visible)
         .saturating_add(1)
         .saturating_add(u16::from(input_height < 3))
         .saturating_add(status_layout.row_count())
@@ -168,7 +197,13 @@ pub(crate) fn draw_recent_transcript(f: &mut ratatui::Frame, area: Rect, app: &A
         return;
     }
 
-    f.render_widget(Paragraph::new(rendered), inner);
+    let rendered_height = (rendered.len() as u16).min(inner.height);
+    let render_area = Rect {
+        y: inner.y + inner.height.saturating_sub(rendered_height),
+        height: rendered_height,
+        ..inner
+    };
+    f.render_widget(Paragraph::new(rendered), render_area);
 }
 
 pub(crate) fn recent_transcript_lines(
@@ -243,9 +278,18 @@ pub(crate) fn draw_chrome(
     input_height: u16,
     state: &ViewState,
 ) -> Rect {
-    let layout = ChromeLayout::new(area, input_height, state.status_layout);
+    let layout = ChromeLayout::new(
+        area,
+        input_height,
+        state.status_layout,
+        chrome_preview_visible(state),
+    );
     draw_chrome_layout(f, layout, state);
     layout.input
+}
+
+pub(crate) fn chrome_preview_visible(state: &ViewState) -> bool {
+    state.stream_preview.is_some() || !state.command_suggestions.is_empty()
 }
 
 pub(crate) fn draw_chrome_layout(f: &mut ratatui::Frame, layout: ChromeLayout, state: &ViewState) {
@@ -1488,7 +1532,6 @@ pub(crate) fn draw_session_status(f: &mut ratatui::Frame, area: Rect, state: &Vi
 #[derive(Clone, Debug)]
 pub(crate) struct StatusContribution {
     compact: Vec<StatusField>,
-    expanded: Vec<StatusField>,
 }
 
 #[derive(Clone, Debug)]
@@ -1498,8 +1541,8 @@ pub(crate) struct StatusField {
 }
 
 impl StatusContribution {
-    pub(crate) fn new(compact: Vec<StatusField>, expanded: Vec<StatusField>) -> Self {
-        Self { compact, expanded }
+    pub(crate) fn new(compact: Vec<StatusField>) -> Self {
+        Self { compact }
     }
 }
 
@@ -1512,10 +1555,36 @@ fn compact_status_lines(state: &ViewState) -> Vec<Line<'static>> {
 }
 
 fn expanded_status_lines(state: &ViewState) -> Vec<Line<'static>> {
-    status_contributions(state)
-        .iter()
-        .map(|section| status_line(section.expanded.iter()))
-        .collect()
+    let mut counts = vec![
+        status_value(message_count_label(state.lines_count)),
+        status_field("tokens", token_label(state.session_tokens)),
+    ];
+    if let Some(bg) = background_label(state.background) {
+        counts.push(status_field("bg", bg));
+    }
+
+    let provider_model = [
+        status_value("[collapse ↑]"),
+        status_field("provider", state.provider_name.clone()),
+        status_field("model", state.model_id.clone()),
+    ];
+    let controls = [
+        status_field("effort", effort_label(state)),
+        status_field("approval", state.approval_mode.clone()),
+        status_field("hooks", state.hooks_summary.clone()),
+        status_field(
+            "goal",
+            state.goal_indicator.clone().unwrap_or_else(|| "—".into()),
+        ),
+    ];
+    let session = [status_field("session", state.session_id.to_string())];
+
+    vec![
+        status_line(provider_model.iter()),
+        status_line(controls.iter()),
+        status_line(counts.iter()),
+        status_line(session.iter()),
+    ]
 }
 
 fn status_contributions(state: &ViewState) -> Vec<StatusContribution> {
@@ -1524,59 +1593,26 @@ fn status_contributions(state: &ViewState) -> Vec<StatusContribution> {
         StatusLayout::Expanded => "[collapse ↑]",
     };
     vec![
-        StatusContribution::new(
-            vec![
-                status_value(toggle_label),
-                status_value(state.provider_name.clone()),
-                status_value(state.model_id.clone()),
-            ],
-            vec![
-                status_value(toggle_label),
-                status_value(state.model_id.clone()),
-                status_field("provider", state.provider_name.clone()),
-            ],
-        ),
-        StatusContribution::new(
-            vec![
-                status_field("effort", effort_label(state)),
-                status_field("approval", state.approval_mode.clone()),
-            ],
-            vec![
-                status_field("effort", effort_label(state)),
-                status_field("approval", state.approval_mode.clone()),
-                status_field("hooks", state.hooks_summary.clone()),
-            ],
-        ),
-        StatusContribution::new(
-            vec![status_field(
-                "goal",
-                state.goal_indicator.clone().unwrap_or_else(|| "—".into()),
-            )],
-            vec![status_field(
-                "goal",
-                state.goal_indicator.clone().unwrap_or_else(|| "—".into()),
-            )],
-        ),
-        StatusContribution::new(
-            {
-                let mut compact = vec![status_value(message_count_label(state.lines_count))];
-                if let Some(bg) = background_label(state.background) {
-                    compact.push(status_field("bg", bg));
-                }
-                compact
-            },
-            {
-                let mut expanded = vec![
-                    status_value(message_count_label(state.lines_count)),
-                    status_field("tokens", token_label(state.session_tokens)),
-                    status_field("session", short_session_id(&state.session_id)),
-                ];
-                if let Some(bg) = background_label(state.background) {
-                    expanded.push(status_field("bg", bg));
-                }
-                expanded
-            },
-        ),
+        StatusContribution::new(vec![
+            status_value(toggle_label),
+            status_value(state.provider_name.clone()),
+            status_value(state.model_id.clone()),
+        ]),
+        StatusContribution::new(vec![
+            status_field("effort", effort_label(state)),
+            status_field("approval", state.approval_mode.clone()),
+        ]),
+        StatusContribution::new(vec![status_field(
+            "goal",
+            state.goal_indicator.clone().unwrap_or_else(|| "—".into()),
+        )]),
+        StatusContribution::new({
+            let mut compact = vec![status_value(message_count_label(state.lines_count))];
+            if let Some(bg) = background_label(state.background) {
+                compact.push(status_field("bg", bg));
+            }
+            compact
+        }),
     ]
 }
 
@@ -1642,19 +1678,4 @@ fn token_label(tokens: Option<u64>) -> String {
 
 fn message_count_label(count: usize) -> String {
     format!("{count} msgs")
-}
-
-fn short_session_id(session_id: &SessionId) -> String {
-    let raw = session_id.to_string();
-    let id = raw.strip_prefix("session_").unwrap_or(&raw);
-    let chars = id.chars().collect::<Vec<_>>();
-    if chars.len() <= 16 {
-        return id.to_string();
-    }
-    let head = chars.iter().take(8).collect::<String>();
-    let tail = chars
-        .iter()
-        .skip(chars.len().saturating_sub(4))
-        .collect::<String>();
-    format!("{head}…{tail}")
 }

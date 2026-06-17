@@ -96,7 +96,6 @@ pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
 /// so this bounds a permanently dead terminal to ~10s before exit while
 /// letting a briefly unresponsive emulator recover.
 const MAX_TERMINAL_IO_FAILURES: usize = 5;
-const COMPACT_CHROME_HEIGHT: u16 = 5;
 const MAX_INPUT_HEIGHT: u16 = 12;
 const EXPANDED_STATUS_ROWS: u16 = 4;
 const RECENT_TRANSCRIPT_SOURCE_LINES: usize = 80;
@@ -1176,10 +1175,12 @@ impl App {
 
     fn mouse_is_on_status(&self, mouse: MouseEvent, terminal_area: Rect) -> bool {
         let input_width = terminal_area.width.saturating_sub(2);
+        let state = self.view_state();
         let layout = app_layout_for_frame(
             terminal_area,
             self.input_height(input_width),
             self.status_layout,
+            chrome_preview_visible(&state),
         );
         if layout.chrome.session_status.height == 0 {
             return false;
@@ -2111,26 +2112,28 @@ mod tests {
 
     #[test]
     fn chrome_height_reserves_four_expanded_status_rows() {
-        assert_eq!(chrome_height(1, StatusLayout::Compact), 5);
-        assert_eq!(chrome_height(1, StatusLayout::Expanded), 8);
-        assert_eq!(chrome_height(3, StatusLayout::Compact), 5);
-        assert_eq!(chrome_height(3, StatusLayout::Expanded), 8);
-        assert_eq!(chrome_height(4, StatusLayout::Compact), 6);
-        assert_eq!(chrome_height(4, StatusLayout::Expanded), 9);
+        assert_eq!(chrome_height(1, StatusLayout::Compact, false), 4);
+        assert_eq!(chrome_height(1, StatusLayout::Compact, true), 5);
+        assert_eq!(chrome_height(1, StatusLayout::Expanded, false), 7);
+        assert_eq!(chrome_height(1, StatusLayout::Expanded, true), 8);
+        assert_eq!(chrome_height(3, StatusLayout::Compact, false), 5);
+        assert_eq!(chrome_height(3, StatusLayout::Expanded, false), 8);
+        assert_eq!(chrome_height(4, StatusLayout::Compact, false), 6);
+        assert_eq!(chrome_height(4, StatusLayout::Expanded, false), 9);
     }
 
     #[test]
     fn chrome_dimensions_clamp_input_to_visible_frame() {
         assert_eq!(
-            chrome_dimensions(7, MAX_INPUT_HEIGHT, StatusLayout::Expanded),
+            chrome_dimensions(7, MAX_INPUT_HEIGHT, StatusLayout::Expanded, false),
             (7, 1)
         );
         assert_eq!(
-            chrome_dimensions(5, MAX_INPUT_HEIGHT, StatusLayout::Compact),
+            chrome_dimensions(5, MAX_INPUT_HEIGHT, StatusLayout::Compact, false),
             (5, 3)
         );
         assert_eq!(
-            chrome_dimensions(0, MAX_INPUT_HEIGHT, StatusLayout::Compact),
+            chrome_dimensions(0, MAX_INPUT_HEIGHT, StatusLayout::Compact, false),
             (0, 0)
         );
     }
@@ -2161,7 +2164,8 @@ mod tests {
                             width,
                             height,
                         };
-                        let layout = app_layout_for_frame(frame, desired_input, status_layout);
+                        let layout =
+                            app_layout_for_frame(frame, desired_input, status_layout, false);
                         assert_eq!(layout.frame, frame);
                         assert!(
                             rect_inside(frame, layout.transcript),
@@ -3642,6 +3646,34 @@ mod tests {
             rows.iter()
                 .any(|row| row.contains("mirrors resumed history")),
             "inline viewport should show recent assistant transcript: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_viewport_bottom_aligns_recent_transcript_tail() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.lines.push(ChatLine {
+            author: Author::Assistant,
+            text: "Latest answer tail".into(),
+        });
+
+        let rows = render_app_lines(app, 96, COMPOSER_VIEWPORT_HEIGHT);
+        let answer_row = rows
+            .iter()
+            .position(|row| row.contains("Latest answer tail"))
+            .expect("recent answer rendered");
+        let separator_row = rows
+            .iter()
+            .position(|row| row.contains("Enter to send"))
+            .expect("message separator rendered");
+
+        assert_eq!(
+            answer_row + 1,
+            separator_row,
+            "recent answer should sit above the input chrome without a large blank gap: {rows:?}"
         );
     }
 
@@ -5241,10 +5273,10 @@ mod tests {
     #[test]
     fn chrome_idle_shows_enter_to_send_hint() {
         let state = view_state_idle();
-        let rows = render_chrome_lines(&state, 80, 5);
-        // Row 1 = message separator. Idle mode shows the keystroke hint.
+        let rows = render_chrome_lines(&state, 80, 4);
+        // Row 0 = message separator. Idle mode shows the keystroke hint.
         assert!(
-            rows[1].contains("Enter to send"),
+            rows[0].contains("Enter to send"),
             "idle separator missing Enter hint: rows={rows:?}"
         );
     }
@@ -5257,16 +5289,16 @@ mod tests {
             turn_activity: Some("reading files".to_string()),
             ..view_state_idle()
         };
-        let rows = render_chrome_lines(&state, 80, 5);
+        let rows = render_chrome_lines(&state, 80, 4);
         assert!(
-            rows[1].contains("reading files"),
+            rows[0].contains("reading files"),
             "busy separator should display turn activity: {}",
-            rows[1]
+            rows[0]
         );
         assert!(
-            rows[1].contains("input disabled"),
+            rows[0].contains("input disabled"),
             "busy separator should signal input is disabled: {}",
-            rows[1]
+            rows[0]
         );
     }
 
@@ -5276,11 +5308,11 @@ mod tests {
             busy: true,
             ..view_state_idle()
         };
-        let rows = render_chrome_lines(&state, 80, 5);
+        let rows = render_chrome_lines(&state, 80, 4);
         assert!(
-            rows[1].contains("thinking"),
+            rows[0].contains("thinking"),
             "busy separator without activity should show 'thinking': {}",
-            rows[1]
+            rows[0]
         );
     }
 
@@ -5320,8 +5352,8 @@ mod tests {
             lines_count: 42,
             ..view_state_idle()
         };
-        let rows = render_chrome_lines(&state, 120, 5);
-        let status = &rows[4];
+        let rows = render_chrome_lines(&state, 120, 4);
+        let status = &rows[3];
         assert!(
             status.contains("[expand ↓]"),
             "compact status should include expand affordance: {status}"
@@ -5353,7 +5385,7 @@ mod tests {
     }
 
     #[test]
-    fn chrome_session_status_expanded_groups_details_across_three_lines() {
+    fn chrome_session_status_expanded_groups_details_across_four_lines() {
         let state = ViewState {
             model_id: "nvidia/nemotron-3-super-120b-a12b".to_string(),
             provider_name: "openrouter".to_string(),
@@ -5364,44 +5396,42 @@ mod tests {
             status_layout: StatusLayout::Expanded,
             ..view_state_idle()
         };
-        let rows = render_chrome_lines(&state, 180, 8);
+        let rows = render_chrome_lines(&state, 180, 7);
         assert!(
-            rows[4].contains("[collapse ↑]")
-                && rows[4].contains("nvidia/nemotron-3-super-120b-a12b")
-                && rows[4].contains("provider openrouter"),
-            "expanded model row should include selected model and provider: {:?}",
-            rows[4]
+            rows[3].contains("[collapse ↑]")
+                && rows[3].contains("provider openrouter")
+                && rows[3].contains("model nvidia/nemotron-3-super-120b-a12b"),
+            "expanded provider/model row should include selected model and provider: {:?}",
+            rows[3]
         );
         assert!(
-            !rows[4].contains("full "),
+            !rows[3].contains("full "),
             "expanded model row should not duplicate model/provider as a full label: {:?}",
+            rows[3]
+        );
+        assert!(
+            rows[4].contains("effort high")
+                && rows[4].contains("approval normal")
+                && rows[4].contains("hooks none")
+                && rows[4].contains("goal"),
+            "expanded controls row should include effort, approval, hooks, and goal: {:?}",
             rows[4]
         );
         assert!(
-            rows[5].contains("effort high")
-                && rows[5].contains("approval normal")
-                && rows[5].contains("hooks none"),
-            "expanded controls row should include effort, approval, and hooks: {:?}",
+            rows[5].contains("42 msgs") && rows[5].contains("tokens 1234"),
+            "expanded counts row should include messages and tokens: {:?}",
             rows[5]
-        );
-        assert!(
-            rows[6].contains("goal"),
-            "expanded goal row should be present: {:?}",
-            rows[6]
         );
         let session_id_str = state.session_id.to_string();
         assert!(
-            rows[7].contains("42 msgs")
-                && rows[7].contains("tokens 1234")
-                && rows[7].contains("session ")
-                && rows[7].contains('…'),
-            "expanded counts row should include messages, tokens, and shortened session: {:?}",
-            rows[7]
+            rows[6].contains("session ") && rows[6].contains(&session_id_str),
+            "expanded session row should include the full session id: {:?}",
+            rows[6]
         );
         assert!(
-            !rows[7].contains(&session_id_str),
-            "expanded counts row should not show the full session id: {:?}",
-            rows[7]
+            !rows[6].contains('…'),
+            "expanded session row should not shorten the session id: {:?}",
+            rows[6]
         );
     }
 
@@ -5423,25 +5453,25 @@ mod tests {
             rows
         );
         assert!(
-            rows[6].contains("goal"),
-            "expanded goal row should remain visible with multiline input: {:?}",
+            rows[6].contains("3 msgs") && rows[6].contains("tokens n/a"),
+            "expanded counts row should remain visible with multiline input: {:?}",
             rows
         );
         assert!(
-            rows[7].contains("3 msgs") && rows[7].contains("tokens n/a"),
-            "expanded counts row should remain visible with multiline input: {:?}",
+            rows[7].contains("session "),
+            "expanded session row should remain visible with multiline input: {:?}",
             rows
         );
     }
 
     #[test]
-    fn chrome_stream_preview_row_is_empty_when_none() {
+    fn chrome_idle_does_not_reserve_empty_stream_preview_row() {
         let state = view_state_idle();
-        let rows = render_chrome_lines(&state, 80, 5);
+        let rows = render_chrome_lines(&state, 80, 4);
         assert!(
-            rows[0].is_empty(),
-            "stream preview row should be empty when no preview is set: {:?}",
-            rows[0]
+            rows[0].contains("Enter to send"),
+            "idle chrome should start with the separator instead of an empty preview row: {:?}",
+            rows
         );
     }
 }
