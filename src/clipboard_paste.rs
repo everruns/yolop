@@ -7,6 +7,7 @@
 use crate::image_input::{self, MAX_IMAGE_BYTES};
 use everruns_core::message::ContentPart;
 use std::io::Cursor;
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,7 @@ pub enum PasteImageError {
     ClipboardUnavailable(String),
     NoImage(String),
     EncodeFailed(String),
+    #[cfg(target_os = "linux")]
     IoError(String),
 }
 
@@ -29,6 +31,7 @@ impl std::fmt::Display for PasteImageError {
             Self::ClipboardUnavailable(msg) => write!(f, "clipboard unavailable: {msg}"),
             Self::NoImage(msg) => write!(f, "no image on clipboard: {msg}"),
             Self::EncodeFailed(msg) => write!(f, "could not encode image: {msg}"),
+            #[cfg(target_os = "linux")]
             Self::IoError(msg) => write!(f, "io error: {msg}"),
         }
     }
