@@ -1185,13 +1185,11 @@ impl App {
         if layout.chrome.session_status.height == 0 {
             return false;
         }
-        mouse.row >= layout.chrome.session_status.y
-            && mouse.row
-                < layout
-                    .chrome
-                    .session_status
-                    .y
-                    .saturating_add(layout.chrome.session_status.height)
+        let status_rect = layout.chrome.session_status;
+        mouse.row >= status_rect.y
+            && mouse.row < status_rect.y.saturating_add(status_rect.height)
+            && mouse.column >= status_rect.x
+            && mouse.column < status_rect.x.saturating_add(status_rect.width)
     }
 
     fn handle_ctrl_c(&mut self) {
