@@ -7,6 +7,8 @@
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, labeled_phrase, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -106,6 +108,23 @@ struct RepoMapTool {
 
 #[async_trait]
 impl Tool for RepoMapTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let query = scan_narration_query(&tool_call.arguments);
+        Some(labeled_phrase(
+            "Build repo map",
+            "Built repo map",
+            "Repo map failed",
+            query,
+            phase,
+        ))
+    }
+
     fn name(&self) -> &str {
         "repo_map"
     }
@@ -153,6 +172,23 @@ struct RepoSymbolsTool {
 
 #[async_trait]
 impl Tool for RepoSymbolsTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let query = scan_narration_query(&tool_call.arguments);
+        Some(labeled_phrase(
+            "Search symbols",
+            "Searched symbols",
+            "Symbol search failed",
+            query,
+            phase,
+        ))
+    }
+
     fn name(&self) -> &str {
         "repo_symbols"
     }
@@ -192,6 +228,10 @@ impl Tool for RepoSymbolsTool {
             Err(err) => ToolExecutionResult::tool_error(err.to_string()),
         }
     }
+}
+
+fn scan_narration_query(arguments: &Value) -> Option<String> {
+    arg_str(arguments, &["query"]).map(|query| truncate(query, 48))
 }
 
 fn scan_schema(query_description: &str) -> Value {
@@ -1069,6 +1109,8 @@ fn truncate_chars(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_core::tool_narration::ToolNarrationPhase;
+    use everruns_core::tool_types::ToolCall;
 
     fn write(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
@@ -1331,5 +1373,37 @@ trait Named {
         .expect_err("outside path should fail");
 
         assert!(err.to_string().contains("inside the workspace"));
+    }
+
+    #[test]
+    fn repo_symbols_narration_includes_query() {
+        let tool = RepoSymbolsTool {
+            workspace_root: PathBuf::from("/tmp"),
+        };
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "repo_symbols".to_owned(),
+            arguments: json!({ "query": "Widget" }),
+        };
+
+        let narration = tool.narrate(&call, ToolNarrationPhase::Started, None);
+
+        assert_eq!(narration.as_deref(), Some("Search symbols: Widget"));
+    }
+
+    #[test]
+    fn repo_map_narration_uses_bare_verb_without_query() {
+        let tool = RepoMapTool {
+            workspace_root: PathBuf::from("/tmp"),
+        };
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "repo_map".to_owned(),
+            arguments: json!({}),
+        };
+
+        let narration = tool.narrate(&call, ToolNarrationPhase::Started, None);
+
+        assert_eq!(narration.as_deref(), Some("Build repo map"));
     }
 }

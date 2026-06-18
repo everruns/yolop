@@ -440,62 +440,9 @@ fn todo_lines_for_result_or_args(
 
 fn tool_started_label(data: &ToolStartedData) -> String {
     data.narration
-        .as_deref()
-        .map(ToOwned::to_owned)
-        .or_else(|| tool_display_name_with_arguments(data))
-        .or_else(|| data.display_name.clone())
+        .clone()
+        .or(data.display_name.clone())
         .unwrap_or_else(|| data.tool_call.name.clone())
-}
-
-// TODO: Remove this Yolop-side fallback once everruns lets capabilities/tools
-// provide their own argument-aware narration. Until then, this only fills gaps
-// after everruns-provided `data.narration` is missing.
-fn tool_display_name_with_arguments(data: &ToolStartedData) -> Option<String> {
-    let (prefix, field) = match data.tool_call.name.as_str() {
-        "tool_search" => ("Search tools", "query"),
-        "activate_skill" => ("Activate skill", "name"),
-        "read_skill" => ("Read skill", "name"),
-        "run_yolop_command" => ("Run command", "command"),
-        "duckduckgo_search" => ("Search DuckDuckGo", "query"),
-        "web_fetch" => ("Fetch URL", "url"),
-        "grep_files" | "ast_grep" => ("Search files", "pattern"),
-        "repo_symbols" => ("Search symbols", "query"),
-        "read_file" => ("Read file", "path"),
-        "list_directory" => ("List directory", "path"),
-        "write_file" | "edit_file" | "delete_file" | "stat_file" => (
-            data.display_name
-                .as_deref()
-                .unwrap_or(data.tool_call.name.as_str()),
-            "path",
-        ),
-        _ => return None,
-    };
-
-    let value = data
-        .tool_call
-        .arguments
-        .get(field)
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    Some(format!("{prefix}: {}", compact_tool_argument(value)))
-}
-
-fn compact_tool_argument(value: &str) -> String {
-    const MAX_CHARS: usize = 80;
-    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut chars = normalized.chars();
-    let mut compact = String::new();
-    for _ in 0..MAX_CHARS {
-        match chars.next() {
-            Some(ch) => compact.push(ch),
-            None => return normalized,
-        }
-    }
-    if chars.next().is_some() {
-        compact.push('…');
-    }
-    compact
 }
 
 /// One-line summary of a tool result, used in the transcript and `--print` output.
@@ -610,16 +557,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_started_label_includes_search_query() {
-        let data = started_tool("tool_search", json!({ "query": "schema metadata" }));
+    fn tool_started_label_falls_back_to_display_name() {
+        let data = started_tool("tool_search", json!({ "query": "hooks" }));
 
-        assert_eq!(tool_started_label(&data), "Search tools: schema metadata");
-    }
-
-    #[test]
-    fn tool_started_label_includes_skill_name() {
-        let data = started_tool("activate_skill", json!({ "name": "ship" }));
-
-        assert_eq!(tool_started_label(&data), "Activate skill: ship");
+        assert_eq!(tool_started_label(&data), "Hardcoded label");
     }
 }

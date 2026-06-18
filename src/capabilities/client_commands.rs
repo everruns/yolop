@@ -19,6 +19,8 @@ use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, labeled_phrase, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -156,6 +158,23 @@ struct RunYolopCommandTool {
 
 #[async_trait]
 impl Tool for RunYolopCommandTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let command = arg_str(&tool_call.arguments, &["command"]).map(|value| truncate(value, 48));
+        Some(labeled_phrase(
+            "Run command",
+            "Ran command",
+            "Failed to run command",
+            command,
+            phase,
+        ))
+    }
+
     fn name(&self) -> &str {
         "run_yolop_command"
     }
@@ -265,6 +284,8 @@ fn arg(name: &str, required: bool) -> CommandArg {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_core::tool_narration::ToolNarrationPhase;
+    use everruns_core::tool_types::ToolCall;
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
@@ -383,5 +404,21 @@ mod tests {
                 arg: Some("expanded".to_string())
             }]
         );
+    }
+
+    #[test]
+    fn run_yolop_command_narration_includes_command() {
+        let tool = RunYolopCommandTool {
+            ui: Arc::new(RecordingUi::default()),
+        };
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "run_yolop_command".to_owned(),
+            arguments: json!({ "command": "/help" }),
+        };
+
+        let narration = tool.narrate(&call, ToolNarrationPhase::Started, None);
+
+        assert_eq!(narration.as_deref(), Some("Run command: /help"));
     }
 }
