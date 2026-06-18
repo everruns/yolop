@@ -277,7 +277,7 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 | `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
 | `--session <ID>`           | Resume a previous session by id                                      |
 | `--session-dir <PATH>`     | Override the parent directory for session folders                    |
-| `--reasoning-effort <E>`   | OpenAI/Codex/OpenRouter/custom reasoning effort (`minimal` / `low` / `medium` / `high`) |
+| `--reasoning-effort <E>`   | Reasoning effort override when the selected model profile supports it |
 
 ### Commands
 
@@ -304,7 +304,7 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 | `CUSTOM_BASE_URL`               | Select the custom OpenAI-compatible endpoint (beats the saved base URL) |
 | `CUSTOM_API_KEY`                | Optional key for the custom endpoint (a placeholder is sent otherwise) |
 | `EVERRUNS_CLI_MODEL`            | Override the auto-selected default model (beats the saved model) |
-| `EVERRUNS_CLI_REASONING_EFFORT` | OpenAI/Codex/OpenRouter/custom reasoning effort override     |
+| `EVERRUNS_CLI_REASONING_EFFORT` | Reasoning effort override when the selected model profile supports it |
 
 ### Settings
 
@@ -351,9 +351,10 @@ provider has no saved model, the global `default_model` setting (if set) is
 applied as a cross-provider fallback. At runtime, the
 per-provider env var (`OPENAI_API_KEY`, etc.) always beats the saved token,
 so a per-run env override is always possible. `/model <id>` opens the model
-picker prefilled for the active provider. OpenAI, Codex, OpenRouter, and custom
-endpoint reasoning effort can be changed at runtime with the `/effort` modal
-or `/setup effort <level>` (for example, `high` or `medium`).
+picker prefilled for the active provider. Reasoning effort can be changed at
+runtime with the `/effort` modal or `/setup effort <level>` when the selected
+model profile exposes effort levels. The available values and default come from
+that model profile, so they can vary by model.
 
 `/setup` can store an API token under `[tokens]` in the settings file. The
 Codex subscription provider stores OAuth data under `[codex_auth]` instead.

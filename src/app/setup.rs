@@ -55,10 +55,14 @@ impl App {
 
     pub(crate) fn start_effort_setup(&mut self, raw: &str) {
         let raw = raw.trim();
-        let selected = effort_index(raw).unwrap_or_else(|| self.current_effort_index());
+        let selected = self
+            .effort_index(raw)
+            .unwrap_or_else(|| self.current_effort_index());
         self.setup = Some(SetupStep::PickEffort {
             selected,
-            error: if raw.is_empty() || effort_index(raw).is_some() {
+            error: if self.model.reasoning_effort_options().is_empty() {
+                Some("current model profile does not expose reasoning efforts".to_string())
+            } else if raw.is_empty() || self.effort_index(raw).is_some() {
                 None
             } else {
                 Some(format!("unknown effort: {raw}"))
@@ -67,19 +71,24 @@ impl App {
     }
 
     pub(crate) fn current_effort_index(&self) -> usize {
-        let label = self.model.provider_label();
-        if !label.starts_with("openai/")
-            && !label.starts_with("codex/")
-            && !label.starts_with("openrouter/")
-            && !label.starts_with("custom/")
-        {
-            return effort_index("medium").unwrap_or(0);
-        }
-        label
-            .split_whitespace()
-            .nth(1)
-            .and_then(effort_index)
-            .unwrap_or_else(|| effort_index("medium").unwrap_or(0))
+        self.model
+            .reasoning_effort()
+            .as_deref()
+            .and_then(|effort| self.effort_index(effort))
+            .or_else(|| {
+                self.model
+                    .default_reasoning_effort()
+                    .as_deref()
+                    .and_then(|effort| self.effort_index(effort))
+            })
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn effort_index(&self, value: &str) -> Option<usize> {
+        self.model
+            .reasoning_effort_options()
+            .iter()
+            .position(|option| option.value.eq_ignore_ascii_case(value))
     }
 
     pub(crate) fn current_provider_name(&self) -> String {
@@ -1220,6 +1229,7 @@ impl App {
     }
 
     pub(crate) async fn handle_effort_key(&mut self, key: KeyEvent, selected: usize) {
+        let options_len = self.model.reasoning_effort_options().len();
         match key.code {
             KeyCode::Esc => {
                 self.setup = None;
@@ -1232,12 +1242,12 @@ impl App {
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.setup = Some(SetupStep::PickEffort {
-                    selected: (selected + 1).min(EFFORT_OPTIONS.len().saturating_sub(1)),
+                    selected: (selected + 1).min(options_len.saturating_sub(1)),
                     error: None,
                 });
             }
             KeyCode::Char(ch) if ch.is_ascii_digit() => {
-                if let Some(index) = digit_index(ch, EFFORT_OPTIONS.len()) {
+                if let Some(index) = digit_index(ch, options_len) {
                     self.confirm_effort(index).await;
                 }
             }
@@ -1249,10 +1259,11 @@ impl App {
     }
 
     pub(crate) async fn confirm_effort(&mut self, selected: usize) {
-        let Some(option) = EFFORT_OPTIONS.get(selected) else {
+        let options = self.model.reasoning_effort_options();
+        let Some(option) = options.get(selected) else {
             self.setup = Some(SetupStep::PickEffort {
                 selected: 0,
-                error: None,
+                error: Some("current model profile does not expose reasoning efforts".to_string()),
             });
             return;
         };

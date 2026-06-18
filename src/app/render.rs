@@ -589,31 +589,29 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
         Some(SetupStep::PickEffort { selected, error }) => {
             lines.push(setup_title("Select Reasoning Effort"));
             lines.push(setup_hint(
-                "Applies to OpenAI, Codex, OpenRouter, and custom endpoints — this session and future sessions.",
+                "Profile-defined options for the current model — this session and future sessions.",
             ));
             lines.push(Line::from(""));
-            let label = app.model.provider_label();
-            let current = if label.starts_with("openai/") || label.starts_with("codex/") {
-                label
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("medium")
-                    .to_string()
-            } else if label.starts_with("openrouter/") || label.starts_with("custom/") {
-                label
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or_default()
-                    .to_string()
-            } else {
-                String::new()
-            };
-            for (idx, option) in EFFORT_OPTIONS.iter().enumerate() {
-                let mut hint = option.hint.to_string();
-                if option.value == current {
-                    hint.push_str(" · current");
+            let options = app.model.reasoning_effort_options();
+            let current = app.model.reasoning_effort();
+            let default = app.model.default_reasoning_effort();
+            if options.is_empty() {
+                lines.push(setup_hint(
+                    "No reasoning effort options in this model profile.",
+                ));
+            }
+            for (idx, option) in options.iter().enumerate() {
+                let mut hint = String::new();
+                if Some(option.value.as_str()) == current.as_deref() {
+                    hint.push_str("current");
                 }
-                lines.push(setup_row(idx == *selected, idx + 1, option.label, &hint));
+                if Some(option.value.as_str()) == default.as_deref() {
+                    if !hint.is_empty() {
+                        hint.push_str(" · ");
+                    }
+                    hint.push_str("profile default");
+                }
+                lines.push(setup_row(idx == *selected, idx + 1, &option.label, &hint));
             }
             push_setup_error(&mut lines, error.as_deref());
             lines.push(setup_footer("Enter confirm · ↑/↓ move · Esc cancel"));
@@ -1376,12 +1374,6 @@ pub(crate) fn model_window(selected: usize, total: usize, max_rows: usize) -> (u
     }
     let start = selected.saturating_sub(max_rows / 2).min(total - max_rows);
     (start, start + max_rows)
-}
-
-pub(crate) fn effort_index(value: &str) -> Option<usize> {
-    EFFORT_OPTIONS
-        .iter()
-        .position(|option| option.value.eq_ignore_ascii_case(value))
 }
 
 pub(crate) fn inset_x(area: Rect, pad: u16) -> Rect {

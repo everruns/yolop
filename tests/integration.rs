@@ -664,7 +664,7 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
     tui.write_input(b"2");
     assert!(
         tui.wait_for_output(
-            "setup complete: openai/gpt-5.4 medium",
+            "setup complete: openai/gpt-5.4 none",
             Duration::from_secs(3)
         ),
         "model selection should complete with the picked model: {}",
@@ -678,7 +678,7 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
         "provider switch should persist: {settings}"
     );
     assert!(
-        settings.contains("openai = \"gpt-5.4 medium\""),
+        settings.contains("openai = \"gpt-5.4 none\""),
         "picked model should persist under [models]: {settings}"
     );
 

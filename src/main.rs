@@ -249,57 +249,33 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<St
 
     notes.extend(resolved.notes);
     let base = resolved.choice;
-    let selected = match (base, cli.model.clone()) {
-        (ProviderChoice::Anthropic { .. }, Some(m)) => ProviderChoice::Anthropic { model: m },
-        (
-            ProviderChoice::OpenAi {
-                reasoning_effort, ..
-            },
-            Some(m),
-        ) => ProviderChoice::OpenAi {
-            model: m,
-            reasoning_effort: cli_reasoning_effort.clone().or(reasoning_effort),
-        },
-        (
-            ProviderChoice::Codex {
-                reasoning_effort, ..
-            },
-            Some(m),
-        ) => ProviderChoice::Codex {
-            model: m,
-            reasoning_effort: cli_reasoning_effort.clone().or(reasoning_effort),
-        },
-        (ProviderChoice::Google { base_url, .. }, Some(m)) => {
-            ProviderChoice::Google { model: m, base_url }
+    let selected = if let Some(model) = cli.model.clone() {
+        let spec = match cli_reasoning_effort.clone() {
+            Some(effort) => format!("{model} {effort}"),
+            None => model,
+        };
+        match base.resolve_model_spec(&spec) {
+            Ok(selected) => selected,
+            Err(err) => {
+                notes.push(format!("model override ignored: {err}"));
+                base
+            }
         }
-        (
-            ProviderChoice::OpenRouter {
-                base_url,
-                reasoning_effort,
-                ..
-            },
-            Some(m),
-        ) => ProviderChoice::OpenRouter {
-            model: m,
-            base_url,
-            reasoning_effort: cli_reasoning_effort.clone().or(reasoning_effort),
-        },
-        (ProviderChoice::Ollama { base_url, .. }, Some(m)) => {
-            ProviderChoice::Ollama { model: m, base_url }
-        }
-        (
-            ProviderChoice::Custom {
-                reasoning_effort, ..
-            },
-            Some(m),
-        ) => ProviderChoice::Custom {
-            model: m,
-            reasoning_effort: cli_reasoning_effort.clone().or(reasoning_effort),
-        },
-        (other, _) => other,
+    } else {
+        base
     };
     let selected = match (selected, cli_reasoning_effort) {
         (
+            ProviderChoice::Anthropic {
+                model,
+                reasoning_effort,
+            },
+            effort,
+        ) => ProviderChoice::Anthropic {
+            model,
+            reasoning_effort: effort.or(reasoning_effort),
+        },
+        (
             ProviderChoice::OpenAi {
                 model,
                 reasoning_effort,
@@ -320,6 +296,18 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<St
             reasoning_effort: effort.or(reasoning_effort),
         },
         (
+            ProviderChoice::Google {
+                model,
+                base_url,
+                reasoning_effort,
+            },
+            effort,
+        ) => ProviderChoice::Google {
+            model,
+            base_url,
+            reasoning_effort: effort.or(reasoning_effort),
+        },
+        (
             ProviderChoice::OpenRouter {
                 model,
                 base_url,
@@ -327,6 +315,18 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<St
             },
             effort,
         ) => ProviderChoice::OpenRouter {
+            model,
+            base_url,
+            reasoning_effort: effort.or(reasoning_effort),
+        },
+        (
+            ProviderChoice::Ollama {
+                model,
+                base_url,
+                reasoning_effort,
+            },
+            effort,
+        ) => ProviderChoice::Ollama {
             model,
             base_url,
             reasoning_effort: effort.or(reasoning_effort),

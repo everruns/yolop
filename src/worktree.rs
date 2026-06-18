@@ -716,6 +716,7 @@ mod tests {
 
     #[test]
     fn worktree_manager_creates_isolated_branch_on_implementation_prompt() {
+        let _guard = crate::test_env::lock();
         let repo = tempfile::tempdir().expect("repo");
         std::process::Command::new("git")
             .args(["init", "-b", "main"])
@@ -787,6 +788,7 @@ mod tests {
 
     #[test]
     fn prune_removes_unreferenced_worktree_dirs() {
+        let _guard = crate::test_env::lock();
         let sessions = tempfile::tempdir().expect("sessions");
         let storage = tempfile::tempdir().expect("storage");
         let storage_path = storage.path().to_path_buf();
