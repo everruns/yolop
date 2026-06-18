@@ -94,12 +94,12 @@ jobs:
     name: Live Provider Smoke (Doppler)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Gate this job out entirely on fork PRs where DOPPLER_TOKEN is not
-    # exposed. When the job does run, it must actually run the tests —
-    # YOLOP_REQUIRE_LIVE_TESTS=1 (below) turns a missing provider key into a
-    # hard failure so the live check can't report green without exercising
-    # anything.
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    # Gate this job out entirely on fork PRs and dependabot PRs where
+    # DOPPLER_TOKEN is not exposed. When the job does run, it must actually
+    # run the tests — YOLOP_REQUIRE_LIVE_TESTS=1 (below) turns a missing
+    # provider key into a hard failure so the live check can't report green
+    # without exercising anything.
+    if: (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && github.actor != 'dependabot[bot]'
     needs: [lint, test]
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
