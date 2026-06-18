@@ -3,33 +3,58 @@
 # `defaults` applies to every config; per-config keys override it. Each config
 # becomes one column of results under bench/results/<benchmark>/<config>/.
 #
-# Add a config by appending an entry under `configs:`. To benchmark a non-yolop
-# agent later, set `agent: <name>` once an adapter exists in yoloeval/agents/.
+# Add a config by appending an entry under `configs:`. `agent:` selects the
+# adapter (yolop | claude-code | codex | pi); remaining keys are passed to it.
 
 defaults:
-  agent: yolop
-  # Path to the yolop binary (relative paths are resolved from this file's dir,
-  # i.e. bench/configs/; the default points at a release build at the repo root).
-  binary: ../../target/release/yolop
   timeout: 1800            # per-instance agent wall-clock budget (seconds)
   max_cost_usd: 5.0        # per-instance USD cap; the run is killed if exceeded
 
+# Reusable yolop base: the binary path is relative to this file's dir
+# (bench/configs/) and points at a release build at the repo root.
+_yolop: &yolop
+  agent: yolop
+  binary: ../../target/release/yolop
+
 configs:
-  # --- OpenAI (yolop default provider) ---
+  # --- yolop x OpenAI (default provider) ---
   openai-default:
+    <<: *yolop
     provider: openai
     model: gpt-5.5
 
   openai-high:
+    <<: *yolop
     provider: openai
     model: gpt-5.5
     reasoning_effort: high
 
-  # --- Anthropic (secondary provider) ---
+  # --- yolop x Anthropic (secondary provider) ---
   anthropic-sonnet:
+    <<: *yolop
     provider: anthropic
     model: claude-sonnet-4-5
 
   # --- Offline plumbing check (no API key, won't solve tasks) ---
   llmsim:
+    <<: *yolop
     provider: llmsim
+
+  # --- Other coding agents (require their CLI on PATH + provider keys) ---
+  # Claude Code reports its own USD cost (total_cost_usd).
+  claude-code:
+    agent: claude-code
+    model: claude-sonnet-4-5
+
+  # Codex reports tokens but no cost; `price` (USD per 1M tokens) lets the
+  # harness estimate cost and enforce the cap. UPDATE to current pricing.
+  codex:
+    agent: codex
+    model: gpt-5-codex
+    price: {input: 1.25, output: 10.0, cache_read: 0.125}
+
+  # Pi reports per-message cost in its JSON events.
+  pi-sonnet:
+    agent: pi
+    provider: anthropic
+    model: claude-sonnet-4-5

@@ -18,21 +18,8 @@ from typing import Any
 
 from ..metrics import extract_metrics, running_cost
 from ..models import AgentRun, Instance, RunMetrics
-from .base import Agent
-
-PROMPT_TEMPLATE = """\
-You are fixing a bug in the {repo} repository. The working directory is a clean \
-checkout at the relevant base commit.
-
-Resolve the following issue by editing the source code. Do not write new tests; \
-the project's own hidden test suite will be used to verify your fix. Make the \
-smallest change that correctly fixes the problem.
-
---- ISSUE ---
-{problem_statement}
---- END ISSUE ---
-
-When you are done, ensure the change is saved to the files on disk."""
+from .base import PROMPT_TEMPLATE, Agent
+from ._proc import run_agent_process
 
 
 class YolopAgent(Agent):
@@ -103,42 +90,17 @@ class YolopAgent(Agent):
         env["XDG_CONFIG_HOME"] = str(config_home)
         env.update(self.env_overrides)
 
+        # yolop writes its own events.jsonl, so we don't redirect stdout; the
+        # cost probe reads that log for in-flight budget enforcement.
         log_path = Path(session_dir) / session_id / "events.jsonl"
-        error: str | None = None
-        stop_reason = "completed"
         start = time.monotonic()
-
-        proc = subprocess.Popen(
-            cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        res = run_agent_process(
+            cmd, env=env, name="yolop", timeout=self.timeout,
+            max_cost_usd=self.max_cost_usd,
+            cost_probe=lambda: running_cost(log_path),
         )
-        # Poll the process while watching wall-clock and the session log's
-        # running cost; terminate on timeout or budget breach.
-        while True:
-            try:
-                proc.wait(timeout=2)
-                break
-            except subprocess.TimeoutExpired:
-                pass
-            elapsed = time.monotonic() - start
-            if elapsed > self.timeout:
-                _kill(proc)
-                error = f"yolop timed out after {self.timeout}s"
-                stop_reason = "timeout"
-                break
-            if self.max_cost_usd is not None:
-                cost = running_cost(log_path)
-                if cost > self.max_cost_usd:
-                    _kill(proc)
-                    error = f"budget cap hit: ${cost:.2f} > ${self.max_cost_usd:.2f}"
-                    stop_reason = "budget"
-                    break
 
-        stderr = (proc.stderr.read() if proc.stderr else "") or ""
-        if stop_reason == "completed" and proc.returncode not in (0, None):
-            error = f"yolop exited {proc.returncode}: {stderr[-2000:]}"
-            stop_reason = "error"
-        wall = time.monotonic() - start
-
+        error, stop_reason = res.error, res.stop_reason
         if log_path.exists():
             metrics = extract_metrics(log_path)
         else:
@@ -146,7 +108,7 @@ class YolopAgent(Agent):
             if error is None:
                 error = f"no session log at {log_path}"
                 stop_reason = "error"
-        metrics.wall_time_s = round(wall, 3)
+        metrics.wall_time_s = round(time.monotonic() - start, 3)
         metrics.stop_reason = stop_reason
 
         return AgentRun(
@@ -155,16 +117,6 @@ class YolopAgent(Agent):
             session_log_path=str(log_path),
             error=error,
         )
-
-
-def _kill(proc: subprocess.Popen) -> None:
-    """Terminate a yolop process, escalating to SIGKILL if it lingers."""
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=10)
 
 
 def _yolop_version(binary: str) -> dict[str, str | None]:

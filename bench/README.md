@@ -4,26 +4,47 @@ Benchmarks yolop on coding benchmarks, starting with **SWE-bench Verified**, and
 keeps the results in this repo. Designed to grow: new benchmarks and new agents
 plug in behind small interfaces.
 
+## Agents
+
+The harness benchmarks yolop and, behind the same `Agent` interface, three other
+terminal coding agents so they can be compared on identical instances, prompt,
+and scorer:
+
+| `agent:` | CLI | needs | cost source |
+|----------|-----|-------|-------------|
+| `yolop` | `target/release/yolop` | provider key | yolop's own usage accounting |
+| `claude-code` | `claude` on PATH | `ANTHROPIC_API_KEY` | reported `total_cost_usd` |
+| `codex` | `codex` on PATH | `OPENAI_API_KEY` | estimated from config `price` |
+| `pi` | `pi` on PATH | provider key | reported `usage.cost.total` |
+
+Each adapter runs its CLI non-interactively in the checkout with edits
+auto-approved, streams the tool's JSON event log to a file, and mines it into the
+common `RunMetrics`. The runner captures the working-tree diff regardless of
+agent, so scoring is identical.
+
 ## What it measures
 
-For every `(instance, config)` run it records, from yolop's `events.jsonl`:
+For every `(instance, config)` run it records, mined from the agent's event log:
 
 - **success** — `resolved` (did the hidden test suite pass?)
-- **time** — `wall_time_s` (harness-measured) and `agent_reported_time_s` (summed turn durations)
-- **turns**, **assistant/user messages**, **llm_calls**
+- **time** — `wall_time_s` (harness-measured) and `agent_reported_time_s` (from the agent)
+- **turns**/**iterations**, **assistant/user messages**, **llm_calls**
 - **tool calls** — total, failed, and a per-tool breakdown (`tools_used`)
 - **tokens** — input, output, `cache_read_tokens`, `cache_creation_tokens`, total
-- **cost** — `cost_usd` (provider `actual_cost_usd` when present, else yolop's `estimated_cost_usd`)
+- **cost** — `cost_usd` (tool-reported where available, else estimated from `price`)
 - **stop_reason** — `completed` / `timeout` / `budget` / `error`
-- **config metadata** — agent, provider, model, reasoning effort, cost cap, yolop version + commit, everruns-runtime version
+- **config metadata** — agent, provider, model, reasoning effort, cost cap, tool version
 
 ## Cost cap
 
 Each run has a per-instance USD budget (default **$5**, `max_cost_usd` in the
-matrix or `--max-cost` on the CLI). yolop has no native cost cap, so the harness
-watches the running cost in the session log and kills the run if it exceeds the
-cap (recorded as `stop_reason: budget`). Cost is read from yolop's own usage
-accounting, so it tracks whatever pricing yolop knows for the model.
+matrix or `--max-cost` on the CLI). None of these CLIs has a native dollar cap,
+so the harness watches the running cost in the session log and kills the run if
+it exceeds the cap (recorded as `stop_reason: budget`). Cost comes from the
+tool's own reporting where available; for agents that report only tokens (codex)
+set a per-config `price` block (USD per 1M tokens) so cost — and the cap — can be
+computed. Without a price/reported cost, only the wall-clock `timeout` bounds a
+run.
 
 ## Layout
 
@@ -31,8 +52,10 @@ accounting, so it tracks whatever pricing yolop knows for the model.
 bench/
   yoloeval/            # the harness (Python package)
     datasets/          # Benchmark implementations (swebench.py)
-    agents/            # Agent adapters (yolop.py; add others here)
-    metrics.py         # events.jsonl -> RunMetrics
+    agents/            # Agent adapters (yolop, claude_code, codex, pi; _proc shared driver)
+    metrics.py         # yolop events.jsonl -> RunMetrics
+    agent_metrics.py   # claude-code / codex / pi event logs -> RunMetrics
+    pricing.py         # token-based cost estimate (fallback for codex)
     runner.py          # (instance x config) orchestration
     results.py         # save/summarize result JSON
   configs/matrix.yaml  # the config matrix to benchmark
@@ -56,7 +79,8 @@ cargo build --release            # produces target/release/yolop
 Requires a running **Docker** daemon (SWE-bench runs the hidden tests in
 per-instance containers) and a provider key in the environment
 (`OPENAI_API_KEY` by default; `ANTHROPIC_API_KEY` for the Anthropic config).
-Use `doppler run --` to inject secrets where applicable.
+Use `doppler run --` to inject secrets where applicable. To benchmark a non-yolop
+agent, its CLI must be installed and on `PATH` (`claude`, `codex`, or `pi`).
 
 ## Usage
 
@@ -91,12 +115,15 @@ applies to all; per-config keys override. Each config is one results column.
 
 ```yaml
 defaults:
-  agent: yolop
-  binary: ../../target/release/yolop
   timeout: 1800
+  max_cost_usd: 5.0
 configs:
-  openai-default: { provider: openai, model: gpt-5.5 }
-  openai-high:    { provider: openai, model: gpt-5.5, reasoning_effort: high }
+  anthropic-sonnet: { agent: yolop, binary: ../../target/release/yolop,
+                      provider: anthropic, model: claude-sonnet-4-5 }
+  claude-code:      { agent: claude-code, model: claude-sonnet-4-5 }
+  codex:            { agent: codex, model: gpt-5-codex,
+                      price: { input: 1.25, output: 10.0, cache_read: 0.125 } }
+  pi-sonnet:        { agent: pi, provider: anthropic, model: claude-sonnet-4-5 }
 ```
 
 ## Extending
@@ -104,8 +131,9 @@ configs:
 - **New benchmark:** add a `Benchmark` subclass in `yoloeval/datasets/` (implement
   `load` + `evaluate`) and register it in `datasets/base.get_benchmark`.
 - **New agent (to compare against yolop):** add an `Agent` subclass in
-  `yoloeval/agents/` (implement `run` to leave changes in the working tree) and
-  register it in `agents.build_agent`. Set `agent: <name>` in a matrix entry.
+  `yoloeval/agents/` (implement `run` to leave changes in the working tree, using
+  the shared `_proc.run_agent_process` driver) and register it in
+  `agents._AGENTS`. Set `agent: <name>` in a matrix entry.
 
 ## Session data upload
 

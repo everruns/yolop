@@ -15,6 +15,22 @@ from typing import Any
 
 from ..models import AgentRun, Instance
 
+#: Shared issue-fixing prompt used by every agent adapter so the only variable
+#: in a cross-agent comparison is the agent, not the wording of the task.
+PROMPT_TEMPLATE = """\
+You are fixing a bug in the {repo} repository. The working directory is a clean \
+checkout at the relevant base commit.
+
+Resolve the following issue by editing the source code. Do not write new tests; \
+the project's own hidden test suite will be used to verify your fix. Make the \
+smallest change that correctly fixes the problem.
+
+--- ISSUE ---
+{problem_statement}
+--- END ISSUE ---
+
+When you are done, ensure the change is saved to the files on disk."""
+
 
 class Agent(abc.ABC):
     #: Stable short name used in result paths (e.g. ``yolop``).
