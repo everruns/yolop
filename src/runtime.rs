@@ -507,6 +507,7 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "write_todos",
     "run_yolop_command",
 ];
+const YOLOP_KEEP_RECENT_TOOL_OUTPUTS: u64 = 3;
 
 #[derive(Clone, Debug)]
 pub enum ProviderChoice {
@@ -1429,7 +1430,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
                 "proactive": true,
                 "budget_percent": 0.20,
                 "observation_masking": {
-                    "keep_recent_tool_outputs": 1,
+                    "keep_recent_tool_outputs": YOLOP_KEEP_RECENT_TOOL_OUTPUTS,
                     "summary_format": "one_line"
                 }
             }),
@@ -4151,6 +4152,23 @@ mod tests {
         assert!(
             ids.iter()
                 .any(|cap| cap.capability_id() == "loop_detection")
+        );
+    }
+
+    #[test]
+    fn coding_harness_keeps_small_recent_tool_output_window() {
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+        let compaction = ids
+            .iter()
+            .find(|cap| cap.capability_id() == COMPACTION_CAPABILITY_ID)
+            .expect("compaction capability");
+
+        assert_eq!(
+            compaction
+                .config
+                .pointer("/observation_masking/keep_recent_tool_outputs")
+                .and_then(|value| value.as_u64()),
+            Some(3)
         );
     }
 
