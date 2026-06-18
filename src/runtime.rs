@@ -2091,6 +2091,11 @@ pub async fn build_with_options(
     capabilities.register(ScopedSkillsCapability::new(
         crate::capabilities::skills::skills_config(&skill_dirs),
     ));
+    // yolop-owned skill uninstall (`delete_skill`); the upstream capability has
+    // no removal. Shares the same resolved scope directories.
+    capabilities.register(crate::capabilities::skills::SkillManagementCapability::new(
+        skill_dirs.clone(),
+    ));
     capabilities.register(RepoMapCapability::new(effective_root.clone()));
     capabilities.register(AstGrepCapability::new(effective_root.clone()));
     capabilities.register(InfinityContextCapability);
@@ -3074,6 +3079,15 @@ mod tests {
         assert!(!unknown.success);
         assert!(unknown.message.contains("model <id>"));
     }
+
+    // The live-config tools (`set_provider` / `set_model` / `set_reasoning_effort`)
+    // and `delete_skill` are registered via SetupCapability / SkillManagementCapability
+    // in `build_with_options`. Because ToolSearchCapability defers the long tail
+    // behind `tool_search`, they are not in the immediate `runtime_agent.tools`
+    // snapshot, so their presence is asserted at the capability level
+    // (`capabilities::host::tests::setup_capability_exposes_live_config_tools`,
+    // `capabilities::skills::tests::skill_management_capability_exposes_delete_skill`)
+    // and their behavior by the SetupController / DeleteSkillTool unit tests.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn setup_url_and_custom_model_persist_through_settings() {

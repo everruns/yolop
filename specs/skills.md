@@ -76,6 +76,12 @@ a labeled VFS root that yolop's file store maps to a **real on-disk directory**:
    `write_skill` validates the skill name and `SKILL.md`, requires the
    frontmatter `name` to match the directory name, bounds extra files, rejects
    path traversal, and never writes system skills.
+8. **Uninstall.** The yolop-owned `delete_skill` tool removes an installed skill
+   from a writable scope (`workspace` or `global`). It validates the name as a
+   single path segment (no separators, `.`, or `..`), refuses a directory with no
+   `SKILL.md`, and never touches the read-only system scope. This is the
+   conversational uninstall path (see [`conversational-control.md`](./conversational-control.md));
+   the upstream capability has no removal.
 8. **Absent scopes are silent.** A missing workspace/global directory is simply
    empty until a skill is installed. A failure to materialize system skills
    disables that scope without failing the session.
@@ -93,8 +99,9 @@ a labeled VFS root that yolop's file store maps to a **real on-disk directory**:
   precedence, the skills tools, validation, and substitution — all through the
   session `SessionFileSystem`.
 - `crate::capabilities::skills` owns the yolop wiring: the scope set, the
-  host-path `SkillDirResolver`, the embedded system skills + materialization, and
-  the VFS-root constants the file store routes on.
+  host-path `SkillDirResolver`, the embedded system skills + materialization, the
+  VFS-root constants the file store routes on, and the `SkillManagementCapability`
+  that contributes the `delete_skill` (uninstall) tool.
 - `crate::runtime` (`CodingCliSessionFileStore`) owns mapping the scope VFS roots
   to real on-disk directories.
 - `everruns_core::skill` owns the `SKILL.md` format, parsing, validation, and
