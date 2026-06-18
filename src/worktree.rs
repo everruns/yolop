@@ -501,8 +501,24 @@ fn copy_worktree_includes(repo_root: &Path, worktree_path: &Path) {
         .output()
     {
         Ok(out) if out.status.success() => out.stdout,
-        _ => return,
+        Ok(out) => {
+            tracing::warn!(
+                status = ?out.status.code(),
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "git ls-files failed; skipping .worktreeinclude copy"
+            );
+            return;
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "could not run git ls-files; skipping .worktreeinclude copy");
+            return;
+        }
     };
+
+    // Resolve once so we can confirm copied sources stay inside the repo even if
+    // a parent component is a symlink (git won't list through symlinked dirs,
+    // but guard defensively against symlink escape).
+    let repo_canon = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
 
     let mut copied = 0usize;
     for rel in output.split(|&b| b == 0) {
@@ -523,6 +539,16 @@ fn copy_worktree_includes(repo_root: &Path, worktree_path: &Path) {
             Ok(meta) if !meta.is_file() => continue,
             Ok(_) => {}
             Err(_) => continue,
+        }
+        // Reject any source that resolves outside the repo (symlinked parent
+        // escape). `std::fs::copy` follows symlinks, so this prevents reading
+        // and re-materializing files from outside the checkout.
+        match std::fs::canonicalize(&src) {
+            Ok(canon) if canon.starts_with(&repo_canon) => {}
+            _ => {
+                tracing::warn!(src = %src.display(), "skipping worktree include resolving outside repo");
+                continue;
+            }
         }
         let dest = worktree_path.join(rel);
         if dest.exists() {
@@ -872,7 +898,7 @@ mod tests {
     fn copies_ignored_includes_into_worktree() {
         let repo = tempfile::tempdir().expect("repo");
         let run = |args: &[&str]| {
-            std::process::Command::new("git")
+            let status = std::process::Command::new("git")
                 .arg("-c")
                 .arg("commit.gpgsign=false")
                 .args(args)
@@ -881,6 +907,7 @@ mod tests {
                 .env("GIT_COMMITTER_EMAIL", "test@example.com")
                 .status()
                 .expect("git");
+            assert!(status.success(), "git {args:?} failed");
         };
         run(&["init", "-b", "main"]);
         std::fs::write(
@@ -911,8 +938,9 @@ mod tests {
             "test <test@example.com>",
         ]);
 
-        let worktree = repo.path().parent().unwrap().join("wt-copy-test");
-        let _ = std::fs::remove_dir_all(&worktree);
+        // Unique, isolated worktree path so parallel tests can't collide.
+        let wt_parent = tempfile::tempdir().expect("wt parent");
+        let worktree = wt_parent.path().join("wt");
         create_worktree(repo.path(), &worktree, "copy-test", "HEAD").expect("create worktree");
 
         assert_eq!(
