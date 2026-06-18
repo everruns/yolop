@@ -42,7 +42,7 @@ eventsource-stream = "0.2"
 # `.worktreeinclude` matching for copying ignored local files into worktrees.
 ignore = "0.4"
 include_dir = "0.7"
-rand = "0.9"
+rand = "0.10"
 ratatui = "0.30"
 # Already in the tree via the everruns driver crates; used directly only for
 # the OpenAI-compatible `GET <base>/models` discovery fallback.

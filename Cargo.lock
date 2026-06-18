@@ -6521,7 +6521,7 @@ dependencies = [
  "image",
  "include_dir",
  "portable-pty",
- "rand 0.9.4",
+ "rand 0.10.1",
  "ratatui",
  "ratatui-textarea",
  "reqwest 0.13.4",

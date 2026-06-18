@@ -1,7 +1,7 @@
 use crate::settings::CodexAuth;
 use anyhow::{Context, Result, anyhow};
 use base64::Engine as _;
-use rand::Rng;
+use rand::RngExt;
 use reqwest::Url;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
