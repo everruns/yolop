@@ -580,9 +580,9 @@ const SETUP_TOOLS_PROMPT: &str = "<capability id=\"yolop_setup\">\n\
     `set_reasoning_effort` changes the model's reasoning effort (escalate before \
     a hard step, deescalate for cheap follow-ups), `set_model` switches the model, \
     and `set_provider` switches the provider. All three apply on the next turn of \
-    this session — no restart. Effort options are model-specific; call \
-    `set_reasoning_effort` with no change to learn the current set, or read the \
-    error it returns. Prefer the smallest change that fits; do not thrash the model \
+    this session — no restart. Effort options are model-specific; if the level is \
+    unknown, `set_reasoning_effort` returns the accepted values, so retry with one \
+    of those. Prefer the smallest change that fits; do not thrash the model \
     or provider mid-task.\n\
     </capability>";
 

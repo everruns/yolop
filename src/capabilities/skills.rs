@@ -293,7 +293,9 @@ impl DeleteSkillTool {
     /// silently falling back to the workspace.
     fn base_for(&self, scope: &str) -> Result<PathBuf, String> {
         match scope {
-            "workspace" | "local" => Ok(self.dirs.workspace.clone()),
+            // Only the scopes advertised in the tool schema are accepted, so the
+            // documented surface and the behavior stay in lockstep.
+            "workspace" => Ok(self.dirs.workspace.clone()),
             "global" => self
                 .dirs
                 .global
@@ -380,29 +382,42 @@ impl Tool for DeleteSkillTool {
             Err(err) => return ToolExecutionResult::tool_error(err),
         };
         let target = base.join(name);
-        if !target.is_dir() {
-            return ToolExecutionResult::tool_error(format!(
-                "no `{name}` skill installed in the {scope} scope"
-            ));
-        }
-        // Guard against deleting an unrelated directory: a real skill always
-        // carries a SKILL.md. Refuse anything that does not look like a skill.
-        if !target.join("SKILL.md").is_file() {
-            return ToolExecutionResult::tool_error(format!(
-                "`{}` is not a skill (no SKILL.md); refusing to delete",
-                target.display()
-            ));
-        }
-        match std::fs::remove_dir_all(&target) {
-            Ok(()) => ToolExecutionResult::success(json!({
+        // The stat checks and the recursive delete are blocking filesystem work;
+        // run them off the async runtime so a large skill directory can't stall a
+        // tokio worker. The guard messages are built here so the closure owns
+        // everything it needs.
+        let name_owned = name.to_string();
+        let scope_owned = scope.to_string();
+        let target_for_delete = target.clone();
+        let outcome = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            if !target_for_delete.is_dir() {
+                return Err(format!(
+                    "no `{name_owned}` skill installed in the {scope_owned} scope"
+                ));
+            }
+            // Guard against deleting an unrelated directory: a real skill always
+            // carries a SKILL.md. Refuse anything that does not look like a skill.
+            if !target_for_delete.join("SKILL.md").is_file() {
+                return Err(format!(
+                    "`{}` is not a skill (no SKILL.md); refusing to delete",
+                    target_for_delete.display()
+                ));
+            }
+            std::fs::remove_dir_all(&target_for_delete)
+                .map_err(|err| format!("failed to delete `{name_owned}`: {err}"))
+        })
+        .await;
+        match outcome {
+            Ok(Ok(())) => ToolExecutionResult::success(json!({
                 "success": true,
                 "name": name,
                 "scope": scope,
                 "removed": target.display().to_string(),
                 "message": format!("uninstalled `{name}` from the {scope} scope"),
             })),
-            Err(err) => {
-                ToolExecutionResult::tool_error(format!("failed to delete `{name}`: {err}"))
+            Ok(Err(message)) => ToolExecutionResult::tool_error(message),
+            Err(join_err) => {
+                ToolExecutionResult::tool_error(format!("delete task failed: {join_err}"))
             }
         }
     }
