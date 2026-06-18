@@ -6517,6 +6517,7 @@ dependencies = [
  "everruns-openrouter",
  "everruns-runtime",
  "futures",
+ "ignore",
  "image",
  "include_dir",
  "portable-pty",
