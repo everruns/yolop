@@ -48,13 +48,16 @@ configs:
 
   # Codex reports tokens but no cost; `price` (USD per 1M tokens) lets the
   # harness estimate cost and enforce the cap. UPDATE to current pricing.
+  # sandbox: bypass — codex's Landlock sandbox can't initialize as root, and the
+  # checkout is already isolated.
   codex:
     agent: codex
-    model: gpt-5-codex
+    model: gpt-5.5
+    sandbox: bypass
     price: {input: 1.25, output: 10.0, cache_read: 0.125}
 
   # Pi reports per-message cost in its JSON events.
-  pi-sonnet:
+  pi:
     agent: pi
-    provider: anthropic
-    model: claude-sonnet-4-5
+    provider: openai
+    model: gpt-5.5

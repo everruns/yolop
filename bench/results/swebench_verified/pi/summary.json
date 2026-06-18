@@ -1,0 +1,29 @@
+{
+  "benchmark": "swebench_verified",
+  "config_name": "pi",
+  "instances": 1,
+  "resolved": 1,
+  "resolved_rate": 1.0,
+  "errored": 0,
+  "stop_reasons": {
+    "completed": 1
+  },
+  "totals": {
+    "wall_time_s": 22.1,
+    "cost_usd": 0.0992,
+    "turns": 7,
+    "tool_calls": 6,
+    "input_tokens": 11342,
+    "output_tokens": 829,
+    "cache_read_tokens": 35328,
+    "total_tokens": 12171
+  },
+  "generated_at": "2026-06-18T23:45:31.280324+00:00",
+  "averages": {
+    "wall_time_s": 22.1,
+    "cost_usd": 0.0992,
+    "turns": 7.0,
+    "tool_calls": 6.0,
+    "total_tokens": 12171.0
+  }
+}

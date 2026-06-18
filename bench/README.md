@@ -22,6 +22,23 @@ auto-approved, streams the tool's JSON event log to a file, and mines it into th
 common `RunMetrics`. The runner captures the working-tree diff regardless of
 agent, so scoring is identical.
 
+### First comparison
+
+All four agents on `astropy__astropy-12907` (SWE-bench Verified), same prompt and
+Docker scorer — all **resolved**:
+
+| agent (model) | resolved | cost | wall | turns | llm calls | tool calls |
+|---|---|---|---|---|---|---|
+| yolop (claude-sonnet-4-5) | ✓ | $0.288 | 131s | 26 | 26 | 26 |
+| claude-code (claude-sonnet-4-5) | ✓ | $0.830 | 226s | 34 | 54 | 33 |
+| codex (gpt-5.5) | ✓ | ~$0.063\* | 27s | 1 | 6 | 11 |
+| pi (gpt-5.5) | ✓ | $0.099 | 22s | 7 | 14 | 6 |
+
+\* codex reports no cost; this is the harness estimate from a placeholder
+`price` block — update it to real gpt-5.5 pricing for accuracy. yolop,
+claude-code and pi costs are tool-reported. One instance is a smoke, not a
+resolve-rate; run the full set per config for leaderboard-comparable numbers.
+
 ## What it measures
 
 For every `(instance, config)` run it records, mined from the agent's event log:

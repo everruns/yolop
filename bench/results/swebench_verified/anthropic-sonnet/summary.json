@@ -9,21 +9,21 @@
     "completed": 1
   },
   "totals": {
-    "wall_time_s": 144.2,
-    "cost_usd": 0.3342,
-    "turns": 28,
-    "tool_calls": 27,
-    "input_tokens": 79662,
-    "output_tokens": 6350,
-    "cache_read_tokens": 299936,
-    "total_tokens": 86012
+    "wall_time_s": 130.8,
+    "cost_usd": 0.2875,
+    "turns": 26,
+    "tool_calls": 26,
+    "input_tokens": 65813,
+    "output_tokens": 6007,
+    "cache_read_tokens": 285042,
+    "total_tokens": 71820
   },
-  "generated_at": "2026-06-18T21:21:03.338755+00:00",
+  "generated_at": "2026-06-18T23:33:33.691157+00:00",
   "averages": {
-    "wall_time_s": 144.2,
-    "cost_usd": 0.3342,
-    "turns": 28.0,
-    "tool_calls": 27.0,
-    "total_tokens": 86012.0
+    "wall_time_s": 130.8,
+    "cost_usd": 0.2875,
+    "turns": 26.0,
+    "tool_calls": 26.0,
+    "total_tokens": 71820.0
   }
 }

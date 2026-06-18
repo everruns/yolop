@@ -105,11 +105,13 @@ def extract_claude_code(log_path: str | Path, price: dict | None = None) -> RunM
 def _codex_usage(tokens: TokenUsage, usage: dict | None) -> None:
     if not usage:
         return
-    tokens.input_tokens += int(usage.get("input_tokens") or 0)
+    # Codex's input_tokens is the full prompt count *including* the cached
+    # portion, so subtract it to get the non-cached input (and avoid double
+    # counting cached tokens in cost), matching how claude/pi report.
+    cached = int(usage.get("cached_input_tokens") or usage.get("cache_read_tokens") or 0)
+    tokens.input_tokens += max(int(usage.get("input_tokens") or 0) - cached, 0)
     tokens.output_tokens += int(usage.get("output_tokens") or 0)
-    tokens.cache_read_tokens += int(
-        usage.get("cached_input_tokens") or usage.get("cache_read_tokens") or 0
-    )
+    tokens.cache_read_tokens += cached
 
 
 def extract_codex(log_path: str | Path, price: dict | None = None) -> RunMetrics:

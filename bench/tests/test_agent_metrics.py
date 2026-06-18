@@ -103,11 +103,12 @@ class CodexMetricsTest(unittest.TestCase):
         self.assertEqual(m.tools_used, {"command": 2, "file_change": 1})
         self.assertEqual(m.assistant_messages, 1)
         self.assertEqual(m.turns, 1)
-        self.assertEqual(m.tokens.input_tokens, 100)
+        # input_tokens (100) includes the 40 cached -> 60 non-cached reported
+        self.assertEqual(m.tokens.input_tokens, 60)
         self.assertEqual(m.tokens.cache_read_tokens, 40)
         self.assertEqual(m.tokens.output_tokens, 25)
         self.assertAlmostEqual(
-            m.cost_usd, (100 * 1.0 + 25 * 10.0 + 40 * 0.1) / 1e6, places=9)
+            m.cost_usd, (60 * 1.0 + 25 * 10.0 + 40 * 0.1) / 1e6, places=9)
 
 
 class PiMetricsTest(unittest.TestCase):
@@ -152,7 +153,7 @@ class RegistryTest(unittest.TestCase):
             names[cfg_name] = agent.name
         self.assertEqual(names["claude-code"], "claude-code")
         self.assertEqual(names["codex"], "codex")
-        self.assertEqual(names["pi-sonnet"], "pi")
+        self.assertEqual(names["pi"], "pi")
         self.assertEqual(names["anthropic-sonnet"], "yolop")
 
     def test_unknown_agent_raises(self):

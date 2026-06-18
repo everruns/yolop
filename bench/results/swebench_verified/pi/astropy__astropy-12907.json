@@ -2,46 +2,42 @@
   "schema_version": 1,
   "benchmark": "swebench_verified",
   "instance_id": "astropy__astropy-12907",
-  "config_name": "anthropic-sonnet",
-  "run_id": "yoloeval-20260618-232947-0efa55",
+  "config_name": "pi",
+  "run_id": "yoloeval-20260618-234218-af7261",
   "resolved": true,
   "error": null,
   "agent": {
-    "agent": "yolop",
-    "config_name": "anthropic-sonnet",
-    "provider": "anthropic",
-    "model": "claude-sonnet-4-5",
-    "reasoning_effort": null,
+    "agent": "pi",
+    "config_name": "pi",
+    "provider": "openai",
+    "model": "gpt-5.5",
     "max_cost_usd": 5.0,
     "extra_args": [],
-    "yolop_version": "0.3.0",
-    "yolop_commit": "e6c0c9046607",
-    "everruns_runtime_version": "0.14.0"
+    "pi_version": "0.79.7"
   },
   "metrics": {
-    "wall_time_s": 130.831,
-    "agent_reported_time_s": 98.185,
-    "turns": 26,
-    "iterations": 26,
-    "assistant_messages": 26,
-    "user_messages": 1,
-    "llm_calls": 26,
-    "tool_calls": 26,
+    "wall_time_s": 22.056,
+    "agent_reported_time_s": null,
+    "turns": 7,
+    "iterations": 7,
+    "assistant_messages": 14,
+    "user_messages": 0,
+    "llm_calls": 14,
+    "tool_calls": 6,
     "tool_calls_failed": 0,
     "tools_used": {
-      "grep_files": 2,
-      "bash": 21,
-      "read_file": 2,
-      "edit_file": 1
+      "bash": 3,
+      "read": 2,
+      "edit": 1
     },
     "tokens": {
-      "input_tokens": 65813,
-      "output_tokens": 6007,
-      "cache_read_tokens": 285042,
-      "cache_creation_tokens": 38962,
-      "total_tokens": 71820
+      "input_tokens": 11342,
+      "output_tokens": 829,
+      "cache_read_tokens": 35328,
+      "cache_creation_tokens": 0,
+      "total_tokens": 12171
     },
-    "cost_usd": 0.287544,
+    "cost_usd": 0.099244,
     "stop_reason": "completed"
   },
   "eval_report": {
@@ -86,9 +82,9 @@
     }
   },
   "patch": "diff --git a/astropy/modeling/separable.py b/astropy/modeling/separable.py\nindex a308e27..45bea36 100644\n--- a/astropy/modeling/separable.py\n+++ b/astropy/modeling/separable.py\n@@ -242,7 +242,7 @@ def _cstack(left, right):\n         cright = _coord_matrix(right, 'right', noutp)\n     else:\n         cright = np.zeros((noutp, right.shape[1]))\n-        cright[-right.shape[0]:, -right.shape[1]:] = 1\n+        cright[-right.shape[0]:, -right.shape[1]:] = right\n \n     return np.hstack([cleft, cright])\n \n",
-  "session_log_path": "/home/user/yolop/bench/.cache/sessions/yoloeval-20260618-232947-0efa55/anthropic-sonnet/astropy__astropy-12907/session_c9e679a0515148f5b6186f783877537e/events.jsonl",
+  "session_log_path": "/home/user/yolop/bench/.cache/sessions/yoloeval-20260618-234218-af7261/pi/astropy__astropy-12907/pi.jsonl",
   "timing": {
-    "started_at": "2026-06-18T23:29:47.312420+00:00",
-    "finished_at": "2026-06-18T23:33:33.690298+00:00"
+    "started_at": "2026-06-18T23:43:57.397568+00:00",
+    "finished_at": "2026-06-18T23:45:31.279703+00:00"
   }
 }

@@ -1,0 +1,29 @@
+{
+  "benchmark": "swebench_verified",
+  "config_name": "codex",
+  "instances": 1,
+  "resolved": 1,
+  "resolved_rate": 1.0,
+  "errored": 0,
+  "stop_reasons": {
+    "completed": 1
+  },
+  "totals": {
+    "wall_time_s": 27.0,
+    "cost_usd": 0.0629,
+    "turns": 1,
+    "tool_calls": 11,
+    "input_tokens": 21538,
+    "output_tokens": 1871,
+    "cache_read_tokens": 138496,
+    "total_tokens": 23409
+  },
+  "generated_at": "2026-06-18T23:43:56.579007+00:00",
+  "averages": {
+    "wall_time_s": 27.0,
+    "cost_usd": 0.0629,
+    "turns": 1.0,
+    "tool_calls": 11.0,
+    "total_tokens": 23409.0
+  }
+}

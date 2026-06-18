@@ -1,0 +1,29 @@
+{
+  "benchmark": "swebench_verified",
+  "config_name": "claude-code",
+  "instances": 1,
+  "resolved": 1,
+  "resolved_rate": 1.0,
+  "errored": 0,
+  "stop_reasons": {
+    "completed": 1
+  },
+  "totals": {
+    "wall_time_s": 226.4,
+    "cost_usd": 0.8299,
+    "turns": 34,
+    "tool_calls": 33,
+    "input_tokens": 65,
+    "output_tokens": 12487,
+    "cache_read_tokens": 1139582,
+    "total_tokens": 12552
+  },
+  "generated_at": "2026-06-18T23:38:36.665473+00:00",
+  "averages": {
+    "wall_time_s": 226.4,
+    "cost_usd": 0.8299,
+    "turns": 34.0,
+    "tool_calls": 33.0,
+    "total_tokens": 12552.0
+  }
+}
