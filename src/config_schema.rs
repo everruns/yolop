@@ -174,6 +174,18 @@ pub fn schema() -> &'static [ConfigField] {
             provider_scoped: false,
         },
         ConfigField {
+            key: "worktrees",
+            aliases: &[],
+            title: "Git worktree isolation",
+            description: "Controls session worktrees for code changes: `auto` creates one when a \
+                          prompt looks like implementation work, `always` uses a worktree in git \
+                          repos from the start, `off` disables worktrees.",
+            kind: ValueKind::Text,
+            default: Some("auto"),
+            examples: &["auto", "always", "off"],
+            provider_scoped: false,
+        },
+        ConfigField {
             key: "capabilities",
             aliases: &["capability"],
             title: "Harness capabilities",
@@ -207,6 +219,7 @@ pub enum KeyTarget {
     Attribution,
     ApprovalMode,
     ProactiveWake,
+    Worktrees,
     /// Per-provider model spec, for the named provider.
     Model(String),
     /// Per-provider API token.
@@ -228,6 +241,7 @@ impl KeyTarget {
             KeyTarget::Attribution => "attribution",
             KeyTarget::ApprovalMode => "approval_mode",
             KeyTarget::ProactiveWake => "proactive_wake",
+            KeyTarget::Worktrees => "worktrees",
             KeyTarget::Model(_) => "models",
             KeyTarget::Token(_) => "tokens",
             KeyTarget::BaseUrl(_) => "base_urls",
@@ -279,6 +293,7 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "attribution" => scalar(KeyTarget::Attribution),
         "approval_mode" | "approval" => scalar(KeyTarget::ApprovalMode),
         "proactive_wake" | "background_wake" | "wake" => scalar(KeyTarget::ProactiveWake),
+        "worktrees" | "worktree" => scalar(KeyTarget::Worktrees),
         "models" | "model_for" => scoped(KeyTarget::Model),
         "tokens" | "token" => scoped(KeyTarget::Token),
         "base_urls" | "base_url" | "url" => scoped(KeyTarget::BaseUrl),

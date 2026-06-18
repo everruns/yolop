@@ -44,13 +44,44 @@ Do not add duplicate attribution or session links."
 }
 
 pub(crate) struct CodingCliEnvironmentCapability {
-    base: EnvironmentContextBase,
+    repo_root: PathBuf,
+    active_root: Arc<RwLock<PathBuf>>,
 }
 
 impl CodingCliEnvironmentCapability {
-    pub(crate) fn new(workspace_root: PathBuf) -> Self {
+    pub(crate) fn new(repo_root: PathBuf, active_root: Arc<RwLock<PathBuf>>) -> Self {
         Self {
-            base: EnvironmentContextBase::collect(workspace_root),
+            repo_root,
+            active_root,
+        }
+    }
+
+    fn collect(&self) -> EnvironmentContext {
+        let active_path = self
+            .active_root
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|_| self.repo_root.clone());
+        EnvironmentContext {
+            cwd: active_path.display().to_string(),
+            shell: shell_name(),
+            current_date: Local::now().format("%Y-%m-%d").to_string(),
+            timezone: local_timezone(),
+            git_repo: git_output(&self.repo_root, &["config", "--get", "remote.origin.url"])
+                .map(|remote| redact_git_remote_secret(&remote))
+                .or_else(|| {
+                    git_output(&self.repo_root, &["rev-parse", "--show-toplevel"])
+                        .map(|_| self.repo_root.display().to_string())
+                }),
+            git_user: git_output(&self.repo_root, &["config", "--get", "user.name"]),
+            git_email: git_output(&self.repo_root, &["config", "--get", "user.email"]),
+            repo_root: self.repo_root.display().to_string(),
+            git_current_branch: git_current_branch(&active_path),
+            worktree_path: if active_path != self.repo_root {
+                Some(active_path.display().to_string())
+            } else {
+                None
+            },
         }
     }
 }
@@ -73,9 +104,7 @@ impl Capability for CodingCliEnvironmentCapability {
         Some("Examples")
     }
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        Some(render_environment_context(&EnvironmentContext::from_base(
-            &self.base,
-        )))
+        Some(render_environment_context(&self.collect()))
     }
     fn system_prompt_preview(&self) -> Option<String> {
         Some(
@@ -129,33 +158,6 @@ impl Capability for AttributionCapability {
 }
 
 #[derive(Debug)]
-struct EnvironmentContextBase {
-    cwd: String,
-    shell: String,
-    timezone: String,
-    git_repo: Option<String>,
-    git_user: Option<String>,
-    git_email: Option<String>,
-    workspace_root: PathBuf,
-}
-
-impl EnvironmentContextBase {
-    fn collect(workspace_root: PathBuf) -> Self {
-        Self {
-            cwd: workspace_root.display().to_string(),
-            shell: shell_name(),
-            timezone: local_timezone(),
-            git_repo: git_output(&workspace_root, &["config", "--get", "remote.origin.url"])
-                .map(|remote| redact_git_remote_secret(&remote))
-                .or_else(|| git_output(&workspace_root, &["rev-parse", "--show-toplevel"])),
-            git_user: git_output(&workspace_root, &["config", "--get", "user.name"]),
-            git_email: git_output(&workspace_root, &["config", "--get", "user.email"]),
-            workspace_root,
-        }
-    }
-}
-
-#[derive(Debug)]
 struct EnvironmentContext {
     cwd: String,
     shell: String,
@@ -164,28 +166,24 @@ struct EnvironmentContext {
     git_repo: Option<String>,
     git_user: Option<String>,
     git_email: Option<String>,
+    repo_root: String,
     git_current_branch: Option<String>,
-}
-
-impl EnvironmentContext {
-    fn from_base(base: &EnvironmentContextBase) -> Self {
-        Self {
-            cwd: base.cwd.clone(),
-            shell: base.shell.clone(),
-            current_date: Local::now().format("%Y-%m-%d").to_string(),
-            timezone: base.timezone.clone(),
-            git_repo: base.git_repo.clone(),
-            git_user: base.git_user.clone(),
-            git_email: base.git_email.clone(),
-            git_current_branch: git_current_branch(&base.workspace_root),
-        }
-    }
+    worktree_path: Option<String>,
 }
 
 fn render_environment_context(context: &EnvironmentContext) -> String {
     let mut out = String::new();
     out.push_str("<environment_context>\n");
     push_xml_field(&mut out, "cwd", &context.cwd);
+    push_xml_field(&mut out, "repo_root", &context.repo_root);
+    if let Some(path) = &context.worktree_path {
+        out.push_str("  <git_worktree>\n");
+        push_xml_field(&mut out, "path", path);
+        if let Some(branch) = &context.git_current_branch {
+            push_xml_field(&mut out, "branch", branch);
+        }
+        out.push_str("  </git_worktree>\n");
+    }
     push_xml_field(&mut out, "shell", &context.shell);
     push_xml_field(&mut out, "current_date", &context.current_date);
     push_xml_field(&mut out, "timezone", &context.timezone);
@@ -198,7 +196,9 @@ fn render_environment_context(context: &EnvironmentContext) -> String {
     if let Some(value) = &context.git_email {
         push_xml_field(&mut out, "git_email", value);
     }
-    if let Some(value) = &context.git_current_branch {
+    if context.worktree_path.is_none()
+        && let Some(value) = &context.git_current_branch
+    {
         push_xml_field(&mut out, "git_current_branch", value);
     }
     out.push_str("</environment_context>");
@@ -1211,7 +1211,9 @@ mod tests {
             git_repo: Some("https://github.com/everruns/everruns.git".to_string()),
             git_user: Some("Chal & Yi".to_string()),
             git_email: Some("chalyi@example.com".to_string()),
+            repo_root: "/repo".to_string(),
             git_current_branch: Some("feature<context>".to_string()),
+            worktree_path: None,
         });
 
         assert!(rendered.starts_with("<environment_context>\n"));

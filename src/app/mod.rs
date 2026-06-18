@@ -7,6 +7,7 @@ use crate::goal::{GOAL_EVALUATE_ARG, GoalStore, parse_evaluation_response};
 use crate::host_ui::UiCommand;
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles, StartupInfo};
 use crate::tools::{BashTool, Workspace};
+use crate::worktree::WorktreeManager;
 use anyhow::Result;
 use crossterm::event::{
     self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
@@ -165,6 +166,7 @@ pub struct App {
     /// `None` when closed. Toggled with Ctrl+B; read-only view of the registry.
     background_panel: Option<usize>,
     goal_store: Arc<GoalStore>,
+    worktree: Arc<WorktreeManager>,
     /// Images from `--image` / `-i` on the CLI, consumed on the first turn.
     pending_images: Vec<ContentPart>,
 }
@@ -457,6 +459,7 @@ impl App {
             background: runtime.background,
             background_panel: None,
             goal_store,
+            worktree: runtime.worktree,
             pending_images,
         };
         app.emit_system_banner();
@@ -533,6 +536,12 @@ impl App {
             "workspace: {}",
             self.startup.workspace_root.display()
         ));
+        if let Some(line) = self.startup.worktree_line.clone() {
+            if let Some(repo) = &self.startup.repo_root {
+                self.push_system(format!("repo: {}", repo.display()));
+            }
+            self.push_system(line);
+        }
         self.push_system(format!("model: {}", self.model.provider_label()));
         self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
         if !self.startup.capability_commands.is_empty() {
@@ -1412,6 +1421,19 @@ impl App {
     }
 
     fn start_turn(&mut self, prompt: String) {
+        match self.worktree.ensure_before_turn(&prompt) {
+            Ok(true) => {
+                self.startup.workspace_root = self.worktree.active_root();
+                if let Some(line) = self.worktree.status_line() {
+                    self.push_system(line);
+                }
+            }
+            Ok(false) => {
+                self.startup.workspace_root = self.worktree.active_root();
+            }
+            Err(err) => self.push_system(format!("worktree: {err}")),
+        }
+
         let handles = self.handles.clone();
         let model = self.model.clone();
         let images = std::mem::take(&mut self.pending_images);

@@ -12,27 +12,35 @@ use everruns_core::exec_tool_result::ExecToolResultPayload;
 use everruns_core::tool_types::ToolHints;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-/// Workspace context for the bash tool. Just the root path — path
-/// resolution for file ops now lives inside the configured session filesystem.
+/// Workspace context for the bash tool. The root may be updated when a session
+/// worktree is activated mid-session.
 #[derive(Clone)]
 pub struct Workspace {
-    root: Arc<PathBuf>,
+    root: Arc<RwLock<PathBuf>>,
 }
 
 impl Workspace {
     pub fn new(root: PathBuf) -> Self {
         Self {
-            root: Arc::new(root),
+            root: Arc::new(RwLock::new(root)),
         }
     }
-    pub fn root(&self) -> &Path {
-        &self.root
+
+    pub fn with_shared(root: Arc<RwLock<PathBuf>>) -> Self {
+        Self { root }
+    }
+
+    pub fn root(&self) -> PathBuf {
+        self.root
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|_| PathBuf::from("."))
     }
 }
 
