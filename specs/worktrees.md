@@ -25,6 +25,29 @@ main checkout stays untouched.
 - Branches are named `<slug>-<id>` (e.g. `fix-auth-a1b2c3d4`), branched from `origin/main` when available.
 - Session metadata in `workspace.json` records `repo_root`, `active_root`, and worktree fields for resume.
 
+### Ignored local files (`.worktreeinclude`)
+
+`git worktree add` only materializes tracked files, so intentionally-ignored
+setup files (`.env`, local secrets, …) are missing from a fresh worktree. A
+`.worktreeinclude` file at the repo root lists, using `.gitignore`-style
+patterns, which **git-ignored** paths to copy into newly-created worktrees.
+
+```
+# .worktreeinclude
+.env
+.env.local
+config/secrets.json
+```
+
+- Only ignored files matching a pattern are copied; tracked files and other
+  untracked-but-not-ignored files are left alone.
+- An ignored `AGENTS.override.md` is copied automatically without being listed.
+- Symlinks are skipped, and files already present in the worktree are never
+  overwritten.
+- Copying is best-effort: per-file failures are logged (`RUST_LOG`) and never
+  block worktree activation. The same copy runs when a worktree is recreated on
+  resume.
+
 ### Runtime behavior
 
 - `active_root` is the effective cwd for file tools, bash, repo scans, and environment context.

@@ -15,6 +15,14 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
+/// Patterns naming git-ignored paths to copy into freshly-created worktrees,
+/// `.gitignore`-style. Lives at the repo root.
+const WORKTREE_INCLUDE_FILE: &str = ".worktreeinclude";
+
+/// Copied into managed worktrees automatically, without needing a
+/// `.worktreeinclude` entry (mirrors Codex). Only copied when git-ignored.
+const IMPLICIT_INCLUDE: &str = "AGENTS.override.md";
+
 const IMPLEMENT_VERBS: &[&str] = &[
     "fix",
     "implement",
@@ -443,12 +451,125 @@ fn create_worktree(repo_root: &Path, path: &Path, branch: &str, base_ref: &str) 
         .status()
         .with_context(|| format!("git worktree add for {}", path.display()))?;
     if status.success() {
+        copy_worktree_includes(repo_root, path);
         return Ok(());
     }
     bail!(
         "git worktree add -B {branch} {} {base_ref} failed",
         path.display()
     );
+}
+
+/// Copy git-ignored files matching `.worktreeinclude` (plus an ignored
+/// `AGENTS.override.md`) from the source checkout into a fresh worktree.
+///
+/// `git worktree add` only materializes tracked files, so intentionally-ignored
+/// setup files (`.env`, local secrets, …) are otherwise missing. Best-effort:
+/// failures are logged, never fatal. Skips symlinks and never overwrites a file
+/// already present in the new checkout.
+fn copy_worktree_includes(repo_root: &Path, worktree_path: &Path) {
+    use ignore::gitignore::GitignoreBuilder;
+
+    let mut builder = GitignoreBuilder::new(repo_root);
+    let include_file = repo_root.join(WORKTREE_INCLUDE_FILE);
+    if include_file.is_file()
+        && let Some(err) = builder.add(&include_file)
+    {
+        tracing::warn!(error = %err, file = %include_file.display(), "ignoring malformed .worktreeinclude");
+    }
+    // Implicit, un-listed include — only copied if it is actually git-ignored.
+    let _ = builder.add_line(None, IMPLICIT_INCLUDE);
+    let matcher = match builder.build() {
+        Ok(m) => m,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to build .worktreeinclude matcher");
+            return;
+        }
+    };
+
+    // Enumerate git-ignored files in the source checkout (relative paths).
+    let output = match Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args([
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+        ])
+        .output()
+    {
+        Ok(out) if out.status.success() => out.stdout,
+        Ok(out) => {
+            tracing::warn!(
+                status = ?out.status.code(),
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "git ls-files failed; skipping .worktreeinclude copy"
+            );
+            return;
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "could not run git ls-files; skipping .worktreeinclude copy");
+            return;
+        }
+    };
+
+    // Resolve once so we can confirm copied sources stay inside the repo even if
+    // a parent component is a symlink (git won't list through symlinked dirs,
+    // but guard defensively against symlink escape).
+    let repo_canon = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+
+    let mut copied = 0usize;
+    for rel in output.split(|&b| b == 0) {
+        if rel.is_empty() {
+            continue;
+        }
+        let rel = Path::new(std::str::from_utf8(rel).unwrap_or_default());
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        if !matcher.matched_path_or_any_parents(rel, false).is_ignore() {
+            continue;
+        }
+        let src = repo_root.join(rel);
+        // Skip symlinks; copy regular files only.
+        match std::fs::symlink_metadata(&src) {
+            Ok(meta) if meta.file_type().is_symlink() => continue,
+            Ok(meta) if !meta.is_file() => continue,
+            Ok(_) => {}
+            Err(_) => continue,
+        }
+        // Reject any source that resolves outside the repo (symlinked parent
+        // escape). `std::fs::copy` follows symlinks, so this prevents reading
+        // and re-materializing files from outside the checkout.
+        match std::fs::canonicalize(&src) {
+            Ok(canon) if canon.starts_with(&repo_canon) => {}
+            _ => {
+                tracing::warn!(src = %src.display(), "skipping worktree include resolving outside repo");
+                continue;
+            }
+        }
+        let dest = worktree_path.join(rel);
+        if dest.exists() {
+            continue;
+        }
+        if let Some(parent) = dest.parent()
+            && let Err(err) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!(error = %err, dest = %dest.display(), "failed to create worktree include dir");
+            continue;
+        }
+        match std::fs::copy(&src, &dest) {
+            Ok(_) => copied += 1,
+            Err(err) => {
+                tracing::warn!(error = %err, src = %src.display(), "failed to copy worktree include");
+            }
+        }
+    }
+    if copied > 0 {
+        tracing::info!(count = copied, worktree = %worktree_path.display(), "copied ignored files into worktree");
+    }
 }
 
 fn recreate_worktree(repo_root: &Path, saved: &WorktreeMetadata) -> Result<WorktreeInfo> {
@@ -475,6 +596,7 @@ fn recreate_worktree(repo_root: &Path, saved: &WorktreeMetadata) -> Result<Workt
         if !status.success() {
             bail!("git worktree add {} {}", path.display(), saved.branch);
         }
+        copy_worktree_includes(repo_root, &path);
     } else {
         create_worktree(repo_root, &path, &saved.branch, &saved.base_ref)?;
     }
@@ -731,6 +853,8 @@ mod tests {
             .expect("git add");
         std::process::Command::new("git")
             .args([
+                "-c",
+                "commit.gpgsign=false",
                 "commit",
                 "-m",
                 "init",
@@ -768,6 +892,81 @@ mod tests {
         let main_branch =
             git_output(repo.path(), &["branch", "--show-current"]).expect("main branch");
         assert_eq!(main_branch, "main");
+    }
+
+    #[test]
+    fn copies_ignored_includes_into_worktree() {
+        let repo = tempfile::tempdir().expect("repo");
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-c")
+                .arg("commit.gpgsign=false")
+                .args(args)
+                .current_dir(repo.path())
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-b", "main"]);
+        std::fs::write(
+            repo.path().join(".gitignore"),
+            ".env\nsecrets/\nAGENTS.override.md\n",
+        )
+        .expect("gitignore");
+        std::fs::write(
+            repo.path().join(".worktreeinclude"),
+            ".env\nsecrets/secret.txt\n",
+        )
+        .expect("worktreeinclude");
+        // Ignored files that should be copied.
+        std::fs::write(repo.path().join(".env"), "TOKEN=abc").expect("env");
+        std::fs::create_dir_all(repo.path().join("secrets")).expect("secrets dir");
+        std::fs::write(repo.path().join("secrets/secret.txt"), "shh").expect("secret");
+        // Ignored AGENTS.override.md is copied implicitly without being listed.
+        std::fs::write(repo.path().join("AGENTS.override.md"), "override").expect("override");
+        // Ignored but not matched by .worktreeinclude — must NOT be copied.
+        std::fs::write(repo.path().join("secrets/other.txt"), "nope").expect("other");
+        std::fs::write(repo.path().join("README.md"), "hello").expect("readme");
+        run(&["add", "README.md", ".gitignore"]);
+        run(&[
+            "commit",
+            "-m",
+            "init",
+            "--author",
+            "test <test@example.com>",
+        ]);
+
+        // Unique, isolated worktree path so parallel tests can't collide.
+        let wt_parent = tempfile::tempdir().expect("wt parent");
+        let worktree = wt_parent.path().join("wt");
+        create_worktree(repo.path(), &worktree, "copy-test", "HEAD").expect("create worktree");
+
+        assert_eq!(
+            std::fs::read_to_string(worktree.join(".env")).unwrap(),
+            "TOKEN=abc"
+        );
+        assert_eq!(
+            std::fs::read_to_string(worktree.join("secrets/secret.txt")).unwrap(),
+            "shh"
+        );
+        assert_eq!(
+            std::fs::read_to_string(worktree.join("AGENTS.override.md")).unwrap(),
+            "override"
+        );
+        assert!(!worktree.join("secrets/other.txt").exists());
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                &worktree.display().to_string(),
+            ])
+            .status();
     }
 
     #[test]
