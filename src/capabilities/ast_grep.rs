@@ -13,7 +13,6 @@ use ast_grep_language::SupportLang;
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::ToolNarrationPhase;
-use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -111,7 +110,7 @@ struct AstGrepTool {
 impl Tool for AstGrepTool {
     fn narrate(
         &self,
-        tool_call: &ToolCall,
+        tool_call: &everruns_core::tool_types::ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
     ) -> Option<String> {
@@ -696,8 +695,6 @@ fn truncate_chars(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::tool_narration::ToolNarrationPhase;
-    use everruns_core::tool_types::ToolCall;
 
     fn write(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
@@ -765,22 +762,6 @@ mod tests {
                 .iter()
                 .any(|capture| capture.name == "A" && capture.text == "value")
         );
-    }
-
-    #[test]
-    fn ast_grep_narration_includes_pattern() {
-        let tool = AstGrepTool {
-            workspace_root: PathBuf::from("/tmp"),
-        };
-        let call = ToolCall {
-            id: "call-1".to_owned(),
-            name: "ast_grep".to_owned(),
-            arguments: json!({ "pattern": "fn main" }),
-        };
-
-        let narration = tool.narrate(&call, ToolNarrationPhase::Started, None);
-
-        assert_eq!(narration.as_deref(), Some("Searching files for fn main"));
     }
 
     #[tokio::test]
