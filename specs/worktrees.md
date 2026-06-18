@@ -32,7 +32,13 @@ main checkout stays untouched.
 - Sub-agents inherit the parent session's active worktree.
 - Resume reattaches to a saved worktree or recreates it when tmp was cleared.
 
-### Agent guidance
+### Commands
+
+- `/worktree` — show active worktree, branch, and path (or mode when inactive)
+- `/worktree off` — disable auto-activation for future turns in this session
+- `yolop worktree list` — list worktree directories on disk
+- `yolop worktree prune` — remove worktrees not referenced by any saved session (`--dry-run` to preview)
+
 
 Harness and `<environment_context>` tell the model to edit and commit only in
 the session worktree and never change git state in `repo_root`.
