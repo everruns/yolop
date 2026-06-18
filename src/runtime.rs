@@ -14,7 +14,7 @@ use crate::capabilities::{
     CodingBashCapability, CodingCliEnvironmentCapability, ConfigCapability,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, GOAL_CAPABILITY_ID, GoalCapability, HOOKS_CAPABILITY_ID,
     HooksCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability, SETUP_CAPABILITY_ID,
-    SetupCapability,
+    SetupCapability, WorktreeCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::connectors::{
@@ -1994,6 +1994,9 @@ pub async fn build_with_options(
     goal_store.load_session(session_id)?;
     capabilities.register(GoalCapability {
         store: goal_store.clone(),
+    });
+    capabilities.register(WorktreeCapability {
+        manager: worktree.clone(),
     });
     // `/setup` (below) is the capability-sourced slash command. It implements
     // `Capability::execute_command` end to end.

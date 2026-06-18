@@ -129,6 +129,29 @@ enum Commands {
     Version,
     /// Add yolop into supported editors.
     Into(IntoCommand),
+    /// Git worktree maintenance.
+    Worktree(WorktreeArgs),
+}
+
+#[derive(Args, Debug)]
+struct WorktreeArgs {
+    #[command(subcommand)]
+    command: WorktreeCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum WorktreeCommand {
+    /// List session worktree directories on disk.
+    List,
+    /// Remove worktrees not referenced by any saved session.
+    Prune {
+        /// Print what would be removed without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Session storage parent directory (default: platform data dir).
+        #[arg(long)]
+        session_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -421,12 +444,56 @@ fn resolve_workspace_root(
     std::env::current_dir().context("resolve current workspace directory")
 }
 
+fn run_worktree_command(command: WorktreeCommand) -> Result<()> {
+    match command {
+        WorktreeCommand::List => {
+            let paths = worktree::list_worktree_paths_on_disk()?;
+            if paths.is_empty() {
+                println!("no yolop worktrees found on disk");
+            } else {
+                for path in paths {
+                    println!("{}", path.display());
+                }
+            }
+            Ok(())
+        }
+        WorktreeCommand::Prune {
+            dry_run,
+            session_dir,
+        } => {
+            let sessions_dir = match session_dir {
+                Some(path) => path,
+                None => session_log::default_sessions_dir()?,
+            };
+            let report = worktree::prune_orphan_worktrees(&sessions_dir, dry_run)?;
+            let action = if dry_run { "would remove" } else { "removed" };
+            for path in &report.removed {
+                println!("{action}: {}", path.display());
+            }
+            println!(
+                "kept {} referenced worktree(s); {} orphan(s) {action}",
+                report.kept,
+                report.removed.len()
+            );
+            for err in &report.errors {
+                eprintln!("error: {err}");
+            }
+            if report.errors.is_empty() {
+                Ok(())
+            } else {
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
 fn run_command(command: Commands) -> Result<()> {
     match command {
         Commands::Version => {
             println!("{}", version::VERSION_LINE);
             Ok(())
         }
+        Commands::Worktree(args) => run_worktree_command(args.command),
         Commands::Into(into) => match into.target {
             IntoTarget::Zed(args) => {
                 let command = match args.command {

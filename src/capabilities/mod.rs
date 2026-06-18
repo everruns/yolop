@@ -16,6 +16,7 @@ pub(crate) mod model_discovery;
 pub(crate) mod model_ranking;
 pub(crate) mod repo_map;
 pub mod skills;
+pub(crate) mod worktree_cmd;
 pub(crate) mod your;
 
 pub(crate) use crate::goal::GOAL_CAPABILITY_ID;
@@ -35,3 +36,4 @@ pub(crate) use host::{
     SetupCapability,
 };
 pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
+pub(crate) use worktree_cmd::WorktreeCapability;

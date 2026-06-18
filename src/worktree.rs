@@ -109,6 +109,42 @@ impl WorktreeManager {
         self.worktree.read().ok().and_then(|g| g.clone())
     }
 
+    pub fn disable_auto(&self) {
+        self.auto_disabled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn auto_disabled(&self) -> bool {
+        self.auto_disabled.load(Ordering::SeqCst)
+    }
+
+    pub fn status_message(&self) -> String {
+        if let Some(info) = self.worktree_info() {
+            let repo = self
+                .repo_root
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            return format!(
+                "active worktree\nrepo: {repo}\nbranch: {}\npath: {}\nbase: {}",
+                info.branch,
+                info.path.display(),
+                info.base_ref,
+            );
+        }
+        if self.repo_root.is_none() {
+            return "worktrees: not in a git repository".to_string();
+        }
+        if self.auto_disabled() {
+            return "worktrees: auto activation disabled for this session (already-active \
+                    worktrees are unchanged)"
+                .to_string();
+        }
+        format!(
+            "worktrees: {} (inactive — activates on implementation prompts)",
+            self.mode.as_str()
+        )
+    }
+
     /// Returns `true` when the active root changed (worktree was created or restored).
     pub fn ensure_before_turn(&self, prompt: &str) -> Result<bool> {
         if self.worktree.read().map(|g| g.is_some()).unwrap_or(false) {
@@ -509,9 +545,150 @@ pub fn restore_worktree_from_metadata(metadata: &SessionWorkspaceMetadata) -> Op
     recreate_worktree(repo_root, worktree).ok()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PruneReport {
+    pub removed: Vec<PathBuf>,
+    pub kept: usize,
+    pub errors: Vec<String>,
+}
+
+/// Roots that may contain session worktrees (tmp + persistent fallback).
+pub fn worktree_storage_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let tmp_base = std::env::var_os("TMPDIR")
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from("/tmp")))
+        .unwrap();
+    roots.push(tmp_base.join("yolop").join("worktrees"));
+    roots.push(
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".yolop")
+            .join("worktrees"),
+    );
+    roots
+}
+
+pub fn referenced_worktree_paths(
+    sessions_dir: &Path,
+) -> Result<std::collections::HashSet<PathBuf>> {
+    use crate::session_log::{read_session_workspace_metadata, session_dir_path};
+    use everruns_core::typed_id::SessionId;
+
+    let mut referenced = std::collections::HashSet::new();
+    if !sessions_dir.is_dir() {
+        return Ok(referenced);
+    }
+    for entry in std::fs::read_dir(sessions_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Ok(session_id) = name.parse::<SessionId>() else {
+            continue;
+        };
+        let session_dir = session_dir_path(sessions_dir, session_id);
+        if let Some(metadata) = read_session_workspace_metadata(&session_dir)?
+            && let Some(worktree) = metadata.worktree
+        {
+            if let Ok(path) = std::fs::canonicalize(&worktree.path) {
+                referenced.insert(path);
+            } else {
+                referenced.insert(worktree.path);
+            }
+        }
+    }
+    Ok(referenced)
+}
+
+pub fn list_worktree_paths_on_disk() -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for root in worktree_storage_roots() {
+        if !root.is_dir() {
+            continue;
+        }
+        for repo_entry in std::fs::read_dir(&root)? {
+            let repo_entry = repo_entry?;
+            if !repo_entry.file_type()?.is_dir() {
+                continue;
+            }
+            for session_entry in std::fs::read_dir(repo_entry.path())? {
+                let session_entry = session_entry?;
+                if session_entry.file_type()?.is_dir() {
+                    paths.push(session_entry.path());
+                }
+            }
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn main_repo_for_worktree(worktree_path: &Path) -> Option<PathBuf> {
+    let git_common = git_output(worktree_path, &["rev-parse", "--git-common-dir"])?;
+    let git_path = PathBuf::from(git_common);
+    if git_path.is_absolute() {
+        git_path.parent().map(|p| p.to_path_buf())
+    } else {
+        worktree_path
+            .join(&git_path)
+            .parent()
+            .map(|p| p.to_path_buf())
+    }
+}
+
+pub fn remove_worktree_path(path: &Path) -> Result<()> {
+    if let Some(repo_root) = main_repo_for_worktree(path) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["worktree", "remove", "--force", &path.display().to_string()])
+            .status()
+            .with_context(|| format!("git worktree remove {}", path.display()))?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+    if path.exists() {
+        std::fs::remove_dir_all(path)
+            .with_context(|| format!("remove worktree directory {}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub fn prune_orphan_worktrees(sessions_dir: &Path, dry_run: bool) -> Result<PruneReport> {
+    let referenced = referenced_worktree_paths(sessions_dir)?;
+    let mut report = PruneReport {
+        removed: Vec::new(),
+        kept: 0,
+        errors: Vec::new(),
+    };
+    for path in list_worktree_paths_on_disk()? {
+        let canonical = std::fs::canonicalize(&path).unwrap_or(path.clone());
+        if referenced.contains(&canonical) || referenced.contains(&path) {
+            report.kept += 1;
+            continue;
+        }
+        if dry_run {
+            report.removed.push(path);
+            continue;
+        }
+        match remove_worktree_path(&path) {
+            Ok(()) => report.removed.push(path),
+            Err(err) => report.errors.push(format!("{}: {err}", path.display())),
+        }
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn slug_from_prompt_strips_stop_words() {
@@ -590,5 +767,53 @@ mod tests {
         let main_branch =
             git_output(repo.path(), &["branch", "--show-current"]).expect("main branch");
         assert_eq!(main_branch, "main");
+    }
+
+    #[test]
+    fn disable_auto_and_status_message() {
+        let manager = WorktreeManager::new(
+            WorktreesMode::Auto,
+            Some(PathBuf::from("/tmp/repo")),
+            PathBuf::from("/tmp/repo"),
+            SessionId::from_seed(1),
+            PathBuf::from("/tmp/session"),
+            None,
+        );
+        assert!(manager.status_message().contains("auto"));
+        manager.disable_auto();
+        assert!(manager.auto_disabled());
+        assert!(manager.status_message().contains("disabled"));
+    }
+
+    #[test]
+    fn prune_removes_unreferenced_worktree_dirs() {
+        let sessions = tempfile::tempdir().expect("sessions");
+        let storage = tempfile::tempdir().expect("storage");
+        let storage_path = storage.path().to_path_buf();
+        let previous_tmpdir = std::env::var_os("TMPDIR");
+        // SAFETY: test-only TMPDIR override; restored before this test returns.
+        unsafe {
+            std::env::set_var("TMPDIR", &storage_path);
+        }
+
+        let orphan = storage_path
+            .join("yolop")
+            .join("worktrees")
+            .join("abc12345")
+            .join("orphan-session");
+        std::fs::create_dir_all(&orphan).expect("orphan");
+
+        let report = prune_orphan_worktrees(sessions.path(), false).expect("prune");
+        assert_eq!(report.kept, 0);
+        assert_eq!(report.removed.len(), 1);
+        assert!(!orphan.exists());
+
+        // SAFETY: restore prior TMPDIR so later tests see a valid temp root.
+        unsafe {
+            match &previous_tmpdir {
+                Some(value) => std::env::set_var("TMPDIR", value),
+                None => std::env::remove_var("TMPDIR"),
+            }
+        }
     }
 }
