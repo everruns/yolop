@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "benchmark": "swebench_verified",
+  "instance_id": "astropy__astropy-12907",
+  "config_name": "anthropic-sonnet",
+  "run_id": "yoloeval-20260618-201744-ad9dd4",
+  "resolved": true,
+  "error": null,
+  "agent": {
+    "agent": "yolop",
+    "config_name": "anthropic-sonnet",
+    "binary": "/home/user/yolop/target/release/yolop",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "reasoning_effort": null,
+    "max_cost_usd": 5.0,
+    "extra_args": [],
+    "yolop_version": "yolop 0.3.0 (commit e6c0c9046607, everruns-runtime 0.14.0)"
+  },
+  "metrics": {
+    "wall_time_s": 144.196,
+    "agent_reported_time_s": 120.667,
+    "turns": 28,
+    "iterations": 28,
+    "assistant_messages": 28,
+    "user_messages": 1,
+    "llm_calls": 28,
+    "tool_calls": 27,
+    "tool_calls_failed": 0,
+    "tools_used": {
+      "bash": 24,
+      "read_file": 2,
+      "edit_file": 1
+    },
+    "tokens": {
+      "input_tokens": 79662,
+      "output_tokens": 6350,
+      "cache_read_tokens": 299936,
+      "cache_creation_tokens": 29496,
+      "total_tokens": 86012
+    },
+    "cost_usd": 0.334236,
+    "stop_reason": "completed"
+  },
+  "eval_report": {
+    "patch_is_None": false,
+    "patch_exists": true,
+    "patch_successfully_applied": true,
+    "resolved": true,
+    "tests_status": {
+      "FAIL_TO_PASS": {
+        "success": [
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+        ],
+        "failure": []
+      },
+      "PASS_TO_PASS": {
+        "success": [
+          "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+          "astropy/modeling/tests/test_separable.py::test_cdot",
+          "astropy/modeling/tests/test_separable.py::test_cstack",
+          "astropy/modeling/tests/test_separable.py::test_arith_oper",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+          "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+        ],
+        "failure": []
+      },
+      "FAIL_TO_FAIL": {
+        "success": [],
+        "failure": []
+      },
+      "PASS_TO_FAIL": {
+        "success": [],
+        "failure": []
+      }
+    }
+  },
+  "patch": "diff --git a/astropy/modeling/separable.py b/astropy/modeling/separable.py\nindex a308e27..45bea36 100644\n--- a/astropy/modeling/separable.py\n+++ b/astropy/modeling/separable.py\n@@ -242,7 +242,7 @@ def _cstack(left, right):\n         cright = _coord_matrix(right, 'right', noutp)\n     else:\n         cright = np.zeros((noutp, right.shape[1]))\n-        cright[-right.shape[0]:, -right.shape[1]:] = 1\n+        cright[-right.shape[0]:, -right.shape[1]:] = right\n \n     return np.hstack([cleft, cright])\n \n",
+  "session_log_path": "/home/user/yolop/bench/.cache/sessions/yoloeval-20260618-201744-ad9dd4/anthropic-sonnet/astropy__astropy-12907/session_3f5d83a3d5944657ba5bd418ebce7d5d/events.jsonl",
+  "timing": {
+    "started_at": "2026-06-18T20:17:44.548480+00:00",
+    "finished_at": "2026-06-18T20:21:23.820679+00:00"
+  }
+}

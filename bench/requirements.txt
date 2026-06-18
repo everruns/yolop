@@ -1,0 +1,6 @@
+# yoloeval harness dependencies. Install into a venv:
+#   python3 -m venv bench/.venv && bench/.venv/bin/pip install -r bench/requirements.txt
+swebench>=4.1.0      # canonical SWE-bench evaluation (Docker)
+pandas>=2.0          # read the dataset parquet
+pyarrow>=14.0        # parquet engine for pandas
+pyyaml>=6.0          # config matrix

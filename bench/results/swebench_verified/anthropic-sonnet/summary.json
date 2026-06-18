@@ -1,0 +1,29 @@
+{
+  "benchmark": "swebench_verified",
+  "config_name": "anthropic-sonnet",
+  "instances": 1,
+  "resolved": 1,
+  "resolved_rate": 1.0,
+  "errored": 0,
+  "stop_reasons": {
+    "completed": 1
+  },
+  "totals": {
+    "wall_time_s": 144.2,
+    "cost_usd": 0.3342,
+    "turns": 28,
+    "tool_calls": 27,
+    "input_tokens": 79662,
+    "output_tokens": 6350,
+    "cache_read_tokens": 299936,
+    "total_tokens": 86012
+  },
+  "generated_at": "2026-06-18T20:22:45.421767+00:00",
+  "averages": {
+    "wall_time_s": 144.2,
+    "cost_usd": 0.3342,
+    "turns": 28.0,
+    "tool_calls": 27.0,
+    "total_tokens": 86012.0
+  }
+}

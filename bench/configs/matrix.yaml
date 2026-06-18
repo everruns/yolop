@@ -1,0 +1,35 @@
+# Config matrix for yoloeval.
+#
+# `defaults` applies to every config; per-config keys override it. Each config
+# becomes one column of results under bench/results/<benchmark>/<config>/.
+#
+# Add a config by appending an entry under `configs:`. To benchmark a non-yolop
+# agent later, set `agent: <name>` once an adapter exists in yoloeval/agents/.
+
+defaults:
+  agent: yolop
+  # Path to the yolop binary (relative paths are resolved from this file's dir,
+  # i.e. bench/configs/; the default points at a release build at the repo root).
+  binary: ../../target/release/yolop
+  timeout: 1800            # per-instance agent wall-clock budget (seconds)
+  max_cost_usd: 5.0        # per-instance USD cap; the run is killed if exceeded
+
+configs:
+  # --- OpenAI (yolop default provider) ---
+  openai-default:
+    provider: openai
+    model: gpt-5.5
+
+  openai-high:
+    provider: openai
+    model: gpt-5.5
+    reasoning_effort: high
+
+  # --- Anthropic (secondary provider) ---
+  anthropic-sonnet:
+    provider: anthropic
+    model: claude-sonnet-4-5
+
+  # --- Offline plumbing check (no API key, won't solve tasks) ---
+  llmsim:
+    provider: llmsim
