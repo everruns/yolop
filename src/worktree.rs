@@ -513,7 +513,7 @@ fn copy_worktree_includes(repo_root: &Path, worktree_path: &Path) {
         if rel.as_os_str().is_empty() {
             continue;
         }
-        if !matcher.matched(rel, false).is_ignore() {
+        if !matcher.matched_path_or_any_parents(rel, false).is_ignore() {
             continue;
         }
         let src = repo_root.join(rel);
@@ -827,6 +827,8 @@ mod tests {
             .expect("git add");
         std::process::Command::new("git")
             .args([
+                "-c",
+                "commit.gpgsign=false",
                 "commit",
                 "-m",
                 "init",
