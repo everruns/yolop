@@ -309,8 +309,11 @@ mod tests {
         materialize_system_skills(&dest).unwrap();
 
         let mut dir_names = Vec::new();
-        for entry in std::fs::read_dir(&dest).unwrap().flatten() {
-            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        for entry in std::fs::read_dir(&dest).unwrap() {
+            // Unwrap each entry/file_type so a filesystem error fails the test
+            // loudly instead of silently skipping an embedded skill.
+            let entry = entry.unwrap();
+            if !entry.file_type().unwrap().is_dir() {
                 continue;
             }
             let dir_name = entry.file_name().into_string().unwrap();

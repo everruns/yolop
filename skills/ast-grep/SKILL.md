@@ -71,11 +71,13 @@ language=rust    pattern: $X.unwrap()
 # Python — calls to a specific function
 language=python  pattern: requests.get($$$ARGS)
 
-# Python — functions decorated with @app.route
-language=python  pattern: |
-                   @app.route($$$)
-                   def $NAME($$$PARAMS):
-                       $$$BODY
+# Python — functions decorated with @app.route.
+# The `pattern` value is one plain string with embedded newlines — the
+# tool takes a string, not YAML; pass exactly these three lines:
+#   @app.route($$$)
+#   def $NAME($$$PARAMS):
+#       $$$BODY
+language=python  multiline pattern shown above
 
 # TypeScript — console.log calls
 language=typescript  pattern: console.log($$$ARGS)
