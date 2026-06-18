@@ -297,4 +297,50 @@ mod tests {
             PathBuf::from("/ws/.agents/skills").join("bar")
         );
     }
+
+    #[test]
+    fn embedded_system_skills_parse_with_matching_names() {
+        // Materialize the binary's system skills and validate each through the
+        // upstream parser the capability uses. Every embedded skill must parse,
+        // and its frontmatter `name` must equal its directory name — that name
+        // is the activation/precedence key, so a mismatch is shipped-broken.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("system-skills");
+        materialize_system_skills(&dest).unwrap();
+
+        let mut dir_names = Vec::new();
+        for entry in std::fs::read_dir(&dest).unwrap() {
+            // Unwrap each entry/file_type so a filesystem error fails the test
+            // loudly instead of silently skipping an embedded skill.
+            let entry = entry.unwrap();
+            if !entry.file_type().unwrap().is_dir() {
+                continue;
+            }
+            let dir_name = entry.file_name().into_string().unwrap();
+            let md = std::fs::read_to_string(entry.path().join("SKILL.md"))
+                .unwrap_or_else(|_| panic!("{dir_name} has no SKILL.md"));
+            let parsed = everruns_core::skill::parse_skill_md(&md)
+                .unwrap_or_else(|e| panic!("{dir_name}/SKILL.md failed to parse: {e:?}"));
+            assert_eq!(
+                parsed.name, dir_name,
+                "system skill `name` must match its directory"
+            );
+            dir_names.push(dir_name);
+        }
+        assert!(!dir_names.is_empty(), "expected embedded system skills");
+
+        // The ast-grep skill is shipped, parses, and is user-invocable.
+        assert!(
+            dir_names.iter().any(|n| n == "ast-grep"),
+            "ast-grep system skill is shipped: {dir_names:?}"
+        );
+        let md = std::fs::read_to_string(dest.join("ast-grep").join("SKILL.md")).unwrap();
+        let parsed = everruns_core::skill::parse_skill_md(&md).unwrap();
+        assert!(parsed.user_invocable);
+        assert!(
+            parsed.description.to_lowercase().contains("ast-grep"),
+            "description should mention ast-grep: {:?}",
+            parsed.description
+        );
+    }
 }
