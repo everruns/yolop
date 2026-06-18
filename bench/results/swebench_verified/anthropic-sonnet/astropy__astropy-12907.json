@@ -9,13 +9,14 @@
   "agent": {
     "agent": "yolop",
     "config_name": "anthropic-sonnet",
-    "binary": "/home/user/yolop/target/release/yolop",
     "provider": "anthropic",
     "model": "claude-sonnet-4-5",
     "reasoning_effort": null,
     "max_cost_usd": 5.0,
     "extra_args": [],
-    "yolop_version": "yolop 0.3.0 (commit e6c0c9046607, everruns-runtime 0.14.0)"
+    "yolop_version": "0.3.0",
+    "yolop_commit": "e6c0c9046607",
+    "everruns_runtime_version": "0.14.0"
   },
   "metrics": {
     "wall_time_s": 144.196,

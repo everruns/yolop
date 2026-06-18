@@ -9,6 +9,7 @@ config matrix entry.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 import uuid
@@ -63,13 +64,12 @@ class YolopAgent(Agent):
         self.config: dict[str, Any] = {
             "agent": self.name,
             "config_name": config_name,
-            "binary": binary,
             "provider": provider,
             "model": model,
             "reasoning_effort": reasoning_effort,
             "max_cost_usd": max_cost_usd,
             "extra_args": self.extra_args,
-            "yolop_version": _yolop_version(binary),
+            **_yolop_version(binary),
         }
 
     def run(self, instance: Instance, workdir: str, session_dir: str) -> AgentRun:
@@ -167,11 +167,25 @@ def _kill(proc: subprocess.Popen) -> None:
         proc.wait(timeout=10)
 
 
-def _yolop_version(binary: str) -> str | None:
+def _yolop_version(binary: str) -> dict[str, str | None]:
+    """Parse `yolop version` into structured metadata.
+
+    The binary path itself is deliberately not recorded — it is machine-specific
+    and not reproducibility-relevant. The version line looks like:
+    ``yolop 0.3.0 (commit e6c0c9046607, everruns-runtime 0.14.0)``.
+    """
+    out = {"yolop_version": None, "yolop_commit": None, "everruns_runtime_version": None}
     try:
-        out = subprocess.run(
+        proc = subprocess.run(
             [binary, "version"], capture_output=True, text=True, timeout=30
         )
-        return (out.stdout or out.stderr).strip().splitlines()[0] if out.stdout or out.stderr else None
+        line = (proc.stdout or proc.stderr).strip().splitlines()[0]
     except Exception:
-        return None
+        return out
+    if m := re.search(r"yolop\s+(\S+)", line):
+        out["yolop_version"] = m.group(1)
+    if m := re.search(r"commit\s+([0-9a-f]+)", line):
+        out["yolop_commit"] = m.group(1)
+    if m := re.search(r"everruns-runtime\s+(\S+?)\)?$", line):
+        out["everruns_runtime_version"] = m.group(1)
+    return out

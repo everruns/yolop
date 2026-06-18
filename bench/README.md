@@ -15,7 +15,7 @@ For every `(instance, config)` run it records, from yolop's `events.jsonl`:
 - **tokens** — input, output, `cache_read_tokens`, `cache_creation_tokens`, total
 - **cost** — `cost_usd` (provider `actual_cost_usd` when present, else yolop's `estimated_cost_usd`)
 - **stop_reason** — `completed` / `timeout` / `budget` / `error`
-- **config metadata** — agent, provider, model, reasoning effort, cost cap, yolop version
+- **config metadata** — agent, provider, model, reasoning effort, cost cap, yolop version + commit, everruns-runtime version
 
 ## Cost cap
 
