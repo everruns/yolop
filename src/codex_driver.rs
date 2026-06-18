@@ -8,6 +8,7 @@ use everruns_core::driver_registry::{
 use everruns_core::driver_registry::{DiscoveredModel, DriverRegistry};
 use everruns_core::error::{AgentLoopError, Result as EverrunsResult};
 use everruns_core::tool_types::{ToolCall, ToolDefinition};
+use everruns_core::{DriverId, ModelProfile, get_model_profile};
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Serialize;
@@ -36,6 +37,10 @@ pub fn register_driver(registry: &mut DriverRegistry) {
     registry.register_external(CODEX_DRIVER_ID, |config| {
         Box::new(CodexChatDriver::from_config(config))
     });
+}
+
+pub(crate) fn model_profile(model_id: &str) -> Option<ModelProfile> {
+    get_model_profile(&DriverId::OpenAI, model_id)
 }
 
 impl CodexChatDriver {

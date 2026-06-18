@@ -27,7 +27,6 @@ use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use everruns_core::DriverId;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
     BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, FileSystemCapability,
@@ -51,6 +50,7 @@ use everruns_core::{
     ReasoningConfig, ResolvedModel, ScopedMcpServers, SessionFileSystem, SessionFileSystemFactory,
     SessionFileSystemFactoryContext,
 };
+use everruns_core::{DriverId, ModelProfile, ReasoningEffortConfig, ReasoningEffortValue};
 use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_runtime::{
@@ -480,9 +480,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
 // ---------- provider selection ----------
 
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.5";
-const DEFAULT_OPENAI_REASONING_EFFORT: &str = "medium";
 const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
-const REASONING_EFFORT_SUGGESTIONS: &[&str] = &["minimal", "low", "medium", "high"];
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
 // Gemini exposes an OpenAI-compatible surface at this base URL, driven through
@@ -512,6 +510,7 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
 pub enum ProviderChoice {
     Anthropic {
         model: String,
+        reasoning_effort: Option<String>,
     },
     OpenAi {
         model: String,
@@ -524,6 +523,7 @@ pub enum ProviderChoice {
     Google {
         model: String,
         base_url: String,
+        reasoning_effort: Option<String>,
     },
     OpenRouter {
         model: String,
@@ -533,6 +533,7 @@ pub enum ProviderChoice {
     Ollama {
         model: String,
         base_url: String,
+        reasoning_effort: Option<String>,
     },
     /// Generic OpenAI-compatible endpoint (vLLM, llama.cpp, LM Studio,
     /// hosted gateways, …). Unlike the other variants the base URL is not
@@ -545,6 +546,12 @@ pub enum ProviderChoice {
         reasoning_effort: Option<String>,
     },
     Sim,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReasoningEffortOption {
+    pub value: String,
+    pub label: String,
 }
 
 /// Provider names recognized by `/setup` and persisted settings. The order
@@ -573,32 +580,49 @@ impl ProviderChoice {
             return Self::default_codex();
         }
         if env_non_empty("ANTHROPIC_API_KEY").is_some() || settings.has_token("anthropic") {
+            let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL);
             return Self::Anthropic {
-                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL),
+                reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                    "EVERRUNS_CLI_REASONING_EFFORT",
+                ))
+                .or_else(|| profile_default_reasoning_effort(&DriverId::Anthropic, &model)),
+                model,
             };
         }
         if env_non_empty("OPENROUTER_API_KEY").is_some() || settings.has_token("openrouter") {
+            let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL);
             return Self::OpenRouter {
-                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL),
                 base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
                 reasoning_effort: normalize_reasoning_effort(env_non_empty(
                     "EVERRUNS_CLI_REASONING_EFFORT",
-                )),
+                ))
+                .or_else(|| profile_default_reasoning_effort(&DriverId::OpenRouter, &model)),
+                model,
             };
         }
         if google_api_key().is_some() || settings.has_token("google") {
+            let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL);
             return Self::Google {
-                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL),
                 base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
+                reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                    "EVERRUNS_CLI_REASONING_EFFORT",
+                ))
+                .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAI, &model)),
+                model,
             };
         }
         if env_non_empty("OLLAMA_BASE_URL").is_some()
             || env_non_empty("OLLAMA_API_KEY").is_some()
             || settings.has_token("ollama")
         {
+            let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL);
             return Self::Ollama {
-                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL),
                 base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
+                reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                    "EVERRUNS_CLI_REASONING_EFFORT",
+                ))
+                .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAI, &model)),
+                model,
             };
         }
         // The custom endpoint has no default model, so it is auto-selected
@@ -610,72 +634,51 @@ impl ProviderChoice {
             && (env_non_empty("EVERRUNS_CLI_MODEL").is_some()
                 || settings.model_for("custom").is_some())
         {
+            let model = env_or_default("EVERRUNS_CLI_MODEL", "");
             return Self::Custom {
-                model: env_or_default("EVERRUNS_CLI_MODEL", ""),
                 reasoning_effort: normalize_reasoning_effort(env_non_empty(
                     "EVERRUNS_CLI_REASONING_EFFORT",
-                )),
+                ))
+                .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAICompletions, &model)),
+                model,
             };
         }
         Self::default_openai()
     }
 
     fn default_openai() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENAI_MODEL);
         Self::OpenAi {
-            model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENAI_MODEL),
-            reasoning_effort: Some(env_or_default(
+            reasoning_effort: normalize_reasoning_effort(env_non_empty(
                 "EVERRUNS_CLI_REASONING_EFFORT",
-                DEFAULT_OPENAI_REASONING_EFFORT,
-            )),
+            ))
+            .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAI, &model)),
+            model,
         }
     }
 
     fn default_codex() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_CODEX_MODEL);
         Self::Codex {
-            model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_CODEX_MODEL),
-            reasoning_effort: Some(env_or_default(
+            reasoning_effort: normalize_reasoning_effort(env_non_empty(
                 "EVERRUNS_CLI_REASONING_EFFORT",
-                DEFAULT_OPENAI_REASONING_EFFORT,
-            )),
+            ))
+            .or_else(|| {
+                crate::codex_driver::model_profile(&model)
+                    .and_then(|profile| profile.reasoning_effort)
+                    .and_then(|config| reasoning_effort_value(&config.default))
+            }),
+            model,
         }
     }
 
     pub fn label(&self) -> String {
-        match self {
-            Self::Anthropic { model } => format!("anthropic/{model}"),
-            Self::OpenAi {
-                model,
-                reasoning_effort,
-            } => match reasoning_effort {
-                Some(effort) => format!("openai/{model} {effort}"),
-                None => format!("openai/{model}"),
-            },
-            Self::Codex {
-                model,
-                reasoning_effort,
-            } => match reasoning_effort {
-                Some(effort) => format!("codex/{model} {effort}"),
-                None => format!("codex/{model}"),
-            },
-            Self::Google { model, .. } => format!("google/{model}"),
-            Self::OpenRouter {
-                model,
-                reasoning_effort,
-                ..
-            } => match reasoning_effort {
-                Some(effort) => format!("openrouter/{model} {effort}"),
-                None => format!("openrouter/{model}"),
-            },
-            Self::Ollama { model, .. } => format!("ollama/{model}"),
-            Self::Custom {
-                model,
-                reasoning_effort,
-            } => match reasoning_effort {
-                Some(effort) => format!("custom/{model} {effort}"),
-                None => format!("custom/{model}"),
-            },
-            Self::Sim => "llmsim/llmsim-yolop".to_string(),
+        let mut label = format!("{}/{}", self.provider_name(), self.model_id());
+        if let Some(effort) = self.reasoning_effort() {
+            label.push(' ');
+            label.push_str(effort);
         }
+        label
     }
 
     /// Short name used in settings and command suggestions.
@@ -699,33 +702,64 @@ impl ProviderChoice {
         match name.trim().to_ascii_lowercase().as_str() {
             "openai" => Ok(Self::default_openai()),
             "codex" => Ok(Self::default_codex()),
-            "anthropic" => Ok(Self::Anthropic {
-                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL),
-            }),
-            "google" => Ok(Self::Google {
-                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL),
-                base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
-            }),
-            "openrouter" => Ok(Self::OpenRouter {
-                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL),
-                base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
-                reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                    "EVERRUNS_CLI_REASONING_EFFORT",
-                )),
-            }),
-            "ollama" => Ok(Self::Ollama {
-                model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL),
-                base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
-            }),
+            "anthropic" => {
+                let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL);
+                Ok(Self::Anthropic {
+                    reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                        "EVERRUNS_CLI_REASONING_EFFORT",
+                    ))
+                    .or_else(|| profile_default_reasoning_effort(&DriverId::Anthropic, &model)),
+                    model,
+                })
+            }
+            "google" => {
+                let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL);
+                Ok(Self::Google {
+                    base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
+                    reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                        "EVERRUNS_CLI_REASONING_EFFORT",
+                    ))
+                    .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAI, &model)),
+                    model,
+                })
+            }
+            "openrouter" => {
+                let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL);
+                Ok(Self::OpenRouter {
+                    base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
+                    reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                        "EVERRUNS_CLI_REASONING_EFFORT",
+                    ))
+                    .or_else(|| profile_default_reasoning_effort(&DriverId::OpenRouter, &model)),
+                    model,
+                })
+            }
+            "ollama" => {
+                let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL);
+                Ok(Self::Ollama {
+                    base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
+                    reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                        "EVERRUNS_CLI_REASONING_EFFORT",
+                    ))
+                    .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAI, &model)),
+                    model,
+                })
+            }
             // No sensible default model exists for an arbitrary endpoint; an
             // empty model is rejected later by `model_with_provider` so the
             // setup wizard (or a saved model from settings) must fill it in.
-            "custom" => Ok(Self::Custom {
-                model: env_or_default("EVERRUNS_CLI_MODEL", ""),
-                reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                    "EVERRUNS_CLI_REASONING_EFFORT",
-                )),
-            }),
+            "custom" => {
+                let model = env_or_default("EVERRUNS_CLI_MODEL", "");
+                Ok(Self::Custom {
+                    reasoning_effort: normalize_reasoning_effort(env_non_empty(
+                        "EVERRUNS_CLI_REASONING_EFFORT",
+                    ))
+                    .or_else(|| {
+                        profile_default_reasoning_effort(&DriverId::OpenAICompletions, &model)
+                    }),
+                    model,
+                })
+            }
             "llmsim" => Ok(Self::Sim),
             other => Err(anyhow!(
                 "unknown provider {other}; expected one of {}",
@@ -910,7 +944,7 @@ pub fn resolve_for_settings(provider: &str, settings: &Settings) -> Result<Resol
 impl ProviderChoice {
     pub fn model_id(&self) -> &str {
         match self {
-            Self::Anthropic { model }
+            Self::Anthropic { model, .. }
             | Self::OpenAi { model, .. }
             | Self::Codex { model, .. }
             | Self::Google { model, .. }
@@ -922,16 +956,57 @@ impl ProviderChoice {
     }
 
     pub fn reasoning_effort(&self) -> Option<&str> {
+        self.reasoning_effort_value().and_then(Option::as_deref)
+    }
+
+    pub(crate) fn reasoning_effort_options(&self) -> Vec<ReasoningEffortOption> {
+        self.reasoning_effort_config()
+            .map(|config| config.values.iter().map(reasoning_effort_option).collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn default_reasoning_effort(&self) -> Option<String> {
+        self.reasoning_effort_config()
+            .and_then(|config| reasoning_effort_value(&config.default))
+    }
+
+    fn reasoning_effort_config(&self) -> Option<ReasoningEffortConfig> {
+        self.model_profile()?.reasoning_effort
+    }
+
+    fn model_profile(&self) -> Option<ModelProfile> {
+        match self {
+            Self::Codex { model, .. } => crate::codex_driver::model_profile(model),
+            _ => {
+                let resolved = self.model_without_stored_key();
+                get_model_profile(&resolved.provider_type, &resolved.model)
+            }
+        }
+    }
+
+    fn reasoning_effort_value(&self) -> Option<&Option<String>> {
         match self {
             Self::OpenAi {
+                reasoning_effort, ..
+            }
+            | Self::Anthropic {
+                reasoning_effort, ..
+            }
+            | Self::Codex {
+                reasoning_effort, ..
+            }
+            | Self::Google {
                 reasoning_effort, ..
             }
             | Self::OpenRouter {
                 reasoning_effort, ..
             }
+            | Self::Ollama {
+                reasoning_effort, ..
+            }
             | Self::Custom {
                 reasoning_effort, ..
-            } => reasoning_effort.as_deref(),
+            } => Some(reasoning_effort),
             _ => None,
         }
     }
@@ -1010,52 +1085,64 @@ impl ProviderChoice {
         }
         match self {
             Self::Anthropic { .. } => {
-                if reasoning_effort.is_some() {
-                    return Err(anyhow!(
-                        "anthropic model switching does not accept reasoning effort"
-                    ));
-                }
-                Ok(Self::Anthropic { model })
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
+                Ok(Self::Anthropic {
+                    model,
+                    reasoning_effort,
+                })
             }
-            Self::OpenAi { .. } => Ok(Self::OpenAi {
-                model,
-                reasoning_effort: normalize_openai_reasoning_effort(reasoning_effort),
-            }),
-            Self::Codex { .. } => Ok(Self::Codex {
-                model,
-                reasoning_effort: normalize_openai_reasoning_effort(reasoning_effort),
-            }),
+            Self::OpenAi { .. } => {
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
+                Ok(Self::OpenAi {
+                    model,
+                    reasoning_effort,
+                })
+            }
+            Self::Codex { .. } => {
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
+                Ok(Self::Codex {
+                    model,
+                    reasoning_effort,
+                })
+            }
             Self::Google { base_url, .. } => {
-                if reasoning_effort.is_some() {
-                    return Err(anyhow!(
-                        "google model switching does not accept reasoning effort"
-                    ));
-                }
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
                 Ok(Self::Google {
                     model,
                     base_url: base_url.clone(),
+                    reasoning_effort,
                 })
             }
-            Self::OpenRouter { base_url, .. } => Ok(Self::OpenRouter {
-                model,
-                base_url: base_url.clone(),
-                reasoning_effort: normalize_reasoning_effort(reasoning_effort),
-            }),
+            Self::OpenRouter { base_url, .. } => {
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
+                Ok(Self::OpenRouter {
+                    model,
+                    base_url: base_url.clone(),
+                    reasoning_effort,
+                })
+            }
             Self::Ollama { base_url, .. } => {
-                if reasoning_effort.is_some() {
-                    return Err(anyhow!(
-                        "ollama model switching does not accept reasoning effort"
-                    ));
-                }
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
                 Ok(Self::Ollama {
                     model,
                     base_url: base_url.clone(),
+                    reasoning_effort,
                 })
             }
-            Self::Custom { .. } => Ok(Self::Custom {
-                model,
-                reasoning_effort: normalize_reasoning_effort(reasoning_effort),
-            }),
+            Self::Custom { .. } => {
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
+                Ok(Self::Custom {
+                    model,
+                    reasoning_effort,
+                })
+            }
             Self::Sim => {
                 if reasoning_effort.is_some() {
                     return Err(anyhow!("offline llmsim does not support reasoning effort"));
@@ -1069,49 +1156,80 @@ impl ProviderChoice {
         }
     }
 
+    fn resolve_model_reasoning_effort(
+        &self,
+        model: &str,
+        reasoning_effort: Option<String>,
+    ) -> Result<Option<String>> {
+        let requested = normalize_reasoning_effort(reasoning_effort);
+        let Some(config) = self.reasoning_effort_config_for_model(model) else {
+            return Ok(requested);
+        };
+        let allowed = config
+            .values
+            .iter()
+            .filter_map(|option| reasoning_effort_value(&option.value))
+            .collect::<Vec<_>>();
+        if let Some(effort) = requested {
+            if allowed.iter().any(|allowed| allowed == &effort) {
+                return Ok(Some(effort));
+            }
+            return Err(anyhow!(
+                "model {} supports reasoning efforts: {}",
+                self.model_label_for(model),
+                allowed.join(", ")
+            ));
+        }
+        reasoning_effort_value(&config.default)
+            .ok_or_else(|| {
+                anyhow!(
+                    "model {} has an invalid profile default",
+                    self.model_label_for(model)
+                )
+            })
+            .map(Some)
+    }
+
+    fn reasoning_effort_config_for_model(&self, model: &str) -> Option<ReasoningEffortConfig> {
+        match self {
+            Self::Codex { .. } => crate::codex_driver::model_profile(model),
+            _ => {
+                let resolved = self.model_without_stored_key_for_model(model);
+                get_model_profile(&resolved.provider_type, &resolved.model)
+            }
+        }
+        .and_then(|profile| profile.reasoning_effort)
+    }
+
+    fn model_label_for(&self, model: &str) -> String {
+        format!("{}/{}", self.provider_name(), model)
+    }
+
     pub(crate) fn resolve_reasoning_effort(&self, raw: &str) -> Result<Self> {
         let mut parts = raw.split_whitespace();
         let effort = parts.next().unwrap_or_default();
         if effort.is_empty() || parts.next().is_some() {
+            let suggestions = self
+                .reasoning_effort_options()
+                .iter()
+                .map(|option| option.value.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             return Err(anyhow!(
                 "expected one reasoning effort (suggestions: {})",
-                REASONING_EFFORT_SUGGESTIONS.join(", ")
+                if suggestions.is_empty() {
+                    "none".to_string()
+                } else {
+                    suggestions
+                }
             ));
         }
-        match self {
-            Self::OpenAi { model, .. } => Ok(Self::OpenAi {
-                model: model.clone(),
-                reasoning_effort: normalize_openai_reasoning_effort(Some(effort.to_string())),
-            }),
-            Self::Codex { model, .. } => Ok(Self::Codex {
-                model: model.clone(),
-                reasoning_effort: normalize_openai_reasoning_effort(Some(effort.to_string())),
-            }),
-            Self::OpenRouter {
-                model, base_url, ..
-            } => Ok(Self::OpenRouter {
-                model: model.clone(),
-                base_url: base_url.clone(),
-                reasoning_effort: normalize_reasoning_effort(Some(effort.to_string())),
-            }),
-            Self::Custom { model, .. } => Ok(Self::Custom {
-                model: model.clone(),
-                reasoning_effort: normalize_reasoning_effort(Some(effort.to_string())),
-            }),
-            other => Err(anyhow!(
-                "reasoning effort only applies to OpenAI, Codex, OpenRouter, and custom models (current provider: {})",
-                other.provider_name()
-            )),
-        }
-    }
-
-    pub(crate) fn reasoning_effort_suggestions() -> &'static [&'static str] {
-        REASONING_EFFORT_SUGGESTIONS
+        self.with_current_provider_model(self.model_id().to_string(), Some(effort.to_string()))
     }
 
     pub(crate) fn model_with_provider(&self, settings: &Settings) -> Result<ResolvedModel> {
         match self {
-            ProviderChoice::Anthropic { model } => {
+            ProviderChoice::Anthropic { model, .. } => {
                 let key = resolve_token(settings, "anthropic", &["ANTHROPIC_API_KEY"])
                     .ok_or_else(|| anyhow!("ANTHROPIC_API_KEY not set (and no token stored)"))?;
                 Ok(ResolvedModel {
@@ -1159,7 +1277,9 @@ impl ProviderChoice {
                     base_url: None,
                 })
             }
-            ProviderChoice::Google { model, base_url } => {
+            ProviderChoice::Google {
+                model, base_url, ..
+            } => {
                 let key = resolve_token(settings, "google", &["GEMINI_API_KEY", "GOOGLE_API_KEY"])
                     .ok_or_else(|| {
                         anyhow!("GEMINI_API_KEY (or GOOGLE_API_KEY) not set (and no token stored)")
@@ -1194,7 +1314,9 @@ impl ProviderChoice {
                     base_url: Some(base_url.clone()),
                 })
             }
-            ProviderChoice::Ollama { model, base_url } => {
+            ProviderChoice::Ollama {
+                model, base_url, ..
+            } => {
                 let key = resolve_token(settings, "ollama", &["OLLAMA_API_KEY"])
                     .unwrap_or_else(|| DEFAULT_OLLAMA_API_KEY.to_string());
                 Ok(ResolvedModel {
@@ -1237,7 +1359,7 @@ impl ProviderChoice {
 
     fn model_without_stored_key(&self) -> ResolvedModel {
         match self {
-            ProviderChoice::Anthropic { model } => ResolvedModel {
+            ProviderChoice::Anthropic { model, .. } => ResolvedModel {
                 model: model.clone(),
                 provider_type: DriverId::Anthropic,
                 provider_metadata: None,
@@ -1258,7 +1380,9 @@ impl ProviderChoice {
                 api_key: None,
                 base_url: None,
             },
-            ProviderChoice::Google { model, base_url } => ResolvedModel {
+            ProviderChoice::Google {
+                model, base_url, ..
+            } => ResolvedModel {
                 model: model.clone(),
                 provider_type: DriverId::OpenAI,
                 provider_metadata: None,
@@ -1276,7 +1400,9 @@ impl ProviderChoice {
                 api_key: None,
                 base_url: Some(base_url.clone()),
             },
-            ProviderChoice::Ollama { model, base_url } => ResolvedModel {
+            ProviderChoice::Ollama {
+                model, base_url, ..
+            } => ResolvedModel {
                 model: model.clone(),
                 provider_type: DriverId::OpenAI,
                 provider_metadata: None,
@@ -1300,6 +1426,12 @@ impl ProviderChoice {
         }
     }
 
+    fn model_without_stored_key_for_model(&self, model: &str) -> ResolvedModel {
+        let mut resolved = self.model_without_stored_key();
+        resolved.model = model.to_string();
+        resolved
+    }
+
     fn input_message(&self, text: impl Into<String>) -> InputMessage {
         self.input_message_with_parts(vec![ContentPart::text(text)])
     }
@@ -1316,21 +1448,7 @@ impl ProviderChoice {
             metadata: None,
             tags: vec![],
         };
-        if let Some(effort) = match self {
-            Self::OpenAi {
-                reasoning_effort, ..
-            }
-            | Self::Codex {
-                reasoning_effort, ..
-            }
-            | Self::OpenRouter {
-                reasoning_effort, ..
-            }
-            | Self::Custom {
-                reasoning_effort, ..
-            } => reasoning_effort.as_deref(),
-            _ => None,
-        } {
+        if let Some(effort) = self.reasoning_effort() {
             input.controls = Some(Controls {
                 reasoning: Some(ReasoningConfig {
                     effort: Some(effort.to_string()),
@@ -1387,18 +1505,29 @@ fn env_or_default(name: &str, default: &str) -> String {
     env_non_empty(name).unwrap_or_else(|| default.to_string())
 }
 
-fn normalize_openai_reasoning_effort(reasoning_effort: Option<String>) -> Option<String> {
-    normalize_reasoning_effort(Some(
-        reasoning_effort
-            .filter(|effort| !effort.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_OPENAI_REASONING_EFFORT.to_string()),
-    ))
-}
-
 pub(crate) fn normalize_reasoning_effort(reasoning_effort: Option<String>) -> Option<String> {
     reasoning_effort
         .map(|effort| effort.trim().to_ascii_lowercase())
         .filter(|effort| !effort.is_empty())
+}
+
+fn profile_default_reasoning_effort(provider_type: &DriverId, model: &str) -> Option<String> {
+    get_model_profile(provider_type, model)
+        .and_then(|profile| profile.reasoning_effort)
+        .and_then(|config| reasoning_effort_value(&config.default))
+}
+
+fn reasoning_effort_option(value: &ReasoningEffortValue) -> ReasoningEffortOption {
+    ReasoningEffortOption {
+        value: reasoning_effort_value(&value.value).unwrap_or_default(),
+        label: value.name.clone(),
+    }
+}
+
+fn reasoning_effort_value(value: &everruns_core::ReasoningEffort) -> Option<String> {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
 }
 
 fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabilityConfig> {
@@ -1640,6 +1769,20 @@ impl ModelState {
             .expect("provider lock poisoned")
             .reasoning_effort()
             .map(str::to_string)
+    }
+
+    pub(crate) fn reasoning_effort_options(&self) -> Vec<ReasoningEffortOption> {
+        self.provider
+            .read()
+            .expect("provider lock poisoned")
+            .reasoning_effort_options()
+    }
+
+    pub(crate) fn default_reasoning_effort(&self) -> Option<String> {
+        self.provider
+            .read()
+            .expect("provider lock poisoned")
+            .default_reasoning_effort()
     }
 
     /// Snapshot of the current provider choice (including any custom base
@@ -3023,7 +3166,7 @@ mod tests {
             .resolve_model_spec("anthropic/claude-sonnet-4-5")
             .unwrap();
 
-        assert_eq!(next.label(), "openai/anthropic/claude-sonnet-4-5 medium");
+        assert_eq!(next.label(), "openai/anthropic/claude-sonnet-4-5");
     }
 
     #[test]
@@ -3036,9 +3179,10 @@ mod tests {
 
         let provider = ProviderChoice::Anthropic {
             model: "claude-sonnet-4-5".to_string(),
+            reasoning_effort: None,
         };
         let next = provider.resolve_model_spec("claude-fable-5").unwrap();
-        assert_eq!(next.label(), "anthropic/claude-fable-5");
+        assert_eq!(next.label(), "anthropic/claude-fable-5 high");
     }
 
     #[test]
@@ -3052,9 +3196,10 @@ mod tests {
 
         let provider = ProviderChoice::Anthropic {
             model: "claude-sonnet-4-5".to_string(),
+            reasoning_effort: None,
         };
         let next = provider.resolve_model_spec("claude-fable-5[1m]").unwrap();
-        assert_eq!(next.label(), "anthropic/claude-fable-5[1m]");
+        assert_eq!(next.label(), "anthropic/claude-fable-5[1m] high");
     }
 
     #[test]
@@ -3065,7 +3210,7 @@ mod tests {
         };
         let next = provider.resolve_model_spec("gpt-5.4").unwrap();
 
-        assert_eq!(next.label(), "openai/gpt-5.4 medium");
+        assert_eq!(next.label(), "openai/gpt-5.4 none");
     }
 
     #[test]
@@ -3115,6 +3260,7 @@ mod tests {
         let provider = ProviderChoice::Ollama {
             model: "llama3.2".to_string(),
             base_url: DEFAULT_OLLAMA_BASE_URL.to_string(),
+            reasoning_effort: None,
         };
         let next = provider.resolve_model_spec("llama3.3").unwrap();
 
@@ -3126,6 +3272,7 @@ mod tests {
         let provider = ProviderChoice::Google {
             model: "gemini-2.5-flash".to_string(),
             base_url: DEFAULT_GOOGLE_BASE_URL.to_string(),
+            reasoning_effort: None,
         };
         let next = provider.resolve_model_spec("gemini-2.5-pro").unwrap();
 
@@ -3142,7 +3289,7 @@ mod tests {
         assert!(codex.label().starts_with("codex/gpt-5.5"));
 
         let anthropic = ProviderChoice::default_for_provider_name("anthropic").unwrap();
-        assert_eq!(anthropic.label(), "anthropic/claude-sonnet-4-5");
+        assert_eq!(anthropic.label(), "anthropic/claude-sonnet-4-5 medium");
 
         let google = ProviderChoice::default_for_provider_name("google").unwrap();
         assert_eq!(google.label(), "google/gemini-2.5-flash");
@@ -3286,8 +3433,8 @@ mod tests {
         settings
             .models
             .insert("openai".to_string(), "gpt-5.4 high".to_string());
-        // A spec the provider rejects (anthropic takes no effort) is
-        // ignored, not fatal.
+        // Anthropic profiles own their effort support too, so a persisted
+        // model+effort spec is restored when the model profile allows it.
         settings
             .models
             .insert("anthropic".to_string(), "claude-opus-4-5 high".to_string());
@@ -3300,7 +3447,7 @@ mod tests {
         let anthropic = resolve_for_settings("anthropic", &settings)
             .expect("resolve")
             .choice;
-        assert_eq!(anthropic.label(), "anthropic/claude-sonnet-4-5");
+        assert_eq!(anthropic.label(), "anthropic/claude-opus-4-5 high");
     }
 
     #[test]
@@ -3318,7 +3465,7 @@ mod tests {
         let anthropic = resolve_for_settings("anthropic", &settings)
             .expect("resolve")
             .choice;
-        assert_eq!(anthropic.label(), "anthropic/claude-opus-4-5");
+        assert_eq!(anthropic.label(), "anthropic/claude-opus-4-5 medium");
 
         // A per-provider pick still wins over the global default.
         settings
@@ -3327,7 +3474,7 @@ mod tests {
         let anthropic = resolve_for_settings("anthropic", &settings)
             .expect("resolve")
             .choice;
-        assert_eq!(anthropic.label(), "anthropic/claude-haiku-4-5");
+        assert_eq!(anthropic.label(), "anthropic/claude-haiku-4-5 medium");
     }
 
     #[test]
@@ -3343,7 +3490,10 @@ mod tests {
         };
 
         let resolved = resolve_for_settings("anthropic", &settings).expect("resolve");
-        assert_eq!(resolved.choice.label(), "anthropic/claude-sonnet-4-5");
+        assert_eq!(
+            resolved.choice.label(),
+            "anthropic/claude-sonnet-4-5 medium"
+        );
         assert_eq!(resolved.source, ModelResolutionSource::ProviderDefault);
         assert!(
             resolved.notes.iter().any(|n| n.contains("default_model")),
@@ -3432,6 +3582,7 @@ mod tests {
         let provider = ProviderChoice::Google {
             model: "gemini-2.5-flash".to_string(),
             base_url: DEFAULT_GOOGLE_BASE_URL.to_string(),
+            reasoning_effort: None,
         };
         let err = provider
             .model_with_provider(&Settings::default())
@@ -3504,6 +3655,7 @@ mod tests {
         let provider = ProviderChoice::Ollama {
             model: "llama3.2".to_string(),
             base_url: DEFAULT_OLLAMA_BASE_URL.to_string(),
+            reasoning_effort: None,
         };
 
         let model = provider.model_with_provider(&Settings::default()).unwrap();
@@ -3526,6 +3678,7 @@ mod tests {
 
         let provider = ProviderChoice::Anthropic {
             model: "claude-sonnet-4-5".to_string(),
+            reasoning_effort: None,
         };
         let model = provider.model_with_provider(&settings).unwrap();
         assert_eq!(model.api_key, Some("stored-anth-key".to_string()));
@@ -3608,15 +3761,34 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_effort_rejects_unsupported_provider() {
-        let provider = ProviderChoice::Anthropic {
-            model: "claude-sonnet-4-5".to_string(),
+    fn reasoning_effort_options_come_from_model_profile() {
+        let provider = ProviderChoice::OpenAi {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: None,
         };
-        let err = provider.resolve_reasoning_effort("high").unwrap_err();
+        let options = provider.reasoning_effort_options();
 
         assert!(
-            err.to_string()
-                .contains("only applies to OpenAI, Codex, OpenRouter, and custom")
+            options.iter().any(|option| option.value == "xhigh"),
+            "profile-defined xhigh option should be exposed: {options:?}"
+        );
+        assert_eq!(
+            provider.default_reasoning_effort().as_deref(),
+            Some("medium")
+        );
+    }
+
+    #[test]
+    fn codex_reasoning_effort_options_come_from_driver_profile() {
+        let provider = ProviderChoice::Codex {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: None,
+        };
+        let options = provider.reasoning_effort_options();
+
+        assert!(
+            options.iter().any(|option| option.value == "xhigh"),
+            "Codex driver profile should expose OpenAI-family effort metadata: {options:?}"
         );
     }
 

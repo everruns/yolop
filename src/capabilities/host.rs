@@ -556,12 +556,6 @@ fn setup_command_arg() -> CommandArg {
             .copied()
             .map(|model| format!("model {model}")),
     );
-    suggestions.extend(
-        ProviderChoice::reasoning_effort_suggestions()
-            .iter()
-            .copied()
-            .map(|effort| format!("effort {effort}")),
-    );
 
     CommandArg {
         name: "action".to_string(),
@@ -813,7 +807,12 @@ impl SetupCapability {
                 message: format!(
                     "setup effort: {}; suggestions: {}",
                     current.label(),
-                    ProviderChoice::reasoning_effort_suggestions().join(", ")
+                    current
+                        .reasoning_effort_options()
+                        .iter()
+                        .map(|effort| effort.value.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 error_code: None,
                 error_fields: None,

@@ -293,35 +293,6 @@ pub(crate) struct ModelOption {
     hint: String,
 }
 
-pub(crate) struct EffortOption {
-    value: &'static str,
-    label: &'static str,
-    hint: &'static str,
-}
-
-const EFFORT_OPTIONS: &[EffortOption] = &[
-    EffortOption {
-        value: "minimal",
-        label: "Minimal",
-        hint: "least reasoning",
-    },
-    EffortOption {
-        value: "low",
-        label: "Low",
-        hint: "faster responses",
-    },
-    EffortOption {
-        value: "medium",
-        label: "Medium",
-        hint: "balanced default",
-    },
-    EffortOption {
-        value: "high",
-        label: "High",
-        hint: "more reasoning for hard tasks",
-    },
-];
-
 /// Owned snapshot of the App fields the pure-render chrome helpers
 /// (command suggestions, stream preview, separators, session status)
 /// consume. Extracted from `App` so those helpers can be exercised by
@@ -4924,11 +4895,11 @@ mod tests {
             .await;
 
         assert!(app.setup.is_none(), "wizard should finish: {:?}", app.setup);
-        assert_eq!(app.model.provider_label(), "openai/gpt-5.4 medium");
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.4 none");
         assert!(
             app.lines
                 .iter()
-                .any(|line| line.text == "setup complete: openai/gpt-5.4 medium"),
+                .any(|line| line.text == "setup complete: openai/gpt-5.4 none"),
             "completion line should report the picked model: {:?}",
             app.lines
         );
@@ -4936,7 +4907,7 @@ mod tests {
         // pick_provider_applies_saved_model_for_saved_provider in main.rs).
         let snapshot = app.settings.snapshot();
         assert_eq!(snapshot.default_provider.as_deref(), Some("openai"));
-        assert_eq!(snapshot.model_for("openai"), Some("gpt-5.4 medium"));
+        assert_eq!(snapshot.model_for("openai"), Some("gpt-5.4 none"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5152,7 +5123,7 @@ mod tests {
         app.lines.clear();
         app.dispatch_command_for_test("effort high").await;
 
-        assert_eq!(app.model.provider_label(), "openai/gpt-5.4 medium");
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.4 none");
         assert!(matches!(
             app.setup,
             Some(SetupStep::PickEffort { selected: 3, .. })

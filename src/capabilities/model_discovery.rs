@@ -377,6 +377,7 @@ mod tests {
         let provider = ProviderChoice::Ollama {
             model: "llama3.2".to_string(),
             base_url: format!("http://{addr}/v1"),
+            reasoning_effort: None,
         };
         let models = discover_provider_models(&provider, &Settings::default())
             .await
