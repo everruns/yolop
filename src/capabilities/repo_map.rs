@@ -7,6 +7,8 @@
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, labeled_phrase, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -106,6 +108,23 @@ struct RepoMapTool {
 
 #[async_trait]
 impl Tool for RepoMapTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let query = scan_narration_query(&tool_call.arguments);
+        Some(labeled_phrase(
+            "Build repo map",
+            "Built repo map",
+            "Repo map failed",
+            query,
+            phase,
+        ))
+    }
+
     fn name(&self) -> &str {
         "repo_map"
     }
@@ -153,6 +172,23 @@ struct RepoSymbolsTool {
 
 #[async_trait]
 impl Tool for RepoSymbolsTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let query = scan_narration_query(&tool_call.arguments);
+        Some(labeled_phrase(
+            "Search symbols",
+            "Searched symbols",
+            "Symbol search failed",
+            query,
+            phase,
+        ))
+    }
+
     fn name(&self) -> &str {
         "repo_symbols"
     }
@@ -192,6 +228,10 @@ impl Tool for RepoSymbolsTool {
             Err(err) => ToolExecutionResult::tool_error(err.to_string()),
         }
     }
+}
+
+fn scan_narration_query(arguments: &Value) -> Option<String> {
+    arg_str(arguments, &["query"]).map(|query| truncate(query, 48))
 }
 
 fn scan_schema(query_description: &str) -> Value {

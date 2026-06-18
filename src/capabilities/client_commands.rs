@@ -19,6 +19,8 @@ use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, labeled_phrase, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -156,6 +158,23 @@ struct RunYolopCommandTool {
 
 #[async_trait]
 impl Tool for RunYolopCommandTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let command = arg_str(&tool_call.arguments, &["command"]).map(|value| truncate(value, 48));
+        Some(labeled_phrase(
+            "Run command",
+            "Ran command",
+            "Failed to run command",
+            command,
+            phase,
+        ))
+    }
+
     fn name(&self) -> &str {
         "run_yolop_command"
     }

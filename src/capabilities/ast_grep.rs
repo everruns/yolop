@@ -12,6 +12,8 @@ use ast_grep_core::{AstGrep, Node};
 use ast_grep_language::SupportLang;
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::tool_narration::ToolNarrationPhase;
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -107,6 +109,19 @@ struct AstGrepTool {
 
 #[async_trait]
 impl Tool for AstGrepTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        Some(everruns_core::tool_narration::narrate_grep_files(
+            &tool_call.arguments,
+            phase,
+            locale,
+        ))
+    }
+
     fn name(&self) -> &str {
         "ast_grep"
     }
