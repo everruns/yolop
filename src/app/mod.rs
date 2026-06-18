@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
+mod markdown_table;
 mod render;
 mod setup;
 mod transcript;
@@ -2880,6 +2881,87 @@ mod tests {
     }
 
     #[test]
+    fn markdown_table_renders_columns_within_width() {
+        let width = 48;
+        let mut lines = Vec::new();
+        append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::Assistant,
+                text: "| Name | Value |\n| --- | --- |\n| foo | bar |".to_string(),
+            },
+            width,
+        );
+
+        let body = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            body.contains("Name") && body.contains("foo"),
+            "table content should survive rendering: {body}"
+        );
+        assert!(
+            lines.iter().all(|line| line_width(line) <= width),
+            "table rows should fit width {width}: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.style.fg == Some(TEXT_DIM)),
+            "table borders should use dim styling: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn markdown_table_reflows_when_terminal_width_changes() {
+        let text = "| Key | Notes |\n| --- | --- |\n| resize | should reflow columns cleanly |"
+            .to_string();
+        let chat = ChatLine {
+            author: Author::Assistant,
+            text,
+        };
+
+        let mut narrow = Vec::new();
+        append_chat_lines(&mut narrow, &chat, 28);
+        let mut wide = Vec::new();
+        append_chat_lines(&mut wide, &chat, 80);
+
+        assert_ne!(
+            narrow.iter().map(line_text).collect::<Vec<_>>(),
+            wide.iter().map(line_text).collect::<Vec<_>>(),
+            "table layout should change with width"
+        );
+        for (width, rendered) in [(28, &narrow), (80, &wide)] {
+            assert!(
+                rendered.iter().all(|line| line_width(line) <= width),
+                "table should fit width {width}: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_table_inside_code_fence_stays_literal() {
+        let mut lines = Vec::new();
+        append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::Assistant,
+                text: "```\n| not | a table |\n| --- | --- |\n```".to_string(),
+            },
+            60,
+        );
+
+        let body = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            !body.contains('╭') && !body.contains('╮'),
+            "fenced pipe rows should not be rendered as a table: {body}"
+        );
+        assert!(
+            body.contains("| not | a table |"),
+            "literal pipes preserved"
+        );
+    }
+
+    #[test]
     fn markdown_lines_wrap_styled_content_to_available_width() {
         let width = 32;
         let mut lines = Vec::new();
@@ -2935,6 +3017,10 @@ mod tests {
             ChatLine {
                 author: Author::User,
                 text: "this is a deliberately long user prompt with one-super-long-token".into(),
+            },
+            ChatLine {
+                author: Author::Assistant,
+                text: "| Col A | Col B |\n| --- | --- |\n| alpha | beta |".into(),
             },
             ChatLine {
                 author: Author::Assistant,

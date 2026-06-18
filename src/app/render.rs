@@ -1037,9 +1037,13 @@ pub(crate) fn append_markdown_lines<'a>(
         .max(1);
     let mut first = true;
     let mut in_code = false;
+    let source_lines = text.lines().collect::<Vec<_>>();
+    let mut index = 0;
 
-    for raw in text.lines() {
+    while index < source_lines.len() {
+        let raw = source_lines[index];
         let trimmed = raw.trim_end();
+
         if let Some(lang) = trimmed.trim_start().strip_prefix("```") {
             in_code = !in_code;
             let code_lang = lang.trim();
@@ -1063,6 +1067,23 @@ pub(crate) fn append_markdown_lines<'a>(
                     Style::default().fg(TEXT_DIM).add_modifier(Modifier::ITALIC),
                 )],
             );
+            index += 1;
+            continue;
+        }
+
+        if !in_code
+            && let Some((table, next)) =
+                super::markdown_table::try_parse_table_at(&source_lines, index)
+            && super::markdown_table::append_markdown_table_lines(
+                lines,
+                first_prefix,
+                prefix_style,
+                &table,
+                inner_width,
+                &mut first,
+            )
+        {
+            index = next;
             continue;
         }
 
@@ -1087,6 +1108,7 @@ pub(crate) fn append_markdown_lines<'a>(
                 &mut first,
                 vec![],
             );
+            index += 1;
             continue;
         }
         let mut search_from = 0;
@@ -1104,6 +1126,7 @@ pub(crate) fn append_markdown_lines<'a>(
                 piece_spans,
             );
         }
+        index += 1;
     }
 }
 
