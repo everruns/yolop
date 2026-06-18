@@ -284,6 +284,8 @@ fn arg(name: &str, required: bool) -> CommandArg {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_core::tool_narration::ToolNarrationPhase;
+    use everruns_core::tool_types::ToolCall;
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
@@ -402,5 +404,21 @@ mod tests {
                 arg: Some("expanded".to_string())
             }]
         );
+    }
+
+    #[test]
+    fn run_yolop_command_narration_includes_command() {
+        let tool = RunYolopCommandTool {
+            ui: Arc::new(RecordingUi::default()),
+        };
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "run_yolop_command".to_owned(),
+            arguments: json!({ "command": "/help" }),
+        };
+
+        let narration = tool.narrate(&call, ToolNarrationPhase::Started, None);
+
+        assert_eq!(narration.as_deref(), Some("Run command: /help"));
     }
 }

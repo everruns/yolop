@@ -1109,6 +1109,8 @@ fn truncate_chars(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_core::tool_narration::ToolNarrationPhase;
+    use everruns_core::tool_types::ToolCall;
 
     fn write(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
@@ -1371,5 +1373,37 @@ trait Named {
         .expect_err("outside path should fail");
 
         assert!(err.to_string().contains("inside the workspace"));
+    }
+
+    #[test]
+    fn repo_symbols_narration_includes_query() {
+        let tool = RepoSymbolsTool {
+            workspace_root: PathBuf::from("/tmp"),
+        };
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "repo_symbols".to_owned(),
+            arguments: json!({ "query": "Widget" }),
+        };
+
+        let narration = tool.narrate(&call, ToolNarrationPhase::Started, None);
+
+        assert_eq!(narration.as_deref(), Some("Search symbols: Widget"));
+    }
+
+    #[test]
+    fn repo_map_narration_uses_bare_verb_without_query() {
+        let tool = RepoMapTool {
+            workspace_root: PathBuf::from("/tmp"),
+        };
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "repo_map".to_owned(),
+            arguments: json!({}),
+        };
+
+        let narration = tool.narrate(&call, ToolNarrationPhase::Started, None);
+
+        assert_eq!(narration.as_deref(), Some("Build repo map"));
     }
 }

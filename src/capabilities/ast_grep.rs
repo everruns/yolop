@@ -696,6 +696,8 @@ fn truncate_chars(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_core::tool_narration::ToolNarrationPhase;
+    use everruns_core::tool_types::ToolCall;
 
     fn write(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
@@ -763,6 +765,22 @@ mod tests {
                 .iter()
                 .any(|capture| capture.name == "A" && capture.text == "value")
         );
+    }
+
+    #[test]
+    fn ast_grep_narration_includes_pattern() {
+        let tool = AstGrepTool {
+            workspace_root: PathBuf::from("/tmp"),
+        };
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "ast_grep".to_owned(),
+            arguments: json!({ "pattern": "fn main" }),
+        };
+
+        let narration = tool.narrate(&call, ToolNarrationPhase::Started, None);
+
+        assert_eq!(narration.as_deref(), Some("Searching files for fn main"));
     }
 
     #[tokio::test]
