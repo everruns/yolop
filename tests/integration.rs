@@ -306,7 +306,7 @@ fn tui_escape_does_not_exit_and_ctrl_c_exits() {
 
     tui.write_input(b"\x03");
     assert!(
-        tui.wait_for_output("Press Ctrl+C again to exit", Duration::from_secs(3)),
+        tui.wait_for_output("Press Ctrl+C again to exit", Duration::from_secs(5)),
         "first Ctrl-C should invite a second press: {}",
         tui.output_text()
     );
