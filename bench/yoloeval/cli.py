@@ -70,6 +70,7 @@ def cmd_run(args) -> int:
         run_id=args.run_id,
         do_eval=not args.no_eval,
         keep_workdirs=args.keep_workdirs,
+        results_tag=args.suite,
     )
     print("\n=== run complete ===")
     print(json.dumps(overall, indent=2))

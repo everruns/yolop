@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "benchmark": "swebench_verified",
+  "instance_id": "sphinx-doc__sphinx-10466",
+  "config_name": "openai-default__tracking-v1",
+  "run_id": "tracking-v1-gpt55",
+  "resolved": true,
+  "error": null,
+  "agent": {
+    "agent": "yolop",
+    "config_name": "openai-default",
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "reasoning_effort": null,
+    "max_cost_usd": 5.0,
+    "extra_args": [],
+    "yolop_version": "0.3.0",
+    "yolop_commit": "e6c0c9046607",
+    "everruns_runtime_version": "0.14.0"
+  },
+  "metrics": {
+    "wall_time_s": 50.89,
+    "agent_reported_time_s": 49.536,
+    "turns": 16,
+    "iterations": 16,
+    "assistant_messages": 16,
+    "user_messages": 1,
+    "llm_calls": 16,
+    "tool_calls": 15,
+    "tool_calls_failed": 0,
+    "tools_used": {
+      "list_directory": 1,
+      "grep_files": 5,
+      "read_file": 4,
+      "bash": 4,
+      "edit_file": 1
+    },
+    "tokens": {
+      "input_tokens": 202884,
+      "output_tokens": 1385,
+      "cache_read_tokens": 170496,
+      "cache_creation_tokens": 0,
+      "total_tokens": 204269
+    },
+    "reasoning_effort": "medium",
+    "cost_usd": 1.05597,
+    "stop_reason": "completed"
+  },
+  "eval_report": {
+    "patch_is_None": false,
+    "patch_exists": true,
+    "patch_successfully_applied": true,
+    "resolved": true,
+    "tests_status": {
+      "FAIL_TO_PASS": {
+        "success": [
+          "tests/test_build_gettext.py::test_Catalog_duplicated_message"
+        ],
+        "failure": []
+      },
+      "PASS_TO_PASS": {
+        "success": [
+          "tests/test_build_gettext.py::test_build_gettext",
+          "tests/test_build_gettext.py::test_gettext_index_entries",
+          "tests/test_build_gettext.py::test_gettext_disable_index_entries",
+          "tests/test_build_gettext.py::test_gettext_template",
+          "tests/test_build_gettext.py::test_gettext_template_msgid_order_in_sphinxpot",
+          "tests/test_build_gettext.py::test_build_single_pot"
+        ],
+        "failure": []
+      },
+      "FAIL_TO_FAIL": {
+        "success": [],
+        "failure": []
+      },
+      "PASS_TO_FAIL": {
+        "success": [],
+        "failure": []
+      }
+    }
+  },
+  "patch": "diff --git a/sphinx/builders/gettext.py b/sphinx/builders/gettext.py\nindex e8bc547..ae58865 100644\n--- a/sphinx/builders/gettext.py\n+++ b/sphinx/builders/gettext.py\n@@ -32,7 +32,7 @@ class Message:\n     \"\"\"An entry of translatable message.\"\"\"\n     def __init__(self, text: str, locations: List[Tuple[str, int]], uuids: List[str]):\n         self.text = text\n-        self.locations = locations\n+        self.locations = list(OrderedDict.fromkeys(locations))\n         self.uuids = uuids\n \n \n",
+  "session_log_path": "bench/.cache/sessions/tracking-v1-gpt55/openai-default/sphinx-doc__sphinx-10466/session_c27253f962bc408285a25ddf37e43026/events.jsonl",
+  "timing": {
+    "started_at": "2026-06-19T02:39:34.823733+00:00",
+    "finished_at": "2026-06-19T02:54:10.998834+00:00"
+  }
+}

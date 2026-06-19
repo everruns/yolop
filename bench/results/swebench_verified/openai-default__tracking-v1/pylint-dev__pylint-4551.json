@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "benchmark": "swebench_verified",
+  "instance_id": "pylint-dev__pylint-4551",
+  "config_name": "openai-default__tracking-v1",
+  "run_id": "tracking-v1-gpt55",
+  "resolved": false,
+  "error": "budget cap hit: $5.03 > $5.00",
+  "agent": {
+    "agent": "yolop",
+    "config_name": "openai-default",
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "reasoning_effort": null,
+    "max_cost_usd": 5.0,
+    "extra_args": [],
+    "yolop_version": "0.3.0",
+    "yolop_commit": "e6c0c9046607",
+    "everruns_runtime_version": "0.14.0"
+  },
+  "metrics": {
+    "wall_time_s": 160.14,
+    "agent_reported_time_s": 145.988,
+    "turns": 39,
+    "iterations": 39,
+    "assistant_messages": 39,
+    "user_messages": 1,
+    "llm_calls": 39,
+    "tool_calls": 40,
+    "tool_calls_failed": 0,
+    "tools_used": {
+      "write_todos": 3,
+      "list_directory": 3,
+      "grep_files": 3,
+      "read_file": 10,
+      "bash": 19,
+      "edit_file": 2
+    },
+    "tokens": {
+      "input_tokens": 965091,
+      "output_tokens": 6798,
+      "cache_read_tokens": 916480,
+      "cache_creation_tokens": 0,
+      "total_tokens": 971889
+    },
+    "reasoning_effort": "medium",
+    "cost_usd": 5.029395,
+    "stop_reason": "budget"
+  },
+  "eval_report": {
+    "patch_is_None": false,
+    "patch_exists": true,
+    "patch_successfully_applied": true,
+    "resolved": false,
+    "tests_status": {
+      "FAIL_TO_PASS": {
+        "success": [],
+        "failure": [
+          "tests/unittest_pyreverse_writer.py::test_dot_files[packages_No_Name.dot]",
+          "tests/unittest_pyreverse_writer.py::test_dot_files[classes_No_Name.dot]",
+          "tests/unittest_pyreverse_writer.py::test_get_visibility[names0-special]",
+          "tests/unittest_pyreverse_writer.py::test_get_visibility[names1-private]",
+          "tests/unittest_pyreverse_writer.py::test_get_visibility[names2-public]",
+          "tests/unittest_pyreverse_writer.py::test_get_visibility[names3-protected]",
+          "tests/unittest_pyreverse_writer.py::test_get_annotation_annassign[a:",
+          "tests/unittest_pyreverse_writer.py::test_get_annotation_assignattr[def",
+          "tests/unittest_pyreverse_writer.py::test_infer_node_1",
+          "tests/unittest_pyreverse_writer.py::test_infer_node_2"
+        ]
+      },
+      "PASS_TO_PASS": {
+        "success": [],
+        "failure": []
+      },
+      "FAIL_TO_FAIL": {
+        "success": [],
+        "failure": []
+      },
+      "PASS_TO_FAIL": {
+        "success": [],
+        "failure": []
+      }
+    }
+  },
+  "patch": "diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py\nindex 8fa1220..f6db6a3 100644\n--- a/pylint/pyreverse/inspector.py\n+++ b/pylint/pyreverse/inspector.py\n@@ -189,6 +189,64 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):\n     link_class = visit_classdef\n     link_function = visit_functiondef\n \n+    @staticmethod\n+    def _get_annotation(node):\n+        \"\"\"Return the annotation for *node*, if any.\"\"\"\n+        parent = node.parent\n+        if isinstance(parent, astroid.AnnAssign):\n+            return parent.annotation\n+        if isinstance(parent, astroid.Arguments):\n+            for args, annotations in (\n+                (getattr(parent, \"posonlyargs\", ()), parent.posonlyargs_annotations),\n+                (parent.args, parent.annotations),\n+                (parent.kwonlyargs, parent.kwonlyargs_annotations),\n+            ):\n+                try:\n+                    index = args.index(node)\n+                except ValueError:\n+                    continue\n+                if index < len(annotations):\n+                    return annotations[index]\n+        return None\n+\n+    @staticmethod\n+    def _infer_annotation(annotation):\n+        \"\"\"Infer an annotation node.\"\"\"\n+        if annotation is None:\n+            return set()\n+        try:\n+            return set(annotation.infer())\n+        except astroid.InferenceError:\n+            return set()\n+\n+    @staticmethod\n+    def _filter_annotation_values(values, annotations):\n+        \"\"\"Prefer annotations over ``None`` default values.\"\"\"\n+        if annotations:\n+            values = {\n+                value\n+                for value in values\n+                if not (isinstance(value, astroid.Const) and value.value is None)\n+            }\n+            values.update(annotations)\n+        return values\n+\n+    @classmethod\n+    def _get_value_annotations(cls, node):\n+        \"\"\"Return inferred annotations for the value assigned to *node*.\"\"\"\n+        parent = node.parent\n+        value = getattr(parent, \"value\", None)\n+        if not isinstance(value, astroid.Name):\n+            return set()\n+        try:\n+            _frame, assignments = value.lookup(value.name)\n+        except astroid.AstroidError:\n+            return set()\n+        annotations = set()\n+        for assignment in assignments:\n+            annotations.update(cls._infer_annotation(cls._get_annotation(assignment)))\n+        return annotations\n+\n     def visit_assignname(self, node):\n         \"\"\"visit an astroid.AssignName node\n \n@@ -219,18 +277,23 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):\n \n             current = frame.locals_type[node.name]\n             values = set(node.infer())\n+            annotations = self._infer_annotation(self._get_annotation(node))\n+            values = self._filter_annotation_values(values, annotations)\n             frame.locals_type[node.name] = list(set(current) | values)\n         except astroid.InferenceError:\n             pass\n \n-    @staticmethod\n-    def handle_assignattr_type(node, parent):\n+    @classmethod\n+    def handle_assignattr_type(cls, node, parent):\n         \"\"\"handle an astroid.assignattr node\n \n         handle instance_attrs_type\n         \"\"\"\n         try:\n             values = set(node.infer())\n+            annotations = cls._infer_annotation(cls._get_annotation(node))\n+            annotations.update(cls._get_value_annotations(node))\n+            values = cls._filter_annotation_values(values, annotations)\n             current = set(parent.instance_attrs_type[node.attrname])\n             parent.instance_attrs_type[node.attrname] = list(current | values)\n         except astroid.InferenceError:\n",
+  "session_log_path": "bench/.cache/sessions/tracking-v1-gpt55/openai-default/pylint-dev__pylint-4551/session_f6375b93f508476bb87921dd1ad882b0/events.jsonl",
+  "timing": {
+    "started_at": "2026-06-19T02:33:01.246154+00:00",
+    "finished_at": "2026-06-19T02:54:10.997488+00:00"
+  }
+}

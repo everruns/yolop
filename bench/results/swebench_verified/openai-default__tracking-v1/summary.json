@@ -1,0 +1,32 @@
+{
+  "benchmark": "swebench_verified",
+  "config_name": "openai-default__tracking-v1",
+  "instances": 20,
+  "resolved": 13,
+  "resolved_rate": 0.65,
+  "errored": 6,
+  "stop_reasons": {
+    "budget": 5,
+    "completed": 14,
+    "error": 1
+  },
+  "totals": {
+    "wall_time_s": 2253.1,
+    "cost_usd": 43.0443,
+    "turns": 452,
+    "tool_calls": 442,
+    "input_tokens": 8221263,
+    "output_tokens": 64599,
+    "cache_read_tokens": 7459840,
+    "cache_creation_tokens": 0,
+    "total_tokens": 8285862
+  },
+  "generated_at": "2026-06-19T02:56:34.957532+00:00",
+  "averages": {
+    "wall_time_s": 112.7,
+    "cost_usd": 2.1522,
+    "turns": 22.6,
+    "tool_calls": 22.1,
+    "total_tokens": 414293.1
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "benchmark": "swebench_verified",
+  "instance_id": "django__django-11149",
+  "config_name": "openai-default__tracking-v1",
+  "run_id": "tracking-v1-gpt55",
+  "resolved": false,
+  "error": "yolop exited 1: turn error: LLM error: provider stream stall: no tokens for 120s\n",
+  "agent": {
+    "agent": "yolop",
+    "config_name": "openai-default",
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "reasoning_effort": null,
+    "max_cost_usd": 5.0,
+    "extra_args": [],
+    "yolop_version": "0.3.0",
+    "yolop_commit": "e6c0c9046607",
+    "everruns_runtime_version": "0.14.0"
+  },
+  "metrics": {
+    "wall_time_s": 140.348,
+    "agent_reported_time_s": 139.529,
+    "turns": 7,
+    "iterations": 7,
+    "assistant_messages": 7,
+    "user_messages": 1,
+    "llm_calls": 7,
+    "tool_calls": 6,
+    "tool_calls_failed": 0,
+    "tools_used": {
+      "list_directory": 1,
+      "grep_files": 2,
+      "bash": 1,
+      "read_file": 2
+    },
+    "tokens": {
+      "input_tokens": 48043,
+      "output_tokens": 327,
+      "cache_read_tokens": 39936,
+      "cache_creation_tokens": 0,
+      "total_tokens": 48370
+    },
+    "reasoning_effort": "medium",
+    "cost_usd": 0.250025,
+    "stop_reason": "error"
+  },
+  "eval_report": {},
+  "patch": "",
+  "session_log_path": "bench/.cache/sessions/tracking-v1-gpt55/openai-default/django__django-11149/session_b8f16e84fbc74b1286476957a62d3e65/events.jsonl",
+  "timing": {
+    "started_at": "2026-06-19T02:29:08.706647+00:00",
+    "finished_at": "2026-06-19T02:54:10.995294+00:00"
+  }
+}

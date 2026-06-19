@@ -76,7 +76,12 @@ def run_matrix(
     run_id: str | None = None,
     do_eval: bool = True,
     keep_workdirs: bool = False,
+    results_tag: str | None = None,
 ) -> dict[str, Any]:
+    # ``results_tag`` (e.g. a suite name) isolates a run's results into a
+    # distinct column ``<config>__<tag>`` so, e.g., a tracking-suite run keeps a
+    # clean self-contained summary instead of mixing with ad-hoc runs of the
+    # same config.
     run_id = run_id or f"yoloeval-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
     instances = benchmark.load(instance_ids)
     if not instances:
@@ -89,6 +94,7 @@ def run_matrix(
 
     for config_name, spec in configs.items():
         agent = build_agent(config_name, spec, defaults)
+        store_name = f"{config_name}__{results_tag}" if results_tag else config_name
         print(f"\n[runner] === config {config_name} === {agent.config}", flush=True)
 
         runs: dict[str, AgentRun] = {}
@@ -130,7 +136,7 @@ def run_matrix(
             err = run.error or (ev.error if ev else None)
             record = results.build_record(
                 benchmark=benchmark.name,
-                config_name=config_name,
+                config_name=store_name,
                 instance_id=inst.instance_id,
                 agent_config=agent.config,
                 resolved=resolved,
@@ -145,9 +151,9 @@ def run_matrix(
             path = results.save_result(record)
             print(f"[runner] saved {path} resolved={resolved}", flush=True)
 
-        summary = results.summarize(benchmark.name, config_name)
-        overall["configs"][config_name] = summary
-        print(f"[runner] summary {config_name}: "
+        summary = results.summarize(benchmark.name, store_name)
+        overall["configs"][store_name] = summary
+        print(f"[runner] summary {store_name}: "
               f"{summary['resolved']}/{summary['instances']} resolved", flush=True)
 
     return overall
