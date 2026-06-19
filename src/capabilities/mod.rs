@@ -18,7 +18,7 @@ pub(crate) mod model_ranking;
 pub(crate) mod repo_map;
 pub mod skills;
 pub(crate) mod worktree_cmd;
-pub(crate) mod your;
+pub(crate) mod yolop;
 
 pub(crate) use crate::goal::GOAL_CAPABILITY_ID;
 pub(crate) use approval::{APPROVAL_CAPABILITY_ID, ApprovalCapability};

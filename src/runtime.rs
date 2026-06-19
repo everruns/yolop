@@ -5,7 +5,7 @@
 // instead of running against the VFS.
 
 use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, MemoryStore};
-use crate::capabilities::your::{YOUR_CAPABILITY_ID, YourCapability};
+use crate::capabilities::yolop::{YOLOP_CAPABILITY_ID, YolopCapability};
 use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, AgentRunResult,
     AgentSpawner, ApprovalCapability, AstGrepCapability, AttributionCapability,
@@ -1577,7 +1577,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new(CONNECTORS_CAPABILITY_ID),
         AgentCapabilityConfig::new(MEMORY_CAPABILITY_ID),
         AgentCapabilityConfig::new(HOOKS_CAPABILITY_ID),
-        AgentCapabilityConfig::new(YOUR_CAPABILITY_ID),
+        AgentCapabilityConfig::new(YOLOP_CAPABILITY_ID),
         // `/btw` — ephemeral side question, answered out-of-band with the
         // session's context (upstream `BtwCapability`).
         AgentCapabilityConfig::new(BTW_CAPABILITY_ID),
@@ -2193,9 +2193,8 @@ pub async fn build_with_options(
     // `hooks` — global/workspace hook self-configuration tools. Runtime
     // execution is still upstream `user_hooks`, registered above.
     capabilities.register(HooksCapability { hooks: hooks_store });
-    // `your` — global personalization framing. Durable memory and hooks live in
-    // their own capabilities above.
-    capabilities.register(YourCapability);
+    // `yolop` — framing when the user addresses yolop itself, not the project.
+    capabilities.register(YolopCapability);
     // Soft approval — spoken-consent guidance + audit tool, gated by the
     // central `approval_mode` setting (read live each turn).
     capabilities.register(ApprovalCapability {
@@ -4328,7 +4327,7 @@ mod tests {
     }
 
     #[test]
-    fn coding_harness_enables_hooks_authoring_separately_from_your() {
+    fn coding_harness_enables_hooks_authoring_and_yolop_framing() {
         let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
@@ -4338,8 +4337,8 @@ mod tests {
         );
         assert!(
             ids.iter()
-                .any(|cap| cap.capability_id() == YOUR_CAPABILITY_ID),
-            "your should remain available for personalization routing"
+                .any(|cap| cap.capability_id() == YOLOP_CAPABILITY_ID),
+            "yolop framing should remain available in the default harness"
         );
     }
 

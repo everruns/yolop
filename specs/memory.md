@@ -8,15 +8,16 @@ Yolop needs to remember durable, cross-session facts about the user — "prefer
 terse answers", "my name is Mike", "always run `cargo fmt` before committing" —
 so the model honors them without being reminded each session.
 
-The first cut lived inside the `your` personalization capability as a single
+The first cut lived inside the original personalization capability as a single
 flat `MEMORY.md` bullet list, injected **in full every turn** under a byte
 budget. That has two problems: the whole file competes for prompt space no
 matter how little of it is relevant, and a flat bullet list has no structure to
 search, timestamp, or address individual notes.
 
 `memory` is its own capability. It owns structured, durable memory and the
-tools to manage it; `your` keeps the personalization *framing*, while hook
-self-configuration lives in the `hooks` capability (see [`hooks.md`](./hooks.md)).
+tools to manage it. Hook self-configuration lives in the `hooks` capability
+(see [`hooks.md`](./hooks.md)). Requests addressed to yolop itself are framed
+by the `yolop` capability (see [`yolop.md`](./yolop.md)).
 
 ## What
 

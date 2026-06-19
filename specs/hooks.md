@@ -98,14 +98,13 @@ Hook setup is part of yolop self-configuration. A user should be able to say:
 > yolop setup a hook to prevent calls to git
 
 and have yolop create a real hook config entry rather than merely remembering a
-preference. The natural-language layer belongs in `YourCapability`, because
-that capability is the place users address yolop itself.
+preference.
 
 The reliable design is **prompt/skill for interpretation, tools for writes**:
 
-- The `your` prompt teaches the model that requests like "configure yolop",
-  "set up your hooks", or "prevent yourself from calling X" are
-  self-configuration requests.
+- The `hooks` capability prompt teaches the model that requests like
+  "configure yolop", "set up your hooks", or "prevent yourself from calling X"
+  are self-configuration requests.
 - The embedded `yolop-hooks` skill holds examples that map common intents to
   hook specs, so the prompt stays short and examples are loaded on demand.
 - Structured `hooks` capability tools perform the actual mutation. They read,

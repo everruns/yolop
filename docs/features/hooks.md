@@ -16,8 +16,7 @@ exposes a `hooks` capability to configure those files from natural language.
 
 ```mermaid
 flowchart LR
-  User["User: yolop setup a hook"] --> Your["your personalization"]
-  Your --> Hooks["hooks capability"]
+  User["User: yolop setup a hook"] --> Hooks["hooks capability"]
   Hooks --> Tools["validate_hook / upsert_hook"]
   Tools --> Files["hooks.json"]
   Files --> Runtime["user_hooks capability"]
@@ -137,4 +136,4 @@ does not add a second hook engine.
 ## Related
 
 - [`specs/hooks.md`](../../specs/hooks.md)
-- [`specs/your.md`](../../specs/your.md)
+- [`specs/yolop.md`](../../specs/yolop.md)

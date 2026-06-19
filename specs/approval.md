@@ -72,8 +72,7 @@ The paranoia level can be changed three ways, all writing the same setting:
   current level.
 - **Natural language** — because users address yolop directly ("be more
   careful", "stop asking me", "yolo mode"), the `set_approval_mode` tool lets
-  the model switch the level in response, the same way the `your` layer
-  handles other "configure yolop itself" requests.
+  the model switch the level in response.
 
 ## Non-goals
 
