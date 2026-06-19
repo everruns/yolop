@@ -19,11 +19,13 @@ mod image_input;
 mod into;
 mod mcp_config;
 mod runtime;
+mod session;
 mod session_log;
 mod settings;
 #[cfg(test)]
 mod test_env;
 mod tools;
+mod transcript;
 mod version;
 mod worktree;
 
@@ -876,10 +878,10 @@ async fn run_print_turn(
         .unwrap_or_default();
 
     for event in events.iter().skip(before_events) {
-        if let Some(status) = app::status_for_event(event) {
+        if let Some(status) = transcript::status_for_event(event) {
             print_status_line(&status.text, color);
         }
-        for line in app::lines_for_event(event) {
+        for line in transcript::lines_for_event(event) {
             print_transcript_line(&line, color);
         }
     }
@@ -892,8 +894,8 @@ async fn run_print_turn(
             if !t.is_empty() {
                 println!();
                 print_transcript_line(
-                    &app::ChatLine {
-                        author: app::Author::Assistant,
+                    &transcript::ChatLine {
+                        author: transcript::Author::Assistant,
                         text: t.to_string(),
                     },
                     color,
@@ -916,12 +918,12 @@ async fn run_print_turn(
     Ok(result)
 }
 
-fn print_transcript_line(line: &app::ChatLine, color: bool) {
+fn print_transcript_line(line: &transcript::ChatLine, color: bool) {
     match line.author {
-        app::Author::Assistant => {
+        transcript::Author::Assistant => {
             println!("{} {}", paint(color, "90", "•"), line.text);
         }
-        app::Author::Narration => {
+        transcript::Author::Narration => {
             println!(
                 "{} {} {}",
                 paint(color, "90", "•"),
@@ -929,7 +931,7 @@ fn print_transcript_line(line: &app::ChatLine, color: bool) {
                 paint(color, "90", &line.text)
             );
         }
-        app::Author::Tool => {
+        transcript::Author::Tool => {
             println!(
                 "{} {} {}",
                 paint(color, "92", "•"),
@@ -937,13 +939,13 @@ fn print_transcript_line(line: &app::ChatLine, color: bool) {
                 line.text
             );
         }
-        app::Author::ToolDetail => {
+        transcript::Author::ToolDetail => {
             println!("           {}", line.text);
         }
-        app::Author::Diff => {
+        transcript::Author::Diff => {
             println!("  {}", paint(color, "95", &line.text));
         }
-        app::Author::System | app::Author::User => {
+        transcript::Author::System | transcript::Author::User => {
             println!(
                 "{} {} {}",
                 paint(color, "90", "•"),

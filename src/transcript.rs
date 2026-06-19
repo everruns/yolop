@@ -1,14 +1,88 @@
-//! Translation of runtime events into transcript `ChatLine`s and status text,
-//! plus tool-result summarization. Pure functions over `RuntimeEvent` /
-//! `ToolCompletedData`; no terminal I/O. `DeltaRouter` (the per-turn dedup
-//! state these consume) is defined in the parent module.
+//! The TUI view model and the single place that interprets `everruns_core`
+//! runtime events / tool results.
+//!
+//! This module owns the display data types (`ChatLine`, `Author`,
+//! `ActivityStatus`, `StreamPreview`, `StreamKind`) and the `TurnEvent` channel
+//! protocol that [`crate::session::Session`] emits while a turn runs. It is the
+//! one boundary that knows about `EventData` / `Message`; the rest of the TUI
+//! (`crate::app`) consumes only the view-model types defined here. Functions are
+//! pure over runtime types — no terminal I/O. Presentation concerns (colors)
+//! live in `crate::app::render`.
 
-use super::*;
-use everruns_core::events::ToolStartedData;
+use everruns_core::events::{Event as RuntimeEvent, EventData, ToolCompletedData, ToolStartedData};
+use everruns_core::message::{ContentPart, Message, MessageRole};
+use everruns_core::tools::ToolExecutionResult;
+use serde_json::Value;
+use std::collections::HashMap;
+use tokio::sync::mpsc;
+
+// ---------- view-model types ----------
+
+#[derive(Clone, Debug)]
+pub enum Author {
+    User,
+    Assistant,
+    Narration,
+    Tool,
+    ToolDetail,
+    Diff,
+    System,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChatLine {
+    pub author: Author,
+    pub text: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamPreview {
+    pub kind: StreamKind,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamKind {
+    Assistant,
+    Tool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ActivityStatus {
+    pub text: String,
+    pub(crate) fallback: bool,
+}
+
+/// Events emitted by [`crate::session::Session`] while a turn (or `!shell`
+/// command) runs. The TUI drains these from the per-turn channel; it never sees
+/// the underlying runtime events.
+#[derive(Debug)]
+pub(crate) enum TurnEvent {
+    Lines(Vec<ChatLine>),
+    Activity(ActivityStatus),
+    /// Replace the live streaming preview shown above the input.
+    /// `None` clears the preview.
+    Stream(Option<StreamPreview>),
+    Tokens(u64),
+    Done,
+    Failed(String),
+}
+
+/// Tracks the most recently active delta stream so we can drop the streaming
+/// preview as soon as a matching `*.completed` arrives. Per-turn state — one
+/// `DeltaRouter` per turn.
+#[derive(Default)]
+pub(crate) struct DeltaRouter {
+    last_assistant_turn: Option<everruns_core::typed_id::TurnId>,
+    last_tool_call: Option<String>,
+    write_todos_args: HashMap<String, Value>,
+}
+
+// ---------- live event translation ----------
 
 pub(crate) fn handle_live_event(
     event: &RuntimeEvent,
-    emitted_events: &mut HashSet<String>,
+    emitted_events: &mut std::collections::HashSet<String>,
     router: &mut DeltaRouter,
     tx: &mpsc::UnboundedSender<TurnEvent>,
 ) {
@@ -67,39 +141,7 @@ pub(crate) fn handle_live_event(
     }
 }
 
-/// Drain any persisted events (from `runtime.events()`) that the broadcast
-/// receiver may have missed — used after a `Lagged` recv error and once
-/// more at end-of-turn so the transcript is never missing tool/reason
-/// completion lines.
-pub(crate) async fn catch_up_events(
-    handles: &RuntimeHandles,
-    events_before: usize,
-    emitted_events: &mut HashSet<String>,
-    router: &mut DeltaRouter,
-    tx: &mpsc::UnboundedSender<TurnEvent>,
-) {
-    let events = handles.runtime.events().await.unwrap_or_default();
-    let mut lines = Vec::new();
-    for event in events.iter().skip(events_before) {
-        let event_id = event.id.to_string();
-        if !emitted_events.insert(event_id) {
-            continue;
-        }
-        if let Some(tokens) = tokens_for_event(event) {
-            let _ = tx.send(TurnEvent::Tokens(tokens));
-        }
-        remember_write_todos_args(event, router);
-        if let Some(activity) = status_for_event(event) {
-            let _ = tx.send(TurnEvent::Activity(activity));
-        }
-        lines.extend(lines_for_event_with_router(event, router));
-    }
-    if !lines.is_empty() {
-        let _ = tx.send(TurnEvent::Lines(lines));
-    }
-}
-
-fn remember_write_todos_args(event: &RuntimeEvent, router: &mut DeltaRouter) {
+pub(crate) fn remember_write_todos_args(event: &RuntimeEvent, router: &mut DeltaRouter) {
     if let EventData::ToolStarted(data) = &event.data
         && data.tool_call.name == "write_todos"
     {
@@ -116,7 +158,10 @@ pub(crate) fn tokens_for_event(event: &RuntimeEvent) -> Option<u64> {
     }
 }
 
-fn lines_for_event_with_router(event: &RuntimeEvent, router: &mut DeltaRouter) -> Vec<ChatLine> {
+pub(crate) fn lines_for_event_with_router(
+    event: &RuntimeEvent,
+    router: &mut DeltaRouter,
+) -> Vec<ChatLine> {
     match &event.data {
         EventData::ToolCompleted(data) if data.tool_name == "write_todos" => {
             todo_lines_for_result_or_args(data, &mut router.write_todos_args)
@@ -213,6 +258,28 @@ pub(crate) fn lines_for_replayed_event(event: &RuntimeEvent) -> Vec<ChatLine> {
         }
         _ => lines_for_event(event),
     }
+}
+
+/// Assistant text lines produced by a turn, read from the messages appended
+/// after `skip`. Mirrors the message-loop reconciliation the session does at
+/// end of turn.
+pub(crate) fn assistant_lines_since(messages: &[Message], skip: usize) -> Vec<ChatLine> {
+    let mut out = Vec::new();
+    for msg in messages.iter().skip(skip) {
+        if msg.role == MessageRole::Agent
+            && !msg.has_tool_calls()
+            && let Some(text) = msg.text()
+        {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                out.push(ChatLine {
+                    author: Author::Assistant,
+                    text: trimmed.to_string(),
+                });
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn message_line(author: Author, message: &Message) -> Option<ChatLine> {
@@ -527,6 +594,81 @@ pub fn summarize_tool_result(data: &ToolCompletedData) -> String {
 /// never panics on a mid-codepoint byte index.
 pub(crate) fn first_line(s: &str, max: usize) -> String {
     truncate_chars(s.lines().next().unwrap_or(""), max)
+}
+
+// ---------- `!shell` result translation ----------
+
+pub(crate) fn shell_result_lines(result: ToolExecutionResult) -> Vec<ChatLine> {
+    match result {
+        ToolExecutionResult::Success(value) => shell_success_lines(&value),
+        ToolExecutionResult::SuccessWithImages { result, .. } => shell_success_lines(&result),
+        ToolExecutionResult::ToolError(message) => vec![ChatLine {
+            author: Author::System,
+            text: format!("shell failed: {message}"),
+        }],
+        ToolExecutionResult::InternalError(_) => vec![ChatLine {
+            author: Author::System,
+            text: "shell failed: internal error".into(),
+        }],
+        ToolExecutionResult::ConnectionRequired { provider } => vec![ChatLine {
+            author: Author::System,
+            text: format!("shell failed: connection required for {provider}"),
+        }],
+    }
+}
+
+fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
+    let exit_code = value.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
+    let success = value
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(exit_code == 0);
+    let mut out = vec![ChatLine {
+        author: Author::Tool,
+        text: format!("shell exited with code {exit_code}"),
+    }];
+
+    for (label, author) in [
+        ("stdout", Author::ToolDetail),
+        ("stderr", Author::ToolDetail),
+    ] {
+        if let Some(text) = value.get(label).and_then(Value::as_str) {
+            let text = text.trim_end();
+            if !text.is_empty() {
+                out.push(ChatLine {
+                    author,
+                    text: format!("{label}:\n{text}"),
+                });
+            }
+        }
+    }
+    if value
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || value
+            .get("output_limited")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        out.push(ChatLine {
+            author: Author::System,
+            text: "shell output was truncated".into(),
+        });
+    }
+    if out.len() == 1 {
+        out.push(ChatLine {
+            author: Author::ToolDetail,
+            text: "(no output)".into(),
+        });
+    }
+    if !success {
+        out.push(ChatLine {
+            author: Author::System,
+            text: "shell command exited non-zero".into(),
+        });
+    }
+    out
 }
 
 #[cfg(test)]

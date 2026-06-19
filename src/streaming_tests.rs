@@ -247,3 +247,52 @@ async fn broadcast_does_not_persist_delta_events_to_jsonl() {
         "JSONL log must not persist tool output delta events: {on_disk}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_run_turn_emits_lines_and_finishes_with_done() {
+    // End-to-end exercise of the `Session` facade — the boundary the TUI now
+    // drives instead of touching the runtime/event bus directly. Drains the
+    // `TurnEvent` channel the facade produces and asserts the turn streams
+    // assistant content and terminates with `Done` (never `Failed`).
+    use crate::session::Session;
+
+    let runtime = build_llmsim_runtime().await;
+    let session = Session::new(runtime.handles.clone(), runtime.model.clone());
+
+    let mut handle = session.run_turn("anything".to_string(), Vec::new());
+
+    let mut saw_assistant_lines = false;
+    let mut saw_done = false;
+    let mut failure: Option<String> = None;
+    let deadline = tokio::time::Instant::now() + TURN_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        match tokio::time::timeout(remaining, handle.events.recv()).await {
+            Ok(Some(TurnEvent::Lines(lines))) => {
+                if lines
+                    .iter()
+                    .any(|l| matches!(l.author, crate::app::Author::Assistant))
+                {
+                    saw_assistant_lines = true;
+                }
+            }
+            Ok(Some(TurnEvent::Failed(err))) => failure = Some(err),
+            Ok(Some(TurnEvent::Done)) => {
+                saw_done = true;
+                break;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => break,
+        }
+    }
+
+    assert!(failure.is_none(), "turn failed via facade: {failure:?}");
+    assert!(
+        saw_done,
+        "facade turn did not emit Done within {TURN_TIMEOUT:?}"
+    );
+    assert!(
+        saw_assistant_lines,
+        "facade turn produced no assistant lines"
+    );
+}

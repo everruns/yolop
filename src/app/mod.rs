@@ -5,18 +5,16 @@
 
 use crate::goal::{GOAL_EVALUATE_ARG, GoalStore, parse_evaluation_response};
 use crate::host_ui::UiCommand;
-use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles, StartupInfo};
-use crate::tools::{BashTool, Workspace};
+use crate::runtime::{BuiltRuntime, ModelState, StartupInfo};
+use crate::session::Session;
 use crate::worktree::WorktreeManager;
 use anyhow::Result;
 use crossterm::event::{
     self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
 };
-use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
-use everruns_core::events::{Event as RuntimeEvent, EventData, ToolCompletedData};
-use everruns_core::message::{ContentPart, Message, MessageRole};
-use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::command::{CommandDescriptor, CommandSource};
+use everruns_core::message::ContentPart;
 use everruns_core::typed_id::SessionId;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -26,64 +24,24 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
-use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 mod markdown_table;
 mod render;
 mod setup;
-mod transcript;
 
 // Re-export the moved free items so the rest of the crate (and the test module)
 // can keep referring to them as `crate::app::*`. `setup` exposes only `impl App`
 // methods, so it needs no re-export. The rendering module is named `render`
 // rather than `draw` so it does not collide with the free `draw` fn it exports.
-pub(crate) use self::{render::*, transcript::*};
-
-#[derive(Clone, Debug)]
-pub enum Author {
-    User,
-    Assistant,
-    Narration,
-    Tool,
-    ToolDetail,
-    Diff,
-    System,
-}
-
-impl Author {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Author::User => "you",
-            Author::Assistant => "agent",
-            Author::Narration => "note",
-            Author::Tool => "tool",
-            Author::ToolDetail => "",
-            Author::Diff => "diff",
-            Author::System => "system",
-        }
-    }
-    pub fn color(&self) -> Color {
-        match self {
-            Author::User => ACCENT_BLUE,
-            Author::Assistant => ACCENT_GOLD,
-            Author::Narration => TEXT_MUTED,
-            Author::Tool => TEXT_MUTED,
-            Author::ToolDetail => TEXT_MUTED,
-            Author::Diff => ACCENT_BLUE,
-            Author::System => TEXT_DIM,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ChatLine {
-    pub author: Author,
-    pub text: String,
-}
+// The view-model types and runtime-event translation live in `crate::transcript`
+// (the single boundary that interprets `everruns_core` events); re-export them
+// here so the TUI's own submodules keep referring to them as `crate::app::*`.
+pub(crate) use self::render::*;
+pub(crate) use crate::transcript::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CommandSuggestion {
@@ -114,7 +72,7 @@ const CODE_BG: Color = Color::Rgb(18, 18, 20);
 const PANEL_BG: Color = Color::Rgb(28, 28, 34);
 
 pub struct App {
-    handles: RuntimeHandles,
+    session: Session,
     startup: StartupInfo,
     model: ModelState,
     pub lines: Vec<ChatLine>,
@@ -334,40 +292,6 @@ pub(crate) struct ViewState {
 /// What kind of delta is currently being streamed. Only the assistant
 /// output is finalized into the transcript at end-of-turn (via the
 /// message store); thinking and tool output are display-only.
-#[derive(Clone, Debug)]
-pub struct StreamPreview {
-    pub kind: StreamKind,
-    pub text: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StreamKind {
-    Assistant,
-    Tool,
-}
-
-impl StreamKind {
-    fn label(self) -> &'static str {
-        match self {
-            StreamKind::Assistant => "agent",
-            StreamKind::Tool => "tool",
-        }
-    }
-
-    fn color(self) -> Color {
-        match self {
-            StreamKind::Assistant => ACCENT_GOLD,
-            StreamKind::Tool => TEXT_MUTED,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ActivityStatus {
-    pub text: String,
-    fallback: bool,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StatusLayout {
     Compact,
@@ -383,26 +307,15 @@ impl StatusLayout {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum TurnEvent {
-    Lines(Vec<ChatLine>),
-    Activity(ActivityStatus),
-    /// Replace the live streaming preview shown above the input.
-    /// `None` clears the preview.
-    Stream(Option<StreamPreview>),
-    Tokens(u64),
-    Done,
-    Failed(String),
-}
-
 impl App {
     pub fn new(runtime: BuiltRuntime, pending_images: Vec<ContentPart>) -> Self {
         let should_setup = runtime.startup.setup_recommended;
         let goal_store = runtime.goal_store.clone();
         let session_id = runtime.handles.session_id;
+        let session = Session::new(runtime.handles, runtime.model.clone());
         let (models_tx, models_rx) = mpsc::unbounded_channel::<ModelDiscovery>();
         let mut app = Self {
-            handles: runtime.handles,
+            session,
             startup: runtime.startup,
             model: runtime.model,
             lines: Vec::new(),
@@ -458,7 +371,7 @@ impl App {
     }
 
     pub fn session_id(&self) -> SessionId {
-        self.handles.session_id
+        self.session.session_id()
     }
 
     /// Snapshot the renderer-relevant fields into a `ViewState`. Called
@@ -477,7 +390,7 @@ impl App {
             model_id: self.model.model_id(),
             provider_name: self.model.provider_name(),
             reasoning_effort: self.model.reasoning_effort(),
-            session_id: self.handles.session_id,
+            session_id: self.session.session_id(),
             lines_count: self.lines.len(),
             session_tokens: self.session_tokens,
             status_layout: self.status_layout,
@@ -497,12 +410,12 @@ impl App {
     }
 
     fn goal_indicator(&self) -> Option<String> {
-        if !self.goal_store.is_active(self.handles.session_id) {
+        if !self.goal_store.is_active(self.session.session_id()) {
             return None;
         }
         let turns = self
             .goal_store
-            .status(self.handles.session_id, self.session_tokens)
+            .status(self.session.session_id(), self.session_tokens)
             .active
             .map(|active| (active.evaluated_turns, active.paused))
             .unwrap_or((0, false));
@@ -751,19 +664,14 @@ impl App {
             return;
         }
 
-        let events = match self.handles.runtime.events().await {
-            Ok(events) => events,
-            Err(err) => {
-                self.push_system(format!("load replayed transcript: {err}"));
-                return;
-            }
-        };
-        let replayed_lines = events
-            .iter()
-            .take(self.startup.replayed_events)
-            .flat_map(lines_for_replayed_event)
-            .collect::<Vec<_>>();
-        self.lines.extend(replayed_lines);
+        match self
+            .session
+            .replayed_lines(self.startup.replayed_events)
+            .await
+        {
+            Ok(replayed_lines) => self.lines.extend(replayed_lines),
+            Err(err) => self.push_system(format!("load replayed transcript: {err}")),
+        }
     }
 
     fn flush_transcript<B>(&mut self, terminal: &mut Terminal<B>) -> Result<()>
@@ -1095,7 +1003,7 @@ impl App {
             UiCommand::ClearTranscript => {
                 self.lines.clear();
                 self.printed_lines = 0;
-                self.goal_store.clear_active(self.handles.session_id);
+                self.goal_store.clear_active(self.session.session_id());
                 self.emit_system_banner();
             }
             UiCommand::RunShell { command } => self.start_shell_command(command),
@@ -1215,8 +1123,8 @@ impl App {
 
     fn cancel_current_turn(&mut self) {
         self.esc_pending_cancel = false;
-        if self.goal_store.is_active(self.handles.session_id) {
-            match self.goal_store.pause_active(self.handles.session_id) {
+        if self.goal_store.is_active(self.session.session_id()) {
+            match self.goal_store.pause_active(self.session.session_id()) {
                 Ok(message) => self.push_system(message),
                 Err(err) => self.push_system(format!("goal pause failed: {err}")),
             }
@@ -1239,7 +1147,7 @@ impl App {
     }
 
     fn maybe_start_goal_turn(&mut self) {
-        let session_id = self.handles.session_id;
+        let session_id = self.session.session_id();
         if !self.goal_store.take_pending_turn(session_id) {
             return;
         }
@@ -1251,22 +1159,16 @@ impl App {
     }
 
     async fn after_turn_goal_check(&mut self) {
-        let session_id = self.handles.session_id;
+        let session_id = self.session.session_id();
         if !self.goal_store.is_active(session_id) {
             return;
         }
         if self.goal_store.is_paused(session_id) {
             return;
         }
-        let request = ExecuteCommandRequest {
-            name: "goal".to_string(),
-            arguments: Some(GOAL_EVALUATE_ARG.to_string()),
-            controls: None,
-        };
         let result = match self
-            .handles
-            .runtime
-            .execute_command(session_id, request)
+            .session
+            .execute_command("goal", Some(GOAL_EVALUATE_ARG.to_string()))
             .await
         {
             Ok(result) => result,
@@ -1333,19 +1235,10 @@ impl App {
                     return;
                 }
 
-                let request = everruns_core::command::ExecuteCommandRequest {
-                    name: descriptor.name.clone(),
-                    arguments: if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed.to_string())
-                    },
-                    controls: None,
-                };
+                let arguments = (!trimmed.is_empty()).then(|| trimmed.to_string());
                 let result = self
-                    .handles
-                    .runtime
-                    .execute_command(self.handles.session_id, request)
+                    .session
+                    .execute_command(&descriptor.name, arguments)
                     .await;
                 match result {
                     Ok(result) => {
@@ -1377,38 +1270,20 @@ impl App {
 
     fn start_shell_command(&mut self, command: String) {
         let workspace_root = self.startup.workspace_root.clone();
-        let display_command = command.clone();
-        let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
-        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
-        self.rx = Some(rx);
-        self.turn_cancel = Some(cancel_tx);
+        self.push_user(format!("!shell {command}"));
+        let handle = self.session.run_shell(command, workspace_root);
+        self.begin_turn(handle, Some("running shell command".into()));
+    }
+
+    /// Wire a freshly started [`crate::session::TurnHandle`] into the event loop:
+    /// store its receiver and cancel trigger and flip into the busy state.
+    fn begin_turn(&mut self, handle: crate::session::TurnHandle, activity: Option<String>) {
+        self.rx = Some(handle.events);
+        self.turn_cancel = Some(handle.cancel);
         self.esc_pending_cancel = false;
         self.busy = true;
-        self.turn_activity = Some("running shell command".into());
+        self.turn_activity = activity;
         self.stream_preview = None;
-        self.push_user(format!("!shell {display_command}"));
-
-        tokio::spawn(async move {
-            let tool = BashTool::new(Workspace::new(workspace_root));
-            let run = tool.execute(serde_json::json!({
-                "command": command,
-                // Direct shell output is not persisted through a tool-call
-                // lifecycle, so render a useful bounded window inline.
-                "output": "normal",
-            }));
-            tokio::select! {
-                result = run => {
-                    let _ = tx.send(TurnEvent::Lines(shell_result_lines(result)));
-                }
-                _ = &mut cancel_rx => {
-                    let _ = tx.send(TurnEvent::Lines(vec![ChatLine {
-                        author: Author::System,
-                        text: "turn cancelled".into(),
-                    }]));
-                }
-            }
-            let _ = tx.send(TurnEvent::Done);
-        });
     }
 
     fn start_turn(&mut self, prompt: String) {
@@ -1425,179 +1300,10 @@ impl App {
             Err(err) => self.push_system(format!("worktree: {err}")),
         }
 
-        let handles = self.handles.clone();
-        let model = self.model.clone();
         let images = std::mem::take(&mut self.pending_images);
-        let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
-        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
-        self.rx = Some(rx);
-        self.turn_cancel = Some(cancel_tx);
-        self.esc_pending_cancel = false;
-        self.busy = true;
-        self.turn_activity = None;
-        self.stream_preview = None;
-
-        // Subscribe BEFORE spawning the turn so we don't miss the first
-        // few events (turn.started, reason.started). The broadcast only
-        // delivers events emitted after subscribe().
-        let mut live = handles.events.subscribe();
-
-        tokio::spawn(async move {
-            let session_id = handles.session_id;
-            let before = match handles.runtime.messages(session_id).await {
-                Ok(m) => m.len(),
-                Err(e) => {
-                    let _ = tx.send(TurnEvent::Failed(format!("load history: {e}")));
-                    let _ = tx.send(TurnEvent::Done);
-                    return;
-                }
-            };
-            let events_before = match handles.runtime.events().await {
-                Ok(e) => e.len(),
-                Err(_) => 0,
-            };
-
-            let input = model.input_message_with_images(prompt, images);
-            let runtime = handles.runtime.clone();
-            let turn = tokio::spawn(async move { runtime.run_turn(session_id, input).await });
-
-            let mut emitted_events = HashSet::new();
-            let mut delta_router = DeltaRouter::default();
-            let mut cancelled = false;
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = &mut cancel_rx => {
-                        cancelled = true;
-                        turn.abort();
-                        break;
-                    }
-                    recv = live.recv() => match recv {
-                        Ok(event) => {
-                            if event.session_id != session_id {
-                                continue;
-                            }
-                            handle_live_event(
-                                &event,
-                                &mut emitted_events,
-                                &mut delta_router,
-                                &tx,
-                            );
-                        }
-                        Err(broadcast::error::RecvError::Lagged(_)) => {
-                            // Receiver overflow: catch up from the canonical
-                            // event vec so we don't lose persistent events.
-                            // Resubscribe to restart from the current head.
-                            live = handles.events.subscribe();
-                            catch_up_events(
-                                &handles,
-                                events_before,
-                                &mut emitted_events,
-                                &mut delta_router,
-                                &tx,
-                            )
-                            .await;
-                        }
-                        Err(broadcast::error::RecvError::Closed) => break,
-                    },
-                    _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                        if turn.is_finished() {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if cancelled {
-                let _ = tx.send(TurnEvent::Stream(None));
-                let _ = tx.send(TurnEvent::Lines(vec![ChatLine {
-                    author: Author::System,
-                    text: "turn cancelled".into(),
-                }]));
-                let _ = tx.send(TurnEvent::Done);
-                return;
-            }
-
-            // Drain any tail events emitted between the last broadcast
-            // poll and the turn's actual completion.
-            catch_up_events(
-                &handles,
-                events_before,
-                &mut emitted_events,
-                &mut delta_router,
-                &tx,
-            )
-            .await;
-            // Clear any in-flight streaming preview before we finalize.
-            let _ = tx.send(TurnEvent::Stream(None));
-
-            let result = match turn.await {
-                Ok(result) => result,
-                Err(e) => {
-                    let _ = tx.send(TurnEvent::Failed(format!("turn task: {e}")));
-                    let _ = tx.send(TurnEvent::Done);
-                    return;
-                }
-            };
-            let response = match result {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = tx.send(TurnEvent::Failed(format!("{e}")));
-                    let _ = tx.send(TurnEvent::Done);
-                    return;
-                }
-            };
-
-            let messages = handles
-                .runtime
-                .messages(session_id)
-                .await
-                .unwrap_or_default();
-
-            let mut out = Vec::new();
-            // Assistant text from the turn.
-            for msg in messages.iter().skip(before) {
-                if msg.role == MessageRole::Agent
-                    && !msg.has_tool_calls()
-                    && let Some(text) = msg.text()
-                {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        out.push(ChatLine {
-                            author: Author::Assistant,
-                            text: trimmed.to_string(),
-                        });
-                    }
-                }
-            }
-            if out.is_empty() && !response.response.is_empty() {
-                out.push(ChatLine {
-                    author: Author::Assistant,
-                    text: response.response,
-                });
-            }
-            if !response.success
-                && let Some(err) = response.error
-            {
-                out.push(ChatLine {
-                    author: Author::System,
-                    text: format!("turn error: {err}"),
-                });
-            }
-            let _ = tx.send(TurnEvent::Lines(out));
-            let _ = tx.send(TurnEvent::Done);
-        });
+        let handle = self.session.run_turn(prompt, images);
+        self.begin_turn(handle, None);
     }
-}
-
-/// Tracks the most recently active delta stream so we can drop the
-/// preview as soon as a matching `*.completed` arrives. Per-turn state
-/// — one `DeltaRouter` per `start_turn` invocation.
-#[derive(Default)]
-pub(crate) struct DeltaRouter {
-    last_assistant_turn: Option<everruns_core::typed_id::TurnId>,
-    last_tool_call: Option<String>,
-    write_todos_args: HashMap<String, Value>,
 }
 
 fn parse_bang_shell_command(input: &str) -> Option<&str> {
@@ -1616,79 +1322,6 @@ fn parse_bang_shell_command(input: &str) -> Option<&str> {
         return Some("");
     }
     Some(rest.trim())
-}
-
-fn shell_result_lines(result: ToolExecutionResult) -> Vec<ChatLine> {
-    match result {
-        ToolExecutionResult::Success(value) => shell_success_lines(&value),
-        ToolExecutionResult::SuccessWithImages { result, .. } => shell_success_lines(&result),
-        ToolExecutionResult::ToolError(message) => vec![ChatLine {
-            author: Author::System,
-            text: format!("shell failed: {message}"),
-        }],
-        ToolExecutionResult::InternalError(_) => vec![ChatLine {
-            author: Author::System,
-            text: "shell failed: internal error".into(),
-        }],
-        ToolExecutionResult::ConnectionRequired { provider } => vec![ChatLine {
-            author: Author::System,
-            text: format!("shell failed: connection required for {provider}"),
-        }],
-    }
-}
-
-fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
-    let exit_code = value.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
-    let success = value
-        .get("success")
-        .and_then(Value::as_bool)
-        .unwrap_or(exit_code == 0);
-    let mut out = vec![ChatLine {
-        author: Author::Tool,
-        text: format!("shell exited with code {exit_code}"),
-    }];
-
-    for (label, author) in [
-        ("stdout", Author::ToolDetail),
-        ("stderr", Author::ToolDetail),
-    ] {
-        if let Some(text) = value.get(label).and_then(Value::as_str) {
-            let text = text.trim_end();
-            if !text.is_empty() {
-                out.push(ChatLine {
-                    author,
-                    text: format!("{label}:\n{text}"),
-                });
-            }
-        }
-    }
-    if value
-        .get("truncated")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || value
-            .get("output_limited")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    {
-        out.push(ChatLine {
-            author: Author::System,
-            text: "shell output was truncated".into(),
-        });
-    }
-    if out.len() == 1 {
-        out.push(ChatLine {
-            author: Author::ToolDetail,
-            text: "(no output)".into(),
-        });
-    }
-    if !success {
-        out.push(ChatLine {
-            author: Author::System,
-            text: "shell command exited non-zero".into(),
-        });
-    }
-    out
 }
 
 fn command_suggestions(
@@ -1888,8 +1521,8 @@ mod tests {
     use super::*;
     use crate::capabilities::model_discovery::DiscoveredProviderModel;
     use everruns_core::events::{
-        EventContext, InputMessageData, OutputMessageCompletedData, OutputMessageStartedData,
-        ReasonCompletedData,
+        Event as RuntimeEvent, EventContext, InputMessageData, OutputMessageCompletedData,
+        OutputMessageStartedData, ReasonCompletedData, ToolCompletedData,
     };
     use everruns_core::message::Message;
     use everruns_core::tool_types::ToolCall;
@@ -4084,7 +3717,7 @@ mod tests {
     async fn second_esc_while_goal_active_pauses_goal_continuation() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
-        let session_id = app.handles.session_id;
+        let session_id = app.session.session_id();
         let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
         app.setup = None;
         app.goal_store

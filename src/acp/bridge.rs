@@ -171,7 +171,7 @@ impl Translator {
 /// One concise text block summarising a finished tool call, or `None` when
 /// there is nothing worth surfacing.
 fn tool_result_content(data: &ToolCompletedData) -> Option<ContentBlock> {
-    let summary = crate::app::summarize_tool_result(data);
+    let summary = crate::transcript::summarize_tool_result(data);
     let trimmed = summary.trim();
     if trimmed.is_empty() {
         None
