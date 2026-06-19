@@ -27,20 +27,22 @@ agent, so scoring is identical.
 All four agents on `astropy__astropy-12907` (SWE-bench Verified), same prompt and
 Docker scorer — all **resolved**:
 
-| agent (model) | resolved | cost | wall | turns | llm calls | tool calls |
-|---|---|---|---|---|---|---|
-| yolop (claude-sonnet-4-5) | ✓ | $0.288 | 131s | 26 | 26 | 26 |
-| yolop · OpenRouter (nvidia nemotron-3-ultra-550b) | ✓ | $0.718 | 607s | 71 | 71 | 70 |
-| yolop · OpenRouter (openai/gpt-5.5) | ✓ | $0.361 | 38s | 19 | 19 | 18 |
-| claude-code (claude-sonnet-4-5) | ✓ | $0.830 | 226s | 34 | 54 | 33 |
-| codex (gpt-5.5) | ✓ | ~$0.063\* | 27s | 1 | 6 | 11 |
-| pi (gpt-5.5) | ✓ | $0.099 | 22s | 7 | 14 | 6 |
+| agent (model) | effort | resolved | cost | wall | turns | llm calls | tool calls |
+|---|---|---|---|---|---|---|---|
+| yolop (claude-sonnet-4-5) | default | ✓ | $0.288 | 131s | 26 | 26 | 26 |
+| yolop (claude-opus-4-8) | default | ✓ | $0.114 | 122s | 10 | 10 | 9 |
+| yolop (gpt-5.5, OpenAI) | default | ✓ | $1.698 | 156s | 23 | 23 | 22 |
+| yolop · OpenRouter (nvidia nemotron-3-ultra-550b) | default | ✓ | $0.718 | 607s | 71 | 71 | 70 |
+| claude-code (claude-sonnet-4-5) | default | ✓ | $0.830 | 226s | 34 | 54 | 33 |
+| codex (gpt-5.5) | default | ✓ | ~$0.063\* | 27s | 1 | 6 | 11 |
+| pi (gpt-5.5) | default | ✓ | $0.099 | 22s | 7 | 14 | 6 |
 
 \* codex reports no cost; this is the harness estimate from a placeholder
 `price` block — update it to real gpt-5.5 pricing for accuracy. All other costs
-are tool-reported (OpenRouter costs are real post-routing prices). One instance
-is a smoke, not a resolve-rate; run the full set per config for
-leaderboard-comparable numbers.
+are tool-reported. `effort` is the model reasoning-effort setting
+(`reasoning_effort`; "default" = the provider/yolop default — see the
+`openai-high` config for `high`). One instance is a smoke, not a resolve-rate;
+run the full set per config for leaderboard-comparable numbers.
 
 ## What it measures
 
@@ -133,6 +135,10 @@ cd bench
 
 # Whole benchmark (all 500), one config
 .venv/bin/python -m yoloeval run --config openai-default
+
+# Re-score saved patches without re-running the agent (e.g. after a Docker Hub
+# pull rate-limit aborted the original eval)
+.venv/bin/python -m yoloeval eval --instance astropy__astropy-12907 --config openai-default
 
 # Rebuild summaries from saved results
 .venv/bin/python -m yoloeval summarize --config openai-default

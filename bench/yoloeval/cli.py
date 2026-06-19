@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 
 from .config import load_matrix
 from .datasets.base import get_benchmark
@@ -72,6 +73,58 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_eval(args) -> int:
+    """Re-score already-saved patches without re-running the agent.
+
+    Useful when the agent run succeeded but Docker evaluation failed for an
+    infra reason (e.g. a Docker Hub pull rate limit), so we don't pay to
+    regenerate patches just to score them.
+    """
+    benchmark = get_benchmark(
+        args.benchmark, max_workers=args.max_workers,
+        namespace=args.namespace, timeout=args.eval_timeout,
+    )
+    defaults, configs = load_matrix(args.matrix)
+    names = args.config or list(configs)
+    run_id = args.run_id or f"reeval-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}"
+    want = set(args.instance) if args.instance else None
+    limit_ids = None
+    if args.limit is not None:
+        limit_ids = {i.instance_id for i in benchmark.load()[: args.limit]}
+
+    for name in names:
+        cfg_dir = results.RESULTS_DIR / args.benchmark / name
+        records: dict[str, dict] = {}
+        for p in sorted(cfg_dir.glob("*.json")) if cfg_dir.exists() else []:
+            if p.name == "summary.json":
+                continue
+            rec = json.loads(p.read_text())
+            iid = rec["instance_id"]
+            if want and iid not in want:
+                continue
+            if limit_ids is not None and iid not in limit_ids:
+                continue
+            records[iid] = rec
+        if not records:
+            print(f"[eval] {name}: no saved results to score", flush=True)
+            continue
+
+        predictions = {iid: rec.get("patch", "") for iid, rec in records.items()}
+        instances = benchmark.load(list(records))
+        eval_results = benchmark.evaluate(predictions, instances, f"{run_id}--{name}")
+        for iid, rec in records.items():
+            ev = eval_results.get(iid)
+            rec["resolved"] = bool(ev.resolved) if ev else False
+            rec["eval_report"] = ev.report if ev else {}
+            rec["error"] = ev.error if ev else rec.get("error")
+            results.save_result(rec)
+            print(f"[eval] {name} :: {iid} :: resolved={rec['resolved']}", flush=True)
+        summary = results.summarize(args.benchmark, name)
+        print(f"[eval] summary {name}: {summary['resolved']}/{summary['instances']} resolved",
+              flush=True)
+    return 0
+
+
 def cmd_summarize(args) -> int:
     defaults, configs = load_matrix(args.matrix)
     names = args.config or list(configs)
@@ -103,6 +156,17 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--namespace", default="swebench", help="image namespace ('none' to build locally)")
     r.add_argument("--eval-timeout", type=int, default=1800, help="per-instance test timeout (s)")
     r.set_defaults(func=cmd_run)
+
+    e = sub.add_parser("eval", parents=[common],
+                       help="re-score saved patches without re-running the agent")
+    eg = e.add_mutually_exclusive_group()
+    eg.add_argument("--instance", action="append", help="specific instance id(s); repeatable")
+    eg.add_argument("--limit", type=int, help="score the first N instances")
+    e.add_argument("--run-id", default=None)
+    e.add_argument("--max-workers", type=int, default=4, help="Docker eval workers")
+    e.add_argument("--namespace", default="swebench", help="image namespace ('none' to build locally)")
+    e.add_argument("--eval-timeout", type=int, default=1800, help="per-instance test timeout (s)")
+    e.set_defaults(func=cmd_eval)
 
     s = sub.add_parser("summarize", parents=[common], help="rebuild summary.json files")
     s.set_defaults(func=cmd_summarize)

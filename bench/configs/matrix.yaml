@@ -35,19 +35,17 @@ configs:
     provider: anthropic
     model: claude-sonnet-4-5
 
+  anthropic-opus:
+    <<: *yolop
+    provider: anthropic
+    model: claude-opus-4-8
+
   # --- yolop x OpenRouter (needs OPENROUTER_API_KEY) ---
   # Latest NVIDIA flagship on OpenRouter (released 2026-06-04).
   openrouter-nemotron:
     <<: *yolop
     provider: openrouter
     model: nvidia/nemotron-3-ultra-550b-a55b
-
-  # gpt-5.5 routed through OpenRouter (openai-default runs the same model via the
-  # OpenAI provider directly; this is the OpenRouter-routed comparison point).
-  openrouter-gpt-5.5:
-    <<: *yolop
-    provider: openrouter
-    model: openai/gpt-5.5
 
   # --- Offline plumbing check (no API key, won't solve tasks) ---
   llmsim:
