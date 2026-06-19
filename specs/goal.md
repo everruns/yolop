@@ -21,6 +21,8 @@ the transcript.
 | --- | --- |
 | `/goal <condition>` | Replace any active goal, persist it, and start a turn immediately with the condition as the directive. |
 | `/goal` | Show status: condition, elapsed time, evaluated turns, session tokens, last evaluator reason. |
+| `/goal pause` | Pause auto-continuation without clearing the active condition. |
+| `/goal resume` | Resume a paused goal and start the next turn. |
 | `/goal clear` | Clear the active goal (`stop`, `off`, `reset`, `none`, `cancel` are aliases). |
 | `/clear` | Also clears an active goal (new conversation). |
 
@@ -33,6 +35,10 @@ After each agent turn while a goal is active:
 3. If `met` is true, the goal clears and the host prints `goal achieved`.
 4. If `met` is false, the host starts another turn with the evaluator reason
    as guidance.
+
+In the interactive TUI, pressing `Esc` twice during a goal turn cancels the
+current turn and pauses the goal. The condition remains available in `/goal`;
+`/goal resume` restarts auto-continuation.
 
 Conditions may be up to 4,000 characters. Users can bound runs in the condition
 itself (for example `or stop after 20 turns`); the evaluator judges that clause
@@ -50,7 +56,8 @@ from the transcript, matching the Claude Code contract.
 
 Active goals are stored in `<session_dir>/goal.json` so a resumed session
 (`--session`) restores the condition. Timer and evaluated-turn counters reset
-on resume; an already-achieved goal is not restored as active.
+on resume; an already-achieved goal is not restored as active. Paused goals are
+restored without starting a turn until `/goal resume`.
 
 ## Ownership
 

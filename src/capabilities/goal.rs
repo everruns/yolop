@@ -53,8 +53,9 @@ impl Capability for GoalCapability {
             source: CommandSource::System,
             args: vec![CommandArg {
                 name: "condition".to_string(),
-                description: "Verifiable end state, `clear` to stop, or omit for status."
-                    .to_string(),
+                description:
+                    "Verifiable end state, `pause`/`resume`, `clear` to stop, or omit for status."
+                        .to_string(),
                 required: false,
                 suggestions: vec![],
             }],

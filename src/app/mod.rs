@@ -436,6 +436,12 @@ impl App {
         app.emit_system_banner();
         if should_setup {
             app.start_first_run_setup();
+        } else if app.goal_store.is_paused(session_id)
+            && let Some(condition) = app.goal_store.active_condition(session_id)
+        {
+            app.push_system(format!(
+                "restored paused goal: {condition} (run /goal resume to continue)"
+            ));
         } else if app.goal_store.take_pending_turn(session_id)
             && let Some(condition) = app.goal_store.active_condition(session_id)
         {
@@ -497,9 +503,13 @@ impl App {
             .goal_store
             .status(self.handles.session_id, self.session_tokens)
             .active
-            .map(|active| active.evaluated_turns)
-            .unwrap_or(0);
-        Some(format!("◎ goal ({turns})"))
+            .map(|active| (active.evaluated_turns, active.paused))
+            .unwrap_or((0, false));
+        if turns.1 {
+            Some(format!("◎ goal paused ({})", turns.0))
+        } else {
+            Some(format!("◎ goal ({})", turns.0))
+        }
     }
 
     fn emit_system_banner(&mut self) {
@@ -1204,6 +1214,12 @@ impl App {
 
     fn cancel_current_turn(&mut self) {
         self.esc_pending_cancel = false;
+        if self.goal_store.is_active(self.handles.session_id) {
+            match self.goal_store.pause_active(self.handles.session_id) {
+                Ok(message) => self.push_system(message),
+                Err(err) => self.push_system(format!("goal pause failed: {err}")),
+            }
+        }
         if let Some(cancel) = self.turn_cancel.take() {
             let _ = cancel.send(());
             self.turn_activity = Some("cancelling".into());
@@ -1236,6 +1252,9 @@ impl App {
     async fn after_turn_goal_check(&mut self) {
         let session_id = self.handles.session_id;
         if !self.goal_store.is_active(session_id) {
+            return;
+        }
+        if self.goal_store.is_paused(session_id) {
             return;
         }
         let request = ExecuteCommandRequest {
@@ -3973,6 +3992,46 @@ mod tests {
             "second Esc should notify the turn worker"
         );
         assert_eq!(app.turn_activity.as_deref(), Some("cancelling"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn second_esc_while_goal_active_pauses_goal_continuation() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        let session_id = app.handles.session_id;
+        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+        app.setup = None;
+        app.goal_store
+            .set_active(session_id, "ship the change".into())
+            .expect("set active goal");
+        assert!(
+            app.goal_store.take_pending_turn(session_id),
+            "test starts from an in-progress goal turn"
+        );
+        app.busy = true;
+        app.turn_cancel = Some(cancel_tx);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert!(cancel_rx.await.is_ok(), "second Esc should cancel the turn");
+        assert!(
+            app.goal_store.is_paused(session_id),
+            "cancelled goal turn should pause auto-continuation"
+        );
+        assert!(
+            !app.goal_store.take_pending_turn(session_id),
+            "paused goal should not keep a pending continuation"
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("goal paused")),
+            "cancellation should explain how to resume the goal: {:?}",
+            app.lines
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
