@@ -9,6 +9,7 @@
 
 use async_trait::async_trait;
 use everruns_core::exec_tool_result::ExecToolResultPayload;
+use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::tool_types::ToolHints;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
@@ -62,6 +63,20 @@ impl BashTool {
 
 #[async_trait]
 impl Tool for BashTool {
+    fn narrate(
+        &self,
+        tool_call: &everruns_core::tool_types::ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        Some(everruns_core::tool_narration::narrate_shell_exec(
+            &tool_call.arguments,
+            self.display_name().unwrap_or("Bash"),
+            phase,
+            locale,
+        ))
+    }
+
     fn name(&self) -> &str {
         "bash"
     }

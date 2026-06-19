@@ -19,22 +19,23 @@ use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
-use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, labeled_phrase, truncate};
-use everruns_core::tool_types::ToolCall;
+use everruns_core::tool_narration::{ToolNarrationPhase, labeled_phrase, safe_arg_str, truncate};
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub(crate) const CLIENT_COMMANDS_CAPABILITY_ID: &str = "yolop_client_commands";
 
-const CLIENT_COMMANDS_PROMPT: &str = r#"For natural-language requests, `run_yolop_command` can perform these TUI client
+const CLIENT_COMMANDS_PROMPT: &str = r#"<capability id="yolop_client_commands">
+For natural-language requests, `run_yolop_command` can perform these TUI client
 commands: `/help`, `/tools`, `/mcp`, `/cwd`, `/status [compact|expanded|toggle]`,
 `/model [id]`, `/effort [level]`, `/clear`, and `/quit` (`/exit` is an alias).
 The TUI may expose other slash commands, but only use `run_yolop_command` for
 this listed client-command set. When the user asks for one of these terminal
 actions — for example "exit", "clear the screen", "show tools", "switch model",
 or "expand the status bar" — call `run_yolop_command`; do not merely tell the
-user to type the slash command."#;
+user to type the slash command.
+</capability>"#;
 
 pub(crate) struct ClientCommandsCapability {
     ui: Arc<dyn HostUi>,
@@ -158,17 +159,18 @@ struct RunYolopCommandTool {
 impl Tool for RunYolopCommandTool {
     fn narrate(
         &self,
-        tool_call: &ToolCall,
+        tool_call: &everruns_core::tool_types::ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
     ) -> Option<String> {
         let _ = locale;
-        let command = arg_str(&tool_call.arguments, &["command"]).map(|value| truncate(value, 48));
+        let value =
+            safe_arg_str(&tool_call.arguments, &["command"]).map(|value| truncate(value, 48));
         Some(labeled_phrase(
-            "Run command",
-            "Ran command",
-            "Failed to run command",
-            command,
+            "Yolop command",
+            "Yolop command",
+            "Could not use yolop command",
+            value,
             phase,
         ))
     }
@@ -178,11 +180,11 @@ impl Tool for RunYolopCommandTool {
     }
 
     fn display_name(&self) -> Option<&str> {
-        Some("Run yolop command")
+        Some("Yolop command")
     }
 
     fn description(&self) -> &str {
-        "Run an interactive yolop slash command on behalf of a natural-language user request. \
+        "Execute an interactive yolop slash command on behalf of a natural-language user request. \
          Use this when the user asks to exit, clear the transcript, show help/tools/MCP/cwd, \
          show or change the status layout, or open/switch model or reasoning effort. Accepts command names with or without the leading \
          slash; `exit` is accepted as an alias for `quit`."
@@ -282,8 +284,6 @@ fn arg(name: &str, required: bool) -> CommandArg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::tool_narration::ToolNarrationPhase;
-    use everruns_core::tool_types::ToolCall;
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
@@ -317,9 +317,25 @@ mod tests {
         assert!(prompt.contains("this listed client-command set"));
         assert!(prompt.contains("/quit"));
         assert!(prompt.contains("/exit"));
-        assert!(
-            !prompt.contains("<capability"),
-            "system_prompt_addition is wrapped by the runtime"
+    }
+
+    #[test]
+    fn run_yolop_command_narration_includes_command() {
+        use everruns_core::tool_narration::ToolNarrationPhase;
+        use everruns_core::tool_types::ToolCall;
+
+        let tool = RunYolopCommandTool {
+            ui: Arc::new(RecordingUi::default()),
+        };
+        let tool_call = ToolCall {
+            id: "call-1".to_string(),
+            name: "run_yolop_command".to_string(),
+            arguments: json!({ "command": "/model" }),
+        };
+
+        assert_eq!(
+            tool.narrate(&tool_call, ToolNarrationPhase::Started, None),
+            Some("Yolop command: /model".to_string())
         );
     }
 
@@ -406,21 +422,5 @@ mod tests {
                 arg: Some("expanded".to_string())
             }]
         );
-    }
-
-    #[test]
-    fn run_yolop_command_narration_includes_command() {
-        let tool = RunYolopCommandTool {
-            ui: Arc::new(RecordingUi::default()),
-        };
-        let call = ToolCall {
-            id: "call-1".to_owned(),
-            name: "run_yolop_command".to_owned(),
-            arguments: json!({ "command": "/help" }),
-        };
-
-        let narration = tool.narrate(&call, ToolNarrationPhase::Started, None);
-
-        assert_eq!(narration.as_deref(), Some("Run command: /help"));
     }
 }

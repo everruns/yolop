@@ -21,6 +21,10 @@ use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptCont
 use everruns_core::command::{
     CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource, ExecuteCommandRequest,
 };
+use everruns_core::tool_narration::{
+    ToolNarrationPhase, labeled_phrase, narrate_shell_exec, safe_arg_str,
+    truncate as truncate_narration,
+};
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1156,11 +1160,25 @@ struct BackgroundRunTool {
 
 #[async_trait]
 impl Tool for BackgroundRunTool {
+    fn narrate(
+        &self,
+        tool_call: &everruns_core::tool_types::ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        Some(narrate_shell_exec(
+            &tool_call.arguments,
+            self.display_name().unwrap_or("Background shell"),
+            phase,
+            locale,
+        ))
+    }
+
     fn name(&self) -> &str {
         "background_run"
     }
     fn display_name(&self) -> Option<&str> {
-        Some("Run in background")
+        Some("Background shell")
     }
     fn description(&self) -> &str {
         "Start a shell command that runs DETACHED from this turn and returns immediately. Use for \
@@ -1222,11 +1240,29 @@ struct BackgroundAgentTool {
 
 #[async_trait]
 impl Tool for BackgroundAgentTool {
+    fn narrate(
+        &self,
+        tool_call: &everruns_core::tool_types::ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let value = safe_arg_str(&tool_call.arguments, &["label", "task"])
+            .map(|value| truncate_narration(value, 48));
+        Some(labeled_phrase(
+            "Sub-agent in background",
+            "Sub-agent in background",
+            "Could not launch sub-agent",
+            value,
+            phase,
+        ))
+    }
+
     fn name(&self) -> &str {
         "background_agent"
     }
     fn display_name(&self) -> Option<&str> {
-        Some("Run sub-agent in background")
+        Some("Sub-agent in background")
     }
     fn description(&self) -> &str {
         "Spin off a focused sub-agent that runs DETACHED from this turn in its own session, with \

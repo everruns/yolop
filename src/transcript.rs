@@ -508,7 +508,7 @@ fn todo_lines_for_result_or_args(
 fn tool_started_label(data: &ToolStartedData) -> String {
     data.narration
         .clone()
-        .or(data.display_name.clone())
+        .or_else(|| data.display_name.clone())
         .unwrap_or_else(|| data.tool_call.name.clone())
 }
 
@@ -703,5 +703,13 @@ mod tests {
         let data = started_tool("tool_search", json!({ "query": "hooks" }));
 
         assert_eq!(tool_started_label(&data), "Hardcoded label");
+    }
+
+    #[test]
+    fn tool_started_label_falls_back_to_tool_name() {
+        let mut data = started_tool("tool_search", json!({ "query": "hooks" }));
+        data.display_name = None;
+
+        assert_eq!(tool_started_label(&data), "tool_search");
     }
 }
