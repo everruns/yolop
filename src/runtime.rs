@@ -10,11 +10,11 @@ use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, AgentRunResult,
     AgentSpawner, ApprovalCapability, AstGrepCapability, AttributionCapability,
     BACKGROUND_CAPABILITY_ID, BackgroundCapability, BackgroundRegistry,
-    CLIENT_COMMANDS_CAPABILITY_ID, CONFIG_CAPABILITY_ID, ClientCommandsCapability,
-    CodingBashCapability, CodingCliEnvironmentCapability, ConfigCapability,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, GOAL_CAPABILITY_ID, GoalCapability, HOOKS_CAPABILITY_ID,
-    HooksCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability, SETUP_CAPABILITY_ID,
-    SetupCapability, WorktreeCapability,
+    CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID,
+    ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
+    ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, GOAL_CAPABILITY_ID, GoalCapability,
+    HOOKS_CAPABILITY_ID, HooksCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
+    SETUP_CAPABILITY_ID, SetupCapability, WorktreeCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::connectors::{
@@ -30,11 +30,13 @@ use async_trait::async_trait;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
     BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, FileSystemCapability,
-    INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LoopDetectionCapability,
-    MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability,
-    SKILLS_CAPABILITY_ID, ScopedSkillsCapability, SessionStorageCapability,
-    StatelessTodoListCapability, TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability,
-    ToolSearchCapability, UserHooksCapability, WebFetchCapability,
+    INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID,
+    LoopDetectionCapability, MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID,
+    PromptCachingCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID,
+    SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability,
+    SessionStorageCapability, StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID,
+    TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
+    USER_HOOKS_CAPABILITY_ID, UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::driver_registry::{DriverRegistry, ProviderMetadata};
@@ -1528,6 +1530,13 @@ fn reasoning_effort_value(value: &everruns_core::ReasoningEffort) -> Option<Stri
         .and_then(|value| value.as_str().map(str::to_string))
 }
 
+// Integration capabilities whose crates do not export an id constant
+// (`everruns-integrations-*` identify themselves with a bare string). Mirror
+// them here so the harness wiring references a single named source of truth
+// instead of scattering string literals.
+pub(crate) const DUCKDUCKGO_CAPABILITY_ID: &str = "duckduckgo";
+pub(crate) const DAYTONA_CAPABILITY_ID: &str = "daytona";
+
 fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabilityConfig> {
     let mut caps = Vec::new();
     // Terminal-side commands lead the registry so the most-typed commands
@@ -1538,7 +1547,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         caps.push(AgentCapabilityConfig::new(CLIENT_COMMANDS_CAPABILITY_ID));
     }
     caps.extend([
-        AgentCapabilityConfig::new("session_file_system"),
+        AgentCapabilityConfig::new(SESSION_FILE_SYSTEM_CAPABILITY_ID),
         AgentCapabilityConfig::new(SKILLS_CAPABILITY_ID),
         AgentCapabilityConfig::new(REPO_MAP_CAPABILITY_ID),
         AgentCapabilityConfig::new(AST_GREP_CAPABILITY_ID),
@@ -1555,21 +1564,21 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
                 }
             }),
         ),
-        AgentCapabilityConfig::new("stateless_todo_list"),
-        AgentCapabilityConfig::new("loop_detection"),
+        AgentCapabilityConfig::new(STATELESS_TODO_LIST_CAPABILITY_ID),
+        AgentCapabilityConfig::new(LOOP_DETECTION_CAPABILITY_ID),
         AgentCapabilityConfig::new(PROMPT_CACHING_CAPABILITY_ID),
         // Provider-agnostic deferred tool loading. Core tools stay fully
         // loaded; the long tail is stubbed until the model loads it via the
         // `tool_search` tool. Works on every model. Default threshold is 15
         // tools (see DEFAULT_TOOL_SEARCH_THRESHOLD).
         AgentCapabilityConfig::new(TOOL_SEARCH_CAPABILITY_ID),
-        AgentCapabilityConfig::new("tool_output_persistence"),
-        AgentCapabilityConfig::new("duckduckgo"),
+        AgentCapabilityConfig::new(TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID),
+        AgentCapabilityConfig::new(DUCKDUCKGO_CAPABILITY_ID),
         AgentCapabilityConfig::new(ATTRIBUTION_CAPABILITY_ID),
         // enable_file_download=true: saved responses land on disk through
         // the platform filesystem stack, so the write blocklist applies.
         AgentCapabilityConfig::with_config(
-            "web_fetch",
+            WEB_FETCH_CAPABILITY_ID,
             serde_json::json!({ "enable_file_download": true }),
         ),
         AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
@@ -1586,7 +1595,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         // Soft approval: injects spoken-consent guidance for critical actions,
         // tuned by the central `approval_mode` setting (off contributes nothing).
         AgentCapabilityConfig::new(APPROVAL_CAPABILITY_ID),
-        AgentCapabilityConfig::new("yolop_bash"),
+        AgentCapabilityConfig::new(CODING_BASH_CAPABILITY_ID),
         AgentCapabilityConfig::new(BACKGROUND_CAPABILITY_ID),
         // Project policy changes more often than tool-use guidance, so keep it
         // late in the prompt prefix for better cache reuse.
@@ -1604,13 +1613,46 @@ pub(crate) fn coding_harness_defaults(client_commands: bool) -> Vec<AgentCapabil
     default_coding_harness_capabilities(client_commands)
 }
 
-/// Daytona depends on `session_storage`. When enabled via `[[capabilities]]`,
-/// ensure that dependency is present on the harness.
+/// Capability dependency edges: enabling the first id requires the listed ids
+/// to also be present on the harness. Declared as data — each new dependency is
+/// one row, resolved transitively below — rather than hand-written per-pair
+/// checks. IDs are constants so a typo or an upstream rename is a compile error,
+/// not a silently dropped dependency.
+const HARNESS_CAPABILITY_DEPENDENCIES: &[(&str, &[&str])] =
+    &[(DAYTONA_CAPABILITY_ID, &[SESSION_STORAGE_CAPABILITY_ID])];
+
+/// Append any capabilities that enabled ones depend on (e.g. `daytona` pulls in
+/// `session_storage`), closing the set against the production
+/// [`HARNESS_CAPABILITY_DEPENDENCIES`] table.
 fn ensure_harness_capability_dependencies(caps: &mut Vec<AgentCapabilityConfig>) {
-    let daytona = caps.iter().any(|c| c.capability_id() == "daytona");
-    let storage = caps.iter().any(|c| c.capability_id() == "session_storage");
-    if daytona && !storage {
-        caps.push(AgentCapabilityConfig::new("session_storage"));
+    resolve_capability_dependencies(caps, HARNESS_CAPABILITY_DEPENDENCIES);
+}
+
+/// Close `caps` under the dependency `edges`: for every present capability,
+/// append any missing ids it depends on, repeating until no new id is added so
+/// transitive chains are fully resolved. Already-present ids are never
+/// duplicated. Bounded by the number of edges — each pass adds at most the
+/// missing dependencies once, so the set stabilizes.
+fn resolve_capability_dependencies(
+    caps: &mut Vec<AgentCapabilityConfig>,
+    edges: &[(&str, &[&str])],
+) {
+    loop {
+        let mut added = false;
+        for (capability, dependencies) in edges {
+            if !caps.iter().any(|c| c.capability_id() == *capability) {
+                continue;
+            }
+            for dependency in *dependencies {
+                if !caps.iter().any(|c| c.capability_id() == *dependency) {
+                    caps.push(AgentCapabilityConfig::new(*dependency));
+                    added = true;
+                }
+            }
+        }
+        if !added {
+            break;
+        }
     }
 }
 
@@ -1641,7 +1683,7 @@ fn coding_harness_capabilities(
     if let Some(config) = hook_config {
         push_before_environment_context(
             &mut caps,
-            AgentCapabilityConfig::with_config("user_hooks", config),
+            AgentCapabilityConfig::with_config(USER_HOOKS_CAPABILITY_ID, config),
         );
     }
     caps
@@ -2673,16 +2715,19 @@ mod tests {
 
         let mut settings = Settings::default();
         settings.capabilities.push(CapabilityOverride {
-            capability_ref: "daytona".to_string(),
+            capability_ref: DAYTONA_CAPABILITY_ID.to_string(),
             enabled: Some(true),
             append: false,
             config: serde_json::json!({}),
         });
         let ids = coding_harness_capabilities(false, None, &settings);
-        assert!(ids.iter().any(|cap| cap.capability_id() == "daytona"));
         assert!(
             ids.iter()
-                .any(|cap| cap.capability_id() == "session_storage")
+                .any(|cap| cap.capability_id() == DAYTONA_CAPABILITY_ID)
+        );
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == SESSION_STORAGE_CAPABILITY_ID)
         );
     }
 
@@ -2693,7 +2738,40 @@ mod tests {
             ids.iter()
                 .any(|cap| cap.capability_id() == CONNECTORS_CAPABILITY_ID)
         );
-        assert!(!ids.iter().any(|cap| cap.capability_id() == "daytona"));
+        assert!(
+            !ids.iter()
+                .any(|cap| cap.capability_id() == DAYTONA_CAPABILITY_ID)
+        );
+    }
+
+    #[test]
+    fn dependency_resolver_pulls_transitive_dependencies() {
+        // Drive the production resolver with a synthetic edge set: a capability
+        // that only declares a direct dependency must still get the
+        // dependency's own dependencies (a -> b -> c).
+        let edges: &[(&str, &[&str])] = &[("a", &["b"]), ("b", &["c"])];
+        let mut caps = vec![AgentCapabilityConfig::new("a")];
+        resolve_capability_dependencies(&mut caps, edges);
+        let ids: Vec<&str> = caps.iter().map(|c| c.capability_id()).collect();
+        assert!(ids.contains(&"b"), "direct dependency missing: {ids:?}");
+        assert!(ids.contains(&"c"), "transitive dependency missing: {ids:?}");
+    }
+
+    #[test]
+    fn dependency_resolver_is_idempotent() {
+        // Running the real resolver twice must not duplicate the injected
+        // dependency, and an already-satisfied dependency is left untouched.
+        let mut caps = vec![
+            AgentCapabilityConfig::new(DAYTONA_CAPABILITY_ID),
+            AgentCapabilityConfig::new(SESSION_STORAGE_CAPABILITY_ID),
+        ];
+        ensure_harness_capability_dependencies(&mut caps);
+        ensure_harness_capability_dependencies(&mut caps);
+        let storage = caps
+            .iter()
+            .filter(|c| c.capability_id() == SESSION_STORAGE_CAPABILITY_ID)
+            .count();
+        assert_eq!(storage, 1, "dependency injected more than once");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4195,7 +4273,7 @@ mod tests {
 
         assert!(
             ids.iter()
-                .any(|cap| cap.capability_id() == "tool_output_persistence")
+                .any(|cap| cap.capability_id() == TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID)
         );
     }
 
@@ -4381,7 +4459,7 @@ mod tests {
 
         assert!(
             ids.iter()
-                .any(|cap| cap.capability_id() == "loop_detection")
+                .any(|cap| cap.capability_id() == LOOP_DETECTION_CAPABILITY_ID)
         );
     }
 
@@ -4442,7 +4520,10 @@ mod tests {
         assert!(
             position(CLIENT_COMMANDS_CAPABILITY_ID) < position(AGENT_INSTRUCTIONS_CAPABILITY_ID)
         );
-        assert!(position("session_file_system") < position(AGENT_INSTRUCTIONS_CAPABILITY_ID));
+        assert!(
+            position(SESSION_FILE_SYSTEM_CAPABILITY_ID)
+                < position(AGENT_INSTRUCTIONS_CAPABILITY_ID)
+        );
         assert!(position(SKILLS_CAPABILITY_ID) < position(AGENT_INSTRUCTIONS_CAPABILITY_ID));
         assert!(position(APPROVAL_CAPABILITY_ID) < position(AGENT_INSTRUCTIONS_CAPABILITY_ID));
         assert!(
@@ -4474,7 +4555,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{id} should be enabled"))
         };
 
-        assert!(position("user_hooks") < position(ENVIRONMENT_CONTEXT_CAPABILITY_ID));
+        assert!(position(USER_HOOKS_CAPABILITY_ID) < position(ENVIRONMENT_CONTEXT_CAPABILITY_ID));
         assert_eq!(position(ENVIRONMENT_CONTEXT_CAPABILITY_ID), ids.len() - 1);
     }
 

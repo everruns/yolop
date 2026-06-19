@@ -243,6 +243,8 @@ fn git_output(workspace_root: &Path, args: &[&str]) -> Option<String> {
 
 // ---------- bash ----------
 
+pub(crate) const CODING_BASH_CAPABILITY_ID: &str = "yolop_bash";
+
 pub(crate) struct CodingBashCapability {
     pub(crate) workspace: Workspace,
     pub(crate) expose_command: bool,
@@ -251,7 +253,7 @@ pub(crate) struct CodingBashCapability {
 #[async_trait]
 impl Capability for CodingBashCapability {
     fn id(&self) -> &str {
-        "yolop_bash"
+        CODING_BASH_CAPABILITY_ID
     }
     fn name(&self) -> &str {
         "Coding CLI Bash"
