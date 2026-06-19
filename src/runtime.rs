@@ -554,17 +554,84 @@ pub(crate) struct ReasoningEffortOption {
     pub label: String,
 }
 
-/// Provider names recognized by `/setup` and persisted settings. The order
-/// is the user-visible suggestion order.
+/// Canonical provider identity: the single source of truth for the set of
+/// providers and the name/driver mapping. `ProviderChoice` carries the live
+/// model/effort/base-url for a chosen provider; `Provider` is just the identity
+/// (one per [`ProviderChoice`] variant). Settings TOML and env vars still use
+/// the string form at their boundary — `as_str`/`from_name` are the only place
+/// that conversion happens, instead of string matches scattered across the
+/// resolver, driver lookup, and a separate hardcoded name list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Provider {
+    OpenAi,
+    Codex,
+    Anthropic,
+    Google,
+    OpenRouter,
+    Ollama,
+    Custom,
+    Sim,
+}
+
+impl Provider {
+    /// Every provider, in the user-visible suggestion order.
+    pub const ALL: [Provider; 8] = [
+        Provider::OpenAi,
+        Provider::Codex,
+        Provider::Anthropic,
+        Provider::Google,
+        Provider::OpenRouter,
+        Provider::Ollama,
+        Provider::Custom,
+        Provider::Sim,
+    ];
+
+    /// Short name used in settings, env, and command suggestions.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Provider::OpenAi => "openai",
+            Provider::Codex => "codex",
+            Provider::Anthropic => "anthropic",
+            Provider::Google => "google",
+            Provider::OpenRouter => "openrouter",
+            Provider::Ollama => "ollama",
+            Provider::Custom => "custom",
+            Provider::Sim => "llmsim",
+        }
+    }
+
+    /// Parse a provider name (case-insensitive, trimmed). `None` for any name
+    /// outside [`Provider::ALL`].
+    pub fn from_name(name: &str) -> Option<Provider> {
+        let name = name.trim().to_ascii_lowercase();
+        Provider::ALL.into_iter().find(|p| p.as_str() == name)
+    }
+
+    /// The driver that serves this provider, when it maps to one of the
+    /// registered first-class drivers. Providers without a dedicated driver
+    /// (codex, ollama, custom, llmsim) return `None`.
+    pub fn driver_id(self) -> Option<DriverId> {
+        match self {
+            Provider::Anthropic => Some(DriverId::Anthropic),
+            Provider::OpenAi | Provider::Google => Some(DriverId::OpenAI),
+            Provider::OpenRouter => Some(DriverId::OpenRouter),
+            Provider::Codex | Provider::Ollama | Provider::Custom | Provider::Sim => None,
+        }
+    }
+}
+
+/// Provider names recognized by `/setup` and persisted settings, in the
+/// user-visible suggestion order. Spelled in terms of [`Provider`] so the set
+/// has one source of truth (a round-trip test locks the two together).
 pub const SUPPORTED_PROVIDERS: &[&str] = &[
-    "openai",
-    "codex",
-    "anthropic",
-    "google",
-    "openrouter",
-    "ollama",
-    "custom",
-    "llmsim",
+    Provider::OpenAi.as_str(),
+    Provider::Codex.as_str(),
+    Provider::Anthropic.as_str(),
+    Provider::Google.as_str(),
+    Provider::OpenRouter.as_str(),
+    Provider::Ollama.as_str(),
+    Provider::Custom.as_str(),
+    Provider::Sim.as_str(),
 ];
 
 impl ProviderChoice {
@@ -681,28 +748,39 @@ impl ProviderChoice {
         label
     }
 
+    /// The canonical provider identity for this choice.
+    pub fn provider(&self) -> Provider {
+        match self {
+            Self::Anthropic { .. } => Provider::Anthropic,
+            Self::OpenAi { .. } => Provider::OpenAi,
+            Self::Codex { .. } => Provider::Codex,
+            Self::Google { .. } => Provider::Google,
+            Self::OpenRouter { .. } => Provider::OpenRouter,
+            Self::Ollama { .. } => Provider::Ollama,
+            Self::Custom { .. } => Provider::Custom,
+            Self::Sim => Provider::Sim,
+        }
+    }
+
     /// Short name used in settings and command suggestions.
     pub fn provider_name(&self) -> &'static str {
-        match self {
-            Self::Anthropic { .. } => "anthropic",
-            Self::OpenAi { .. } => "openai",
-            Self::Codex { .. } => "codex",
-            Self::Google { .. } => "google",
-            Self::OpenRouter { .. } => "openrouter",
-            Self::Ollama { .. } => "ollama",
-            Self::Custom { .. } => "custom",
-            Self::Sim => "llmsim",
-        }
+        self.provider().as_str()
     }
 
     /// Build a ProviderChoice from a bare provider name, picking the
     /// provider's default model. Used by `/setup` and by startup when
     /// rehydrating the persisted preference.
     pub fn default_for_provider_name(name: &str) -> Result<Self> {
-        match name.trim().to_ascii_lowercase().as_str() {
-            "openai" => Ok(Self::default_openai()),
-            "codex" => Ok(Self::default_codex()),
-            "anthropic" => {
+        let provider = Provider::from_name(name).ok_or_else(|| {
+            anyhow!(
+                "unknown provider {name}; expected one of {}",
+                SUPPORTED_PROVIDERS.join(", ")
+            )
+        })?;
+        match provider {
+            Provider::OpenAi => Ok(Self::default_openai()),
+            Provider::Codex => Ok(Self::default_codex()),
+            Provider::Anthropic => {
                 let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL);
                 Ok(Self::Anthropic {
                     reasoning_effort: normalize_reasoning_effort(env_non_empty(
@@ -712,7 +790,7 @@ impl ProviderChoice {
                     model,
                 })
             }
-            "google" => {
+            Provider::Google => {
                 let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL);
                 Ok(Self::Google {
                     base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
@@ -723,7 +801,7 @@ impl ProviderChoice {
                     model,
                 })
             }
-            "openrouter" => {
+            Provider::OpenRouter => {
                 let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL);
                 Ok(Self::OpenRouter {
                     base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
@@ -734,7 +812,7 @@ impl ProviderChoice {
                     model,
                 })
             }
-            "ollama" => {
+            Provider::Ollama => {
                 let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL);
                 Ok(Self::Ollama {
                     base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
@@ -748,7 +826,7 @@ impl ProviderChoice {
             // No sensible default model exists for an arbitrary endpoint; an
             // empty model is rejected later by `model_with_provider` so the
             // setup wizard (or a saved model from settings) must fill it in.
-            "custom" => {
+            Provider::Custom => {
                 let model = env_or_default("EVERRUNS_CLI_MODEL", "");
                 Ok(Self::Custom {
                     reasoning_effort: normalize_reasoning_effort(env_non_empty(
@@ -760,11 +838,7 @@ impl ProviderChoice {
                     model,
                 })
             }
-            "llmsim" => Ok(Self::Sim),
-            other => Err(anyhow!(
-                "unknown provider {other}; expected one of {}",
-                SUPPORTED_PROVIDERS.join(", ")
-            )),
+            Provider::Sim => Ok(Self::Sim),
         }
     }
 
@@ -825,13 +899,7 @@ fn bare_model_id_from_spec(spec: &str) -> &str {
 }
 
 fn driver_id_for_provider_name(provider: &str) -> Option<DriverId> {
-    match provider {
-        "anthropic" => Some(DriverId::Anthropic),
-        "openai" => Some(DriverId::OpenAI),
-        "google" => Some(DriverId::OpenAI),
-        "openrouter" => Some(DriverId::OpenRouter),
-        _ => None,
-    }
+    Provider::from_name(provider).and_then(Provider::driver_id)
 }
 
 /// Whether a bare model id plausibly belongs to the given provider. Used to
@@ -3433,6 +3501,40 @@ mod tests {
 
         let sim = ProviderChoice::default_for_provider_name("llmsim").unwrap();
         assert_eq!(sim.label(), "llmsim/llmsim-yolop");
+    }
+
+    #[test]
+    fn provider_identity_is_single_source_of_truth() {
+        // The supported-name list is exactly `Provider::ALL` mapped to names,
+        // in order — adding a variant without updating the list (or vice versa)
+        // fails here.
+        let from_enum: Vec<&str> = Provider::ALL.iter().map(|p| p.as_str()).collect();
+        assert_eq!(SUPPORTED_PROVIDERS, from_enum.as_slice());
+
+        // Names round-trip; parsing is case-insensitive and trims.
+        for p in Provider::ALL {
+            assert_eq!(Provider::from_name(p.as_str()), Some(p));
+        }
+        assert_eq!(Provider::from_name("  OpenAI "), Some(Provider::OpenAi));
+        assert_eq!(Provider::from_name("nope"), None);
+
+        // Every supported name builds a choice whose identity round-trips, so
+        // `ProviderChoice` and `Provider` can't drift apart.
+        for name in SUPPORTED_PROVIDERS {
+            let choice = ProviderChoice::default_for_provider_name(name)
+                .unwrap_or_else(|e| panic!("default_for_provider_name({name}): {e}"));
+            assert_eq!(choice.provider().as_str(), *name);
+        }
+
+        // Driver mapping matches the previous hand-written table.
+        assert_eq!(Provider::Anthropic.driver_id(), Some(DriverId::Anthropic));
+        assert_eq!(Provider::OpenAi.driver_id(), Some(DriverId::OpenAI));
+        assert_eq!(Provider::Google.driver_id(), Some(DriverId::OpenAI));
+        assert_eq!(Provider::OpenRouter.driver_id(), Some(DriverId::OpenRouter));
+        assert_eq!(Provider::Codex.driver_id(), None);
+        assert_eq!(Provider::Ollama.driver_id(), None);
+        assert_eq!(Provider::Custom.driver_id(), None);
+        assert_eq!(Provider::Sim.driver_id(), None);
     }
 
     #[test]
