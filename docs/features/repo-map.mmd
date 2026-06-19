@@ -1,0 +1,6 @@
+flowchart LR
+  R["Request<br/>query · path · language · limit"] --> W["Walk tree<br/>skip vendored dirs"]
+  W --> P["Parse<br/>tree-sitter · 18 languages"]
+  P --> E["Extract symbols<br/>name · kind · parent · signature"]
+  E --> G["Rank &amp; group<br/>relevance · top-N"]
+  G -. query only .-> Rank["TF-IDF-ish ranking<br/>field weights · IDF · coverage boost"]

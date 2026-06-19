@@ -1,0 +1,78 @@
+<svg viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Repo map on-demand symbol pipeline: request, walk tree, parse, extract symbols, rank and group.">
+  <style>
+    .label { font-family: 'Geist Sans', -apple-system, system-ui, sans-serif; font-size: 13px; font-weight: 600; fill: #0A0A0A; }
+    .sublabel { font-family: 'Geist Sans', -apple-system, system-ui, sans-serif; font-size: 11px; font-weight: 400; fill: #404040; }
+    .header-text { font-family: 'Geist Sans', -apple-system, system-ui, sans-serif; font-size: 11px; font-weight: 400; letter-spacing: 0.08em; fill: #A0A0A0; }
+    .mono { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 10px; fill: #404040; }
+    .step-num { font-family: 'Geist Sans', -apple-system, system-ui, sans-serif; font-size: 10px; font-weight: 600; fill: #FFFFFF; }
+  </style>
+
+  <rect x="0" y="0" width="800" height="300" fill="#FFFFFF"/>
+
+  <text x="400" y="42" text-anchor="middle" class="header-text">REPO MAP — ON-DEMAND SYMBOL PIPELINE</text>
+
+  <!-- Stage boxes -->
+  <g>
+    <rect x="12" y="95" width="120" height="90" fill="#F5F5F5" stroke="#0A0A0A" stroke-width="1"/>
+    <text x="72" y="130" text-anchor="middle" class="label">Request</text>
+    <text x="72" y="148" text-anchor="middle" class="sublabel">query · path</text>
+    <text x="72" y="163" text-anchor="middle" class="sublabel">language · limit</text>
+  </g>
+  <g>
+    <rect x="176" y="95" width="120" height="90" fill="#F5F5F5" stroke="#0A0A0A" stroke-width="1"/>
+    <text x="236" y="130" text-anchor="middle" class="label">Walk tree</text>
+    <text x="236" y="148" text-anchor="middle" class="sublabel">recurse workspace</text>
+    <text x="236" y="163" text-anchor="middle" class="sublabel">skip vendored dirs</text>
+  </g>
+  <g>
+    <rect x="340" y="95" width="120" height="90" fill="#F5F5F5" stroke="#0A0A0A" stroke-width="1"/>
+    <text x="400" y="130" text-anchor="middle" class="label">Parse</text>
+    <text x="400" y="148" text-anchor="middle" class="sublabel">tree-sitter</text>
+    <text x="400" y="163" text-anchor="middle" class="sublabel">18 languages</text>
+  </g>
+  <g>
+    <rect x="504" y="95" width="120" height="90" fill="#F5F5F5" stroke="#0A0A0A" stroke-width="1"/>
+    <text x="564" y="130" text-anchor="middle" class="label">Extract</text>
+    <text x="564" y="148" text-anchor="middle" class="sublabel">name · kind · parent</text>
+    <text x="564" y="163" text-anchor="middle" class="sublabel">signature · visibility</text>
+  </g>
+  <g>
+    <rect x="668" y="95" width="120" height="90" fill="#F5F5F5" stroke="#0A0A0A" stroke-width="1"/>
+    <text x="728" y="130" text-anchor="middle" class="label">Rank &amp; group</text>
+    <text x="728" y="148" text-anchor="middle" class="sublabel">relevance score</text>
+    <text x="728" y="163" text-anchor="middle" class="sublabel">top-N by file</text>
+  </g>
+
+  <!-- Arrows + step badges -->
+  <g>
+    <line x1="132" y1="140" x2="168" y2="140" stroke="#0A1636" stroke-width="1.5"/>
+    <polygon points="168,135 168,145 176,140" fill="#0A1636"/>
+    <rect x="145" y="118" width="18" height="18" fill="#0A1636"/>
+    <text x="154" y="131" text-anchor="middle" dominant-baseline="middle" class="step-num">1</text>
+  </g>
+  <g>
+    <line x1="296" y1="140" x2="332" y2="140" stroke="#0A1636" stroke-width="1.5"/>
+    <polygon points="332,135 332,145 340,140" fill="#0A1636"/>
+    <rect x="309" y="118" width="18" height="18" fill="#0A1636"/>
+    <text x="318" y="131" text-anchor="middle" dominant-baseline="middle" class="step-num">2</text>
+  </g>
+  <g>
+    <line x1="460" y1="140" x2="496" y2="140" stroke="#0A1636" stroke-width="1.5"/>
+    <polygon points="496,135 496,145 504,140" fill="#0A1636"/>
+    <rect x="473" y="118" width="18" height="18" fill="#0A1636"/>
+    <text x="482" y="131" text-anchor="middle" dominant-baseline="middle" class="step-num">3</text>
+  </g>
+  <g>
+    <line x1="624" y1="140" x2="660" y2="140" stroke="#0A1636" stroke-width="1.5"/>
+    <polygon points="660,135 660,145 668,140" fill="#0A1636"/>
+    <rect x="637" y="118" width="18" height="18" fill="#0A1636"/>
+    <text x="646" y="131" text-anchor="middle" dominant-baseline="middle" class="step-num">4</text>
+  </g>
+
+  <!-- Annotation -->
+  <g>
+    <rect x="240" y="218" width="320" height="58" fill="#FFFFFF" stroke="#404040" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="400" y="240" text-anchor="middle" class="mono">with a query → match terms, then TF-IDF-ish rank</text>
+    <text x="400" y="258" text-anchor="middle" class="mono">no query → scan order, capped at limit</text>
+  </g>
+</svg>
