@@ -1614,6 +1614,20 @@ fn ensure_harness_capability_dependencies(caps: &mut Vec<AgentCapabilityConfig>)
     }
 }
 
+fn push_before_environment_context(
+    caps: &mut Vec<AgentCapabilityConfig>,
+    cap: AgentCapabilityConfig,
+) {
+    if let Some(index) = caps
+        .iter()
+        .position(|c| c.capability_id() == ENVIRONMENT_CONTEXT_CAPABILITY_ID)
+    {
+        caps.insert(index, cap);
+    } else {
+        caps.push(cap);
+    }
+}
+
 fn coding_harness_capabilities(
     client_commands: bool,
     hook_config: Option<serde_json::Value>,
@@ -1625,7 +1639,10 @@ fn coding_harness_capabilities(
     );
     ensure_harness_capability_dependencies(&mut caps);
     if let Some(config) = hook_config {
-        caps.push(AgentCapabilityConfig::with_config("user_hooks", config));
+        push_before_environment_context(
+            &mut caps,
+            AgentCapabilityConfig::with_config("user_hooks", config),
+        );
     }
     caps
 }
@@ -4443,6 +4460,23 @@ mod tests {
             agent_instructions.config["files"],
             serde_json::json!(["AGENTS.md"])
         );
+    }
+
+    #[test]
+    fn coding_harness_keeps_environment_context_last_with_user_hooks() {
+        let ids = coding_harness_capabilities(
+            true,
+            Some(serde_json::json!({ "hooks": [] })),
+            &Settings::default(),
+        );
+        let position = |id: &str| {
+            ids.iter()
+                .position(|cap| cap.capability_id() == id)
+                .unwrap_or_else(|| panic!("{id} should be enabled"))
+        };
+
+        assert!(position("user_hooks") < position(ENVIRONMENT_CONTEXT_CAPABILITY_ID));
+        assert_eq!(position(ENVIRONMENT_CONTEXT_CAPABILITY_ID), ids.len() - 1);
     }
 
     /// Harness prompt is paid on every turn — keep it small enough that the
