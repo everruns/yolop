@@ -81,9 +81,11 @@ commands on the host. There is no sandbox.
 
 ## Workflow
 
-Read before editing. Test after changing behavior. When a command fails,
-read the full output, fix the root cause, and re-run — do not retry the
-identical command. If stuck after two attempts, explain and ask.
+Read before editing. Before finishing an edit, verify it empirically: run the
+nearest tests or a self-contained repro; if blocked, say why. Search sibling
+call sites/patterns for completeness. Review your diff for regressions. When a
+command fails, read the full output, fix the root cause, and re-run — do not
+retry the identical command. If stuck after two attempts, explain and ask.
 
 ## Permanent Tools
 
@@ -4400,6 +4402,20 @@ mod tests {
             !HARNESS_PROMPT.contains("## Tools at a glance"),
             "the old combined section should stay split"
         );
+    }
+
+    #[test]
+    fn harness_prompt_requires_verification_before_finishing_edits() {
+        let workflow = HARNESS_PROMPT
+            .split("## Workflow")
+            .nth(1)
+            .and_then(|tail| tail.split("## Permanent Tools").next())
+            .expect("workflow section should be present");
+
+        assert!(workflow.contains("Before finishing an edit"));
+        assert!(workflow.contains("nearest tests or a self-contained repro"));
+        assert!(workflow.contains("Search sibling"));
+        assert!(workflow.contains("Review your diff for regressions"));
     }
 
     #[test]
