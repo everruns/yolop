@@ -32,6 +32,7 @@ use tokio::sync::{mpsc, oneshot};
 mod markdown_table;
 mod render;
 mod setup;
+mod theme;
 mod viewport;
 
 // Re-export the moved free items so the rest of the crate (and the test module)
@@ -41,7 +42,7 @@ mod viewport;
 // The view-model types and runtime-event translation live in `crate::transcript`
 // (the single boundary that interprets `everruns_core` events); re-export them
 // here so the TUI's own submodules keep referring to them as `crate::app::*`.
-pub(crate) use self::{render::*, viewport::*};
+pub(crate) use self::{render::*, theme::*, viewport::*};
 pub(crate) use crate::transcript::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,16 +62,9 @@ const MAX_INPUT_HEIGHT: u16 = 12;
 const EXPANDED_STATUS_ROWS: u16 = 4;
 const RECENT_TRANSCRIPT_SOURCE_LINES: usize = 80;
 const RECENT_TRANSCRIPT_MAX_TEXT_BYTES: usize = 4_000;
-const ACCENT_BLUE: Color = Color::Rgb(45, 91, 158);
-const ACCENT_GOLD: Color = Color::Rgb(126, 94, 19);
-const TEXT_PRIMARY: Color = Color::Rgb(230, 230, 232);
-const TEXT_MUTED: Color = Color::Rgb(140, 140, 145);
-const TEXT_DIM: Color = Color::Rgb(72, 72, 78);
-const DIFF_ADD: Color = Color::Rgb(132, 166, 142);
-const DIFF_DELETE: Color = Color::Rgb(180, 132, 136);
-const DIFF_META: Color = Color::Rgb(108, 132, 188);
-const CODE_BG: Color = Color::Rgb(18, 18, 20);
-const PANEL_BG: Color = Color::Rgb(28, 28, 34);
+// Colors come from the active [`Theme`] (see `theme.rs`), which is built from
+// the terminal's own palette so yolop respects the user's scheme and renders
+// correctly on light and dark backgrounds.
 
 pub struct App {
     session: Session,
@@ -1470,7 +1464,7 @@ fn capability_command_usage_with_prefix(descriptor: &CommandDescriptor, prefix: 
 fn new_input_area(lines: Vec<String>) -> TextArea<'static> {
     let mut input = TextArea::new(lines);
     input.set_wrap_mode(WrapMode::Word);
-    input.set_style(Style::default().fg(TEXT_PRIMARY));
+    input.set_style(Style::default().fg(theme().text_primary));
     input.set_cursor_line_style(Style::default());
     input.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
     input
@@ -2514,12 +2508,12 @@ mod tests {
             96,
         );
 
-        assert_eq!(line_content_color(&lines[0]), Some(DIFF_DELETE));
-        assert_eq!(line_content_color(&lines[1]), Some(DIFF_ADD));
-        assert_eq!(line_content_color(&lines[2]), Some(DIFF_META));
-        assert_eq!(line_content_color(&lines[3]), Some(DIFF_DELETE));
-        assert_eq!(line_content_color(&lines[4]), Some(DIFF_ADD));
-        assert_eq!(line_content_color(&lines[5]), Some(TEXT_PRIMARY));
+        assert_eq!(line_content_color(&lines[0]), Some(theme().diff_delete));
+        assert_eq!(line_content_color(&lines[1]), Some(theme().diff_add));
+        assert_eq!(line_content_color(&lines[2]), Some(theme().diff_meta));
+        assert_eq!(line_content_color(&lines[3]), Some(theme().diff_delete));
+        assert_eq!(line_content_color(&lines[4]), Some(theme().diff_add));
+        assert_eq!(line_content_color(&lines[5]), Some(theme().text_primary));
     }
 
     #[test]
@@ -2538,8 +2532,8 @@ mod tests {
             line_text(&lines[0]),
             "note › Considering installation steps"
         );
-        assert_eq!(lines[0].spans[0].style.fg, Some(TEXT_MUTED));
-        assert_eq!(line_content_color(&lines[0]), Some(TEXT_MUTED));
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme().text_muted));
+        assert_eq!(line_content_color(&lines[0]), Some(theme().text_muted));
     }
 
     #[test]
@@ -2568,7 +2562,7 @@ mod tests {
             lines
                 .iter()
                 .flat_map(|line| line.spans.iter())
-                .any(|span| span.style.fg == Some(TEXT_DIM)),
+                .any(|span| span.style.fg == Some(theme().text_dim)),
             "table borders should use dim styling: {lines:?}"
         );
     }
@@ -2649,7 +2643,7 @@ mod tests {
             lines
                 .iter()
                 .flat_map(|line| line.spans.iter())
-                .any(|span| span.style.bg == Some(CODE_BG)),
+                .any(|span| span.style.bg == Some(theme().code_bg)),
             "wrapped inline-code spans should keep code styling: {lines:?}"
         );
     }

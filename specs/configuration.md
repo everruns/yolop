@@ -40,6 +40,7 @@ Keys are addressed the way a human would name them:
 | `approval_mode`           | text   | Soft-approval paranoia level (`protective` / `normal` / `off`). |
 | `attribution`             | bool   | Commit/PR attribution on/off.                                  |
 | `proactive_wake`          | bool   | Auto-start a turn when a background task finishes (TUI); on by default. |
+| `theme`                   | text   | TUI color palette (`auto` / `dark` / `light`). Colors derive from the terminal scheme; this only picks the light/dark-sensitive shades. `auto` detects via `COLORFGBG`. |
 | `capabilities`            | list   | Ordered `[[capabilities]]` harness overrides; `capabilities.<ref>` for schema metadata. |
 
 `default_provider` is persisted under that name on disk; the legacy `provider`

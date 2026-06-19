@@ -514,6 +514,21 @@ impl SetConfigTool {
                     mode.as_str()
                 )))
             }
+            KeyTarget::Theme => {
+                if clearing {
+                    self.settings
+                        .set_theme(crate::settings::ThemeMode::Auto)
+                        .map_err(map_err)?;
+                    return Ok(saved("cleared theme (default auto)".to_string()));
+                }
+                let mode = crate::settings::ThemeMode::parse(value)
+                    .ok_or_else(|| "theme expects auto, dark, or light".to_string())?;
+                self.settings.set_theme(mode).map_err(map_err)?;
+                Ok(saved(format!(
+                    "theme = {}; applies on next launch",
+                    mode.as_str()
+                )))
+            }
             KeyTarget::Model(provider) => {
                 if clearing {
                     let existed = self.settings.clear_model(provider).map_err(map_err)?;

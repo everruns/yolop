@@ -43,7 +43,10 @@ use anyhow::{Context, Result};
 // Force-link integration crates whose inventory registrations must survive
 // LTO/dead-code elimination when we register capabilities explicitly.
 extern crate everruns_integrations_daytona;
-use app::{App, COMPOSER_VIEWPORT_HEIGHT, maybe_reanchor_inline_viewport};
+use app::{
+    App, COMPOSER_VIEWPORT_HEIGHT, Theme, detect_dark_background, init_theme,
+    maybe_reanchor_inline_viewport,
+};
 use clap::{Args, Parser, Subcommand};
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -541,6 +544,15 @@ fn run_command(command: Commands) -> Result<()> {
 }
 
 async fn run_tui(runtime: BuiltRuntime, pending_images: Vec<ContentPart>) -> Result<()> {
+    // Resolve the palette once before the first frame. `auto` consults the
+    // terminal's reported background; `dark`/`light` force it.
+    let dark = match runtime.settings.snapshot().theme {
+        crate::settings::ThemeMode::Dark => true,
+        crate::settings::ThemeMode::Light => false,
+        crate::settings::ThemeMode::Auto => detect_dark_background(),
+    };
+    init_theme(Theme::for_terminal(dark));
+
     let mut raw_mode = RawModeGuard::new()?;
     let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
     let stdout = io::stdout();

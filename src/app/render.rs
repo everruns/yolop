@@ -22,13 +22,13 @@ impl Author {
     }
     pub fn color(&self) -> Color {
         match self {
-            Author::User => ACCENT_BLUE,
-            Author::Assistant => ACCENT_GOLD,
-            Author::Narration => TEXT_MUTED,
-            Author::Tool => TEXT_MUTED,
-            Author::ToolDetail => TEXT_MUTED,
-            Author::Diff => ACCENT_BLUE,
-            Author::System => TEXT_DIM,
+            Author::User => theme().accent_blue,
+            Author::Assistant => theme().accent_gold,
+            Author::Narration => theme().text_muted,
+            Author::Tool => theme().text_muted,
+            Author::ToolDetail => theme().text_muted,
+            Author::Diff => theme().accent_blue,
+            Author::System => theme().text_dim,
         }
     }
 }
@@ -43,8 +43,8 @@ impl StreamKind {
 
     fn color(self) -> Color {
         match self {
-            StreamKind::Assistant => ACCENT_GOLD,
-            StreamKind::Tool => TEXT_MUTED,
+            StreamKind::Assistant => theme().accent_gold,
+            StreamKind::Tool => theme().text_muted,
         }
     }
 }
@@ -356,9 +356,11 @@ pub(crate) fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
         return;
     }
     f.render_widget(Clear, panel);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
+    let block = Block::default().borders(Borders::ALL).style(
+        Style::default()
+            .bg(theme().panel_bg)
+            .fg(theme().text_primary),
+    );
     f.render_widget(block, panel);
     let inner = Rect {
         x: panel.x.saturating_add(2),
@@ -368,7 +370,7 @@ pub(crate) fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
     };
     let (lines, cursor) = setup_overlay_content(app);
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(PANEL_BG)),
+        Paragraph::new(lines).style(Style::default().bg(theme().panel_bg)),
         inner,
     );
     if let Some((row, col)) = cursor
@@ -401,9 +403,11 @@ pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &Ap
         return;
     }
     f.render_widget(Clear, panel);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
+    let block = Block::default().borders(Borders::ALL).style(
+        Style::default()
+            .bg(theme().panel_bg)
+            .fg(theme().text_primary),
+    );
     f.render_widget(block, panel);
     let inner = Rect {
         x: panel.x.saturating_add(2),
@@ -418,14 +422,16 @@ pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &Ap
         if i == 0 {
             lines.push(Line::from(Span::styled(
                 text,
-                Style::default().fg(DIFF_META).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme().diff_meta)
+                    .add_modifier(Modifier::BOLD),
             )));
         } else {
             lines.push(Line::raw(text));
         }
     }
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(PANEL_BG)),
+        Paragraph::new(lines).style(Style::default().bg(theme().panel_bg)),
         inner,
     );
 }
@@ -496,10 +502,10 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
                 Span::styled(
                     "› ",
                     Style::default()
-                        .fg(ACCENT_BLUE)
+                        .fg(theme().accent_blue)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(value.clone(), Style::default().fg(TEXT_PRIMARY)),
+                Span::styled(value.clone(), Style::default().fg(theme().text_primary)),
             ]));
             push_setup_error(&mut lines, error.as_deref());
             lines.push(setup_footer("Enter save · Esc back"));
@@ -559,10 +565,10 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
                 Span::styled(
                     "› ",
                     Style::default()
-                        .fg(ACCENT_BLUE)
+                        .fg(theme().accent_blue)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(masked, Style::default().fg(TEXT_PRIMARY)),
+                Span::styled(masked, Style::default().fg(theme().text_primary)),
             ]));
             push_setup_error(&mut lines, error.as_deref());
             lines.push(setup_footer("Enter save · Esc back"));
@@ -592,10 +598,10 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
                     Span::styled(
                         "› ",
                         Style::default()
-                            .fg(ACCENT_BLUE)
+                            .fg(theme().accent_blue)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(value.clone(), Style::default().fg(TEXT_PRIMARY)),
+                    Span::styled(value.clone(), Style::default().fg(theme().text_primary)),
                 ]));
             } else {
                 if app.is_fetching_models(provider) {
@@ -669,8 +675,8 @@ pub(crate) fn setup_title(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
         Style::default()
-            .fg(TEXT_PRIMARY)
-            .bg(PANEL_BG)
+            .fg(theme().text_primary)
+            .bg(theme().panel_bg)
             .add_modifier(Modifier::BOLD),
     ))
 }
@@ -678,21 +684,23 @@ pub(crate) fn setup_title(text: &str) -> Line<'static> {
 pub(crate) fn setup_hint(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
-        Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+        Style::default().fg(theme().text_muted).bg(theme().panel_bg),
     ))
 }
 
 pub(crate) fn setup_divider(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
-        Style::default().fg(ACCENT_BLUE).bg(PANEL_BG),
+        Style::default()
+            .fg(theme().accent_blue)
+            .bg(theme().panel_bg),
     ))
 }
 
 pub(crate) fn setup_footer(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
-        Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+        Style::default().fg(theme().text_muted).bg(theme().panel_bg),
     ))
 }
 
@@ -700,25 +708,27 @@ pub(crate) fn setup_row(selected: bool, index: usize, label: &str, hint: &str) -
     let marker = if selected { "›" } else { " " };
     let marker_style = if selected {
         Style::default()
-            .fg(ACCENT_BLUE)
-            .bg(PANEL_BG)
+            .fg(theme().accent_blue)
+            .bg(theme().panel_bg)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(TEXT_DIM).bg(PANEL_BG)
+        Style::default().fg(theme().text_dim).bg(theme().panel_bg)
     };
     let label_style = if selected {
         Style::default()
-            .fg(Color::Rgb(135, 220, 205))
-            .bg(PANEL_BG)
+            .fg(theme().accent_cyan)
+            .bg(theme().panel_bg)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(TEXT_PRIMARY).bg(PANEL_BG)
+        Style::default()
+            .fg(theme().text_primary)
+            .bg(theme().panel_bg)
     };
     Line::from(vec![
         Span::styled(format!("{marker} "), marker_style),
         Span::styled(
             format!("{index}. "),
-            Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+            Style::default().fg(theme().text_muted).bg(theme().panel_bg),
         ),
         // Pad to a 28-col label column so hints align, but always keep at
         // least a 2-space gap: labels like "Use OPENAI_API_KEY from
@@ -733,7 +743,7 @@ pub(crate) fn setup_row(selected: bool, index: usize, label: &str, hint: &str) -
         ),
         Span::styled(
             hint.to_string(),
-            Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+            Style::default().fg(theme().text_muted).bg(theme().panel_bg),
         ),
     ])
 }
@@ -743,7 +753,9 @@ pub(crate) fn push_setup_error(lines: &mut Vec<Line<'static>>, error: Option<&st
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!("error: {error}"),
-            Style::default().fg(Color::Rgb(220, 120, 90)).bg(PANEL_BG),
+            Style::default()
+                .fg(theme().accent_warn)
+                .bg(theme().panel_bg),
         )));
     } else {
         lines.push(Line::from(""));
@@ -781,12 +793,12 @@ pub(crate) fn suggestion_preview_line(
         Span::styled(
             prefix,
             Style::default()
-                .fg(ACCENT_BLUE)
+                .fg(theme().accent_blue)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             truncate_end_chars(&body, max_body),
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(theme().text_muted),
         ),
     ])
 }
@@ -823,7 +835,7 @@ pub(crate) fn draw_stream_preview(f: &mut ratatui::Frame, area: Rect, state: &Vi
                     .fg(preview.kind.color())
                     .add_modifier(Modifier::DIM),
             ),
-            Span::styled(truncated, Style::default().fg(TEXT_MUTED)),
+            Span::styled(truncated, Style::default().fg(theme().text_muted)),
         ])),
         area,
     );
@@ -901,7 +913,7 @@ pub(crate) fn append_chat_lines<'a>(
         append_wrapped_plain(
             lines,
             "           ",
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(theme().text_muted),
             &chat.text,
             inner_width,
         );
@@ -921,7 +933,7 @@ pub(crate) fn append_chat_lines<'a>(
             header_style,
             &chat.text,
             inner_width,
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(theme().text_muted),
         );
     } else if matches!(chat.author, Author::Diff) {
         append_wrapped_diff(lines, &header_text, header_style, &chat.text, inner_width);
@@ -1057,13 +1069,13 @@ pub(crate) fn append_wrapped_diff<'a>(
 
 pub(crate) fn diff_line_style(line: &str) -> Style {
     let color = if line.starts_with('+') {
-        DIFF_ADD
+        theme().diff_add
     } else if line.starts_with('-') {
-        DIFF_DELETE
+        theme().diff_delete
     } else if line.starts_with("@@") || line.starts_with('\\') {
-        DIFF_META
+        theme().diff_meta
     } else {
-        TEXT_PRIMARY
+        theme().text_primary
     };
     Style::default().fg(color)
 }
@@ -1108,7 +1120,9 @@ pub(crate) fn append_markdown_lines<'a>(
                 &mut first,
                 vec![Span::styled(
                     label,
-                    Style::default().fg(TEXT_DIM).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(theme().text_dim)
+                        .add_modifier(Modifier::ITALIC),
                 )],
             );
             index += 1;
@@ -1196,14 +1210,14 @@ pub(crate) fn markdown_text_spans(text: &str) -> Vec<Span<'static>> {
         return vec![Span::styled(
             heading.to_string(),
             Style::default()
-                .fg(TEXT_PRIMARY)
+                .fg(theme().text_primary)
                 .add_modifier(Modifier::BOLD),
         )];
     }
     if let Some(rest) = trimmed.strip_prefix("> ") {
         return vec![
-            Span::styled("| ", Style::default().fg(ACCENT_BLUE)),
-            Span::styled(rest.to_string(), Style::default().fg(TEXT_MUTED)),
+            Span::styled("| ", Style::default().fg(theme().accent_blue)),
+            Span::styled(rest.to_string(), Style::default().fg(theme().text_muted)),
         ];
     }
     if let Some(rest) = trimmed
@@ -1211,13 +1225,13 @@ pub(crate) fn markdown_text_spans(text: &str) -> Vec<Span<'static>> {
         .or_else(|| trimmed.strip_prefix("* "))
     {
         return vec![
-            Span::styled("- ", Style::default().fg(ACCENT_GOLD)),
+            Span::styled("- ", Style::default().fg(theme().accent_gold)),
             Span::raw(rest.to_string()),
         ];
     }
     if let Some((marker, rest)) = numbered_marker(trimmed) {
         return vec![
-            Span::styled(marker, Style::default().fg(ACCENT_GOLD)),
+            Span::styled(marker, Style::default().fg(theme().accent_gold)),
             Span::raw(rest.to_string()),
         ];
     }
@@ -1225,7 +1239,7 @@ pub(crate) fn markdown_text_spans(text: &str) -> Vec<Span<'static>> {
 }
 
 pub(crate) fn markdown_code_spans(text: &str) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::styled("    ", Style::default().fg(TEXT_DIM))];
+    let mut spans = vec![Span::styled("    ", Style::default().fg(theme().text_dim))];
     spans.extend(simple_code_highlight(text));
     spans
 }
@@ -1241,7 +1255,9 @@ pub(crate) fn inline_code_spans(text: &str) -> Vec<Span<'static>> {
         if let Some((inside, after)) = after_tick.split_once('`') {
             spans.push(Span::styled(
                 inside.to_string(),
-                Style::default().fg(TEXT_PRIMARY).bg(CODE_BG),
+                Style::default()
+                    .fg(theme().text_primary)
+                    .bg(theme().code_bg),
             ));
             rest = after;
             code = true;
@@ -1276,26 +1292,29 @@ pub(crate) fn simple_code_highlight(text: &str) -> Vec<Span<'static>> {
         if !token.is_empty() {
             let style = if keywords.contains(&token.as_str()) {
                 Style::default()
-                    .fg(ACCENT_GOLD)
+                    .fg(theme().accent_gold)
                     .add_modifier(Modifier::BOLD)
             } else if token.chars().all(|c| c.is_ascii_digit()) {
-                Style::default().fg(TEXT_MUTED)
+                Style::default().fg(theme().text_muted)
             } else {
-                Style::default().fg(ACCENT_BLUE)
+                Style::default().fg(theme().accent_blue)
             };
             spans.push(Span::styled(std::mem::take(&mut token), style));
         }
-        spans.push(Span::styled(ch.to_string(), Style::default().fg(TEXT_DIM)));
+        spans.push(Span::styled(
+            ch.to_string(),
+            Style::default().fg(theme().text_dim),
+        ));
     }
     if !token.is_empty() {
         let style = if keywords.contains(&token.as_str()) {
             Style::default()
-                .fg(ACCENT_GOLD)
+                .fg(theme().accent_gold)
                 .add_modifier(Modifier::BOLD)
         } else if token.chars().all(|c| c.is_ascii_digit()) {
-            Style::default().fg(TEXT_MUTED)
+            Style::default().fg(theme().text_muted)
         } else {
-            Style::default().fg(ACCENT_BLUE)
+            Style::default().fg(theme().accent_blue)
         };
         spans.push(Span::styled(token, style));
     }
@@ -1501,7 +1520,7 @@ pub(crate) fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         Paragraph::new(Span::styled(
             "> ",
             Style::default()
-                .fg(ACCENT_BLUE)
+                .fg(theme().accent_blue)
                 .add_modifier(Modifier::BOLD),
         )),
         prompt_area,
@@ -1540,10 +1559,10 @@ pub(crate) fn message_separator_title(state: &ViewState) -> Line<'static> {
         );
     }
     Line::from(vec![
-        Span::styled("─── ", Style::default().fg(ACCENT_BLUE)),
+        Span::styled("─── ", Style::default().fg(theme().accent_blue)),
         Span::styled(
             format!("(Enter to send, {} for newline) ", newline_shortcut_hint()),
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(theme().text_muted),
         ),
     ])
 }
@@ -1556,13 +1575,18 @@ pub(crate) fn thinking_title(frame: u64, activity: &str) -> Line<'static> {
     const SPINNER: [&str; 4] = ["-", "\\", "|", "/"];
     let spinner = SPINNER[((frame / 2) as usize) % SPINNER.len()];
     let text = format!("{activity}...");
-    let text_style = Style::default().fg(TEXT_MUTED).add_modifier(Modifier::BOLD);
+    let text_style = Style::default()
+        .fg(theme().text_muted)
+        .add_modifier(Modifier::BOLD);
     let spans = vec![
-        Span::styled("─── ", Style::default().fg(ACCENT_BLUE)),
-        Span::styled(spinner.to_string(), Style::default().fg(ACCENT_GOLD)),
+        Span::styled("─── ", Style::default().fg(theme().accent_blue)),
+        Span::styled(
+            spinner.to_string(),
+            Style::default().fg(theme().accent_gold),
+        ),
         Span::raw(" "),
         Span::styled(text, text_style),
-        Span::styled(" (input disabled) ", Style::default().fg(TEXT_DIM)),
+        Span::styled(" (input disabled) ", Style::default().fg(theme().text_dim)),
     ];
     Line::from(spans)
 }
@@ -1572,12 +1596,17 @@ pub(crate) fn draw_message_separator(f: &mut ratatui::Frame, area: Rect, state: 
         f,
         area,
         message_separator_title(state),
-        Style::default().fg(ACCENT_BLUE),
+        Style::default().fg(theme().accent_blue),
     );
 }
 
 pub(crate) fn draw_status_separator(f: &mut ratatui::Frame, area: Rect) {
-    draw_separator(f, area, Line::from(""), Style::default().fg(ACCENT_GOLD));
+    draw_separator(
+        f,
+        area,
+        Line::from(""),
+        Style::default().fg(theme().accent_gold),
+    );
 }
 
 pub(crate) fn draw_session_status(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
@@ -1700,25 +1729,25 @@ pub(crate) fn status_field(label: &'static str, value: impl Into<String>) -> Sta
 }
 
 fn status_line<'a>(fields: impl IntoIterator<Item = &'a StatusField>) -> Line<'static> {
-    let mut spans = vec![Span::styled(" ", Style::default().fg(TEXT_MUTED))];
+    let mut spans = vec![Span::styled(" ", Style::default().fg(theme().text_muted))];
     let mut first = true;
     for field in fields {
         if !first {
-            spans.push(Span::styled("  ·  ", Style::default().fg(TEXT_DIM)));
+            spans.push(Span::styled("  ·  ", Style::default().fg(theme().text_dim)));
         }
         first = false;
         if let Some(label) = field.label {
             spans.push(Span::styled(
                 format!("{label} "),
-                Style::default().fg(TEXT_DIM),
+                Style::default().fg(theme().text_dim),
             ));
         }
         spans.push(Span::styled(
             field.value.clone(),
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(theme().text_muted),
         ));
     }
-    spans.push(Span::styled(" ", Style::default().fg(TEXT_MUTED)));
+    spans.push(Span::styled(" ", Style::default().fg(theme().text_muted)));
     Line::from(spans)
 }
 

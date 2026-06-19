@@ -71,6 +71,45 @@ impl std::fmt::Display for WorktreesMode {
     }
 }
 
+/// How the TUI picks its color palette. Yolop builds colors from the terminal's
+/// own scheme either way; this only governs whether the light/dark-sensitive
+/// shades (grays, panel/code backgrounds) are auto-detected or forced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeMode {
+    /// Detect a light vs dark terminal background (via `COLORFGBG`), dark default.
+    #[default]
+    Auto,
+    /// Force the dark palette.
+    Dark,
+    /// Force the light palette.
+    Light,
+}
+
+impl ThemeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThemeMode::Auto => "auto",
+            ThemeMode::Dark => "dark",
+            ThemeMode::Light => "light",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" | "default" | "system" => Some(Self::Auto),
+            "dark" => Some(Self::Dark),
+            "light" => Some(Self::Light),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ThemeMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// running critical actions. Soft approval is prompt-engineering, not a
 /// hard gate: the chosen level is injected into the system prompt so the
 /// model itself decides when to ask, batches safe calls, and the user
@@ -148,6 +187,8 @@ pub struct Settings {
     pub proactive_wake: bool,
     /// Git worktree isolation for code changes (`auto`, `always`, `off`).
     pub worktrees: WorktreesMode,
+    /// TUI color palette selection (`auto`, `dark`, `light`).
+    pub theme: ThemeMode,
     /// Ordered harness capability overrides (`[[capabilities]]` in settings.toml).
     pub capabilities: Vec<CapabilityOverride>,
 }
@@ -165,6 +206,7 @@ impl Default for Settings {
             approval_mode: ApprovalMode::Normal,
             proactive_wake: true,
             worktrees: WorktreesMode::Auto,
+            theme: ThemeMode::Auto,
             capabilities: Vec::new(),
         }
     }
@@ -201,6 +243,11 @@ impl Settings {
             .and_then(Value::as_str)
             .and_then(WorktreesMode::parse)
             .unwrap_or_default();
+        let theme = table
+            .get("theme")
+            .and_then(Value::as_str)
+            .and_then(ThemeMode::parse)
+            .unwrap_or_default();
         let string_map = |key: &str| {
             let mut map = BTreeMap::new();
             if let Some(t) = table.get(key).and_then(Value::as_table) {
@@ -227,6 +274,7 @@ impl Settings {
             approval_mode,
             proactive_wake,
             worktrees,
+            theme,
             capabilities: parse_capabilities_table(table),
         }
     }
@@ -257,6 +305,12 @@ impl Settings {
             table.insert(
                 "worktrees".to_string(),
                 Value::String(self.worktrees.as_str().to_string()),
+            );
+        }
+        if self.theme != ThemeMode::Auto {
+            table.insert(
+                "theme".to_string(),
+                Value::String(self.theme.as_str().to_string()),
             );
         }
         let mut insert_map = |key: &str, map: &BTreeMap<String, String>| {
@@ -330,6 +384,10 @@ impl Settings {
 
     pub fn worktrees_mode(&self) -> WorktreesMode {
         self.worktrees
+    }
+
+    pub fn theme_mode(&self) -> ThemeMode {
+        self.theme
     }
 
     pub fn capability_overrides_for(&self, id: &str) -> Vec<(usize, &CapabilityOverride)> {
@@ -507,6 +565,12 @@ impl SettingsStore {
     pub fn set_worktrees_mode(&self, mode: WorktreesMode) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         guard.worktrees = mode;
+        save_to(&self.path, &guard)
+    }
+
+    pub fn set_theme(&self, mode: ThemeMode) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.theme = mode;
         save_to(&self.path, &guard)
     }
 

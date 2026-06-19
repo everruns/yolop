@@ -6,7 +6,7 @@ use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::{TEXT_DIM, TEXT_PRIMARY, push_markdown_line};
+use super::{push_markdown_line, theme};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MarkdownTable {
@@ -126,17 +126,17 @@ fn style_table_line(line: &str) -> Vec<Span<'static>> {
     if !has_cell_delimiters || is_border_only_line(line) {
         return vec![Span::styled(
             line.to_string(),
-            Style::default().fg(TEXT_DIM),
+            Style::default().fg(theme().text_dim),
         )];
     }
 
-    let border_style = Style::default().fg(TEXT_DIM);
+    let border_style = Style::default().fg(theme().text_dim);
     let content_style = if is_header_content_line(line) {
         Style::default()
-            .fg(TEXT_PRIMARY)
+            .fg(theme().text_primary)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(TEXT_PRIMARY)
+        Style::default().fg(theme().text_primary)
     };
 
     let mut spans = Vec::new();
@@ -333,7 +333,7 @@ mod tests {
     fn table_line_styles_use_dim_borders() {
         let spans = style_table_line("╭──────┬──────╮");
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].style.fg, Some(TEXT_DIM));
+        assert_eq!(spans[0].style.fg, Some(theme().text_dim));
     }
 
     #[test]
@@ -351,7 +351,7 @@ mod tests {
     fn table_line_styles_dim_header_separator() {
         let spans = style_table_line("╞═══╪═══╡");
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].style.fg, Some(TEXT_DIM));
+        assert_eq!(spans[0].style.fg, Some(theme().text_dim));
     }
 
     #[test]
