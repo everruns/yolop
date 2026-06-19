@@ -37,8 +37,8 @@ After each agent turn while a goal is active:
    as guidance.
 
 In the interactive TUI, pressing `Esc` twice during a goal turn cancels the
-current turn and pauses the goal. The condition remains available in
-`/goal status`; `/goal resume` restarts auto-continuation.
+current turn and pauses the goal. The condition remains available in `/goal`;
+`/goal resume` restarts auto-continuation.
 
 Conditions may be up to 4,000 characters. Users can bound runs in the condition
 itself (for example `or stop after 20 turns`); the evaluator judges that clause
