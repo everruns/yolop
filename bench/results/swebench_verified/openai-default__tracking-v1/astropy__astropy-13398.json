@@ -3,50 +3,53 @@
   "benchmark": "swebench_verified",
   "instance_id": "astropy__astropy-13398",
   "config_name": "openai-default__tracking-v1",
-  "run_id": "tracking-v1-gpt55",
+  "run_id": "tracking-v1-recap3",
   "resolved": false,
   "evaluated": true,
-  "error": "budget cap hit: $5.02 > $5.00",
+  "error": null,
   "agent": {
     "agent": "yolop",
     "config_name": "openai-default",
     "provider": "openai",
     "model": "gpt-5.5",
     "reasoning_effort": null,
-    "max_cost_usd": 5.0,
+    "max_cost_usd": 12.0,
     "extra_args": [],
     "yolop_version": "0.3.0",
     "yolop_commit": "e6c0c9046607",
     "everruns_runtime_version": "0.14.0"
   },
   "metrics": {
-    "wall_time_s": 238.226,
-    "agent_reported_time_s": 135.476,
-    "turns": 35,
-    "iterations": 35,
-    "assistant_messages": 35,
+    "wall_time_s": 395.205,
+    "agent_reported_time_s": 268.067,
+    "turns": 57,
+    "iterations": 57,
+    "assistant_messages": 57,
     "user_messages": 1,
-    "llm_calls": 35,
-    "tool_calls": 37,
+    "llm_calls": 57,
+    "tool_calls": 58,
     "tool_calls_failed": 0,
     "tools_used": {
-      "list_directory": 2,
-      "grep_files": 5,
-      "read_file": 13,
-      "bash": 11,
-      "write_todos": 2,
-      "edit_file": 4
+      "write_todos": 4,
+      "list_directory": 3,
+      "grep_files": 8,
+      "read_file": 19,
+      "bash": 18,
+      "tool_search": 1,
+      "web_fetch": 1,
+      "write_file": 1,
+      "edit_file": 3
     },
     "tokens": {
-      "input_tokens": 966367,
-      "output_tokens": 6209,
-      "cache_read_tokens": 911360,
+      "input_tokens": 2139725,
+      "output_tokens": 9496,
+      "cache_read_tokens": 1971200,
       "cache_creation_tokens": 0,
-      "total_tokens": 972576
+      "total_tokens": 2149221
     },
     "reasoning_effort": "medium",
-    "cost_usd": 5.018105,
-    "stop_reason": "budget"
+    "cost_usd": 10.983505,
+    "stop_reason": "completed"
   },
   "eval_report": {
     "patch_is_None": false,
@@ -147,10 +150,10 @@
       }
     }
   },
-  "patch": "diff --git a/astropy/coordinates/builtin_frames/intermediate_rotation_transforms.py b/astropy/coordinates/builtin_frames/intermediate_rotation_transforms.py\nindex a15248c..09357e1 100644\n--- a/astropy/coordinates/builtin_frames/intermediate_rotation_transforms.py\n+++ b/astropy/coordinates/builtin_frames/intermediate_rotation_transforms.py\n@@ -8,16 +8,19 @@ rotations without aberration corrections or offsets.\n import numpy as np\n import erfa\n \n+from astropy import units as u\n from astropy.coordinates.baseframe import frame_transform_graph\n from astropy.coordinates.transformations import FunctionTransformWithFiniteDifference\n-from astropy.coordinates.matrix_utilities import matrix_transpose\n+from astropy.coordinates.matrix_utilities import matrix_transpose, rotation_matrix\n \n from .icrs import ICRS\n from .gcrs import GCRS, PrecessedGeocentric\n from .cirs import CIRS\n from .itrs import ITRS\n+from .altaz import AltAz\n+from .hadec import HADec\n from .equatorial import TEME, TETE\n-from .utils import get_polar_motion, get_jd12, EARTH_CENTER\n+from .utils import get_polar_motion, get_jd12, EARTH_CENTER, PIOVER2\n \n # # first define helper functions\n \n@@ -109,8 +112,60 @@ def get_location_gcrs(location, obstime, ref_to_itrs, gcrs_to_ref):\n     return GCRS(obstime=obstime, obsgeoloc=obsgeoloc, obsgeovel=obsgeovel)\n \n \n+def itrs_to_observed_mat(observed_frame):\n+    lon, lat, _ = observed_frame.location.to_geodetic('WGS84')\n+    elong = lon.to_value(u.radian)\n+\n+    if isinstance(observed_frame, AltAz):\n+        # form ITRS to AltAz matrix\n+        elat = lat.to_value(u.radian)\n+        # AltAz frame is left handed\n+        minus_x = np.eye(3)\n+        minus_x[0][0] = -1.0\n+        mat = (minus_x\n+               @ rotation_matrix(PIOVER2 - elat, 'y', unit=u.radian)\n+               @ rotation_matrix(elong, 'z', unit=u.radian))\n+    else:\n+        # form ITRS to HADec matrix\n+        # HADec frame is left handed\n+        minus_y = np.eye(3)\n+        minus_y[1][1] = -1.0\n+        mat = (minus_y\n+               @ rotation_matrix(elong, 'z', unit=u.radian))\n+\n+    return mat\n+\n+\n # now the actual transforms\n \n+\n+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, AltAz)\n+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, HADec)\n+def itrs_to_observed(itrs_coo, observed_frame):\n+    # Trying to synchronize the obstimes here makes no sense. In fact,\n+    # it's a real gotcha as doing an ITRS->ITRS transform references ITRS\n+    # coordinates, which should be tied to the Earth, to the SSB. Instead,\n+    # we treat ITRS coordinates as time invariant here.\n+\n+    # form the Topocentric ITRS position\n+    topocentric_itrs_repr = (itrs_coo.cartesian\n+                             - observed_frame.location.get_itrs().cartesian)\n+    rep = topocentric_itrs_repr.transform(itrs_to_observed_mat(observed_frame))\n+    return observed_frame.realize_frame(rep)\n+\n+\n+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, AltAz, ITRS)\n+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, HADec, ITRS)\n+def observed_to_itrs(observed_coo, itrs_frame):\n+    # form the Topocentric ITRS position\n+    topocentric_itrs_repr = observed_coo.cartesian.transform(matrix_transpose(\n+        itrs_to_observed_mat(observed_coo)))\n+\n+    # form the Geocentric ITRS position\n+    rep = topocentric_itrs_repr + observed_coo.location.get_itrs().cartesian\n+    return itrs_frame.realize_frame(rep)\n+\n+\n @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, GCRS, TETE)\n def gcrs_to_tete(gcrs_coo, tete_frame):\n     # Classical NPB matrix, IAU 2006/2000A\n",
-  "session_log_path": "bench/.cache/sessions/tracking-v1-gpt55/openai-default/astropy__astropy-13398/session_074ba4271ba343788729182250c9d56f/events.jsonl",
+  "patch": "diff --git a/astropy/coordinates/builtin_frames/__init__.py b/astropy/coordinates/builtin_frames/__init__.py\nindex 6fd688c..17b5244 100644\n--- a/astropy/coordinates/builtin_frames/__init__.py\n+++ b/astropy/coordinates/builtin_frames/__init__.py\n@@ -48,6 +48,7 @@ from . import supergalactic_transforms\n from . import icrs_cirs_transforms\n from . import cirs_observed_transforms\n from . import icrs_observed_transforms\n+from . import itrs_observed_transforms\n from . import intermediate_rotation_transforms\n from . import ecliptic_transforms\n \ndiff --git a/astropy/coordinates/builtin_frames/itrs_observed_transforms.py b/astropy/coordinates/builtin_frames/itrs_observed_transforms.py\nnew file mode 100644\nindex 0000000..2c3f0bd\n--- /dev/null\n+++ b/astropy/coordinates/builtin_frames/itrs_observed_transforms.py\n@@ -0,0 +1,159 @@\n+# Licensed under a 3-clause BSD style license - see LICENSE.rst\n+\"\"\"\n+Contains the transformation functions for getting to \"observed\" systems from ITRS.\n+\"\"\"\n+\n+import erfa\n+import numpy as np\n+\n+from astropy import units as u\n+from astropy.coordinates.baseframe import frame_transform_graph\n+from astropy.coordinates.matrix_utilities import matrix_transpose, rotation_matrix\n+from astropy.coordinates.representation import CartesianRepresentation\n+from astropy.coordinates.transformations import FunctionTransformWithFiniteDifference\n+\n+from .altaz import AltAz\n+from .hadec import HADec\n+from .itrs import ITRS\n+\n+# Minimum cos(alt) and sin(alt) for refraction purposes.\n+CELMIN = 1e-6\n+SELMIN = 0.05\n+\n+\n+def itrs_to_altaz_mat(lon, lat):\n+    # form ITRS to AltAz matrix\n+    # AltAz frame is left handed\n+    minus_x = np.eye(3)\n+    minus_x[0][0] = -1.0\n+    return (minus_x @\n+            rotation_matrix(90*u.deg - lat, 'y') @\n+            rotation_matrix(lon, 'z'))\n+\n+\n+def itrs_to_hadec_mat(lon):\n+    # form ITRS to HADec matrix\n+    # HADec frame is left handed\n+    minus_y = np.eye(3)\n+    minus_y[1][1] = -1.0\n+    return minus_y @ rotation_matrix(lon, 'z')\n+\n+\n+def altaz_to_hadec_mat(lat):\n+    # form AltAz to HADec matrix\n+    z180 = np.eye(3)\n+    z180[0][0] = -1.0\n+    z180[1][1] = -1.0\n+    return z180 @ rotation_matrix(90*u.deg - lat, 'y')\n+\n+\n+def add_refraction(aa_crepr, observed_frame):\n+    # add refraction to AltAz cartesian representation\n+    refa, refb = erfa.refco(\n+        observed_frame.pressure.to_value(u.hPa),\n+        observed_frame.temperature.to_value(u.deg_C),\n+        observed_frame.relative_humidity.value,\n+        observed_frame.obswl.to_value(u.micron))\n+\n+    # Reference: erfa.atioq().\n+    norm, uv = erfa.pn(aa_crepr.get_xyz(xyz_axis=-1).to_value())\n+\n+    # Cosine and sine of altitude, with precautions.\n+    sel = np.maximum(uv[..., 2], SELMIN)\n+    cel = np.maximum(np.sqrt(uv[..., 0]**2 + uv[..., 1]**2), CELMIN)\n+\n+    # A*tan(z)+B*tan^3(z) model, with Newton-Raphson correction.\n+    tan_z = cel / sel\n+    w = refb * tan_z**2\n+    delta_el = ((refa + w) * tan_z /\n+                (1.0 + (refa + 3.0 * w) / (sel**2)))\n+\n+    # Apply the change, giving observed vector.\n+    cosdel = 1.0 - 0.5 * delta_el**2\n+    f = cosdel - delta_el * sel / cel\n+    uv[..., 0] *= f\n+    uv[..., 1] *= f\n+    uv[..., 2] = cosdel * uv[..., 2] + delta_el * cel\n+\n+    # Need to renormalize to preserve the distance.\n+    _, uv = erfa.pn(uv)\n+    uv = erfa.sxp(norm, uv)\n+    return CartesianRepresentation(uv, xyz_axis=-1, unit=aa_crepr.x.unit,\n+                                   copy=False)\n+\n+\n+def remove_refraction(aa_crepr, observed_frame):\n+    # remove refraction from AltAz cartesian representation\n+    refa, refb = erfa.refco(\n+        observed_frame.pressure.to_value(u.hPa),\n+        observed_frame.temperature.to_value(u.deg_C),\n+        observed_frame.relative_humidity.value,\n+        observed_frame.obswl.to_value(u.micron))\n+\n+    # Reference: erfa.atoiq().\n+    norm, uv = erfa.pn(aa_crepr.get_xyz(xyz_axis=-1).to_value())\n+\n+    # Cosine and sine of altitude, with precautions.\n+    sel = np.maximum(uv[..., 2], SELMIN)\n+    cel = np.sqrt(uv[..., 0]**2 + uv[..., 1]**2)\n+\n+    # A*tan(z)+B*tan^3(z) model.\n+    tan_z = cel / sel\n+    delta_el = (refa + refb * tan_z**2) * tan_z\n+\n+    # Apply the change, giving observed vector.\n+    az, el = erfa.c2s(uv)\n+    el -= delta_el\n+    uv = erfa.s2c(az, el)\n+    uv = erfa.sxp(norm, uv)\n+    return CartesianRepresentation(uv, xyz_axis=-1, unit=aa_crepr.x.unit,\n+                                   copy=False)\n+\n+\n+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS,\n+                                 AltAz, priority=1.1)\n+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS,\n+                                 HADec, priority=1.1)\n+def itrs_to_observed(itrs_coo, observed_frame):\n+    # Trying to synchronize the obstimes here makes no sense. In fact, doing an\n+    # ITRS->ITRS transform references ITRS coordinates, which should be tied to\n+    # the Earth, to the SSB. Instead, treat ITRS coordinates as time invariant.\n+    lon, lat, _ = observed_frame.location.to_geodetic('WGS84')\n+\n+    # Form the topocentric ITRS position.\n+    topocentric_itrs_repr = (itrs_coo.cartesian -\n+                             observed_frame.location.get_itrs().cartesian)\n+\n+    if isinstance(observed_frame, AltAz) or observed_frame.pressure > 0.0:\n+        rep = topocentric_itrs_repr.transform(itrs_to_altaz_mat(lon, lat))\n+        if observed_frame.pressure > 0.0:\n+            rep = add_refraction(rep, observed_frame)\n+            if isinstance(observed_frame, HADec):\n+                rep = rep.transform(altaz_to_hadec_mat(lat))\n+    else:\n+        rep = topocentric_itrs_repr.transform(itrs_to_hadec_mat(lon))\n+\n+    return observed_frame.realize_frame(rep)\n+\n+\n+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, AltAz,\n+                                 ITRS, priority=1.1)\n+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, HADec,\n+                                 ITRS, priority=1.1)\n+def observed_to_itrs(observed_coo, itrs_frame):\n+    lon, lat, _ = observed_coo.location.to_geodetic('WGS84')\n+\n+    if isinstance(observed_coo, AltAz) or observed_coo.pressure > 0.0:\n+        rep = observed_coo.cartesian\n+        if observed_coo.pressure > 0.0:\n+            if isinstance(observed_coo, HADec):\n+                rep = rep.transform(matrix_transpose(altaz_to_hadec_mat(lat)))\n+            rep = remove_refraction(rep, observed_coo)\n+        rep = rep.transform(matrix_transpose(itrs_to_altaz_mat(lon, lat)))\n+    else:\n+        rep = observed_coo.cartesian.transform(\n+            matrix_transpose(itrs_to_hadec_mat(lon)))\n+\n+    # Form the geocentric ITRS position, adopting the output frame attributes.\n+    rep = rep + observed_coo.location.get_itrs().cartesian\n+    return itrs_frame.realize_frame(rep)\n",
+  "session_log_path": "bench/.cache/sessions/tracking-v1-recap3/openai-default/astropy__astropy-13398/session_3006c26b133346a1ad85f859d659c883/events.jsonl",
   "timing": {
-    "started_at": "2026-06-19T02:08:46.171669+00:00",
-    "finished_at": "2026-06-19T02:54:10.989689+00:00"
+    "started_at": "2026-06-19T16:19:11.869513+00:00",
+    "finished_at": "2026-06-19T16:45:10.145715+00:00"
   }
 }

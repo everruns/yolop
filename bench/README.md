@@ -97,6 +97,11 @@ Re-running `select_tracking.py` on the same dataset reproduces the committed set
 exactly; bump to `tracking-v2` rather than editing v1, so historical numbers stay
 comparable.
 
+**Baseline:** yolop · gpt-5.5 (OpenAI) scores **14/20** on tracking-v1 (all cases
+ran to completion; results under `results/swebench_verified/openai-default__tracking-v1/`).
+A `--suite` run is stored in its own `<config>__<suite>` column so its summary
+stays self-contained.
+
 ## Layout
 
 ```

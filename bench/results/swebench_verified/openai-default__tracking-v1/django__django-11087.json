@@ -3,50 +3,52 @@
   "benchmark": "swebench_verified",
   "instance_id": "django__django-11087",
   "config_name": "openai-default__tracking-v1",
-  "run_id": "tracking-v1-gpt55",
+  "run_id": "tracking-v1-recap3",
   "resolved": true,
   "evaluated": true,
-  "error": "budget cap hit: $5.06 > $5.00",
+  "error": null,
   "agent": {
     "agent": "yolop",
     "config_name": "openai-default",
     "provider": "openai",
     "model": "gpt-5.5",
     "reasoning_effort": null,
-    "max_cost_usd": 5.0,
+    "max_cost_usd": 12.0,
     "extra_args": [],
     "yolop_version": "0.3.0",
     "yolop_commit": "e6c0c9046607",
     "everruns_runtime_version": "0.14.0"
   },
   "metrics": {
-    "wall_time_s": 146.114,
-    "agent_reported_time_s": 141.71,
-    "turns": 39,
-    "iterations": 39,
-    "assistant_messages": 39,
+    "wall_time_s": 244.031,
+    "agent_reported_time_s": 234.837,
+    "turns": 41,
+    "iterations": 41,
+    "assistant_messages": 41,
     "user_messages": 1,
-    "llm_calls": 39,
-    "tool_calls": 39,
+    "llm_calls": 41,
+    "tool_calls": 40,
     "tool_calls_failed": 0,
     "tools_used": {
-      "list_directory": 1,
-      "grep_files": 7,
-      "write_todos": 2,
-      "read_file": 14,
-      "bash": 13,
-      "edit_file": 2
+      "list_directory": 2,
+      "grep_files": 5,
+      "stat_file": 1,
+      "read_file": 11,
+      "tool_search": 1,
+      "web_fetch": 1,
+      "bash": 16,
+      "edit_file": 3
     },
     "tokens": {
-      "input_tokens": 981739,
-      "output_tokens": 5188,
-      "cache_read_tokens": 934912,
+      "input_tokens": 1113229,
+      "output_tokens": 6460,
+      "cache_read_tokens": 1013760,
       "cache_creation_tokens": 0,
-      "total_tokens": 986927
+      "total_tokens": 1119689
     },
     "reasoning_effort": "medium",
-    "cost_usd": 5.064335,
-    "stop_reason": "budget"
+    "cost_usd": 5.759945,
+    "stop_reason": "completed"
   },
   "eval_report": {
     "patch_is_None": false,
@@ -116,10 +118,10 @@
       }
     }
   },
-  "patch": "diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py\nindex 3a462f1..6be92b2 100644\n--- a/django/db/models/deletion.py\n+++ b/django/db/models/deletion.py\n@@ -1,4 +1,5 @@\n from collections import Counter\n+from itertools import chain\n from operator import attrgetter\n \n from django.db import IntegrityError, connections, transaction\n@@ -135,9 +136,7 @@ class Collector:\n             model = objs.model\n         else:\n             return False\n-        if (signals.pre_delete.has_listeners(model) or\n-                signals.post_delete.has_listeners(model) or\n-                signals.m2m_changed.has_listeners(model)):\n+        if self._has_signal_listeners(model):\n             return False\n         # The use of from_field comes from the need to avoid cascade back to\n         # parent when parent delete is cascading to child.\n@@ -154,6 +153,13 @@ class Collector:\n             )\n         )\n \n+    def _has_signal_listeners(self, model):\n+        return (\n+            signals.pre_delete.has_listeners(model) or\n+            signals.post_delete.has_listeners(model) or\n+            signals.m2m_changed.has_listeners(model)\n+        )\n+\n     def get_del_batches(self, objs, field):\n         \"\"\"\n         Return the objs in suitably sized batches for the used connection.\n@@ -220,8 +226,16 @@ class Collector:\n                     sub_objs = self.related_objects(related, batch)\n                     if self.can_fast_delete(sub_objs, from_field=field):\n                         self.fast_deletes.append(sub_objs)\n-                    elif sub_objs:\n-                        field.remote_field.on_delete(self, field, sub_objs, self.using)\n+                    else:\n+                        related_model = related.related_model\n+                        if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):\n+                            referenced_fields = set(chain.from_iterable(\n+                                (rf.attname for rf in rel.field.foreign_related_fields)\n+                                for rel in get_candidate_relations_to_delete(related_model._meta)\n+                            ))\n+                            sub_objs = sub_objs.only(*tuple(referenced_fields))\n+                        if sub_objs:\n+                            field.remote_field.on_delete(self, field, sub_objs, self.using)\n             for field in model._meta.private_fields:\n                 if hasattr(field, 'bulk_related_objects'):\n                     # It's something like generic foreign key.\n",
-  "session_log_path": "bench/.cache/sessions/tracking-v1-gpt55/openai-default/django__django-11087/session_7994100d631f46c8844716de44186991/events.jsonl",
+  "patch": "diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py\nindex 3a462f1..acb5049 100644\n--- a/django/db/models/deletion.py\n+++ b/django/db/models/deletion.py\n@@ -1,4 +1,5 @@\n from collections import Counter\n+from itertools import chain\n from operator import attrgetter\n \n from django.db import IntegrityError, connections, transaction\n@@ -220,8 +221,27 @@ class Collector:\n                     sub_objs = self.related_objects(related, batch)\n                     if self.can_fast_delete(sub_objs, from_field=field):\n                         self.fast_deletes.append(sub_objs)\n-                    elif sub_objs:\n-                        field.remote_field.on_delete(self, field, sub_objs, self.using)\n+                    else:\n+                        # Non-referenced fields can be deferred if no signal\n+                        # receivers are connected for the related model as\n+                        # they'll never be exposed to the user. Skip field\n+                        # deferring when some relationships are select_related\n+                        # as interactions between both features are hard to get\n+                        # right. This should only happen in the rare cases\n+                        # where .related_objects is overridden anyway.\n+                        if not (sub_objs.query.select_related or\n+                                signals.pre_delete.has_listeners(related.related_model) or\n+                                signals.post_delete.has_listeners(related.related_model)):\n+                            referenced_fields = set(chain.from_iterable(\n+                                (rf.attname for rf in rel.field.foreign_related_fields)\n+                                for rel in get_candidate_relations_to_delete(\n+                                    related.related_model._meta\n+                                )\n+                            ))\n+                            referenced_fields.add(related.related_model._meta.pk.attname)\n+                            sub_objs = sub_objs.only(*tuple(referenced_fields))\n+                        if sub_objs:\n+                            field.remote_field.on_delete(self, field, sub_objs, self.using)\n             for field in model._meta.private_fields:\n                 if hasattr(field, 'bulk_related_objects'):\n                     # It's something like generic foreign key.\n",
+  "session_log_path": "bench/.cache/sessions/tracking-v1-recap3/openai-default/django__django-11087/session_6cb62ddec5094cf6942e92c6c24d3953/events.jsonl",
   "timing": {
-    "started_at": "2026-06-19T02:23:43.411306+00:00",
-    "finished_at": "2026-06-19T02:54:10.993952+00:00"
+    "started_at": "2026-06-19T16:25:50.228395+00:00",
+    "finished_at": "2026-06-19T16:45:10.146576+00:00"
   }
 }
