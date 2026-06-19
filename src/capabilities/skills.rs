@@ -23,10 +23,13 @@
 //   * global    — `<config_dir>/yolop/skills`            (writable; override: YOLOP_GLOBAL_SKILLS_DIR)
 //   * system    — pre-packed, materialized once          (read-only; override: YOLOP_SYSTEM_SKILLS_DIR)
 
+use crate::capabilities::narration::stable_labeled;
 use async_trait::async_trait;
 use everruns_core::capabilities::{
     Capability, CapabilityStatus, SkillDirResolver, SkillScope, SkillsConfig,
 };
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use include_dir::{Dir, include_dir};
 use serde_json::{Value, json};
@@ -332,6 +335,20 @@ fn validate_skill_name(name: &str) -> Result<(), String> {
 
 #[async_trait]
 impl Tool for DeleteSkillTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let detail = arg_str(&tool_call.arguments, &["name"]).map(|name| {
+            let scope = arg_str(&tool_call.arguments, &["scope"]).unwrap_or("workspace");
+            truncate(&format!("{name} ({scope})"), 48)
+        });
+        Some(stable_labeled("Delete skill", detail, phase))
+    }
+
     fn name(&self) -> &str {
         "delete_skill"
     }

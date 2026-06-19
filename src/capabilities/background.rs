@@ -15,16 +15,15 @@
 // (whose OS process died with the previous yolop) are re-labelled `interrupted`.
 // Results survive a restart; in-flight processes do not. See specs/background.md.
 
+use crate::capabilities::narration::stable_labeled;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::command::{
     CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource, ExecuteCommandRequest,
 };
-use everruns_core::tool_narration::{
-    ToolNarrationPhase, labeled_phrase, narrate_shell_exec, safe_arg_str,
-    truncate as truncate_narration,
-};
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1162,16 +1161,14 @@ struct BackgroundRunTool {
 impl Tool for BackgroundRunTool {
     fn narrate(
         &self,
-        tool_call: &everruns_core::tool_types::ToolCall,
+        tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
     ) -> Option<String> {
-        Some(narrate_shell_exec(
-            &tool_call.arguments,
-            self.display_name().unwrap_or("Background shell"),
-            phase,
-            locale,
-        ))
+        let _ = locale;
+        let detail =
+            arg_str(&tool_call.arguments, &["label", "command"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Run in background", detail, phase))
     }
 
     fn name(&self) -> &str {
@@ -1242,20 +1239,14 @@ struct BackgroundAgentTool {
 impl Tool for BackgroundAgentTool {
     fn narrate(
         &self,
-        tool_call: &everruns_core::tool_types::ToolCall,
+        tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
     ) -> Option<String> {
         let _ = locale;
-        let value = safe_arg_str(&tool_call.arguments, &["label", "task"])
-            .map(|value| truncate_narration(value, 48));
-        Some(labeled_phrase(
-            "Sub-agent in background",
-            "Sub-agent in background",
-            "Could not launch sub-agent",
-            value,
-            phase,
-        ))
+        let detail =
+            arg_str(&tool_call.arguments, &["label", "task"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Run sub-agent in background", detail, phase))
     }
 
     fn name(&self) -> &str {
@@ -1326,6 +1317,16 @@ struct BackgroundListTool {
 
 #[async_trait]
 impl Tool for BackgroundListTool {
+    fn narrate(
+        &self,
+        _tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        Some(stable_labeled("List background tasks", None, phase))
+    }
+
     fn name(&self) -> &str {
         "background_list"
     }
@@ -1354,6 +1355,17 @@ struct BackgroundOutputTool {
 
 #[async_trait]
 impl Tool for BackgroundOutputTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let id = arg_str(&tool_call.arguments, &["id"]).map(|value| truncate(value, 24));
+        Some(stable_labeled("Read background output", id, phase))
+    }
+
     fn name(&self) -> &str {
         "background_output"
     }
@@ -1416,6 +1428,17 @@ struct BackgroundCancelTool {
 
 #[async_trait]
 impl Tool for BackgroundCancelTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let id = arg_str(&tool_call.arguments, &["id"]).map(|value| truncate(value, 24));
+        Some(stable_labeled("Cancel background task", id, phase))
+    }
+
     fn name(&self) -> &str {
         "background_cancel"
     }

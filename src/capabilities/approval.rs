@@ -19,11 +19,13 @@
 // yolop in natural language ("yolop, be more careful") — with the
 // `set_approval_mode` tool.
 
+use crate::capabilities::narration::stable_labeled;
 use crate::config_service::ConfigService;
 use crate::settings::{ApprovalMode, SettingsStore};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
-use everruns_core::tool_types::{BuiltinTool, DeferrablePolicy, ToolDefinition};
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
+use everruns_core::tool_types::{BuiltinTool, DeferrablePolicy, ToolCall, ToolDefinition};
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -173,6 +175,17 @@ fn approval_action(arguments: &Value) -> &str {
 
 #[async_trait]
 impl Tool for RecordApprovalTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let action = arg_str(&tool_call.arguments, &["action"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Record approval", action, phase))
+    }
+
     fn name(&self) -> &str {
         "record_approval"
     }
@@ -229,6 +242,18 @@ struct SetApprovalModeTool {
 
 #[async_trait]
 impl Tool for SetApprovalModeTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let mode =
+            arg_str(&tool_call.arguments, &["mode", "level"]).map(|value| truncate(value, 24));
+        Some(stable_labeled("Set approval level", mode, phase))
+    }
+
     fn name(&self) -> &str {
         "set_approval_mode"
     }

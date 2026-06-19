@@ -12,6 +12,7 @@
 //! registered for the TUI (see [`crate::runtime::BuildOptions`]); ACP and
 //! `--print` hosts, which have no overlay/transcript to drive, omit it.
 
+use crate::capabilities::narration::stable_labeled;
 use crate::host_ui::{HostUi, UiCommand};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus};
@@ -19,7 +20,8 @@ use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
-use everruns_core::tool_narration::{ToolNarrationPhase, labeled_phrase, safe_arg_str, truncate};
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -159,20 +161,13 @@ struct RunYolopCommandTool {
 impl Tool for RunYolopCommandTool {
     fn narrate(
         &self,
-        tool_call: &everruns_core::tool_types::ToolCall,
+        tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
     ) -> Option<String> {
         let _ = locale;
-        let value =
-            safe_arg_str(&tool_call.arguments, &["command"]).map(|value| truncate(value, 48));
-        Some(labeled_phrase(
-            "Yolop command",
-            "Yolop command",
-            "Could not use yolop command",
-            value,
-            phase,
-        ))
+        let command = arg_str(&tool_call.arguments, &["command"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Run command", command, phase))
     }
 
     fn name(&self) -> &str {
@@ -334,7 +329,7 @@ mod tests {
 
         assert_eq!(
             tool.narrate(&tool_call, ToolNarrationPhase::Started, None),
-            Some("Yolop command: /model".to_string())
+            Some("Run command: /model".to_string())
         );
     }
 

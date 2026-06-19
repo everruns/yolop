@@ -13,11 +13,14 @@
 //
 // See specs/memory.md for the design and configuration knobs.
 
+use crate::capabilities::narration::stable_labeled;
 use crate::settings::SettingsStore;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::io::Write as _;
@@ -800,6 +803,17 @@ struct RememberTool {
 
 #[async_trait]
 impl Tool for RememberTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let title = arg_str(&tool_call.arguments, &["title"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Remember", title, phase))
+    }
+
     fn name(&self) -> &str {
         "remember"
     }
@@ -892,6 +906,18 @@ struct RecallTool {
 
 #[async_trait]
 impl Tool for RecallTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let detail =
+            arg_str(&tool_call.arguments, &["id", "query"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Recall", detail, phase))
+    }
+
     fn name(&self) -> &str {
         "recall"
     }
@@ -987,6 +1013,18 @@ struct ForgetTool {
 
 #[async_trait]
 impl Tool for ForgetTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let detail =
+            arg_str(&tool_call.arguments, &["id", "title"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Forget", detail, phase))
+    }
+
     fn name(&self) -> &str {
         "forget"
     }
