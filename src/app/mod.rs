@@ -3604,9 +3604,7 @@ mod tests {
             "help should introduce the command list: {help_lines:?}"
         );
         assert!(
-            help_lines
-                .iter()
-                .any(|line| line.starts_with("  /help —")),
+            help_lines.iter().any(|line| line.starts_with("  /help —")),
             "help should list /help with a description: {help_lines:?}"
         );
         assert!(
