@@ -10,7 +10,6 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::Result;
 use everruns_core::command::ExecuteCommandRequest;
@@ -125,11 +124,19 @@ impl Session {
 
             let input = model.input_message_with_images(prompt, images);
             let runtime = handles.runtime.clone();
-            let turn = tokio::spawn(async move { runtime.run_turn(session_id, input).await });
+            let mut turn = tokio::spawn(async move { runtime.run_turn(session_id, input).await });
 
             let mut emitted_events = HashSet::new();
             let mut delta_router = DeltaRouter::default();
+            // High-water mark into the persisted event vec. Each catch-up
+            // advances it to `events.len()` so a later catch-up only scans the
+            // newly persisted suffix — repeated `Lagged` recoveries on a long
+            // session stay O(total new events), not O(n²) re-scans.
+            let mut events_cursor = events_before;
             let mut cancelled = false;
+            // Set once the turn task joins from within the loop, so we don't
+            // await the `JoinHandle` twice.
+            let mut joined = None;
             loop {
                 tokio::select! {
                     biased;
@@ -157,7 +164,7 @@ impl Session {
                             live = handles.events.subscribe();
                             catch_up_events(
                                 &handles,
-                                events_before,
+                                &mut events_cursor,
                                 &mut emitted_events,
                                 &mut delta_router,
                                 &tx,
@@ -166,10 +173,12 @@ impl Session {
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
                     },
-                    _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                        if turn.is_finished() {
-                            break;
-                        }
+                    // Turn finished: no poll/latency. Live events buffered
+                    // before this point are preferred (biased order); the tail
+                    // is drained by the catch-up below.
+                    res = &mut turn => {
+                        joined = Some(res);
+                        break;
                     }
                 }
             }
@@ -188,7 +197,7 @@ impl Session {
             // poll and the turn's actual completion.
             catch_up_events(
                 &handles,
-                events_before,
+                &mut events_cursor,
                 &mut emitted_events,
                 &mut delta_router,
                 &tx,
@@ -197,7 +206,13 @@ impl Session {
             // Clear any in-flight streaming preview before we finalize.
             let _ = tx.send(TurnEvent::Stream(None));
 
-            let result = match turn.await {
+            // `joined` is set unless the loop broke on a closed broadcast
+            // before the turn finished; await the handle in that rare case.
+            let result = match joined {
+                Some(res) => res,
+                None => turn.await,
+            };
+            let result = match result {
                 Ok(result) => result,
                 Err(e) => {
                     let _ = tx.send(TurnEvent::Failed(format!("turn task: {e}")));
@@ -286,14 +301,16 @@ impl Session {
 /// end-of-turn so the transcript is never missing tool/reason completion lines.
 async fn catch_up_events(
     handles: &RuntimeHandles,
-    events_before: usize,
+    cursor: &mut usize,
     emitted_events: &mut HashSet<String>,
     router: &mut DeltaRouter,
     tx: &mpsc::UnboundedSender<TurnEvent>,
 ) {
     let events = handles.runtime.events().await.unwrap_or_default();
     let mut lines = Vec::new();
-    for event in events.iter().skip(events_before) {
+    // Only scan the suffix persisted since the last catch-up; `emitted_events`
+    // still de-dupes overlap with events already delivered live.
+    for event in events.iter().skip(*cursor) {
         let event_id = event.id.to_string();
         if !emitted_events.insert(event_id) {
             continue;
@@ -307,6 +324,7 @@ async fn catch_up_events(
         }
         lines.extend(lines_for_event_with_router(event, router));
     }
+    *cursor = events.len();
     if !lines.is_empty() {
         let _ = tx.send(TurnEvent::Lines(lines));
     }
