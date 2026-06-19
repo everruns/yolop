@@ -30,14 +30,17 @@ Docker scorer — all **resolved**:
 | agent (model) | resolved | cost | wall | turns | llm calls | tool calls |
 |---|---|---|---|---|---|---|
 | yolop (claude-sonnet-4-5) | ✓ | $0.288 | 131s | 26 | 26 | 26 |
+| yolop · OpenRouter (nvidia nemotron-3-ultra-550b) | ✓ | $0.718 | 607s | 71 | 71 | 70 |
+| yolop · OpenRouter (openai/gpt-5.5) | ✓ | $0.361 | 38s | 19 | 19 | 18 |
 | claude-code (claude-sonnet-4-5) | ✓ | $0.830 | 226s | 34 | 54 | 33 |
 | codex (gpt-5.5) | ✓ | ~$0.063\* | 27s | 1 | 6 | 11 |
 | pi (gpt-5.5) | ✓ | $0.099 | 22s | 7 | 14 | 6 |
 
 \* codex reports no cost; this is the harness estimate from a placeholder
-`price` block — update it to real gpt-5.5 pricing for accuracy. yolop,
-claude-code and pi costs are tool-reported. One instance is a smoke, not a
-resolve-rate; run the full set per config for leaderboard-comparable numbers.
+`price` block — update it to real gpt-5.5 pricing for accuracy. All other costs
+are tool-reported (OpenRouter costs are real post-routing prices). One instance
+is a smoke, not a resolve-rate; run the full set per config for
+leaderboard-comparable numbers.
 
 ## What it measures
 

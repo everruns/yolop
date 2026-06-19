@@ -1,0 +1,29 @@
+{
+  "benchmark": "swebench_verified",
+  "config_name": "openrouter-nemotron",
+  "instances": 1,
+  "resolved": 1,
+  "resolved_rate": 1.0,
+  "errored": 0,
+  "stop_reasons": {
+    "completed": 1
+  },
+  "totals": {
+    "wall_time_s": 606.5,
+    "cost_usd": 0.7184,
+    "turns": 71,
+    "tool_calls": 70,
+    "input_tokens": 1453177,
+    "output_tokens": 16360,
+    "cache_read_tokens": 530944,
+    "total_tokens": 1469537
+  },
+  "generated_at": "2026-06-19T00:40:58.320976+00:00",
+  "averages": {
+    "wall_time_s": 606.5,
+    "cost_usd": 0.7184,
+    "turns": 71.0,
+    "tool_calls": 70.0,
+    "total_tokens": 1469537.0
+  }
+}

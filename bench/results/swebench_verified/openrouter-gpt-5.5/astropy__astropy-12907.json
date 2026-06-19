@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "benchmark": "swebench_verified",
+  "instance_id": "astropy__astropy-12907",
+  "config_name": "openrouter-gpt-5.5",
+  "run_id": "yoloeval-20260619-002939-d96cc5",
+  "resolved": true,
+  "error": null,
+  "agent": {
+    "agent": "yolop",
+    "config_name": "openrouter-gpt-5.5",
+    "provider": "openrouter",
+    "model": "openai/gpt-5.5",
+    "reasoning_effort": null,
+    "max_cost_usd": 5.0,
+    "extra_args": [],
+    "yolop_version": "0.3.0",
+    "yolop_commit": "e6c0c9046607",
+    "everruns_runtime_version": "0.14.0"
+  },
+  "metrics": {
+    "wall_time_s": 37.935,
+    "agent_reported_time_s": 36.163,
+    "turns": 19,
+    "iterations": 19,
+    "assistant_messages": 19,
+    "user_messages": 1,
+    "llm_calls": 19,
+    "tool_calls": 18,
+    "tool_calls_failed": 0,
+    "tools_used": {
+      "write_todos": 4,
+      "grep_files": 3,
+      "list_directory": 1,
+      "bash": 6,
+      "read_file": 3,
+      "edit_file": 1
+    },
+    "tokens": {
+      "input_tokens": 149146,
+      "output_tokens": 1369,
+      "cache_read_tokens": 94720,
+      "cache_creation_tokens": 0,
+      "total_tokens": 150515
+    },
+    "cost_usd": 0.36056,
+    "stop_reason": "completed"
+  },
+  "eval_report": {
+    "patch_is_None": false,
+    "patch_exists": true,
+    "patch_successfully_applied": true,
+    "resolved": true,
+    "tests_status": {
+      "FAIL_TO_PASS": {
+        "success": [
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+        ],
+        "failure": []
+      },
+      "PASS_TO_PASS": {
+        "success": [
+          "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+          "astropy/modeling/tests/test_separable.py::test_cdot",
+          "astropy/modeling/tests/test_separable.py::test_cstack",
+          "astropy/modeling/tests/test_separable.py::test_arith_oper",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+          "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+        ],
+        "failure": []
+      },
+      "FAIL_TO_FAIL": {
+        "success": [],
+        "failure": []
+      },
+      "PASS_TO_FAIL": {
+        "success": [],
+        "failure": []
+      }
+    }
+  },
+  "patch": "diff --git a/astropy/modeling/separable.py b/astropy/modeling/separable.py\nindex a308e27..45bea36 100644\n--- a/astropy/modeling/separable.py\n+++ b/astropy/modeling/separable.py\n@@ -242,7 +242,7 @@ def _cstack(left, right):\n         cright = _coord_matrix(right, 'right', noutp)\n     else:\n         cright = np.zeros((noutp, right.shape[1]))\n-        cright[-right.shape[0]:, -right.shape[1]:] = 1\n+        cright[-right.shape[0]:, -right.shape[1]:] = right\n \n     return np.hstack([cleft, cright])\n \n",
+  "session_log_path": "/home/user/yolop/bench/.cache/sessions/yoloeval-20260619-002939-d96cc5/openrouter-gpt-5.5/astropy__astropy-12907/session_db447a200b5442a988528c262063c56a/events.jsonl",
+  "timing": {
+    "started_at": "2026-06-19T00:40:58.328502+00:00",
+    "finished_at": "2026-06-19T00:42:47.946547+00:00"
+  }
+}
