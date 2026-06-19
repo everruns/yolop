@@ -1622,15 +1622,24 @@ const HARNESS_CAPABILITY_DEPENDENCIES: &[(&str, &[&str])] =
     &[(DAYTONA_CAPABILITY_ID, &[SESSION_STORAGE_CAPABILITY_ID])];
 
 /// Append any capabilities that enabled ones depend on (e.g. `daytona` pulls in
-/// `session_storage`). Closes the dependency set transitively, so a dependency
-/// that itself has dependencies is fully resolved, and is idempotent — already
-/// present ids are never duplicated.
+/// `session_storage`), closing the set against the production
+/// [`HARNESS_CAPABILITY_DEPENDENCIES`] table.
 fn ensure_harness_capability_dependencies(caps: &mut Vec<AgentCapabilityConfig>) {
-    // Bounded by the number of declared edges: each pass can only add a
-    // dependency once (deduped), so the set stabilizes.
+    resolve_capability_dependencies(caps, HARNESS_CAPABILITY_DEPENDENCIES);
+}
+
+/// Close `caps` under the dependency `edges`: for every present capability,
+/// append any missing ids it depends on, repeating until no new id is added so
+/// transitive chains are fully resolved. Already-present ids are never
+/// duplicated. Bounded by the number of edges — each pass adds at most the
+/// missing dependencies once, so the set stabilizes.
+fn resolve_capability_dependencies(
+    caps: &mut Vec<AgentCapabilityConfig>,
+    edges: &[(&str, &[&str])],
+) {
     loop {
         let mut added = false;
-        for (capability, dependencies) in HARNESS_CAPABILITY_DEPENDENCIES {
+        for (capability, dependencies) in edges {
             if !caps.iter().any(|c| c.capability_id() == *capability) {
                 continue;
             }
@@ -2738,32 +2747,12 @@ mod tests {
 
     #[test]
     fn dependency_resolver_pulls_transitive_dependencies() {
-        // A capability that only declares a direct dependency must still get the
-        // dependency's own dependencies. Use a temporary edge set via the same
-        // resolution shape the production table uses.
-        fn resolve(caps: &mut Vec<AgentCapabilityConfig>, edges: &[(&str, &[&str])]) {
-            loop {
-                let mut added = false;
-                for (capability, deps) in edges {
-                    if !caps.iter().any(|c| c.capability_id() == *capability) {
-                        continue;
-                    }
-                    for dep in *deps {
-                        if !caps.iter().any(|c| c.capability_id() == *dep) {
-                            caps.push(AgentCapabilityConfig::new(*dep));
-                            added = true;
-                        }
-                    }
-                }
-                if !added {
-                    break;
-                }
-            }
-        }
-
+        // Drive the production resolver with a synthetic edge set: a capability
+        // that only declares a direct dependency must still get the
+        // dependency's own dependencies (a -> b -> c).
         let edges: &[(&str, &[&str])] = &[("a", &["b"]), ("b", &["c"])];
         let mut caps = vec![AgentCapabilityConfig::new("a")];
-        resolve(&mut caps, edges);
+        resolve_capability_dependencies(&mut caps, edges);
         let ids: Vec<&str> = caps.iter().map(|c| c.capability_id()).collect();
         assert!(ids.contains(&"b"), "direct dependency missing: {ids:?}");
         assert!(ids.contains(&"c"), "transitive dependency missing: {ids:?}");
