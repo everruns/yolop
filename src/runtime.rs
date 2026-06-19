@@ -1538,12 +1538,6 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         caps.push(AgentCapabilityConfig::new(CLIENT_COMMANDS_CAPABILITY_ID));
     }
     caps.extend([
-        AgentCapabilityConfig::new(ENVIRONMENT_CONTEXT_CAPABILITY_ID),
-        // AGENTS.md is the sole project-instructions file, live-reloaded.
-        AgentCapabilityConfig::with_config(
-            AGENT_INSTRUCTIONS_CAPABILITY_ID,
-            serde_json::json!({ "files": ["AGENTS.md"] }),
-        ),
         AgentCapabilityConfig::new("session_file_system"),
         AgentCapabilityConfig::new(SKILLS_CAPABILITY_ID),
         AgentCapabilityConfig::new(REPO_MAP_CAPABILITY_ID),
@@ -1594,6 +1588,14 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new(APPROVAL_CAPABILITY_ID),
         AgentCapabilityConfig::new("yolop_bash"),
         AgentCapabilityConfig::new(BACKGROUND_CAPABILITY_ID),
+        // Project policy changes more often than tool-use guidance, so keep it
+        // late in the prompt prefix for better cache reuse.
+        AgentCapabilityConfig::with_config(
+            AGENT_INSTRUCTIONS_CAPABILITY_ID,
+            serde_json::json!({ "files": ["AGENTS.md"] }),
+        ),
+        // Per-turn facts are the most volatile prompt contribution.
+        AgentCapabilityConfig::new(ENVIRONMENT_CONTEXT_CAPABILITY_ID),
     ]);
     caps
 }
@@ -4409,6 +4411,37 @@ mod tests {
             with.iter()
                 .any(|cap| cap.capability_id() == CLIENT_COMMANDS_CAPABILITY_ID),
             "the TUI host enables the terminal-side commands"
+        );
+    }
+
+    #[test]
+    fn coding_harness_orders_stable_prompt_before_project_context() {
+        let ids = coding_harness_capabilities(true, None, &Settings::default());
+        let position = |id: &str| {
+            ids.iter()
+                .position(|cap| cap.capability_id() == id)
+                .unwrap_or_else(|| panic!("{id} should be enabled"))
+        };
+
+        assert!(
+            position(CLIENT_COMMANDS_CAPABILITY_ID) < position(AGENT_INSTRUCTIONS_CAPABILITY_ID)
+        );
+        assert!(position("session_file_system") < position(AGENT_INSTRUCTIONS_CAPABILITY_ID));
+        assert!(position(SKILLS_CAPABILITY_ID) < position(AGENT_INSTRUCTIONS_CAPABILITY_ID));
+        assert!(position(APPROVAL_CAPABILITY_ID) < position(AGENT_INSTRUCTIONS_CAPABILITY_ID));
+        assert!(
+            position(AGENT_INSTRUCTIONS_CAPABILITY_ID)
+                < position(ENVIRONMENT_CONTEXT_CAPABILITY_ID)
+        );
+        assert_eq!(position(ENVIRONMENT_CONTEXT_CAPABILITY_ID), ids.len() - 1);
+
+        let agent_instructions = ids
+            .iter()
+            .find(|cap| cap.capability_id() == AGENT_INSTRUCTIONS_CAPABILITY_ID)
+            .expect("agent instructions");
+        assert_eq!(
+            agent_instructions.config["files"],
+            serde_json::json!(["AGENTS.md"])
         );
     }
 
