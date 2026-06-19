@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "benchmark": "swebench_verified",
+  "instance_id": "astropy__astropy-12907",
+  "config_name": "claude-code",
+  "run_id": "yoloeval-20260618-232947-0efa55",
+  "resolved": true,
+  "error": null,
+  "agent": {
+    "agent": "claude-code",
+    "config_name": "claude-code",
+    "model": "claude-sonnet-4-5",
+    "max_cost_usd": 5.0,
+    "extra_args": [],
+    "claude_code_version": "2.1.181 (Claude Code)"
+  },
+  "metrics": {
+    "wall_time_s": 226.372,
+    "agent_reported_time_s": 225.696,
+    "turns": 34,
+    "iterations": 54,
+    "assistant_messages": 54,
+    "user_messages": 0,
+    "llm_calls": 54,
+    "tool_calls": 33,
+    "tool_calls_failed": 2,
+    "tools_used": {
+      "Bash": 20,
+      "Read": 6,
+      "Write": 6,
+      "Edit": 1
+    },
+    "tokens": {
+      "input_tokens": 65,
+      "output_tokens": 12487,
+      "cache_read_tokens": 1139582,
+      "cache_creation_tokens": 49906,
+      "total_tokens": 12552
+    },
+    "cost_usd": 0.829867,
+    "stop_reason": "completed",
+    "reasoning_effort": null
+  },
+  "eval_report": {
+    "patch_is_None": false,
+    "patch_exists": true,
+    "patch_successfully_applied": true,
+    "resolved": true,
+    "tests_status": {
+      "FAIL_TO_PASS": {
+        "success": [
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+        ],
+        "failure": []
+      },
+      "PASS_TO_PASS": {
+        "success": [
+          "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+          "astropy/modeling/tests/test_separable.py::test_cdot",
+          "astropy/modeling/tests/test_separable.py::test_cstack",
+          "astropy/modeling/tests/test_separable.py::test_arith_oper",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+          "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+          "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+        ],
+        "failure": []
+      },
+      "FAIL_TO_FAIL": {
+        "success": [],
+        "failure": []
+      },
+      "PASS_TO_FAIL": {
+        "success": [],
+        "failure": []
+      }
+    }
+  },
+  "patch": "diff --git a/astropy/modeling/separable.py b/astropy/modeling/separable.py\nindex a308e27..45bea36 100644\n--- a/astropy/modeling/separable.py\n+++ b/astropy/modeling/separable.py\n@@ -242,7 +242,7 @@ def _cstack(left, right):\n         cright = _coord_matrix(right, 'right', noutp)\n     else:\n         cright = np.zeros((noutp, right.shape[1]))\n-        cright[-right.shape[0]:, -right.shape[1]:] = 1\n+        cright[-right.shape[0]:, -right.shape[1]:] = right\n \n     return np.hstack([cleft, cright])\n \n",
+  "session_log_path": "bench/.cache/sessions/yoloeval-20260618-232947-0efa55/claude-code/astropy__astropy-12907/claude_code.jsonl",
+  "timing": {
+    "started_at": "2026-06-18T23:33:33.799950+00:00",
+    "finished_at": "2026-06-18T23:38:36.664828+00:00"
+  }
+}

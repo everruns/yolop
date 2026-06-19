@@ -68,6 +68,11 @@ doppler run -- cargo run -- --provider openai -p "hi"
 
 `RUST_LOG` is honored for the tracing layer (stderr).
 
+The `bench/` directory is a standalone Python harness (`yoloeval`) for
+benchmarking yolop and other agents on SWE-bench; it is outside the Cargo
+workspace and has its own tests (`bench/.venv/bin/python -m unittest discover -s
+bench/tests`). See [`bench/README.md`](bench/README.md).
+
 ## Git and commits
 
 - Conventional Commits: `type(scope): description`.

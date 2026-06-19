@@ -1,0 +1,30 @@
+{
+  "benchmark": "swebench_verified",
+  "config_name": "anthropic-opus",
+  "instances": 1,
+  "resolved": 1,
+  "resolved_rate": 1.0,
+  "errored": 0,
+  "stop_reasons": {
+    "completed": 1
+  },
+  "totals": {
+    "wall_time_s": 122.3,
+    "cost_usd": 0.1137,
+    "turns": 10,
+    "tool_calls": 9,
+    "input_tokens": 13582,
+    "output_tokens": 1832,
+    "cache_read_tokens": 112952,
+    "cache_creation_tokens": 15999,
+    "total_tokens": 15414
+  },
+  "generated_at": "2026-06-19T01:23:54.961194+00:00",
+  "averages": {
+    "wall_time_s": 122.3,
+    "cost_usd": 0.1137,
+    "turns": 10.0,
+    "tool_calls": 9.0,
+    "total_tokens": 15414.0
+  }
+}
