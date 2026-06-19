@@ -70,7 +70,9 @@ def cmd_run(args) -> int:
         run_id=args.run_id,
         do_eval=not args.no_eval,
         keep_workdirs=args.keep_workdirs,
-        results_tag=args.suite,
+        # --results-tag lets a subset re-run (e.g. --instance ...) land in an
+        # existing suite column; otherwise the suite name is the tag.
+        results_tag=args.results_tag or args.suite,
     )
     print("\n=== run complete ===")
     print(json.dumps(overall, indent=2))
@@ -155,6 +157,9 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--limit", type=int, help="run the first N instances")
     g.add_argument("--suite", help="named instance suite from bench/suites/ (e.g. tracking-v1)")
     r.add_argument("--run-id", default=None)
+    r.add_argument("--results-tag", default=None,
+                   help="store results in column <config>__<tag> (combine with --instance "
+                        "to re-run a subset into an existing suite column)")
     r.add_argument("--max-cost", type=float, default=None,
                    help="per-instance USD cap (overrides matrix); kills the run if exceeded")
     r.add_argument("--no-eval", action="store_true", help="skip Docker evaluation (plumbing test)")
