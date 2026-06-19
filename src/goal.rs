@@ -37,6 +37,8 @@ transcript. Otherwise set `met` to false and explain what is still missing or \
 what the agent should do next.";
 
 const CLEAR_ALIASES: &[&str] = &["clear", "stop", "off", "reset", "none", "cancel"];
+const PAUSE_ALIASES: &[&str] = &["pause", "paused"];
+const RESUME_ALIASES: &[&str] = &["resume", "continue"];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct GoalAchieved {
@@ -49,6 +51,8 @@ pub(crate) struct GoalAchieved {
 pub(crate) struct PersistedGoal {
     pub condition: String,
     pub active: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub paused: bool,
     pub evaluated_turns: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_reason: Option<String>,
@@ -67,6 +71,8 @@ pub(crate) struct GoalStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GoalCommandOutcome {
     Set { condition: String },
+    Paused,
+    Resumed,
     Cleared,
     Status(GoalStatus),
 }
@@ -106,13 +112,14 @@ impl GoalStore {
         let persisted: PersistedGoal = serde_json::from_str(&raw)
             .with_context(|| format!("parse goal state: {}", path.display()))?;
         if persisted.active {
+            let pending_turn = !persisted.paused;
             let mut sessions = self.sessions.write().expect("goal store lock poisoned");
             sessions.insert(
                 session_id,
                 SessionGoalRuntime {
                     persisted,
                     started_at: Instant::now(),
-                    pending_turn: true,
+                    pending_turn,
                 },
             );
         }
@@ -134,6 +141,18 @@ impl GoalStore {
             .any(|alias| trimmed.eq_ignore_ascii_case(alias))
         {
             return Ok(GoalCommandOutcome::Cleared);
+        }
+        if PAUSE_ALIASES
+            .iter()
+            .any(|alias| trimmed.eq_ignore_ascii_case(alias))
+        {
+            return Ok(GoalCommandOutcome::Paused);
+        }
+        if RESUME_ALIASES
+            .iter()
+            .any(|alias| trimmed.eq_ignore_ascii_case(alias))
+        {
+            return Ok(GoalCommandOutcome::Resumed);
         }
         if trimmed.len() > MAX_GOAL_CONDITION_LEN {
             bail!("goal condition is too long (max {MAX_GOAL_CONDITION_LEN} characters)");
@@ -157,6 +176,8 @@ impl GoalStore {
                 self.clear_active(session_id);
                 Ok("goal cleared".into())
             }
+            GoalCommandOutcome::Paused => self.pause_active(session_id),
+            GoalCommandOutcome::Resumed => self.resume_active(session_id),
             GoalCommandOutcome::Status(_) => Ok(String::new()),
         }
     }
@@ -197,6 +218,7 @@ impl GoalStore {
                 persisted: PersistedGoal {
                     condition: condition.clone(),
                     active: true,
+                    paused: false,
                     evaluated_turns: 0,
                     last_reason: None,
                     achieved: None,
@@ -225,12 +247,51 @@ impl GoalStore {
         }
     }
 
+    pub(crate) fn pause_active(&self, session_id: SessionId) -> Result<String> {
+        let mut sessions = self.sessions.write().expect("goal store lock poisoned");
+        let Some(runtime) = sessions.get_mut(&session_id) else {
+            return Ok("no active goal".into());
+        };
+        if !runtime.persisted.active {
+            return Ok("no active goal".into());
+        }
+        runtime.persisted.paused = true;
+        runtime.pending_turn = false;
+        drop(sessions);
+        self.persist(session_id)?;
+        Ok("goal paused; run /goal resume to continue".into())
+    }
+
+    pub(crate) fn resume_active(&self, session_id: SessionId) -> Result<String> {
+        let mut sessions = self.sessions.write().expect("goal store lock poisoned");
+        let Some(runtime) = sessions.get_mut(&session_id) else {
+            return Ok("no active goal".into());
+        };
+        if !runtime.persisted.active {
+            return Ok("no active goal".into());
+        }
+        runtime.persisted.paused = false;
+        runtime.pending_turn = true;
+        let condition = runtime.persisted.condition.clone();
+        drop(sessions);
+        self.persist(session_id)?;
+        Ok(format!("goal resumed: {condition}"))
+    }
+
     pub(crate) fn is_active(&self, session_id: SessionId) -> bool {
         self.sessions
             .read()
             .expect("goal store lock poisoned")
             .get(&session_id)
             .is_some_and(|runtime| runtime.persisted.active)
+    }
+
+    pub(crate) fn is_paused(&self, session_id: SessionId) -> bool {
+        self.sessions
+            .read()
+            .expect("goal store lock poisoned")
+            .get(&session_id)
+            .is_some_and(|runtime| runtime.persisted.active && runtime.persisted.paused)
     }
 
     pub(crate) fn active_condition(&self, session_id: SessionId) -> Option<String> {
@@ -247,7 +308,12 @@ impl GoalStore {
             .write()
             .expect("goal store lock poisoned")
             .get_mut(&session_id)
-            .is_some_and(|runtime| std::mem::take(&mut runtime.pending_turn))
+            .is_some_and(|runtime| {
+                if runtime.persisted.paused {
+                    return false;
+                }
+                std::mem::take(&mut runtime.pending_turn)
+            })
     }
 
     pub(crate) fn record_evaluation(
@@ -269,9 +335,10 @@ impl GoalStore {
             };
             runtime.persisted.active = false;
             runtime.persisted.achieved = Some(achieved);
+            runtime.persisted.paused = false;
             runtime.pending_turn = false;
         } else {
-            runtime.pending_turn = true;
+            runtime.pending_turn = !runtime.persisted.paused;
         }
         drop(sessions);
         self.persist(session_id)
@@ -280,7 +347,7 @@ impl GoalStore {
     pub(crate) fn continuation_prompt(&self, session_id: SessionId) -> Option<String> {
         let sessions = self.sessions.read().expect("goal store lock poisoned");
         let runtime = sessions.get(&session_id)?;
-        if !runtime.persisted.active {
+        if !runtime.persisted.active || runtime.persisted.paused {
             return None;
         }
         let reason = runtime
@@ -335,8 +402,18 @@ pub(crate) fn format_status(status: &GoalStatus) -> String {
             .filter(|value| !value.is_empty())
             .map(|value| format!("\nlast evaluation: {value}"))
             .unwrap_or_default();
+        let state = if active.paused {
+            "goal paused"
+        } else {
+            "goal active"
+        };
+        let resume = if active.paused {
+            "\nresume: /goal resume"
+        } else {
+            ""
+        };
         return format!(
-            "goal active\ncondition: {}\nrunning: {elapsed}\nevaluated turns: {}\nsession tokens: {tokens}{reason}",
+            "{state}\ncondition: {}\nrunning: {elapsed}\nevaluated turns: {}\nsession tokens: {tokens}{reason}{resume}",
             active.condition, active.evaluated_turns
         );
     }
@@ -347,6 +424,10 @@ pub(crate) fn format_status(status: &GoalStatus) -> String {
         );
     }
     "no active goal".into()
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn format_duration(duration: Duration) -> String {
@@ -492,6 +573,68 @@ mod tests {
     }
 
     #[test]
+    fn parse_pause_and_resume_aliases() {
+        for alias in PAUSE_ALIASES {
+            let outcome = GoalStore::parse_user_args(Some(alias)).expect("parse");
+            assert_eq!(outcome, GoalCommandOutcome::Paused);
+        }
+        for alias in RESUME_ALIASES {
+            let outcome = GoalStore::parse_user_args(Some(alias)).expect("parse");
+            assert_eq!(outcome, GoalCommandOutcome::Resumed);
+        }
+    }
+
+    #[test]
+    fn pause_blocks_continuation_until_resume() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = GoalStore::open(dir.path().to_path_buf());
+        let session_id = SessionId::new();
+        store
+            .set_active(session_id, "ship the fix".into())
+            .expect("set");
+        assert!(store.take_pending_turn(session_id));
+
+        let message = store.pause_active(session_id).expect("pause");
+        assert!(message.contains("goal paused"));
+        assert!(store.is_active(session_id));
+        assert!(store.is_paused(session_id));
+        assert!(!store.take_pending_turn(session_id));
+        assert!(store.continuation_prompt(session_id).is_none());
+
+        let evaluation = GoalEvaluation {
+            met: false,
+            reason: "not done".into(),
+        };
+        store
+            .record_evaluation(session_id, &evaluation)
+            .expect("record");
+        assert!(!store.take_pending_turn(session_id));
+
+        let message = store.resume_active(session_id).expect("resume");
+        assert!(message.contains("ship the fix"));
+        assert!(!store.is_paused(session_id));
+        assert!(store.take_pending_turn(session_id));
+    }
+
+    #[test]
+    fn paused_goal_restores_without_pending_turn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::new();
+        let store = GoalStore::open(dir.path().to_path_buf());
+        store
+            .set_active(session_id, "ship the fix".into())
+            .expect("set");
+        store.pause_active(session_id).expect("pause");
+
+        let restored = GoalStore::open(dir.path().to_path_buf());
+        restored.load_session(session_id).expect("load");
+
+        assert!(restored.is_active(session_id));
+        assert!(restored.is_paused(session_id));
+        assert!(!restored.take_pending_turn(session_id));
+    }
+
+    #[test]
     fn parse_set_condition() {
         let outcome = GoalStore::parse_user_args(Some("all tests pass")).expect("parse");
         assert_eq!(
@@ -518,6 +661,7 @@ mod tests {
             active: Some(PersistedGoal {
                 condition: "tests pass".into(),
                 active: true,
+                paused: false,
                 evaluated_turns: 2,
                 last_reason: Some("still failing".into()),
                 achieved: None,
