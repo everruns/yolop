@@ -60,6 +60,10 @@ class RunMetrics:
     tool_calls_failed: int = 0
     tools_used: dict[str, int] = field(default_factory=dict)
     tokens: TokenUsage = field(default_factory=TokenUsage)
+    # Reasoning effort actually applied per request (from the agent's log), which
+    # may differ from the configured value: when unset, yolop picks a per-model
+    # default. ``None`` if the agent doesn't expose it (claude-code/codex/pi).
+    reasoning_effort: Optional[str] = None
     # USD cost summed from per-completion usage: provider-reported
     # ``actual_cost_usd`` when present, else yolop's ``estimated_cost_usd``.
     cost_usd: float = 0.0

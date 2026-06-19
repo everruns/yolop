@@ -24,23 +24,32 @@ agent, so scoring is identical.
 
 ### First comparison
 
-All four agents on `astropy__astropy-12907` (SWE-bench Verified), same prompt and
-Docker scorer — all **resolved**:
+Seven configs on `astropy__astropy-12907` (SWE-bench Verified), same prompt and
+Docker scorer — all **resolved**. `effort` is the reasoning effort *actually
+applied* (yolop records it per request; it picks a per-model default when none is
+configured):
 
 | agent (model) | effort | resolved | cost | wall | turns | llm calls | tool calls |
 |---|---|---|---|---|---|---|---|
-| yolop (claude-sonnet-4-5) | default | ✓ | $0.288 | 131s | 26 | 26 | 26 |
-| yolop (claude-opus-4-8) | default | ✓ | $0.114 | 122s | 10 | 10 | 9 |
-| yolop (gpt-5.5, OpenAI) | default | ✓ | $1.698 | 156s | 23 | 23 | 22 |
-| yolop · OpenRouter (nvidia nemotron-3-ultra-550b) | default | ✓ | $0.718 | 607s | 71 | 71 | 70 |
-| claude-code (claude-sonnet-4-5) | default | ✓ | $0.830 | 226s | 34 | 54 | 33 |
-| codex (gpt-5.5) | default | ✓ | ~$0.063\* | 27s | 1 | 6 | 11 |
-| pi (gpt-5.5) | default | ✓ | $0.099 | 22s | 7 | 14 | 6 |
+| yolop (claude-sonnet-4-5) | high | ✓ | $0.288† | 131s | 26 | 26 | 26 |
+| yolop (claude-opus-4-8) | high | ✓ | $0.114† | 122s | 10 | 10 | 9 |
+| yolop (gpt-5.5, OpenAI) | medium | ✓ | $1.698† | 156s | 23 | 23 | 22 |
+| yolop · OpenRouter (nvidia nemotron-3-ultra-550b) | — | ✓ | $0.718 | 607s | 71 | 71 | 70 |
+| claude-code (claude-sonnet-4-5) | n/a | ✓ | $0.830 | 226s | 34 | 54 | 33 |
+| codex (gpt-5.5) | n/a | ✓ | ~$0.063\* | 27s | 1 | 6 | 11 |
+| pi (gpt-5.5) | n/a | ✓ | $0.099 | 22s | 7 | 14 | 6 |
 
-\* codex reports no cost; this is the harness estimate from a placeholder
-`price` block — update it to real gpt-5.5 pricing for accuracy. All other costs
-are tool-reported. `effort` is the model reasoning-effort setting
-(`reasoning_effort`; "default" = the provider/yolop default — see the
+\* codex reports no cost; harness estimate from a placeholder `price` block —
+update to real gpt-5.5 pricing. `n/a` = the agent's CLI doesn't expose effort.
+
+† yolop's cost for providers that don't return an inline price (OpenAI,
+Anthropic) is a price-table **estimate that does not discount cached input**
+(`estimate_cost_usd` bills full `prompt_tokens`). For OpenAI `prompt_tokens`
+*includes* cached tokens, so cache-heavy runs are **over-stated**: the gpt-5.5
+row reads $1.698 but ≈87% of its prompt was cache reads — applying the standard
+cache discount gives ≈ **$0.38**, matching the same model's real OpenRouter cost
+($0.36). OpenRouter and pi costs are tool-reported (real). `effort` is the model
+reasoning-effort setting (`reasoning_effort`; per-model default when unset — see the
 `openai-high` config for `high`). One instance is a smoke, not a resolve-rate;
 run the full set per config for leaderboard-comparable numbers.
 

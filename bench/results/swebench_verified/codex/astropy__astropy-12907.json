@@ -42,7 +42,8 @@
       "total_tokens": 23409
     },
     "cost_usd": 0.062945,
-    "stop_reason": "completed"
+    "stop_reason": "completed",
+    "reasoning_effort": null
   },
   "eval_report": {
     "patch_is_None": false,

@@ -42,8 +42,10 @@ class MetricsTest(unittest.TestCase):
             {"type": "reason.completed", "data": {"usage": {"input_tokens": 100, "output_tokens": 20}}},
             {
                 "type": "output.message.completed",
-                # actual cost is preferred over estimated when both are present.
-                "data": {"usage": {"input_tokens": 50, "output_tokens": 8,
+                # actual cost is preferred over estimated when both are present;
+                # message.metadata carries the actually-applied reasoning effort.
+                "data": {"message": {"metadata": {"reasoning_effort": "high"}},
+                         "usage": {"input_tokens": 50, "output_tokens": 8,
                                    "estimated_cost_usd": 0.10, "actual_cost_usd": 0.12}},
             },
             {"type": "turn.completed", "data": {"duration_ms": 1500}},
@@ -68,6 +70,7 @@ class MetricsTest(unittest.TestCase):
         # 0.30 (estimated) + 0.12 (actual preferred over its estimate)
         self.assertAlmostEqual(m.cost_usd, 0.42, places=6)
         self.assertEqual(m.stop_reason, "completed")
+        self.assertEqual(m.reasoning_effort, "high")  # actual effort from metadata
 
     def test_oneshot_turns_from_reason_completed(self):
         # --print mode emits no turn.completed; iterations/turns come from

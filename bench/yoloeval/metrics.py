@@ -103,6 +103,11 @@ def extract_metrics(session_log_path: str | Path) -> RunMetrics:
             m.llm_calls += 1
             _add_usage(m.tokens, data.get("usage"))
             m.cost_usd = round(m.cost_usd + _usage_cost(data.get("usage")), 6)
+            # Actual effort applied for this completion (yolop records it in the
+            # message metadata); take the latest seen.
+            meta = (data.get("message") or {}).get("metadata") or {}
+            if meta.get("reasoning_effort"):
+                m.reasoning_effort = meta["reasoning_effort"]
         elif etype == "input.message":
             m.user_messages += 1
         elif etype == "tool.completed":
