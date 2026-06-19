@@ -526,10 +526,14 @@ mod tests {
         }
         assert!(!dir_names.is_empty(), "expected embedded system skills");
 
-        // The ast-grep skill is shipped, parses, and is user-invocable.
+        // The ast-grep and yolop skills are shipped, parse, and are user-invocable.
         assert!(
             dir_names.iter().any(|n| n == "ast-grep"),
             "ast-grep system skill is shipped: {dir_names:?}"
+        );
+        assert!(
+            dir_names.iter().any(|n| n == "yolop"),
+            "yolop system skill is shipped: {dir_names:?}"
         );
         let md = std::fs::read_to_string(dest.join("ast-grep").join("SKILL.md")).unwrap();
         let parsed = everruns_core::skill::parse_skill_md(&md).unwrap();
@@ -538,6 +542,14 @@ mod tests {
             parsed.description.to_lowercase().contains("ast-grep"),
             "description should mention ast-grep: {:?}",
             parsed.description
+        );
+        let yolop_md = std::fs::read_to_string(dest.join("yolop").join("SKILL.md")).unwrap();
+        let yolop_parsed = everruns_core::skill::parse_skill_md(&yolop_md).unwrap();
+        assert!(yolop_parsed.user_invocable);
+        assert!(
+            yolop_parsed.description.to_lowercase().contains("keyboard"),
+            "yolop skill description should mention keyboard shortcuts: {:?}",
+            yolop_parsed.description
         );
     }
 

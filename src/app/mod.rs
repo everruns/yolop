@@ -1026,20 +1026,24 @@ impl App {
 
     fn show_help(&mut self) {
         if !self.startup.capability_commands.is_empty() {
-            let caps = self
+            let command_lines: Vec<String> = self
                 .startup
                 .capability_commands
                 .iter()
-                .map(capability_command_usage)
-                .collect::<Vec<_>>()
-                .join(" · ");
-            self.push_system(format!("commands: {caps}"));
+                .map(help_command_line)
+                .collect();
+            self.push_system("commands:".into());
+            for line in command_lines {
+                self.push_system(line);
+            }
         }
-        self.push_system(format!(
-            "input: ←/→ edit · {} newline · scroll: use the terminal scrollback",
-            newline_shortcut_hint()
-        ));
-        self.push_system("exit: Ctrl-C twice / Ctrl-D".into());
+        self.push_system("shortcuts:".into());
+        for line in help_shortcut_lines() {
+            self.push_system(line.to_string());
+        }
+        self.push_system(
+            "more: /tools · /mcp · /yolop skill · type naturally for terminal actions".into(),
+        );
     }
 
     fn set_status_layout(&mut self, raw: Option<&str>) {
@@ -1422,6 +1426,23 @@ fn capability_command_display_usage(descriptor: &CommandDescriptor) -> String {
 
 fn capability_command_usage(descriptor: &CommandDescriptor) -> String {
     capability_command_usage_with_prefix(descriptor, "/")
+}
+
+fn help_command_line(descriptor: &CommandDescriptor) -> String {
+    format!(
+        "  {} — {}",
+        capability_command_usage(descriptor),
+        descriptor.description
+    )
+}
+
+fn help_shortcut_lines() -> [&'static str; 4] {
+    [
+        "  Enter send · Shift-Enter newline · Tab complete slash command · ←/→ edit",
+        "  Ctrl+V paste image · Ctrl+B background tasks · !<cmd> shell alias",
+        "  exit: Ctrl-C twice / Ctrl-D · Esc twice cancel turn (while busy)",
+        "  scroll: terminal scrollback (no in-app page keys)",
+    ]
 }
 
 fn capability_command_usage_with_prefix(descriptor: &CommandDescriptor, prefix: &str) -> String {
@@ -3570,19 +3591,43 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn help_command_names_ctrl_c_and_ctrl_d_as_exit_keys() {
+    async fn help_command_lists_commands_shortcuts_and_exit_keys() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.lines.clear();
 
         app.dispatch_command_for_test("help").await;
 
+        let help_lines: Vec<_> = app.lines.iter().map(|line| line.text.as_str()).collect();
         assert!(
-            app.lines
+            help_lines.contains(&"commands:"),
+            "help should introduce the command list: {help_lines:?}"
+        );
+        assert!(
+            help_lines
                 .iter()
-                .any(|line| line.text.contains("exit: Ctrl-C twice / Ctrl-D")),
-            "help output should name Ctrl-C/Ctrl-D exits: {:?}",
-            app.lines
+                .any(|line| line.starts_with("  /help —")),
+            "help should list /help with a description: {help_lines:?}"
+        );
+        assert!(
+            help_lines.contains(&"shortcuts:"),
+            "help should introduce keyboard shortcuts: {help_lines:?}"
+        );
+        assert!(
+            help_lines
+                .iter()
+                .any(|line| line.contains("exit: Ctrl-C twice / Ctrl-D")),
+            "help output should name Ctrl-C/Ctrl-D exits: {help_lines:?}"
+        );
+        assert!(
+            help_lines
+                .iter()
+                .any(|line| line.contains("Ctrl+V paste image")),
+            "help output should mention image paste: {help_lines:?}"
+        );
+        assert!(
+            help_lines.iter().any(|line| line.contains("/yolop skill")),
+            "help output should point at the yolop skill: {help_lines:?}"
         );
     }
 
