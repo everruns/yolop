@@ -33,8 +33,8 @@ pub(crate) use config::{CONFIG_CAPABILITY_ID, ConfigCapability};
 pub(crate) use goal::GoalCapability;
 pub(crate) use hooks::{HOOKS_CAPABILITY_ID, HooksCapability};
 pub(crate) use host::{
-    CodingBashCapability, CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
-    SETUP_CAPABILITY_ID, SetupCapability,
+    CODING_BASH_CAPABILITY_ID, CodingBashCapability, CodingCliEnvironmentCapability,
+    ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
 };
 pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
 pub(crate) use worktree_cmd::WorktreeCapability;
