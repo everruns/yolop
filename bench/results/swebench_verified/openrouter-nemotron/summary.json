@@ -16,9 +16,10 @@
     "input_tokens": 1453177,
     "output_tokens": 16360,
     "cache_read_tokens": 530944,
+    "cache_creation_tokens": 0,
     "total_tokens": 1469537
   },
-  "generated_at": "2026-06-19T01:01:22.787632+00:00",
+  "generated_at": "2026-06-19T01:23:54.962735+00:00",
   "averages": {
     "wall_time_s": 606.5,
     "cost_usd": 0.7184,

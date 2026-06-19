@@ -87,7 +87,7 @@
     }
   },
   "patch": "diff --git a/astropy/modeling/separable.py b/astropy/modeling/separable.py\nindex a308e27..45bea36 100644\n--- a/astropy/modeling/separable.py\n+++ b/astropy/modeling/separable.py\n@@ -242,7 +242,7 @@ def _cstack(left, right):\n         cright = _coord_matrix(right, 'right', noutp)\n     else:\n         cright = np.zeros((noutp, right.shape[1]))\n-        cright[-right.shape[0]:, -right.shape[1]:] = 1\n+        cright[-right.shape[0]:, -right.shape[1]:] = right\n \n     return np.hstack([cleft, cright])\n \n",
-  "session_log_path": "/home/user/yolop/bench/.cache/sessions/yoloeval-20260618-232947-0efa55/anthropic-sonnet/astropy__astropy-12907/session_c9e679a0515148f5b6186f783877537e/events.jsonl",
+  "session_log_path": "bench/.cache/sessions/yoloeval-20260618-232947-0efa55/anthropic-sonnet/astropy__astropy-12907/session_c9e679a0515148f5b6186f783877537e/events.jsonl",
   "timing": {
     "started_at": "2026-06-18T23:29:47.312420+00:00",
     "finished_at": "2026-06-18T23:33:33.690298+00:00"

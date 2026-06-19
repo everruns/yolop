@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,12 +36,23 @@ def _git(args: list[str], cwd: str | Path | None = None) -> subprocess.Completed
 def checkout(instance: Instance, dest: Path) -> None:
     """Materialize ``instance.repo`` at ``base_commit`` into ``dest``.
 
-    Uses a SHA-targeted shallow fetch so we don't clone full history.
+    Uses a SHA-targeted shallow fetch so we don't clone full history. Starts from
+    a clean ``dest`` and checks every git step explicitly (no ``assert``, which
+    ``python -O`` would strip) so failures surface here, not downstream.
     """
+    if not instance.repo or not instance.base_commit:
+        raise RuntimeError(f"{instance.instance_id}: missing repo/base_commit")
+    # A reused dest could carry a stale remote/repo; start fresh.
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True, exist_ok=True)
     url = f"https://github.com/{instance.repo}.git"
-    assert _git(["init", "-q"], dest).returncode == 0
-    _git(["remote", "add", "origin", url], dest)
+    for step in (["init", "-q"], ["remote", "add", "origin", url]):
+        r = _git(step, dest)
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"git {step[0]} failed for {instance.instance_id}: {r.stderr.strip()}"
+            )
     fetch = _git(["fetch", "-q", "--depth", "1", "origin", instance.base_commit], dest)
     if fetch.returncode != 0:
         raise RuntimeError(f"fetch failed for {instance.instance_id}: {fetch.stderr.strip()}")

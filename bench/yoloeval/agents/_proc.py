@@ -67,6 +67,8 @@ def run_agent_process(
             proc.wait(timeout=poll_s)
             break
         except subprocess.TimeoutExpired:
+            # Still running at the poll interval — fall through to the
+            # wall-clock and budget checks below, then keep polling.
             pass
         if time.monotonic() - start > timeout:
             _kill(proc)
@@ -88,6 +90,7 @@ def run_agent_process(
         try:
             stderr_tail = proc.stderr.read().decode("utf-8", "replace")[-2000:]
         except Exception:
+            # stderr tail is best-effort diagnostics; never fail the run over it.
             pass
     if stop_reason == "completed" and proc.returncode not in (0, None):
         stop_reason = "error"

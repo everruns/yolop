@@ -98,7 +98,7 @@ def cmd_eval(args) -> int:
         for p in sorted(cfg_dir.glob("*.json")) if cfg_dir.exists() else []:
             if p.name == "summary.json":
                 continue
-            rec = json.loads(p.read_text())
+            rec = json.loads(p.read_text(encoding="utf-8"))
             iid = rec["instance_id"]
             if want and iid not in want:
                 continue

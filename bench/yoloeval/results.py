@@ -20,6 +20,18 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 RESULTS_DIR = Path(__file__).resolve().parents[1] / "results"
+# Repo root, used to store machine-independent (relative) paths in results.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _portable_path(p: str | None) -> str | None:
+    """Make a path repo-relative so committed results don't leak local prefixes."""
+    if not p:
+        return p
+    try:
+        return str(Path(p).resolve().relative_to(_REPO_ROOT))
+    except ValueError:
+        return p  # outside the repo: leave as-is
 
 
 def result_path(benchmark: str, config_name: str, instance_id: str) -> Path:
@@ -60,7 +72,7 @@ def build_record(
         "metrics": metrics,
         "eval_report": eval_report,
         "patch": patch,
-        "session_log_path": session_log_path,
+        "session_log_path": _portable_path(session_log_path),
         "timing": {
             "started_at": started_at,
             "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -75,7 +87,7 @@ def summarize(benchmark: str, config_name: str) -> dict[str, Any]:
     for p in sorted(config_dir.glob("*.json")):
         if p.name == "summary.json":
             continue
-        runs.append(json.loads(p.read_text()))
+        runs.append(json.loads(p.read_text(encoding="utf-8")))
 
     n = len(runs)
     resolved = sum(1 for r in runs if r.get("resolved"))
@@ -111,6 +123,7 @@ def summarize(benchmark: str, config_name: str) -> dict[str, Any]:
             "input_tokens": int(_sum(["metrics", "tokens", "input_tokens"])),
             "output_tokens": int(_sum(["metrics", "tokens", "output_tokens"])),
             "cache_read_tokens": int(_sum(["metrics", "tokens", "cache_read_tokens"])),
+            "cache_creation_tokens": int(_sum(["metrics", "tokens", "cache_creation_tokens"])),
             "total_tokens": int(_sum(["metrics", "tokens", "total_tokens"])),
         },
         "generated_at": datetime.now(timezone.utc).isoformat(),
