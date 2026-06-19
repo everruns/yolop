@@ -59,6 +59,7 @@ def build_record(
     error: str | None,
     run_id: str,
     started_at: str,
+    evaluated: bool = True,
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -67,6 +68,10 @@ def build_record(
         "config_name": config_name,
         "run_id": run_id,
         "resolved": resolved,
+        # False until the patch has been scored. The runner persists a record as
+        # soon as the agent run finishes (before the batched eval) with
+        # evaluated=False; `yoloeval eval` can score it later and flip this true.
+        "evaluated": evaluated,
         "error": error,
         "agent": agent_config,
         "metrics": metrics,

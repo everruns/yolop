@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "benchmark": "swebench_verified",
+  "instance_id": "sphinx-doc__sphinx-10323",
+  "config_name": "openai-default__tracking-v1",
+  "run_id": "tracking-v1-gpt55",
+  "resolved": true,
+  "evaluated": true,
+  "error": null,
+  "agent": {
+    "agent": "yolop",
+    "config_name": "openai-default",
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "reasoning_effort": null,
+    "max_cost_usd": 5.0,
+    "extra_args": [],
+    "yolop_version": "0.3.0",
+    "yolop_commit": "e6c0c9046607",
+    "everruns_runtime_version": "0.14.0"
+  },
+  "metrics": {
+    "wall_time_s": 113.638,
+    "agent_reported_time_s": 110.113,
+    "turns": 29,
+    "iterations": 29,
+    "assistant_messages": 29,
+    "user_messages": 1,
+    "llm_calls": 29,
+    "tool_calls": 28,
+    "tool_calls_failed": 1,
+    "tools_used": {
+      "bash": 13,
+      "grep_files": 3,
+      "read_file": 9,
+      "edit_file": 3
+    },
+    "tokens": {
+      "input_tokens": 496341,
+      "output_tokens": 4506,
+      "cache_read_tokens": 460800,
+      "cache_creation_tokens": 0,
+      "total_tokens": 500847
+    },
+    "reasoning_effort": "medium",
+    "cost_usd": 2.616885,
+    "stop_reason": "completed"
+  },
+  "eval_report": {
+    "patch_is_None": false,
+    "patch_exists": true,
+    "patch_successfully_applied": true,
+    "resolved": true,
+    "tests_status": {
+      "FAIL_TO_PASS": {
+        "success": [
+          "tests/test_directive_code.py::test_LiteralIncludeReader_dedent_and_append_and_prepend"
+        ],
+        "failure": []
+      },
+      "PASS_TO_PASS": {
+        "success": [
+          "tests/test_directive_code.py::test_LiteralIncludeReader",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_lineno_start",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_pyobject1",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_pyobject2",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_pyobject3",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_pyobject_and_lines",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_lines1",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_lines2",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_lines_and_lineno_match1",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_lines_and_lineno_match2",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_lines_and_lineno_match3",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_start_at",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_start_after",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_start_after_and_lines",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_start_at_and_lines",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_missing_start_and_end",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_end_before",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_prepend",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_dedent",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_tabwidth",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_tabwidth_dedent",
+          "tests/test_directive_code.py::test_LiteralIncludeReader_diff",
+          "tests/test_directive_code.py::test_code_block",
+          "tests/test_directive_code.py::test_force_option",
+          "tests/test_directive_code.py::test_code_block_caption_html",
+          "tests/test_directive_code.py::test_code_block_caption_latex",
+          "tests/test_directive_code.py::test_code_block_namedlink_latex",
+          "tests/test_directive_code.py::test_code_block_emphasize_latex",
+          "tests/test_directive_code.py::test_literal_include",
+          "tests/test_directive_code.py::test_literal_include_block_start_with_comment_or_brank",
+          "tests/test_directive_code.py::test_literal_include_linenos",
+          "tests/test_directive_code.py::test_literalinclude_file_whole_of_emptyline",
+          "tests/test_directive_code.py::test_literalinclude_caption_html",
+          "tests/test_directive_code.py::test_literalinclude_caption_latex",
+          "tests/test_directive_code.py::test_literalinclude_namedlink_latex",
+          "tests/test_directive_code.py::test_literalinclude_classes",
+          "tests/test_directive_code.py::test_literalinclude_pydecorators",
+          "tests/test_directive_code.py::test_code_block_highlighted",
+          "tests/test_directive_code.py::test_linenothreshold",
+          "tests/test_directive_code.py::test_code_block_dedent"
+        ],
+        "failure": []
+      },
+      "FAIL_TO_FAIL": {
+        "success": [],
+        "failure": []
+      },
+      "PASS_TO_FAIL": {
+        "success": [],
+        "failure": []
+      }
+    }
+  },
+  "patch": "diff --git a/sphinx/directives/code.py b/sphinx/directives/code.py\nindex dc44ed3..e47e595 100644\n--- a/sphinx/directives/code.py\n+++ b/sphinx/directives/code.py\n@@ -224,9 +224,9 @@ class LiteralIncludeReader:\n                        self.start_filter,\n                        self.end_filter,\n                        self.lines_filter,\n+                       self.dedent_filter,\n                        self.prepend_filter,\n-                       self.append_filter,\n-                       self.dedent_filter]\n+                       self.append_filter]\n             lines = self.read_file(self.filename, location=location)\n             for func in filters:\n                 lines = func(lines, location=location)\n@@ -396,6 +396,18 @@ class LiteralInclude(SphinxDirective):\n         'diff': directives.unchanged_required,\n     }\n \n+    def preserve_preappend_option_indent(self) -> None:\n+        \"\"\"Preserve leading whitespace in prepend/append options.\"\"\"\n+        for line in self.block_text.splitlines():\n+            stripped = line.lstrip()\n+            for option in ('prepend', 'append'):\n+                prefix = ':%s:' % option\n+                if option in self.options and stripped.startswith(prefix):\n+                    value = stripped[len(prefix):]\n+                    if value[:1] in (' ', '\\t'):\n+                        value = value[1:]\n+                    self.options[option] = value\n+\n     def run(self) -> List[Node]:\n         document = self.state.document\n         if not document.settings.file_insertion_enabled:\n@@ -405,6 +417,7 @@ class LiteralInclude(SphinxDirective):\n         if 'diff' in self.options:\n             _, path = self.env.relfn2path(self.options['diff'])\n             self.options['diff'] = path\n+        self.preserve_preappend_option_indent()\n \n         try:\n             location = self.state_machine.get_source_and_line(self.lineno)\n",
+  "session_log_path": "bench/.cache/sessions/tracking-v1-gpt55/openai-default/sphinx-doc__sphinx-10323/session_cc245acd543b4dc6a8587c4a96518b6c/events.jsonl",
+  "timing": {
+    "started_at": "2026-06-19T02:37:39.809424+00:00",
+    "finished_at": "2026-06-19T02:54:10.998554+00:00"
+  }
+}

@@ -5,6 +5,7 @@
   "config_name": "anthropic-opus",
   "run_id": "yoloeval-20260619-004557-3a58b8",
   "resolved": true,
+  "evaluated": true,
   "error": null,
   "agent": {
     "agent": "yolop",

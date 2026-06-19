@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "benchmark": "swebench_verified",
+  "instance_id": "django__django-11141",
+  "config_name": "openai-default__tracking-v1",
+  "run_id": "tracking-v1-gpt55",
+  "resolved": false,
+  "evaluated": true,
+  "error": null,
+  "agent": {
+    "agent": "yolop",
+    "config_name": "openai-default",
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "reasoning_effort": null,
+    "max_cost_usd": 5.0,
+    "extra_args": [],
+    "yolop_version": "0.3.0",
+    "yolop_commit": "e6c0c9046607",
+    "everruns_runtime_version": "0.14.0"
+  },
+  "metrics": {
+    "wall_time_s": 80.221,
+    "agent_reported_time_s": 75.667,
+    "turns": 22,
+    "iterations": 22,
+    "assistant_messages": 22,
+    "user_messages": 1,
+    "llm_calls": 22,
+    "tool_calls": 21,
+    "tool_calls_failed": 0,
+    "tools_used": {
+      "list_directory": 1,
+      "grep_files": 3,
+      "bash": 8,
+      "read_file": 8,
+      "edit_file": 1
+    },
+    "tokens": {
+      "input_tokens": 324067,
+      "output_tokens": 3025,
+      "cache_read_tokens": 278528,
+      "cache_creation_tokens": 0,
+      "total_tokens": 327092
+    },
+    "reasoning_effort": "medium",
+    "cost_usd": 1.711085,
+    "stop_reason": "completed"
+  },
+  "eval_report": {
+    "patch_is_None": false,
+    "patch_exists": true,
+    "patch_successfully_applied": true,
+    "resolved": false,
+    "tests_status": {
+      "FAIL_TO_PASS": {
+        "success": [
+          "Migration directories without an __init__.py file are loaded."
+        ],
+        "failure": []
+      },
+      "PASS_TO_PASS": {
+        "success": [
+          "test_apply (migrations.test_loader.RecorderTests)",
+          "test_invalid (migrations.test_loader.PycLoaderTests)",
+          "test_valid (migrations.test_loader.PycLoaderTests)",
+          "test_check_consistent_history (migrations.test_loader.LoaderTests)",
+          "test_check_consistent_history_squashed (migrations.test_loader.LoaderTests)",
+          "test_explicit_missing_module (migrations.test_loader.LoaderTests)",
+          "test_first (migrations.test_loader.LoaderTests)",
+          "Files prefixed with underscore, tilde, or dot aren't loaded.",
+          "test_load (migrations.test_loader.LoaderTests)",
+          "test_load_import_error (migrations.test_loader.LoaderTests)",
+          "test_load_module_file (migrations.test_loader.LoaderTests)",
+          "test_load_unmigrated_dependency (migrations.test_loader.LoaderTests)",
+          "Tests loading a squashed migration",
+          "Tests loading a complex set of squashed migrations",
+          "test_loading_squashed_complex_multi_apps (migrations.test_loader.LoaderTests)",
+          "test_loading_squashed_complex_multi_apps_partially_applied (migrations.test_loader.LoaderTests)",
+          "Tests loading a complex but erroneous set of squashed migrations",
+          "Tests loading a squashed migration with a new migration referencing it",
+          "test_marked_as_migrated (migrations.test_loader.LoaderTests)",
+          "test_marked_as_unmigrated (migrations.test_loader.LoaderTests)",
+          "Tests prefix name matching",
+          "test_plan_handles_repeated_migrations (migrations.test_loader.LoaderTests)",
+          "test_run_before (migrations.test_loader.LoaderTests)"
+        ],
+        "failure": [
+          "test_load_empty_dir (migrations.test_loader.LoaderTests)"
+        ]
+      },
+      "FAIL_TO_FAIL": {
+        "success": [],
+        "failure": []
+      },
+      "PASS_TO_FAIL": {
+        "success": [],
+        "failure": []
+      }
+    }
+  },
+  "patch": "diff --git a/django/db/migrations/loader.py b/django/db/migrations/loader.py\nindex 8c30862..d075fcc 100644\n--- a/django/db/migrations/loader.py\n+++ b/django/db/migrations/loader.py\n@@ -84,11 +84,6 @@ class MigrationLoader:\n                     continue\n                 raise\n             else:\n-                # Empty directories are namespaces.\n-                # getattr() needed on PY36 and older (replace w/attribute access).\n-                if getattr(module, '__file__', None) is None:\n-                    self.unmigrated_apps.add(app_config.label)\n-                    continue\n                 # Module is not a package (e.g. migrations.py).\n                 if not hasattr(module, '__path__'):\n                     self.unmigrated_apps.add(app_config.label)\n",
+  "session_log_path": "bench/.cache/sessions/tracking-v1-gpt55/openai-default/django__django-11141/session_7a71642d5a7c4d0684601b659c060f28/events.jsonl",
+  "timing": {
+    "started_at": "2026-06-19T02:27:43.279794+00:00",
+    "finished_at": "2026-06-19T02:54:10.994765+00:00"
+  }
+}

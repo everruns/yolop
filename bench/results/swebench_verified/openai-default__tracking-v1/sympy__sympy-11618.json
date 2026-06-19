@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "benchmark": "swebench_verified",
+  "instance_id": "sympy__sympy-11618",
+  "config_name": "openai-default__tracking-v1",
+  "run_id": "tracking-v1-gpt55",
+  "resolved": true,
+  "evaluated": true,
+  "error": null,
+  "agent": {
+    "agent": "yolop",
+    "config_name": "openai-default",
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "reasoning_effort": null,
+    "max_cost_usd": 5.0,
+    "extra_args": [],
+    "yolop_version": "0.3.0",
+    "yolop_commit": "e6c0c9046607",
+    "everruns_runtime_version": "0.14.0"
+  },
+  "metrics": {
+    "wall_time_s": 64.799,
+    "agent_reported_time_s": 63.267,
+    "turns": 22,
+    "iterations": 22,
+    "assistant_messages": 22,
+    "user_messages": 1,
+    "llm_calls": 22,
+    "tool_calls": 21,
+    "tool_calls_failed": 1,
+    "tools_used": {
+      "list_directory": 2,
+      "grep_files": 7,
+      "read_file": 4,
+      "edit_file": 2,
+      "bash": 6
+    },
+    "tokens": {
+      "input_tokens": 277256,
+      "output_tokens": 2368,
+      "cache_read_tokens": 256512,
+      "cache_creation_tokens": 0,
+      "total_tokens": 279624
+    },
+    "reasoning_effort": "medium",
+    "cost_usd": 1.45732,
+    "stop_reason": "completed"
+  },
+  "eval_report": {
+    "patch_is_None": false,
+    "patch_exists": true,
+    "patch_successfully_applied": true,
+    "resolved": true,
+    "tests_status": {
+      "FAIL_TO_PASS": {
+        "success": [
+          "test_issue_11617"
+        ],
+        "failure": []
+      },
+      "PASS_TO_PASS": {
+        "success": [
+          "test_point3D",
+          "test_Point2D",
+          "test_issue_9214",
+          "test_transform"
+        ],
+        "failure": []
+      },
+      "FAIL_TO_FAIL": {
+        "success": [],
+        "failure": []
+      },
+      "PASS_TO_FAIL": {
+        "success": [],
+        "failure": []
+      }
+    }
+  },
+  "patch": "diff --git a/sympy/geometry/point.py b/sympy/geometry/point.py\nindex 5930484..d134e5b 100644\n--- a/sympy/geometry/point.py\n+++ b/sympy/geometry/point.py\n@@ -266,8 +266,10 @@ def distance(self, p):\n         sqrt(x**2 + y**2)\n \n         \"\"\"\n+        p = Point(p)\n         return sqrt(sum([(a - b)**2 for a, b in zip(\n-            self.args, p.args if isinstance(p, Point) else p)]))\n+            self.args + (S.Zero,)*(len(p) - len(self)),\n+            p.args + (S.Zero,)*(len(self) - len(p)))]))\n \n     def taxicab_distance(self, p):\n         \"\"\"The Taxicab Distance from self to point p.\n",
+  "session_log_path": "bench/.cache/sessions/tracking-v1-gpt55/openai-default/sympy__sympy-11618/session_0b86a38291244be2b8ca107df069133d/events.jsonl",
+  "timing": {
+    "started_at": "2026-06-19T02:40:26.774112+00:00",
+    "finished_at": "2026-06-19T02:54:10.999083+00:00"
+  }
+}

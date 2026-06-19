@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "benchmark": "swebench_verified",
+  "instance_id": "sympy__sympy-12419",
+  "config_name": "openai-default__tracking-v1",
+  "run_id": "tracking-v1-recap3",
+  "resolved": true,
+  "evaluated": true,
+  "error": null,
+  "agent": {
+    "agent": "yolop",
+    "config_name": "openai-default",
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "reasoning_effort": null,
+    "max_cost_usd": 12.0,
+    "extra_args": [],
+    "yolop_version": "0.3.0",
+    "yolop_commit": "e6c0c9046607",
+    "everruns_runtime_version": "0.14.0"
+  },
+  "metrics": {
+    "wall_time_s": 199.148,
+    "agent_reported_time_s": 190.033,
+    "turns": 40,
+    "iterations": 40,
+    "assistant_messages": 40,
+    "user_messages": 1,
+    "llm_calls": 40,
+    "tool_calls": 39,
+    "tool_calls_failed": 0,
+    "tools_used": {
+      "write_todos": 3,
+      "bash": 17,
+      "read_file": 13,
+      "grep_files": 4,
+      "edit_file": 2
+    },
+    "tokens": {
+      "input_tokens": 1043679,
+      "output_tokens": 7222,
+      "cache_read_tokens": 937472,
+      "cache_creation_tokens": 0,
+      "total_tokens": 1050901
+    },
+    "reasoning_effort": "medium",
+    "cost_usd": 5.435055,
+    "stop_reason": "completed"
+  },
+  "eval_report": {
+    "patch_is_None": false,
+    "patch_exists": true,
+    "patch_successfully_applied": true,
+    "resolved": true,
+    "tests_status": {
+      "FAIL_TO_PASS": {
+        "success": [
+          "test_Identity"
+        ],
+        "failure": []
+      },
+      "PASS_TO_PASS": {
+        "success": [
+          "test_shape",
+          "test_matexpr",
+          "test_subs",
+          "test_ZeroMatrix",
+          "test_ZeroMatrix_doit",
+          "test_Identity_doit",
+          "test_addition",
+          "test_multiplication",
+          "test_MatPow",
+          "test_MatrixSymbol",
+          "test_dense_conversion",
+          "test_free_symbols",
+          "test_zero_matmul",
+          "test_matadd_simplify",
+          "test_matmul_simplify",
+          "test_invariants",
+          "test_indexing",
+          "test_single_indexing",
+          "test_MatrixElement_commutative",
+          "test_MatrixSymbol_determinant",
+          "test_MatrixElement_diff",
+          "test_MatrixElement_doit",
+          "test_identity_powers",
+          "test_Zero_power",
+          "test_matrixelement_diff"
+        ],
+        "failure": []
+      },
+      "FAIL_TO_FAIL": {
+        "success": [],
+        "failure": []
+      },
+      "PASS_TO_FAIL": {
+        "success": [],
+        "failure": []
+      }
+    }
+  },
+  "patch": "diff --git a/sympy/concrete/summations.py b/sympy/concrete/summations.py\nindex 3724876..822d456 100644\n--- a/sympy/concrete/summations.py\n+++ b/sympy/concrete/summations.py\n@@ -855,6 +855,14 @@ def eval_sum(f, limits):\n     if a == b:\n         return f.subs(i, a)\n     if isinstance(f, Piecewise):\n+        from sympy.logic.boolalg import simplify_logic\n+        from sympy.sets import Interval\n+        arg = f.args[0]\n+        try:\n+            if simplify_logic(arg.cond ^ Interval(a, b).as_relational(i)) is S.false:\n+                return eval_sum(arg.expr, limits)\n+        except (NotImplementedError, TypeError):\n+            pass\n         if not any(i in arg.args[1].free_symbols for arg in f.args):\n             # Piecewise conditions do not depend on the dummy summation variable,\n             # therefore we can fold:     Sum(Piecewise((e, c), ...), limits)\ndiff --git a/sympy/matrices/expressions/matexpr.py b/sympy/matrices/expressions/matexpr.py\nindex b4d7598..374f755 100644\n--- a/sympy/matrices/expressions/matexpr.py\n+++ b/sympy/matrices/expressions/matexpr.py\n@@ -6,7 +6,7 @@\n from sympy.core.decorators import call_highest_priority\n from sympy.core.compatibility import range\n from sympy.core.sympify import SympifyError, sympify\n-from sympy.functions import conjugate, adjoint\n+from sympy.functions import conjugate, adjoint, KroneckerDelta\n from sympy.matrices import ShapeError\n from sympy.simplify import simplify\n \n@@ -476,10 +476,7 @@ def conjugate(self):\n         return self\n \n     def _entry(self, i, j):\n-        if i == j:\n-            return S.One\n-        else:\n-            return S.Zero\n+        return KroneckerDelta(i, j)\n \n     def _eval_determinant(self):\n         return S.One\n",
+  "session_log_path": "bench/.cache/sessions/tracking-v1-recap3/openai-default/sympy__sympy-12419/session_e58ae006ec194e258148b14fb0b9fdfe/events.jsonl",
+  "timing": {
+    "started_at": "2026-06-19T16:38:48.771970+00:00",
+    "finished_at": "2026-06-19T16:45:10.148568+00:00"
+  }
+}
