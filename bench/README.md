@@ -88,16 +88,30 @@ Results path: `results/<benchmark>/<config>/<instance_id>.json` plus a rolled-up
 ## Setup
 
 ```bash
-python3 -m venv bench/.venv
-bench/.venv/bin/pip install -r bench/requirements.txt
-cargo build --release            # produces target/release/yolop
+bench/bootstrap.sh          # venv + yolop build + agent CLIs (pinned versions)
+```
+
+`bootstrap.sh` is idempotent and sets up the Python venv, a yolop release build,
+and the three external agent CLIs (claude-code, codex, pi) pinned to the
+validated versions. Scope it with `AGENTS=codex,pi bench/bootstrap.sh`. Manual
+equivalent:
+
+```bash
+python3 -m venv bench/.venv && bench/.venv/bin/pip install -r bench/requirements.txt
+cargo build --release       # produces target/release/yolop
 ```
 
 Requires a running **Docker** daemon (SWE-bench runs the hidden tests in
-per-instance containers) and a provider key in the environment
-(`OPENAI_API_KEY` by default; `ANTHROPIC_API_KEY` for the Anthropic config).
-Use `doppler run --` to inject secrets where applicable. To benchmark a non-yolop
+per-instance containers) and provider keys in the environment: `OPENAI_API_KEY`
+(yolop openai / codex / pi), `ANTHROPIC_API_KEY` (yolop anthropic / claude-code),
+`OPENROUTER_API_KEY` (yolop openrouter configs). Use `doppler run --` to inject
+secrets. **codex** ignores `OPENAI_API_KEY` for requests — log in once with
+`printenv OPENAI_API_KEY | codex login --with-api-key`. To benchmark a non-yolop
 agent, its CLI must be installed and on `PATH` (`claude`, `codex`, or `pi`).
+
+Every result records the exact tool version that produced it (e.g.
+`codex_version`, `pi_version`, `claude_code_version`, `yolop_version`) in its
+`agent` block, so a committed result is always traceable to its binary.
 
 ## Usage
 
