@@ -81,9 +81,9 @@ pub(crate) fn append_markdown_table_lines<'a>(
 }
 
 fn table_render_fits(rendered: &[String], inner_width: usize, prefix_len: usize) -> bool {
-    rendered.iter().all(|line| {
-        prefix_len.saturating_add(line.chars().count()) <= inner_width
-    })
+    rendered
+        .iter()
+        .all(|line| prefix_len.saturating_add(line.chars().count()) <= inner_width)
 }
 
 pub(crate) fn render_table(table: &MarkdownTable, width: usize) -> Vec<String> {
@@ -121,12 +121,8 @@ pub(crate) fn render_table(table: &MarkdownTable, width: usize) -> Vec<String> {
 }
 
 fn style_table_line(line: &str) -> Vec<Span<'static>> {
-    let has_cell_delimiters = line.contains('│')
-        || line
-            .chars()
-            .filter(|ch| *ch == '|')
-            .count()
-            >= 2;
+    let has_cell_delimiters =
+        line.contains('│') || line.chars().filter(|ch| *ch == '|').count() >= 2;
     if !has_cell_delimiters || is_border_only_line(line) {
         return vec![Span::styled(
             line.to_string(),
