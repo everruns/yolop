@@ -13,6 +13,7 @@ use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::cmp::Ordering;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use tree_sitter::{Language, Node, Parser};
@@ -24,6 +25,10 @@ const MAX_LIMIT: usize = 1000;
 const DEFAULT_MAX_FILE_BYTES: usize = 512 * 1024;
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SIGNATURE_CHARS: usize = 180;
+// When a query is supplied we collect every matching symbol before ranking, so
+// the candidate pool is bounded independently of `limit` to keep ranking work
+// predictable on large workspaces.
+const MAX_CANDIDATES: usize = 5000;
 const SKIP_DIRS: &[&str] = &[
     ".git",
     ".hg",
@@ -135,7 +140,7 @@ impl Tool for RepoMapTool {
 
     fn parameters_schema(&self) -> Value {
         scan_schema(
-            "Optional case-insensitive filter matched against path, name, kind, parent, and signature.",
+            "Optional space-separated terms. Symbols matching any term (in name, path, kind, parent, or signature) are returned, ranked by relevance with the strongest matches first.",
         )
     }
 
@@ -193,7 +198,7 @@ impl Tool for RepoSymbolsTool {
 
     fn parameters_schema(&self) -> Value {
         scan_schema(
-            "Optional case-insensitive filter matched against path, name, kind, parent, and signature.",
+            "Optional space-separated terms. Symbols matching any term (in name, path, kind, parent, or signature) are returned, ranked by relevance with the strongest matches first.",
         )
     }
 
@@ -237,7 +242,7 @@ fn scan_schema(query_description: &str) -> Value {
             },
             "language": {
                 "type": "string",
-                "description": "Optional language filter. Supported values include rust, python, typescript, tsx, javascript, csharp, go, zig, css, html, bash, and sql."
+                "description": "Optional language filter. Supported values include rust, python, typescript, tsx, javascript, csharp, go, zig, css, html, bash, sql, java, c, cpp, php, ruby, kotlin, and scala."
             },
             "limit": {
                 "type": "integer",
@@ -376,7 +381,25 @@ fn collect_repo_symbols(
     )?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let query = options.query.as_ref().map(|query| query.to_lowercase());
+    let query_terms: Vec<String> = options
+        .query
+        .as_ref()
+        .map(|query| {
+            query
+                .to_lowercase()
+                .split_whitespace()
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    // Without a query every symbol matches, so cap collection at `limit` and
+    // preserve scan order. With a query we gather the full candidate pool first
+    // and rank it afterwards.
+    let budget = if query_terms.is_empty() {
+        options.limit
+    } else {
+        MAX_CANDIDATES
+    };
     let mut report = SymbolScanReport {
         path: relative_path(&root, &scope),
         query: options.query,
@@ -438,10 +461,18 @@ fn collect_repo_symbols(
             source: &source,
             path: &path,
             language: file.language,
-            query: query.as_deref(),
-            limit: options.limit,
+            terms: &query_terms,
+            budget,
         };
         collect_symbols_from_node(tree.root_node(), &context, &mut parents, &mut report);
+    }
+
+    if !query_terms.is_empty() {
+        report.symbols = rank_symbols(std::mem::take(&mut report.symbols), &query_terms);
+        if report.symbols.len() > options.limit {
+            report.truncated = true;
+            report.symbols.truncate(options.limit);
+        }
     }
 
     Ok(report)
@@ -541,6 +572,34 @@ fn sql_language() -> Language {
     tree_sitter_sequel::LANGUAGE.into()
 }
 
+fn java_language() -> Language {
+    tree_sitter_java::LANGUAGE.into()
+}
+
+fn c_language() -> Language {
+    tree_sitter_c::LANGUAGE.into()
+}
+
+fn cpp_language() -> Language {
+    tree_sitter_cpp::LANGUAGE.into()
+}
+
+fn php_language() -> Language {
+    tree_sitter_php::LANGUAGE_PHP.into()
+}
+
+fn ruby_language() -> Language {
+    tree_sitter_ruby::LANGUAGE.into()
+}
+
+fn kotlin_language() -> Language {
+    tree_sitter_kotlin_ng::LANGUAGE.into()
+}
+
+fn scala_language() -> Language {
+    tree_sitter_scala::LANGUAGE.into()
+}
+
 const RUST_KINDS: &[KindMap] = &[
     kind("const_item", "const"),
     kind("enum_item", "enum"),
@@ -628,6 +687,65 @@ const SQL_KINDS: &[KindMap] = &[
     kind("create_type", "type"),
     kind("create_view", "view"),
     kind("function_declaration", "function"),
+];
+
+const JAVA_KINDS: &[KindMap] = &[
+    kind("annotation_type_declaration", "annotation"),
+    kind("class_declaration", "class"),
+    kind("constructor_declaration", "constructor"),
+    kind("enum_declaration", "enum"),
+    kind("interface_declaration", "interface"),
+    kind("method_declaration", "method"),
+    kind("record_declaration", "record"),
+];
+
+const C_KINDS: &[KindMap] = &[
+    kind("enum_specifier", "enum"),
+    kind("function_definition", "function"),
+    kind("struct_specifier", "struct"),
+    kind("union_specifier", "union"),
+];
+
+const CPP_KINDS: &[KindMap] = &[
+    kind("class_specifier", "class"),
+    kind("enum_specifier", "enum"),
+    kind("function_definition", "function"),
+    kind("namespace_definition", "namespace"),
+    kind("struct_specifier", "struct"),
+    kind("union_specifier", "union"),
+];
+
+const PHP_KINDS: &[KindMap] = &[
+    kind("class_declaration", "class"),
+    kind("enum_declaration", "enum"),
+    kind("function_definition", "function"),
+    kind("interface_declaration", "interface"),
+    kind("method_declaration", "method"),
+    kind("namespace_definition", "namespace"),
+    kind("trait_declaration", "trait"),
+];
+
+const RUBY_KINDS: &[KindMap] = &[
+    kind("class", "class"),
+    kind("method", "method"),
+    kind("module", "module"),
+    kind("singleton_method", "method"),
+];
+
+const KOTLIN_KINDS: &[KindMap] = &[
+    kind("class_declaration", "class"),
+    kind("function_declaration", "function"),
+    kind("object_declaration", "object"),
+    kind("property_declaration", "property"),
+];
+
+const SCALA_KINDS: &[KindMap] = &[
+    kind("class_definition", "class"),
+    kind("function_definition", "function"),
+    kind("object_definition", "object"),
+    kind("trait_definition", "trait"),
+    kind("type_definition", "type"),
+    kind("val_definition", "val"),
 ];
 
 static LANGUAGES: &[LanguageSpec] = &[
@@ -755,6 +873,83 @@ static LANGUAGES: &[LanguageSpec] = &[
         symbol_kinds: SQL_KINDS,
         parent_kinds: &[],
     },
+    LanguageSpec {
+        name: "java",
+        aliases: &[],
+        extensions: &["java"],
+        filenames: &[],
+        grammar: java_language,
+        symbol_kinds: JAVA_KINDS,
+        parent_kinds: &[
+            "class_declaration",
+            "enum_declaration",
+            "interface_declaration",
+            "record_declaration",
+        ],
+    },
+    LanguageSpec {
+        name: "c",
+        aliases: &[],
+        extensions: &["c", "h"],
+        filenames: &[],
+        grammar: c_language,
+        symbol_kinds: C_KINDS,
+        parent_kinds: &[],
+    },
+    LanguageSpec {
+        name: "cpp",
+        aliases: &["c++", "cc", "cxx", "hpp"],
+        extensions: &["cpp", "cc", "cxx", "hpp", "hh", "hxx"],
+        filenames: &[],
+        grammar: cpp_language,
+        symbol_kinds: CPP_KINDS,
+        parent_kinds: &[
+            "class_specifier",
+            "namespace_definition",
+            "struct_specifier",
+        ],
+    },
+    LanguageSpec {
+        name: "php",
+        aliases: &[],
+        extensions: &["php"],
+        filenames: &[],
+        grammar: php_language,
+        symbol_kinds: PHP_KINDS,
+        parent_kinds: &[
+            "class_declaration",
+            "enum_declaration",
+            "interface_declaration",
+            "trait_declaration",
+        ],
+    },
+    LanguageSpec {
+        name: "ruby",
+        aliases: &["rb"],
+        extensions: &["rb"],
+        filenames: &["Rakefile", "Gemfile"],
+        grammar: ruby_language,
+        symbol_kinds: RUBY_KINDS,
+        parent_kinds: &["class", "module"],
+    },
+    LanguageSpec {
+        name: "kotlin",
+        aliases: &["kt"],
+        extensions: &["kt", "kts"],
+        filenames: &[],
+        grammar: kotlin_language,
+        symbol_kinds: KOTLIN_KINDS,
+        parent_kinds: &["class_declaration", "object_declaration"],
+    },
+    LanguageSpec {
+        name: "scala",
+        aliases: &["sc"],
+        extensions: &["scala", "sc"],
+        filenames: &[],
+        grammar: scala_language,
+        symbol_kinds: SCALA_KINDS,
+        parent_kinds: &["class_definition", "object_definition", "trait_definition"],
+    },
 ];
 
 fn normalize_language_filter(language: &str) -> String {
@@ -854,8 +1049,8 @@ struct SymbolCollectContext<'a> {
     source: &'a str,
     path: &'a str,
     language: &'static LanguageSpec,
-    query: Option<&'a str>,
-    limit: usize,
+    terms: &'a [String],
+    budget: usize,
 }
 
 fn collect_symbols_from_node(
@@ -879,9 +1074,9 @@ fn collect_symbols_from_node(
         .as_ref()
         .and_then(|symbol| parent_context_label(symbol, context.language, node.kind()));
     if let Some(symbol) = symbol
-        && matches_query(&symbol, context.query)
+        && symbol_matches(&symbol, context.terms)
     {
-        if report.symbols.len() >= context.limit {
+        if report.symbols.len() >= context.budget {
             report.truncated = true;
             return;
         }
@@ -967,6 +1162,8 @@ fn symbol_name(
                     "property_identifier",
                     "type_identifier",
                     "field_identifier",
+                    "simple_identifier",
+                    "constant",
                     "word",
                 ],
             )
@@ -1040,18 +1237,96 @@ fn parent_context_label(
     }
 }
 
-fn matches_query(symbol: &RepoSymbol, query: Option<&str>) -> bool {
-    let Some(query) = query else {
-        return true;
-    };
-    symbol.path.to_lowercase().contains(query)
-        || symbol.kind.to_lowercase().contains(query)
-        || symbol.name.to_lowercase().contains(query)
-        || symbol.signature.to_lowercase().contains(query)
-        || symbol
-            .parent
-            .as_ref()
-            .is_some_and(|parent| parent.to_lowercase().contains(query))
+/// A symbol is a candidate when it matches at least one query term in any
+/// searchable field. With no terms (no query) every symbol matches.
+fn symbol_matches(symbol: &RepoSymbol, terms: &[String]) -> bool {
+    terms.is_empty()
+        || terms
+            .iter()
+            .any(|term| term_field_weight(symbol, term) > 0.0)
+}
+
+/// Field-weighted match strength of a single term against a symbol. Higher
+/// weights mean a more specific match: an exact name beats a name substring,
+/// which beats an incidental hit in the signature or path. Returns 0 when the
+/// term is absent.
+fn term_field_weight(symbol: &RepoSymbol, term: &str) -> f64 {
+    let name = symbol.name.to_lowercase();
+    if name == term {
+        return 12.0;
+    }
+    let mut weight = 0.0_f64;
+    if name.contains(term) {
+        weight = weight.max(6.0);
+    }
+    if symbol.kind.eq_ignore_ascii_case(term) {
+        weight = weight.max(4.0);
+    }
+    if symbol
+        .parent
+        .as_ref()
+        .is_some_and(|parent| parent.to_lowercase().contains(term))
+    {
+        weight = weight.max(3.0);
+    }
+    if symbol.signature.to_lowercase().contains(term) {
+        weight = weight.max(2.0);
+    }
+    if symbol.path.to_lowercase().contains(term) {
+        weight = weight.max(1.0);
+    }
+    weight
+}
+
+/// Rank candidate symbols by TF-IDF-ish relevance to the query terms. Rarer
+/// terms (matching fewer candidates) contribute more via an inverse-document-
+/// frequency weight, and symbols covering more distinct terms are boosted.
+/// Ties break deterministically on path, then position.
+fn rank_symbols(symbols: Vec<RepoSymbol>, terms: &[String]) -> Vec<RepoSymbol> {
+    let total = symbols.len() as f64;
+    let document_frequency: Vec<usize> = terms
+        .iter()
+        .map(|term| {
+            symbols
+                .iter()
+                .filter(|symbol| term_field_weight(symbol, term) > 0.0)
+                .count()
+        })
+        .collect();
+    let idf: Vec<f64> = document_frequency
+        .iter()
+        .map(|&frequency| (1.0 + total / (1.0 + frequency as f64)).ln())
+        .collect();
+
+    let mut scored: Vec<(f64, RepoSymbol)> = symbols
+        .into_iter()
+        .map(|symbol| (symbol_score(&symbol, terms, &idf), symbol))
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.1.path.cmp(&b.1.path))
+            .then_with(|| a.1.line.cmp(&b.1.line))
+            .then_with(|| a.1.column.cmp(&b.1.column))
+    });
+    scored.into_iter().map(|(_, symbol)| symbol).collect()
+}
+
+fn symbol_score(symbol: &RepoSymbol, terms: &[String], idf: &[f64]) -> f64 {
+    let mut score = 0.0_f64;
+    let mut matched = 0u32;
+    for (index, term) in terms.iter().enumerate() {
+        let weight = term_field_weight(symbol, term);
+        if weight > 0.0 {
+            score += weight * idf[index];
+            matched += 1;
+        }
+    }
+    // Reward symbols that cover more of a multi-term query.
+    if terms.len() > 1 {
+        score *= 1.0 + (matched.saturating_sub(1) as f64) * 0.5;
+    }
+    score
 }
 
 fn grouped_symbols(symbols: &[RepoSymbol]) -> Vec<SymbolFileGroup<'_>> {
@@ -1164,6 +1439,67 @@ trait Named {
     }
 
     #[test]
+    fn ranks_exact_name_match_above_incidental_matches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Files are scanned in path order, so `a_helpers.rs` comes before
+        // `b_widget.rs`. Without relevance ranking the incidental signature
+        // match would be returned first.
+        write(
+            &dir.path().join("a_helpers.rs"),
+            "pub fn render_widget_list() {}\n",
+        );
+        write(&dir.path().join("b_widget.rs"), "pub fn widget() {}\n");
+
+        let report = collect_repo_symbols(
+            dir.path(),
+            SymbolScanOptions {
+                path: None,
+                query: Some("widget".to_string()),
+                language: None,
+                limit: 20,
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
+        )
+        .expect("scan");
+
+        assert_eq!(report.symbols.len(), 2);
+        assert_eq!(
+            report.symbols[0].name, "widget",
+            "exact name match should rank first, got {:?}",
+            report.symbols
+        );
+    }
+
+    #[test]
+    fn ranks_symbols_matching_more_query_terms_higher() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(&dir.path().join("a.rs"), "pub fn render() {}\n");
+        write(&dir.path().join("b.rs"), "pub fn render_widget() {}\n");
+
+        let report = collect_repo_symbols(
+            dir.path(),
+            SymbolScanOptions {
+                path: None,
+                query: Some("render widget".to_string()),
+                language: None,
+                limit: 20,
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
+        )
+        .expect("scan");
+
+        assert_eq!(
+            report.symbols[0].name, "render_widget",
+            "symbol matching both terms should rank first, got {:?}",
+            report.symbols
+        );
+        assert!(
+            report.symbols.iter().any(|symbol| symbol.name == "render"),
+            "single-term match should still be returned"
+        );
+    }
+
+    #[test]
     fn filters_by_query_and_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         write(&dir.path().join("src/lib.rs"), "pub fn keep_me() {}\n");
@@ -1252,6 +1588,108 @@ trait Named {
         assert!(report.symbols.iter().any(|symbol| symbol.language == "bash"
             && symbol.kind == "function"
             && symbol.name == "deploy"));
+    }
+
+    #[test]
+    fn collects_symbols_from_newly_added_languages() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(
+            &dir.path().join("Service.java"),
+            "class Service {\n  void run() {}\n}\n",
+        );
+        write(
+            &dir.path().join("math.c"),
+            "int add(int a, int b) {\n  return a + b;\n}\n",
+        );
+        write(
+            &dir.path().join("widget.cpp"),
+            "class Widget {\npublic:\n  void render() {}\n};\n",
+        );
+        write(
+            &dir.path().join("app.php"),
+            "<?php\nclass App {\n  function boot() {}\n}\n",
+        );
+        write(
+            &dir.path().join("service.rb"),
+            "class Service\n  def run\n  end\nend\n",
+        );
+        write(
+            &dir.path().join("Main.kt"),
+            "class Greeter {\n  fun greet() {}\n}\n",
+        );
+        write(
+            &dir.path().join("Main.scala"),
+            "object Main {\n  def run(): Unit = {}\n}\n",
+        );
+
+        let report = collect_repo_symbols(
+            dir.path(),
+            SymbolScanOptions {
+                path: None,
+                query: None,
+                language: None,
+                limit: 200,
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
+        )
+        .expect("scan");
+
+        let has = |language: &str, kind: &str, name: &str| {
+            report.symbols.iter().any(|symbol| {
+                symbol.language == language && symbol.kind == kind && symbol.name == name
+            })
+        };
+
+        assert!(
+            has("java", "class", "Service"),
+            "java class: {:?}",
+            report.symbols
+        );
+        assert!(
+            has("java", "method", "run"),
+            "java method: {:?}",
+            report.symbols
+        );
+        assert!(
+            has("c", "function", "add"),
+            "c function: {:?}",
+            report.symbols
+        );
+        assert!(
+            has("cpp", "class", "Widget"),
+            "cpp class: {:?}",
+            report.symbols
+        );
+        assert!(
+            has("php", "class", "App"),
+            "php class: {:?}",
+            report.symbols
+        );
+        assert!(
+            has("ruby", "class", "Service"),
+            "ruby class: {:?}",
+            report.symbols
+        );
+        assert!(
+            has("ruby", "method", "run"),
+            "ruby method: {:?}",
+            report.symbols
+        );
+        assert!(
+            has("kotlin", "class", "Greeter"),
+            "kotlin class: {:?}",
+            report.symbols
+        );
+        assert!(
+            has("kotlin", "function", "greet"),
+            "kotlin fn: {:?}",
+            report.symbols
+        );
+        assert!(
+            has("scala", "object", "Main"),
+            "scala object: {:?}",
+            report.symbols
+        );
     }
 
     #[test]
