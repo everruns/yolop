@@ -381,17 +381,7 @@ fn collect_repo_symbols(
     )?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let query_terms: Vec<String> = options
-        .query
-        .as_ref()
-        .map(|query| {
-            query
-                .to_lowercase()
-                .split_whitespace()
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
+    let query_terms = tokenize_query(options.query.as_deref());
     // Without a query every symbol matches, so cap collection at `limit` and
     // preserve scan order. With a query we gather the full candidate pool first
     // and rank it afterwards.
@@ -1237,42 +1227,80 @@ fn parent_context_label(
     }
 }
 
+/// Split a query into lowercased, de-duplicated terms (preserving first-seen
+/// order). Duplicates would otherwise double-count in document frequency,
+/// scoring, and the multi-term boost.
+fn tokenize_query(query: Option<&str>) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
+    for raw in query.unwrap_or_default().split_whitespace() {
+        let term = raw.to_lowercase();
+        if !term.is_empty() && !terms.contains(&term) {
+            terms.push(term);
+        }
+    }
+    terms
+}
+
+/// A symbol's searchable fields, lowercased once so term matching avoids
+/// re-allocating on every term/symbol comparison.
+struct LoweredFields {
+    name: String,
+    kind: String,
+    parent: Option<String>,
+    signature: String,
+    path: String,
+}
+
+impl LoweredFields {
+    fn from_symbol(symbol: &RepoSymbol) -> Self {
+        Self {
+            name: symbol.name.to_lowercase(),
+            kind: symbol.kind.to_lowercase(),
+            parent: symbol.parent.as_ref().map(|parent| parent.to_lowercase()),
+            signature: symbol.signature.to_lowercase(),
+            path: symbol.path.to_lowercase(),
+        }
+    }
+}
+
 /// A symbol is a candidate when it matches at least one query term in any
 /// searchable field. With no terms (no query) every symbol matches.
 fn symbol_matches(symbol: &RepoSymbol, terms: &[String]) -> bool {
-    terms.is_empty()
-        || terms
-            .iter()
-            .any(|term| term_field_weight(symbol, term) > 0.0)
+    if terms.is_empty() {
+        return true;
+    }
+    let fields = LoweredFields::from_symbol(symbol);
+    terms
+        .iter()
+        .any(|term| term_field_weight(&fields, term) > 0.0)
 }
 
 /// Field-weighted match strength of a single term against a symbol. Higher
 /// weights mean a more specific match: an exact name beats a name substring,
 /// which beats an incidental hit in the signature or path. Returns 0 when the
-/// term is absent.
-fn term_field_weight(symbol: &RepoSymbol, term: &str) -> f64 {
-    let name = symbol.name.to_lowercase();
-    if name == term {
+/// term is absent. `fields` are expected to already be lowercased; `term` too.
+fn term_field_weight(fields: &LoweredFields, term: &str) -> f64 {
+    if fields.name == term {
         return 12.0;
     }
     let mut weight = 0.0_f64;
-    if name.contains(term) {
+    if fields.name.contains(term) {
         weight = weight.max(6.0);
     }
-    if symbol.kind.eq_ignore_ascii_case(term) {
+    if fields.kind == term {
         weight = weight.max(4.0);
     }
-    if symbol
+    if fields
         .parent
         .as_ref()
-        .is_some_and(|parent| parent.to_lowercase().contains(term))
+        .is_some_and(|parent| parent.contains(term))
     {
         weight = weight.max(3.0);
     }
-    if symbol.signature.to_lowercase().contains(term) {
+    if fields.signature.contains(term) {
         weight = weight.max(2.0);
     }
-    if symbol.path.to_lowercase().contains(term) {
+    if fields.path.contains(term) {
         weight = weight.max(1.0);
     }
     weight
@@ -1283,24 +1311,23 @@ fn term_field_weight(symbol: &RepoSymbol, term: &str) -> f64 {
 /// frequency weight, and symbols covering more distinct terms are boosted.
 /// Ties break deterministically on path, then position.
 fn rank_symbols(symbols: Vec<RepoSymbol>, terms: &[String]) -> Vec<RepoSymbol> {
+    let lowered: Vec<LoweredFields> = symbols.iter().map(LoweredFields::from_symbol).collect();
     let total = symbols.len() as f64;
-    let document_frequency: Vec<usize> = terms
+    let idf: Vec<f64> = terms
         .iter()
         .map(|term| {
-            symbols
+            let frequency = lowered
                 .iter()
-                .filter(|symbol| term_field_weight(symbol, term) > 0.0)
-                .count()
+                .filter(|fields| term_field_weight(fields, term) > 0.0)
+                .count();
+            (1.0 + total / (1.0 + frequency as f64)).ln()
         })
-        .collect();
-    let idf: Vec<f64> = document_frequency
-        .iter()
-        .map(|&frequency| (1.0 + total / (1.0 + frequency as f64)).ln())
         .collect();
 
     let mut scored: Vec<(f64, RepoSymbol)> = symbols
         .into_iter()
-        .map(|symbol| (symbol_score(&symbol, terms, &idf), symbol))
+        .enumerate()
+        .map(|(index, symbol)| (symbol_score(&lowered[index], terms, &idf), symbol))
         .collect();
     scored.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
@@ -1312,11 +1339,11 @@ fn rank_symbols(symbols: Vec<RepoSymbol>, terms: &[String]) -> Vec<RepoSymbol> {
     scored.into_iter().map(|(_, symbol)| symbol).collect()
 }
 
-fn symbol_score(symbol: &RepoSymbol, terms: &[String], idf: &[f64]) -> f64 {
+fn symbol_score(fields: &LoweredFields, terms: &[String], idf: &[f64]) -> f64 {
     let mut score = 0.0_f64;
     let mut matched = 0u32;
     for (index, term) in terms.iter().enumerate() {
-        let weight = term_field_weight(symbol, term);
+        let weight = term_field_weight(fields, term);
         if weight > 0.0 {
             score += weight * idf[index];
             matched += 1;
@@ -1497,6 +1524,16 @@ trait Named {
             report.symbols.iter().any(|symbol| symbol.name == "render"),
             "single-term match should still be returned"
         );
+    }
+
+    #[test]
+    fn tokenizes_query_lowercased_without_duplicates() {
+        assert_eq!(
+            tokenize_query(Some("Render RENDER  widget")),
+            vec!["render".to_string(), "widget".to_string()]
+        );
+        assert!(tokenize_query(None).is_empty());
+        assert!(tokenize_query(Some("   ")).is_empty());
     }
 
     #[test]
