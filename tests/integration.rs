@@ -467,6 +467,85 @@ fn tui_resize_with_wrapped_input_keeps_cursor_inside_new_frame() {
     );
 }
 
+#[test]
+fn tui_resize_grow_reanchors_composer_to_bottom() {
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            rows: 24,
+            cols: 80,
+            ..TuiSpawnOptions::default()
+        },
+    );
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"hi\r");
+    assert!(
+        tui.wait_for_output("offline mode", Duration::from_secs(5)),
+        "turn did not complete: {}",
+        tui.output_text()
+    );
+
+    tui.clear_output();
+    tui.resize(80, 40);
+    tui.write_input(b" ");
+    assert!(
+        tui.wait_for_output("[expand", Duration::from_secs(3)),
+        "TUI did not redraw after grow resize: {}",
+        tui.output_text()
+    );
+
+    assert_cursor_near_bottom(&mut tui, 40);
+
+    tui.write_input(b"\x03\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(5));
+    assert!(
+        status.success(),
+        "double Ctrl-C should exit cleanly after grow resize, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
+#[test]
+fn tui_resize_shrink_width_reanchors_composer_to_bottom() {
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"hi\r");
+    assert!(
+        tui.wait_for_output("offline mode", Duration::from_secs(5)),
+        "turn did not complete: {}",
+        tui.output_text()
+    );
+
+    tui.clear_output();
+    tui.resize(60, 24);
+    tui.write_input(b" ");
+    assert!(
+        tui.wait_for_output("[expand", Duration::from_secs(3)),
+        "TUI did not redraw after width shrink: {}",
+        tui.output_text()
+    );
+
+    assert_cursor_near_bottom(&mut tui, 24);
+
+    tui.write_input(b"\x03\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(5));
+    assert!(
+        status.success(),
+        "double Ctrl-C should exit cleanly after width shrink, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
 // ratatui 0.30.1 `Terminal::clear` snapshots the cursor with a blocking
 // `CSI 6n` query, and the inline viewport calls `clear` inside
 // `insert_before` — so viewport anchoring, every transcript flush, and exit

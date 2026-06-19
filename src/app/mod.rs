@@ -32,6 +32,7 @@ use tokio::sync::{mpsc, oneshot};
 mod markdown_table;
 mod render;
 mod setup;
+mod viewport;
 
 // Re-export the moved free items so the rest of the crate (and the test module)
 // can keep referring to them as `crate::app::*`. `setup` exposes only `impl App`
@@ -40,7 +41,7 @@ mod setup;
 // The view-model types and runtime-event translation live in `crate::transcript`
 // (the single boundary that interprets `everruns_core` events); re-export them
 // here so the TUI's own submodules keep referring to them as `crate::app::*`.
-pub(crate) use self::render::*;
+pub(crate) use self::{render::*, viewport::*};
 pub(crate) use crate::transcript::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -528,6 +529,11 @@ impl App {
         B::Error: std::error::Error + Send + Sync + 'static,
     {
         self.flush_transcript(terminal)?;
+        // Ratatui keeps the inline viewport row fixed across vertical grows and
+        // resets it to the top on horizontal shrinks. Re-anchor before each draw
+        // so the composer stays pinned to the terminal bottom after resize.
+        terminal.autoresize()?;
+        maybe_reanchor_inline_viewport(terminal)?;
         terminal.draw(|f| draw(f, self))?;
 
         // 1) drain background turn events
