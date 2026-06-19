@@ -82,6 +82,9 @@ def run_matrix(
     # distinct column ``<config>__<tag>`` so, e.g., a tracking-suite run keeps a
     # clean self-contained summary instead of mixing with ad-hoc runs of the
     # same config.
+    if results_tag is not None:
+        from .suites import _check_name  # validate: used as a path component
+        _check_name(results_tag)
     run_id = run_id or f"yoloeval-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
     instances = benchmark.load(instance_ids)
     if not instances:

@@ -125,6 +125,7 @@ def cmd_eval(args) -> int:
             rec["resolved"] = bool(ev.resolved) if ev else False
             rec["eval_report"] = ev.report if ev else {}
             rec["error"] = ev.error if ev else rec.get("error")
+            rec["evaluated"] = ev is not None  # mark scored
             results.save_result(rec)
             print(f"[eval] {name} :: {iid} :: resolved={rec['resolved']}", flush=True)
         summary = results.summarize(args.benchmark, name)

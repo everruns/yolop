@@ -68,8 +68,9 @@ def build_record(
         "config_name": config_name,
         "run_id": run_id,
         "resolved": resolved,
-        # False until the patch has been scored. Records persisted right after
-        # the agent run start unevaluated; `yoloeval eval` can score them later.
+        # False until the patch has been scored. The runner persists a record as
+        # soon as the agent run finishes (before the batched eval) with
+        # evaluated=False; `yoloeval eval` can score it later and flip this true.
         "evaluated": evaluated,
         "error": error,
         "agent": agent_config,

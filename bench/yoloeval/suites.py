@@ -9,12 +9,24 @@ The JSON records selection metadata (by_repo/by_difficulty) plus an
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 SUITES_DIR = Path(__file__).resolve().parents[1] / "suites"
 
+# Suite names are used as filenames; keep them simple to prevent path traversal.
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _check_name(name: str) -> None:
+    if not name or name in (".", "..") or not _SAFE_NAME.match(name):
+        raise SystemExit(
+            f"invalid name {name!r}: use only letters, digits, '.', '_', '-'"
+        )
+
 
 def load_suite(name: str) -> dict:
+    _check_name(name)
     path = SUITES_DIR / f"{name}.json"
     if not path.exists():
         available = sorted(p.stem for p in SUITES_DIR.glob("*.json"))

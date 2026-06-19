@@ -15,6 +15,11 @@ class SuiteLoaderTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             load_suite("does-not-exist")
 
+    def test_path_traversal_names_rejected(self):
+        for bad in ["../secrets", "a/b", "..", "", "foo/../bar"]:
+            with self.assertRaises(SystemExit):
+                load_suite(bad)
+
     def test_tracking_v1_is_well_formed(self):
         suite = load_suite("tracking-v1")
         instances = suite["instances"]
