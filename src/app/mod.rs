@@ -1429,18 +1429,20 @@ fn capability_command_usage(descriptor: &CommandDescriptor) -> String {
 }
 
 fn help_command_line(descriptor: &CommandDescriptor) -> String {
-    format!(
-        "  {} — {}",
-        capability_command_usage(descriptor),
-        descriptor.description
-    )
+    let usage = if descriptor.name == "quit" {
+        "/quit (/exit)".to_string()
+    } else {
+        capability_command_usage(descriptor)
+    };
+    format!("  {} — {}", usage, descriptor.description)
 }
 
-fn help_shortcut_lines() -> [&'static str; 4] {
+fn help_shortcut_lines() -> [&'static str; 5] {
     [
         "  Enter send · Shift-Enter newline · Tab complete slash command · ←/→ edit",
         "  Ctrl+V paste image · Ctrl+B background tasks · !<cmd> shell alias",
-        "  exit: Ctrl-C twice / Ctrl-D · Esc twice cancel turn (while busy)",
+        "  exit: Ctrl-C twice / Ctrl-D",
+        "  cancel turn: Esc twice (while model is busy)",
         "  scroll: terminal scrollback (no in-app page keys)",
     ]
 }
@@ -3616,6 +3618,14 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("exit: Ctrl-C twice / Ctrl-D")),
             "help output should name Ctrl-C/Ctrl-D exits: {help_lines:?}"
+        );
+        assert!(
+            help_lines.iter().any(|line| line.contains("cancel turn")),
+            "help output should label Esc as cancel turn: {help_lines:?}"
+        );
+        assert!(
+            help_lines.iter().any(|line| line.contains("/exit")),
+            "help output should mention /exit alias for /quit: {help_lines:?}"
         );
         assert!(
             help_lines
