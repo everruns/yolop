@@ -1982,12 +1982,25 @@ struct YolopAgentSpawner {
 
 #[async_trait]
 impl AgentSpawner for YolopAgentSpawner {
-    async fn run(&self, prompt: String) -> std::result::Result<AgentRunResult, String> {
-        let provider = self
+    async fn run(
+        &self,
+        prompt: String,
+        model: Option<String>,
+    ) -> std::result::Result<AgentRunResult, String> {
+        let mut provider = self
             .provider
             .read()
             .map_err(|_| "provider lock poisoned".to_string())?
             .clone();
+        // A per-spawn model override swaps the model on the parent's provider
+        // (validated against the provider's catalog), so an expensive lead can
+        // delegate grunt work to a cheaper model. An unknown model is surfaced
+        // to the caller rather than silently falling back to the lead's model.
+        if let Some(model) = model {
+            provider = provider
+                .with_current_provider_model(model, None)
+                .map_err(|e| format!("invalid sub-agent model override: {e}"))?;
+        }
         let built = build_with_options(
             self.workspace_root.clone(),
             provider,
@@ -2583,7 +2596,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(20),
-            spawner.run("say hello".to_string()),
+            spawner.run("say hello".to_string(), None),
         )
         .await
         .expect("sub-agent timed out")
@@ -2593,6 +2606,35 @@ mod tests {
         assert!(
             !result.session_id.is_empty(),
             "child session id must be reported for resume"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn background_agent_rejects_unknown_model_override() {
+        // A per-spawn model override is validated against the provider's catalog
+        // before a child session is built; an unknown model is an error, not a
+        // silent fall-back to the lead's model.
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+
+        let spawner = YolopAgentSpawner {
+            workspace_root: workspace.path().to_path_buf(),
+            provider: Arc::new(RwLock::new(ProviderChoice::Sim)),
+            sessions_dir: sessions.path().to_path_buf(),
+            settings,
+        };
+
+        let err = spawner
+            .run(
+                "say hello".to_string(),
+                Some("definitely-not-a-model".into()),
+            )
+            .await
+            .expect_err("unknown model override must error");
+        assert!(
+            err.contains("invalid sub-agent model override"),
+            "got: {err}"
         );
     }
 
