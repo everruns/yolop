@@ -14,7 +14,7 @@ use everruns_core::command::{
 };
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use everruns_runtime::RuntimeProviderStore;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
@@ -459,6 +459,35 @@ pub(crate) struct SetupCapability {
     pub(crate) settings: Arc<SettingsStore>,
 }
 
+impl SetupCapability {
+    /// The shared, cloneable handle the `/setup` command and the model-facing
+    /// `set_*` tools both drive. Everything that mutates the live provider/model
+    /// lives on [`SetupController`] so the slash command and the agent tools
+    /// route through one implementation — there is no second config path.
+    fn controller(&self) -> SetupController {
+        SetupController {
+            provider: self.provider.clone(),
+            provider_store: self.provider_store.clone(),
+            config: self.config.clone(),
+            settings: self.settings.clone(),
+        }
+    }
+}
+
+/// Live provider/model/effort controller. Holds the same handles as
+/// [`SetupCapability`] and owns every mutation (`change_provider`,
+/// `change_model`, `change_effort`, tokens, urls, attribution, approval). The
+/// slash command (`execute_command`) and the agent-facing `set_*` tools both
+/// call these methods, so a natural-language request and a typed `/setup`
+/// apply identically and take effect on the live session.
+#[derive(Clone)]
+pub(crate) struct SetupController {
+    provider: Arc<RwLock<ProviderChoice>>,
+    provider_store: Arc<dyn RuntimeProviderStore>,
+    config: Arc<dyn ConfigService>,
+    settings: Arc<SettingsStore>,
+}
+
 #[async_trait]
 impl Capability for SetupCapability {
     fn id(&self) -> &str {
@@ -477,7 +506,7 @@ impl Capability for SetupCapability {
         Some("Examples")
     }
     fn system_prompt_addition(&self) -> Option<&str> {
-        None
+        Some(SETUP_TOOLS_PROMPT)
     }
     fn commands(&self) -> Vec<CommandDescriptor> {
         vec![CommandDescriptor {
@@ -486,6 +515,25 @@ impl Capability for SetupCapability {
             source: CommandSource::System,
             args: vec![setup_command_arg()],
         }]
+    }
+
+    fn tools(&self) -> Vec<Box<dyn Tool>> {
+        // The model-facing surface for live session control. Each tool routes
+        // through the same `SetupController` the `/setup` command uses, so a
+        // natural-language request ("switch to high effort", "use gpt-5.4")
+        // applies to the running session exactly like the slash command — no
+        // overlay, no next-run-only deferral. See specs/conversational-control.md.
+        vec![
+            Box::new(SetReasoningEffortTool {
+                controller: self.controller(),
+            }),
+            Box::new(SetModelTool {
+                controller: self.controller(),
+            }),
+            Box::new(SetProviderTool {
+                controller: self.controller(),
+            }),
+        ]
     }
 
     async fn execute_command(
@@ -500,28 +548,43 @@ impl Capability for SetupCapability {
                 request.name
             )));
         }
+        let controller = self.controller();
         let raw = request.arguments.as_deref().unwrap_or("").trim();
         if raw.is_empty() || raw == "status" {
-            return Ok(self.status_result());
+            return Ok(controller.status_result());
         }
 
         let mut parts = raw.splitn(2, char::is_whitespace);
         let action = parts.next().unwrap_or_default();
         let rest = parts.next().unwrap_or_default().trim();
         match action {
-            "provider" => self.change_provider(rest).await,
-            "model" => self.change_model(rest).await,
-            "effort" => self.change_effort(rest).await,
-            "token" => self.change_token(rest),
-            "url" => self.change_base_url(rest),
-            "attribution" => self.change_attribution(rest),
-            "approval" => self.change_approval(rest),
+            "provider" => controller.change_provider(rest).await,
+            "model" => controller.change_model(rest).await,
+            "effort" => controller.change_effort(rest).await,
+            "token" => controller.change_token(rest),
+            "url" => controller.change_base_url(rest),
+            "attribution" => controller.change_attribution(rest),
+            "approval" => controller.change_approval(rest),
             _ => Ok(failed_result(
                 "usage: /setup — run guided setup; internal forms: status, provider <name> [model], token <provider> <value|clear>, url <provider> <base-url|clear>, model <id> [reasoning-effort], effort <reasoning-effort>, attribution <on|off>, approval <protective|normal|off>".to_string(),
             )),
         }
     }
 }
+
+/// Always-on guidance so the agent knows it can reconfigure the live session
+/// itself, in prose, without the user typing a slash command or touching an
+/// overlay. Mirrors the conversational-control contract (specs/conversational-control.md).
+const SETUP_TOOLS_PROMPT: &str = "<capability id=\"yolop_setup\">\n\
+    You can reconfigure the live session yourself when it helps the task:\n\
+    `set_reasoning_effort` changes the model's reasoning effort (escalate before \
+    a hard step, deescalate for cheap follow-ups), `set_model` switches the model, \
+    and `set_provider` switches the provider. All three apply on the next turn of \
+    this session — no restart. Effort options are model-specific; if the level is \
+    unknown, `set_reasoning_effort` returns the accepted values, so retry with one \
+    of those. Prefer the smallest change that fits; do not thrash the model \
+    or provider mid-task.\n\
+    </capability>";
 
 fn setup_command_arg() -> CommandArg {
     let mut suggestions = vec![
@@ -565,7 +628,7 @@ fn setup_command_arg() -> CommandArg {
     }
 }
 
-impl SetupCapability {
+impl SetupController {
     fn status_result(&self) -> CommandResult {
         let current = self
             .provider
@@ -1058,6 +1121,175 @@ fn failed_result(message: String) -> CommandResult {
     }
 }
 
+// ---------- model-facing live-config tools ----------
+//
+// These expose the `SetupController` mutations as agent tools so the model can
+// reconfigure the running session from a natural-language request (or on its
+// own), instead of asking the user to type `/setup` or confirm an overlay. They
+// reuse the exact `change_*` logic the slash command uses, so behavior — live
+// application, validation, persistence — is identical across both entry points.
+
+/// Map a `change_*` outcome onto a tool result: a failed (but non-erroring)
+/// `CommandResult` becomes a recoverable tool error carrying the same message
+/// (e.g. an unknown effort plus the valid set), so the model can correct itself.
+fn into_tool_result(outcome: everruns_core::Result<CommandResult>) -> ToolExecutionResult {
+    match outcome {
+        Ok(result) if result.success => ToolExecutionResult::success(json!({
+            "success": true,
+            "message": result.message,
+        })),
+        Ok(result) => ToolExecutionResult::tool_error(result.message),
+        Err(err) => ToolExecutionResult::tool_error(err.to_string()),
+    }
+}
+
+fn required_str_arg<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, ToolExecutionResult> {
+    match arguments.get(key).and_then(Value::as_str) {
+        Some(value) if !value.trim().is_empty() => Ok(value.trim()),
+        _ => Err(ToolExecutionResult::tool_error(format!(
+            "'{key}' is required"
+        ))),
+    }
+}
+
+struct SetReasoningEffortTool {
+    controller: SetupController,
+}
+
+#[async_trait]
+impl Tool for SetReasoningEffortTool {
+    fn name(&self) -> &str {
+        "set_reasoning_effort"
+    }
+    fn display_name(&self) -> Option<&str> {
+        Some("Set reasoning effort")
+    }
+    fn description(&self) -> &str {
+        "Change the current model's reasoning effort for this session (e.g. escalate to think \
+         harder before a difficult step, or deescalate for cheap follow-ups). Applies on the next \
+         turn — no restart. The valid set is model-specific; if the level is unknown the tool \
+         returns the accepted values so you can retry."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "effort": {
+                    "type": "string",
+                    "description": "Reasoning-effort level for the active model, e.g. low / medium / high (model-specific)."
+                }
+            },
+            "required": ["effort"],
+            "additionalProperties": false
+        })
+    }
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let effort = match required_str_arg(&arguments, "effort") {
+            Ok(value) => value,
+            Err(err) => return err,
+        };
+        into_tool_result(self.controller.change_effort(effort).await)
+    }
+}
+
+struct SetModelTool {
+    controller: SetupController,
+}
+
+#[async_trait]
+impl Tool for SetModelTool {
+    fn name(&self) -> &str {
+        "set_model"
+    }
+    fn display_name(&self) -> Option<&str> {
+        Some("Set model")
+    }
+    fn description(&self) -> &str {
+        "Switch the model used for this session. Applies on the next turn — no restart. The id is \
+         resolved against the current provider; an optional reasoning effort can be set at the same \
+         time. Avoid switching mid-task unless it clearly helps."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "description": "Model id for the active provider, e.g. `gpt-5.4` or `claude-sonnet-4-5`."
+                },
+                "reasoning_effort": {
+                    "type": "string",
+                    "description": "Optional reasoning-effort level to apply with the model (model-specific)."
+                }
+            },
+            "required": ["model"],
+            "additionalProperties": false
+        })
+    }
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let model = match required_str_arg(&arguments, "model") {
+            Ok(value) => value,
+            Err(err) => return err,
+        };
+        // `change_model` accepts the `model [reasoning-effort]` spec the
+        // `/setup model` command takes, so join the optional effort onto it.
+        let spec = match arguments.get("reasoning_effort").and_then(Value::as_str) {
+            Some(effort) if !effort.trim().is_empty() => format!("{model} {}", effort.trim()),
+            _ => model.to_string(),
+        };
+        into_tool_result(self.controller.change_model(&spec).await)
+    }
+}
+
+struct SetProviderTool {
+    controller: SetupController,
+}
+
+#[async_trait]
+impl Tool for SetProviderTool {
+    fn name(&self) -> &str {
+        "set_provider"
+    }
+    fn display_name(&self) -> Option<&str> {
+        Some("Set provider")
+    }
+    fn description(&self) -> &str {
+        "Switch the LLM provider for this session. Applies on the next turn — no restart. \
+         Optionally pin a model for the new provider at the same time. Requires that provider's \
+         credentials to already be configured."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Provider name.",
+                    "enum": SUPPORTED_PROVIDERS
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional model id to select for the new provider."
+                }
+            },
+            "required": ["provider"],
+            "additionalProperties": false
+        })
+    }
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let provider = match required_str_arg(&arguments, "provider") {
+            Ok(value) => value,
+            Err(err) => return err,
+        };
+        // `change_provider` accepts `provider [model]`, switching both at once.
+        let spec = match arguments.get("model").and_then(Value::as_str) {
+            Some(model) if !model.trim().is_empty() => format!("{provider} {}", model.trim()),
+            _ => provider.to_string(),
+        };
+        into_tool_result(self.controller.change_provider(&spec).await)
+    }
+}
+
 impl SetupCapability {
     /// True when no provider preference is saved and no API token is set —
     /// either via env var or in the settings file. Used by the TUI at
@@ -1095,6 +1327,153 @@ fn env_credential_present() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------- live-config tools (set_model / set_provider / set_reasoning_effort) ----------
+
+    /// Minimal provider store for controller tests: `change_*` only ever calls
+    /// `set_default_model`, which we accept; the reads are never exercised here.
+    struct StubProviderStore;
+
+    #[async_trait::async_trait]
+    impl everruns_core::ProviderStore for StubProviderStore {
+        async fn get_resolved_model(
+            &self,
+            _model_id: everruns_core::ModelId,
+        ) -> everruns_core::Result<Option<everruns_core::ResolvedModel>> {
+            Ok(None)
+        }
+        async fn get_default_model(
+            &self,
+        ) -> everruns_core::Result<Option<everruns_core::ResolvedModel>> {
+            Ok(None)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RuntimeProviderStore for StubProviderStore {
+        async fn set_default_model(
+            &self,
+            _model: everruns_core::ResolvedModel,
+        ) -> everruns_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A controller wired to a temp settings file and the stub store, plus the
+    /// shared provider handle so the test can observe live changes. The returned
+    /// `TempDir` must be kept alive for the settings path to stay valid.
+    fn test_controller(
+        provider: ProviderChoice,
+    ) -> (
+        SetupController,
+        Arc<RwLock<ProviderChoice>>,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = Arc::new(SettingsStore::open(dir.path().join("settings.toml")));
+        // Seed credentials in the settings file so model resolution never depends
+        // on ambient env vars (other tests in this binary clear API keys). This
+        // keeps the controller tests deterministic without holding the env lock.
+        settings
+            .set_token("openai".to_string(), "sk-test".to_string())
+            .expect("seed openai token");
+        settings
+            .set_token("anthropic".to_string(), "sk-test".to_string())
+            .expect("seed anthropic token");
+        let provider = Arc::new(RwLock::new(provider));
+        let controller = SetupController {
+            provider: provider.clone(),
+            provider_store: Arc::new(StubProviderStore),
+            config: settings.clone(),
+            settings,
+        };
+        (controller, provider, dir)
+    }
+
+    #[tokio::test]
+    async fn set_reasoning_effort_tool_applies_live_and_validates() {
+        let (controller, provider, _dir) = test_controller(ProviderChoice::OpenAi {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: Some("medium".to_string()),
+        });
+        let tool = SetReasoningEffortTool {
+            controller: controller.clone(),
+        };
+
+        // Escalate: the shared handle reflects the new effort immediately.
+        let result = tool.execute(json!({ "effort": "high" })).await;
+        assert!(result.is_success(), "escalate: {result:?}");
+        assert_eq!(provider.read().unwrap().reasoning_effort(), Some("high"));
+
+        // A missing argument is a tool error before anything is mutated.
+        let result = tool.execute(json!({})).await;
+        assert!(result.is_error(), "missing effort should error");
+
+        // An unknown level errors and leaves the prior selection intact.
+        let result = tool.execute(json!({ "effort": "ludicrous" })).await;
+        assert!(result.is_error(), "unknown effort should error");
+        assert_eq!(provider.read().unwrap().reasoning_effort(), Some("high"));
+    }
+
+    #[tokio::test]
+    async fn set_model_tool_switches_model_and_optional_effort() {
+        let (controller, provider, _dir) = test_controller(ProviderChoice::OpenAi {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: Some("medium".to_string()),
+        });
+        let tool = SetModelTool { controller };
+
+        let result = tool
+            .execute(json!({ "model": "gpt-5.4", "reasoning_effort": "high" }))
+            .await;
+        assert!(result.is_success(), "set_model: {result:?}");
+        assert_eq!(provider.read().unwrap().model_id(), "gpt-5.4");
+        assert_eq!(provider.read().unwrap().reasoning_effort(), Some("high"));
+
+        let result = tool.execute(json!({})).await;
+        assert!(result.is_error(), "missing model should error");
+    }
+
+    #[test]
+    fn setup_capability_exposes_live_config_tools() {
+        let (controller, _provider, _dir) = test_controller(ProviderChoice::Sim);
+        let capability = SetupCapability {
+            provider: controller.provider.clone(),
+            provider_store: controller.provider_store.clone(),
+            config: controller.config.clone(),
+            settings: controller.settings.clone(),
+        };
+        let names: Vec<String> = capability
+            .tools()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        for expected in ["set_reasoning_effort", "set_model", "set_provider"] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "{expected} should be exposed by SetupCapability: {names:?}"
+            );
+        }
+        // The agent is told these tools exist so it uses them instead of asking
+        // the user to type a slash command.
+        let prompt = capability.system_prompt_addition().expect("setup prompt");
+        assert!(prompt.contains("set_reasoning_effort"));
+        assert!(prompt.contains("set_model"));
+        assert!(prompt.contains("set_provider"));
+    }
+
+    #[tokio::test]
+    async fn set_provider_tool_switches_provider_live() {
+        let (controller, provider, _dir) = test_controller(ProviderChoice::Sim);
+        let tool = SetProviderTool { controller };
+
+        let result = tool.execute(json!({ "provider": "openai" })).await;
+        assert!(result.is_success(), "set_provider: {result:?}");
+        assert_eq!(provider.read().unwrap().provider_name(), "openai");
+
+        let result = tool.execute(json!({ "provider": "nope" })).await;
+        assert!(result.is_error(), "unknown provider should error");
+    }
 
     #[test]
     fn needs_onboarding_true_for_empty_settings() {

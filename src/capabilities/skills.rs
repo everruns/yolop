@@ -23,8 +23,13 @@
 //   * global    — `<config_dir>/yolop/skills`            (writable; override: YOLOP_GLOBAL_SKILLS_DIR)
 //   * system    — pre-packed, materialized once          (read-only; override: YOLOP_SYSTEM_SKILLS_DIR)
 
-use everruns_core::capabilities::{SkillDirResolver, SkillScope, SkillsConfig};
+use async_trait::async_trait;
+use everruns_core::capabilities::{
+    Capability, CapabilityStatus, SkillDirResolver, SkillScope, SkillsConfig,
+};
+use everruns_core::tools::{Tool, ToolExecutionResult};
 use include_dir::{Dir, include_dir};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -226,6 +231,198 @@ fn write_if_changed(target: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, target)
 }
 
+pub(crate) const SKILL_MANAGEMENT_CAPABILITY_ID: &str = "yolop_skill_management";
+
+const SKILL_MANAGEMENT_PROMPT: &str = "<capability id=\"yolop_skill_management\">\n\
+    To uninstall a skill, call `delete_skill` with its name and scope \
+    (`workspace` or `global`). It removes the installed skill directory in that \
+    scope. System skills are read-only and cannot be deleted. Install and update \
+    still go through `write_skill`; this only handles removal.\n\
+    </capability>";
+
+/// Skill removal for yolop's writable scopes. The upstream
+/// `ScopedSkillsCapability` owns discovery and `list/activate/read/write_skill`
+/// but has no uninstall, so yolop contributes `delete_skill` here. It operates
+/// on the same workspace/global directories the resolver exposes (system stays
+/// read-only), giving the agent a first-class, conversational uninstall instead
+/// of shelling out to `rm`.
+pub(crate) struct SkillManagementCapability {
+    dirs: SkillDirs,
+}
+
+impl SkillManagementCapability {
+    pub(crate) fn new(dirs: SkillDirs) -> Self {
+        Self { dirs }
+    }
+}
+
+#[async_trait]
+impl Capability for SkillManagementCapability {
+    fn id(&self) -> &str {
+        SKILL_MANAGEMENT_CAPABILITY_ID
+    }
+    fn name(&self) -> &str {
+        "Skill Management"
+    }
+    fn description(&self) -> &str {
+        "Uninstall workspace or global skills (delete_skill)."
+    }
+    fn status(&self) -> CapabilityStatus {
+        CapabilityStatus::Available
+    }
+    fn category(&self) -> Option<&str> {
+        Some("Examples")
+    }
+    fn system_prompt_addition(&self) -> Option<&str> {
+        Some(SKILL_MANAGEMENT_PROMPT)
+    }
+    fn tools(&self) -> Vec<Box<dyn Tool>> {
+        vec![Box::new(DeleteSkillTool {
+            dirs: self.dirs.clone(),
+        })]
+    }
+}
+
+struct DeleteSkillTool {
+    dirs: SkillDirs,
+}
+
+impl DeleteSkillTool {
+    /// Resolve the host directory for a writable scope. `system` is rejected
+    /// (read-only); an unconfigured `global` scope is reported rather than
+    /// silently falling back to the workspace.
+    fn base_for(&self, scope: &str) -> Result<PathBuf, String> {
+        match scope {
+            // Only the scopes advertised in the tool schema are accepted, so the
+            // documented surface and the behavior stay in lockstep.
+            "workspace" => Ok(self.dirs.workspace.clone()),
+            "global" => self
+                .dirs
+                .global
+                .clone()
+                .ok_or_else(|| "no global skills directory is configured".to_string()),
+            "system" => Err("system skills are read-only and cannot be deleted".to_string()),
+            other => Err(format!(
+                "unknown scope `{other}`; expected `workspace` or `global`"
+            )),
+        }
+    }
+}
+
+/// A skill name must be a single, plain path component — no separators, no `.`
+/// or `..`. This keeps `delete_skill` from escaping the scope directory.
+fn validate_skill_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("'name' is required".to_string());
+    }
+    let mut components = Path::new(name).components();
+    let only = components.next();
+    if components.next().is_some() {
+        return Err(format!(
+            "invalid skill name `{name}`: must be a single path segment"
+        ));
+    }
+    match only {
+        Some(std::path::Component::Normal(segment)) if segment == name => Ok(()),
+        _ => Err(format!(
+            "invalid skill name `{name}`: must not contain path separators, `.`, or `..`"
+        )),
+    }
+}
+
+#[async_trait]
+impl Tool for DeleteSkillTool {
+    fn name(&self) -> &str {
+        "delete_skill"
+    }
+    fn display_name(&self) -> Option<&str> {
+        Some("Delete skill")
+    }
+    fn description(&self) -> &str {
+        "Uninstall a skill by removing its directory from a writable scope \
+         (`workspace` or `global`). System skills cannot be deleted. Use this to \
+         remove a skill the user no longer wants; install/update go through `write_skill`."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The skill's directory name (matches its SKILL.md `name`)."
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "Which writable scope to remove it from.",
+                    "enum": ["workspace", "global"],
+                    "default": "workspace"
+                }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        })
+    }
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let name = arguments
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if let Err(err) = validate_skill_name(name) {
+            return ToolExecutionResult::tool_error(err);
+        }
+        let scope = arguments
+            .get("scope")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("workspace");
+        let base = match self.base_for(scope) {
+            Ok(base) => base,
+            Err(err) => return ToolExecutionResult::tool_error(err),
+        };
+        let target = base.join(name);
+        // The stat checks and the recursive delete are blocking filesystem work;
+        // run them off the async runtime so a large skill directory can't stall a
+        // tokio worker. The guard messages are built here so the closure owns
+        // everything it needs.
+        let name_owned = name.to_string();
+        let scope_owned = scope.to_string();
+        let target_for_delete = target.clone();
+        let outcome = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            if !target_for_delete.is_dir() {
+                return Err(format!(
+                    "no `{name_owned}` skill installed in the {scope_owned} scope"
+                ));
+            }
+            // Guard against deleting an unrelated directory: a real skill always
+            // carries a SKILL.md. Refuse anything that does not look like a skill.
+            if !target_for_delete.join("SKILL.md").is_file() {
+                return Err(format!(
+                    "`{}` is not a skill (no SKILL.md); refusing to delete",
+                    target_for_delete.display()
+                ));
+            }
+            std::fs::remove_dir_all(&target_for_delete)
+                .map_err(|err| format!("failed to delete `{name_owned}`: {err}"))
+        })
+        .await;
+        match outcome {
+            Ok(Ok(())) => ToolExecutionResult::success(json!({
+                "success": true,
+                "name": name,
+                "scope": scope,
+                "removed": target.display().to_string(),
+                "message": format!("uninstalled `{name}` from the {scope} scope"),
+            })),
+            Ok(Err(message)) => ToolExecutionResult::tool_error(message),
+            Err(join_err) => {
+                ToolExecutionResult::tool_error(format!("delete task failed: {join_err}"))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +539,158 @@ mod tests {
             "description should mention ast-grep: {:?}",
             parsed.description
         );
+    }
+
+    // ---------- delete_skill ----------
+
+    #[test]
+    fn skill_management_capability_exposes_delete_skill() {
+        let dirs = SkillDirs {
+            workspace: PathBuf::from("/ws/.agents/skills"),
+            global: None,
+            system: None,
+        };
+        let capability = SkillManagementCapability::new(dirs);
+        let names: Vec<String> = capability
+            .tools()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "delete_skill"),
+            "delete_skill should be exposed: {names:?}"
+        );
+        assert!(
+            capability
+                .system_prompt_addition()
+                .expect("prompt")
+                .contains("delete_skill")
+        );
+    }
+
+    /// Build a tool whose workspace/global scopes point at fresh temp dirs.
+    fn delete_tool_with_dirs(workspace: &Path, global: Option<&Path>) -> DeleteSkillTool {
+        DeleteSkillTool {
+            dirs: SkillDirs {
+                workspace: workspace.to_path_buf(),
+                global: global.map(Path::to_path_buf),
+                system: None,
+            },
+        }
+    }
+
+    fn install_skill(base: &Path, name: &str) {
+        let dir = base.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test\n---\nbody"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_skill_name_rejects_traversal_and_separators() {
+        assert!(validate_skill_name("good-skill").is_ok());
+        assert!(validate_skill_name("").is_err());
+        assert!(validate_skill_name(".").is_err());
+        assert!(validate_skill_name("..").is_err());
+        assert!(validate_skill_name("a/b").is_err());
+        assert!(validate_skill_name("../escape").is_err());
+        assert!(validate_skill_name("/abs").is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_skill_removes_workspace_skill() {
+        let ws = tempfile::tempdir().unwrap();
+        install_skill(ws.path(), "ship");
+        let tool = delete_tool_with_dirs(ws.path(), None);
+
+        let result = tool.execute(json!({ "name": "ship" })).await;
+
+        assert!(result.is_success(), "result: {result:?}");
+        assert!(
+            !ws.path().join("ship").exists(),
+            "skill directory should be gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_skill_defaults_to_workspace_and_uninstalls_global_when_asked() {
+        let ws = tempfile::tempdir().unwrap();
+        let global = tempfile::tempdir().unwrap();
+        install_skill(ws.path(), "dup");
+        install_skill(global.path(), "dup");
+        let tool = delete_tool_with_dirs(ws.path(), Some(global.path()));
+
+        // Default scope is workspace.
+        assert!(tool.execute(json!({ "name": "dup" })).await.is_success());
+        assert!(!ws.path().join("dup").exists());
+        assert!(global.path().join("dup").exists(), "global untouched");
+
+        // Explicit global scope removes the global copy.
+        assert!(
+            tool.execute(json!({ "name": "dup", "scope": "global" }))
+                .await
+                .is_success()
+        );
+        assert!(!global.path().join("dup").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_skill_rejects_system_scope() {
+        let ws = tempfile::tempdir().unwrap();
+        let tool = delete_tool_with_dirs(ws.path(), None);
+        let result = tool
+            .execute(json!({ "name": "anything", "scope": "system" }))
+            .await;
+        assert!(result.is_error(), "system skills must be read-only");
+    }
+
+    #[tokio::test]
+    async fn delete_skill_errors_on_unconfigured_global_scope() {
+        let ws = tempfile::tempdir().unwrap();
+        let tool = delete_tool_with_dirs(ws.path(), None);
+        let result = tool
+            .execute(json!({ "name": "x", "scope": "global" }))
+            .await;
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn delete_skill_errors_when_missing() {
+        let ws = tempfile::tempdir().unwrap();
+        let tool = delete_tool_with_dirs(ws.path(), None);
+        let result = tool.execute(json!({ "name": "ghost" })).await;
+        assert!(result.is_error(), "deleting a missing skill should fail");
+    }
+
+    #[tokio::test]
+    async fn delete_skill_refuses_directory_without_skill_md() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(ws.path().join("notaskill")).unwrap();
+        let tool = delete_tool_with_dirs(ws.path(), None);
+        let result = tool.execute(json!({ "name": "notaskill" })).await;
+        assert!(result.is_error(), "must refuse non-skill directories");
+        assert!(
+            ws.path().join("notaskill").exists(),
+            "directory must be left intact"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_skill_rejects_path_traversal_argument() {
+        let ws = tempfile::tempdir().unwrap();
+        // A sibling dir outside the scope that must never be touched.
+        let outside = ws.path().parent().unwrap().join("outside-skill");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("SKILL.md"), "---\nname: x\n---\n").unwrap();
+        let tool = delete_tool_with_dirs(ws.path(), None);
+
+        let result = tool.execute(json!({ "name": "../outside-skill" })).await;
+
+        assert!(result.is_error(), "traversal must be rejected");
+        assert!(outside.exists(), "outside directory must survive");
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }
