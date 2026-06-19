@@ -603,8 +603,10 @@ impl Provider {
     /// Parse a provider name (case-insensitive, trimmed). `None` for any name
     /// outside [`Provider::ALL`].
     pub fn from_name(name: &str) -> Option<Provider> {
-        let name = name.trim().to_ascii_lowercase();
-        Provider::ALL.into_iter().find(|p| p.as_str() == name)
+        let name = name.trim();
+        Provider::ALL
+            .into_iter()
+            .find(|p| p.as_str().eq_ignore_ascii_case(name))
     }
 
     /// The driver that serves this provider, when it maps to one of the
