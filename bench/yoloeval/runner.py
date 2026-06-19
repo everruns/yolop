@@ -101,6 +101,23 @@ def run_matrix(
         patches: dict[str, str] = {}
         started_at: dict[str, str] = {}
 
+        def persist(inst, run, *, resolved, eval_report, error, evaluated):
+            return results.save_result(results.build_record(
+                benchmark=benchmark.name,
+                config_name=store_name,
+                instance_id=inst.instance_id,
+                agent_config=agent.config,
+                resolved=resolved,
+                metrics=run.metrics.to_dict(),
+                patch=run.patch,
+                session_log_path=run.session_log_path,
+                eval_report=eval_report,
+                error=error,
+                run_id=run_id,
+                started_at=started_at[inst.instance_id],
+                evaluated=evaluated,
+            ))
+
         for inst in instances:
             print(f"[runner] {config_name} :: {inst.instance_id} :: agent run", flush=True)
             workdir = CACHE_DIR / "work" / run_id / config_name / inst.instance_id
@@ -117,6 +134,11 @@ def run_matrix(
                 patch = ""
             runs[inst.instance_id] = run
             patches[inst.instance_id] = patch
+            # Persist immediately (unevaluated) so a crash or container reclaim
+            # before the batched eval keeps the patch + metrics; the run can then
+            # be scored later with `yoloeval eval` instead of re-paying the agent.
+            persist(inst, run, resolved=False, eval_report={}, error=run.error,
+                    evaluated=False)
             print(f"[runner] {config_name} :: {inst.instance_id} :: "
                   f"patch={len(patch)}B err={run.error!r}", flush=True)
             if not keep_workdirs:
@@ -134,21 +156,9 @@ def run_matrix(
             resolved = bool(ev.resolved) if ev else False
             eval_report = ev.report if ev else {}
             err = run.error or (ev.error if ev else None)
-            record = results.build_record(
-                benchmark=benchmark.name,
-                config_name=store_name,
-                instance_id=inst.instance_id,
-                agent_config=agent.config,
-                resolved=resolved,
-                metrics=run.metrics.to_dict(),
-                patch=run.patch,
-                session_log_path=run.session_log_path,
-                eval_report=eval_report,
-                error=err,
-                run_id=run_id,
-                started_at=started_at[inst.instance_id],
-            )
-            path = results.save_result(record)
+            # Re-persist with eval outcome (evaluated=True unless eval was skipped).
+            path = persist(inst, run, resolved=resolved, eval_report=eval_report,
+                           error=err, evaluated=do_eval)
             print(f"[runner] saved {path} resolved={resolved}", flush=True)
 
         summary = results.summarize(benchmark.name, store_name)

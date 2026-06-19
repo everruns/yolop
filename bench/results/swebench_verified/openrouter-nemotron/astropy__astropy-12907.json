@@ -5,6 +5,7 @@
   "config_name": "openrouter-nemotron",
   "run_id": "yoloeval-20260619-002939-d96cc5",
   "resolved": true,
+  "evaluated": true,
   "error": null,
   "agent": {
     "agent": "yolop",

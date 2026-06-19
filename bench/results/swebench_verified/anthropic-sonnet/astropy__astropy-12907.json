@@ -5,6 +5,7 @@
   "config_name": "anthropic-sonnet",
   "run_id": "yoloeval-20260618-232947-0efa55",
   "resolved": true,
+  "evaluated": true,
   "error": null,
   "agent": {
     "agent": "yolop",

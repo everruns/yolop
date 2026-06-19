@@ -5,6 +5,7 @@
   "config_name": "openai-default__tracking-v1",
   "run_id": "tracking-v1-gpt55",
   "resolved": false,
+  "evaluated": true,
   "error": null,
   "agent": {
     "agent": "yolop",

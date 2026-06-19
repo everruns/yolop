@@ -5,6 +5,7 @@
   "config_name": "codex",
   "run_id": "yoloeval-20260618-234218-af7261",
   "resolved": true,
+  "evaluated": true,
   "error": null,
   "agent": {
     "agent": "codex",
