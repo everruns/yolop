@@ -1,6 +1,7 @@
 // Host/example capabilities for yolop: local environment context, bash, and
 // TUI-facing slash commands that mutate this process's provider selection.
 
+use crate::capabilities::narration::stable_labeled;
 use crate::config_service::ConfigService;
 use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS, resolve_for_settings};
 use crate::settings::{ApprovalMode, SettingsStore};
@@ -12,6 +13,8 @@ use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use everruns_runtime::RuntimeProviderStore;
 use serde_json::{Value, json};
@@ -1107,6 +1110,17 @@ struct SetReasoningEffortTool {
 
 #[async_trait]
 impl Tool for SetReasoningEffortTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let effort = arg_str(&tool_call.arguments, &["effort"]).map(|value| truncate(value, 24));
+        Some(stable_labeled("Set reasoning effort", effort, phase))
+    }
+
     fn name(&self) -> &str {
         "set_reasoning_effort"
     }
@@ -1147,6 +1161,17 @@ struct SetModelTool {
 
 #[async_trait]
 impl Tool for SetModelTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let model = arg_str(&tool_call.arguments, &["model"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Set model", model, phase))
+    }
+
     fn name(&self) -> &str {
         "set_model"
     }
@@ -1196,6 +1221,18 @@ struct SetProviderTool {
 
 #[async_trait]
 impl Tool for SetProviderTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let provider =
+            arg_str(&tool_call.arguments, &["provider"]).map(|value| truncate(value, 24));
+        Some(stable_labeled("Set provider", provider, phase))
+    }
+
     fn name(&self) -> &str {
         "set_provider"
     }

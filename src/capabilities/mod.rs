@@ -15,6 +15,7 @@ mod host;
 pub(crate) mod memory;
 pub(crate) mod model_discovery;
 pub(crate) mod model_ranking;
+pub(crate) mod narration;
 pub(crate) mod repo_map;
 pub mod skills;
 pub(crate) mod worktree_cmd;

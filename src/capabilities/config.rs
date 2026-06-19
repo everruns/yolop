@@ -12,6 +12,7 @@
 // Provider/model edits are persisted here and take effect on the next run; use
 // the interactive `/setup` command to switch the *live* model mid-session.
 
+use crate::capabilities::narration::{narrate_get_config, narrate_set_config};
 use crate::capability_settings::{
     CapabilityCatalog, apply_capability_settings, build_capability_override,
     capability_catalog_json, capability_catalog_list, effective_harness_json, overrides_to_json,
@@ -25,6 +26,8 @@ use crate::runtime::{
 use crate::settings::{ApprovalMode, Settings, SettingsStore};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::tool_narration::ToolNarrationPhase;
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -132,6 +135,16 @@ struct GetConfigTool {
 
 #[async_trait]
 impl Tool for GetConfigTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        Some(narrate_get_config(tool_call, phase))
+    }
+
     fn name(&self) -> &str {
         "get_config"
     }
@@ -258,6 +271,16 @@ struct SetConfigTool {
 
 #[async_trait]
 impl Tool for SetConfigTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        Some(narrate_set_config(tool_call, phase))
+    }
+
     fn name(&self) -> &str {
         "set_config"
     }
@@ -562,6 +585,8 @@ fn on_off(enabled: bool) -> &'static str {
 mod tests {
     use super::*;
     use everruns_core::capabilities::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
+    use everruns_core::tool_narration::ToolNarrationPhase;
+    use everruns_core::tool_types::ToolCall;
 
     fn store() -> (tempfile::TempDir, Arc<SettingsStore>) {
         let tmp = tempfile::tempdir().expect("tmp");
@@ -587,6 +612,32 @@ mod tests {
             settings,
             catalog: catalog(),
         }
+    }
+
+    #[test]
+    fn set_config_narration_shows_key_and_bool_value() {
+        let (_tmp, settings) = store();
+        let tool = set_config_tool(settings);
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "set_config".to_owned(),
+            arguments: json!({ "key": "attribution", "value": "on" }),
+        };
+        let narration = tool.narrate(&call, ToolNarrationPhase::Completed, None);
+        assert_eq!(narration.as_deref(), Some("Set config: attribution=true"));
+    }
+
+    #[test]
+    fn get_config_narration_uses_bare_verb_without_key() {
+        let (_tmp, settings) = store();
+        let tool = get_config_tool(settings);
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "get_config".to_owned(),
+            arguments: json!({}),
+        };
+        let narration = tool.narrate(&call, ToolNarrationPhase::Completed, None);
+        assert_eq!(narration.as_deref(), Some("Get config"));
     }
 
     #[tokio::test]

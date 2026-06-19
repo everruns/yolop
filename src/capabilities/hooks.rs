@@ -4,9 +4,12 @@
 // natural-language-safe write surface for Yolop's global/workspace `hooks.json`
 // files.
 
+use crate::capabilities::narration::stable_labeled;
 use crate::hooks_config::{HookScope, HooksStore};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -85,6 +88,16 @@ struct ListHooksTool {
 
 #[async_trait]
 impl Tool for ListHooksTool {
+    fn narrate(
+        &self,
+        _tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        Some(stable_labeled("List hooks", None, phase))
+    }
+
     fn name(&self) -> &str {
         "list_hooks"
     }
@@ -121,6 +134,22 @@ struct ValidateHookTool {
 
 #[async_trait]
 impl Tool for ValidateHookTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let id = tool_call
+            .arguments
+            .get("hook")
+            .and_then(|hook| hook.get("id"))
+            .and_then(Value::as_str)
+            .map(|value| truncate(value, 48));
+        Some(stable_labeled("Validate hook", id, phase))
+    }
+
     fn name(&self) -> &str {
         "validate_hook"
     }
@@ -159,6 +188,22 @@ struct UpsertHookTool {
 
 #[async_trait]
 impl Tool for UpsertHookTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let id = tool_call
+            .arguments
+            .get("hook")
+            .and_then(|hook| hook.get("id"))
+            .and_then(Value::as_str)
+            .map(|value| truncate(value, 48));
+        Some(stable_labeled("Save hook", id, phase))
+    }
+
     fn name(&self) -> &str {
         "upsert_hook"
     }
@@ -218,6 +263,17 @@ struct RemoveHookTool {
 
 #[async_trait]
 impl Tool for RemoveHookTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        let _ = locale;
+        let id = arg_str(&tool_call.arguments, &["id"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Remove hook", id, phase))
+    }
+
     fn name(&self) -> &str {
         "remove_hook"
     }

@@ -4,10 +4,12 @@
 //! remain the hot path; repo-map gives the model a compact structural view when
 //! lexical search is too narrow.
 
+use crate::capabilities::narration::stable_labeled;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
-use everruns_core::tool_narration::{ToolNarrationPhase, labeled_phrase, safe_arg_str, truncate};
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -109,20 +111,13 @@ struct RepoMapTool {
 impl Tool for RepoMapTool {
     fn narrate(
         &self,
-        tool_call: &everruns_core::tool_types::ToolCall,
+        tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
     ) -> Option<String> {
         let _ = locale;
-        let value =
-            safe_arg_str(&tool_call.arguments, &["query", "path"]).map(|value| truncate(value, 48));
-        Some(labeled_phrase(
-            "Repo map",
-            "Repo map",
-            "Could not build repo map",
-            value,
-            phase,
-        ))
+        let query = scan_narration_query(&tool_call.arguments);
+        Some(stable_labeled("Build repo map", query, phase))
     }
 
     fn name(&self) -> &str {
@@ -174,19 +169,13 @@ struct RepoSymbolsTool {
 impl Tool for RepoSymbolsTool {
     fn narrate(
         &self,
-        tool_call: &everruns_core::tool_types::ToolCall,
+        tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
     ) -> Option<String> {
         let _ = locale;
-        let value = safe_arg_str(&tool_call.arguments, &["query"]).map(|value| truncate(value, 48));
-        Some(labeled_phrase(
-            "Search symbols",
-            "Searched symbols",
-            "Could not search symbols",
-            value,
-            phase,
-        ))
+        let query = scan_narration_query(&tool_call.arguments);
+        Some(stable_labeled("Search symbols", query, phase))
     }
 
     fn name(&self) -> &str {
@@ -228,6 +217,10 @@ impl Tool for RepoSymbolsTool {
             Err(err) => ToolExecutionResult::tool_error(err.to_string()),
         }
     }
+}
+
+fn scan_narration_query(arguments: &serde_json::Value) -> Option<String> {
+    arg_str(arguments, &["query", "path"]).map(|v| truncate(v, 48))
 }
 
 fn scan_schema(query_description: &str) -> Value {
