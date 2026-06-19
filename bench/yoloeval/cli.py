@@ -25,10 +25,13 @@ from datetime import datetime, timezone
 from .config import load_matrix
 from .datasets.base import get_benchmark
 from .runner import run_matrix
+from .suites import suite_instance_ids
 from . import results
 
 
 def _select_instance_ids(benchmark, args) -> list[str] | None:
+    if getattr(args, "suite", None):
+        return suite_instance_ids(args.suite)
     if args.instance:
         return list(args.instance)
     if args.limit is not None:
@@ -88,6 +91,8 @@ def cmd_eval(args) -> int:
     names = args.config or list(configs)
     run_id = args.run_id or f"reeval-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}"
     want = set(args.instance) if args.instance else None
+    if getattr(args, "suite", None):
+        want = set(suite_instance_ids(args.suite))
     limit_ids = None
     if args.limit is not None:
         limit_ids = {i.instance_id for i in benchmark.load()[: args.limit]}
@@ -147,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
     g = r.add_mutually_exclusive_group()
     g.add_argument("--instance", action="append", help="specific instance id(s); repeatable")
     g.add_argument("--limit", type=int, help="run the first N instances")
+    g.add_argument("--suite", help="named instance suite from bench/suites/ (e.g. tracking-v1)")
     r.add_argument("--run-id", default=None)
     r.add_argument("--max-cost", type=float, default=None,
                    help="per-instance USD cap (overrides matrix); kills the run if exceeded")
@@ -162,6 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     eg = e.add_mutually_exclusive_group()
     eg.add_argument("--instance", action="append", help="specific instance id(s); repeatable")
     eg.add_argument("--limit", type=int, help="score the first N instances")
+    eg.add_argument("--suite", help="named instance suite from bench/suites/ (e.g. tracking-v1)")
     e.add_argument("--run-id", default=None)
     e.add_argument("--max-workers", type=int, default=4, help="Docker eval workers")
     e.add_argument("--namespace", default="swebench", help="image namespace ('none' to build locally)")

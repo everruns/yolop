@@ -77,6 +77,26 @@ set a per-config `price` block (USD per 1M tokens) so cost — and the cap — c
 computed. Without a price/reported cost, only the wall-clock `timeout` bounds a
 run.
 
+## Tracking suite
+
+`bench/suites/tracking-v1.json` is a fixed, representative 20-instance subset of
+SWE-bench Verified for tracking yolop quality across versions. It is selected
+deterministically (no randomness) by `suites/select_tracking.py`: repo quotas by
+largest-remainder apportionment proportional to each repo's share of the 500
+instances, then filled to match the benchmark's overall difficulty mix. The
+result spans 9 repos and 3 difficulty tiers (8 `<15 min`, 10 `15 min–1 hour`,
+2 `1–4 hours`), so the resolve-rate carries signal.
+
+Run a suite with `--suite` (works for `run` and `eval`):
+
+```bash
+.venv/bin/python -m yoloeval run --suite tracking-v1 --config openai-default
+```
+
+Re-running `select_tracking.py` on the same dataset reproduces the committed set
+exactly; bump to `tracking-v2` rather than editing v1, so historical numbers stay
+comparable.
+
 ## Layout
 
 ```
@@ -87,9 +107,11 @@ bench/
     metrics.py         # yolop events.jsonl -> RunMetrics
     agent_metrics.py   # claude-code / codex / pi event logs -> RunMetrics
     pricing.py         # token-based cost estimate (fallback for codex)
+    suites.py          # named instance subsets (loads suites/*.json)
     runner.py          # (instance x config) orchestration
     results.py         # save/summarize result JSON
   configs/matrix.yaml  # the config matrix to benchmark
+  suites/              # curated instance subsets (tracking-v1.json + selector)
   results/             # committed: per-run JSON + summary.json per config
   .cache/              # gitignored: dataset parquet, checkouts, raw logs, eval scratch
 ```
