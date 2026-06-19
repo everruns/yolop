@@ -141,8 +141,97 @@ def summarize(benchmark: str, config_name: str) -> dict[str, Any]:
             "tool_calls": round(summary["totals"]["tool_calls"] / n, 2),
             "total_tokens": round(summary["totals"]["total_tokens"] / n, 1),
         }
+        # Cost efficiency — the "performance per dollar" headline. ``cost_usd``
+        # is cache-aware (it comes from the driver's actual/estimated cost, which
+        # prices cache reads/writes), so this is a fair cross-model comparison.
+        total_cost = summary["totals"]["cost_usd"]
+        summary["efficiency"] = {
+            # Resolved instances per USD spent — higher is better (the score/$).
+            "resolved_per_usd": round(resolved / total_cost, 4) if total_cost else 0.0,
+            # Average USD to land one resolved instance — lower is better.
+            # ``None`` when nothing resolved (avoids a divide-by-zero headline).
+            "cost_per_resolved_usd": round(total_cost / resolved, 4) if resolved else None,
+        }
 
     (config_dir / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
     return summary
+
+
+def leaderboard(benchmark: str, baseline: str | None = None) -> dict[str, Any]:
+    """Rank every config for ``benchmark`` by cost efficiency (resolved per USD).
+
+    Reads each ``<config>/summary.json`` and normalizes resolved-per-USD to a
+    baseline config, so the output reads like a "performance per dollar"
+    comparison (e.g. "2.6x value" vs a "1.0x baseline"). The baseline defaults to
+    the least cost-efficient priced config, so every other config is a >=1.0x
+    multiple; pass ``baseline`` to pin it to a specific config (e.g. the most
+    capable/expensive one). Configs with no recorded cost are listed but cannot
+    be normalized (``value_multiple`` is ``None``).
+    """
+    bench_dir = RESULTS_DIR / benchmark
+    rows: list[dict[str, Any]] = []
+    for summ in sorted(bench_dir.glob("*/summary.json")) if bench_dir.exists() else []:
+        s = json.loads(summ.read_text(encoding="utf-8"))
+        n = s.get("instances", 0)
+        if not n:
+            continue
+        cost = (s.get("totals") or {}).get("cost_usd", 0.0)
+        resolved = s.get("resolved", 0)
+        rows.append(
+            {
+                "config_name": s.get("config_name", summ.parent.name),
+                "instances": n,
+                "resolved": resolved,
+                "resolved_rate": s.get("resolved_rate", round(resolved / n, 4)),
+                "cost_usd": round(cost, 4),
+                "resolved_per_usd": round(resolved / cost, 4) if cost else 0.0,
+            }
+        )
+
+    priced = [r for r in rows if r["resolved_per_usd"] > 0]
+    if baseline:
+        base = next((r for r in rows if r["config_name"] == baseline), None)
+    else:
+        base = min(priced, key=lambda r: r["resolved_per_usd"]) if priced else None
+    base_eff = base["resolved_per_usd"] if base else 0.0
+    for r in rows:
+        r["value_multiple"] = (
+            round(r["resolved_per_usd"] / base_eff, 2) if base_eff else None
+        )
+
+    # Most cost-efficient first; unpriced configs (eff 0) sink to the bottom.
+    rows.sort(key=lambda r: r["resolved_per_usd"], reverse=True)
+    return {
+        "benchmark": benchmark,
+        "baseline": base["config_name"] if base else None,
+        "rows": rows,
+    }
+
+
+def format_leaderboard(board: dict[str, Any]) -> str:
+    """Render :func:`leaderboard` as a fixed-width text table for the CLI."""
+    rows = board["rows"]
+    if not rows:
+        return f"no results to rank for benchmark {board['benchmark']!r}"
+    name_w = max(len("config"), *(len(r["config_name"]) for r in rows))
+    header = (
+        f"{'config':<{name_w}}  {'resolved':>10}  {'score%':>7}  "
+        f"{'cost_usd':>9}  {'resolved/$':>11}  {'value':>6}"
+    )
+    lines = [
+        f"performance per dollar — {board['benchmark']} "
+        f"(baseline: {board['baseline'] or 'n/a'})",
+        header,
+        "-" * len(header),
+    ]
+    for r in rows:
+        resolved = f"{r['resolved']}/{r['instances']}"
+        score = f"{r['resolved_rate'] * 100:.0f}%"
+        mult = "—" if r["value_multiple"] is None else f"{r['value_multiple']:.2f}x"
+        lines.append(
+            f"{r['config_name']:<{name_w}}  {resolved:>10}  {score:>7}  "
+            f"{r['cost_usd']:>9.4f}  {r['resolved_per_usd']:>11.4f}  {mult:>6}"
+        )
+    return "\n".join(lines)

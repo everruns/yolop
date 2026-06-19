@@ -143,6 +143,16 @@ def cmd_summarize(args) -> int:
     return 0
 
 
+def cmd_report(args) -> int:
+    """Cross-config cost-efficiency leaderboard ("performance per dollar")."""
+    board = results.leaderboard(args.benchmark, baseline=args.baseline)
+    if args.json:
+        print(json.dumps(board, indent=2))
+    else:
+        print(results.format_leaderboard(board))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="yoloeval", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -184,6 +194,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("summarize", parents=[common], help="rebuild summary.json files")
     s.set_defaults(func=cmd_summarize)
+
+    rep = sub.add_parser(
+        "report", parents=[common],
+        help="cost-efficiency leaderboard across configs (performance per dollar)",
+    )
+    rep.add_argument("--baseline", default=None,
+                     help="config to normalize against (default: least cost-efficient)")
+    rep.add_argument("--json", action="store_true", help="emit JSON instead of a table")
+    rep.set_defaults(func=cmd_report)
 
     return p
 
