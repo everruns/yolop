@@ -5,6 +5,50 @@
 
 use super::*;
 
+// Presentation for the transcript view-model types defined in
+// `crate::transcript`. The data lives there; colors/labels live here so the
+// translation layer stays free of `ratatui`.
+impl Author {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Author::User => "you",
+            Author::Assistant => "agent",
+            Author::Narration => "note",
+            Author::Tool => "tool",
+            Author::ToolDetail => "",
+            Author::Diff => "diff",
+            Author::System => "system",
+        }
+    }
+    pub fn color(&self) -> Color {
+        match self {
+            Author::User => ACCENT_BLUE,
+            Author::Assistant => ACCENT_GOLD,
+            Author::Narration => TEXT_MUTED,
+            Author::Tool => TEXT_MUTED,
+            Author::ToolDetail => TEXT_MUTED,
+            Author::Diff => ACCENT_BLUE,
+            Author::System => TEXT_DIM,
+        }
+    }
+}
+
+impl StreamKind {
+    fn label(self) -> &'static str {
+        match self {
+            StreamKind::Assistant => "agent",
+            StreamKind::Tool => "tool",
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            StreamKind::Assistant => ACCENT_GOLD,
+            StreamKind::Tool => TEXT_MUTED,
+        }
+    }
+}
+
 pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
     // Match `draw_input`: the `> ` prompt consumes two columns.

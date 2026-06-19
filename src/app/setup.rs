@@ -1287,15 +1287,9 @@ impl App {
     pub(crate) async fn execute_setup_command(
         &mut self,
         arg: Option<&str>,
-    ) -> Result<everruns_core::command::CommandResult, String> {
-        let request = everruns_core::command::ExecuteCommandRequest {
-            name: "setup".to_string(),
-            arguments: arg.map(str::to_string),
-            controls: None,
-        };
-        self.handles
-            .runtime
-            .execute_command(self.handles.session_id, request)
+    ) -> Result<crate::session::CommandOutcome, String> {
+        self.session
+            .execute_command("setup", arg.map(str::to_string))
             .await
             .map_err(|err| err.to_string())
     }
