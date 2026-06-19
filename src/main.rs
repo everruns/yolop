@@ -83,7 +83,9 @@ struct Cli {
     #[arg(short, long)]
     model: Option<String>,
 
-    /// Reasoning effort for OpenAI and OpenRouter model calls
+    /// Reasoning effort for model calls (validated against the model's
+    /// supported values, e.g. minimal/low/medium/high). Applies to any
+    /// provider whose selected model exposes a reasoning-effort setting.
     #[arg(long)]
     reasoning_effort: Option<String>,
 
