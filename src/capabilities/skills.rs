@@ -342,8 +342,11 @@ impl Tool for DeleteSkillTool {
         locale: Option<&str>,
     ) -> Option<String> {
         let _ = locale;
-        let name = arg_str(&tool_call.arguments, &["name"]).map(|value| truncate(value, 48));
-        Some(stable_labeled("Delete skill", name, phase))
+        let detail = arg_str(&tool_call.arguments, &["name"]).map(|name| {
+            let scope = arg_str(&tool_call.arguments, &["scope"]).unwrap_or("workspace");
+            truncate(&format!("{name} ({scope})"), 48)
+        });
+        Some(stable_labeled("Delete skill", detail, phase))
     }
 
     fn name(&self) -> &str {

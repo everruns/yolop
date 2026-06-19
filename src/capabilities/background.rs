@@ -1166,8 +1166,9 @@ impl Tool for BackgroundRunTool {
         locale: Option<&str>,
     ) -> Option<String> {
         let _ = locale;
-        let command = arg_str(&tool_call.arguments, &["command"]).map(|value| truncate(value, 48));
-        Some(stable_labeled("Run in background", command, phase))
+        let detail = arg_str(&tool_call.arguments, &["label", "command"])
+            .map(|value| truncate(value, 48));
+        Some(stable_labeled("Run in background", detail, phase))
     }
 
     fn name(&self) -> &str {
@@ -1243,8 +1244,9 @@ impl Tool for BackgroundAgentTool {
         locale: Option<&str>,
     ) -> Option<String> {
         let _ = locale;
-        let task = arg_str(&tool_call.arguments, &["task"]).map(|value| truncate(value, 48));
-        Some(stable_labeled("Run sub-agent in background", task, phase))
+        let detail = arg_str(&tool_call.arguments, &["label", "task"])
+            .map(|value| truncate(value, 48));
+        Some(stable_labeled("Run sub-agent in background", detail, phase))
     }
 
     fn name(&self) -> &str {
