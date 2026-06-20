@@ -535,6 +535,49 @@ impl App {
         }
     }
 
+    pub(crate) async fn handle_setup_paste(&mut self, pasted: String) {
+        let Some(step) = self.setup.clone() else {
+            return;
+        };
+        let pasted = crate::paste_attachment::normalize_pasted_text(&pasted);
+        if pasted.is_empty() {
+            return;
+        }
+        match step {
+            SetupStep::BaseUrlInput { mut value, .. } => {
+                value.push_str(&pasted);
+                self.setup = Some(SetupStep::BaseUrlInput { value, error: None });
+            }
+            SetupStep::TokenInput {
+                mut token,
+                provider,
+                ..
+            } => {
+                token.push_str(&pasted);
+                self.setup = Some(SetupStep::TokenInput {
+                    provider,
+                    token,
+                    error: None,
+                });
+            }
+            SetupStep::PickModel {
+                provider,
+                selected,
+                custom: Some(mut value),
+                ..
+            } => {
+                value.push_str(&pasted);
+                self.setup = Some(SetupStep::PickModel {
+                    provider,
+                    selected,
+                    custom: Some(value),
+                    error: None,
+                });
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) async fn handle_setup_key(&mut self, key: KeyEvent) {
         let Some(step) = self.setup.clone() else {
             return;

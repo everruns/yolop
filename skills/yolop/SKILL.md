@@ -71,7 +71,8 @@ also appear in the registry when installed.
 | `Tab` | Accept the first slash-command suggestion, or insert a literal tab |
 | `←` / `→` | Move cursor in the composer |
 | `/` then type | Command palette suggestions (accept with Tab) |
-| `Ctrl+V` | Paste a clipboard image as an attachment |
+| `Ctrl+V` | Paste a clipboard image as an attachment, or attach large text as a placeholder |
+| Terminal paste | Large pastes (>1000 chars) attach as `[Pasted Content N chars]` placeholders |
 
 ### Session control
 

@@ -18,6 +18,7 @@ mod host_ui;
 mod image_input;
 mod into;
 mod mcp_config;
+mod paste_attachment;
 mod runtime;
 mod session;
 mod session_log;
@@ -46,7 +47,8 @@ extern crate everruns_integrations_daytona;
 use app::{App, COMPOSER_VIEWPORT_HEIGHT, maybe_reanchor_inline_viewport};
 use clap::{Args, Parser, Subcommand};
 use crossterm::event::{
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
@@ -543,6 +545,7 @@ fn run_command(command: Commands) -> Result<()> {
 async fn run_tui(runtime: BuiltRuntime, pending_images: Vec<ContentPart>) -> Result<()> {
     let mut raw_mode = RawModeGuard::new()?;
     let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
+    let mut bracketed_paste = BracketedPasteGuard::new();
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::with_options(
@@ -577,6 +580,7 @@ async fn run_tui(runtime: BuiltRuntime, pending_images: Vec<ContentPart>) -> Res
         tracing::warn!("cursor restore failed: {err:#}");
     }
     drop(terminal);
+    bracketed_paste.disable();
     keyboard_enhancements.disable();
     raw_mode.disable()?;
 
@@ -642,6 +646,32 @@ impl KeyboardEnhancementGuard {
 }
 
 impl Drop for KeyboardEnhancementGuard {
+    fn drop(&mut self) {
+        self.disable();
+    }
+}
+
+struct BracketedPasteGuard {
+    active: bool,
+}
+
+impl BracketedPasteGuard {
+    fn new() -> Self {
+        let mut stdout = io::stdout();
+        let active = execute!(stdout, EnableBracketedPaste).is_ok();
+        Self { active }
+    }
+
+    fn disable(&mut self) {
+        if self.active {
+            let mut stdout = io::stdout();
+            let _ = execute!(stdout, DisableBracketedPaste);
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for BracketedPasteGuard {
     fn drop(&mut self) {
         self.disable();
     }

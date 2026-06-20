@@ -212,6 +212,23 @@ fn convert_windows_path_to_wsl(input: &str) -> Option<PathBuf> {
     Some(result)
 }
 
+/// Read plain text from the clipboard.
+#[cfg(not(target_os = "android"))]
+pub fn paste_clipboard_text() -> Result<String, PasteImageError> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|err| PasteImageError::ClipboardUnavailable(err.to_string()))?;
+    clipboard
+        .get_text()
+        .map_err(|err| PasteImageError::NoImage(err.to_string()))
+}
+
+#[cfg(target_os = "android")]
+pub fn paste_clipboard_text() -> Result<String, PasteImageError> {
+    Err(PasteImageError::ClipboardUnavailable(
+        "clipboard text paste is unsupported on Android".into(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
