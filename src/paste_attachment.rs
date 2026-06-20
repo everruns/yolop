@@ -81,7 +81,10 @@ mod tests {
     #[test]
     fn next_large_paste_placeholder_adds_suffix_for_duplicates() {
         let pending = vec![
-            ("[Pasted Content 1200 chars]".to_string(), "first".to_string()),
+            (
+                "[Pasted Content 1200 chars]".to_string(),
+                "first".to_string(),
+            ),
             (
                 "[Pasted Content 1200 chars] #2".to_string(),
                 "second".to_string(),
