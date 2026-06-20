@@ -7,6 +7,10 @@ use crate::goal::{GOAL_EVALUATE_ARG, GoalStore, parse_evaluation_response};
 use crate::host_ui::UiCommand;
 use crate::runtime::{BuiltRuntime, ModelState, StartupInfo};
 use crate::session::Session;
+use crate::user_ask::{
+    USER_ASK_EVALUATE_ARG, UserAskStore, evaluation_status_message,
+    parse_evaluation_response as parse_user_ask_evaluation,
+};
 use crate::worktree::WorktreeManager;
 use anyhow::Result;
 use crossterm::event::{
@@ -126,6 +130,8 @@ pub struct App {
     /// `None` when closed. Toggled with Ctrl+B; read-only view of the registry.
     background_panel: Option<usize>,
     goal_store: Arc<GoalStore>,
+    user_ask_store: Arc<UserAskStore>,
+    user_ask_enabled: bool,
     worktree: Arc<WorktreeManager>,
     /// Images from `--image` / `-i` on the CLI, consumed on the first turn.
     pending_images: Vec<ContentPart>,
@@ -284,6 +290,8 @@ impl App {
     pub fn new(runtime: BuiltRuntime, pending_images: Vec<ContentPart>) -> Self {
         let should_setup = runtime.startup.setup_recommended;
         let goal_store = runtime.goal_store.clone();
+        let user_ask_store = runtime.user_ask_store.clone();
+        let user_ask_enabled = runtime.user_ask_enabled;
         let session_id = runtime.handles.session_id;
         let session = Session::new(runtime.handles, runtime.model.clone());
         let (models_tx, models_rx) = mpsc::unbounded_channel::<ModelDiscovery>();
@@ -317,6 +325,8 @@ impl App {
             background: runtime.background,
             background_panel: None,
             goal_store,
+            user_ask_store,
+            user_ask_enabled,
             worktree: runtime.worktree,
             pending_images,
             pending_pastes: Vec::new(),
@@ -387,9 +397,26 @@ impl App {
                 counts => Some(counts),
             },
             goal_indicator: self.goal_indicator(),
+            ask_indicator: self.ask_indicator(),
             worktree_compact: self.worktree.status_bar_compact(),
             worktree_expanded: self.worktree.status_bar_expanded(),
         }
+    }
+
+    fn ask_indicator(&self) -> Option<String> {
+        if !self.user_ask_enabled {
+            return None;
+        }
+        if !self.user_ask_store.is_active(self.session.session_id()) {
+            return None;
+        }
+        let turns = self
+            .user_ask_store
+            .status(self.session.session_id())
+            .active
+            .map(|active| active.evaluated_turns)
+            .unwrap_or(0);
+        Some(format!("? ask ({turns})"))
     }
 
     fn goal_indicator(&self) -> Option<String> {
@@ -537,6 +564,7 @@ impl App {
                 Ok(TurnEvent::Done) => {
                     self.finish_busy();
                     self.after_turn_goal_check().await;
+                    self.after_turn_user_ask_check().await;
                     return Ok(());
                 }
                 Ok(TurnEvent::Failed(err)) => {
@@ -875,6 +903,13 @@ impl App {
         let image_count = self.pending_images.len();
         let display = crate::image_input::user_display_text(&display_text, image_count);
         self.push_user(display);
+        if self.user_ask_enabled
+            && let Err(err) = self
+                .user_ask_store
+                .record_user_prompt(self.session.session_id(), &text)
+        {
+            self.push_system(format!("user ask: {err}"));
+        }
         self.start_turn(text);
     }
 
@@ -1033,6 +1068,7 @@ impl App {
                 self.lines.clear();
                 self.printed_lines = 0;
                 self.goal_store.clear_active(self.session.session_id());
+                self.user_ask_store.clear_active(self.session.session_id());
                 self.emit_system_banner();
             }
             UiCommand::RunShell { command } => self.start_shell_command(command),
@@ -1231,6 +1267,39 @@ impl App {
         };
         self.push_user(prompt.clone());
         self.start_turn(prompt);
+    }
+
+    async fn after_turn_user_ask_check(&mut self) {
+        if !self.user_ask_enabled {
+            return;
+        }
+        let session_id = self.session.session_id();
+        if !self.user_ask_store.is_active(session_id) {
+            return;
+        }
+        let result = match self
+            .session
+            .execute_command("ask", Some(USER_ASK_EVALUATE_ARG.to_string()))
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                self.push_system(format!("user ask evaluation failed: {err}"));
+                return;
+            }
+        };
+        if !result.success {
+            self.push_system(format!("user ask evaluation failed: {}", result.message));
+            return;
+        }
+        let evaluation = match parse_user_ask_evaluation(&result.message) {
+            Ok(evaluation) => evaluation,
+            Err(err) => {
+                self.push_system(format!("user ask evaluation failed: {err}"));
+                return;
+            }
+        };
+        self.push_system(evaluation_status_message(&evaluation));
     }
 
     /// Dispatch a capability-provided slash command.
@@ -2784,6 +2853,7 @@ mod tests {
             approval_mode: "normal".to_string(),
             background: None,
             goal_indicator: None,
+            ask_indicator: None,
             worktree_compact: None,
             worktree_expanded: None,
         }
@@ -5312,7 +5382,7 @@ mod tests {
         let rows = render_chrome_lines(&state, 120, 4);
         let status = &rows[3];
         assert!(
-            status.contains("wt bump-outdated-crat"),
+            status.contains("wt bump-out"),
             "compact status should include worktree slug: {status}"
         );
     }

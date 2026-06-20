@@ -28,6 +28,7 @@ mod settings;
 mod test_env;
 mod tools;
 mod transcript;
+mod user_ask;
 mod version;
 mod worktree;
 
@@ -708,6 +709,8 @@ async fn run_print_mode(
         mut startup,
         model,
         goal_store,
+        user_ask_store,
+        user_ask_enabled,
         worktree,
         ..
     } = runtime;
@@ -772,9 +775,38 @@ async fn run_print_mode(
         .await;
     }
 
+    if user_ask_enabled
+        && let Err(err) = user_ask_store.record_user_prompt(handles.session_id, trimmed)
+    {
+        eprintln!("user ask: {err}");
+    }
+
     let result = run_print_turn(&handles, &worktree, &model, trimmed, images, color).await?;
     if !result.success {
         std::process::exit(1);
+    }
+    if user_ask_enabled && user_ask_store.is_active(handles.session_id) {
+        let evaluation = handles
+            .runtime
+            .execute_command(
+                handles.session_id,
+                ExecuteCommandRequest {
+                    name: "ask".to_string(),
+                    arguments: Some(user_ask::USER_ASK_EVALUATE_ARG.to_string()),
+                    controls: None,
+                },
+            )
+            .await?;
+        if evaluation.success {
+            if let Ok(parsed) = user_ask::parse_evaluation_response(&evaluation.message) {
+                println!(
+                    "{}",
+                    paint(color, "94", &user_ask::evaluation_status_message(&parsed))
+                );
+            }
+        } else {
+            eprintln!("user ask evaluation failed: {}", evaluation.message);
+        }
     }
     Ok(())
 }

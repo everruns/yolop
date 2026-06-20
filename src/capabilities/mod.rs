@@ -19,10 +19,12 @@ pub(crate) mod model_ranking;
 pub(crate) mod narration;
 pub(crate) mod repo_map;
 pub mod skills;
+pub(crate) mod user_ask;
 pub(crate) mod worktree_cmd;
 pub(crate) mod yolop;
 
 pub(crate) use crate::goal::GOAL_CAPABILITY_ID;
+pub(crate) use crate::user_ask::USER_ASK_CAPABILITY_ID;
 pub(crate) use approval::{APPROVAL_CAPABILITY_ID, ApprovalCapability};
 pub(crate) use ast_grep::{AST_GREP_CAPABILITY_ID, AstGrepCapability};
 pub(crate) use attribution::{ATTRIBUTION_CAPABILITY_ID, AttributionCapability};
@@ -39,4 +41,5 @@ pub(crate) use host::{
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
 };
 pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
+pub(crate) use user_ask::UserAskCapability;
 pub(crate) use worktree_cmd::WorktreeCapability;
