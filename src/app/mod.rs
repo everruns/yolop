@@ -290,6 +290,10 @@ pub(crate) struct ViewState {
     pub background: Option<(usize, usize)>,
     /// Short label when a `/goal` loop is active (for example `◎ goal`).
     pub goal_indicator: Option<String>,
+    /// Worktree slug for the compact status bar (for example `bump-outdated-crates-ship`).
+    pub worktree_compact: Option<String>,
+    /// Branch and path shown in the expanded status bar when a worktree is active.
+    pub worktree_expanded: Option<(String, String)>,
 }
 
 /// What kind of delta is currently being streamed. Only the assistant
@@ -302,11 +306,21 @@ pub(crate) enum StatusLayout {
 }
 
 impl StatusLayout {
-    pub(crate) fn row_count(self) -> u16 {
+    pub(crate) fn base_row_count(self) -> u16 {
         match self {
             Self::Compact => 1,
             Self::Expanded => EXPANDED_STATUS_ROWS,
         }
+    }
+}
+
+impl ViewState {
+    pub(crate) fn status_row_count(&self) -> u16 {
+        self.status_layout.base_row_count() + self.worktree_extra_status_rows()
+    }
+
+    fn worktree_extra_status_rows(&self) -> u16 {
+        u16::from(self.status_layout == StatusLayout::Expanded && self.worktree_expanded.is_some())
     }
 }
 
@@ -410,6 +424,8 @@ impl App {
                 counts => Some(counts),
             },
             goal_indicator: self.goal_indicator(),
+            worktree_compact: self.worktree.status_bar_compact(),
+            worktree_expanded: self.worktree.status_bar_expanded(),
         }
     }
 
@@ -435,12 +451,6 @@ impl App {
             "workspace: {}",
             self.startup.workspace_root.display()
         ));
-        if let Some(line) = self.startup.worktree_line.clone() {
-            if let Some(repo) = &self.startup.repo_root {
-                self.push_system(format!("repo: {}", repo.display()));
-            }
-            self.push_system(line);
-        }
         self.push_system(format!("model: {}", self.model.provider_label()));
         self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
         if !self.startup.capability_commands.is_empty() {
@@ -1138,7 +1148,7 @@ impl App {
         let layout = app_layout_for_frame(
             terminal_area,
             self.input_height(input_width),
-            self.status_layout,
+            state.status_row_count(),
             chrome_preview_visible(&state),
         );
         if layout.chrome.session_status.height == 0 {
@@ -1350,8 +1360,8 @@ impl App {
         match self.worktree.ensure_before_turn(&prompt) {
             Ok(true) => {
                 self.startup.workspace_root = self.worktree.active_root();
-                if let Some(line) = self.worktree.status_line() {
-                    self.push_system(line);
+                if let Some(notice) = self.worktree.switch_notice() {
+                    self.push_system(notice);
                 }
             }
             Ok(false) => {
@@ -1835,30 +1845,21 @@ mod tests {
 
     #[test]
     fn chrome_height_reserves_four_expanded_status_rows() {
-        assert_eq!(chrome_height(1, StatusLayout::Compact, false), 4);
-        assert_eq!(chrome_height(1, StatusLayout::Compact, true), 5);
-        assert_eq!(chrome_height(1, StatusLayout::Expanded, false), 7);
-        assert_eq!(chrome_height(1, StatusLayout::Expanded, true), 8);
-        assert_eq!(chrome_height(3, StatusLayout::Compact, false), 5);
-        assert_eq!(chrome_height(3, StatusLayout::Expanded, false), 8);
-        assert_eq!(chrome_height(4, StatusLayout::Compact, false), 6);
-        assert_eq!(chrome_height(4, StatusLayout::Expanded, false), 9);
+        assert_eq!(chrome_height(1, 1, false), 4);
+        assert_eq!(chrome_height(1, 1, true), 5);
+        assert_eq!(chrome_height(1, 4, false), 7);
+        assert_eq!(chrome_height(1, 4, true), 8);
+        assert_eq!(chrome_height(3, 1, false), 5);
+        assert_eq!(chrome_height(3, 4, false), 8);
+        assert_eq!(chrome_height(4, 1, false), 6);
+        assert_eq!(chrome_height(4, 4, false), 9);
     }
 
     #[test]
     fn chrome_dimensions_clamp_input_to_visible_frame() {
-        assert_eq!(
-            chrome_dimensions(7, MAX_INPUT_HEIGHT, StatusLayout::Expanded, false),
-            (7, 1)
-        );
-        assert_eq!(
-            chrome_dimensions(5, MAX_INPUT_HEIGHT, StatusLayout::Compact, false),
-            (5, 3)
-        );
-        assert_eq!(
-            chrome_dimensions(0, MAX_INPUT_HEIGHT, StatusLayout::Compact, false),
-            (0, 0)
-        );
+        assert_eq!(chrome_dimensions(7, MAX_INPUT_HEIGHT, 4, false), (7, 1));
+        assert_eq!(chrome_dimensions(5, MAX_INPUT_HEIGHT, 1, false), (5, 3));
+        assert_eq!(chrome_dimensions(0, MAX_INPUT_HEIGHT, 1, false), (0, 0));
     }
 
     fn rect_inside(parent: Rect, child: Rect) -> bool {
@@ -1887,8 +1888,12 @@ mod tests {
                             width,
                             height,
                         };
-                        let layout =
-                            app_layout_for_frame(frame, desired_input, status_layout, false);
+                        let layout = app_layout_for_frame(
+                            frame,
+                            desired_input,
+                            status_layout.base_row_count(),
+                            false,
+                        );
                         assert_eq!(layout.frame, frame);
                         assert!(
                             rect_inside(frame, layout.transcript),
@@ -2818,6 +2823,8 @@ mod tests {
             approval_mode: "normal".to_string(),
             background: None,
             goal_indicator: None,
+            worktree_compact: None,
+            worktree_expanded: None,
         }
     }
 
@@ -5301,6 +5308,57 @@ mod tests {
             !status.contains("session "),
             "compact status should keep session id for expanded layout: {status}"
         );
+    }
+
+    #[test]
+    fn chrome_session_status_compact_shows_worktree_indicator() {
+        let state = ViewState {
+            worktree_compact: Some("bump-outdated-crates-ship".to_string()),
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 120, 4);
+        let status = &rows[3];
+        assert!(
+            status.contains("wt bump-outdated-crat"),
+            "compact status should include worktree slug: {status}"
+        );
+    }
+
+    #[test]
+    fn chrome_session_status_expanded_shows_worktree_subsection() {
+        let state = ViewState {
+            status_layout: StatusLayout::Expanded,
+            worktree_compact: Some("bump-outdated-crates-ship".to_string()),
+            worktree_expanded: Some((
+                "bump-outdated-crates-ship-f6dd3e41".to_string(),
+                "…/session_019ee6c2dfd27223853ea56ff6dd3e41".to_string(),
+            )),
+            ..view_state_idle()
+        };
+        assert_eq!(state.status_row_count(), 5);
+        let rows = render_chrome_lines(&state, 180, 8);
+        assert!(
+            rows[7].contains("worktree bump-outdated-crates-ship-f6dd3e41")
+                && rows[7].contains("path …/session_019ee6"),
+            "expanded status should include worktree branch and path: {:?}",
+            rows[7]
+        );
+    }
+
+    #[test]
+    fn view_state_status_row_count_adds_worktree_row_only_when_expanded() {
+        let compact = ViewState {
+            worktree_expanded: Some(("branch".into(), "path".into())),
+            ..view_state_idle()
+        };
+        assert_eq!(compact.status_row_count(), 1);
+
+        let expanded = ViewState {
+            status_layout: StatusLayout::Expanded,
+            worktree_expanded: Some(("branch".into(), "path".into())),
+            ..view_state_idle()
+        };
+        assert_eq!(expanded.status_row_count(), 5);
     }
 
     #[test]

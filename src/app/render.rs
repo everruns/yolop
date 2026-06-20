@@ -58,7 +58,7 @@ pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let layout = TuiLayout::new(
         area,
         desired_input_height,
-        state.status_layout,
+        state.status_row_count(),
         chrome_preview_visible(&state),
     );
 
@@ -83,13 +83,13 @@ impl TuiLayout {
     pub(crate) fn new(
         frame: Rect,
         desired_input_height: u16,
-        status_layout: StatusLayout,
+        status_rows: u16,
         preview_visible: bool,
     ) -> Self {
         let (chrome_height, input_height) = chrome_dimensions(
             frame.height,
             desired_input_height,
-            status_layout,
+            status_rows,
             preview_visible,
         );
         let chrome_area = bottom_rect(frame, chrome_height);
@@ -100,7 +100,7 @@ impl TuiLayout {
         Self {
             frame,
             transcript,
-            chrome: ChromeLayout::new(chrome_area, input_height, status_layout, preview_visible),
+            chrome: ChromeLayout::new(chrome_area, input_height, status_rows, preview_visible),
         }
     }
 }
@@ -120,12 +120,11 @@ impl ChromeLayout {
     pub(crate) fn new(
         area: Rect,
         input_height: u16,
-        status_layout: StatusLayout,
+        status_rows: u16,
         preview_visible: bool,
     ) -> Self {
         let preview_height = u16::from(input_height == 1 && preview_visible);
         let status_height = u16::from(input_height < 3);
-        let status_rows = status_layout.row_count();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -157,24 +156,20 @@ pub(crate) fn bottom_rect(area: Rect, height: u16) -> Rect {
     }
 }
 
-pub(crate) fn chrome_height(
-    input_height: u16,
-    status_layout: StatusLayout,
-    preview_visible: bool,
-) -> u16 {
+pub(crate) fn chrome_height(input_height: u16, status_rows: u16, preview_visible: bool) -> u16 {
     let preview_height = u16::from(input_height == 1 && preview_visible);
     let status_separator_height = u16::from(input_height < 3);
     let fixed_rows = preview_height
         .saturating_add(1)
         .saturating_add(status_separator_height)
-        .saturating_add(status_layout.row_count());
+        .saturating_add(status_rows);
     input_height.saturating_add(fixed_rows)
 }
 
 pub(crate) fn chrome_dimensions(
     frame_height: u16,
     desired_input_height: u16,
-    status_layout: StatusLayout,
+    status_rows: u16,
     preview_visible: bool,
 ) -> (u16, u16) {
     if frame_height == 0 {
@@ -183,12 +178,12 @@ pub(crate) fn chrome_dimensions(
 
     let desired_input_height = desired_input_height.clamp(1, MAX_INPUT_HEIGHT);
     let chrome_height =
-        chrome_height(desired_input_height, status_layout, preview_visible).min(frame_height);
+        chrome_height(desired_input_height, status_rows, preview_visible).min(frame_height);
     let mut input_height = desired_input_height.min(chrome_height);
     while input_height > 1
         && input_height.saturating_add(chrome_fixed_rows(
             input_height,
-            status_layout,
+            status_rows,
             preview_visible,
         )) > chrome_height
     {
@@ -200,17 +195,17 @@ pub(crate) fn chrome_dimensions(
 pub(crate) fn app_layout_for_frame(
     frame: Rect,
     desired_input_height: u16,
-    status_layout: StatusLayout,
+    status_rows: u16,
     preview_visible: bool,
 ) -> TuiLayout {
-    TuiLayout::new(frame, desired_input_height, status_layout, preview_visible)
+    TuiLayout::new(frame, desired_input_height, status_rows, preview_visible)
 }
 
-fn chrome_fixed_rows(input_height: u16, status_layout: StatusLayout, preview_visible: bool) -> u16 {
+fn chrome_fixed_rows(input_height: u16, status_rows: u16, preview_visible: bool) -> u16 {
     u16::from(input_height == 1 && preview_visible)
         .saturating_add(1)
         .saturating_add(u16::from(input_height < 3))
-        .saturating_add(status_layout.row_count())
+        .saturating_add(status_rows)
 }
 
 pub(crate) fn clear_transcript_viewport(f: &mut ratatui::Frame, area: Rect) {
@@ -325,7 +320,7 @@ pub(crate) fn draw_chrome(
     let layout = ChromeLayout::new(
         area,
         input_height,
-        state.status_layout,
+        state.status_row_count(),
         chrome_preview_visible(state),
     );
     draw_chrome_layout(f, layout, state);
@@ -1638,12 +1633,20 @@ fn expanded_status_lines(state: &ViewState) -> Vec<Line<'static>> {
     ];
     let session = [status_field("session", state.session_id.to_string())];
 
-    vec![
+    let mut lines = vec![
         status_line(provider_model.iter()),
         status_line(controls.iter()),
         status_line(counts.iter()),
         status_line(session.iter()),
-    ]
+    ];
+    if let Some((branch, path)) = &state.worktree_expanded {
+        let worktree = [
+            status_field("worktree", branch.clone()),
+            status_field("path", path.clone()),
+        ];
+        lines.push(status_line(worktree.iter()));
+    }
+    lines
 }
 
 fn status_contributions(state: &ViewState) -> Vec<StatusContribution> {
@@ -1669,6 +1672,9 @@ fn status_contributions(state: &ViewState) -> Vec<StatusContribution> {
             let mut compact = vec![status_value(message_count_label(state.lines_count))];
             if let Some(bg) = background_label(state.background) {
                 compact.push(status_field("bg", bg));
+            }
+            if let Some(wt) = &state.worktree_compact {
+                compact.push(status_field("wt", wt.clone()));
             }
             compact
         }),

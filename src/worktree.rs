@@ -294,14 +294,35 @@ impl WorktreeManager {
         write_session_workspace(&self.session_dir, &metadata).map_err(|e| anyhow::anyhow!("{e}"))
     }
 
-    pub fn status_line(&self) -> Option<String> {
-        let info = self.worktree_info()?;
-        Some(format!(
-            "worktree: {} @ {}",
-            info.branch,
-            info.path.display()
-        ))
+    /// Short slug for the compact session status bar.
+    pub fn status_bar_compact(&self) -> Option<String> {
+        self.worktree_info().map(|info| info.slug)
     }
+
+    /// Branch and filesystem path for the expanded status bar subsection.
+    pub fn status_bar_expanded(&self) -> Option<(String, String)> {
+        self.worktree_info().map(|info| {
+            (
+                info.branch,
+                truncate_status_path(&info.path.display().to_string(), 72),
+            )
+        })
+    }
+
+    /// Light transcript notice when a worktree is activated mid-session.
+    pub fn switch_notice(&self) -> Option<String> {
+        self.worktree_info()
+            .map(|info| format!("Switched to worktree · {}", info.branch))
+    }
+}
+
+fn truncate_status_path(path: &str, max_len: usize) -> String {
+    if path.chars().count() <= max_len {
+        return path.to_string();
+    }
+    let tail_len = max_len.saturating_sub(1);
+    let tail: String = path.chars().rev().take(tail_len).collect::<String>();
+    format!("…{}", tail.chars().rev().collect::<String>())
 }
 
 pub fn detect_repo_root(path: &Path) -> Option<PathBuf> {
@@ -834,6 +855,15 @@ mod tests {
         let branch = branch_name("fix-auth", id);
         assert!(branch.starts_with("fix-auth-"));
         assert!(branch.len() > "fix-auth-".len());
+    }
+
+    #[test]
+    fn truncate_status_path_keeps_tail() {
+        let path = "/var/folders/rs/tcmw11q17s961ch7pb76czc0000gn/T/yolop/worktrees/b85662b381593c9f/session_019ee6c2";
+        let truncated = truncate_status_path(path, 40);
+        assert!(truncated.starts_with('…'));
+        assert!(truncated.contains("session_019ee6c2"));
+        assert!(truncated.chars().count() <= 40);
     }
 
     #[test]

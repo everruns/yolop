@@ -1795,8 +1795,6 @@ pub struct RuntimeHandles {
 
 pub struct StartupInfo {
     pub workspace_root: PathBuf,
-    pub repo_root: Option<PathBuf>,
-    pub worktree_line: Option<String>,
     pub tool_names: Vec<String>,
     /// Slash commands contributed by registered capabilities (via
     /// `Capability::commands()`). Resolved once at startup against this
@@ -2506,8 +2504,6 @@ pub async fn build_with_options(
         },
         startup: StartupInfo {
             workspace_root: effective_root,
-            repo_root,
-            worktree_line: worktree.status_line(),
             tool_names,
             capability_commands,
             session_log_path: log_path,

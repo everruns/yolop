@@ -54,6 +54,9 @@ config/secrets.json
 - `repo_root` is the git toplevel of the user's checkout; git identity/remote context comes from there.
 - Sub-agents inherit the parent session's active worktree.
 - Resume reattaches to a saved worktree or recreates it when tmp was cleared.
+- The TUI compact status bar shows `wt <slug>` when a worktree is active; expand
+  the status bar for branch and path. Mid-session activation posts a light
+  `Switched to worktree · <branch>` system line instead of the raw path.
 
 ### Commands
 
