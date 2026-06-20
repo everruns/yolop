@@ -3,7 +3,8 @@
 //! yolop still owns its runtime bridge and server loop, but the wire data model
 //! comes from `agent-client-protocol` so schema changes are not mirrored by hand.
 
-pub use agent_client_protocol::schema::{
+pub use agent_client_protocol::schema::ProtocolVersion;
+pub use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthenticateRequest as AuthenticateParams,
     AuthenticateResponse as AuthenticateResult, AvailableCommand, AvailableCommandInput,
     AvailableCommandsUpdate, CancelNotification, Content, ContentBlock, ContentChunk,
@@ -11,9 +12,9 @@ pub use agent_client_protocol::schema::{
     LoadSessionRequest as LoadSessionParams, LoadSessionResponse as LoadSessionResult,
     NewSessionRequest as NewSessionParams, NewSessionResponse as NewSessionResult, Plan, PlanEntry,
     PlanEntryPriority, PlanEntryStatus, PromptCapabilities, PromptRequest as PromptParams,
-    PromptResponse as PromptResult, ProtocolVersion, SessionNotification, SessionUpdate,
-    StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+    PromptResponse as PromptResult, SessionNotification, SessionUpdate, StopReason, TextContent,
+    ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    UnstructuredCommandInput,
 };
 use serde_json::{Map, Value};
 
@@ -54,6 +55,7 @@ pub fn prompt_text(blocks: &[ContentBlock]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::schema::v1::ImageContent;
 
     #[test]
     fn sdk_initialize_result_serializes_camel_case() {
@@ -74,8 +76,7 @@ mod tests {
 
     #[test]
     fn sdk_message_chunk_uses_snake_case_discriminator() {
-        let update =
-            agent_client_protocol::schema::SessionUpdate::AgentMessageChunk(text_chunk("hi"));
+        let update = SessionUpdate::AgentMessageChunk(text_chunk("hi"));
         let v = serde_json::to_value(&update).unwrap();
         assert_eq!(v["sessionUpdate"], "agent_message_chunk");
         assert_eq!(v["content"]["type"], "text");
@@ -86,10 +87,7 @@ mod tests {
     fn prompt_text_concatenates_text_blocks_only() {
         let blocks = vec![
             text_block("hello"),
-            ContentBlock::Image(agent_client_protocol::schema::ImageContent::new(
-                "image/png",
-                "...",
-            )),
+            ContentBlock::Image(ImageContent::new("image/png", "...")),
             text_block("world"),
         ];
         assert_eq!(prompt_text(&blocks), "hello\nworld");

@@ -84,9 +84,9 @@ pub async fn run_stdio(
 mod tests {
     use super::*;
     use crate::runtime::{BuildOptions, build_with_options};
-    use agent_client_protocol::schema::{
+    use agent_client_protocol::schema::v1::{
         InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, SessionId,
-        SessionUpdate,
+        SessionNotification, SessionUpdate, StopReason,
     };
     use agent_client_protocol::{
         Agent, ByteStreams, Client, ConnectionTo, JsonRpcRequest, SessionMessage,
@@ -165,7 +165,7 @@ mod tests {
     }
 
     struct PromptRun {
-        stop_reason: agent_client_protocol::schema::StopReason,
+        stop_reason: StopReason,
         updates: Vec<Value>,
     }
 
@@ -233,7 +233,7 @@ mod tests {
                 Ok(Ok(SessionMessage::SessionMessage(dispatch))) => {
                     let message = dispatch.to_untyped_message()?;
                     if message.method() == "session/update" {
-                        let notification: agent_client_protocol::schema::SessionNotification =
+                        let notification: SessionNotification =
                             serde_json::from_value(message.params().clone())?;
                         updates.push(serde_json::to_value(notification.update)?);
                     }
@@ -265,7 +265,7 @@ mod tests {
                         if message.method() != "session/update" {
                             continue;
                         }
-                        let notification: agent_client_protocol::schema::SessionNotification =
+                        let notification: SessionNotification =
                             serde_json::from_value(message.params().clone())?;
                         notification.update
                     }
@@ -493,10 +493,7 @@ mod tests {
         })
         .await;
 
-        assert_eq!(
-            run.stop_reason,
-            agent_client_protocol::schema::StopReason::EndTurn
-        );
+        assert_eq!(run.stop_reason, StopReason::EndTurn);
         assert!(
             run.assistant_text().contains("hello from acp"),
             "expected streamed assistant text, got updates: {:?}",
@@ -549,10 +546,7 @@ mod tests {
         })
         .await;
 
-        assert_eq!(
-            run.stop_reason,
-            agent_client_protocol::schema::StopReason::EndTurn
-        );
+        assert_eq!(run.stop_reason, StopReason::EndTurn);
         let tool_calls = run.updates_of_kind("tool_call");
         assert!(
             tool_calls
@@ -589,10 +583,7 @@ mod tests {
         })
         .await;
 
-        assert_eq!(
-            run.stop_reason,
-            agent_client_protocol::schema::StopReason::EndTurn
-        );
+        assert_eq!(run.stop_reason, StopReason::EndTurn);
         let tool_calls = run.updates_of_kind("tool_call");
         assert!(
             tool_calls
@@ -708,10 +699,7 @@ mod tests {
         })
         .await;
 
-        assert_eq!(
-            run.stop_reason,
-            agent_client_protocol::schema::StopReason::EndTurn
-        );
+        assert_eq!(run.stop_reason, StopReason::EndTurn);
         let tool_calls = run.updates_of_kind("tool_call");
         assert!(
             !tool_calls.is_empty(),
