@@ -8,6 +8,15 @@ integration over the Agent Client Protocol.
 
 ![yolop upgrading a project's dependencies](https://raw.githubusercontent.com/everruns/yolop/main/docs/demo.gif)
 
+## Origin of the name
+
+`yolop` comes from the Ukrainian `Йолоп`: a dummy, fool, or not-too-bright
+person. The name was meant to sound clever and funny in Ukrainian while also
+describing the agent's starting point: yolop does not believe in per-tool
+approval pop-ups. It uses an AI-judgement approach instead — autonomous by
+default, with [soft approval](./docs/features/approvals.md) for critical
+moments when you want spoken consent and an audit trail.
+
 ## Install
 
 ```bash
@@ -199,6 +208,8 @@ The setting is saved to `settings.toml`, so it persists across sessions.
 
 Soft approval is judgement, not a guarantee. For deterministic enforcement
 (hard-blocking a tool), use [hooks](specs/hooks.md); the two compose.
+For the public user-facing details, see
+[Approvals](./docs/features/approvals.md).
 
 ## Editor integration (ACP)
 
