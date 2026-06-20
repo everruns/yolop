@@ -165,10 +165,12 @@ def leaderboard(benchmark: str, baseline: str | None = None) -> dict[str, Any]:
     Reads each ``<config>/summary.json`` and normalizes resolved-per-USD to a
     baseline config, so the output reads like a "performance per dollar"
     comparison (e.g. "2.6x value" vs a "1.0x baseline"). The baseline defaults to
-    the least cost-efficient priced config, so every other config is a >=1.0x
-    multiple; pass ``baseline`` to pin it to a specific config (e.g. the most
-    capable/expensive one). Configs with no recorded cost are listed but cannot
-    be normalized (``value_multiple`` is ``None``).
+    the least cost-efficient config with a *positive* resolved-per-USD (a config
+    that resolved nothing, or has no recorded cost, would zero out every
+    multiple, so it is never auto-selected); pass ``baseline`` to pin it to a
+    specific config (e.g. the most capable/expensive one). Configs with no
+    recorded cost (``cost_usd == 0``) are listed but unpriced — their
+    ``value_multiple`` is ``None`` since value per dollar is undefined.
     """
     bench_dir = RESULTS_DIR / benchmark
     rows: list[dict[str, Any]] = []
@@ -197,8 +199,13 @@ def leaderboard(benchmark: str, baseline: str | None = None) -> dict[str, Any]:
         base = min(priced, key=lambda r: r["resolved_per_usd"]) if priced else None
     base_eff = base["resolved_per_usd"] if base else 0.0
     for r in rows:
+        # Unpriced configs (no recorded cost) have undefined value per dollar →
+        # ``None`` ("—" in the table), not a misleading "0.00x". A priced config
+        # that resolved nothing is a real 0.00x (zero value for the spend).
         r["value_multiple"] = (
-            round(r["resolved_per_usd"] / base_eff, 2) if base_eff else None
+            round(r["resolved_per_usd"] / base_eff, 2)
+            if base_eff and r["cost_usd"] > 0
+            else None
         )
 
     # Most cost-efficient first; unpriced configs (eff 0) sink to the bottom.

@@ -99,9 +99,11 @@ child sessions are built with sub-agent spawning disabled, so the
 level — a sub-agent cannot recursively spawn its own sub-agents.
 
 By default a sub-agent inherits the parent's live model. An optional `model`
-argument overrides it per spawn, swapping the model on the **same provider**
-(validated against the provider's catalog before the child is built; an unknown
-model is an error, not a silent fall-back). This lets an expensive lead delegate
+argument overrides it per spawn, swapping the model on the **same provider**.
+The id is checked for compatibility with the parent's provider before the child
+is built — a cross-provider or unrecognized model is an error, not a silent
+fall-back (open-catalog providers like openrouter/ollama/custom accept any id by
+design). This lets an expensive lead delegate
 self-contained grunt work — reading a subtree, running tests, boilerplate edits —
 to a cheaper model, the in-harness routing seam that keeps cost down without
 upfront whole-task routing. The override is recorded in the task log for

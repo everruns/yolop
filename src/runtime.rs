@@ -1992,11 +1992,21 @@ impl AgentSpawner for YolopAgentSpawner {
             .read()
             .map_err(|_| "provider lock poisoned".to_string())?
             .clone();
-        // A per-spawn model override swaps the model on the parent's provider
-        // (validated against the provider's catalog), so an expensive lead can
-        // delegate grunt work to a cheaper model. An unknown model is surfaced
-        // to the caller rather than silently falling back to the lead's model.
+        // A per-spawn model override swaps the model on the parent's provider, so
+        // an expensive lead can delegate grunt work to a cheaper model. The id is
+        // checked for compatibility with the parent's provider first (the same
+        // gate `default_model` resolution uses) so a cross-provider or
+        // unrecognized model is surfaced to the caller rather than silently
+        // accepted and only failing at the API call. Open-catalog providers
+        // (openrouter/ollama/custom) accept any id by design.
         if let Some(model) = model {
+            let provider_name = provider.provider_name();
+            if !model_compatible_with_provider(&model, provider_name) {
+                return Err(format!(
+                    "sub-agent model {model:?} is not recognized for provider \
+                     {provider_name}; overrides must name a model on the parent's provider"
+                ));
+            }
             provider = provider
                 .with_current_provider_model(model, None)
                 .map_err(|e| format!("invalid sub-agent model override: {e}"))?;
@@ -2610,30 +2620,32 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn background_agent_rejects_unknown_model_override() {
-        // A per-spawn model override is validated against the provider's catalog
-        // before a child session is built; an unknown model is an error, not a
-        // silent fall-back to the lead's model.
+    async fn background_agent_rejects_incompatible_model_override() {
+        // A per-spawn model override is checked for compatibility with the
+        // parent's provider before any child session is built: a cross-provider
+        // id (an OpenAI model while on Anthropic) is rejected up front, not
+        // silently accepted and only failed at the API call. No key or network is
+        // touched because validation precedes the session build.
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
 
         let spawner = YolopAgentSpawner {
             workspace_root: workspace.path().to_path_buf(),
-            provider: Arc::new(RwLock::new(ProviderChoice::Sim)),
+            provider: Arc::new(RwLock::new(ProviderChoice::Anthropic {
+                model: "claude-sonnet-4-6".to_string(),
+                reasoning_effort: None,
+            })),
             sessions_dir: sessions.path().to_path_buf(),
             settings,
         };
 
         let err = spawner
-            .run(
-                "say hello".to_string(),
-                Some("definitely-not-a-model".into()),
-            )
+            .run("say hello".to_string(), Some("gpt-5.5".into()))
             .await
-            .expect_err("unknown model override must error");
+            .expect_err("cross-provider model override must error");
         assert!(
-            err.contains("invalid sub-agent model override"),
+            err.contains("not recognized for provider anthropic"),
             "got: {err}"
         );
     }

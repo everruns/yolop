@@ -103,6 +103,31 @@ class LeaderboardTest(unittest.TestCase):
                 # The table renders without error and shows the multiple.
                 self.assertIn("4.00x", format_leaderboard(board))
 
+    def test_unpriced_is_none_priced_zero_resolve_is_zero(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(results_mod, "RESULTS_DIR", Path(d)):
+                # priced baseline (2 resolved / $1 = 2.0/$)
+                for i in range(2):
+                    _write_run(Path(d) / "bench" / "cheap", f"i{i}", resolved=True, cost=0.5)
+                # priced but resolved nothing -> a real 0.00x (zero value/$)
+                for i in range(2):
+                    _write_run(Path(d) / "bench" / "dud", f"i{i}", resolved=False, cost=1.0)
+                # unpriced (no recorded cost) -> undefined, value_multiple None
+                _write_run(Path(d) / "bench" / "free", "i0", resolved=True, cost=0.0)
+                for name in ("cheap", "dud", "free"):
+                    summarize("bench", name)
+
+                board = leaderboard("bench")
+                by = {r["config_name"]: r for r in board["rows"]}
+                # Baseline is the least-efficient *positive* config, never the
+                # zero-resolve or unpriced ones (which would zero out the table).
+                self.assertEqual(board["baseline"], "cheap")
+                self.assertEqual(by["cheap"]["value_multiple"], 1.0)
+                self.assertEqual(by["dud"]["value_multiple"], 0.0)
+                self.assertIsNone(by["free"]["value_multiple"])
+                # Unpriced rows render as "—", not "0.00x".
+                self.assertIn("—", format_leaderboard(board))
+
     def test_empty_when_no_results(self):
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(results_mod, "RESULTS_DIR", Path(d)):

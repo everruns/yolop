@@ -830,14 +830,21 @@ async fn run_agent(
     max_runtime_secs: u64,
 ) -> AgentOutcome {
     let timeout = std::time::Duration::from_secs(max_runtime_secs);
-    match tokio::time::timeout(timeout, spawner.run(task, model.clone())).await {
+    // Recorded in every terminal log when the spawn overrode the model, so a
+    // reader can always see a sub-agent ran on a cheaper delegate — including
+    // timeouts and spawn errors, which are prime reasons to inspect the log.
+    let model_line = model
+        .as_deref()
+        .map(|m| format!("model: {m}\n"))
+        .unwrap_or_default();
+    match tokio::time::timeout(timeout, spawner.run(task, model)).await {
         // Timed out: the spawner future (and the child turn it owns) is dropped,
         // abandoning the run. Match `run_script`'s `timed_out` semantics.
         Err(_) => {
             write_log(
                 dir,
                 log_file,
-                &format!("sub-agent timed out after {max_runtime_secs}s\n"),
+                &format!("{model_line}sub-agent timed out after {max_runtime_secs}s\n"),
             )
             .await;
             AgentOutcome {
@@ -855,12 +862,6 @@ async fn run_agent(
             };
             // Header AND footer carry the child session id, so it stays visible
             // even when `background_output` returns only the tail of a long log.
-            // The model line is present only when the spawn overrode the model,
-            // so a reader can see a sub-agent ran on a cheaper delegate.
-            let model_line = model
-                .as_deref()
-                .map(|m| format!("model: {m}\n"))
-                .unwrap_or_default();
             let body = format!(
                 "background sub-agent\nchild session: {sid}\n{model_line}success: {ok}\n\n{shown}\n\n\
                  [child session: {sid}]\n",
@@ -888,7 +889,12 @@ async fn run_agent(
             }
         }
         Ok(Err(e)) => {
-            write_log(dir, log_file, &format!("sub-agent failed to run: {e}\n")).await;
+            write_log(
+                dir,
+                log_file,
+                &format!("{model_line}sub-agent failed to run: {e}\n"),
+            )
+            .await;
             AgentOutcome {
                 status: BackgroundStatus::Failed,
                 summary: truncate(&format!("error: {e}"), 200),
