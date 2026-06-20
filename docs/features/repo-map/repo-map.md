@@ -140,5 +140,4 @@ Unsupported files are counted and skipped rather than failing the scan.
 
 ## Related
 
-- [`specs/yolop.md`](../../specs/yolop.md)
 - Diagram source: [`repo-map.mmd`](repo-map.mmd)
