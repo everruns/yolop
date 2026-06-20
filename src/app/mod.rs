@@ -129,6 +129,8 @@ pub struct App {
     worktree: Arc<WorktreeManager>,
     /// Images from `--image` / `-i` on the CLI, consumed on the first turn.
     pending_images: Vec<ContentPart>,
+    /// Large paste placeholders mapped to their full clipboard/terminal payloads.
+    pending_pastes: Vec<(String, String)>,
 }
 
 /// Result of one background models API fetch. `Ok(None)` means the provider
@@ -347,6 +349,7 @@ impl App {
             goal_store,
             worktree: runtime.worktree,
             pending_images,
+            pending_pastes: Vec::new(),
         };
         app.emit_system_banner();
         if should_setup {
@@ -450,7 +453,7 @@ impl App {
             self.push_system(format!("commands: {}", names.join(", ")));
         }
         self.push_system(
-            "type /help for commands, Ctrl+V to paste an image, press Ctrl-C twice (or Ctrl-D) to exit"
+            "type /help for commands, Ctrl+V to paste an image, large pastes attach as placeholders, press Ctrl-C twice (or Ctrl-D) to exit"
                 .into(),
         );
     }
@@ -624,6 +627,13 @@ impl App {
                         return Ok(());
                     }
                 }
+                CrosstermEvent::Paste(pasted) => {
+                    if self.setup.is_some() {
+                        self.handle_setup_paste(pasted).await;
+                    } else {
+                        self.handle_paste(pasted);
+                    }
+                }
                 _ => {}
             }
             if self.should_quit {
@@ -734,7 +744,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('v') => {
-                    self.try_paste_clipboard_image();
+                    self.try_paste_clipboard();
                     return;
                 }
                 _ => {}
@@ -802,6 +812,7 @@ impl App {
 
     fn reset_input(&mut self) {
         self.input = new_input_area(vec![String::new()]);
+        self.pending_pastes.clear();
     }
 
     fn input_height(&self, input_width: u16) -> u16 {
@@ -809,7 +820,38 @@ impl App {
             as u16
     }
 
-    fn try_paste_clipboard_image(&mut self) {
+    fn handle_paste(&mut self, pasted: String) {
+        if self.busy || self.setup.is_some() || self.background_panel.is_some() {
+            return;
+        }
+
+        let pasted = crate::paste_attachment::normalize_pasted_text(&pasted);
+        if pasted.is_empty() {
+            return;
+        }
+
+        if pasted.len() > crate::paste_attachment::MAX_PASTE_ATTACHMENT_BYTES {
+            self.push_system(format!(
+                "paste too large (max {} KiB)",
+                crate::paste_attachment::MAX_PASTE_ATTACHMENT_BYTES / 1024
+            ));
+            return;
+        }
+
+        if crate::paste_attachment::is_large_paste(&pasted) {
+            let char_count = pasted.chars().count();
+            let placeholder = crate::paste_attachment::next_large_paste_placeholder(
+                char_count,
+                &self.pending_pastes,
+            );
+            self.input.insert_str(&placeholder);
+            self.pending_pastes.push((placeholder, pasted));
+        } else {
+            self.input.insert_str(&pasted);
+        }
+    }
+
+    fn try_paste_clipboard(&mut self) {
         if self.busy || self.setup.is_some() || self.background_panel.is_some() {
             return;
         }
@@ -822,7 +864,11 @@ impl App {
                     info.width, info.height
                 ));
             }
-            Err(crate::clipboard_paste::PasteImageError::NoImage(_)) => {}
+            Err(crate::clipboard_paste::PasteImageError::NoImage(_)) => {
+                if let Ok(text) = crate::clipboard_paste::paste_clipboard_text() {
+                    self.handle_paste(text);
+                }
+            }
             Err(err) => {
                 tracing::debug!("clipboard image paste failed: {err}");
                 self.push_system(format!("clipboard image paste failed: {err}"));
@@ -832,8 +878,12 @@ impl App {
 
     async fn submit_input(&mut self) {
         let raw = self.input_text();
+        crate::paste_attachment::prune_pending_pastes(&raw, &mut self.pending_pastes);
+        let pending_pastes = std::mem::take(&mut self.pending_pastes);
+        let expanded = crate::paste_attachment::expand_pending_pastes(&raw, &pending_pastes);
         self.reset_input();
-        let text = raw.trim().to_string();
+        let text = expanded.trim().to_string();
+        let display_text = raw.trim().to_string();
         if let Some(command) = parse_bang_shell_command(&text) {
             if command.is_empty() {
                 self.push_system("usage: !<command>".into());
@@ -850,7 +900,7 @@ impl App {
             return;
         }
         let image_count = self.pending_images.len();
-        let display = crate::image_input::user_display_text(&text, image_count);
+        let display = crate::image_input::user_display_text(&display_text, image_count);
         self.push_user(display);
         self.start_turn(text);
     }
@@ -1440,7 +1490,7 @@ fn help_command_line(descriptor: &CommandDescriptor) -> String {
 fn help_shortcut_lines() -> [&'static str; 5] {
     [
         "  Enter send · Shift-Enter newline · Tab complete slash command · ←/→ edit",
-        "  Ctrl+V paste image · Ctrl+B background tasks · !<cmd> shell alias",
+        "  Ctrl+V paste image/text · Ctrl+B background tasks · !<cmd> shell alias",
         "  exit: Ctrl-C twice / Ctrl-D",
         "  cancel turn: Esc twice (while model is busy)",
         "  scroll: terminal scrollback (no in-app page keys)",
@@ -3367,6 +3417,47 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn large_paste_attaches_placeholder_and_expands_on_submit() {
+        use crate::paste_attachment::LARGE_PASTE_CHAR_THRESHOLD;
+
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+
+        let payload = format!("paste-marker-{}", "x".repeat(LARGE_PASTE_CHAR_THRESHOLD));
+        app.handle_paste(payload.clone());
+        let placeholder = app.input_text();
+        assert!(
+            placeholder.contains("[Pasted Content"),
+            "large paste should insert a placeholder: {placeholder:?}"
+        );
+        assert_eq!(app.pending_pastes.len(), 1);
+
+        app.submit_input().await;
+
+        assert!(
+            app.busy,
+            "submit should start a turn with the expanded paste"
+        );
+        assert!(
+            app.lines.iter().any(|line| {
+                matches!(line.author, Author::User) && line.text.contains("[Pasted Content")
+            }),
+            "transcript should show the compact placeholder: {:?}",
+            app.lines
+        );
+        assert!(
+            !app.lines.iter().any(|line| {
+                matches!(line.author, Author::User) && line.text.contains("paste-marker-")
+            }),
+            "transcript should not inline the full pasted payload: {:?}",
+            app.lines
+        );
+        assert!(app.pending_pastes.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn startup_banner_is_kept_out_of_inline_viewport() {
         let mut fixture = app_with_llmsim().await;
         let rows = render_app_lines(&mut fixture.app, 96, COMPOSER_VIEWPORT_HEIGHT);
@@ -3630,7 +3721,7 @@ mod tests {
         assert!(
             help_lines
                 .iter()
-                .any(|line| line.contains("Ctrl+V paste image")),
+                .any(|line| line.contains("Ctrl+V paste image/text")),
             "help output should mention image paste: {help_lines:?}"
         );
         assert!(
