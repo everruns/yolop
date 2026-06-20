@@ -77,8 +77,8 @@ The `background` capability contributes:
   (optional human tag). Returns the new task id and status. Non-blocking.
 - `background_agent` — spin off a sub-agent. `task` (required, a complete
   standalone instruction — the sub-agent does not see the parent conversation),
-  `label` (optional). Returns the new task id. Offered only when the session can
-  spawn agents (see [Sub-agents](#sub-agents)).
+  `label` (optional), `model` (optional model override — see [Sub-agents](#sub-agents)).
+  Returns the new task id. Offered only when the session can spawn agents.
 - `background_list` — list every task with its status and one-line summary.
 - `background_output` — read a task's captured output by `id` (tail-capped),
   with its status and exit code.
@@ -97,6 +97,17 @@ The capability holds an injected `AgentSpawner` only in top-level sessions;
 child sessions are built with sub-agent spawning disabled, so the
 `background_agent` tool is absent there. That bounds sub-agent depth at one
 level — a sub-agent cannot recursively spawn its own sub-agents.
+
+By default a sub-agent inherits the parent's live model. An optional `model`
+argument overrides it per spawn, swapping the model on the **same provider**.
+The id is checked for compatibility with the parent's provider before the child
+is built — a cross-provider or unrecognized model is an error, not a silent
+fall-back (open-catalog providers like openrouter/ollama/custom accept any id by
+design). This lets an expensive lead delegate
+self-contained grunt work — reading a subtree, running tests, boilerplate edits —
+to a cheaper model, the in-harness routing seam that keeps cost down without
+upfront whole-task routing. The override is recorded in the task log for
+traceability.
 
 ### System-prompt disclosure
 

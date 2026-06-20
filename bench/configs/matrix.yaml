@@ -47,6 +47,21 @@ configs:
     provider: openrouter
     model: nvidia/nemotron-3-ultra-550b-a55b
 
+  # --- Open-model cost-efficiency comparison (needs OPENROUTER_API_KEY) ---
+  # Run these against the closed-model configs above and compare with
+  # `yoloeval report` to test the "open models at a fraction of the cost, no
+  # drop in performance" claim (Magnitude, 2026-06-19) on yolop's own harness.
+  # OpenRouter reports real cost, so resolved-per-USD is directly comparable.
+  openrouter-glm:
+    <<: *yolop
+    provider: openrouter
+    model: z-ai/glm-5.2
+
+  openrouter-qwen-coder:
+    <<: *yolop
+    provider: openrouter
+    model: qwen/qwen3-coder
+
   # --- Offline plumbing check (no API key, won't solve tasks) ---
   llmsim:
     <<: *yolop

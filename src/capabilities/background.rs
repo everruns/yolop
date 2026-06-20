@@ -97,8 +97,12 @@ pub struct AgentRunResult {
 /// sub-agents (bounded depth).
 #[async_trait]
 pub trait AgentSpawner: Send + Sync {
-    /// Run a one-shot sub-agent with `prompt` and return its outcome.
-    async fn run(&self, prompt: String) -> Result<AgentRunResult, String>;
+    /// Run a one-shot sub-agent with `prompt` and return its outcome. When
+    /// `model` is `Some`, the sub-agent runs on that model — on the same
+    /// provider as the parent — instead of inheriting the parent's current
+    /// model. This lets an expensive lead delegate self-contained grunt work to
+    /// a cheaper model. `None` inherits the session's model.
+    async fn run(&self, prompt: String, model: Option<String>) -> Result<AgentRunResult, String>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -443,6 +447,7 @@ impl BackgroundRegistry {
         &self,
         label: Option<String>,
         task: String,
+        model: Option<String>,
     ) -> Result<BackgroundRecord, String> {
         let spawner = self
             .spawner
@@ -482,7 +487,7 @@ impl BackgroundRegistry {
         let max_runtime = self.max_runtime_secs;
         let task_id = id.clone();
         let handle = tokio::spawn(async move {
-            let outcome = run_agent(spawner, &dir, &log_file, task, max_runtime).await;
+            let outcome = run_agent(spawner, &dir, &log_file, task, model, max_runtime).await;
             update_record(&inner, &index_path, &task_id, |r| {
                 // Don't clobber a status a concurrent `cancel` already set.
                 if r.status != BackgroundStatus::Running {
@@ -821,17 +826,25 @@ async fn run_agent(
     dir: &Path,
     log_file: &str,
     task: String,
+    model: Option<String>,
     max_runtime_secs: u64,
 ) -> AgentOutcome {
     let timeout = std::time::Duration::from_secs(max_runtime_secs);
-    match tokio::time::timeout(timeout, spawner.run(task)).await {
+    // Recorded in every terminal log when the spawn overrode the model, so a
+    // reader can always see a sub-agent ran on a cheaper delegate — including
+    // timeouts and spawn errors, which are prime reasons to inspect the log.
+    let model_line = model
+        .as_deref()
+        .map(|m| format!("model: {m}\n"))
+        .unwrap_or_default();
+    match tokio::time::timeout(timeout, spawner.run(task, model)).await {
         // Timed out: the spawner future (and the child turn it owns) is dropped,
         // abandoning the run. Match `run_script`'s `timed_out` semantics.
         Err(_) => {
             write_log(
                 dir,
                 log_file,
-                &format!("sub-agent timed out after {max_runtime_secs}s\n"),
+                &format!("{model_line}sub-agent timed out after {max_runtime_secs}s\n"),
             )
             .await;
             AgentOutcome {
@@ -850,7 +863,7 @@ async fn run_agent(
             // Header AND footer carry the child session id, so it stays visible
             // even when `background_output` returns only the tail of a long log.
             let body = format!(
-                "background sub-agent\nchild session: {sid}\nsuccess: {ok}\n\n{shown}\n\n\
+                "background sub-agent\nchild session: {sid}\n{model_line}success: {ok}\n\n{shown}\n\n\
                  [child session: {sid}]\n",
                 sid = run.session_id,
                 ok = run.success,
@@ -876,7 +889,12 @@ async fn run_agent(
             }
         }
         Ok(Err(e)) => {
-            write_log(dir, log_file, &format!("sub-agent failed to run: {e}\n")).await;
+            write_log(
+                dir,
+                log_file,
+                &format!("{model_line}sub-agent failed to run: {e}\n"),
+            )
+            .await;
             AgentOutcome {
                 status: BackgroundStatus::Failed,
                 summary: truncate(&format!("error: {e}"), 200),
@@ -1262,7 +1280,9 @@ impl Tool for BackgroundAgentTool {
          (e.g. \"analyze the auth module and summarize the risks\", \"draft an integration test for \
          X\"). Give it a complete, standalone instruction — it does not see this conversation. \
          Returns a task id; read its result later with `background_output` (status also shows at \
-         the top of later turns). The sub-agent cannot spawn further sub-agents."
+         the top of later turns). The sub-agent cannot spawn further sub-agents. Use `model` to run \
+         routine, mechanical work (reading files, running tests, boilerplate edits) on a cheaper \
+         model while you stay on the more capable one."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -1275,6 +1295,10 @@ impl Tool for BackgroundAgentTool {
                 "label": {
                     "type": "string",
                     "description": "Optional short human label (e.g. \"analyze auth module\"). Defaults to the task."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional model id to run the sub-agent on, on the SAME provider as this session (e.g. a cheaper/faster model for grunt work). Omit to inherit this session's model. Errors if the model is unknown for the current provider."
                 }
             },
             "required": ["task"],
@@ -1295,14 +1319,24 @@ impl Tool for BackgroundAgentTool {
             .get("label")
             .and_then(Value::as_str)
             .map(str::to_string);
-        match self.registry.spawn_agent(label, task) {
+        let model = arguments
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string);
+        let on_model = model
+            .as_deref()
+            .map(|m| format!(" on model {m}"))
+            .unwrap_or_default();
+        match self.registry.spawn_agent(label, task, model) {
             Ok(record) => ToolExecutionResult::success(json!({
                 "ok": true,
                 "id": record.id,
                 "status": record.status.as_str(),
                 "label": record.label,
                 "message": format!(
-                    "started background sub-agent {} — read its result with `background_output` or watch later turns.",
+                    "started background sub-agent {}{on_model} — read its result with `background_output` or watch later turns.",
                     record.id
                 ),
             })),
@@ -1496,11 +1530,37 @@ mod tests {
 
     #[async_trait]
     impl AgentSpawner for MockSpawner {
-        async fn run(&self, _prompt: String) -> Result<AgentRunResult, String> {
+        async fn run(
+            &self,
+            _prompt: String,
+            _model: Option<String>,
+        ) -> Result<AgentRunResult, String> {
             Ok(AgentRunResult {
                 session_id: "session_child_test".to_string(),
                 final_text: self.final_text.clone(),
                 success: self.success,
+            })
+        }
+    }
+
+    /// Spawner that records the model override it was handed, so the
+    /// spawn-agent → spawner plumbing can be asserted without a real runtime.
+    struct RecordingSpawner {
+        seen_model: Arc<Mutex<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl AgentSpawner for RecordingSpawner {
+        async fn run(
+            &self,
+            _prompt: String,
+            model: Option<String>,
+        ) -> Result<AgentRunResult, String> {
+            *self.seen_model.lock().expect("seen_model lock poisoned") = model;
+            Ok(AgentRunResult {
+                session_id: "session_child_test".to_string(),
+                final_text: Some("done".to_string()),
+                success: true,
             })
         }
     }
@@ -1510,7 +1570,11 @@ mod tests {
 
     #[async_trait]
     impl AgentSpawner for SlowSpawner {
-        async fn run(&self, _prompt: String) -> Result<AgentRunResult, String> {
+        async fn run(
+            &self,
+            _prompt: String,
+            _model: Option<String>,
+        ) -> Result<AgentRunResult, String> {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             unreachable!("should be cancelled by the timeout")
         }
@@ -1808,6 +1872,7 @@ mod tests {
             .spawn_agent(
                 Some("analyze auth".into()),
                 "analyze the auth module".into(),
+                None,
             )
             .expect("spawner present");
         assert_eq!(record.kind, BackgroundKind::Agent);
@@ -1824,13 +1889,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_forwards_model_override_to_spawner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let seen = Arc::new(Mutex::new(None));
+        let reg = registry_in(tmp.path()).with_spawner(Arc::new(RecordingSpawner {
+            seen_model: seen.clone(),
+        }));
+        let record = reg
+            .spawn_agent(None, "grunt work".into(), Some("cheap-model".into()))
+            .expect("spawner present");
+        wait_terminal(&reg, &record.id, 100).await;
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("cheap-model"));
+        // The override is recorded in the task log for observability.
+        let (_, output, _) = reg.read_output(&record.id, 64 * 1024).unwrap();
+        assert!(output.contains("model: cheap-model"), "got: {output}");
+    }
+
+    #[tokio::test]
+    async fn agent_tool_forwards_model_argument() {
+        let tmp = tempfile::tempdir().unwrap();
+        let seen = Arc::new(Mutex::new(None));
+        let reg = Arc::new(
+            registry_in(tmp.path()).with_spawner(Arc::new(RecordingSpawner {
+                seen_model: seen.clone(),
+            })),
+        );
+        let tool = BackgroundAgentTool {
+            registry: reg.clone(),
+        };
+        let res = tool
+            .execute(json!({ "task": "do x", "model": "cheap-model" }))
+            .await;
+        assert!(!res.is_error());
+        // The sub-agent runs detached; wait for it to record the model.
+        for _ in 0..100 {
+            if seen.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("cheap-model"));
+    }
+
+    #[tokio::test]
     async fn agent_times_out() {
         let tmp = tempfile::tempdir().unwrap();
         let reg = registry_in(tmp.path())
             .with_max_runtime(1)
             .with_spawner(Arc::new(SlowSpawner));
         let record = reg
-            .spawn_agent(None, "slow task".into())
+            .spawn_agent(None, "slow task".into(), None)
             .expect("spawner present");
         let done = wait_terminal(&reg, &record.id, 100).await;
         assert_eq!(done.status, BackgroundStatus::TimedOut);
@@ -1846,7 +1954,7 @@ mod tests {
             success: false,
         }));
         let record = reg
-            .spawn_agent(None, "do a thing".into())
+            .spawn_agent(None, "do a thing".into(), None)
             .expect("spawner present");
         let done = wait_terminal(&reg, &record.id, 100).await;
         assert_eq!(done.status, BackgroundStatus::Failed);
@@ -1858,7 +1966,7 @@ mod tests {
         let reg = registry_in(tmp.path());
         // No spawner attached → spawning a sub-agent errors and the tool is hidden.
         assert!(!reg.can_spawn_agents());
-        assert!(reg.spawn_agent(None, "x".into()).is_err());
+        assert!(reg.spawn_agent(None, "x".into(), None).is_err());
 
         let cap = BackgroundCapability {
             registry: Arc::new(reg),
