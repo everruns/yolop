@@ -96,7 +96,9 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **Background tasks** — `background_run` starts a shell command that runs
   detached from the current turn (e.g. `gh pr checks <pr> --watch` waiting on
   CI), and `background_agent` spins off a focused sub-agent (its own child
-  session, same tools and workspace) for a self-contained piece of work;
+  session, same tools and workspace) for a self-contained piece of work —
+  optionally on a cheaper model (same provider) via its `model` argument, so an
+  expensive lead can delegate grunt work;
   `background_list`, `background_output`, and `background_cancel` track and read
   them. Output streams to the session folder and a task's *result* survives a
   restart (a task still running when yolop exits is restored as `interrupted`; a

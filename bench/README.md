@@ -63,8 +63,22 @@ For every `(instance, config)` run it records, mined from the agent's event log:
 - **tool calls** — total, failed, and a per-tool breakdown (`tools_used`)
 - **tokens** — input, output, `cache_read_tokens`, `cache_creation_tokens`, total
 - **cost** — `cost_usd` (tool-reported where available, else estimated from `price`)
+- **efficiency** — `resolved_per_usd` (resolved instances per dollar — the
+  "score per dollar") and `cost_per_resolved_usd`, in each config's `summary.json`
 - **stop_reason** — `completed` / `timeout` / `budget` / `error`
 - **config metadata** — agent, provider, model, reasoning effort, cost cap, tool version
+
+Cost is cache-aware (`cache_read`/`cache_creation` tokens are priced), so
+`resolved_per_usd` is a fair cross-model comparison. Rank configs by it with the
+cross-config leaderboard:
+
+```bash
+.venv/bin/python -m yoloeval report --benchmark swebench_verified
+```
+
+`report` prints a "performance per dollar" table normalized to a baseline config
+(`--baseline <config>`, default: the least cost-efficient), or `--json` for the
+raw rows.
 
 ## Cost cap
 
