@@ -44,7 +44,7 @@ def _fake_agent_run(*_a, **_k):
 class InitializeListTest(unittest.TestCase):
     def test_initialize_announces_study(self):
         info = _study().initialize()
-        self.assertEqual(info["protocol_version"], "1.0")
+        self.assertEqual(info["protocol_version"], "1.4")
         self.assertEqual(info["study"], "swebench_verified")
         self.assertIn("usage", info["capabilities"])
 
@@ -81,10 +81,32 @@ class RunTest(unittest.TestCase):
         names = {s["scorer"]: s for s in res["scores"]}
         self.assertTrue(names["resolved"]["pass"])
         self.assertTrue(names["succeeded"]["pass"])
-        usage = res["transcript"]["usage"]
-        self.assertEqual(usage["input_tokens"], 100)
-        self.assertEqual(usage["cost_usd"], 0.01)
-        self.assertIn("model_patch.diff", res["transcript"]["files"])
+        tr = res["transcript"]
+        self.assertEqual(tr["usage"]["input_tokens"], 100)
+        self.assertEqual(tr["usage"]["cost_usd"], 0.01)
+        self.assertIn("model_patch.diff", tr["files"])
+        # numeric metrics map (protocol 1.2): values are plain numbers
+        self.assertEqual(tr["metrics"]["tool_calls"], 2)
+        self.assertEqual(tr["metrics"]["turns"], 3)
+        # open-ended metadata (protocol 1.4): structured, not stringified
+        md = tr["metadata"]
+        self.assertIs(md["resolved"], True)
+        self.assertEqual(md["repo"], "org/repo")
+        self.assertEqual(md["tools_used"], {"edit_file": 1, "read_file": 1})
+        self.assertEqual(md["eval_report"], {"resolved": True})
+        self.assertNotIn("error_kind", tr)  # clean run: no infra error
+
+    def test_infra_eval_failure_is_marked_na(self):
+        # When the Docker harness fails to score, the cell is an infra error
+        # (error_kind=infra) so the host treats it as N/A, not a model failure.
+        study = _study()
+        with mock.patch.object(sv, "checkout", lambda *a, **k: None), \
+             mock.patch.object(sv, "capture_patch", lambda *a, **k: "d"), \
+             mock.patch.object(sv, "run_agent", _fake_agent_run), \
+             mock.patch.object(sv, "evaluate_predictions",
+                               lambda *a, **k: {"org__repo-1": EvalResult(False, {}, "no report.json")}):
+            res = study.run({"eval": "swebench_verified", "sample": "org__repo-1", "model": "llmsim"})
+        self.assertEqual(res["transcript"]["error_kind"], "infra")
 
     def test_unresolved_cell_fails(self):
         res = self._run(resolved=False)

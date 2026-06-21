@@ -50,8 +50,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-PROTOCOL_VERSION = "1.0"
-STUDY_VERSION = "0.3.0"
+# 1.4: open-ended (string -> JSON) metadata; 1.2: the numeric `metrics` map;
+# 1.3: `error_kind`. We emit all three, so advertise 1.4 (the host accepts by
+# major and tolerates a study that emits fewer fields).
+PROTOCOL_VERSION = "1.4"
+STUDY_VERSION = "0.4.0"
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]                      # evals/swebench_verified -> repo root
@@ -892,9 +895,12 @@ class Study:
             return self._result(eval_name, sample_id, model, skipped=True)
 
         run = self._run_agent(inst, model, spec)
+        # A checkout/setup failure is infra (not the model's fault).
+        error_kind = "infra" if (run.error or "").startswith("runner:") else None
         resolved, report, eval_err = self._score(inst, run, model)
         if eval_err and not run.error:
-            run.error = eval_err
+            run.error = eval_err  # Docker/harness failed to score
+            error_kind = "infra"
 
         scores = [
             {"scorer": "succeeded", "value": 0.0 if run.error else 1.0,
@@ -904,8 +910,10 @@ class Study:
         ]
         aggregate = sum(s["value"] for s in scores) / len(scores)
         # `resolved` is the benchmark gate; `succeeded` is reported for signal.
+        # On an infra error the host overrides these to a single N/A.
         return self._result(eval_name, sample_id, model, passed=resolved, aggregate=aggregate,
-                            scores=scores, transcript=self._transcript(run, resolved, report, model, spec))
+                            scores=scores,
+                            transcript=self._transcript(run, resolved, report, model, spec, inst, error_kind))
 
     # -- helpers -----------------------------------------------------------
     def _run_agent(self, inst: Instance, model: str, spec: dict) -> AgentRun:
@@ -940,24 +948,46 @@ class Study:
             log(f"eval failed for {model}/{inst.instance_id}: {e}")
             return False, {}, f"eval: {e}"
 
-    def _transcript(self, run: AgentRun, resolved: bool, report: dict, model: str, spec: dict):
+    def _transcript(self, run: AgentRun, resolved: bool, report: dict, model: str,
+                    spec: dict, inst: Instance, error_kind: str | None):
         m = run.metrics
         tools = [name for name, count in m.tools_used.items() for _ in range(count)]
         files = {"model_patch.diff": run.patch} if run.patch else {}
-        return {
+        # metadata is open-ended JSON (protocol 1.4): structured values, not
+        # stringified. Use `metrics` (1.2) for anything numeric so it surfaces in
+        # reports and feeds generic budget scorers.
+        metrics = {
+            "turns": m.turns, "iterations": m.iterations, "tool_calls": m.tool_calls,
+            "tool_calls_failed": m.tool_calls_failed,
+            "cache_read_tokens": m.tokens.cache_read_tokens,
+            "cache_creation_tokens": m.tokens.cache_creation_tokens,
+        }
+        if m.agent_reported_time_s is not None:
+            metrics["agent_reported_time_s"] = m.agent_reported_time_s
+        transcript = {
             "final_response": f"resolved={resolved}", "iterations": m.iterations,
             "tool_calls_count": m.tool_calls, "tool_calls": tools,
             "usage": {"input_tokens": m.tokens.input_tokens, "output_tokens": m.tokens.output_tokens,
                       "cache_read_tokens": m.tokens.cache_read_tokens,
                       "cache_creation_tokens": m.tokens.cache_creation_tokens,
                       "total_tokens": m.tokens.total_tokens, "cost_usd": m.cost_usd},
-            "timing": {"duration_ms": int(m.wall_time_s * 1000)}, "files": files,
-            "metadata": {"config": model, "agent": str(spec.get("agent", "yolop")),
-                         "provider": str(spec.get("provider") or ""), "model": str(spec.get("model") or ""),
-                         "reasoning_effort": str(m.reasoning_effort or ""), "stop_reason": m.stop_reason,
-                         "resolved": str(resolved), "fail_to_pass": str((report or {}).get("resolved", ""))},
+            "timing": {"duration_ms": int(m.wall_time_s * 1000)},
+            "metrics": metrics, "files": files,
+            "metadata": {
+                "config": model, "agent": spec.get("agent", "yolop"),
+                "provider": spec.get("provider") or "", "model": spec.get("model") or "",
+                "reasoning_effort": m.reasoning_effort, "stop_reason": m.stop_reason,
+                "resolved": resolved, "repo": inst.repo,
+                "difficulty": (inst.extra or {}).get("difficulty"),
+                "tools_used": m.tools_used, "eval_report": report or {},
+            },
             "error": run.error,
         }
+        # Infra errors (Docker/harness, checkout) are surfaced as N/A by the host
+        # and retried — not counted as the model getting it wrong.
+        if error_kind:
+            transcript["error_kind"] = error_kind
+        return transcript
 
     def _result(self, eval_name, sample_id, model, *, passed=False, aggregate=0.0,
                 scores=None, transcript=None, skipped=False) -> dict[str, Any]:

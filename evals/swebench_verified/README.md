@@ -75,12 +75,25 @@ and surfaced in the host's transcript/usage:
 - **stop_reason** — `completed` / `timeout` / `budget` / `error`
 - **config metadata** — agent, provider, model, reasoning effort, stop reason
 
+Each cell's transcript carries these on Mira's open channels (protocol 1.4): a
+numeric **`metrics`** map (`turns`, `iterations`, `tool_calls`,
+`tool_calls_failed`, cache tokens, `agent_reported_time_s`) that feeds the host's
+generic budget scorers, and structured **`metadata`** (`agent`, `provider`,
+`model`, `reasoning_effort`, `stop_reason`, `resolved`, `repo`, `difficulty`,
+`tools_used`, and the full SWE-bench `eval_report` — `FAIL_TO_PASS`/`PASS_TO_PASS`
+status). Tokens/cost/latency stay on the typed `usage`/`timing` fields. A
+Docker/harness failure to score is reported as an **infra error** (`error_kind`),
+so the host treats it as **N/A** and retries it rather than counting it as the
+model getting the fix wrong.
+
 Cost is cache-aware (`cache_read`/`cache_creation` tokens are priced), so cost
-per resolved instance is a fair cross-model comparison. The host surfaces
-per-cell tokens/cost/latency in its JSON and HTML reports — emit one with
+per resolved instance is a fair cross-model comparison. The host surfaces all of
+the above per cell in its JSON and HTML reports — emit one with
 `mira ... run --format html --out report.html` (a single self-contained file) or
 `--format json --out run.json` for the raw rows to rank configs by
-resolved-per-dollar.
+resolved-per-dollar. Each `--save` run also stamps `meta.json` with an
+`environment` block (git commit/branch/dirty, box, mira version) plus the
+`benchmark` label from `mira.toml`.
 
 ## Cost cap
 

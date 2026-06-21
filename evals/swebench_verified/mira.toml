@@ -10,3 +10,8 @@
 
 [results]
 dir = "./results"
+
+# Stamp every saved run's meta.json `environment` block (git/box/CI captured
+# automatically; these are static labels for filtering runs later).
+[environment.labels]
+benchmark = "swebench_verified"
