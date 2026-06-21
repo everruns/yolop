@@ -36,3 +36,21 @@ def load_suite(name: str) -> dict:
 
 def suite_instance_ids(name: str) -> list[str]:
     return [i["instance_id"] for i in load_suite(name)["instances"]]
+
+
+def available_suites() -> list[str]:
+    """Names of every suite stored under ``bench/suites/``."""
+    return sorted(p.stem for p in SUITES_DIR.glob("*.json"))
+
+
+def suite_membership() -> dict[str, list[str]]:
+    """Map ``instance_id -> [suite names it belongs to]``.
+
+    Used by the mira study to tag each sample with its suites, so a curated set
+    can be selected with ``mira run --tag <suite>`` (e.g. ``--tag tracking-v1``).
+    """
+    membership: dict[str, list[str]] = {}
+    for name in available_suites():
+        for iid in suite_instance_ids(name):
+            membership.setdefault(iid, []).append(name)
+    return membership

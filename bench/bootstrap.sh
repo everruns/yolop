@@ -40,6 +40,19 @@ else
   echo "  ! cargo not found; skipping yolop build (install Rust to benchmark yolop)"
 fi
 
+# --- Mira host CLI ---------------------------------------------------------- #
+# The study is driven by `mira` (matrix, selection, checkpoints, reporting).
+note "mira host CLI"
+if have mira; then
+  mira --version 2>&1 | head -1 || true
+elif have brew; then
+  brew install everruns/tap/mira || echo "  ! mira install failed; install manually"
+elif have cargo; then
+  cargo install mira-cli --locked || echo "  ! mira install failed; install manually"
+else
+  echo "  ! no brew/cargo; install mira manually (brew install everruns/tap/mira)"
+fi
+
 # --- External agent CLIs (npm, pinned) -------------------------------------- #
 npm_install() {  # name  package@version  binary
   case ",$AGENTS," in *",$1,"*) ;; *) return 0 ;; esac
@@ -67,5 +80,7 @@ cat <<'EOF'
 
   Docker daemon must be running for SWE-bench evaluation.
 
-  Smoke test:  cd bench && .venv/bin/python -m yoloeval run --config llmsim --limit 1 --no-eval
+  Smoke test (offline, skips Docker):
+    YOLOEVAL_NO_EVAL=1 mira --cmd "bench/.venv/bin/python -m yoloeval" \
+      run astropy__astropy-12907 --models llmsim
 EOF

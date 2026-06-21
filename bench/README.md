@@ -1,8 +1,14 @@
-# yoloeval — yolop benchmark harness
+# yoloeval — yolop benchmark study
 
-Benchmarks yolop on coding benchmarks, starting with **SWE-bench Verified**, and
-keeps the results in this repo. Designed to grow: new benchmarks and new agents
-plug in behind small interfaces.
+Benchmarks yolop on coding benchmarks, starting with **SWE-bench Verified**.
+yoloeval is a [Mira](https://github.com/everruns/mira) eval **study**: the
+generic `mira` host CLI owns the model matrix, selection, checkpoints, and
+JSON/HTML/JUnit reporting, while this Python study — driven over Mira's stdio
+protocol — owns the SWE-bench-specific work (loading instances, checking out
+repos, running agent CLIs, and the Docker `FAIL_TO_PASS` scoring). Designed to
+grow: new benchmarks and new agents plug in behind small interfaces.
+
+See [Usage](#usage) for the `mira --cmd …` invocations.
 
 ## Agents
 
@@ -19,7 +25,7 @@ and scorer:
 
 Each adapter runs its CLI non-interactively in the checkout with edits
 auto-approved, streams the tool's JSON event log to a file, and mines it into the
-common `RunMetrics`. The runner captures the working-tree diff regardless of
+common `RunMetrics`. The study captures the working-tree diff regardless of
 agent, so scoring is identical.
 
 ### First comparison
@@ -55,7 +61,8 @@ run the full set per config for leaderboard-comparable numbers.
 
 ## What it measures
 
-For every `(instance, config)` run it records, mined from the agent's event log:
+For every `(instance, config)` cell it records, mined from the agent's event log
+and surfaced in the host's transcript/usage:
 
 - **success** — `resolved` (did the hidden test suite pass?)
 - **time** — `wall_time_s` (harness-measured) and `agent_reported_time_s` (from the agent)
@@ -63,28 +70,23 @@ For every `(instance, config)` run it records, mined from the agent's event log:
 - **tool calls** — total, failed, and a per-tool breakdown (`tools_used`)
 - **tokens** — input, output, `cache_read_tokens`, `cache_creation_tokens`, total
 - **cost** — `cost_usd` (tool-reported where available, else estimated from `price`)
-- **efficiency** — `resolved_per_usd` (resolved instances per dollar — the
-  "score per dollar") and `cost_per_resolved_usd`, in each config's `summary.json`
+- **efficiency** — cost per resolved instance ("score per dollar"), computable
+  from the host's per-cell `resolved` + `cost_usd`
 - **stop_reason** — `completed` / `timeout` / `budget` / `error`
 - **config metadata** — agent, provider, model, reasoning effort, cost cap, tool version
 
-Cost is cache-aware (`cache_read`/`cache_creation` tokens are priced), so
-`resolved_per_usd` is a fair cross-model comparison. Rank configs by it with the
-cross-config leaderboard:
-
-```bash
-.venv/bin/python -m yoloeval report --benchmark swebench_verified
-```
-
-`report` prints a "performance per dollar" table normalized to a baseline config
-(`--baseline <config>`, default: the least cost-efficient), or `--json` for the
-raw rows.
+Cost is cache-aware (`cache_read`/`cache_creation` tokens are priced), so cost
+per resolved instance is a fair cross-model comparison. The host surfaces
+per-cell tokens/cost/latency in its JSON and HTML reports — emit one with
+`mira ... run --format html --out report.html` (a single self-contained file) or
+`--format json --out run.json` for the raw rows to rank configs by
+resolved-per-dollar.
 
 ## Cost cap
 
 Each run has a per-instance USD budget (default **$5**, `max_cost_usd` in the
-matrix or `--max-cost` on the CLI). None of these CLIs has a native dollar cap,
-so the harness watches the running cost in the session log and kills the run if
+matrix). None of these CLIs has a native dollar cap, so the study watches the
+running cost in the session log and kills the run if
 it exceeds the cap (recorded as `stop_reason: budget`). Cost comes from the
 tool's own reporting where available; for agents that report only tokens (codex)
 set a per-config `price` block (USD per 1M tokens) so cost — and the cap — can be
@@ -101,10 +103,11 @@ instances, then filled to match the benchmark's overall difficulty mix. The
 result spans 9 repos and 3 difficulty tiers (8 `<15 min`, 10 `15 min–1 hour`,
 2 `1–4 hours`), so the resolve-rate carries signal.
 
-Run a suite with `--suite` (works for `run` and `eval`):
+Every sample is tagged with the suites it belongs to, so run one with the host's
+`--tag` selector:
 
 ```bash
-.venv/bin/python -m yoloeval run --suite tracking-v1 --config openai-default
+mira --cmd "bench/.venv/bin/python -m yoloeval" run --tag tracking-v1 --models openai-default
 ```
 
 Re-running `select_tracking.py` on the same dataset reproduces the committed set
@@ -112,33 +115,33 @@ exactly; bump to `tracking-v2` rather than editing v1, so historical numbers sta
 comparable.
 
 **Baseline:** yolop · gpt-5.5 (OpenAI) scores **14/20** on tracking-v1 (all cases
-ran to completion; results under `results/swebench_verified/openai-default__tracking-v1/`).
-A `--suite` run is stored in its own `<config>__<suite>` column so its summary
-stays self-contained.
+ran to completion). Point `--checkpoint` at a per-suite path (e.g.
+`--checkpoint ck/tracking-v1.json`) to keep a run resumable and its results
+self-contained.
 
 ## Layout
 
 ```
 bench/
-  yoloeval/            # the harness (Python package)
+  yoloeval/            # the Mira eval study (Python package)
+    study.py           # the protocol layer: initialize/list/run over stdio
     datasets/          # Benchmark implementations (swebench.py)
     agents/            # Agent adapters (yolop, claude_code, codex, pi; _proc shared driver)
+    workspace.py       # git checkout at base_commit + working-tree diff capture
     metrics.py         # yolop events.jsonl -> RunMetrics
     agent_metrics.py   # claude-code / codex / pi event logs -> RunMetrics
     pricing.py         # token-based cost estimate (fallback for codex)
     suites.py          # named instance subsets (loads suites/*.json)
-    runner.py          # (instance x config) orchestration
-    results.py         # save/summarize result JSON
-  configs/matrix.yaml  # the config matrix to benchmark
+  configs/matrix.yaml  # the config matrix to benchmark (one config = one Mira model)
   suites/              # curated instance subsets (tracking-v1.json + selector)
-  results/             # committed: per-run JSON + summary.json per config
+  results/             # committed historical per-config result JSON (pre-Mira runs)
   .cache/              # gitignored: dataset parquet, checkouts, raw logs, eval scratch
 ```
 
-Results path: `results/<benchmark>/<config>/<instance_id>.json` plus a rolled-up
-`summary.json`. Per-run JSON holds config + metrics + the model patch +
-`resolved`. Raw `events.jsonl` logs are **not** committed (see
-[Session data upload](#session-data-upload)).
+The `mira` host owns durable run output: point `--checkpoint <path>` at a JSON
+session (saved after every cell, resumable) and `--out <path>` at a JSON/HTML/
+JUnit report. Raw `events.jsonl` logs stay in `.cache/sessions/` and are **not**
+committed (see [Session data upload](#session-data-upload)).
 
 ## Setup
 
@@ -156,6 +159,13 @@ python3 -m venv bench/.venv && bench/.venv/bin/pip install -r bench/requirements
 cargo build --release       # produces target/release/yolop
 ```
 
+You also need the **`mira` host CLI** on `PATH` — it drives the study, owning the
+matrix, selection, checkpoints, and reporting:
+
+```bash
+brew install everruns/tap/mira     # or: cargo install mira-cli --locked
+```
+
 Requires a running **Docker** daemon (SWE-bench runs the hidden tests in
 per-instance containers) and provider keys in the environment: `OPENAI_API_KEY`
 (yolop openai / codex / pi), `ANTHROPIC_API_KEY` (yolop anthropic / claude-code),
@@ -170,33 +180,37 @@ Every result records the exact tool version that produced it (e.g.
 
 ## Usage
 
+`yoloeval` is a [Mira](https://github.com/everruns/mira) eval study: the `mira`
+host CLI drives it over a stdio JSON protocol, owning the matrix, selection,
+checkpoints, and reporting, while the study owns the SWE-bench-specific run +
+Docker scoring. Drive it with `--cmd` pointed at the study module:
+
 ```bash
-cd bench
+cd "$(git rev-parse --show-toplevel)"
+STUDY="bench/.venv/bin/python -m yoloeval"
 
-# Plumbing only: first instance, default config, skip Docker eval
-.venv/bin/python -m yoloeval run --config llmsim --limit 1 --no-eval
+# What the study advertises: the eval, its samples (instances), and the models
+# (matrix configs); configs with a missing provider key show as unavailable.
+mira --cmd "$STUDY" list
 
-# Real end-to-end on the first instance
-.venv/bin/python -m yoloeval run --config openai-default --limit 1
+# Plumbing only: one instance on the offline llmsim config, skip Docker eval.
+YOLOEVAL_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --models llmsim
 
-# A specific instance across selected configs
-.venv/bin/python -m yoloeval run --instance astropy__astropy-12907 \
-    --config openai-default --config openai-high
+# Real end-to-end on one instance, selected configs (substring selection on the
+# case key, like `cargo test`).
+mira --cmd "$STUDY" run astropy__astropy-12907 --models openai-default,openai-high
 
-# Whole benchmark (all 500), one config
-.venv/bin/python -m yoloeval run --config openai-default
-
-# Re-score saved patches without re-running the agent (e.g. after a Docker Hub
-# pull rate-limit aborted the original eval)
-.venv/bin/python -m yoloeval eval --instance astropy__astropy-12907 --config openai-default
-
-# Rebuild summaries from saved results
-.venv/bin/python -m yoloeval summarize --config openai-default
+# Whole benchmark (all 500), one config, resumable + an HTML report.
+mira --cmd "$STUDY" run --models openai-default \
+    --checkpoint ck/openai-default.json --format html --out report.html
 ```
 
-Useful flags: `--max-cost 5` (per-instance USD cap), `--max-workers N` (Docker
-eval parallelism), `--namespace none` (build images locally instead of pulling
-prebuilt), `--eval-timeout`, `--keep-workdirs`.
+Study-internal knobs that the host doesn't own are read from the environment so
+they can be set on the `--cmd` line: `YOLOEVAL_NO_EVAL=1` (skip Docker scoring),
+`YOLOEVAL_MAX_WORKERS=N` (Docker eval parallelism), `YOLOEVAL_NAMESPACE=none`
+(build images locally instead of pulling prebuilt), `YOLOEVAL_EVAL_TIMEOUT`,
+`YOLOEVAL_MATRIX` (alternate matrix path). The per-instance USD cap stays in the
+matrix (`max_cost_usd`).
 
 ## Config matrix
 
@@ -228,8 +242,9 @@ configs:
 ## Session data upload
 
 Full `events.jsonl` logs are large and noisy, so they stay out of git (in
-`.cache/sessions/`). The per-run result JSON references each log by
-`session_log_path`. Uploading these logs to durable storage (object store /
+`.cache/sessions/`). The agent records each log's path; the cell transcript
+returned to the host carries the metrics mined from it. Uploading these logs to
+durable storage (object store /
 dataset) is a deliberate, still-open integration point — the harness keeps the
 logs intact and addressable so an uploader can be bolted on without changing the
 run path. **TODO:** wire up an uploader (and record the resulting URL on each
@@ -237,9 +252,11 @@ result record).
 
 ## How an instance runs
 
+The host asks the study to run one `(instance, config)` cell at a time; for each:
+
 1. Shallow-fetch the repo at `base_commit` into a scratch worktree.
 2. Run `yolop -C <worktree> -p "<problem statement prompt>" --session-dir …`.
 3. Capture `git diff` as the model patch.
-4. After all instances for a config, hand the patches to SWE-bench's official
-   Docker evaluator and parse the per-instance `report.json` for `resolved`.
+4. Hand the patch to SWE-bench's official Docker evaluator and parse the
+   `report.json` for `resolved`, returned to the host as the cell's score.
 ```

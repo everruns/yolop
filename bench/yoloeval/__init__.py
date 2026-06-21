@@ -1,13 +1,17 @@
-"""yoloeval — evaluation harness for benchmarking yolop on coding benchmarks.
+"""yoloeval — a Mira eval study for benchmarking yolop on coding benchmarks.
 
-The harness is organized around three pluggable abstractions so new benchmarks
-and new agents can be added without touching the orchestration core:
+yoloeval is the benchmark-specific half of a two-process split: the generic
+``mira`` host CLI owns the model matrix, selection, checkpoints, and reporting,
+while this package — driven over Mira's stdio protocol — owns the parts that are
+SWE-bench-specific. It is organized around pluggable abstractions so new
+benchmarks and agents can be added without touching the protocol layer:
 
 * ``datasets`` — a :class:`~yoloeval.datasets.base.Benchmark` loads instances and
-  scores predictions (e.g. SWE-bench Verified).
+  scores predictions (e.g. SWE-bench Verified, via the official Docker harness).
 * ``agents`` — an :class:`~yoloeval.agents.base.Agent` turns an instance into a
-  patch plus a metrics record (yolop today, other coding agents later).
-* ``runner`` — drives the (instance x config) matrix and persists results.
+  patch plus a metrics record (yolop, claude-code, codex, pi).
+* ``study`` — answers Mira ``initialize``/``list``/``run`` requests, mapping each
+  matrix config to a model and each instance to a sample.
 
 See ``bench/README.md`` for usage.
 """
