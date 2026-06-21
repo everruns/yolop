@@ -75,7 +75,7 @@ class SWEBenchVerified(Benchmark):
         if self.parquet_path.exists():
             return
         self.parquet_path.parent.mkdir(parents=True, exist_ok=True)
-        print(f"[swebench] downloading dataset -> {self.parquet_path}", flush=True)
+        print(f"[swebench] downloading dataset -> {self.parquet_path}", file=sys.stderr, flush=True)
         urllib.request.urlretrieve(PARQUET_URL, self.parquet_path)
 
     def load(self, instance_ids: list[str] | None = None) -> list[Instance]:
@@ -155,8 +155,11 @@ class SWEBenchVerified(Benchmark):
             "--timeout", str(self.timeout),
             "--report_dir", str(work),
         ]
-        print(f"[swebench] running evaluation: {' '.join(cmd)}", flush=True)
-        proc = subprocess.run(cmd, cwd=str(work))
+        print(f"[swebench] running evaluation: {' '.join(cmd)}", file=sys.stderr, flush=True)
+        # The harness prints copiously; keep it off this process's stdout, which
+        # under the Mira host is the protocol channel. Route it all to stderr
+        # (free for logs) so it never corrupts the JSON stream.
+        proc = subprocess.run(cmd, cwd=str(work), stdout=sys.stderr, stderr=subprocess.STDOUT)
 
         results: dict[str, EvalResult] = {}
         log_root = work / "logs" / "run_evaluation" / run_id / model_name

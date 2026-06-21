@@ -14,8 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from yoloeval import study as study_mod  # noqa: E402
 from yoloeval.models import AgentRun, EvalResult, Instance, RunMetrics, TokenUsage  # noqa: E402
-
-
 class FakeBenchmark:
     name = "swebench_verified"
 
@@ -136,6 +134,37 @@ class RunTest(unittest.TestCase):
     def test_unknown_model_raises(self):
         with self.assertRaises(ValueError):
             _make_study().run({"eval": "swebench_verified", "sample": "org__repo-1", "model": "nope"})
+
+
+class StdoutCleanlinessTest(unittest.TestCase):
+    """Under the Mira host, the study's stdout is the protocol channel: nothing
+    the SWE-bench Docker harness emits may leak onto it."""
+
+    def test_evaluate_routes_harness_output_to_stderr(self):
+        import contextlib
+        import io
+        import subprocess
+
+        from yoloeval.datasets.swebench import SWEBenchVerified
+
+        b = SWEBenchVerified()
+        b._raw = {"iid": {"instance_id": "iid", "repo": "org/repo", "patch": ""}}
+        inst = Instance(instance_id="iid", problem_statement="x", repo="org/repo", base_commit="c")
+
+        seen = {}
+
+        def fake_run(cmd, cwd=None, stdout=None, stderr=None):
+            seen["stdout"], seen["stderr"] = stdout, stderr
+            return mock.Mock(returncode=1)
+
+        out = io.StringIO()
+        with mock.patch.object(subprocess, "run", fake_run), contextlib.redirect_stdout(out):
+            b.evaluate({"iid": "diff"}, [inst], "rid-1")
+
+        # The banner stays off stdout, and the harness subprocess is told to
+        # write its stdout to the study's stderr (never the protocol channel).
+        self.assertEqual(out.getvalue(), "")
+        self.assertIs(seen["stdout"], sys.stderr)
 
 
 if __name__ == "__main__":
