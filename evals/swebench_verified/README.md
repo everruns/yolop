@@ -1,7 +1,7 @@
-# yoloeval — yolop benchmark study
+# swebench_verified — yolop benchmark study
 
 Benchmarks yolop on coding benchmarks, starting with **SWE-bench Verified**.
-yoloeval is a [Mira](https://github.com/everruns/mira) eval **study**: the
+swebench_verified is a [Mira](https://github.com/everruns/mira) eval **study**: the
 generic `mira` host CLI owns the model matrix, selection, checkpoints, and
 JSON/HTML/JUnit reporting, while this Python study — driven over Mira's stdio
 protocol — owns the SWE-bench-specific work (loading instances, checking out
@@ -107,7 +107,7 @@ Every sample is tagged with the suites it belongs to, so run one with the host's
 `--tag` selector:
 
 ```bash
-mira --cmd ".venv/bin/python -m yoloeval" run --tag tracking-v1 --models openai-default --save
+mira --cmd "uv run python -m swebench_verified" run --tag tracking-v1 --models openai-default --save
 ```
 
 Re-running `select_tracking.py` on the same dataset reproduces the committed set
@@ -123,7 +123,7 @@ self-contained.
 
 ```
 evals/swebench_verified/
-  yoloeval/            # the Mira eval study (Python package)
+  swebench_verified/            # the Mira eval study (Python package)
     study.py           # the protocol layer: initialize/list/run over stdio
     datasets/          # Benchmark implementations (swebench.py)
     agents/            # Agent adapters (yolop, claude_code, codex, pi; _proc shared driver)
@@ -154,17 +154,20 @@ subdirs under `results/` are pre-Mira historical runs in the old per-config form
 evals/swebench_verified/bootstrap.sh    # venv + yolop build + mira + agent CLIs
 ```
 
-`bootstrap.sh` is idempotent and sets up the Python venv, a yolop release build,
-the `mira` host CLI, and the three external agent CLIs (claude-code, codex, pi)
-pinned to the validated versions. Scope it with
-`AGENTS=codex,pi evals/swebench_verified/bootstrap.sh`. Manual equivalent (run
-from `evals/swebench_verified/`):
+`bootstrap.sh` is idempotent and sets up the Python env (via `uv`, from
+`pyproject.toml`), a yolop release build, the `mira` host CLI, and the three
+external agent CLIs (claude-code, codex, pi) pinned to the validated versions.
+Scope it with `AGENTS=codex,pi evals/swebench_verified/bootstrap.sh`. Manual
+equivalent (run from `evals/swebench_verified/`):
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+uv sync                                  # Python deps from pyproject.toml
 ( cd ../.. && cargo build --release )    # produces target/release/yolop
 brew install everruns/tap/mira           # the host CLI that drives the study
 ```
+
+The study is invoked as `uv run python -m swebench_verified`; `uv` provisions the
+environment on first use, so no manual activation is needed.
 
 Requires a running **Docker** daemon (SWE-bench runs the hidden tests in
 per-instance containers) and provider keys in the environment: `OPENAI_API_KEY`
@@ -180,21 +183,21 @@ Every result records the exact tool version that produced it (e.g.
 
 ## Usage
 
-`yoloeval` is a [Mira](https://github.com/everruns/mira) eval study: the `mira`
+`swebench_verified` is a [Mira](https://github.com/everruns/mira) eval study: the `mira`
 host CLI drives it over a stdio JSON protocol, owning the matrix, selection,
 checkpoints, and reporting, while the study owns the SWE-bench-specific run +
 Docker scoring. Drive it with `--cmd` pointed at the study module:
 
 ```bash
 cd evals/swebench_verified      # so the adjacent mira.toml is found; --save lands in ./results
-STUDY=".venv/bin/python -m yoloeval"
+STUDY="uv run python -m swebench_verified"
 
 # What the study advertises: the eval, its samples (instances), and the models
 # (matrix configs); configs with a missing provider key show as unavailable.
 mira --cmd "$STUDY" list
 
 # Plumbing only: one instance on the offline llmsim config, skip Docker eval.
-YOLOEVAL_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --models llmsim
+SWEBENCH_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --models llmsim
 
 # Real end-to-end on one instance, selected configs (substring selection on the
 # case key, like `cargo test`), archived under ./results.
@@ -207,10 +210,10 @@ doppler run -- mira --cmd "$STUDY" run --models openai-default \
 ```
 
 Study-internal knobs that the host doesn't own are read from the environment so
-they can be set on the `--cmd` line: `YOLOEVAL_NO_EVAL=1` (skip Docker scoring),
-`YOLOEVAL_MAX_WORKERS=N` (Docker eval parallelism), `YOLOEVAL_NAMESPACE=none`
-(build images locally instead of pulling prebuilt), `YOLOEVAL_EVAL_TIMEOUT`,
-`YOLOEVAL_MATRIX` (alternate matrix path). The per-instance USD cap stays in the
+they can be set on the `--cmd` line: `SWEBENCH_NO_EVAL=1` (skip Docker scoring),
+`SWEBENCH_MAX_WORKERS=N` (Docker eval parallelism), `SWEBENCH_NAMESPACE=none`
+(build images locally instead of pulling prebuilt), `SWEBENCH_EVAL_TIMEOUT`,
+`SWEBENCH_MATRIX` (alternate matrix path). The per-instance USD cap stays in the
 matrix (`max_cost_usd`).
 
 ## Config matrix
@@ -233,10 +236,10 @@ configs:
 
 ## Extending
 
-- **New benchmark:** add a `Benchmark` subclass in `yoloeval/datasets/` (implement
+- **New benchmark:** add a `Benchmark` subclass in `swebench_verified/datasets/` (implement
   `load` + `evaluate`) and register it in `datasets/base.get_benchmark`.
 - **New agent (to compare against yolop):** add an `Agent` subclass in
-  `yoloeval/agents/` (implement `run` to leave changes in the working tree, using
+  `swebench_verified/agents/` (implement `run` to leave changes in the working tree, using
   the shared `_proc.run_agent_process` driver) and register it in
   `agents._AGENTS`. Set `agent: <name>` in a matrix entry.
 

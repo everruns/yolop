@@ -12,11 +12,11 @@ Drive it with the host CLI from this study directory (``evals/swebench_verified`
 so the adjacent ``mira.toml`` is found and ``--save`` archives into ``./results``
 (install mira with ``brew install everruns/tap/mira``)::
 
-    mira --cmd ".venv/bin/python -m yoloeval" list
-    mira --cmd ".venv/bin/python -m yoloeval" run
-    mira --cmd ".venv/bin/python -m yoloeval" run astropy__astropy-12907 --save
-    mira --cmd ".venv/bin/python -m yoloeval" run --tag tracking-v1 --save
-    mira --cmd ".venv/bin/python -m yoloeval" run --models openai-default --save
+    mira --cmd "uv run python -m swebench_verified" list
+    mira --cmd "uv run python -m swebench_verified" run
+    mira --cmd "uv run python -m swebench_verified" run astropy__astropy-12907 --save
+    mira --cmd "uv run python -m swebench_verified" run --tag tracking-v1 --save
+    mira --cmd "uv run python -m swebench_verified" run --models openai-default --save
 
 Mapping to mira's model:
 
@@ -66,7 +66,7 @@ _AGENT_KEYS = {"claude-code": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY"}
 
 
 def log(msg: str) -> None:
-    print(f"[yoloeval-study] {msg}", file=sys.stderr, flush=True)
+    print(f"[swebench_verified-study] {msg}", file=sys.stderr, flush=True)
 
 
 def _config_available(spec: dict) -> bool:
@@ -136,7 +136,7 @@ class Study:
     def initialize(self) -> dict[str, Any]:
         return {
             "protocol_version": PROTOCOL_VERSION,
-            "study": "yoloeval",
+            "study": "swebench_verified",
             "study_version": STUDY_VERSION,
             "evals": 1,
             "capabilities": ["usage"],
@@ -322,13 +322,13 @@ def _build_study() -> Study:
             return default
 
     return Study(
-        benchmark=os.environ.get("YOLOEVAL_BENCHMARK", "swebench_verified"),
-        matrix_path=os.environ.get("YOLOEVAL_MATRIX") or None,
-        max_workers=_int("YOLOEVAL_MAX_WORKERS", 4),
-        namespace=os.environ.get("YOLOEVAL_NAMESPACE", "swebench"),
-        eval_timeout=_int("YOLOEVAL_EVAL_TIMEOUT", 1800),
-        # Set YOLOEVAL_NO_EVAL=1 for a plumbing run that skips Docker scoring.
-        do_eval=os.environ.get("YOLOEVAL_NO_EVAL", "") not in ("1", "true", "yes"),
+        benchmark=os.environ.get("SWEBENCH_BENCHMARK", "swebench_verified"),
+        matrix_path=os.environ.get("SWEBENCH_MATRIX") or None,
+        max_workers=_int("SWEBENCH_MAX_WORKERS", 4),
+        namespace=os.environ.get("SWEBENCH_NAMESPACE", "swebench"),
+        eval_timeout=_int("SWEBENCH_EVAL_TIMEOUT", 1800),
+        # Set SWEBENCH_NO_EVAL=1 for a plumbing run that skips Docker scoring.
+        do_eval=os.environ.get("SWEBENCH_NO_EVAL", "") not in ("1", "true", "yes"),
     )
 
 

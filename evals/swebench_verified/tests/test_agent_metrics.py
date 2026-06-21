@@ -13,15 +13,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from yoloeval.agent_metrics import (  # noqa: E402
+from swebench_verified.agent_metrics import (  # noqa: E402
     extract_claude_code,
     extract_codex,
     extract_pi,
 )
-from yoloeval.agents import build_agent  # noqa: E402
-from yoloeval.config import load_matrix  # noqa: E402
-from yoloeval.pricing import cost_from_usage  # noqa: E402
-from yoloeval.models import TokenUsage  # noqa: E402
+from swebench_verified.agents import build_agent  # noqa: E402
+from swebench_verified.config import load_matrix  # noqa: E402
+from swebench_verified.pricing import cost_from_usage  # noqa: E402
+from swebench_verified.models import TokenUsage  # noqa: E402
 
 
 def _write_log(events) -> str:

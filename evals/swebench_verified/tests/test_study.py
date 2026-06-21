@@ -12,8 +12,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from yoloeval import study as study_mod  # noqa: E402
-from yoloeval.models import AgentRun, EvalResult, Instance, RunMetrics, TokenUsage  # noqa: E402
+from swebench_verified import study as study_mod  # noqa: E402
+from swebench_verified.models import AgentRun, EvalResult, Instance, RunMetrics, TokenUsage  # noqa: E402
 class FakeBenchmark:
     name = "swebench_verified"
 
@@ -64,7 +64,7 @@ class InitializeListTest(unittest.TestCase):
     def test_initialize_announces_study(self):
         info = _make_study().initialize()
         self.assertEqual(info["protocol_version"], "1.0")
-        self.assertEqual(info["study"], "yoloeval")
+        self.assertEqual(info["study"], "swebench_verified")
         self.assertIn("usage", info["capabilities"])
 
     def test_list_maps_instances_to_samples(self):
@@ -91,7 +91,7 @@ class RunTest(unittest.TestCase):
     def _run(self, study, model="llmsim", sample="org__repo-1"):
         with mock.patch.object(study_mod, "checkout", lambda *a, **k: None), \
              mock.patch.object(study_mod, "capture_patch", lambda *a, **k: "diff --git a b"), \
-             mock.patch("yoloeval.study.build_agent") as build:
+             mock.patch("swebench_verified.study.build_agent") as build:
             build.return_value = mock.Mock(run=_fake_agent_run)
             return study.run({"eval": "swebench_verified", "sample": sample, "model": model})
 
@@ -145,7 +145,7 @@ class StdoutCleanlinessTest(unittest.TestCase):
         import io
         import subprocess
 
-        from yoloeval.datasets.swebench import SWEBenchVerified
+        from swebench_verified.datasets.swebench import SWEBenchVerified
 
         b = SWEBenchVerified()
         b._raw = {"iid": {"instance_id": "iid", "repo": "org/repo", "patch": ""}}

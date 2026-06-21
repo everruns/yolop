@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from yoloeval.metrics import extract_metrics  # noqa: E402
+from swebench_verified.metrics import extract_metrics  # noqa: E402
 
 
 def _write_log(events) -> str:
@@ -88,7 +88,7 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(m.agent_reported_time_s, 2.0)
 
     def test_running_cost(self):
-        from yoloeval.metrics import running_cost
+        from swebench_verified.metrics import running_cost
 
         path = _write_log([
             {"type": "output.message.completed", "data": {"usage": {"estimated_cost_usd": 1.5}}},

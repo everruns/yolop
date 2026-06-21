@@ -20,13 +20,13 @@ that study's `results/`:
 cd evals/swebench_verified
 ./bootstrap.sh                      # venv + yolop build + mira + agent CLIs
 
-STUDY=".venv/bin/python -m yoloeval"
+STUDY="uv run python -m swebench_verified"
 
 # What the study advertises: the eval, its samples, and the matrix of models.
 mira --cmd "$STUDY" list
 
 # Offline plumbing check — one instance, no API key, no Docker, not saved.
-YOLOEVAL_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --models llmsim
+SWEBENCH_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --models llmsim
 
 # Real run: solve + Docker-score one instance, archive the run under ./results.
 doppler run -- mira --cmd "$STUDY" run astropy__astropy-12907 \

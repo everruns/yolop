@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Bootstrap the yoloeval benchmark environment.
+# Bootstrap the swebench_verified benchmark environment.
 #
-# Installs everything needed to run the matrix: the Python harness venv, a yolop
-# release build, and the three external agent CLIs (claude-code, codex, pi)
+# Installs everything needed to run the matrix: the Python env (uv), a yolop
+# release build, the mira host CLI, and the external agent CLIs (claude-code,
+# codex, pi)
 # pinned to the versions we validate against. Re-runnable / idempotent.
 #
-#   bench/bootstrap.sh            # full setup
-#   AGENTS=codex,pi bench/bootstrap.sh   # only those agent CLIs (+ venv/yolop)
+#   evals/swebench_verified/bootstrap.sh          # full setup
+#   AGENTS=codex,pi evals/swebench_verified/bootstrap.sh   # only those agent CLIs
 #
 # Pinned agent versions are also recorded in every result's `agent` block, so a
 # committed result is always traceable to the binary that produced it. Bump these
@@ -18,20 +19,19 @@ CODEX_VERSION="${CODEX_VERSION:-0.141.0}"
 PI_VERSION="${PI_VERSION:-0.79.7}"
 
 STUDY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BENCH_DIR="$STUDY_DIR"   # back-compat alias used below
 REPO_DIR="$(cd "$STUDY_DIR/../.." && pwd)"
 AGENTS="${AGENTS:-claude-code,codex,pi}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 note() { printf '\n[bootstrap] %s\n' "$*"; }
 
-# --- Python harness venv ---------------------------------------------------- #
-note "Python venv + requirements"
-if [ ! -d "$BENCH_DIR/.venv" ]; then
-  python3 -m venv "$BENCH_DIR/.venv"
+# --- Python study env (uv) -------------------------------------------------- #
+note "Python env via uv (pyproject.toml)"
+if have uv; then
+  ( cd "$STUDY_DIR" && uv sync -q )
+else
+  echo "  ! uv not found; install it: https://docs.astral.sh/uv/  (curl -LsSf https://astral.sh/uv/install.sh | sh)"
 fi
-"$BENCH_DIR/.venv/bin/pip" install -q --upgrade pip
-"$BENCH_DIR/.venv/bin/pip" install -q -r "$BENCH_DIR/requirements.txt"
 
 # --- yolop release build ---------------------------------------------------- #
 note "yolop release build"
@@ -85,6 +85,6 @@ cat <<'EOF'
     cd evals/swebench_verified
 
   Smoke test (offline, skips Docker):
-    YOLOEVAL_NO_EVAL=1 mira --cmd ".venv/bin/python -m yoloeval" \
+    SWEBENCH_NO_EVAL=1 mira --cmd "uv run python -m swebench_verified" \
       run astropy__astropy-12907 --models llmsim
 EOF
