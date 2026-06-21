@@ -42,6 +42,9 @@ Use this skill when the user asks to:
      compiles. Add or update the test as part of the change.
    - The test must actually drive the feature's entry point (e.g. dispatch the
      command, call the handler, run the turn), not just assert on a constructor.
+   - Changes to user-visible transcript output, live activity, or status values
+     must assert the terminal-independent presentation model directly. Terminal
+     buffer tests alone are layout coverage, not proof of visible semantics.
    - If a behavior is genuinely impractical to cover automatically, say so
      explicitly in the PR body, describe the manual verification you performed
      instead, and list the gap under **Follow-ups**. "Hard to test" is not a

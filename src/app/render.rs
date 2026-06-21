@@ -5,21 +5,10 @@
 
 use super::*;
 
-// Presentation for the transcript view-model types defined in
-// `crate::transcript`. The data lives there; colors/labels live here so the
-// translation layer stays free of `ratatui`.
+// Color presentation for the transcript view-model types defined in
+// `crate::transcript`. Labels and status semantics live in `crate::presentation`
+// so they can be tested without a terminal renderer.
 impl Author {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Author::User => "you",
-            Author::Assistant => "agent",
-            Author::Narration => "note",
-            Author::Tool => "tool",
-            Author::ToolDetail => "",
-            Author::Diff => "diff",
-            Author::System => "system",
-        }
-    }
     pub fn color(&self) -> Color {
         match self {
             Author::User => ACCENT_BLUE,
@@ -34,13 +23,6 @@ impl Author {
 }
 
 impl StreamKind {
-    fn label(self) -> &'static str {
-        match self {
-            StreamKind::Assistant => "agent",
-            StreamKind::Tool => "tool",
-        }
-    }
-
     fn color(self) -> Color {
         match self {
             StreamKind::Assistant => ACCENT_GOLD,
@@ -328,7 +310,7 @@ pub(crate) fn draw_chrome(
 }
 
 pub(crate) fn chrome_preview_visible(state: &ViewState) -> bool {
-    state.stream_preview.is_some() || !state.command_suggestions.is_empty()
+    state.presentation.stream_preview.is_some() || !state.command_suggestions.is_empty()
 }
 
 pub(crate) fn draw_chrome_layout(f: &mut ratatui::Frame, layout: ChromeLayout, state: &ViewState) {
@@ -790,7 +772,7 @@ pub(crate) fn draw_stream_preview(f: &mut ratatui::Frame, area: Rect, state: &Vi
     if area.height == 0 {
         return;
     }
-    let Some(preview) = state.stream_preview.as_ref() else {
+    let Some(preview) = state.presentation.stream_preview.as_ref() else {
         return;
     };
     let inner_width = area.width as usize;
@@ -892,36 +874,55 @@ pub(crate) fn append_chat_lines<'a>(
     chat: &ChatLine,
     inner_width: usize,
 ) {
-    if matches!(chat.author, Author::ToolDetail) {
+    let presented = present_transcript_line(chat);
+    if matches!(presented.author, Author::ToolDetail) {
         append_wrapped_plain(
             lines,
             "           ",
             Style::default().fg(TEXT_MUTED),
-            &chat.text,
+            &presented.text,
             inner_width,
         );
         return;
     }
 
-    let header_text = format!("{} › ", chat.author.label());
+    let header_text = format!("{} › ", presented.label.unwrap_or_default());
     let header_style = Style::default()
-        .fg(chat.author.color())
+        .fg(presented.author.color())
         .add_modifier(Modifier::BOLD);
-    if matches!(chat.author, Author::Assistant) {
-        append_markdown_lines(lines, &header_text, header_style, &chat.text, inner_width);
-    } else if matches!(chat.author, Author::Narration) {
+    if matches!(presented.author, Author::Assistant) {
+        append_markdown_lines(
+            lines,
+            &header_text,
+            header_style,
+            &presented.text,
+            inner_width,
+        );
+    } else if matches!(presented.author, Author::Narration) {
         append_wrapped_styled(
             lines,
             &header_text,
             header_style,
-            &chat.text,
+            &presented.text,
             inner_width,
             Style::default().fg(TEXT_MUTED),
         );
-    } else if matches!(chat.author, Author::Diff) {
-        append_wrapped_diff(lines, &header_text, header_style, &chat.text, inner_width);
+    } else if matches!(presented.author, Author::Diff) {
+        append_wrapped_diff(
+            lines,
+            &header_text,
+            header_style,
+            &presented.text,
+            inner_width,
+        );
     } else {
-        append_wrapped_plain(lines, &header_text, header_style, &chat.text, inner_width);
+        append_wrapped_plain(
+            lines,
+            &header_text,
+            header_style,
+            &presented.text,
+            inner_width,
+        );
     }
 }
 
@@ -1528,11 +1529,8 @@ pub(crate) fn draw_input_cursor(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 pub(crate) fn message_separator_title(state: &ViewState) -> Line<'static> {
-    if state.busy {
-        return thinking_title(
-            state.busy_frame,
-            state.turn_activity.as_deref().unwrap_or("thinking"),
-        );
+    if let Some(activity) = state.presentation.activity_text() {
+        return thinking_title(state.busy_frame, activity);
     }
     Line::from(vec![
         Span::styled("─── ", Style::default().fg(ACCENT_BLUE)),
@@ -1576,139 +1574,19 @@ pub(crate) fn draw_status_separator(f: &mut ratatui::Frame, area: Rect) {
 }
 
 pub(crate) fn draw_session_status(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
-    let lines = match state.status_layout {
-        StatusLayout::Compact => compact_status_lines(state),
-        StatusLayout::Expanded => expanded_status_lines(state),
-    };
+    let lines = state
+        .presentation
+        .status_lines()
+        .iter()
+        .map(status_line)
+        .collect::<Vec<_>>();
     f.render_widget(Paragraph::new(lines), area);
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct StatusContribution {
-    compact: Vec<StatusField>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct StatusField {
-    label: Option<&'static str>,
-    value: String,
-}
-
-impl StatusContribution {
-    pub(crate) fn new(compact: Vec<StatusField>) -> Self {
-        Self { compact }
-    }
-}
-
-fn compact_status_lines(state: &ViewState) -> Vec<Line<'static>> {
-    vec![status_line(
-        status_contributions(state)
-            .iter()
-            .flat_map(|section| section.compact.iter()),
-    )]
-}
-
-fn expanded_status_lines(state: &ViewState) -> Vec<Line<'static>> {
-    let mut counts = vec![
-        status_value(message_count_label(state.lines_count)),
-        status_field("tokens", token_label(state.session_tokens)),
-    ];
-    if let Some(bg) = background_label(state.background) {
-        counts.push(status_field("bg", bg));
-    }
-
-    let provider_model = [
-        status_value("[collapse ↑]"),
-        status_field("provider", state.provider_name.clone()),
-        status_field("model", state.model_id.clone()),
-    ];
-    let controls = [
-        status_field("effort", effort_label(state)),
-        status_field("approval", state.approval_mode.clone()),
-        status_field("hooks", state.hooks_summary.clone()),
-        status_field(
-            "goal",
-            state.goal_indicator.clone().unwrap_or_else(|| "—".into()),
-        ),
-    ];
-    let session = [status_field("session", state.session_id.to_string())];
-
-    let mut lines = vec![
-        status_line(provider_model.iter()),
-        status_line(controls.iter()),
-        status_line(counts.iter()),
-        status_line(session.iter()),
-    ];
-    if let Some((branch, path)) = &state.worktree_expanded {
-        let worktree = [
-            status_field("worktree", branch.clone()),
-            status_field("path", path.clone()),
-        ];
-        lines.push(status_line(worktree.iter()));
-    }
-    lines
-}
-
-fn status_contributions(state: &ViewState) -> Vec<StatusContribution> {
-    let toggle_label = match state.status_layout {
-        StatusLayout::Compact => "[expand ↓]",
-        StatusLayout::Expanded => "[collapse ↑]",
-    };
-    vec![
-        StatusContribution::new(vec![
-            status_value(toggle_label),
-            status_value(state.provider_name.clone()),
-            status_value(state.model_id.clone()),
-        ]),
-        StatusContribution::new(vec![
-            status_field("effort", effort_label(state)),
-            status_field("approval", state.approval_mode.clone()),
-        ]),
-        StatusContribution::new(vec![status_field(
-            "goal",
-            state.goal_indicator.clone().unwrap_or_else(|| "—".into()),
-        )]),
-        StatusContribution::new({
-            let mut compact = vec![status_value(message_count_label(state.lines_count))];
-            if let Some(bg) = background_label(state.background) {
-                compact.push(status_field("bg", bg));
-            }
-            if let Some(wt) = &state.worktree_compact {
-                compact.push(status_field("wt", wt.clone()));
-            }
-            compact
-        }),
-    ]
-}
-
-/// Status-bar label for background tasks, e.g. `2▸/3` (2 running of 3), or
-/// `0▸/2` when none are running. `None` when there are no tasks (segment hidden).
-fn background_label(counts: Option<(usize, usize)>) -> Option<String> {
-    let (running, total) = counts?;
-    if total == 0 {
-        return None;
-    }
-    Some(format!("{running}▸/{total}"))
-}
-
-pub(crate) fn status_value(value: impl Into<String>) -> StatusField {
-    StatusField {
-        label: None,
-        value: value.into(),
-    }
-}
-
-pub(crate) fn status_field(label: &'static str, value: impl Into<String>) -> StatusField {
-    StatusField {
-        label: Some(label),
-        value: value.into(),
-    }
-}
-
-fn status_line<'a>(fields: impl IntoIterator<Item = &'a StatusField>) -> Line<'static> {
+fn status_line(line: &StatusLine) -> Line<'static> {
     let mut spans = vec![Span::styled(" ", Style::default().fg(TEXT_MUTED))];
     let mut first = true;
-    for field in fields {
+    for field in &line.fields {
         if !first {
             spans.push(Span::styled("  ·  ", Style::default().fg(TEXT_DIM)));
         }
@@ -1726,21 +1604,4 @@ fn status_line<'a>(fields: impl IntoIterator<Item = &'a StatusField>) -> Line<'s
     }
     spans.push(Span::styled(" ", Style::default().fg(TEXT_MUTED)));
     Line::from(spans)
-}
-
-fn effort_label(state: &ViewState) -> String {
-    state
-        .reasoning_effort
-        .clone()
-        .unwrap_or_else(|| "n/a".to_string())
-}
-
-fn token_label(tokens: Option<u64>) -> String {
-    tokens
-        .map(|tokens| tokens.to_string())
-        .unwrap_or_else(|| "n/a".to_string())
-}
-
-fn message_count_label(count: usize) -> String {
-    format!("{count} msgs")
 }

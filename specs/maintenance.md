@@ -50,12 +50,15 @@ Deferred items are not failures. Untracked ones are.
 ## Feature Completeness Drift
 
 A feature is not release-ready merely because one surface exists. Yolop's
-surfaces are the CLI flags, the TUI behavior, `specs/`, `README.md`, the test
-suite, and the bundled `skills/`. Maintenance should catch:
+surfaces are the CLI flags, the presentation model, the TUI behavior, `--print`
+output, ACP output, `specs/`, `README.md`, the test suite, and the bundled
+`skills/`. Maintenance should catch:
 
 - flags or behavior present in `src/` but absent from `README.md` or `specs/`
 - specs or README describing behavior the binary no longer has
 - shipped features with no test exercising them
+- user-visible transcript/status behavior tested only through terminal buffers
+  instead of the terminal-independent presentation model
 
 The outcome is either a small fix that reconnects the surfaces or a crisp
 finding naming the missing surface and its user-visible impact — not a

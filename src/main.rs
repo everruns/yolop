@@ -19,6 +19,7 @@ mod image_input;
 mod into;
 mod mcp_config;
 mod paste_attachment;
+mod presentation;
 mod runtime;
 mod session;
 mod session_log;

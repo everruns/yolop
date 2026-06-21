@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 
 // ---------- view-model types ----------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Author {
     User,
     Assistant,
@@ -29,13 +29,13 @@ pub enum Author {
     System,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatLine {
     pub author: Author,
     pub text: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamPreview {
     pub kind: StreamKind,
     pub text: String,
