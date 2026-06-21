@@ -504,6 +504,7 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "list_directory",
     "grep_files",
     "bash",
+    "spawn_background",
     "write_todos",
     "run_yolop_command",
 ];

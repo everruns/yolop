@@ -212,6 +212,60 @@ async fn scripted_tool_call_executes_bash_then_assistant_completes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scripted_spawn_background_runs_bash_detached() {
+    let marker = "spawn_background_bash.marker";
+    let cmd = format!("printf background-ok > {marker}");
+    let (runtime, workspace) = build_scripted_runtime(LlmSimConfig::scripted(vec![
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "spawn_background".to_string(),
+            arguments: json!({
+                "tool": "bash",
+                "args": { "command": cmd },
+                "title": "write marker",
+                "signal_on_completion": false
+            }),
+            id: None,
+        }]),
+        SimTurn::Assistant("background started".to_string()),
+    ]))
+    .await;
+
+    assert!(
+        runtime
+            .startup
+            .tool_names
+            .contains(&"spawn_background".to_string()),
+        "spawn_background should be visible when bash supports background: {:?}",
+        runtime.startup.tool_names
+    );
+
+    let result = run_single_turn(&runtime, "start the background marker write").await;
+
+    assert!(
+        result.success,
+        "spawn_background turn must succeed: {result:?}"
+    );
+    assert_eq!(
+        result.tool_calls_count, 1,
+        "the scripted turn should call spawn_background once"
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if workspace.join(marker).exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("background bash did not create marker in time");
+    let marker_text = tokio::fs::read_to_string(workspace.join(marker))
+        .await
+        .expect("read marker");
+    assert_eq!(marker_text, "background-ok");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_hook_blocks_matching_bash_call() {
     let marker = "git_hook_should_block.marker";
     let cmd = format!("git status > {marker}");

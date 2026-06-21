@@ -12,10 +12,15 @@ use everruns_core::exec_tool_result::ExecToolResultPayload;
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::tool_types::ToolHints;
 use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::{
+    BackgroundEventSink, BackgroundExecutableTool, BackgroundOutcome, BackgroundProgress,
+    ToolContext,
+};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
@@ -51,6 +56,15 @@ pub struct BashTool {
     max_output_bytes: usize,
 }
 
+struct BashRunOutput {
+    stdout_text: String,
+    stderr_text: String,
+    exit_code: i32,
+    out_truncated: bool,
+    err_truncated: bool,
+    duration: Duration,
+}
+
 impl BashTool {
     pub fn new(ws: Workspace) -> Self {
         Self {
@@ -58,6 +72,109 @@ impl BashTool {
             timeout_secs: 120,
             max_output_bytes: 1024 * 1024,
         }
+    }
+
+    async fn run_command(
+        &self,
+        command: &str,
+        sink: Option<Arc<dyn BackgroundEventSink>>,
+    ) -> Result<BashRunOutput, ToolExecutionResult> {
+        let root = self.ws.root().to_path_buf();
+        let timeout = Duration::from_secs(self.timeout_secs);
+        let max_bytes = self.max_output_bytes;
+
+        if let Some(sink) = &sink {
+            let _ = sink.status("Running bash command").await;
+        }
+
+        // kill_on_drop ensures a timed-out or canceled background command is
+        // reaped when the owning future is dropped.
+        let mut child = Command::new("bash")
+            .arg("-lc")
+            .arg(command)
+            .current_dir(&root)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| ToolExecutionResult::tool_error(format!("spawn failed: {e}")))?;
+        let mut stdout = child.stdout.take().unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+
+        let start = Instant::now();
+        let run = async {
+            let mut out_buf = Vec::with_capacity(4096);
+            let mut err_buf = Vec::with_capacity(4096);
+            let mut o = vec![0u8; 4096];
+            let mut e = vec![0u8; 4096];
+            let mut out_truncated = false;
+            let mut err_truncated = false;
+            let mut out_done = false;
+            let mut err_done = false;
+            while !(out_done && err_done) {
+                tokio::select! {
+                    n = stdout.read(&mut o), if !out_done => match n {
+                        Ok(0) | Err(_) => out_done = true,
+                        Ok(n) => {
+                            let remaining = max_bytes.saturating_sub(out_buf.len());
+                            let accepted = n.min(remaining);
+                            if accepted > 0 {
+                                out_buf.extend_from_slice(&o[..accepted]);
+                                if let Some(sink) = &sink {
+                                    let text = String::from_utf8_lossy(&o[..accepted]);
+                                    let _ = sink.output("stdout", &text).await;
+                                }
+                            }
+                            if accepted < n {
+                                out_truncated = true;
+                                let _ = child.start_kill();
+                                break;
+                            }
+                        },
+                    },
+                    n = stderr.read(&mut e), if !err_done => match n {
+                        Ok(0) | Err(_) => err_done = true,
+                        Ok(n) => {
+                            let remaining = max_bytes.saturating_sub(err_buf.len());
+                            let accepted = n.min(remaining);
+                            if accepted > 0 {
+                                err_buf.extend_from_slice(&e[..accepted]);
+                                if let Some(sink) = &sink {
+                                    let text = String::from_utf8_lossy(&e[..accepted]);
+                                    let _ = sink.output("stderr", &text).await;
+                                }
+                            }
+                            if accepted < n {
+                                err_truncated = true;
+                                let _ = child.start_kill();
+                                break;
+                            }
+                        },
+                    },
+                }
+            }
+            let status = child.wait().await;
+            (status, out_buf, err_buf, out_truncated, err_truncated)
+        };
+
+        let (status, out_buf, err_buf, out_truncated, err_truncated) =
+            match tokio::time::timeout(timeout, run).await {
+                Ok(r) => r,
+                Err(_) => {
+                    return Err(ToolExecutionResult::tool_error(format!(
+                        "command timed out after {}s",
+                        self.timeout_secs
+                    )));
+                }
+            };
+        Ok(BashRunOutput {
+            stdout_text: String::from_utf8_lossy(&out_buf).to_string(),
+            stderr_text: String::from_utf8_lossy(&err_buf).to_string(),
+            exit_code: status.ok().and_then(|s| s.code()).unwrap_or(-1),
+            out_truncated,
+            err_truncated,
+            duration: start.elapsed(),
+        })
     }
 }
 
@@ -101,6 +218,7 @@ impl Tool for BashTool {
         ToolHints::default()
             .with_long_running(true)
             .with_persist_output(true)
+            .with_supports_background(true)
     }
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
         let command = match arguments.get("command").and_then(Value::as_str) {
@@ -116,86 +234,16 @@ impl Tool for BashTool {
             .get("output")
             .and_then(Value::as_str)
             .unwrap_or("auto");
-        let root = self.ws.root().to_path_buf();
-        let timeout = std::time::Duration::from_secs(self.timeout_secs);
-        let max_bytes = self.max_output_bytes;
-
-        // kill_on_drop ensures a timed-out command is reaped: if we drop the
-        // Child (via the timeout future being canceled) the OS process is
-        // killed and waited on by tokio's background reaper.
-        let mut child = match Command::new("bash")
-            .arg("-lc")
-            .arg(&command)
-            .current_dir(&root)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => return ToolExecutionResult::tool_error(format!("spawn failed: {e}")),
+        let output = match self.run_command(&command, None).await {
+            Ok(output) => output,
+            Err(err) => return err,
         };
-        let mut stdout = child.stdout.take().unwrap();
-        let mut stderr = child.stderr.take().unwrap();
-
-        let run = async {
-            let mut out_buf = Vec::with_capacity(4096);
-            let mut err_buf = Vec::with_capacity(4096);
-            let mut o = vec![0u8; 4096];
-            let mut e = vec![0u8; 4096];
-            // Track per-stream EOF so we stop polling a closed pipe instead
-            // of busy-looping on `Ok(0)` (which would starve the other stream).
-            let mut out_done = false;
-            let mut err_done = false;
-            while !(out_done && err_done) {
-                tokio::select! {
-                    // Bias the select toward stdout so we drain it first on
-                    // every wake — this keeps reasoning about ordering simple.
-                    biased;
-                    n = stdout.read(&mut o), if !out_done => match n {
-                        Ok(0) | Err(_) => out_done = true,
-                        Ok(n) => out_buf.extend_from_slice(&o[..n]),
-                    },
-                    n = stderr.read(&mut e), if !err_done => match n {
-                        Ok(0) | Err(_) => err_done = true,
-                        Ok(n) => err_buf.extend_from_slice(&e[..n]),
-                    },
-                }
-                if out_buf.len() > max_bytes || err_buf.len() > max_bytes {
-                    // Per-stream cap exceeded — kill the child and stop
-                    // reading. Each stream is also truncated to `max_bytes`
-                    // after the wait below, matching the documented
-                    // per-stream 1 MiB cap.
-                    let _ = child.start_kill();
-                    break;
-                }
-            }
-            let status = child.wait().await;
-            (status, out_buf, err_buf)
-        };
-        let (status, mut out_buf, mut err_buf) = match tokio::time::timeout(timeout, run).await {
-            Ok(r) => r,
-            Err(_) => {
-                // child (owned by `run`) is dropped here, kill_on_drop reaps.
-                return ToolExecutionResult::tool_error(format!(
-                    "command timed out after {}s",
-                    self.timeout_secs
-                ));
-            }
-        };
-        let out_truncated = out_buf.len() > max_bytes;
-        if out_truncated {
-            out_buf.truncate(max_bytes);
-        }
-        let err_truncated = err_buf.len() > max_bytes;
-        if err_truncated {
-            err_buf.truncate(max_bytes);
-        }
-        let stdout_text = String::from_utf8_lossy(&out_buf).to_string();
-        let stderr_text = String::from_utf8_lossy(&err_buf).to_string();
-        let exit_code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
-        let payload =
-            ExecToolResultPayload::new(&stdout_text, &stderr_text, exit_code, output_mode);
+        let payload = ExecToolResultPayload::new(
+            &output.stdout_text,
+            &output.stderr_text,
+            output.exit_code,
+            output_mode,
+        );
         let ExecToolResultPayload {
             stdout,
             stderr,
@@ -213,12 +261,86 @@ impl Tool for BashTool {
                 "success": success,
                 "stdout": stdout,
                 "stderr": stderr,
-                "truncated": truncated || out_truncated || err_truncated,
+                "truncated": truncated || output.out_truncated || output.err_truncated,
                 "total_lines": total_lines,
-                "output_limited": out_truncated || err_truncated,
+                "output_limited": output.out_truncated || output.err_truncated,
             }),
             raw_output,
         )
+    }
+
+    fn as_background_executable(&self) -> Option<&dyn BackgroundExecutableTool> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl BackgroundExecutableTool for BashTool {
+    async fn execute_background(
+        &self,
+        arguments: Value,
+        _context: ToolContext,
+        sink: Arc<dyn BackgroundEventSink>,
+    ) -> Result<BackgroundOutcome, ToolExecutionResult> {
+        let command = match arguments.get("command").and_then(Value::as_str) {
+            Some(c) => c.to_string(),
+            None => return Err(ToolExecutionResult::tool_error("'command' is required")),
+        };
+        let output_mode = arguments
+            .get("output")
+            .and_then(Value::as_str)
+            .unwrap_or("auto");
+        let output = self.run_command(&command, Some(sink.clone())).await?;
+        let payload = ExecToolResultPayload::new(
+            &output.stdout_text,
+            &output.stderr_text,
+            output.exit_code,
+            output_mode,
+        );
+        let ExecToolResultPayload {
+            stdout,
+            stderr,
+            exit_code,
+            success,
+            truncated,
+            total_lines,
+            raw_output,
+        } = payload;
+        let output_limited = output.out_truncated || output.err_truncated;
+        let _ = sink
+            .progress(BackgroundProgress {
+                current: Some(output.duration.as_millis() as u64),
+                total: None,
+                unit: Some("ms".to_string()),
+                label: Some("runtime".to_string()),
+            })
+            .await;
+        let result = json!({
+            "command": command,
+            "exit_code": exit_code,
+            "success": success,
+            "stdout": stdout,
+            "stderr": stderr,
+            "truncated": truncated || output_limited,
+            "total_lines": total_lines,
+            "output_limited": output_limited,
+        });
+
+        if success {
+            Ok(BackgroundOutcome {
+                summary: format!(
+                    "Bash command exited with code {exit_code} after {} ms",
+                    output.duration.as_millis()
+                ),
+                result,
+                raw_output: Some(raw_output),
+            })
+        } else {
+            Err(ToolExecutionResult::tool_error(format!(
+                "Bash command exited with code {exit_code} after {} ms",
+                output.duration.as_millis()
+            )))
+        }
     }
 }
 
@@ -226,8 +348,10 @@ impl Tool for BashTool {
 mod tests {
     use super::*;
     use everruns_core::capabilities::{Capability, ToolOutputPersistenceCapability};
+    use everruns_core::typed_id::SessionId;
     use everruns_core::{ToolCall, ToolContext};
     use everruns_runtime::RealDiskFileStore;
+    use std::sync::Mutex;
 
     #[test]
     fn bash_tool_requests_output_persistence() {
@@ -235,6 +359,162 @@ mod tests {
 
         assert_eq!(tool.hints().persist_output, Some(true));
         assert_eq!(tool.hints().long_running, Some(true));
+        assert_eq!(tool.hints().supports_background, Some(true));
+        assert!(tool.as_background_executable().is_some());
+    }
+
+    #[tokio::test]
+    async fn bash_background_executable_streams_and_returns_success_outcome() {
+        #[derive(Default)]
+        struct RecordingSink {
+            output: Mutex<Vec<(String, String)>>,
+            statuses: Mutex<Vec<String>>,
+        }
+
+        #[async_trait]
+        impl BackgroundEventSink for RecordingSink {
+            async fn status(&self, message: &str) -> everruns_core::Result<()> {
+                self.statuses.lock().unwrap().push(message.to_string());
+                Ok(())
+            }
+
+            async fn output(&self, stream: &str, delta: &str) -> everruns_core::Result<()> {
+                self.output
+                    .lock()
+                    .unwrap()
+                    .push((stream.to_string(), delta.to_string()));
+                Ok(())
+            }
+
+            async fn progress(&self, _progress: BackgroundProgress) -> everruns_core::Result<()> {
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let sink = Arc::new(RecordingSink::default());
+        let outcome = tool
+            .as_background_executable()
+            .expect("background executor")
+            .execute_background(
+                json!({ "command": "printf stdout-line; printf stderr-line >&2" }),
+                ToolContext::new(SessionId::new()),
+                sink.clone(),
+            )
+            .await
+            .expect("background bash succeeds");
+
+        assert_eq!(outcome.result["success"], true);
+        assert_eq!(outcome.result["exit_code"], 0);
+        assert_eq!(outcome.result["stdout"], "stdout-line");
+        assert_eq!(outcome.result["stderr"], "stderr-line");
+        assert!(
+            sink.statuses
+                .lock()
+                .unwrap()
+                .contains(&"Running bash command".to_string())
+        );
+        let output = sink.output.lock().unwrap();
+        assert!(
+            output
+                .iter()
+                .any(|(stream, chunk)| { stream == "stdout" && chunk.contains("stdout-line") })
+        );
+        assert!(
+            output
+                .iter()
+                .any(|(stream, chunk)| { stream == "stderr" && chunk.contains("stderr-line") })
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_background_executable_marks_nonzero_exit_as_failure() {
+        #[derive(Default)]
+        struct NoopSink;
+
+        #[async_trait]
+        impl BackgroundEventSink for NoopSink {
+            async fn status(&self, _message: &str) -> everruns_core::Result<()> {
+                Ok(())
+            }
+
+            async fn output(&self, _stream: &str, _delta: &str) -> everruns_core::Result<()> {
+                Ok(())
+            }
+
+            async fn progress(&self, _progress: BackgroundProgress) -> everruns_core::Result<()> {
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let err = tool
+            .as_background_executable()
+            .expect("background executor")
+            .execute_background(
+                json!({ "command": "printf nope; exit 7" }),
+                ToolContext::new(SessionId::new()),
+                Arc::new(NoopSink),
+            )
+            .await
+            .expect_err("nonzero shell exit should fail the background task");
+
+        match err {
+            ToolExecutionResult::ToolError(message) => {
+                assert!(message.contains("code 7"), "got: {message}");
+            }
+            other => panic!("expected ToolError, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn bash_background_streaming_respects_output_cap() {
+        #[derive(Default)]
+        struct RecordingSink {
+            output: Mutex<Vec<(String, String)>>,
+        }
+
+        #[async_trait]
+        impl BackgroundEventSink for RecordingSink {
+            async fn status(&self, _message: &str) -> everruns_core::Result<()> {
+                Ok(())
+            }
+
+            async fn output(&self, stream: &str, delta: &str) -> everruns_core::Result<()> {
+                self.output
+                    .lock()
+                    .unwrap()
+                    .push((stream.to_string(), delta.to_string()));
+                Ok(())
+            }
+
+            async fn progress(&self, _progress: BackgroundProgress) -> everruns_core::Result<()> {
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        tool.max_output_bytes = 5;
+        let sink = Arc::new(RecordingSink::default());
+        let output = tool
+            .run_command("printf 1234567890", Some(sink.clone()))
+            .await
+            .expect("background command should return capped output");
+
+        assert!(output.out_truncated);
+        assert_eq!(output.stdout_text, "12345");
+        let streamed_stdout: String = sink
+            .output
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(stream, _)| stream == "stdout")
+            .map(|(_, chunk)| chunk.as_str())
+            .collect();
+        assert_eq!(streamed_stdout, "12345");
     }
 
     #[tokio::test]
