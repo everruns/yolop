@@ -29,12 +29,13 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
-    BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, FileSystemCapability,
-    INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID,
-    LoopDetectionCapability, MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID,
-    PromptCachingCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID,
-    SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability,
-    SessionStorageCapability, StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID,
+    BackgroundExecutionCapability, BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability,
+    FileSystemCapability, INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability,
+    LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability, MessageMetadataCapability,
+    PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID,
+    SESSION_STORAGE_CAPABILITY_ID, SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID,
+    STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability, SessionStorageCapability,
+    SessionTasksCapability, StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID,
     TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
     USER_HOOKS_CAPABILITY_ID, UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
 };
@@ -55,6 +56,7 @@ use everruns_core::{
 use everruns_core::{DriverId, ModelProfile, ReasoningEffortConfig, ReasoningEffortValue};
 use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
+use everruns_local::{LocalBackends, LocalProfile};
 use everruns_runtime::{
     AgentBuilder, HarnessBuilder, InProcessRuntime, InProcessRuntimeBuilder, RealDiskFileStore,
     RuntimeBackends, SessionBuilder, WriteBlocklistFileStore,
@@ -1644,6 +1646,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         // tools (see DEFAULT_TOOL_SEARCH_THRESHOLD).
         AgentCapabilityConfig::new(TOOL_SEARCH_CAPABILITY_ID),
         AgentCapabilityConfig::new(TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID),
+        AgentCapabilityConfig::new(SESSION_TASKS_CAPABILITY_ID),
         AgentCapabilityConfig::new(DUCKDUCKGO_CAPABILITY_ID),
         AgentCapabilityConfig::new(ATTRIBUTION_CAPABILITY_ID),
         // enable_file_download=true: saved responses land on disk through
@@ -2191,13 +2194,18 @@ pub async fn build_with_options(
         message_store.seed(session_id, replayed.messages).await;
     }
 
-    // Non-filesystem backends: in-memory for everything except the
-    // JsonlEventEmitter (so events also land on disk) and the
-    // pre-seeded message store (so replayed history is available).
-    let backends = RuntimeBackends::in_memory()
+    // Start from the in-memory backend bundle, preserving Yolop's durable
+    // event bus and replay-seeded message store, then let everruns-local attach
+    // the SQLite-backed task registry and schedule store.
+    let base_backends = RuntimeBackends::in_memory()
         .with_event_bus(event_bus)
         .with_message_store(message_store)
         .with_connection_resolver(connection_resolver);
+    let local_profile = LocalProfile::new(sessions_dir.join("everruns-local"))
+        .with_workspace_root(effective_root.clone());
+    let backends = LocalBackends::new(local_profile, base_backends)
+        .context("initialize everruns-local backend stores")?
+        .runtime_backends;
     // Shared between `ModelState` (for banner labels) and
     // `SetupCapability` (which mutates it on a successful `/setup`).
     let provider_state = Arc::new(RwLock::new(provider.clone()));
@@ -2266,6 +2274,8 @@ pub async fn build_with_options(
         ToolSearchCapability::new().with_never_defer(YOLOP_NEVER_DEFER_TOOLS.iter().copied()),
     );
     capabilities.register(ToolOutputPersistenceCapability);
+    capabilities.register(SessionTasksCapability);
+    capabilities.register(BackgroundExecutionCapability);
     capabilities.register(SessionStorageCapability);
     capabilities.register(DaytonaCapability);
     capabilities.register(UserHooksCapability);
@@ -2744,6 +2754,58 @@ mod tests {
                 .is_none(),
             "no credential configured yet"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_uses_everruns_local_backend_stores() {
+        use everruns_runtime::RuntimeHostAdapter;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        assert!(
+            sessions.path().join("everruns-local/local.db").exists(),
+            "local backend database should be created under the Yolop sessions dir"
+        );
+        assert!(
+            built.handles.runtime.session_task_registry().is_some(),
+            "everruns-local should install a session task registry"
+        );
+        assert!(
+            built
+                .handles
+                .runtime
+                .schedule_store(everruns_runtime::in_process_internal_org_id(
+                    everruns_core::DEFAULT_ORG_PUBLIC_ID
+                ))
+                .is_some(),
+            "everruns-local should install a schedule store factory"
+        );
+        for task_tool in [
+            "list_tasks",
+            "get_task",
+            "message_task",
+            "cancel_task",
+            "wait_task",
+        ] {
+            assert!(
+                built.startup.tool_names.contains(&task_tool.to_string()),
+                "session task tools: {:?}",
+                built.startup.tool_names
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
