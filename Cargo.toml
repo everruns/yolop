@@ -83,6 +83,7 @@ everruns-openai = "0.16.0"
 # OpenRouter's first-class driver was split out of everruns-openai into its own
 # crate in 0.13.0; register it alongside openai to keep DriverId::OpenRouter.
 everruns-openrouter = "0.16.0"
+everruns-local = "0.16.0"
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
 # everruns server/worker never enable it (specs/mcp.md, upstream runtime-mcp.md D2).
 everruns-runtime = { version = "0.16.0", features = ["mcp-stdio"] }
