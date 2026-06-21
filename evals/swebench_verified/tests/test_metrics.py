@@ -1,8 +1,8 @@
-"""Unit test for the events.jsonl metrics extractor.
+"""Unit test for the yolop events.jsonl metrics extractor.
 
-Stdlib-only (unittest) so it runs without pytest:
+Stdlib-only (unittest), so it runs without the heavy deps:
 
-    bench/.venv/bin/python -m unittest discover -s bench/tests
+    python3 -m unittest discover -s evals/swebench_verified/tests
 """
 
 import json
@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from swebench_verified.metrics import extract_metrics  # noqa: E402
+from swebench_verified import extract_yolop as extract_metrics  # noqa: E402
 
 
 def _write_log(events) -> str:
@@ -88,7 +88,7 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(m.agent_reported_time_s, 2.0)
 
     def test_running_cost(self):
-        from swebench_verified.metrics import running_cost
+        from swebench_verified import running_cost
 
         path = _write_log([
             {"type": "output.message.completed", "data": {"usage": {"estimated_cost_usd": 1.5}}},

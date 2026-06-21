@@ -1,8 +1,11 @@
 """Tests for the Mira eval study protocol layer.
 
-These run fully offline: the dataset, agent, and Docker scorer are faked so the
-test exercises the protocol mapping (initialize/list/run, sample tagging, model
-availability, transcript + score shape) without a network or Docker.
+Fully offline: the dataset, agent, and Docker scorer are faked so the test
+exercises the protocol mapping (initialize/list/run, sample tagging, model
+availability, transcript + score shape, stdout cleanliness) with no network or
+Docker. Stdlib-only:
+
+    python3 -m unittest discover -s evals/swebench_verified/tests
 """
 
 import sys
@@ -12,35 +15,20 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from swebench_verified import study as study_mod  # noqa: E402
-from swebench_verified.models import AgentRun, EvalResult, Instance, RunMetrics, TokenUsage  # noqa: E402
-class FakeBenchmark:
-    name = "swebench_verified"
-
-    def __init__(self, resolved=True):
-        self.resolved = resolved
-        self.evaluated = []
-
-    def load(self, instance_ids=None):
-        return list(_INSTANCES.values())
-
-    def evaluate(self, predictions, instances, run_id):
-        self.evaluated.append(dict(predictions))
-        return {
-            iid: EvalResult(resolved=self.resolved, report={"resolved": self.resolved})
-            for iid in predictions
-        }
+import swebench_verified as sv  # noqa: E402
+from swebench_verified import AgentRun, EvalResult, Instance, RunMetrics, Study, TokenUsage  # noqa: E402
 
 
-_INSTANCES = {
-    "org__repo-1": Instance(
-        instance_id="org__repo-1",
-        problem_statement="fix the bug",
-        repo="org/repo",
-        base_commit="deadbeef",
-        extra={"difficulty": "15 min - 1 hour"},
-    ),
-}
+_INSTANCE = Instance(
+    instance_id="org__repo-1", problem_statement="fix the bug",
+    repo="org/repo", base_commit="deadbeef", extra={"difficulty": "15 min - 1 hour"},
+)
+
+
+def _study(instances=None):
+    s = Study()
+    s._instances = {(_INSTANCE.instance_id): _INSTANCE} if instances is None else instances
+    return s
 
 
 def _fake_agent_run(*_a, **_k):
@@ -53,50 +41,41 @@ def _fake_agent_run(*_a, **_k):
     return AgentRun(patch="diff --git a b", metrics=m)
 
 
-def _make_study(resolved=True, do_eval=True):
-    s = study_mod.Study(do_eval=do_eval)
-    s._benchmark = FakeBenchmark(resolved=resolved)
-    s._instances = dict(_INSTANCES)
-    return s
-
-
 class InitializeListTest(unittest.TestCase):
     def test_initialize_announces_study(self):
-        info = _make_study().initialize()
+        info = _study().initialize()
         self.assertEqual(info["protocol_version"], "1.0")
         self.assertEqual(info["study"], "swebench_verified")
         self.assertIn("usage", info["capabilities"])
 
     def test_list_maps_instances_to_samples(self):
-        evals = _make_study().list()["evals"]
-        self.assertEqual(len(evals), 1)
-        ev = evals[0]
+        ev = _study().list()["evals"][0]
         self.assertEqual(ev["name"], "swebench_verified")
         sample = ev["samples"][0]
         self.assertEqual(sample["id"], "org__repo-1")
-        # Tagged with repo + sanitized difficulty for `mira run --tag`.
-        self.assertIn("org/repo", sample["tags"])
-        self.assertIn("15_min_-_1_hour", sample["tags"])
+        self.assertIn("org/repo", sample["tags"])             # repo tag
+        self.assertIn("15_min_-_1_hour", sample["tags"])      # sanitized difficulty
 
     def test_list_models_reflect_availability(self):
         with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "", "ANTHROPIC_API_KEY": ""}):
-            models = {m["label"]: m for m in _make_study().list()["evals"][0]["models"]}
-        # llmsim is the offline provider: always runnable.
-        self.assertTrue(models["llmsim"]["available"])
-        # A provider config with no key is advertised unavailable (host skips it).
-        self.assertFalse(models["openai-default"]["available"])
+            models = {m["label"]: m for m in _study().list()["evals"][0]["models"]}
+        self.assertTrue(models["llmsim"]["available"])        # offline provider
+        self.assertFalse(models["openai-default"]["available"])  # no key -> skipped
 
 
 class RunTest(unittest.TestCase):
-    def _run(self, study, model="llmsim", sample="org__repo-1"):
-        with mock.patch.object(study_mod, "checkout", lambda *a, **k: None), \
-             mock.patch.object(study_mod, "capture_patch", lambda *a, **k: "diff --git a b"), \
-             mock.patch("swebench_verified.study.build_agent") as build:
-            build.return_value = mock.Mock(run=_fake_agent_run)
+    def _run(self, *, resolved=True, do_eval=True, model="llmsim", sample="org__repo-1"):
+        study = _study()
+        study.do_eval = do_eval
+        with mock.patch.object(sv, "checkout", lambda *a, **k: None), \
+             mock.patch.object(sv, "capture_patch", lambda *a, **k: "diff --git a b"), \
+             mock.patch.object(sv, "run_agent", _fake_agent_run), \
+             mock.patch.object(sv, "evaluate_predictions",
+                               lambda *a, **k: {sample: EvalResult(resolved, {"resolved": resolved})}):
             return study.run({"eval": "swebench_verified", "sample": sample, "model": model})
 
     def test_resolved_cell_passes(self):
-        res = self._run(_make_study(resolved=True))
+        res = self._run(resolved=True)
         self.assertTrue(res["passed"])
         self.assertFalse(res["skipped"])
         names = {s["scorer"]: s for s in res["scores"]}
@@ -105,39 +84,43 @@ class RunTest(unittest.TestCase):
         usage = res["transcript"]["usage"]
         self.assertEqual(usage["input_tokens"], 100)
         self.assertEqual(usage["cost_usd"], 0.01)
-        # The captured patch is exposed as a workspace file for file scorers.
         self.assertIn("model_patch.diff", res["transcript"]["files"])
 
     def test_unresolved_cell_fails(self):
-        res = self._run(_make_study(resolved=False))
+        res = self._run(resolved=False)
         self.assertFalse(res["passed"])
-        names = {s["scorer"]: s for s in res["scores"]}
-        self.assertFalse(names["resolved"]["pass"])
+        self.assertFalse({s["scorer"]: s for s in res["scores"]}["resolved"]["pass"])
 
-    def test_no_eval_skips_docker_scoring(self):
-        study = _make_study(resolved=True, do_eval=False)
-        res = self._run(study)
-        self.assertFalse(res["passed"])  # unscored → not resolved
-        self.assertEqual(study._benchmark.evaluated, [])
+    def test_no_eval_skips_scoring(self):
+        called = []
+        study = _study()
+        study.do_eval = False
+        with mock.patch.object(sv, "checkout", lambda *a, **k: None), \
+             mock.patch.object(sv, "capture_patch", lambda *a, **k: "d"), \
+             mock.patch.object(sv, "run_agent", _fake_agent_run), \
+             mock.patch.object(sv, "evaluate_predictions", lambda *a, **k: called.append(1) or {}):
+            res = study.run({"eval": "swebench_verified", "sample": "org__repo-1", "model": "llmsim"})
+        self.assertFalse(res["passed"])   # unscored -> not resolved
+        self.assertEqual(called, [])      # Docker scorer not invoked
 
     def test_unavailable_config_is_skipped(self):
         with mock.patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
-            res = _make_study().run(
+            res = _study().run(
                 {"eval": "swebench_verified", "sample": "org__repo-1", "model": "openai-default"}
             )
         self.assertTrue(res["skipped"])
 
     def test_unknown_sample_raises(self):
         with self.assertRaises(ValueError):
-            _make_study().run({"eval": "swebench_verified", "sample": "nope", "model": "llmsim"})
+            _study().run({"eval": "swebench_verified", "sample": "nope", "model": "llmsim"})
 
     def test_unknown_model_raises(self):
         with self.assertRaises(ValueError):
-            _make_study().run({"eval": "swebench_verified", "sample": "org__repo-1", "model": "nope"})
+            _study().run({"eval": "swebench_verified", "sample": "org__repo-1", "model": "nope"})
 
 
 class StdoutCleanlinessTest(unittest.TestCase):
-    """Under the Mira host, the study's stdout is the protocol channel: nothing
+    """Under the Mira host the study's stdout is the protocol channel: nothing
     the SWE-bench Docker harness emits may leak onto it."""
 
     def test_evaluate_routes_harness_output_to_stderr(self):
@@ -145,12 +128,9 @@ class StdoutCleanlinessTest(unittest.TestCase):
         import io
         import subprocess
 
-        from swebench_verified.datasets.swebench import SWEBenchVerified
-
-        b = SWEBenchVerified()
-        b._raw = {"iid": {"instance_id": "iid", "repo": "org/repo", "patch": ""}}
+        sv._RAW.clear()
+        sv._RAW["iid"] = {"instance_id": "iid", "repo": "org/repo", "patch": ""}
         inst = Instance(instance_id="iid", problem_statement="x", repo="org/repo", base_commit="c")
-
         seen = {}
 
         def fake_run(cmd, cwd=None, stdout=None, stderr=None):
@@ -159,12 +139,10 @@ class StdoutCleanlinessTest(unittest.TestCase):
 
         out = io.StringIO()
         with mock.patch.object(subprocess, "run", fake_run), contextlib.redirect_stdout(out):
-            b.evaluate({"iid": "diff"}, [inst], "rid-1")
+            sv.evaluate_predictions({"iid": "diff"}, [inst], "rid-1")
 
-        # The banner stays off stdout, and the harness subprocess is told to
-        # write its stdout to the study's stderr (never the protocol channel).
-        self.assertEqual(out.getvalue(), "")
-        self.assertIs(seen["stdout"], sys.stderr)
+        self.assertEqual(out.getvalue(), "")          # banner not on stdout
+        self.assertIs(seen["stdout"], sys.stderr)     # harness stdout -> stderr
 
 
 if __name__ == "__main__":

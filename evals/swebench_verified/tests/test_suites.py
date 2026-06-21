@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from swebench_verified.suites import load_suite, suite_instance_ids  # noqa: E402
+from swebench_verified import load_suite, suite_instance_ids  # noqa: E402
 
 
 class SuiteLoaderTest(unittest.TestCase):

@@ -73,7 +73,7 @@ and surfaced in the host's transcript/usage:
 - **efficiency** — cost per resolved instance ("score per dollar"), computable
   from the host's per-cell `resolved` + `cost_usd`
 - **stop_reason** — `completed` / `timeout` / `budget` / `error`
-- **config metadata** — agent, provider, model, reasoning effort, cost cap, tool version
+- **config metadata** — agent, provider, model, reasoning effort, stop reason
 
 Cost is cache-aware (`cache_read`/`cache_creation` tokens are priced), so cost
 per resolved instance is a fair cross-model comparison. The host surfaces
@@ -107,7 +107,7 @@ Every sample is tagged with the suites it belongs to, so run one with the host's
 `--tag` selector:
 
 ```bash
-mira --cmd "uv run python -m swebench_verified" run --tag tracking-v1 --models openai-default --save
+mira --cmd "uv run swebench_verified.py" run --tag tracking-v1 --models openai-default --save
 ```
 
 Re-running `select_tracking.py` on the same dataset reproduces the committed set
@@ -123,21 +123,19 @@ self-contained.
 
 ```
 evals/swebench_verified/
-  swebench_verified/            # the Mira eval study (Python package)
-    study.py           # the protocol layer: initialize/list/run over stdio
-    datasets/          # Benchmark implementations (swebench.py)
-    agents/            # Agent adapters (yolop, claude_code, codex, pi; _proc shared driver)
-    workspace.py       # git checkout at base_commit + working-tree diff capture
-    metrics.py         # yolop events.jsonl -> RunMetrics
-    agent_metrics.py   # claude-code / codex / pi event logs -> RunMetrics
-    pricing.py         # token-based cost estimate (fallback for codex)
-    suites.py          # named instance subsets (loads suites/*.json)
-  configs/matrix.yaml  # the config matrix to benchmark (one config = one Mira model)
-  suites/              # curated instance subsets (tracking-v1.json + selector)
-  mira.toml            # host config: [results].dir -> ./results
-  results/             # mira --save run archives (<run_id>/) + pre-Mira history
-  .cache/              # gitignored: dataset parquet, checkouts, raw logs, eval scratch
+  swebench_verified.py   # the whole study: one file, PEP 723 inline deps
+                         #   matrix, agents (yolop/claude-code/codex/pi), event-log
+                         #   metrics, SWE-bench load + Docker scoring, protocol loop
+  mira.toml              # host config: [results].dir -> ./results
+  suites/                # curated instance subsets (tracking-v1.json + selector)
+  tests/                 # stdlib-only unit tests (run with plain python3)
+  results/               # mira --save run archives (<run_id>/) + pre-Mira history
+  .cache/                # gitignored: dataset parquet, checkouts, raw logs, eval scratch
 ```
+
+The study is a single self-contained file with its dependencies declared inline
+([PEP 723](https://peps.python.org/pep-0723/)), so `uv run swebench_verified.py`
+builds an ephemeral env and runs it — no package, `pyproject.toml`, or venv.
 
 The `mira` host owns durable run output. `--save` archives a self-contained run
 folder under `results/` (`results/<run_id>/{report.json,report.html,meta.json}`,
@@ -151,23 +149,19 @@ subdirs under `results/` are pre-Mira historical runs in the old per-config form
 ## Setup
 
 ```bash
-evals/swebench_verified/bootstrap.sh    # venv + yolop build + mira + agent CLIs
+evals/swebench_verified/bootstrap.sh    # pre-warm uv deps + yolop build + mira + agent CLIs
 ```
 
-`bootstrap.sh` is idempotent and sets up the Python env (via `uv`, from
-`pyproject.toml`), a yolop release build, the `mira` host CLI, and the three
-external agent CLIs (claude-code, codex, pi) pinned to the validated versions.
-Scope it with `AGENTS=codex,pi evals/swebench_verified/bootstrap.sh`. Manual
-equivalent (run from `evals/swebench_verified/`):
+`bootstrap.sh` is idempotent: it pre-warms the `uv` dependency cache, builds
+yolop release, installs the `mira` host CLI, and installs the three external
+agent CLIs (claude-code, codex, pi) pinned to the validated versions. Scope it
+with `AGENTS=codex,pi evals/swebench_verified/bootstrap.sh`. Manual equivalent:
 
 ```bash
-uv sync                                  # Python deps from pyproject.toml
 ( cd ../.. && cargo build --release )    # produces target/release/yolop
 brew install everruns/tap/mira           # the host CLI that drives the study
+# Python deps need nothing — `uv run swebench_verified.py` installs them on first use.
 ```
-
-The study is invoked as `uv run python -m swebench_verified`; `uv` provisions the
-environment on first use, so no manual activation is needed.
 
 Requires a running **Docker** daemon (SWE-bench runs the hidden tests in
 per-instance containers) and provider keys in the environment: `OPENAI_API_KEY`
@@ -177,20 +171,19 @@ secrets. **codex** ignores `OPENAI_API_KEY` for requests — log in once with
 `printenv OPENAI_API_KEY | codex login --with-api-key`. To benchmark a non-yolop
 agent, its CLI must be installed and on `PATH` (`claude`, `codex`, or `pi`).
 
-Every result records the exact tool version that produced it (e.g.
-`codex_version`, `pi_version`, `claude_code_version`, `yolop_version`) in its
-`agent` block, so a committed result is always traceable to its binary.
+Pin those agent CLIs to the versions recorded in `bootstrap.sh` so a saved run is
+reproducible against the binaries it was produced with.
 
 ## Usage
 
 `swebench_verified` is a [Mira](https://github.com/everruns/mira) eval study: the `mira`
 host CLI drives it over a stdio JSON protocol, owning the matrix, selection,
 checkpoints, and reporting, while the study owns the SWE-bench-specific run +
-Docker scoring. Drive it with `--cmd` pointed at the study module:
+Docker scoring. Drive it with `--cmd` pointed at the script:
 
 ```bash
 cd evals/swebench_verified      # so the adjacent mira.toml is found; --save lands in ./results
-STUDY="uv run python -m swebench_verified"
+STUDY="uv run swebench_verified.py"
 
 # What the study advertises: the eval, its samples (instances), and the models
 # (matrix configs); configs with a missing provider key show as unavailable.
@@ -213,35 +206,40 @@ Study-internal knobs that the host doesn't own are read from the environment so
 they can be set on the `--cmd` line: `SWEBENCH_NO_EVAL=1` (skip Docker scoring),
 `SWEBENCH_MAX_WORKERS=N` (Docker eval parallelism), `SWEBENCH_NAMESPACE=none`
 (build images locally instead of pulling prebuilt), `SWEBENCH_EVAL_TIMEOUT`,
-`SWEBENCH_MATRIX` (alternate matrix path). The per-instance USD cap stays in the
-matrix (`max_cost_usd`).
+`SWEBENCH_YOLOP_BIN` (override the yolop binary). The per-instance USD cap is set
+per config in the matrix (`max_cost_usd`, default `$5`).
 
 ## Config matrix
 
-`configs/matrix.yaml` declares the configurations to benchmark. `defaults`
-applies to all; per-config keys override. Each config is one results column.
+The matrix is the `MATRIX` dict near the top of `swebench_verified.py` — one
+entry per config, each a Mira model (label = config name). `agent:` picks the
+adapter (`yolop` | `claude-code` | `codex` | `pi`); remaining keys go to it.
+`DEFAULTS` (timeout, `max_cost_usd`) applies to all. Add a config by appending an
+entry:
 
-```yaml
-defaults:
-  timeout: 1800
-  max_cost_usd: 5.0
-configs:
-  anthropic-sonnet: { agent: yolop, binary: ../../target/release/yolop,
-                      provider: anthropic, model: claude-sonnet-4-5 }
-  claude-code:      { agent: claude-code, model: claude-sonnet-4-5 }
-  codex:            { agent: codex, model: gpt-5-codex,
-                      price: { input: 1.25, output: 10.0, cache_read: 0.125 } }
-  pi-sonnet:        { agent: pi, provider: anthropic, model: claude-sonnet-4-5 }
+```python
+MATRIX = {
+    "anthropic-sonnet": {"agent": "yolop", "provider": "anthropic", "model": "claude-sonnet-4-5"},
+    "claude-code":      {"agent": "claude-code", "model": "claude-sonnet-4-5"},
+    "codex":            {"agent": "codex", "model": "gpt-5.5",
+                         "price": {"input": 1.25, "output": 10.0, "cache_read": 0.125}},
+    "pi":               {"agent": "pi", "provider": "openai", "model": "gpt-5.5"},
+}
 ```
+
+yolop configs run the binary at `target/release/yolop` (override with
+`SWEBENCH_YOLOP_BIN`); the other agents run their CLI from `PATH`.
 
 ## Extending
 
-- **New benchmark:** add a `Benchmark` subclass in `swebench_verified/datasets/` (implement
-  `load` + `evaluate`) and register it in `datasets/base.get_benchmark`.
-- **New agent (to compare against yolop):** add an `Agent` subclass in
-  `swebench_verified/agents/` (implement `run` to leave changes in the working tree, using
-  the shared `_proc.run_agent_process` driver) and register it in
-  `agents._AGENTS`. Set `agent: <name>` in a matrix entry.
+It's one file — extend it in place:
+
+- **New agent:** add a `run_<agent>(cfg, instance, workdir, session_dir) -> AgentRun`
+  (use the shared `run_agent_process` driver + an event-log `extract_*` parser),
+  register it in the `_AGENTS` dispatch, and reference it as `agent: <name>` in
+  `MATRIX`.
+- **New benchmark:** this study is SWE-bench-specific; a different benchmark is a
+  sibling study folder under `evals/` with its own single-file adapter.
 
 ## Session data upload
 

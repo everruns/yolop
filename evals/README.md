@@ -18,9 +18,9 @@ that study's `results/`:
 
 ```bash
 cd evals/swebench_verified
-./bootstrap.sh                      # venv + yolop build + mira + agent CLIs
+./bootstrap.sh                      # yolop build + mira + agent CLIs (+ pre-warm uv deps)
 
-STUDY="uv run python -m swebench_verified"
+STUDY="uv run swebench_verified.py"   # single-file study; uv installs its inline deps
 
 # What the study advertises: the eval, its samples, and the matrix of models.
 mira --cmd "$STUDY" list

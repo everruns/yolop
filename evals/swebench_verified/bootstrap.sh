@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Bootstrap the swebench_verified benchmark environment.
 #
-# Installs everything needed to run the matrix: the Python env (uv), a yolop
-# release build, the mira host CLI, and the external agent CLIs (claude-code,
-# codex, pi)
-# pinned to the versions we validate against. Re-runnable / idempotent.
+# Installs everything needed to run the matrix: pre-warms the uv dependency
+# cache for the single-file study, builds yolop release, installs the mira host
+# CLI, and installs the external agent CLIs (claude-code, codex, pi) pinned to
+# the versions we validate against. Re-runnable / idempotent.
 #
 #   evals/swebench_verified/bootstrap.sh          # full setup
 #   AGENTS=codex,pi evals/swebench_verified/bootstrap.sh   # only those agent CLIs
@@ -25,10 +25,13 @@ AGENTS="${AGENTS:-claude-code,codex,pi}"
 have() { command -v "$1" >/dev/null 2>&1; }
 note() { printf '\n[bootstrap] %s\n' "$*"; }
 
-# --- Python study env (uv) -------------------------------------------------- #
-note "Python env via uv (pyproject.toml)"
+# --- Python deps (uv, inline) ----------------------------------------------- #
+# The study is a single file with PEP 723 inline deps; `uv run swebench_verified.py`
+# builds the ephemeral env on first use. Pre-warm it here so the first real run
+# isn't slowed by dependency installation.
+note "Python deps via uv (inline PEP 723)"
 if have uv; then
-  ( cd "$STUDY_DIR" && uv sync -q )
+  ( cd "$STUDY_DIR" && echo '{"id":1,"method":"initialize"}' | uv run swebench_verified.py >/dev/null )
 else
   echo "  ! uv not found; install it: https://docs.astral.sh/uv/  (curl -LsSf https://astral.sh/uv/install.sh | sh)"
 fi
@@ -85,6 +88,6 @@ cat <<'EOF'
     cd evals/swebench_verified
 
   Smoke test (offline, skips Docker):
-    SWEBENCH_NO_EVAL=1 mira --cmd "uv run python -m swebench_verified" \
+    SWEBENCH_NO_EVAL=1 mira --cmd "uv run swebench_verified.py" \
       run astropy__astropy-12907 --models llmsim
 EOF

@@ -1,8 +1,8 @@
-"""Unit tests for the non-yolop agent metric parsers and registry.
+"""Unit tests for the non-yolop agent metric parsers and the agent registry.
 
 Stdlib-only (unittest):
 
-    bench/.venv/bin/python -m unittest discover -s bench/tests
+    python3 -m unittest discover -s evals/swebench_verified/tests
 """
 
 import json
@@ -13,15 +13,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from swebench_verified.agent_metrics import (  # noqa: E402
+import swebench_verified as sv  # noqa: E402
+from swebench_verified import (  # noqa: E402
+    MATRIX,
+    TokenUsage,
+    cost_from_usage,
     extract_claude_code,
     extract_codex,
     extract_pi,
+    run_agent,
 )
-from swebench_verified.agents import build_agent  # noqa: E402
-from swebench_verified.config import load_matrix  # noqa: E402
-from swebench_verified.pricing import cost_from_usage  # noqa: E402
-from swebench_verified.models import TokenUsage  # noqa: E402
 
 
 def _write_log(events) -> str:
@@ -145,20 +146,19 @@ class PricingTest(unittest.TestCase):
 
 
 class RegistryTest(unittest.TestCase):
-    def test_matrix_builds_every_agent(self):
-        defaults, configs = load_matrix()
-        names = {}
-        for cfg_name, spec in configs.items():
-            agent = build_agent(cfg_name, spec, defaults)
-            names[cfg_name] = agent.name
-        self.assertEqual(names["claude-code"], "claude-code")
-        self.assertEqual(names["codex"], "codex")
-        self.assertEqual(names["pi"], "pi")
-        self.assertEqual(names["anthropic-sonnet"], "yolop")
+    def test_every_matrix_config_maps_to_a_known_agent(self):
+        for name, spec in MATRIX.items():
+            self.assertIn(spec.get("agent", "yolop"), sv._AGENTS, name)
+        # the four agent kinds are all represented
+        self.assertEqual(sv._AGENTS["claude-code"], sv.run_claude_code)
+        self.assertEqual(sv._AGENTS["codex"], sv.run_codex)
+        self.assertEqual(sv._AGENTS["pi"], sv.run_pi)
+        self.assertEqual(sv._AGENTS["yolop"], sv.run_yolop)
 
     def test_unknown_agent_raises(self):
+        # dispatch rejects an unknown agent before touching the workspace
         with self.assertRaises(ValueError):
-            build_agent("x", {"agent": "nope"}, {})
+            run_agent({"agent": "nope"}, None, "x", "y")
 
 
 if __name__ == "__main__":
