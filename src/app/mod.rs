@@ -42,6 +42,7 @@ mod viewport;
 // (the single boundary that interprets `everruns_core` events); re-export them
 // here so the TUI's own submodules keep referring to them as `crate::app::*`.
 pub(crate) use self::{render::*, viewport::*};
+pub(crate) use crate::presentation::*;
 pub(crate) use crate::transcript::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,7 +59,6 @@ pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
 /// letting a briefly unresponsive emulator recover.
 const MAX_TERMINAL_IO_FAILURES: usize = 5;
 const MAX_INPUT_HEIGHT: u16 = 12;
-const EXPANDED_STATUS_ROWS: u16 = 4;
 const RECENT_TRANSCRIPT_SOURCE_LINES: usize = 80;
 const RECENT_TRANSCRIPT_MAX_TEXT_BYTES: usize = 4_000;
 const ACCENT_BLUE: Color = Color::Rgb(45, 91, 158);
@@ -269,58 +269,14 @@ pub(crate) struct ModelOption {
 /// the chrome render itself.
 #[derive(Clone, Debug)]
 pub(crate) struct ViewState {
-    pub stream_preview: Option<StreamPreview>,
+    pub presentation: PresentationState,
     pub command_suggestions: Vec<CommandSuggestion>,
-    pub busy: bool,
     pub busy_frame: u64,
-    pub turn_activity: Option<String>,
-    pub model_id: String,
-    pub provider_name: String,
-    pub reasoning_effort: Option<String>,
-    pub session_id: SessionId,
-    pub lines_count: usize,
-    pub session_tokens: Option<u64>,
-    pub status_layout: StatusLayout,
-    pub hooks_summary: String,
-    /// Current soft-approval level (`protective` / `normal` / `off`), shown
-    /// in the session status bar so the paranoia level is always visible.
-    pub approval_mode: String,
-    /// `(running, total)` background task counts, shown in the status bar only
-    /// when there is at least one task this session. `None` hides the segment.
-    pub background: Option<(usize, usize)>,
-    /// Short label when a `/goal` loop is active (for example `◎ goal`).
-    pub goal_indicator: Option<String>,
-    /// Worktree slug for the compact status bar (for example `bump-outdated-crates-ship`).
-    pub worktree_compact: Option<String>,
-    /// Branch and path shown in the expanded status bar when a worktree is active.
-    pub worktree_expanded: Option<(String, String)>,
-}
-
-/// What kind of delta is currently being streamed. Only the assistant
-/// output is finalized into the transcript at end-of-turn (via the
-/// message store); thinking and tool output are display-only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StatusLayout {
-    Compact,
-    Expanded,
-}
-
-impl StatusLayout {
-    pub(crate) fn base_row_count(self) -> u16 {
-        match self {
-            Self::Compact => 1,
-            Self::Expanded => EXPANDED_STATUS_ROWS,
-        }
-    }
 }
 
 impl ViewState {
     pub(crate) fn status_row_count(&self) -> u16 {
-        self.status_layout.base_row_count() + self.worktree_extra_status_rows()
-    }
-
-    fn worktree_extra_status_rows(&self) -> u16 {
-        u16::from(self.status_layout == StatusLayout::Expanded && self.worktree_expanded.is_some())
+        self.presentation.status_row_count()
     }
 }
 
@@ -395,20 +351,27 @@ impl App {
     /// Snapshot the renderer-relevant fields into a `ViewState`. Called
     /// once per frame; the clones are dominated by small `String`s.
     pub(crate) fn view_state(&self) -> ViewState {
+        let presentation = self.presentation_state();
         ViewState {
-            stream_preview: self.stream_preview.clone(),
-            command_suggestions: if !self.busy && self.setup.is_none() {
+            command_suggestions: if !presentation.busy && self.setup.is_none() {
                 self.suggestions()
             } else {
                 Vec::new()
             },
-            busy: self.busy,
             busy_frame: self.busy_frame,
+            presentation,
+        }
+    }
+
+    pub(crate) fn presentation_state(&self) -> PresentationState {
+        PresentationState {
+            stream_preview: self.stream_preview.clone(),
+            busy: self.busy,
             turn_activity: self.turn_activity.clone(),
             model_id: self.model.model_id(),
             provider_name: self.model.provider_name(),
             reasoning_effort: self.model.reasoning_effort(),
-            session_id: self.session.session_id(),
+            session_id: self.session.session_id().to_string(),
             lines_count: self.lines.len(),
             session_tokens: self.session_tokens,
             status_layout: self.status_layout,
@@ -2805,17 +2768,15 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    fn view_state_idle() -> ViewState {
-        ViewState {
+    fn presentation_state_idle() -> PresentationState {
+        PresentationState {
             stream_preview: None,
-            command_suggestions: Vec::new(),
             busy: false,
-            busy_frame: 0,
             turn_activity: None,
             model_id: "gpt-5.5".to_string(),
             provider_name: "openai".to_string(),
             reasoning_effort: Some("medium".to_string()),
-            session_id: SessionId::from_seed(770001),
+            session_id: SessionId::from_seed(770001).to_string(),
             lines_count: 3,
             session_tokens: None,
             status_layout: StatusLayout::Compact,
@@ -2828,11 +2789,22 @@ mod tests {
         }
     }
 
+    fn view_state_idle() -> ViewState {
+        ViewState {
+            presentation: presentation_state_idle(),
+            command_suggestions: Vec::new(),
+            busy_frame: 0,
+        }
+    }
+
     #[test]
     fn status_bar_shows_background_task_count() {
         let state = ViewState {
-            status_layout: StatusLayout::Expanded,
-            background: Some((1, 2)),
+            presentation: PresentationState {
+                status_layout: StatusLayout::Expanded,
+                background: Some((1, 2)),
+                ..presentation_state_idle()
+            },
             ..view_state_idle()
         };
         let lines = render_chrome_lines(&state, 120, 8).join("\n");
@@ -2849,8 +2821,11 @@ mod tests {
     #[test]
     fn status_bar_hides_background_segment_when_no_tasks() {
         let state = ViewState {
-            status_layout: StatusLayout::Expanded,
-            background: None,
+            presentation: PresentationState {
+                status_layout: StatusLayout::Expanded,
+                background: None,
+                ..presentation_state_idle()
+            },
             ..view_state_idle()
         };
         let lines = render_chrome_lines(&state, 120, 8).join("\n");
@@ -5135,10 +5110,13 @@ mod tests {
     #[test]
     fn chrome_command_suggestions_override_stream_preview_row() {
         let state = ViewState {
-            stream_preview: Some(StreamPreview {
-                kind: StreamKind::Assistant,
-                text: "streaming response".to_string(),
-            }),
+            presentation: PresentationState {
+                stream_preview: Some(StreamPreview {
+                    kind: StreamKind::Assistant,
+                    text: "streaming response".to_string(),
+                }),
+                ..presentation_state_idle()
+            },
             command_suggestions: vec![CommandSuggestion {
                 completion: "/help".to_string(),
                 label: "/help    show commands".to_string(),
@@ -5210,9 +5188,12 @@ mod tests {
     #[test]
     fn chrome_busy_shows_thinking_spinner_and_activity() {
         let state = ViewState {
-            busy: true,
+            presentation: PresentationState {
+                busy: true,
+                turn_activity: Some("reading files".to_string()),
+                ..presentation_state_idle()
+            },
             busy_frame: 4,
-            turn_activity: Some("reading files".to_string()),
             ..view_state_idle()
         };
         let rows = render_chrome_lines(&state, 80, 4);
@@ -5231,7 +5212,10 @@ mod tests {
     #[test]
     fn chrome_busy_falls_back_to_thinking_when_activity_unset() {
         let state = ViewState {
-            busy: true,
+            presentation: PresentationState {
+                busy: true,
+                ..presentation_state_idle()
+            },
             ..view_state_idle()
         };
         let rows = render_chrome_lines(&state, 80, 4);
@@ -5245,10 +5229,13 @@ mod tests {
     #[test]
     fn chrome_renders_stream_preview_tail_with_kind_label() {
         let state = ViewState {
-            stream_preview: Some(StreamPreview {
-                kind: StreamKind::Assistant,
-                text: "first line\nsecond line tail".to_string(),
-            }),
+            presentation: PresentationState {
+                stream_preview: Some(StreamPreview {
+                    kind: StreamKind::Assistant,
+                    text: "first line\nsecond line tail".to_string(),
+                }),
+                ..presentation_state_idle()
+            },
             ..view_state_idle()
         };
         let rows = render_chrome_lines(&state, 80, 5);
@@ -5274,8 +5261,11 @@ mod tests {
     #[test]
     fn chrome_session_status_compact_shows_provider_model_effort_approval_and_messages() {
         let state = ViewState {
-            provider_name: "openrouter".to_string(),
-            lines_count: 42,
+            presentation: PresentationState {
+                provider_name: "openrouter".to_string(),
+                lines_count: 42,
+                ..presentation_state_idle()
+            },
             ..view_state_idle()
         };
         let rows = render_chrome_lines(&state, 120, 4);
@@ -5313,7 +5303,10 @@ mod tests {
     #[test]
     fn chrome_session_status_compact_shows_worktree_indicator() {
         let state = ViewState {
-            worktree_compact: Some("bump-outdated-crates-ship".to_string()),
+            presentation: PresentationState {
+                worktree_compact: Some("bump-outdated-crates-ship".to_string()),
+                ..presentation_state_idle()
+            },
             ..view_state_idle()
         };
         let rows = render_chrome_lines(&state, 120, 4);
@@ -5327,12 +5320,15 @@ mod tests {
     #[test]
     fn chrome_session_status_expanded_shows_worktree_subsection() {
         let state = ViewState {
-            status_layout: StatusLayout::Expanded,
-            worktree_compact: Some("bump-outdated-crates-ship".to_string()),
-            worktree_expanded: Some((
-                "bump-outdated-crates-ship-f6dd3e41".to_string(),
-                "…/session_019ee6c2dfd27223853ea56ff6dd3e41".to_string(),
-            )),
+            presentation: PresentationState {
+                status_layout: StatusLayout::Expanded,
+                worktree_compact: Some("bump-outdated-crates-ship".to_string()),
+                worktree_expanded: Some((
+                    "bump-outdated-crates-ship-f6dd3e41".to_string(),
+                    "…/session_019ee6c2dfd27223853ea56ff6dd3e41".to_string(),
+                )),
+                ..presentation_state_idle()
+            },
             ..view_state_idle()
         };
         assert_eq!(state.status_row_count(), 5);
@@ -5348,14 +5344,20 @@ mod tests {
     #[test]
     fn view_state_status_row_count_adds_worktree_row_only_when_expanded() {
         let compact = ViewState {
-            worktree_expanded: Some(("branch".into(), "path".into())),
+            presentation: PresentationState {
+                worktree_expanded: Some(("branch".into(), "path".into())),
+                ..presentation_state_idle()
+            },
             ..view_state_idle()
         };
         assert_eq!(compact.status_row_count(), 1);
 
         let expanded = ViewState {
-            status_layout: StatusLayout::Expanded,
-            worktree_expanded: Some(("branch".into(), "path".into())),
+            presentation: PresentationState {
+                status_layout: StatusLayout::Expanded,
+                worktree_expanded: Some(("branch".into(), "path".into())),
+                ..presentation_state_idle()
+            },
             ..view_state_idle()
         };
         assert_eq!(expanded.status_row_count(), 5);
@@ -5363,14 +5365,18 @@ mod tests {
 
     #[test]
     fn chrome_session_status_expanded_groups_details_across_four_lines() {
+        let session_id = SessionId::from_seed(99887766).to_string();
         let state = ViewState {
-            model_id: "nvidia/nemotron-3-super-120b-a12b".to_string(),
-            provider_name: "openrouter".to_string(),
-            reasoning_effort: Some("high".to_string()),
-            session_id: SessionId::from_seed(99887766),
-            lines_count: 42,
-            session_tokens: Some(1234),
-            status_layout: StatusLayout::Expanded,
+            presentation: PresentationState {
+                model_id: "nvidia/nemotron-3-super-120b-a12b".to_string(),
+                provider_name: "openrouter".to_string(),
+                reasoning_effort: Some("high".to_string()),
+                session_id: session_id.clone(),
+                lines_count: 42,
+                session_tokens: Some(1234),
+                status_layout: StatusLayout::Expanded,
+                ..presentation_state_idle()
+            },
             ..view_state_idle()
         };
         let rows = render_chrome_lines(&state, 180, 7);
@@ -5399,9 +5405,8 @@ mod tests {
             "expanded counts row should include messages and tokens: {:?}",
             rows[5]
         );
-        let session_id_str = state.session_id.to_string();
         assert!(
-            rows[6].contains("session ") && rows[6].contains(&session_id_str),
+            rows[6].contains("session ") && rows[6].contains(&session_id),
             "expanded session row should include the full session id: {:?}",
             rows[6]
         );
@@ -5415,7 +5420,10 @@ mod tests {
     #[test]
     fn chrome_session_status_stays_visible_with_multiline_input() {
         let state = ViewState {
-            status_layout: StatusLayout::Expanded,
+            presentation: PresentationState {
+                status_layout: StatusLayout::Expanded,
+                ..presentation_state_idle()
+            },
             ..view_state_idle()
         };
         let rows = render_chrome_lines_with_input_height(&state, 120, 8, 3);
