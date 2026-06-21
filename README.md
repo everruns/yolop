@@ -432,11 +432,13 @@ the project [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) when participating.
 
 ## Benchmarking
 
-[`bench/`](./bench/) holds `yoloeval`, a harness that benchmarks yolop on coding
-benchmarks (SWE-bench Verified first) and, behind the same interface, other
-terminal agents (claude-code, codex, pi) for head-to-head comparison. It records
-resolved-rate plus cost, tokens, turns, and tool usage per run. See
-[`bench/README.md`](./bench/README.md); `bench/bootstrap.sh` sets it up.
+[`evals/`](./evals/) holds yolop's [Mira](https://github.com/everruns/mira) eval
+studies. [`evals/swebench_verified/`](./evals/swebench_verified/) benchmarks yolop
+on **SWE-bench Verified** and, behind the same interface, other terminal agents
+(claude-code, codex, pi) for head-to-head comparison — recording resolved-rate
+plus cost, tokens, turns, and tool usage per run. The `mira` host CLI drives it.
+See [`evals/README.md`](./evals/README.md); `evals/swebench_verified/bootstrap.sh`
+sets it up.
 
 ## Releases
 

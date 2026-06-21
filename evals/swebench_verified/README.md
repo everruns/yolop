@@ -95,7 +95,7 @@ run.
 
 ## Tracking suite
 
-`bench/suites/tracking-v1.json` is a fixed, representative 20-instance subset of
+`suites/tracking-v1.json` is a fixed, representative 20-instance subset of
 SWE-bench Verified for tracking yolop quality across versions. It is selected
 deterministically (no randomness) by `suites/select_tracking.py`: repo quotas by
 largest-remainder apportionment proportional to each repo's share of the 500
@@ -107,7 +107,7 @@ Every sample is tagged with the suites it belongs to, so run one with the host's
 `--tag` selector:
 
 ```bash
-mira --cmd "bench/.venv/bin/python -m yoloeval" run --tag tracking-v1 --models openai-default
+mira --cmd ".venv/bin/python -m yoloeval" run --tag tracking-v1 --models openai-default --save
 ```
 
 Re-running `select_tracking.py` on the same dataset reproduces the committed set
@@ -122,7 +122,7 @@ self-contained.
 ## Layout
 
 ```
-bench/
+evals/swebench_verified/
   yoloeval/            # the Mira eval study (Python package)
     study.py           # the protocol layer: initialize/list/run over stdio
     datasets/          # Benchmark implementations (swebench.py)
@@ -134,36 +134,36 @@ bench/
     suites.py          # named instance subsets (loads suites/*.json)
   configs/matrix.yaml  # the config matrix to benchmark (one config = one Mira model)
   suites/              # curated instance subsets (tracking-v1.json + selector)
-  results/             # committed historical per-config result JSON (pre-Mira runs)
+  mira.toml            # host config: [results].dir -> ./results
+  results/             # mira --save run archives (<run_id>/) + pre-Mira history
   .cache/              # gitignored: dataset parquet, checkouts, raw logs, eval scratch
 ```
 
-The `mira` host owns durable run output: point `--checkpoint <path>` at a JSON
-session (saved after every cell, resumable) and `--out <path>` at a JSON/HTML/
-JUnit report. Raw `events.jsonl` logs stay in `.cache/sessions/` and are **not**
-committed (see [Session data upload](#session-data-upload)).
+The `mira` host owns durable run output. `--save` archives a self-contained run
+folder under `results/` (`results/<run_id>/{report.json,report.html,meta.json}`,
+`run_id = YYYYMMDDThhmmssZ-xxxx`); the dir comes from `mira.toml`'s
+`[results].dir`. For a resumable long run point `--checkpoint <path>` at a JSON
+session (saved after every cell); for a one-off report use `--format html --out
+report.html`. Raw `events.jsonl` logs stay in `.cache/sessions/` and are **not**
+committed (see [Session data upload](#session-data-upload)). The `swebench_verified/`
+subdirs under `results/` are pre-Mira historical runs in the old per-config format.
 
 ## Setup
 
 ```bash
-bench/bootstrap.sh          # venv + yolop build + agent CLIs (pinned versions)
+evals/swebench_verified/bootstrap.sh    # venv + yolop build + mira + agent CLIs
 ```
 
 `bootstrap.sh` is idempotent and sets up the Python venv, a yolop release build,
-and the three external agent CLIs (claude-code, codex, pi) pinned to the
-validated versions. Scope it with `AGENTS=codex,pi bench/bootstrap.sh`. Manual
-equivalent:
+the `mira` host CLI, and the three external agent CLIs (claude-code, codex, pi)
+pinned to the validated versions. Scope it with
+`AGENTS=codex,pi evals/swebench_verified/bootstrap.sh`. Manual equivalent (run
+from `evals/swebench_verified/`):
 
 ```bash
-python3 -m venv bench/.venv && bench/.venv/bin/pip install -r bench/requirements.txt
-cargo build --release       # produces target/release/yolop
-```
-
-You also need the **`mira` host CLI** on `PATH` — it drives the study, owning the
-matrix, selection, checkpoints, and reporting:
-
-```bash
-brew install everruns/tap/mira     # or: cargo install mira-cli --locked
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+( cd ../.. && cargo build --release )    # produces target/release/yolop
+brew install everruns/tap/mira           # the host CLI that drives the study
 ```
 
 Requires a running **Docker** daemon (SWE-bench runs the hidden tests in
@@ -186,8 +186,8 @@ checkpoints, and reporting, while the study owns the SWE-bench-specific run +
 Docker scoring. Drive it with `--cmd` pointed at the study module:
 
 ```bash
-cd "$(git rev-parse --show-toplevel)"
-STUDY="bench/.venv/bin/python -m yoloeval"
+cd evals/swebench_verified      # so the adjacent mira.toml is found; --save lands in ./results
+STUDY=".venv/bin/python -m yoloeval"
 
 # What the study advertises: the eval, its samples (instances), and the models
 # (matrix configs); configs with a missing provider key show as unavailable.
@@ -197,12 +197,13 @@ mira --cmd "$STUDY" list
 YOLOEVAL_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --models llmsim
 
 # Real end-to-end on one instance, selected configs (substring selection on the
-# case key, like `cargo test`).
-mira --cmd "$STUDY" run astropy__astropy-12907 --models openai-default,openai-high
+# case key, like `cargo test`), archived under ./results.
+doppler run -- mira --cmd "$STUDY" run astropy__astropy-12907 \
+    --models openai-default,openai-high --save
 
-# Whole benchmark (all 500), one config, resumable + an HTML report.
-mira --cmd "$STUDY" run --models openai-default \
-    --checkpoint ck/openai-default.json --format html --out report.html
+# Whole benchmark (all 500), one config, resumable + saved run archive.
+doppler run -- mira --cmd "$STUDY" run --models openai-default \
+    --checkpoint ck/openai-default.json --save
 ```
 
 Study-internal knobs that the host doesn't own are read from the environment so

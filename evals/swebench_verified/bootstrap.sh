@@ -17,8 +17,9 @@ CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.181}"
 CODEX_VERSION="${CODEX_VERSION:-0.141.0}"
 PI_VERSION="${PI_VERSION:-0.79.7}"
 
-BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$BENCH_DIR/.." && pwd)"
+STUDY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BENCH_DIR="$STUDY_DIR"   # back-compat alias used below
+REPO_DIR="$(cd "$STUDY_DIR/../.." && pwd)"
 AGENTS="${AGENTS:-claude-code,codex,pi}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -80,7 +81,10 @@ cat <<'EOF'
 
   Docker daemon must be running for SWE-bench evaluation.
 
+  Run from this study directory (so mira.toml is found and runs save here):
+    cd evals/swebench_verified
+
   Smoke test (offline, skips Docker):
-    YOLOEVAL_NO_EVAL=1 mira --cmd "bench/.venv/bin/python -m yoloeval" \
+    YOLOEVAL_NO_EVAL=1 mira --cmd ".venv/bin/python -m yoloeval" \
       run astropy__astropy-12907 --models llmsim
 EOF

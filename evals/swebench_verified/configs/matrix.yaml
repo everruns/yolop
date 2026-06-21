@@ -11,10 +11,10 @@ defaults:
   max_cost_usd: 5.0        # per-instance USD cap; the run is killed if exceeded
 
 # Reusable yolop base: the binary path is relative to this file's dir
-# (bench/configs/) and points at a release build at the repo root.
+# (evals/swebench_verified/configs/) and points at a release build at the repo root.
 _yolop: &yolop
   agent: yolop
-  binary: ../../target/release/yolop
+  binary: ../../../target/release/yolop
 
 configs:
   # --- yolop x OpenAI (default provider) ---

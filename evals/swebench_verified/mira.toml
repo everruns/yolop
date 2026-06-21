@@ -1,0 +1,12 @@
+# Mira host config for the swebench_verified eval study.
+#
+# The `mira` CLI finds this by walking up from the working directory, so any
+# `mira ... --save` run launched from inside evals/swebench_verified/ archives
+# here. A relative results dir resolves against THIS file's directory, so runs
+# always land in evals/swebench_verified/results/ regardless of the cwd.
+#
+# Layout per saved run: results/<run_id>/{report.json,report.html,meta.json}
+# (run_id = YYYYMMDDThhmmssZ-xxxx, sortable by time).
+
+[results]
+dir = "./results"

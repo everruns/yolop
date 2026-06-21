@@ -8,15 +8,15 @@ out repos, running agent CLIs, and the Docker ``FAIL_TO_PASS`` scoring) and hand
 everything generic — the model matrix, selection, checkpoints, and
 JSON/HTML/JUnit reporting — to the host.
 
-Drive it with the host CLI (install with ``brew install everruns/tap/mira`` or
-``cargo install mira-cli``)::
+Drive it with the host CLI from this study directory (``evals/swebench_verified``)
+so the adjacent ``mira.toml`` is found and ``--save`` archives into ``./results``
+(install mira with ``brew install everruns/tap/mira``)::
 
-    mira --cmd "bench/.venv/bin/python -m yoloeval" list
-    mira --cmd "bench/.venv/bin/python -m yoloeval" run
-    mira --cmd "bench/.venv/bin/python -m yoloeval" run astropy__astropy-12907
-    mira --cmd "bench/.venv/bin/python -m yoloeval" run --tag tracking-v1
-    mira --cmd "bench/.venv/bin/python -m yoloeval" run --models openai-default
-    mira --cmd "bench/.venv/bin/python -m yoloeval" run --format html --out report.html
+    mira --cmd ".venv/bin/python -m yoloeval" list
+    mira --cmd ".venv/bin/python -m yoloeval" run
+    mira --cmd ".venv/bin/python -m yoloeval" run astropy__astropy-12907 --save
+    mira --cmd ".venv/bin/python -m yoloeval" run --tag tracking-v1 --save
+    mira --cmd ".venv/bin/python -m yoloeval" run --models openai-default --save
 
 Mapping to mira's model:
 
