@@ -26,7 +26,6 @@
         "iterations": 27,
         "metadata": {
           "agent": "yolop",
-          "config": "openai-gpt-5.5",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
@@ -157,7 +156,6 @@
         "iterations": 16,
         "metadata": {
           "agent": "yolop",
-          "config": "openai-gpt-5.5-high",
           "difficulty": "15 min - 1 hour",
           "eval_report": {},
           "model": "gpt-5.5",
@@ -239,7 +237,6 @@
         "iterations": 40,
         "metadata": {
           "agent": "yolop",
-          "config": "anthropic-claude-sonnet-4.5",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
@@ -382,7 +379,6 @@
         "iterations": 10,
         "metadata": {
           "agent": "yolop",
-          "config": "anthropic-claude-opus-4.8",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
@@ -496,7 +492,6 @@
         "iterations": 48,
         "metadata": {
           "agent": "claude-code",
-          "config": "claude-code-sonnet-4.5",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
@@ -627,7 +622,6 @@
         "iterations": 11,
         "metadata": {
           "agent": "claude-code",
-          "config": "claude-code-opus-4.8",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
@@ -736,7 +730,6 @@
         "iterations": 1,
         "metadata": {
           "agent": "codex",
-          "config": "codex",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
@@ -847,7 +840,6 @@
         "iterations": 6,
         "metadata": {
           "agent": "pi",
-          "config": "pi",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,

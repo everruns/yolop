@@ -999,8 +999,10 @@ class Study:
                       "total_tokens": m.tokens.total_tokens, "cost_usd": m.cost_usd},
             "timing": {"duration_ms": int(m.wall_time_s * 1000)},
             "metrics": metrics, "files": files,
+            # No `config` here: mira already records the target id as the case
+            # `model` column, so echoing it again only invites rename drift.
             "metadata": {
-                "config": target, "agent": spec.get("agent", "yolop"),
+                "agent": spec.get("agent", "yolop"),
                 "provider": spec.get("provider") or "", "model": spec.get("model") or "",
                 "reasoning_effort": m.reasoning_effort, "stop_reason": m.stop_reason,
                 "resolved": resolved, "repo": inst.repo,
