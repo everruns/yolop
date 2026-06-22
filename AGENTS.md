@@ -68,10 +68,14 @@ doppler run -- cargo run -- --provider openai -p "hi"
 
 `RUST_LOG` is honored for the tracing layer (stderr).
 
-The `bench/` directory is a standalone Python harness (`yoloeval`) for
-benchmarking yolop and other agents on SWE-bench; it is outside the Cargo
-workspace and has its own tests (`bench/.venv/bin/python -m unittest discover -s
-bench/tests`). See [`bench/README.md`](bench/README.md).
+The `evals/` directory holds [Mira](https://github.com/everruns/mira) eval
+studies for benchmarking yolop and other agents. `evals/swebench_verified/` is
+the SWE-bench Verified study — a single self-contained `swebench_verified.py`
+with PEP 723 inline deps; the `mira` host CLI drives it from that directory
+(`mira --cmd "uv run swebench_verified.py" run`). It is outside the Cargo
+workspace; `uv run` provisions its deps on first use, and its stdlib-only tests
+run with `python3 -m unittest discover -s evals/swebench_verified/tests`. See
+[`evals/README.md`](evals/README.md).
 
 ## Git and commits
 

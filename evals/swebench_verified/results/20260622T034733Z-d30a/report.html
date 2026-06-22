@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mira eval report</title>
+<style>
+:root{color-scheme:light dark;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--mut:#57606a;--bg:#fff;--fg:#1f2328;--line:#d0d7de}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--line:#30363d;--mut:#8b949e}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:960px;margin:0 auto;padding:2rem 1.25rem}
+h1{font-size:1.6rem;margin:0 0 1rem}h2{font-size:1.15rem;margin:2rem 0 .75rem;border-bottom:1px solid var(--line);padding-bottom:.25rem}
+.cards{display:flex;flex-wrap:wrap;gap:.75rem}
+.card{flex:1;min-width:96px;border:1px solid var(--line);border-radius:8px;padding:.75rem 1rem;text-align:center}
+.card b{display:block;font-size:1.5rem}.card span{color:var(--mut);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+.card.ok b{color:var(--ok)}.card.bad b{color:var(--bad)}.card.warn b{color:var(--warn)}
+table.matrix{border-collapse:collapse;width:100%}table.matrix th,table.matrix td{border:1px solid var(--line);padding:.4rem .6rem;text-align:center}
+table.matrix td:first-child,table.matrix th:first-child{text-align:left}
+.case{border:1px solid var(--line);border-radius:8px;margin:.5rem 0;padding:.25rem .75rem}
+.case summary{cursor:pointer;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+.case code{font-size:.92rem}.metrics{color:var(--mut);font-size:.8rem;margin-left:auto}
+.badge{font-size:.7rem;font-weight:700;padding:.1rem .4rem;border-radius:4px;color:#fff}
+.badge.pass{background:var(--ok)}.badge.fail{background:var(--bad)}.badge.skip{background:var(--mut)}.badge.na{background:var(--warn)}
+.scores{list-style:none;padding:0;margin:.5rem 0}.scores li{padding:.15rem 0}.scores li.pass{color:var(--ok)}.scores li.fail{color:var(--bad)}.scores li.na{color:var(--mut)}
+.tools,.meta{font-size:.85rem;color:var(--mut)}
+pre{background:rgba(127,127,127,.1);border-radius:6px;padding:.6rem .75rem;overflow:auto;font-size:.85rem;white-space:pre-wrap}
+pre.error{color:var(--bad)}a{color:#0969da}
+</style>
+</head>
+<body>
+<main>
+<h1>Mira eval report</h1>
+<section class="cards">
+<div class="card ok"><b>1/1</b><span>passed</span></div>
+<div class="card"><b>0</b><span>failed</span></div>
+<div class="card"><b>0</b><span>n/a</span></div>
+<div class="card"><b>0</b><span>skipped</span></div>
+<div class="card"><b>1096929</b><span>tokens</span></div>
+<div class="card"><b>$1.0851</b><span>cost</span></div>
+</section>
+<h2>Matrix</h2>
+<table class="matrix">
+<thead><tr><th>eval</th><th>openai-high</th></tr></thead>
+<tbody>
+<tr><td>swebench_verified</td><td>1/1</td></tr>
+</tbody>
+</table>
+<h2>Cases</h2>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>swebench_verified/astropy__astropy-12907@openai-high</code><span class="metrics">1096929 tok · $1.0851 · 297794ms · 43 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — agent run completed</li>
+<li class="pass">✓ <b>resolved</b> — FAIL_TO_PASS passed</li>
+</ul>
+<p class="tools"><b>tools:</b> list_directory, list_directory, list_directory, grep_files, grep_files, grep_files, grep_files, grep_files, grep_files, grep_files, read_file, read_file, read_file, read_file, read_file, read_file, read_file, read_file, read_file, read_file, edit_file, edit_file, edit_file, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash</p>
+<p class="meta"><b>metrics:</b> agent_reported_time_s=170.248, cache_creation_tokens=0, cache_read_tokens=1008128, iterations=44, tool_calls=43, tool_calls_failed=3, turns=44</p>
+<p class="meta"><b>metadata:</b> agent=yolop, config=openai-high, difficulty=15 min - 1 hour, eval_report={"patch_exists":true,"patch_is_None":false,"patch_successfully_applied":true,"resolved":true,"tests_status":{"FAIL_TO_FAIL":{"failure":[],"success":[]},"FAIL_TO_PASS":{"failure":[],"success":["astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]","astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"]},"PASS_TO_FAIL":{"failure":[],"success":[]},"PASS_TO_PASS":{"failure":[],"success":["astropy/modeling/tests/test_separable.py::test_coord_matrix","astropy/modeling/tests/test_separable.py::test_cdot","astropy/modeling/tests/test_separable.py::test_cstack","astropy/modeling/tests/test_separable.py::test_arith_oper","astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]","astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]","astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]","astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]","astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]","astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]","astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]","astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]","astropy/modeling/tests/test_separable.py::test_custom_model_separable"]}}}, model=gpt-5.5, provider=openai, reasoning_effort=high, repo=astropy/astropy, resolved=true, stop_reason=completed, tools_used={"bash":20,"edit_file":3,"grep_files":7,"list_directory":3,"read_file":10}</p>
+<pre class="response">resolved=True</pre>
+</details>
+<script type="application/json" id="mira-data">
+{"cases":[{"aggregate":1.0,"eval":"swebench_verified","model":"openai-high","passed":true,"sample":"astropy__astropy-12907","scores":[{"pass":true,"reason":"agent run completed","scorer":"succeeded","value":1.0},{"pass":true,"reason":"FAIL_TO_PASS passed","scorer":"resolved","value":1.0}],"skipped":false,"transcript":{"final_response":"resolved=True","iterations":44,"metadata":{"agent":"yolop","config":"openai-high","difficulty":"15 min - 1 hour","eval_report":{"patch_exists":true,"patch_is_None":false,"patch_successfully_applied":true,"resolved":true,"tests_status":{"FAIL_TO_FAIL":{"failure":[],"success":[]},"FAIL_TO_PASS":{"failure":[],"success":["astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]","astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"]},"PASS_TO_FAIL":{"failure":[],"success":[]},"PASS_TO_PASS":{"failure":[],"success":["astropy/modeling/tests/test_separable.py::test_coord_matrix","astropy/modeling/tests/test_separable.py::test_cdot","astropy/modeling/tests/test_separable.py::test_cstack","astropy/modeling/tests/test_separable.py::test_arith_oper","astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]","astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]","astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]","astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]","astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]","astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]","astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]","astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]","astropy/modeling/tests/test_separable.py::test_custom_model_separable"]}}},"model":"gpt-5.5","provider":"openai","reasoning_effort":"high","repo":"astropy/astropy","resolved":true,"stop_reason":"completed","tools_used":{"bash":20,"edit_file":3,"grep_files":7,"list_directory":3,"read_file":10}},"metrics":{"agent_reported_time_s":170.248,"cache_creation_tokens":0.0,"cache_read_tokens":1008128.0,"iterations":44.0,"tool_calls":43.0,"tool_calls_failed":3.0,"turns":44.0},"timing":{"duration_ms":297794},"tool_calls":["list_directory","list_directory","list_directory","grep_files","grep_files","grep_files","grep_files","grep_files","grep_files","grep_files","read_file","read_file","read_file","read_file","read_file","read_file","read_file","read_file","read_file","read_file","edit_file","edit_file","edit_file","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash"],"tool_calls_count":43,"usage":{"cache_read_tokens":1008128,"cost_usd":1.085094,"input_tokens":1091448,"output_tokens":5481}}}],"summary":{"failed":0,"na":0,"passed":1,"scored":1,"skipped":0,"total_cost_usd":1.085094,"total_duration_ms":297794,"total_tokens":1096929,"total_tool_calls":43}}
+</script>
+</main>
+</body>
+</html>

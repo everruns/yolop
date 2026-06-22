@@ -1,0 +1,35 @@
+{
+  "format": 1,
+  "run_id": "20260622T025711Z-7f83",
+  "study": "swebench_verified",
+  "study_version": "0.4.0",
+  "started_unix": 1782097031,
+  "finished_unix": 1782098167,
+  "environment": {
+    "git": {
+      "commit": "3d3a351c711f975a6aa0f854f3493e0d4469f722",
+      "branch": "claude/eager-brown-5p0thm",
+      "dirty": false
+    },
+    "os": "linux",
+    "arch": "x86_64",
+    "hostname": "vm",
+    "cpus": 4,
+    "mem_total_mib": 16075,
+    "mira_version": "0.1.0",
+    "labels": {
+      "benchmark": "swebench_verified"
+    }
+  },
+  "summary": {
+    "scored": 5,
+    "passed": 5,
+    "failed": 0,
+    "na": 0,
+    "skipped": 0,
+    "total_tokens": 1363391,
+    "total_cost_usd": 4.313013,
+    "total_tool_calls": 152,
+    "total_duration_ms": 711208
+  }
+}

@@ -1,8 +1,0 @@
-# Python virtualenv
-.venv/
-__pycache__/
-*.pyc
-
-# Local caches: dataset parquet, repo checkouts, raw session logs, eval scratch.
-# Results (results/**/*.json) are committed; raw logs are uploaded separately.
-.cache/
