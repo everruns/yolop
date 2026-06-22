@@ -231,6 +231,22 @@ they can be set on the `--cmd` line: `SWEBENCH_NO_EVAL=1` (skip Docker scoring),
 `SWEBENCH_YOLOP_BIN` (override the yolop binary). The per-instance USD cap is set
 per config in the matrix (`max_cost_usd`, default `$5`).
 
+### Recipe: cross-agent comparison
+
+Mira has no named model bundle (you select models by an explicit `--models` list
+or a substring filter), so the "run all the agents on one instance" comparison is
+a named wrapper, [`compare.sh`](compare.sh):
+
+```bash
+./compare.sh astropy__astropy-12907            # the 8-config set, --group-by agent --save
+./compare.sh django__django-11099 -j 4         # any instance, extra mira flags pass through
+COMPARE_MODELS=codex,pi,claude-code ./compare.sh <id>   # override the set
+```
+
+It runs one cell per agent flavor (yolop across providers/effort + claude-code,
+codex, pi, with Opus 4.8 on yolop and claude-code), groups by `agent`, and saves
+the run under `results/<run_id>/`.
+
 ## Config matrix
 
 The matrix is the `MATRIX` dict near the top of `swebench_verified.py` — one
