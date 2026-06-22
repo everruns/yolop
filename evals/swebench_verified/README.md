@@ -250,6 +250,17 @@ the run under `results/<run_id>/`. A **target** is Mira's comparison axis — a
 model *or* a harness — so agent configs are first-class targets, not models
 faked into the model slot.
 
+A preset can also **pin the sample** via `filter` (a substring on the case key
+`eval/sample@target`), so "this one item across all targets" is a single
+self-contained preset — no instance arg:
+
+```bash
+# [presets.astropy-12907] = filter = "astropy__astropy-12907" + the compare targets
+mira --cmd "uv run swebench_verified.py" run --preset astropy-12907 --group-by agent --save
+```
+
+Clone that `[presets.NAME]` block (new name + `filter`) to pin other instances.
+
 ## Config matrix
 
 The matrix is the `MATRIX` dict near the top of `swebench_verified.py` — one

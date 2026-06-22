@@ -23,3 +23,13 @@ benchmark = "swebench_verified"
 [presets.compare]
 targets = ["anthropic-sonnet", "openai-default", "openai-high", "anthropic-opus",
            "claude-code", "claude-code-opus", "codex", "pi"]
+
+# A fully self-contained run: one specific instance across the compare target
+# set. `filter` is a substring on the case key (`eval/sample@target`), so it
+# pins the sample — no instance arg needed. Clone this block (new name + filter)
+# to pin other instances.
+#   mira --cmd "uv run swebench_verified.py" run --preset astropy-12907 --group-by agent --save
+[presets.astropy-12907]
+filter = "astropy__astropy-12907"
+targets = ["anthropic-sonnet", "openai-default", "openai-high", "anthropic-opus",
+           "claude-code", "claude-code-opus", "codex", "pi"]
