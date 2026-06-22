@@ -939,7 +939,7 @@ class Study:
         # On an infra error the host overrides these to a single N/A.
         return self._result(eval_name, sample_id, target, passed=resolved, aggregate=aggregate,
                             scores=scores,
-                            transcript=self._transcript(run, resolved, report, target, spec, inst, error_kind))
+                            transcript=self._transcript(run, resolved, report, spec, inst, error_kind))
 
     # -- helpers -----------------------------------------------------------
     def _run_agent(self, inst: Instance, target: str, spec: dict) -> AgentRun:
@@ -974,7 +974,7 @@ class Study:
             log(f"eval failed for {target}/{inst.instance_id}: {e}")
             return False, {}, f"eval: {e}"
 
-    def _transcript(self, run: AgentRun, resolved: bool, report: dict, target: str,
+    def _transcript(self, run: AgentRun, resolved: bool, report: dict,
                     spec: dict, inst: Instance, error_kind: str | None):
         m = run.metrics
         tools = [name for name, count in m.tools_used.items() for _ in range(count)]
