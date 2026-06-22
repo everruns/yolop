@@ -2,7 +2,7 @@
 
 Benchmarks yolop on coding benchmarks, starting with **SWE-bench Verified**.
 swebench_verified is a [Mira](https://github.com/everruns/mira) eval **study**: the
-generic `mira` host CLI owns the model matrix, selection, checkpoints, and
+generic `mira` host CLI owns the target matrix, selection, checkpoints, and
 JSON/HTML/JUnit reporting, while this Python study — driven over Mira's stdio
 protocol — owns the SWE-bench-specific work (loading instances, checking out
 repos, running agent CLIs, and the Docker `FAIL_TO_PASS` scoring). Designed to
@@ -86,7 +86,7 @@ Docker/harness failure to score is reported as an **infra error** (`error_kind`)
 so the host treats it as **N/A** and retries it rather than counting it as the
 model getting the fix wrong.
 
-Each **sample** is tagged with `repo`/`difficulty` metadata and each **model**
+Each **sample** is tagged with `repo`/`difficulty` metadata and each **target**
 column carries its config (`agent`, `model`, `reasoning_effort`, `price`, …), so
 the host can break results down by any of them:
 
@@ -129,7 +129,7 @@ Every sample is tagged with the suites it belongs to, so run one with the host's
 `--tag` selector:
 
 ```bash
-mira --cmd "uv run swebench_verified.py" run --tag tracking-v1 --models openai-default --save
+mira --cmd "uv run swebench_verified.py" run --tag tracking-v1 --targets openai-default --save
 ```
 
 Re-running `select_tracking.py` on the same dataset reproduces the committed set
@@ -212,15 +212,15 @@ STUDY="uv run swebench_verified.py"
 mira --cmd "$STUDY" list
 
 # Plumbing only: one instance on the offline llmsim config, skip Docker eval.
-SWEBENCH_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --models llmsim
+SWEBENCH_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --targets llmsim
 
 # Real end-to-end on one instance, selected configs (substring selection on the
 # case key, like `cargo test`), archived under ./results.
 doppler run -- mira --cmd "$STUDY" run astropy__astropy-12907 \
-    --models openai-default,openai-high --save
+    --targets openai-default,openai-high --save
 
 # Whole benchmark (all 500), one config, resumable + saved run archive.
-doppler run -- mira --cmd "$STUDY" run --models openai-default \
+doppler run -- mira --cmd "$STUDY" run --targets openai-default \
     --checkpoint ck/openai-default.json --save
 ```
 
@@ -233,24 +233,27 @@ per config in the matrix (`max_cost_usd`, default `$5`).
 
 ### Recipe: cross-agent comparison
 
-Mira has no named model bundle (you select models by an explicit `--models` list
-or a substring filter), so the "run all the agents on one instance" comparison is
-a named wrapper, [`compare.sh`](compare.sh):
+The comparison target set is the named **`compare` preset** in `mira.toml`
+(`[presets.compare]`), applied with `mira run --preset compare`. The
+[`compare.sh`](compare.sh) wrapper pairs it with the instance, `--group-by
+agent`, and `--save`:
 
 ```bash
-./compare.sh astropy__astropy-12907            # the 8-config set, --group-by agent --save
+./compare.sh astropy__astropy-12907            # the compare preset, --group-by agent --save
 ./compare.sh django__django-11099 -j 4         # any instance, extra mira flags pass through
-COMPARE_MODELS=codex,pi,claude-code ./compare.sh <id>   # override the set
+COMPARE_TARGETS=codex,pi,claude-code ./compare.sh <id>   # override the set ad-hoc
 ```
 
 It runs one cell per agent flavor (yolop across providers/effort + claude-code,
 codex, pi, with Opus 4.8 on yolop and claude-code), groups by `agent`, and saves
-the run under `results/<run_id>/`.
+the run under `results/<run_id>/`. A **target** is Mira's comparison axis — a
+model *or* a harness — so agent configs are first-class targets, not models
+faked into the model slot.
 
 ## Config matrix
 
 The matrix is the `MATRIX` dict near the top of `swebench_verified.py` — one
-entry per config, each a Mira model (label = config name). `agent:` picks the
+entry per config, each a Mira target (label = config name). `agent:` picks the
 adapter (`yolop` | `claude-code` | `codex` | `pi`); remaining keys go to it.
 `DEFAULTS` (timeout, `max_cost_usd`) applies to all. Add a config by appending an
 entry:

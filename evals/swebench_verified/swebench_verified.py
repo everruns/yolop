@@ -12,9 +12,9 @@ it with no project scaffolding:
 
     cd evals/swebench_verified
     mira --cmd "uv run swebench_verified.py" list
-    mira --cmd "uv run swebench_verified.py" run astropy__astropy-12907 --models anthropic-sonnet --save
+    mira --cmd "uv run swebench_verified.py" run astropy__astropy-12907 --targets anthropic-sonnet --save
 
-The `mira` host owns the model matrix, selection, concurrency, checkpoints, and
+The `mira` host owns the target matrix, selection, concurrency, checkpoints, and
 reporting; this study owns the SWE-bench-specific work:
 
 * loads SWE-bench Verified instances (the HF parquet),
@@ -24,8 +24,9 @@ reporting; this study owns the SWE-bench-specific work:
 
 Mapping to Mira: one **eval** (`swebench_verified`); each instance is a
 **sample** (tagged with repo, difficulty, and any curated suite); each entry in
-`MATRIX` below is a **model** (label = config name), advertised `available:
-false` when its provider key is absent so the host skips it.
+`MATRIX` below is a **target** — the thing under evaluation, here an agent config
+(label = config name) — advertised `available: false` when its provider key is
+absent so the host skips it.
 
 Study-internal knobs come from the environment (the host can't pass study CLI
 flags): `SWEBENCH_NO_EVAL=1` skips Docker scoring, `SWEBENCH_MAX_WORKERS`,
@@ -52,9 +53,9 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 # Mira collapsed its pre-release minors back to a single 1.0 baseline; everything
 # we emit (open-ended `metadata`, the numeric `metrics` map, `error_kind`, and
-# per-model `metadata` columns) is part of that baseline.
+# per-target `metadata` columns) is part of that baseline.
 PROTOCOL_VERSION = "1.0"
-STUDY_VERSION = "0.4.0"
+STUDY_VERSION = "0.5.0"
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]                      # evals/swebench_verified -> repo root
@@ -127,7 +128,7 @@ class EvalResult:
 
 
 # ============================================================================ #
-# The config matrix (one entry = one Mira model). Inlined here so the study is
+# The config matrix (one entry = one Mira target). Inlined here so the study is
 # a single file. `agent:` picks the adapter; remaining keys go to it. yolop
 # configs run the binary at REPO_ROOT/target/release/yolop (override with
 # SWEBENCH_YOLOP_BIN).
@@ -179,8 +180,8 @@ def config_available(spec: dict) -> bool:
     return bool(os.environ.get(key)) if key else False
 
 
-def _model_metadata(spec: dict) -> dict[str, Any]:
-    """Descriptive config that rides the model column (open JSON). Lets the host
+def _target_metadata(spec: dict) -> dict[str, Any]:
+    """Descriptive config that rides the target column (open JSON). Lets the host
     surface it per column and group results with `mira run --group-by agent`."""
     cfg = {**DEFAULTS, **spec}
     md: dict[str, Any] = {"agent": cfg.get("agent", "yolop")}
@@ -884,33 +885,35 @@ class Study:
             tags.extend(membership.get(iid, []))
             samples.append({"id": iid, "tags": tags,
                             "metadata": {"repo": inst.repo or "", "difficulty": str(difficulty or "")}})
-        models = [{"label": name, "provider": spec.get("provider") or spec.get("agent", "yolop"),
-                   "available": config_available(spec), "metadata": _model_metadata(spec)}
-                  for name, spec in MATRIX.items()]
+        # Each MATRIX entry is a Mira *target* (the thing under evaluation — here a
+        # harness/agent config, not just a model). label = config name.
+        targets = [{"label": name, "provider": spec.get("provider") or spec.get("agent", "yolop"),
+                    "available": config_available(spec), "metadata": _target_metadata(spec)}
+                   for name, spec in MATRIX.items()]
         return {"evals": [{
             "name": "swebench_verified",
             "description": "Resolve SWE-bench instances; FAIL_TO_PASS via the official Docker harness",
-            "samples": samples, "scorers": ["succeeded", "resolved"], "models": models,
+            "samples": samples, "scorers": ["succeeded", "resolved"], "targets": targets,
             "max_turns": 0, "metadata": {"benchmark": "swebench_verified"},
         }]}
 
     def run(self, params: dict[str, Any]) -> dict[str, Any]:
-        eval_name, sample_id, model = params.get("eval"), params.get("sample"), params.get("model")
+        eval_name, sample_id, target = params.get("eval"), params.get("sample"), params.get("target")
         if eval_name != "swebench_verified":
             raise ValueError(f"unknown eval: {eval_name!r}")
-        spec = MATRIX.get(model)
+        spec = MATRIX.get(target)
         if spec is None:
-            raise ValueError(f"unknown model/config: {model!r}")
+            raise ValueError(f"unknown target/config: {target!r}")
         inst = self.instances().get(sample_id)
         if inst is None:
             raise ValueError(f"unknown sample/instance: {sample_id!r}")
         if not config_available(spec):
-            return self._result(eval_name, sample_id, model, skipped=True)
+            return self._result(eval_name, sample_id, target, skipped=True)
 
-        run = self._run_agent(inst, model, spec)
-        # A checkout/setup failure is infra (not the model's fault).
+        run = self._run_agent(inst, target, spec)
+        # A checkout/setup failure is infra (not the agent's fault).
         error_kind = "infra" if (run.error or "").startswith("runner:") else None
-        resolved, report, eval_err = self._score(inst, run, model)
+        resolved, report, eval_err = self._score(inst, run, target)
         if eval_err and not run.error:
             run.error = eval_err  # Docker/harness failed to score
             error_kind = "infra"
@@ -924,13 +927,13 @@ class Study:
         aggregate = sum(s["value"] for s in scores) / len(scores)
         # `resolved` is the benchmark gate; `succeeded` is reported for signal.
         # On an infra error the host overrides these to a single N/A.
-        return self._result(eval_name, sample_id, model, passed=resolved, aggregate=aggregate,
+        return self._result(eval_name, sample_id, target, passed=resolved, aggregate=aggregate,
                             scores=scores,
-                            transcript=self._transcript(run, resolved, report, model, spec, inst, error_kind))
+                            transcript=self._transcript(run, resolved, report, target, spec, inst, error_kind))
 
     # -- helpers -----------------------------------------------------------
-    def _run_agent(self, inst: Instance, model: str, spec: dict) -> AgentRun:
-        run_id = f"{_sanitize(model)}-{_sanitize(inst.instance_id)}-{uuid.uuid4().hex[:6]}"
+    def _run_agent(self, inst: Instance, target: str, spec: dict) -> AgentRun:
+        run_id = f"{_sanitize(target)}-{_sanitize(inst.instance_id)}-{uuid.uuid4().hex[:6]}"
         workdir = CACHE_DIR / "work" / run_id
         session_dir = CACHE_DIR / "sessions" / run_id
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -939,17 +942,17 @@ class Study:
             run = run_agent(spec, inst, str(workdir), str(session_dir))
             run.patch = capture_patch(workdir)
         except Exception as e:  # report, don't crash the study loop
-            log(f"agent run failed for {model}/{inst.instance_id}: {e}")
+            log(f"agent run failed for {target}/{inst.instance_id}: {e}")
             run = AgentRun(patch="", metrics=RunMetrics(), error=f"runner: {e}")
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
         return run
 
-    def _score(self, inst: Instance, run: AgentRun, model: str):
+    def _score(self, inst: Instance, run: AgentRun, target: str):
         if not self.do_eval:
             return False, {}, None
         try:
-            run_id = f"{_sanitize(model)}-{_sanitize(inst.instance_id)}-{uuid.uuid4().hex[:6]}"
+            run_id = f"{_sanitize(target)}-{_sanitize(inst.instance_id)}-{uuid.uuid4().hex[:6]}"
             results = evaluate_predictions({inst.instance_id: run.patch}, [inst], run_id,
                                            max_workers=self.max_workers, namespace=self.namespace,
                                            timeout=self.eval_timeout)
@@ -958,10 +961,10 @@ class Study:
                 return False, {}, "no eval result"
             return bool(ev.resolved), ev.report, ev.error
         except Exception as e:  # Docker/infra failure: not resolved, surface it
-            log(f"eval failed for {model}/{inst.instance_id}: {e}")
+            log(f"eval failed for {target}/{inst.instance_id}: {e}")
             return False, {}, f"eval: {e}"
 
-    def _transcript(self, run: AgentRun, resolved: bool, report: dict, model: str,
+    def _transcript(self, run: AgentRun, resolved: bool, report: dict, target: str,
                     spec: dict, inst: Instance, error_kind: str | None):
         m = run.metrics
         tools = [name for name, count in m.tools_used.items() for _ in range(count)]
@@ -987,7 +990,7 @@ class Study:
             "timing": {"duration_ms": int(m.wall_time_s * 1000)},
             "metrics": metrics, "files": files,
             "metadata": {
-                "config": model, "agent": spec.get("agent", "yolop"),
+                "config": target, "agent": spec.get("agent", "yolop"),
                 "provider": spec.get("provider") or "", "model": spec.get("model") or "",
                 "reasoning_effort": m.reasoning_effort, "stop_reason": m.stop_reason,
                 "resolved": resolved, "repo": inst.repo,
@@ -1002,9 +1005,9 @@ class Study:
             transcript["error_kind"] = error_kind
         return transcript
 
-    def _result(self, eval_name, sample_id, model, *, passed=False, aggregate=0.0,
+    def _result(self, eval_name, sample_id, target, *, passed=False, aggregate=0.0,
                 scores=None, transcript=None, skipped=False) -> dict[str, Any]:
-        return {"eval": eval_name, "sample": sample_id, "model": model, "passed": passed,
+        return {"eval": eval_name, "sample": sample_id, "target": target, "passed": passed,
                 "aggregate": aggregate, "scores": scores or [],
                 "transcript": transcript or {"final_response": "", "error": None}, "skipped": skipped}
 

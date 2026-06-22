@@ -15,3 +15,11 @@ dir = "./results"
 # automatically; these are static labels for filtering runs later).
 [environment.labels]
 benchmark = "swebench_verified"
+
+# Named selection presets, applied with `mira run --preset NAME` (explicit flags
+# override). `compare` is the cross-agent comparison target set: yolop across
+# providers/effort + claude-code, codex, pi, with Opus 4.8 on yolop and
+# claude-code. Pair it with `--group-by agent --save` (see compare.sh).
+[presets.compare]
+targets = ["anthropic-sonnet", "openai-default", "openai-high", "anthropic-opus",
+           "claude-code", "claude-code-opus", "codex", "pi"]

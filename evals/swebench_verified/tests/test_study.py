@@ -56,14 +56,14 @@ class InitializeListTest(unittest.TestCase):
         self.assertIn("org/repo", sample["tags"])             # repo tag
         self.assertIn("15_min_-_1_hour", sample["tags"])      # sanitized difficulty
 
-    def test_list_models_reflect_availability(self):
+    def test_list_targets_reflect_availability(self):
         with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "", "ANTHROPIC_API_KEY": ""}):
-            models = {m["label"]: m for m in _study().list()["evals"][0]["models"]}
+            models = {m["label"]: m for m in _study().list()["evals"][0]["targets"]}
         self.assertTrue(models["llmsim"]["available"])        # offline provider
         self.assertFalse(models["openai-default"]["available"])  # no key -> skipped
 
-    def test_list_models_carry_config_metadata(self):
-        models = {m["label"]: m for m in _study().list()["evals"][0]["models"]}
+    def test_list_targets_carry_config_metadata(self):
+        models = {m["label"]: m for m in _study().list()["evals"][0]["targets"]}
         # config detail rides the model column for `mira run --group-by agent`
         self.assertEqual(models["openai-high"]["metadata"]["agent"], "yolop")
         self.assertEqual(models["openai-high"]["metadata"]["reasoning_effort"], "high")
@@ -80,7 +80,7 @@ class RunTest(unittest.TestCase):
              mock.patch.object(sv, "run_agent", _fake_agent_run), \
              mock.patch.object(sv, "evaluate_predictions",
                                lambda *a, **k: {sample: EvalResult(resolved, {"resolved": resolved})}):
-            return study.run({"eval": "swebench_verified", "sample": sample, "model": model})
+            return study.run({"eval": "swebench_verified", "sample": sample, "target": model})
 
     def test_resolved_cell_passes(self):
         res = self._run(resolved=True)
@@ -113,7 +113,7 @@ class RunTest(unittest.TestCase):
              mock.patch.object(sv, "run_agent", _fake_agent_run), \
              mock.patch.object(sv, "evaluate_predictions",
                                lambda *a, **k: {"org__repo-1": EvalResult(False, {}, "no report.json")}):
-            res = study.run({"eval": "swebench_verified", "sample": "org__repo-1", "model": "llmsim"})
+            res = study.run({"eval": "swebench_verified", "sample": "org__repo-1", "target": "llmsim"})
         self.assertEqual(res["transcript"]["error_kind"], "infra")
 
     def test_unresolved_cell_fails(self):
@@ -129,24 +129,24 @@ class RunTest(unittest.TestCase):
              mock.patch.object(sv, "capture_patch", lambda *a, **k: "d"), \
              mock.patch.object(sv, "run_agent", _fake_agent_run), \
              mock.patch.object(sv, "evaluate_predictions", lambda *a, **k: called.append(1) or {}):
-            res = study.run({"eval": "swebench_verified", "sample": "org__repo-1", "model": "llmsim"})
+            res = study.run({"eval": "swebench_verified", "sample": "org__repo-1", "target": "llmsim"})
         self.assertFalse(res["passed"])   # unscored -> not resolved
         self.assertEqual(called, [])      # Docker scorer not invoked
 
     def test_unavailable_config_is_skipped(self):
         with mock.patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
             res = _study().run(
-                {"eval": "swebench_verified", "sample": "org__repo-1", "model": "openai-default"}
+                {"eval": "swebench_verified", "sample": "org__repo-1", "target": "openai-default"}
             )
         self.assertTrue(res["skipped"])
 
     def test_unknown_sample_raises(self):
         with self.assertRaises(ValueError):
-            _study().run({"eval": "swebench_verified", "sample": "nope", "model": "llmsim"})
+            _study().run({"eval": "swebench_verified", "sample": "nope", "target": "llmsim"})
 
     def test_unknown_model_raises(self):
         with self.assertRaises(ValueError):
-            _study().run({"eval": "swebench_verified", "sample": "org__repo-1", "model": "nope"})
+            _study().run({"eval": "swebench_verified", "sample": "org__repo-1", "target": "nope"})
 
 
 class StdoutCleanlinessTest(unittest.TestCase):

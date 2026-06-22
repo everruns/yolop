@@ -2,7 +2,7 @@
 
 This directory holds yolop's evaluation studies, each a
 [Mira](https://github.com/everruns/mira) eval **study**: the generic `mira` host
-CLI owns the model matrix, selection, concurrency, checkpoints, and reporting,
+CLI owns the target matrix, selection, concurrency, checkpoints, and reporting,
 while a study owns the benchmark-specific work (loading instances, running the
 agent, scoring). One study per subfolder.
 
@@ -22,20 +22,20 @@ cd evals/swebench_verified
 
 STUDY="uv run swebench_verified.py"   # single-file study; uv installs its inline deps
 
-# What the study advertises: the eval, its samples, and the matrix of models.
+# What the study advertises: the eval, its samples, and the matrix of targets.
 mira --cmd "$STUDY" list
 
 # Offline plumbing check — one instance, no API key, no Docker, not saved.
-SWEBENCH_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --models llmsim
+SWEBENCH_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --targets llmsim
 
 # Real run: solve + Docker-score one instance, archive the run under ./results.
 doppler run -- mira --cmd "$STUDY" run astropy__astropy-12907 \
-    --models anthropic-sonnet --save
+    --targets anthropic-sonnet --save
 ```
 
 `mira run` selects like `cargo test` — by case-key substring
-(`run astropy__astropy-12907`), `--tag tracking-v1`, or `--models <config>` — and
-takes the cross-product of the chosen samples and models. Provider keys live only
+(`run astropy__astropy-12907`), `--tag tracking-v1`, or `--targets <config>` — and
+takes the cross-product of the chosen samples and targets. Provider keys live only
 in the study's environment (inject them with `doppler run --`); a config whose
 key is missing is reported `unavailable` and skipped, so a keyless run stays
 green.
