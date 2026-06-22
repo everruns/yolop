@@ -3,7 +3,7 @@
     {
       "aggregate": 1.0,
       "eval": "swebench_verified",
-      "model": "openai-default",
+      "model": "openai-gpt-5.5",
       "passed": true,
       "sample": "astropy__astropy-12907",
       "scores": [
@@ -26,7 +26,7 @@
         "iterations": 27,
         "metadata": {
           "agent": "yolop",
-          "config": "openai-default",
+          "config": "openai-gpt-5.5",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
@@ -133,7 +133,7 @@
     {
       "aggregate": 0.0,
       "eval": "swebench_verified",
-      "model": "openai-high",
+      "model": "openai-gpt-5.5-high",
       "passed": false,
       "sample": "astropy__astropy-12907",
       "scores": [
@@ -157,7 +157,7 @@
         "iterations": 16,
         "metadata": {
           "agent": "yolop",
-          "config": "openai-high",
+          "config": "openai-gpt-5.5-high",
           "difficulty": "15 min - 1 hour",
           "eval_report": {},
           "model": "gpt-5.5",
@@ -216,7 +216,7 @@
     {
       "aggregate": 1.0,
       "eval": "swebench_verified",
-      "model": "anthropic-sonnet",
+      "model": "anthropic-claude-sonnet-4.5",
       "passed": true,
       "sample": "astropy__astropy-12907",
       "scores": [
@@ -239,7 +239,7 @@
         "iterations": 40,
         "metadata": {
           "agent": "yolop",
-          "config": "anthropic-sonnet",
+          "config": "anthropic-claude-sonnet-4.5",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
@@ -359,7 +359,7 @@
     {
       "aggregate": 1.0,
       "eval": "swebench_verified",
-      "model": "anthropic-opus",
+      "model": "anthropic-claude-opus-4.8",
       "passed": true,
       "sample": "astropy__astropy-12907",
       "scores": [
@@ -382,7 +382,7 @@
         "iterations": 10,
         "metadata": {
           "agent": "yolop",
-          "config": "anthropic-opus",
+          "config": "anthropic-claude-opus-4.8",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
@@ -473,7 +473,7 @@
     {
       "aggregate": 1.0,
       "eval": "swebench_verified",
-      "model": "claude-code",
+      "model": "claude-code-sonnet-4.5",
       "passed": true,
       "sample": "astropy__astropy-12907",
       "scores": [
@@ -496,7 +496,7 @@
         "iterations": 48,
         "metadata": {
           "agent": "claude-code",
-          "config": "claude-code",
+          "config": "claude-code-sonnet-4.5",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
@@ -604,7 +604,7 @@
     {
       "aggregate": 1.0,
       "eval": "swebench_verified",
-      "model": "claude-code-opus",
+      "model": "claude-code-opus-4.8",
       "passed": true,
       "sample": "astropy__astropy-12907",
       "scores": [
@@ -627,7 +627,7 @@
         "iterations": 11,
         "metadata": {
           "agent": "claude-code",
-          "config": "claude-code-opus",
+          "config": "claude-code-opus-4.8",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,

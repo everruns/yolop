@@ -3,7 +3,7 @@
     {
       "aggregate": 1.0,
       "eval": "swebench_verified",
-      "model": "openai-high",
+      "model": "openai-gpt-5.5-high",
       "passed": true,
       "sample": "astropy__astropy-12907",
       "scores": [
@@ -26,7 +26,7 @@
         "iterations": 44,
         "metadata": {
           "agent": "yolop",
-          "config": "openai-high",
+          "config": "openai-gpt-5.5-high",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
