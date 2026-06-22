@@ -44,7 +44,7 @@ def _fake_agent_run(*_a, **_k):
 class InitializeListTest(unittest.TestCase):
     def test_initialize_announces_study(self):
         info = _study().initialize()
-        self.assertEqual(info["protocol_version"], "1.4")
+        self.assertEqual(info["protocol_version"], "1.0")
         self.assertEqual(info["study"], "swebench_verified")
         self.assertIn("usage", info["capabilities"])
 
@@ -61,6 +61,14 @@ class InitializeListTest(unittest.TestCase):
             models = {m["label"]: m for m in _study().list()["evals"][0]["models"]}
         self.assertTrue(models["llmsim"]["available"])        # offline provider
         self.assertFalse(models["openai-default"]["available"])  # no key -> skipped
+
+    def test_list_models_carry_config_metadata(self):
+        models = {m["label"]: m for m in _study().list()["evals"][0]["models"]}
+        # config detail rides the model column for `mira run --group-by agent`
+        self.assertEqual(models["openai-high"]["metadata"]["agent"], "yolop")
+        self.assertEqual(models["openai-high"]["metadata"]["reasoning_effort"], "high")
+        self.assertEqual(models["codex"]["metadata"]["agent"], "codex")
+        self.assertIn("price", models["codex"]["metadata"])
 
 
 class RunTest(unittest.TestCase):

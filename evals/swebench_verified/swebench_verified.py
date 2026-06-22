@@ -50,10 +50,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-# 1.4: open-ended (string -> JSON) metadata; 1.2: the numeric `metrics` map;
-# 1.3: `error_kind`. We emit all three, so advertise 1.4 (the host accepts by
-# major and tolerates a study that emits fewer fields).
-PROTOCOL_VERSION = "1.4"
+# Mira collapsed its pre-release minors back to a single 1.0 baseline; everything
+# we emit (open-ended `metadata`, the numeric `metrics` map, `error_kind`, and
+# per-model `metadata` columns) is part of that baseline.
+PROTOCOL_VERSION = "1.0"
 STUDY_VERSION = "0.4.0"
 
 HERE = Path(__file__).resolve().parent
@@ -176,6 +176,17 @@ def config_available(spec: dict) -> bool:
         return bool(os.environ.get(_PROVIDER_KEYS[provider]))
     key = _AGENT_KEYS.get(spec.get("agent", "yolop"))
     return bool(os.environ.get(key)) if key else False
+
+
+def _model_metadata(spec: dict) -> dict[str, Any]:
+    """Descriptive config that rides the model column (open JSON). Lets the host
+    surface it per column and group results with `mira run --group-by agent`."""
+    cfg = {**DEFAULTS, **spec}
+    md: dict[str, Any] = {"agent": cfg.get("agent", "yolop")}
+    for k in ("model", "provider", "reasoning_effort", "sandbox", "max_cost_usd", "price"):
+        if cfg.get(k) is not None:
+            md[k] = cfg[k]
+    return md
 
 
 # Shared issue-fixing prompt so the only variable across agents is the agent.
@@ -873,7 +884,8 @@ class Study:
             samples.append({"id": iid, "tags": tags,
                             "metadata": {"repo": inst.repo or "", "difficulty": str(difficulty or "")}})
         models = [{"label": name, "provider": spec.get("provider") or spec.get("agent", "yolop"),
-                   "available": config_available(spec)} for name, spec in MATRIX.items()]
+                   "available": config_available(spec), "metadata": _model_metadata(spec)}
+                  for name, spec in MATRIX.items()]
         return {"evals": [{
             "name": "swebench_verified",
             "description": "Resolve SWE-bench instances; FAIL_TO_PASS via the official Docker harness",

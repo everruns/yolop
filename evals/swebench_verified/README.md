@@ -75,25 +75,34 @@ and surfaced in the host's transcript/usage:
 - **stop_reason** — `completed` / `timeout` / `budget` / `error`
 - **config metadata** — agent, provider, model, reasoning effort, stop reason
 
-Each cell's transcript carries these on Mira's open channels (protocol 1.4): a
-numeric **`metrics`** map (`turns`, `iterations`, `tool_calls`,
-`tool_calls_failed`, cache tokens, `agent_reported_time_s`) that feeds the host's
-generic budget scorers, and structured **`metadata`** (`agent`, `provider`,
-`model`, `reasoning_effort`, `stop_reason`, `resolved`, `repo`, `difficulty`,
+Each cell's transcript carries these on Mira's open channels: a numeric
+**`metrics`** map (`turns`, `iterations`, `tool_calls`, `tool_calls_failed`,
+cache tokens, `agent_reported_time_s`) that feeds the host's generic budget
+scorers, and structured **`metadata`** (`agent`, `provider`, `model`,
+`reasoning_effort`, `stop_reason`, `resolved`, `repo`, `difficulty`,
 `tools_used`, and the full SWE-bench `eval_report` — `FAIL_TO_PASS`/`PASS_TO_PASS`
 status). Tokens/cost/latency stay on the typed `usage`/`timing` fields. A
 Docker/harness failure to score is reported as an **infra error** (`error_kind`),
 so the host treats it as **N/A** and retries it rather than counting it as the
 model getting the fix wrong.
 
+Each **sample** is tagged with `repo`/`difficulty` metadata and each **model**
+column carries its config (`agent`, `model`, `reasoning_effort`, `price`, …), so
+the host can break results down by any of them:
+
+```bash
+mira --cmd "$STUDY" run --tag tracking-v1 --group-by repo         # resolve rate per repo
+mira --cmd "$STUDY" run --group-by difficulty                     # per difficulty tier
+mira --cmd "$STUDY" run --group-by agent                          # yolop vs claude-code vs …
+```
+
 Cost is cache-aware (`cache_read`/`cache_creation` tokens are priced), so cost
 per resolved instance is a fair cross-model comparison. The host surfaces all of
 the above per cell in its JSON and HTML reports — emit one with
 `mira ... run --format html --out report.html` (a single self-contained file) or
-`--format json --out run.json` for the raw rows to rank configs by
-resolved-per-dollar. Each `--save` run also stamps `meta.json` with an
-`environment` block (git commit/branch/dirty, box, mira version) plus the
-`benchmark` label from `mira.toml`.
+`--format json --out run.json` for the raw rows. Each `--save` run also stamps
+`meta.json` with an `environment` block (git commit/branch/dirty, box, mira
+version) plus the `benchmark` label from `mira.toml`.
 
 ## Cost cap
 
