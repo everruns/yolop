@@ -102,6 +102,10 @@ class RunTest(unittest.TestCase):
         self.assertEqual(md["repo"], "org/repo")
         self.assertEqual(md["tools_used"], {"edit_file": 1, "read_file": 1})
         self.assertEqual(md["eval_report"], {"resolved": True})
+        self.assertEqual(md["agent"], "yolop")  # harness identity still carried
+        # No `config` echo: the target id is the host's case `model` column, so
+        # the study must not duplicate it into transcript metadata.
+        self.assertNotIn("config", md)
         self.assertNotIn("error_kind", tr)  # clean run: no infra error
 
     def test_infra_eval_failure_is_marked_na(self):
