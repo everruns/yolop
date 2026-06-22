@@ -52,7 +52,9 @@ if have mira; then
 elif have brew; then
   brew install everruns/tap/mira || echo "  ! mira install failed; install manually"
 elif have cargo; then
-  cargo install mira-cli --locked || echo "  ! mira install failed; install manually"
+  # mira-cli isn't on crates.io yet — install from the upstream repo.
+  cargo install --git https://github.com/everruns/mira mira-cli --locked \
+    || echo "  ! mira install failed; install manually"
 else
   echo "  ! no brew/cargo; install mira manually (brew install everruns/tap/mira)"
 fi

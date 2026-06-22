@@ -245,6 +245,8 @@ def run_agent_process(
             proc.wait(timeout=poll_s)
             break
         except subprocess.TimeoutExpired:
+            # Still running at the poll interval — fall through to the wall-clock
+            # and budget checks below, then loop back and keep polling.
             pass
         if time.monotonic() - start > timeout:
             _kill(proc)
@@ -266,6 +268,7 @@ def run_agent_process(
         try:
             stderr_tail = proc.stderr.read().decode("utf-8", "replace")[-2000:]
         except Exception:
+            # stderr tail is best-effort diagnostics; never fail the run over it.
             pass
     if stop_reason == "completed" and proc.returncode not in (0, None):
         stop_reason = "error"
@@ -720,8 +723,15 @@ def checkout(instance: Instance, dest: Path) -> None:
 
 
 def capture_patch(workdir: Path) -> str:
-    _git(["add", "-A"], workdir)
-    return _git(["diff", "--cached", "--no-color"], workdir).stdout
+    # Fail loudly: a silent git error here would yield an empty/partial patch and
+    # mis-score the cell. The caller treats the raise as an infra error.
+    add = _git(["add", "-A"], workdir)
+    if add.returncode != 0:
+        raise RuntimeError(f"git add failed in {workdir}: {add.stderr.strip()}")
+    diff = _git(["diff", "--cached", "--no-color"], workdir)
+    if diff.returncode != 0:
+        raise RuntimeError(f"git diff failed in {workdir}: {diff.stderr.strip()}")
+    return diff.stdout
 
 
 # ============================================================================ #
