@@ -56,7 +56,7 @@ row reads $1.698 but ≈87% of its prompt was cache reads — applying the stand
 cache discount gives ≈ **$0.38**, matching the same model's real OpenRouter cost
 ($0.36). OpenRouter and pi costs are tool-reported (real). `effort` is the model
 reasoning-effort setting (`reasoning_effort`; per-model default when unset — see the
-`openai-high` config for `high`). One instance is a smoke, not a resolve-rate;
+`openai-gpt-5.5-high` config for `high`). One instance is a smoke, not a resolve-rate;
 run the full set per config for leaderboard-comparable numbers.
 
 ## What it measures
@@ -131,7 +131,7 @@ Every sample is tagged with the suites it belongs to. The **`tracking` preset**
 
 ```bash
 mira --cmd "uv run swebench_verified.py" run --preset tracking --group-by difficulty --save
-mira --cmd "uv run swebench_verified.py" run --tag tracking-v1 --targets openai-default --save
+mira --cmd "uv run swebench_verified.py" run --tag tracking-v1 --targets openai-gpt-5.5 --save
 ```
 
 Re-running `select_tracking.py` on the same dataset reproduces the committed set
@@ -219,11 +219,11 @@ SWEBENCH_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --targets llms
 # Real end-to-end on one instance, selected configs (substring selection on the
 # case key, like `cargo test`), archived under ./results.
 doppler run -- mira --cmd "$STUDY" run astropy__astropy-12907 \
-    --targets openai-default,openai-high --save
+    --targets openai-gpt-5.5,openai-gpt-5.5-high --save
 
 # Whole benchmark (all 500), one config, resumable + saved run archive.
-doppler run -- mira --cmd "$STUDY" run --targets openai-default \
-    --checkpoint ck/openai-default.json --save
+doppler run -- mira --cmd "$STUDY" run --targets openai-gpt-5.5 \
+    --checkpoint ck/openai-gpt-5.5.json --save
 ```
 
 Study-internal knobs that the host doesn't own are read from the environment so
@@ -265,7 +265,7 @@ entry:
 
 ```python
 MATRIX = {
-    "anthropic-sonnet": {"agent": "yolop", "provider": "anthropic", "model": "claude-sonnet-4-5"},
+    "anthropic-claude-sonnet-4.5": {"agent": "yolop", "provider": "anthropic", "model": "claude-sonnet-4-5"},
     "claude-code":      {"agent": "claude-code", "model": "claude-sonnet-4-5"},
     "codex":            {"agent": "codex", "model": "gpt-5.5",
                          "price": {"input": 1.25, "output": 10.0, "cache_read": 0.125}},

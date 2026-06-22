@@ -12,7 +12,7 @@ it with no project scaffolding:
 
     cd evals/swebench_verified
     mira --cmd "uv run swebench_verified.py" list
-    mira --cmd "uv run swebench_verified.py" run astropy__astropy-12907 --targets anthropic-sonnet --save
+    mira --cmd "uv run swebench_verified.py" run astropy__astropy-12907 --targets anthropic-claude-sonnet-4.5 --save
 
 The `mira` host owns the target matrix, selection, concurrency, checkpoints, and
 reporting; this study owns the SWE-bench-specific work:
@@ -137,17 +137,17 @@ DEFAULTS: dict[str, Any] = {"timeout": 1800, "max_cost_usd": 5.0}
 
 MATRIX: dict[str, dict[str, Any]] = {
     # yolop x OpenAI (default provider)
-    "openai-default": {"agent": "yolop", "provider": "openai", "model": "gpt-5.5"},
-    "openai-high": {"agent": "yolop", "provider": "openai", "model": "gpt-5.5",
+    "openai-gpt-5.5": {"agent": "yolop", "provider": "openai", "model": "gpt-5.5"},
+    "openai-gpt-5.5-high": {"agent": "yolop", "provider": "openai", "model": "gpt-5.5",
                     "reasoning_effort": "high"},
     # yolop x Anthropic (secondary provider)
-    "anthropic-sonnet": {"agent": "yolop", "provider": "anthropic", "model": "claude-sonnet-4-5"},
-    "anthropic-opus": {"agent": "yolop", "provider": "anthropic", "model": "claude-opus-4-8"},
+    "anthropic-claude-sonnet-4.5": {"agent": "yolop", "provider": "anthropic", "model": "claude-sonnet-4-5"},
+    "anthropic-claude-opus-4.8": {"agent": "yolop", "provider": "anthropic", "model": "claude-opus-4-8"},
     # yolop x OpenRouter (needs OPENROUTER_API_KEY)
-    "openrouter-nemotron": {"agent": "yolop", "provider": "openrouter",
+    "openrouter-nemotron-3-ultra": {"agent": "yolop", "provider": "openrouter",
                             "model": "nvidia/nemotron-3-ultra-550b-a55b"},
-    "openrouter-glm": {"agent": "yolop", "provider": "openrouter", "model": "z-ai/glm-5.2"},
-    "openrouter-qwen-coder": {"agent": "yolop", "provider": "openrouter", "model": "qwen/qwen3-coder"},
+    "openrouter-glm-5.2": {"agent": "yolop", "provider": "openrouter", "model": "z-ai/glm-5.2"},
+    "openrouter-qwen3-coder": {"agent": "yolop", "provider": "openrouter", "model": "qwen/qwen3-coder"},
     # Offline plumbing check (no key; won't solve tasks)
     "llmsim": {"agent": "yolop", "provider": "llmsim"},
     # Other coding agents (need their CLI on PATH + provider keys)

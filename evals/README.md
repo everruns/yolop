@@ -30,7 +30,7 @@ SWEBENCH_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --targets llms
 
 # Real run: solve + Docker-score one instance, archive the run under ./results.
 doppler run -- mira --cmd "$STUDY" run astropy__astropy-12907 \
-    --targets anthropic-sonnet --save
+    --targets anthropic-claude-sonnet-4.5 --save
 ```
 
 `mira run` selects like `cargo test` — by case-key substring

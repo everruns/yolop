@@ -60,13 +60,13 @@ class InitializeListTest(unittest.TestCase):
         with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "", "ANTHROPIC_API_KEY": ""}):
             models = {m["label"]: m for m in _study().list()["evals"][0]["targets"]}
         self.assertTrue(models["llmsim"]["available"])        # offline provider
-        self.assertFalse(models["openai-default"]["available"])  # no key -> skipped
+        self.assertFalse(models["openai-gpt-5.5"]["available"])  # no key -> skipped
 
     def test_list_targets_carry_config_metadata(self):
         models = {m["label"]: m for m in _study().list()["evals"][0]["targets"]}
         # config detail rides the model column for `mira run --group-by agent`
-        self.assertEqual(models["openai-high"]["metadata"]["agent"], "yolop")
-        self.assertEqual(models["openai-high"]["metadata"]["reasoning_effort"], "high")
+        self.assertEqual(models["openai-gpt-5.5-high"]["metadata"]["agent"], "yolop")
+        self.assertEqual(models["openai-gpt-5.5-high"]["metadata"]["reasoning_effort"], "high")
         self.assertEqual(models["codex"]["metadata"]["agent"], "codex")
         self.assertIn("price", models["codex"]["metadata"])
 
@@ -136,7 +136,7 @@ class RunTest(unittest.TestCase):
     def test_unavailable_config_is_skipped(self):
         with mock.patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
             res = _study().run(
-                {"eval": "swebench_verified", "sample": "org__repo-1", "target": "openai-default"}
+                {"eval": "swebench_verified", "sample": "org__repo-1", "target": "openai-gpt-5.5"}
             )
         self.assertTrue(res["skipped"])
 
