@@ -125,10 +125,12 @@ instances, then filled to match the benchmark's overall difficulty mix. The
 result spans 9 repos and 3 difficulty tiers (8 `<15 min`, 10 `15 min–1 hour`,
 2 `1–4 hours`), so the resolve-rate carries signal.
 
-Every sample is tagged with the suites it belongs to, so run one with the host's
-`--tag` selector:
+Every sample is tagged with the suites it belongs to. The **`tracking` preset**
+([Presets](#presets--named-runs)) bundles this suite with the weekly model matrix
+(gpt-5.5 high · glm-5.2 · opus-4.8); or select it ad-hoc with `--tag`:
 
 ```bash
+mira --cmd "uv run swebench_verified.py" run --preset tracking --group-by difficulty --save
 mira --cmd "uv run swebench_verified.py" run --tag tracking-v1 --targets openai-default --save
 ```
 
@@ -231,35 +233,27 @@ they can be set on the `--cmd` line: `SWEBENCH_NO_EVAL=1` (skip Docker scoring),
 `SWEBENCH_YOLOP_BIN` (override the yolop binary). The per-instance USD cap is set
 per config in the matrix (`max_cost_usd`, default `$5`).
 
-### Recipe: cross-agent comparison
+### Presets — named runs
 
-The comparison target set is the named **`compare` preset** in `mira.toml`
-(`[presets.compare]`), applied with `mira run --preset compare`. The
-[`compare.sh`](compare.sh) wrapper pairs it with the instance, `--group-by
-agent`, and `--save`:
+A **preset** (`[presets.NAME]` in `mira.toml`, applied with `--preset NAME`) is a
+saved *selection* bundle — which samples (`tag`/`filter`) and which targets — so
+the recurring run scenarios have names. It's the same one eval (`swebench_verified`)
+sliced differently, not separate evals. A preset only subsets the grid;
+`--group-by` and `--save` aren't selection, so pass them too.
 
-```bash
-./compare.sh astropy__astropy-12907            # the compare preset, --group-by agent --save
-./compare.sh django__django-11099 -j 4         # any instance, extra mira flags pass through
-COMPARE_TARGETS=codex,pi,claude-code ./compare.sh <id>   # override the set ad-hoc
-```
+| Preset | Purpose | Samples | Targets | Typical run |
+|--------|---------|---------|---------|-------------|
+| `compare` | Evidence of how yolop benches vs other configs & coding agents | 1 (you supply) | all 8 agents (yolop ×4 + claude-code ×2 + codex + pi) | `./compare.sh <instance>` |
+| `astropy-12907` | The compare set with the instance **pinned** (`filter`) | astropy-12907 | all 8 agents | `mira … run --preset astropy-12907 --group-by agent --save` |
+| `tracking` | Weekly yolop quality tracking | 20 (`tracking-v1`) | gpt-5.5 high · glm-5.2 · opus-4.8 | `mira … run --preset tracking --group-by difficulty --save` |
+| `full` | Whole benchmark, run rarely | all 500 | same as tracking (edit as needed) | `mira … run --preset full --group-by repo --checkpoint ck/full.json --save` |
 
-It runs one cell per agent flavor (yolop across providers/effort + claude-code,
-codex, pi, with Opus 4.8 on yolop and claude-code), groups by `agent`, and saves
-the run under `results/<run_id>/`. A **target** is Mira's comparison axis — a
-model *or* a harness — so agent configs are first-class targets, not models
-faked into the model slot.
-
-A preset can also **pin the sample** via `filter` (a substring on the case key
-`eval/sample@target`), so "this one item across all targets" is a single
-self-contained preset — no instance arg:
-
-```bash
-# [presets.astropy-12907] = filter = "astropy__astropy-12907" + the compare targets
-mira --cmd "uv run swebench_verified.py" run --preset astropy-12907 --group-by agent --save
-```
-
-Clone that `[presets.NAME]` block (new name + `filter`) to pin other instances.
+`compare` is also wrapped by [`compare.sh`](compare.sh) (adds `--group-by agent
+--save`); `COMPARE_TARGETS=…` overrides the set ad-hoc. A preset's `filter` is a
+substring on the case key `eval/sample@target`, so it can **pin a sample** — clone
+the `astropy-12907` block (new name + `filter`) to pin other instances. A
+**target** is Mira's comparison axis — a model *or* a harness — so agent configs
+are first-class targets, not models faked into the model slot.
 
 ## Config matrix
 

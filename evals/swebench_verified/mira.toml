@@ -17,19 +17,37 @@ dir = "./results"
 benchmark = "swebench_verified"
 
 # Named selection presets, applied with `mira run --preset NAME` (explicit flags
-# override). `compare` is the cross-agent comparison target set: yolop across
-# providers/effort + claude-code, codex, pi, with Opus 4.8 on yolop and
-# claude-code. Pair it with `--group-by agent --save` (see compare.sh).
+# override). A preset only *subsets* the declared grid (targets / samples via
+# tag|filter). `--group-by` and `--save` are not selection, so pass them too (or
+# use compare.sh). The README "Presets" table documents each one's purpose.
+
+# COMPARE — evidence of how yolop benches against different configs and other
+# coding agents on ONE instance: yolop across providers/effort + claude-code,
+# codex, pi (Opus 4.8 on yolop and claude-code). You supply the instance.
+#   ./compare.sh <instance>     # = run <instance> --preset compare --group-by agent --save
 [presets.compare]
 targets = ["anthropic-sonnet", "openai-default", "openai-high", "anthropic-opus",
            "claude-code", "claude-code-opus", "codex", "pi"]
 
-# A fully self-contained run: one specific instance across the compare target
-# set. `filter` is a substring on the case key (`eval/sample@target`), so it
-# pins the sample — no instance arg needed. Clone this block (new name + filter)
-# to pin other instances.
-#   mira --cmd "uv run swebench_verified.py" run --preset astropy-12907 --group-by agent --save
+# ASTROPY-12907 — the compare set with the instance pinned via `filter` (a
+# substring on the case key `eval/sample@target`), so no instance arg is needed.
+# Clone this block (new name + filter) to pin other instances.
+#   mira ... run --preset astropy-12907 --group-by agent --save
 [presets.astropy-12907]
 filter = "astropy__astropy-12907"
 targets = ["anthropic-sonnet", "openai-default", "openai-high", "anthropic-opus",
            "claude-code", "claude-code-opus", "codex", "pi"]
+
+# TRACKING — weekly yolop quality tracking: the fixed 20-instance tracking-v1
+# suite across a small matrix of models (gpt-5.5 high, glm-5.2, opus 4.8).
+#   mira ... run --preset tracking --group-by difficulty --save
+[presets.tracking]
+tag = "tracking-v1"
+targets = ["openai-high", "openrouter-glm", "anthropic-opus"]
+
+# FULL — the whole SWE-bench Verified (all 500), run rarely (e.g. a release
+# headline). Same model matrix as tracking by default — edit the targets for the
+# run you want. This is large (500 × targets cells); use --checkpoint to resume.
+#   mira ... run --preset full --group-by repo --checkpoint ck/full.json --save
+[presets.full]
+targets = ["openai-high", "openrouter-glm", "anthropic-opus"]
