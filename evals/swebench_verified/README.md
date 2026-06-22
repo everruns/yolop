@@ -266,7 +266,7 @@ entry:
 ```python
 MATRIX = {
     "anthropic-claude-sonnet-4.5": {"agent": "yolop", "provider": "anthropic", "model": "claude-sonnet-4-5"},
-    "claude-code":      {"agent": "claude-code", "model": "claude-sonnet-4-5"},
+    "claude-code-sonnet-4.5": {"agent": "claude-code", "model": "claude-sonnet-4-5"},
     "codex":            {"agent": "codex", "model": "gpt-5.5",
                          "price": {"input": 1.25, "output": 10.0, "cache_read": 0.125}},
     "pi":               {"agent": "pi", "provider": "openai", "model": "gpt-5.5"},

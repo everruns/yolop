@@ -151,8 +151,8 @@ MATRIX: dict[str, dict[str, Any]] = {
     # Offline plumbing check (no key; won't solve tasks)
     "llmsim": {"agent": "yolop", "provider": "llmsim"},
     # Other coding agents (need their CLI on PATH + provider keys)
-    "claude-code": {"agent": "claude-code", "model": "claude-sonnet-4-5"},
-    "claude-code-opus": {"agent": "claude-code", "model": "claude-opus-4-8"},
+    "claude-code-sonnet-4.5": {"agent": "claude-code", "model": "claude-sonnet-4-5"},
+    "claude-code-opus-4.8": {"agent": "claude-code", "model": "claude-opus-4-8"},
     # codex reports tokens but no cost; `price` (USD per 1M) lets us estimate +
     # cap. sandbox: bypass — its Landlock sandbox can't init as root; the
     # checkout is already isolated.
