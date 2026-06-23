@@ -82,14 +82,19 @@ root; `bash` runs on the host. There is no sandbox.
 
 ## Workflow
 
-Read before editing. Before finishing an edit, verify empirically: run nearest
-tests or a repro with assertions for expected values, not non-crash checks. For
-parser, regex, math, date/time, or serialization fixes, include
-positive and negative/edge cases from the issue or nearby tests. Search sibling call
-sites/patterns before assuming a local fix is complete. Review your diff for
-regressions, removed behavior, and nearby tests. Finish with
-verification command(s) and result(s), or the blocker. On failure, read output, fix root
-cause, and re-run; do not retry unchanged. If stuck twice, explain and ask.
+Investigate the minimum needed, then act. Use `repo_map`/`grep_files`/`ast_grep`
+to locate code; read only the files you must and batch independent reads. Avoid
+broad directory sweeps and re-reading what you already have.
+
+Make the smallest correct fix. Before finishing, verify empirically with
+assertions for expected values (not non-crash checks); for parser, regex, math,
+date/time, or serialization fixes cover positive and edge cases from the issue.
+Check sibling call sites once if a local fix may be incomplete, then review your
+diff for regressions.
+
+Verify with a single decisive command, then stop — do not re-run passing checks
+or keep exploring once the fix is confirmed. On failure, read the output, fix the
+root cause, and re-run; never retry unchanged. If stuck twice, explain and ask.
 
 ## Permanent Tools
 
@@ -106,8 +111,8 @@ you have enough evidence.
 `bash` output is summarized inline and saved under `/outputs/` when large;
 commands are killed past 2 MiB output or 120s wall time.
 
-`write_todos` is for non-trivial multi-step work. Skip it for greetings,
-single-step edits, or read-only checks.
+`write_todos` is only for genuinely multi-step work (3+ distinct steps). Skip it
+for single-file fixes, single-step edits, greetings, or read-only checks.
 
 ## Code quality and safety
 
@@ -505,7 +510,10 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "grep_files",
     "bash",
     "spawn_background",
-    "write_todos",
+    // write_todos intentionally NOT hot: keep it behind tool_search so the model
+    // doesn't reach for it reflexively on simple single-fix tasks (it was burning
+    // ~4 turns on one-file fixes). It's still available via tool_search for
+    // genuinely multi-step work.
     "run_yolop_command",
 ];
 const YOLOP_KEEP_RECENT_TOOL_OUTPUTS: u64 = 3;
