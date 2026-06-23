@@ -30,14 +30,14 @@ use async_trait::async_trait;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
     BackgroundExecutionCapability, BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability,
-    FileSystemCapability, INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability,
-    LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability, MessageMetadataCapability,
-    PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID,
-    SESSION_STORAGE_CAPABILITY_ID, SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID,
-    STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability, SessionStorageCapability,
-    SessionTasksCapability, StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID,
-    TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
-    USER_HOOKS_CAPABILITY_ID, UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
+    INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID,
+    LoopDetectionCapability, MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID,
+    PromptCachingCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID,
+    SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID,
+    ScopedSkillsCapability, SessionStorageCapability, SessionTasksCapability,
+    StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID,
+    ToolOutputPersistenceCapability, ToolSearchCapability, USER_HOOKS_CAPABILITY_ID,
+    UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::driver_registry::{DriverRegistry, ProviderMetadata};
@@ -2242,7 +2242,12 @@ pub async fn build_with_options(
     //                            global/workspace hook config
     let mut capabilities = CapabilityRegistry::new();
     capabilities.register(AgentInstructionsCapability);
-    capabilities.register(FileSystemCapability);
+    // TODO(EVE-620): revert to `capabilities.register(FileSystemCapability)` once
+    // everruns ships an edits[]-only edit_file. This wrapper drops the ambiguous
+    // top-level old_text/new_text from edit_file's schema (gpt-5.5 populates both
+    // and eats a rejection). https://linear.app/everruns/issue/EVE-620
+    capabilities
+        .register(crate::capabilities::edit_file_override::EditsOnlyFileSystemCapability::new());
     // Upstream multi-scope skills capability (everruns-core 0.12.0+),
     // configured with yolop's workspace/global/system scopes and a host-path
     // resolver so `${SKILL_DIR}` reaches real files. The file store maps the
