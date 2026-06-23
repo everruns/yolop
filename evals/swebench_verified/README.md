@@ -253,8 +253,8 @@ sliced differently, not separate evals. A preset only subsets the grid;
 
 | Preset | Purpose | Samples | Targets | Typical run |
 |--------|---------|---------|---------|-------------|
-| `compare` | Evidence of how yolop benches vs other configs & coding agents | 1 (you supply) | all 8 agents (yolop ×4 + claude-code ×2 + codex + pi) | `./compare.sh <instance>` |
-| `astropy-12907` | The compare set with the instance **pinned** (`filter`) | astropy-12907 | all 8 agents | `mira … run --preset astropy-12907 --group-by agent --save` |
+| `compare` | Evidence of how yolop benches vs other configs & coding agents | 1 (you supply) | 10 targets (yolop ×6, incl. gpt-5.5 none/minimal/medium/high + claude-code ×2 + codex + pi) | `./compare.sh <instance>` |
+| `astropy-12907` | The compare set with the instance **pinned** (`filter`) | astropy-12907 | same 10 targets | `mira … run --preset astropy-12907 --group-by agent --save` |
 | `tracking` | Weekly yolop quality tracking | 20 (`tracking-v1`) | gpt-5.5 high · glm-5.2 · opus-4.8 | `mira … run --preset tracking --group-by difficulty --save` |
 | `full` | Whole benchmark, run rarely | all 500 | same as tracking (edit as needed) | `mira … run --preset full --group-by repo --checkpoint ck/full.json --save` |
 
