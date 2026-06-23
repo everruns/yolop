@@ -82,19 +82,14 @@ root; `bash` runs on the host. There is no sandbox.
 
 ## Workflow
 
-Investigate the minimum needed, then act. Use `repo_map`/`grep_files`/`ast_grep`
-to locate code; read only the files you must and batch independent reads. Avoid
-broad directory sweeps and re-reading what you already have.
-
-Make the smallest correct fix. Before finishing, verify empirically with
-assertions for expected values (not non-crash checks); for parser, regex, math,
-date/time, or serialization fixes cover positive and edge cases from the issue.
-Check sibling call sites once if a local fix may be incomplete, then review your
-diff for regressions.
-
-Verify with a single decisive command, then stop — do not re-run passing checks
-or keep exploring once the fix is confirmed. On failure, read the output, fix the
-root cause, and re-run; never retry unchanged. If stuck twice, explain and ask.
+Investigate minimally: prefer `repo_map`/`grep_files`/`ast_grep` over sweeps;
+read only needed files; batch reads. Make the smallest correct fix. Before
+finishing, verify with assertions for expected values (not non-crash checks);
+for parser, regex, math, date/time, or serialization fixes cover positive and
+edge cases. Check sibling call sites if the fix may be incomplete, then review
+your diff for regressions. Verify with a single decisive command, then stop;
+don't re-run passing checks. On failure, read output, fix root cause; never
+retry unchanged. If stuck twice, explain and ask.
 
 ## Permanent Tools
 
@@ -4534,14 +4529,17 @@ mod tests {
             .nth(1)
             .and_then(|tail| tail.split("## Permanent Tools").next())
             .expect("workflow section should be present");
+        // Normalize whitespace so line-wrapping in the prompt can't split an
+        // asserted phrase across a newline.
+        let workflow = workflow.split_whitespace().collect::<Vec<_>>().join(" ");
 
-        assert!(workflow.contains("Before finishing an edit"));
+        assert!(workflow.contains("Before finishing"));
         assert!(workflow.contains("assertions for expected values"));
-        assert!(workflow.contains("positive and negative/edge cases"));
-        assert!(workflow.contains("Search sibling"));
-        assert!(workflow.contains("Review your diff"));
+        assert!(workflow.contains("positive and edge cases"));
+        assert!(workflow.contains("sibling call sites"));
+        assert!(workflow.contains("review your diff"));
         assert!(workflow.contains("regressions"));
-        assert!(workflow.contains("verification command(s) and result(s)"));
+        assert!(workflow.contains("single decisive command"));
     }
 
     #[test]
