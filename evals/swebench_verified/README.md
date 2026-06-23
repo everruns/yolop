@@ -240,8 +240,11 @@ Study-internal knobs that the host doesn't own are read from the environment so
 they can be set on the `--cmd` line: `SWEBENCH_NO_EVAL=1` (skip Docker scoring),
 `SWEBENCH_MAX_WORKERS=N` (Docker eval parallelism), `SWEBENCH_NAMESPACE=none`
 (build images locally instead of pulling prebuilt), `SWEBENCH_EVAL_TIMEOUT`,
-`SWEBENCH_YOLOP_BIN` (override the yolop binary). The per-instance USD cap is set
-per config in the matrix (`max_cost_usd`, default `$5`).
+`SWEBENCH_YOLOP_BIN` (override the yolop binary), `SWEBENCH_CACHE_LEVEL=instance`
+(keep the per-instance Docker image so a multi-target matrix pulls it once
+rather than re-pulling per cell — avoids Docker Hub anonymous pull-rate limits;
+default `env`). The per-instance USD cap is set per config in the matrix
+(`max_cost_usd`, default `$5`).
 
 ### Presets — named runs
 

@@ -33,7 +33,9 @@ absent so the host skips it.
 Study-internal knobs come from the environment (the host can't pass study CLI
 flags): `SWEBENCH_NO_EVAL=1` skips Docker scoring, `SWEBENCH_MAX_WORKERS`,
 `SWEBENCH_NAMESPACE` (`none` builds images locally), `SWEBENCH_EVAL_TIMEOUT`,
-`SWEBENCH_YOLOP_BIN` (override the yolop binary path).
+`SWEBENCH_YOLOP_BIN` (override the yolop binary path), `SWEBENCH_CACHE_LEVEL`
+(SWE-bench image cache level; `instance` keeps the per-instance image so a
+matrix run pulls it once instead of re-pulling per cell — default `env`).
 
 stdout carries ONLY protocol JSON (one object per line); logs go to stderr.
 """
@@ -818,10 +820,16 @@ def evaluate_predictions(predictions: Mapping[str, str], instances: list[Instanc
         for iid in ids:
             fh.write(json.dumps({"instance_id": iid, "model_name_or_path": model_name,
                                  "model_patch": predictions.get(iid, "")}) + "\n")
+    # SWE-bench's default cache_level "env" deletes the per-instance image after
+    # each cell, so a multi-target matrix re-pulls the same prebuilt image once
+    # per cell — which trips Docker Hub's anonymous pull rate limit. "instance"
+    # keeps the instance image so the matrix pulls it once and reuses it.
+    cache_level = os.environ.get("SWEBENCH_CACHE_LEVEL", "env")
     cmd = [sys.executable, "-m", "swebench.harness.run_evaluation",
            "--dataset_name", str(dataset_file), "--predictions_path", str(preds_file),
            "--run_id", run_id, "--instance_ids", *ids, "--max_workers", str(max_workers),
-           "--namespace", namespace, "--timeout", str(timeout), "--report_dir", str(work)]
+           "--namespace", namespace, "--timeout", str(timeout), "--report_dir", str(work),
+           "--cache_level", cache_level]
     log(f"running evaluation: {' '.join(cmd)}")
     # Keep the harness's copious output OFF this process's stdout (the protocol
     # channel under the Mira host); route it all to stderr.
