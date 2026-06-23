@@ -183,8 +183,9 @@ with `AGENTS=codex,pi evals/swebench_verified/bootstrap.sh`. Manual equivalent:
 
 ```bash
 ( cd ../.. && cargo build --release )    # produces target/release/yolop
-brew install everruns/tap/mira           # the host CLI that drives the study
-# …or from crates.io:  cargo install mira-cli --locked
+brew install everruns/tap/mira           # the host CLI (prebuilt binary, recommended)
+# …or from crates.io:  cargo install mira-cli --locked   (compiles from source)
+# bootstrap.sh prefers a prebuilt binary via cargo-binstall when available.
 # Python deps need nothing — `uv run swebench_verified.py` installs them on first use.
 ```
 
