@@ -71,10 +71,11 @@ doppler run -- cargo run -- --provider openai -p "hi"
 The `evals/` directory holds [Mira](https://github.com/everruns/mira) eval
 studies for benchmarking yolop and other agents. `evals/swebench_verified/` is
 the SWE-bench Verified study — a single self-contained `swebench_verified.py`
-with PEP 723 inline deps; the `mira` host CLI drives it from that directory
-(`mira --cmd "uv run swebench_verified.py" run`). It is outside the Cargo
-workspace; `uv run` provisions its deps on first use, and its stdlib-only tests
-run with `python3 -m unittest discover -s evals/swebench_verified/tests`. See
+built on the `mira-eval` Python SDK, with PEP 723 inline deps; the `mira` host
+CLI drives it from that directory (`mira --cmd "uv run swebench_verified.py"
+run`). It is outside the Cargo workspace; `uv run` provisions its deps on first
+use, and its tests (which import the SDK) run with `uv run --with mira-eval -m
+unittest discover -s evals/swebench_verified/tests`. See
 [`evals/README.md`](evals/README.md).
 
 ## Git and commits

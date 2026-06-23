@@ -1,14 +1,16 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pandas>=2.0", "pyarrow>=14.0", "swebench>=4.1.0"]
+# dependencies = ["mira-eval>=0.1.0", "pandas>=2.0", "pyarrow>=14.0", "swebench>=4.1.0"]
 # ///
 """swebench_verified — a single-file Mira eval study for SWE-bench Verified.
 
 Mira's host CLI speaks newline-delimited JSON over stdio to a child process, so
 an eval study can be any program in any language. This is that program for
-yolop's SWE-bench Verified benchmark — one self-contained file with its
-dependencies declared inline (PEP 723), so `uv` builds an ephemeral env and runs
-it with no project scaffolding:
+yolop's SWE-bench Verified benchmark, built on the `mira-eval` Python SDK (the
+`mira` package on PyPI) — the SDK owns the stdio protocol loop (initialize / list
+/ run / execute / score) while this file owns the SWE-bench-specific work. One
+self-contained file with its dependencies declared inline (PEP 723), so `uv`
+builds an ephemeral env and runs it with no project scaffolding:
 
     cd evals/swebench_verified
     mira --cmd "uv run swebench_verified.py" list
@@ -47,14 +49,16 @@ import sys
 import time
 import urllib.request
 import uuid
+from collections import abc
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-# Mira collapsed its pre-release minors back to a single 1.0 baseline; everything
-# we emit (open-ended `metadata`, the numeric `metrics` map, `error_kind`, and
-# per-target `metadata` columns) is part of that baseline.
-PROTOCOL_VERSION = "1.0"
+import mira  # the mira-eval SDK: protocol types + the stdio serve loop
+
+# The mira-eval SDK pins the protocol version (`mira.PROTOCOL_VERSION`, currently
+# "1.0"); everything we emit (open-ended `metadata`, the numeric `metrics` map,
+# `error_kind`, and per-target `metadata` columns) is part of that 1.0 baseline.
 STUDY_VERSION = "0.5.0"
 
 HERE = Path(__file__).resolve().parent
@@ -858,14 +862,127 @@ def suite_membership() -> dict[str, list[str]]:
 
 
 # ============================================================================ #
-# The study — answers Mira initialize/list/run over stdio. One process serves
-# many run requests, so the dataset is loaded once and reused.
+# The study — owns the SWE-bench-specific work behind the mira-eval SDK. The SDK
+# (`mira.Study`) owns the stdio protocol loop (initialize/list/run/execute/score)
+# and the scoring/verdict machinery; this `Study` holds the dataset cache and the
+# Docker-scoring config, and exposes a subject `(sample, cx) -> mira.Transcript`.
+# One process serves many run requests, so the dataset is loaded once and reused.
 # ============================================================================ #
 def _sanitize(s: str) -> str:
     return "".join(c if c.isalnum() or c in "-._" else "_" for c in s)
 
 
+def _run_agent_cell(inst: Instance, target: str, spec: dict, *,
+                    max_workers: int, namespace: str, eval_timeout: int,
+                    do_eval: bool) -> tuple[AgentRun, bool, dict, str | None]:
+    """Checkout + run the agent + (optionally) Docker-score one cell. Module-level
+    so the unit tests can patch `checkout`/`run_agent`/`capture_patch`/
+    `evaluate_predictions` as globals. Returns (run, resolved, report, error_kind)."""
+    run = _run_agent(inst, target, spec)
+    # A checkout/setup failure is infra (not the agent's fault).
+    error_kind = "infra" if (run.error or "").startswith("runner:") else None
+    resolved, report, eval_err = _score(inst, run, target, do_eval=do_eval,
+                                        max_workers=max_workers, namespace=namespace,
+                                        eval_timeout=eval_timeout)
+    if eval_err and not run.error:
+        run.error = eval_err  # Docker/harness failed to score
+        error_kind = "infra"
+    return run, resolved, report, error_kind
+
+
+def _run_agent(inst: Instance, target: str, spec: dict) -> AgentRun:
+    run_id = f"{_sanitize(target)}-{_sanitize(inst.instance_id)}-{uuid.uuid4().hex[:6]}"
+    workdir = CACHE_DIR / "work" / run_id
+    session_dir = CACHE_DIR / "sessions" / run_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        checkout(inst, workdir)
+        run = run_agent(spec, inst, str(workdir), str(session_dir))
+        run.patch = capture_patch(workdir)
+    except Exception as e:  # report, don't crash the study loop
+        log(f"agent run failed for {target}/{inst.instance_id}: {e}")
+        run = AgentRun(patch="", metrics=RunMetrics(), error=f"runner: {e}")
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    return run
+
+
+def _score(inst: Instance, run: AgentRun, target: str, *, do_eval: bool,
+           max_workers: int, namespace: str, eval_timeout: int):
+    if not do_eval:
+        return False, {}, None
+    try:
+        run_id = f"{_sanitize(target)}-{_sanitize(inst.instance_id)}-{uuid.uuid4().hex[:6]}"
+        results = evaluate_predictions({inst.instance_id: run.patch}, [inst], run_id,
+                                       max_workers=max_workers, namespace=namespace,
+                                       timeout=eval_timeout)
+        ev = results.get(inst.instance_id)
+        if ev is None:
+            return False, {}, "no eval result"
+        return bool(ev.resolved), ev.report, ev.error
+    except Exception as e:  # Docker/infra failure: not resolved, surface it
+        log(f"eval failed for {target}/{inst.instance_id}: {e}")
+        return False, {}, f"eval: {e}"
+
+
+def _build_transcript(run: AgentRun, resolved: bool, report: dict,
+                      spec: dict, inst: Instance, error_kind: str | None) -> mira.Transcript:
+    m = run.metrics
+    tools = [name for name, count in m.tools_used.items() for _ in range(count)]
+    # `metrics` is the numeric map the host's generic budget scorers read; keep
+    # anything numeric here (incl. cache_creation_tokens, which mira.Usage has no
+    # field for). `metadata` is open-ended JSON: structured values, not strings.
+    metrics: dict[str, float] = {
+        "turns": m.turns, "iterations": m.iterations, "tool_calls": m.tool_calls,
+        "tool_calls_failed": m.tool_calls_failed,
+        "cache_read_tokens": m.tokens.cache_read_tokens,
+        "cache_creation_tokens": m.tokens.cache_creation_tokens,
+    }
+    if m.agent_reported_time_s is not None:
+        metrics["agent_reported_time_s"] = m.agent_reported_time_s
+    return mira.Transcript(
+        final_response=f"resolved={resolved}",
+        iterations=m.iterations,
+        tool_calls_count=m.tool_calls,
+        tool_calls=tools,
+        usage=mira.Usage(input_tokens=m.tokens.input_tokens, output_tokens=m.tokens.output_tokens,
+                         cache_read_tokens=m.tokens.cache_read_tokens, cost_usd=m.cost_usd),
+        timing=mira.Timing(duration_ms=int(m.wall_time_s * 1000)),
+        metrics=metrics,
+        files={"model_patch.diff": run.patch} if run.patch else {},
+        # No `config` here: mira already records the target id as the case `model`
+        # column, so echoing it again only invites rename drift.
+        metadata={
+            "agent": spec.get("agent", "yolop"),
+            "provider": spec.get("provider") or "", "model": spec.get("model") or "",
+            "reasoning_effort": m.reasoning_effort, "stop_reason": m.stop_reason,
+            "resolved": resolved, "repo": inst.repo,
+            "difficulty": (inst.extra or {}).get("difficulty"),
+            "tools_used": m.tools_used, "eval_report": report or {},
+        },
+        error=run.error,
+        # Infra errors (Docker/harness, checkout) are surfaced as N/A by the SDK's
+        # scorer short-circuit and retried — not counted as the model getting it
+        # wrong. `error_kind` left None on a clean run (omitted on the wire).
+        error_kind=error_kind,
+    )
+
+
+def _resolved_scorer() -> mira.Scorer:
+    """The benchmark gate: did the hidden FAIL_TO_PASS suite pass? Reads the
+    verdict the subject already computed (and stashed in transcript metadata) so
+    a score-later pass needs no Docker."""
+    def fn(_sample, transcript) -> mira.Score:
+        resolved = bool(transcript.metadata.get("resolved"))
+        return mira.make_score("resolved", 1.0 if resolved else 0.0, resolved,
+                               "FAIL_TO_PASS passed" if resolved else "not resolved")
+    return mira.scorer("resolved", fn)
+
+
 class Study:
+    """SWE-bench study state: the dataset cache plus the Docker-scoring config.
+    `protocol()` wires it into a `mira.Study` (the SDK protocol layer)."""
+
     def __init__(self, *, do_eval: bool = True, max_workers: int = 4,
                  namespace: str = "swebench", eval_timeout: int = 1800):
         self.do_eval = do_eval
@@ -879,149 +996,78 @@ class Study:
             self._instances = {i.instance_id: i for i in load_instances()}
         return self._instances
 
-    # -- protocol handlers -------------------------------------------------
-    def initialize(self) -> dict[str, Any]:
-        return {"protocol_version": PROTOCOL_VERSION, "study": "swebench_verified",
-                "study_version": STUDY_VERSION, "evals": 1, "capabilities": ["usage"]}
+    def _subject(self, sample: mira.Sample, cx: mira.RunCx) -> mira.Transcript:
+        """Run one (instance, config) cell. The SDK has already skipped
+        unavailable targets, so any target reaching here is runnable."""
+        spec = MATRIX.get(cx.target)
+        if spec is None:
+            raise ValueError(f"unknown target/config: {cx.target!r}")
+        inst = self.instances().get(sample.id)
+        if inst is None:
+            raise ValueError(f"unknown sample/instance: {sample.id!r}")
+        run, resolved, report, error_kind = _run_agent_cell(
+            inst, cx.target, spec, max_workers=self.max_workers, namespace=self.namespace,
+            eval_timeout=self.eval_timeout, do_eval=self.do_eval)
+        return _build_transcript(run, resolved, report, spec, inst, error_kind)
 
-    def list(self) -> dict[str, Any]:
+    def _build_samples(self) -> list[mira.Sample]:
         membership = suite_membership()
-        samples = []
+        samples: list[mira.Sample] = []
         for iid, inst in self.instances().items():
             tags = [inst.repo] if inst.repo else []
             difficulty = (inst.extra or {}).get("difficulty")
             if difficulty:
                 tags.append(_sanitize(str(difficulty)))
             tags.extend(membership.get(iid, []))
-            samples.append({"id": iid, "tags": tags,
-                            "metadata": {"repo": inst.repo or "", "difficulty": str(difficulty or "")}})
+            # The subject pulls the full problem statement from the Instance, so
+            # the Sample carries only the routing metadata (the SDK doesn't put a
+            # prompt on the wire `list` anyway).
+            samples.append(mira.Sample(
+                iid, tags=tags,
+                metadata={"repo": inst.repo or "", "difficulty": str(difficulty or "")}))
+        return samples
+
+    def _targets(self) -> list[mira.Target]:
         # Each MATRIX entry is a Mira *target* (the thing under evaluation — here a
-        # harness/agent config, not just a model). label = config name.
-        targets = [{"label": name, "provider": spec.get("provider") or spec.get("agent", "yolop"),
-                    "available": config_available(spec), "metadata": _target_metadata(spec)}
-                   for name, spec in MATRIX.items()]
-        return {"evals": [{
-            "name": "swebench_verified",
-            "description": "Resolve SWE-bench instances; FAIL_TO_PASS via the official Docker harness",
-            "samples": samples, "scorers": ["succeeded", "resolved"], "targets": targets,
-            "max_turns": 0, "metadata": {"benchmark": "swebench_verified"},
-        }]}
+        # harness/agent config, not just a model). label = config name; an absent
+        # provider key marks it unavailable so the SDK reports it N/A and skips it.
+        return [mira.target(name, provider=spec.get("provider") or spec.get("agent", "yolop"),
+                            available=config_available(spec), metadata=_target_metadata(spec))
+                for name, spec in MATRIX.items()]
 
-    def run(self, params: dict[str, Any]) -> dict[str, Any]:
-        eval_name, sample_id, target = params.get("eval"), params.get("sample"), params.get("target")
-        if eval_name != "swebench_verified":
-            raise ValueError(f"unknown eval: {eval_name!r}")
-        spec = MATRIX.get(target)
-        if spec is None:
-            raise ValueError(f"unknown target/config: {target!r}")
-        inst = self.instances().get(sample_id)
-        if inst is None:
-            raise ValueError(f"unknown sample/instance: {sample_id!r}")
-        if not config_available(spec):
-            return self._result(eval_name, sample_id, target, skipped=True)
+    def protocol(self) -> mira.Study:
+        study = mira.Study("swebench_verified", version=STUDY_VERSION)
+        # Samples are lazy (_LazySamples): the dataset loads on the first `list`/
+        # `run`, not at construction, so `initialize` stays cheap and works offline
+        # (the SDK's `initialize` only counts evals, never enumerates samples).
+        study.add(mira.Eval(
+            name="swebench_verified", subject=self._subject,
+            samples=_LazySamples(self), targets=self._targets(),
+            scorers=[mira.succeeded(), _resolved_scorer()],
+            description="Resolve SWE-bench instances; FAIL_TO_PASS via the official Docker harness",
+            metadata={"benchmark": "swebench_verified"}))
+        return study
 
-        run = self._run_agent(inst, target, spec)
-        # A checkout/setup failure is infra (not the agent's fault).
-        error_kind = "infra" if (run.error or "").startswith("runner:") else None
-        resolved, report, eval_err = self._score(inst, run, target)
-        if eval_err and not run.error:
-            run.error = eval_err  # Docker/harness failed to score
-            error_kind = "infra"
 
-        scores = [
-            {"scorer": "succeeded", "value": 0.0 if run.error else 1.0,
-             "pass": run.error is None, "reason": run.error or "agent run completed"},
-            {"scorer": "resolved", "value": 1.0 if resolved else 0.0, "pass": resolved,
-             "reason": "FAIL_TO_PASS passed" if resolved else "not resolved"},
-        ]
-        aggregate = sum(s["value"] for s in scores) / len(scores)
-        # `resolved` is the benchmark gate; `succeeded` is reported for signal.
-        # On an infra error the host overrides these to a single N/A.
-        return self._result(eval_name, sample_id, target, passed=resolved, aggregate=aggregate,
-                            scores=scores,
-                            transcript=self._transcript(run, resolved, report, spec, inst, error_kind))
+class _LazySamples(abc.Sequence):
+    """A Sequence of the study's samples that materializes (loading the dataset)
+    only on first access, then caches. Lets `protocol()` build the Eval — and the
+    host answer `initialize` — without touching the dataset."""
 
-    # -- helpers -----------------------------------------------------------
-    def _run_agent(self, inst: Instance, target: str, spec: dict) -> AgentRun:
-        run_id = f"{_sanitize(target)}-{_sanitize(inst.instance_id)}-{uuid.uuid4().hex[:6]}"
-        workdir = CACHE_DIR / "work" / run_id
-        session_dir = CACHE_DIR / "sessions" / run_id
-        session_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            checkout(inst, workdir)
-            run = run_agent(spec, inst, str(workdir), str(session_dir))
-            run.patch = capture_patch(workdir)
-        except Exception as e:  # report, don't crash the study loop
-            log(f"agent run failed for {target}/{inst.instance_id}: {e}")
-            run = AgentRun(patch="", metrics=RunMetrics(), error=f"runner: {e}")
-        finally:
-            shutil.rmtree(workdir, ignore_errors=True)
-        return run
+    def __init__(self, study: Study):
+        self._study = study
+        self._cache: list[mira.Sample] | None = None
 
-    def _score(self, inst: Instance, run: AgentRun, target: str):
-        if not self.do_eval:
-            return False, {}, None
-        try:
-            run_id = f"{_sanitize(target)}-{_sanitize(inst.instance_id)}-{uuid.uuid4().hex[:6]}"
-            results = evaluate_predictions({inst.instance_id: run.patch}, [inst], run_id,
-                                           max_workers=self.max_workers, namespace=self.namespace,
-                                           timeout=self.eval_timeout)
-            ev = results.get(inst.instance_id)
-            if ev is None:
-                return False, {}, "no eval result"
-            return bool(ev.resolved), ev.report, ev.error
-        except Exception as e:  # Docker/infra failure: not resolved, surface it
-            log(f"eval failed for {target}/{inst.instance_id}: {e}")
-            return False, {}, f"eval: {e}"
+    def _materialized(self) -> list[mira.Sample]:
+        if self._cache is None:
+            self._cache = self._study._build_samples()
+        return self._cache
 
-    def _transcript(self, run: AgentRun, resolved: bool, report: dict,
-                    spec: dict, inst: Instance, error_kind: str | None):
-        m = run.metrics
-        tools = [name for name, count in m.tools_used.items() for _ in range(count)]
-        files = {"model_patch.diff": run.patch} if run.patch else {}
-        # metadata is open-ended JSON (protocol 1.4): structured values, not
-        # stringified. Use `metrics` (1.2) for anything numeric so it surfaces in
-        # reports and feeds generic budget scorers.
-        metrics = {
-            "turns": m.turns, "iterations": m.iterations, "tool_calls": m.tool_calls,
-            "tool_calls_failed": m.tool_calls_failed,
-            "cache_read_tokens": m.tokens.cache_read_tokens,
-            "cache_creation_tokens": m.tokens.cache_creation_tokens,
-        }
-        if m.agent_reported_time_s is not None:
-            metrics["agent_reported_time_s"] = m.agent_reported_time_s
-        transcript = {
-            "final_response": f"resolved={resolved}", "iterations": m.iterations,
-            "tool_calls_count": m.tool_calls, "tool_calls": tools,
-            "usage": {"input_tokens": m.tokens.input_tokens, "output_tokens": m.tokens.output_tokens,
-                      "cache_read_tokens": m.tokens.cache_read_tokens,
-                      "cache_creation_tokens": m.tokens.cache_creation_tokens,
-                      "total_tokens": m.tokens.total_tokens, "cost_usd": m.cost_usd},
-            "timing": {"duration_ms": int(m.wall_time_s * 1000)},
-            "metrics": metrics, "files": files,
-            # No `config` here: mira already records the target id as the case
-            # `model` column, so echoing it again only invites rename drift.
-            "metadata": {
-                "agent": spec.get("agent", "yolop"),
-                "provider": spec.get("provider") or "", "model": spec.get("model") or "",
-                "reasoning_effort": m.reasoning_effort, "stop_reason": m.stop_reason,
-                "resolved": resolved, "repo": inst.repo,
-                "difficulty": (inst.extra or {}).get("difficulty"),
-                "tools_used": m.tools_used, "eval_report": report or {},
-            },
-            "error": run.error,
-        }
-        # Infra errors (Docker/harness, checkout) are surfaced as N/A by the host
-        # and retried — not counted as the model getting it wrong.
-        if error_kind:
-            transcript["error_kind"] = error_kind
-        return transcript
+    def __getitem__(self, index):
+        return self._materialized()[index]
 
-    def _result(self, eval_name, sample_id, target, *, passed=False, aggregate=0.0,
-                scores=None, transcript=None, skipped=False) -> dict[str, Any]:
-        return {"eval": eval_name, "sample": sample_id, "target": target, "passed": passed,
-                "aggregate": aggregate, "scores": scores or [],
-                "transcript": transcript or {"final_response": "", "error": None}, "skipped": skipped}
+    def __len__(self) -> int:
+        return len(self._materialized())
 
 
 def _build_study() -> Study:
@@ -1039,33 +1085,10 @@ def _build_study() -> Study:
 
 
 def serve(study: Study | None = None) -> None:
-    """Run the stdio protocol loop until stdin closes."""
+    """Build the study and run the SDK's stdio protocol loop until stdin closes."""
     study = study or _build_study()
     log(f"ready: study=swebench_verified do_eval={study.do_eval}")
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            print(json.dumps({"method": "log", "params": {"message": "bad json"}}), flush=True)
-            continue
-        rid, method, params = msg.get("id"), msg.get("method"), msg.get("params", {})
-        try:
-            if method == "initialize":
-                result = study.initialize()
-            elif method == "list":
-                result = study.list()
-            elif method == "run":
-                result = study.run(params)
-            else:
-                raise ValueError(f"unknown method: {method!r}")
-            print(json.dumps({"id": rid, "result": result}), flush=True)
-        except Exception as exc:  # noqa: BLE001 — report, never crash the loop
-            log(f"error handling {method}: {exc}")
-            print(json.dumps({"id": rid, "error": {"message": str(exc)}}), flush=True)
-    log("stdin closed, exiting")
+    study.protocol().serve()
 
 
 def main() -> int:

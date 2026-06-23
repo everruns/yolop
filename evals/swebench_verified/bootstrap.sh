@@ -51,10 +51,19 @@ if have mira; then
   mira --version 2>&1 | head -1 || true
 elif have brew; then
   brew install everruns/tap/mira || echo "  ! mira install failed; install manually"
-elif have cargo; then
-  # mira-cli isn't on crates.io yet — install from the upstream repo.
-  cargo install --git https://github.com/everruns/mira mira-cli --locked \
-    || echo "  ! mira install failed; install manually"
+elif have cargo-binstall || have cargo; then
+  # Prefer a prebuilt binary (seconds) over compiling mira-cli from source
+  # (minutes). mira-cli ships no [package.metadata.binstall], and its release
+  # assets are named after the binary (mira-<target>.tar.gz, tag v<version>),
+  # not the crate, so cargo-binstall needs explicit URL/layout overrides.
+  if have cargo-binstall && cargo binstall -y mira-cli \
+       --pkg-url "{ repo }/releases/download/v{ version }/mira-{ target }.tar.gz" \
+       --pkg-fmt tgz --bin-dir "mira{ binary-ext }"; then
+    :
+  else
+    cargo install mira-cli --locked \
+      || echo "  ! mira install failed; install manually"
+  fi
 else
   echo "  ! no brew/cargo; install mira manually (brew install everruns/tap/mira)"
 fi
