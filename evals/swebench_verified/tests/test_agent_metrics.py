@@ -155,6 +155,17 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(sv._AGENTS["pi"], sv.run_pi)
         self.assertEqual(sv._AGENTS["yolop"], sv.run_yolop)
 
+    def test_gpt55_reasoning_effort_baselines(self):
+        # Low/no-reasoning baselines so yolop can be compared to `pi` (which runs
+        # gpt-5.5 with no reasoning controls) on equal footing. effort flows to
+        # the yolop CLI via run_yolop's --reasoning-effort.
+        self.assertEqual(MATRIX["openai-gpt-5.5-none"]["reasoning_effort"], "none")
+        # gpt-5.5 supports none/low/medium/high/xhigh; "minimal" is rejected.
+        self.assertEqual(MATRIX["openai-gpt-5.5-low"]["reasoning_effort"], "low")
+        self.assertEqual(MATRIX["openai-gpt-5.5-high"]["reasoning_effort"], "high")
+        # the medium default rides the model profile, so it carries no explicit key
+        self.assertNotIn("reasoning_effort", MATRIX["openai-gpt-5.5"])
+
     def test_unknown_agent_raises(self):
         # dispatch rejects an unknown agent before touching the workspace
         with self.assertRaises(ValueError):

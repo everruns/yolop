@@ -9,6 +9,7 @@ pub(crate) mod attribution;
 pub(crate) mod background;
 pub(crate) mod client_commands;
 pub(crate) mod config;
+pub(crate) mod edit_file_override;
 pub(crate) mod goal;
 pub(crate) mod hooks;
 mod host;

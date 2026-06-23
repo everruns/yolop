@@ -30,14 +30,14 @@ use async_trait::async_trait;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
     BackgroundExecutionCapability, BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability,
-    FileSystemCapability, INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability,
-    LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability, MessageMetadataCapability,
-    PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID,
-    SESSION_STORAGE_CAPABILITY_ID, SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID,
-    STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability, SessionStorageCapability,
-    SessionTasksCapability, StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID,
-    TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
-    USER_HOOKS_CAPABILITY_ID, UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
+    INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID,
+    LoopDetectionCapability, MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID,
+    PromptCachingCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID,
+    SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID,
+    ScopedSkillsCapability, SessionStorageCapability, SessionTasksCapability,
+    StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID,
+    ToolOutputPersistenceCapability, ToolSearchCapability, USER_HOOKS_CAPABILITY_ID,
+    UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::driver_registry::{DriverRegistry, ProviderMetadata};
@@ -82,14 +82,14 @@ root; `bash` runs on the host. There is no sandbox.
 
 ## Workflow
 
-Read before editing. Before finishing an edit, verify empirically: run nearest
-tests or a repro with assertions for expected values, not non-crash checks. For
-parser, regex, math, date/time, or serialization fixes, include
-positive and negative/edge cases from the issue or nearby tests. Search sibling call
-sites/patterns before assuming a local fix is complete. Review your diff for
-regressions, removed behavior, and nearby tests. Finish with
-verification command(s) and result(s), or the blocker. On failure, read output, fix root
-cause, and re-run; do not retry unchanged. If stuck twice, explain and ask.
+Investigate minimally: prefer `repo_map`/`grep_files`/`ast_grep` over sweeps;
+read only needed files; batch reads. Make the smallest correct fix. Before
+finishing, verify with assertions for expected values (not non-crash checks);
+for parser, regex, math, date/time, or serialization fixes cover positive and
+edge cases. Check sibling call sites if the fix may be incomplete, then review
+your diff for regressions. Verify with a single decisive command, then stop;
+don't re-run passing checks. On failure, read output, fix root cause; never
+retry unchanged. If stuck twice, explain and ask.
 
 ## Permanent Tools
 
@@ -106,8 +106,9 @@ you have enough evidence.
 `bash` output is summarized inline and saved under `/outputs/` when large;
 commands are killed past 2 MiB output or 120s wall time.
 
-`write_todos` is for non-trivial multi-step work. Skip it for greetings,
-single-step edits, or read-only checks.
+`write_todos` is only for complex, multi-step work — 3+ distinct steps spanning
+multiple files or phases. Skip it for single-file fixes, single-step edits,
+greetings, or read-only checks.
 
 ## Code quality and safety
 
@@ -2242,7 +2243,12 @@ pub async fn build_with_options(
     //                            global/workspace hook config
     let mut capabilities = CapabilityRegistry::new();
     capabilities.register(AgentInstructionsCapability);
-    capabilities.register(FileSystemCapability);
+    // TODO(EVE-620): revert to `capabilities.register(FileSystemCapability)` once
+    // everruns ships an edits[]-only edit_file. This wrapper drops the ambiguous
+    // top-level old_text/new_text from edit_file's schema (gpt-5.5 populates both
+    // and eats a rejection). https://linear.app/everruns/issue/EVE-620
+    capabilities
+        .register(crate::capabilities::edit_file_override::EditsOnlyFileSystemCapability::new());
     // Upstream multi-scope skills capability (everruns-core 0.12.0+),
     // configured with yolop's workspace/global/system scopes and a host-path
     // resolver so `${SKILL_DIR}` reaches real files. The file store maps the
@@ -4523,14 +4529,17 @@ mod tests {
             .nth(1)
             .and_then(|tail| tail.split("## Permanent Tools").next())
             .expect("workflow section should be present");
+        // Normalize whitespace so line-wrapping in the prompt can't split an
+        // asserted phrase across a newline.
+        let workflow = workflow.split_whitespace().collect::<Vec<_>>().join(" ");
 
-        assert!(workflow.contains("Before finishing an edit"));
+        assert!(workflow.contains("Before finishing"));
         assert!(workflow.contains("assertions for expected values"));
-        assert!(workflow.contains("positive and negative/edge cases"));
-        assert!(workflow.contains("Search sibling"));
-        assert!(workflow.contains("Review your diff"));
+        assert!(workflow.contains("positive and edge cases"));
+        assert!(workflow.contains("sibling call sites"));
+        assert!(workflow.contains("review your diff"));
         assert!(workflow.contains("regressions"));
-        assert!(workflow.contains("verification command(s) and result(s)"));
+        assert!(workflow.contains("single decisive command"));
     }
 
     #[test]
