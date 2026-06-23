@@ -111,8 +111,9 @@ you have enough evidence.
 `bash` output is summarized inline and saved under `/outputs/` when large;
 commands are killed past 2 MiB output or 120s wall time.
 
-`write_todos` is only for genuinely multi-step work (3+ distinct steps). Skip it
-for single-file fixes, single-step edits, greetings, or read-only checks.
+`write_todos` is only for complex, multi-step work — 3+ distinct steps spanning
+multiple files or phases. Skip it for single-file fixes, single-step edits,
+greetings, or read-only checks.
 
 ## Code quality and safety
 
@@ -510,10 +511,7 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "grep_files",
     "bash",
     "spawn_background",
-    // write_todos intentionally NOT hot: keep it behind tool_search so the model
-    // doesn't reach for it reflexively on simple single-fix tasks (it was burning
-    // ~4 turns on one-file fixes). It's still available via tool_search for
-    // genuinely multi-step work.
+    "write_todos",
     "run_yolop_command",
 ];
 const YOLOP_KEEP_RECENT_TOOL_OUTPUTS: u64 = 3;
