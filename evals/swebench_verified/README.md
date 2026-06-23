@@ -149,10 +149,11 @@ self-contained.
 evals/swebench_verified/
   swebench_verified.py   # the whole study: one file, PEP 723 inline deps
                          #   matrix, agents (yolop/claude-code/codex/pi), event-log
-                         #   metrics, SWE-bench load + Docker scoring, protocol loop
+                         #   metrics, SWE-bench load + Docker scoring; the protocol
+                         #   loop is the mira-eval SDK (the `mira` package)
   mira.toml              # host config: [results].dir -> ./results
   suites/                # curated instance subsets (tracking-v1.json + selector)
-  tests/                 # stdlib-only unit tests (run with plain python3)
+  tests/                 # unit tests; need the SDK (uv run --with mira-eval -m unittest …)
   results/               # mira --save run archives (<run_id>/) + pre-Mira history
   .cache/                # gitignored: dataset parquet, checkouts, raw logs, eval scratch
 ```
@@ -189,9 +190,12 @@ brew install everruns/tap/mira           # the host CLI (prebuilt binary, recomm
 # Python deps need nothing — `uv run swebench_verified.py` installs them on first use.
 ```
 
-This study speaks the Mira protocol directly (stdlib only). To author a new
-Python study ergonomically, the [`mira-eval`](https://pypi.org/project/mira-eval/)
-SDK is on PyPI (`pip install mira-eval`).
+This study is built on the [`mira-eval`](https://pypi.org/project/mira-eval/)
+Python SDK (the `mira` package on PyPI): the SDK owns the stdio protocol loop
+(initialize / list / run / execute / score) and `uv run` installs it from the
+PEP 723 deps, so `uv run swebench_verified.py` needs nothing extra. To run the
+unit tests outside `uv run`, install the SDK first (`pip install mira-eval`, or
+`uv run --with mira-eval -m unittest discover -s tests`).
 
 Requires a running **Docker** daemon (SWE-bench runs the hidden tests in
 per-instance containers) and provider keys in the environment: `OPENAI_API_KEY`

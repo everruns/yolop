@@ -1,11 +1,15 @@
 """Tests for the Mira eval study protocol layer.
 
-Fully offline: the dataset, agent, and Docker scorer are faked so the test
-exercises the protocol mapping (initialize/list/run, sample tagging, model
-availability, transcript + score shape, stdout cleanliness) with no network or
-Docker. Stdlib-only:
+The study is built on the `mira-eval` SDK (the `mira` package); these tests drive
+it through the SDK's protocol dispatch (`Study.protocol().handle(method, params)`)
+with the dataset, agent, and Docker scorer faked, so they exercise the protocol
+mapping (initialize/list/run/execute, sample tagging, target availability,
+transcript + score shape, stdout cleanliness) with no network or Docker.
 
-    python3 -m unittest discover -s evals/swebench_verified/tests
+Needs `mira-eval` installed (the study imports it); run, e.g.:
+
+    uv run --with mira-eval -m unittest discover -s evals/swebench_verified/tests
+    # or: pip install mira-eval && python3 -m unittest discover -s evals/swebench_verified/tests
 """
 
 import sys
@@ -43,13 +47,13 @@ def _fake_agent_run(*_a, **_k):
 
 class InitializeListTest(unittest.TestCase):
     def test_initialize_announces_study(self):
-        info = _study().initialize()
+        info = _study().protocol().handle("initialize", {})
         self.assertEqual(info["protocol_version"], "1.0")
         self.assertEqual(info["study"], "swebench_verified")
         self.assertIn("usage", info["capabilities"])
 
     def test_list_maps_instances_to_samples(self):
-        ev = _study().list()["evals"][0]
+        ev = _study().protocol().handle("list", {})["evals"][0]
         self.assertEqual(ev["name"], "swebench_verified")
         sample = ev["samples"][0]
         self.assertEqual(sample["id"], "org__repo-1")
@@ -57,22 +61,27 @@ class InitializeListTest(unittest.TestCase):
         self.assertIn("15_min_-_1_hour", sample["tags"])      # sanitized difficulty
 
     def test_list_targets_reflect_availability(self):
+        # Availability is baked into the targets when the protocol study is built,
+        # so build it under the patched environment.
         with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "", "ANTHROPIC_API_KEY": ""}):
-            models = {m["label"]: m for m in _study().list()["evals"][0]["targets"]}
-        self.assertTrue(models["llmsim"]["available"])        # offline provider
-        self.assertFalse(models["openai-gpt-5.5"]["available"])  # no key -> skipped
+            targets = {m["label"]: m for m in
+                       _study().protocol().handle("list", {})["evals"][0]["targets"]}
+        self.assertTrue(targets["llmsim"]["available"])           # offline provider
+        self.assertFalse(targets["openai-gpt-5.5"]["available"])  # no key -> skipped
 
     def test_list_targets_carry_config_metadata(self):
-        models = {m["label"]: m for m in _study().list()["evals"][0]["targets"]}
-        # config detail rides the model column for `mira run --group-by agent`
-        self.assertEqual(models["openai-gpt-5.5-high"]["metadata"]["agent"], "yolop")
-        self.assertEqual(models["openai-gpt-5.5-high"]["metadata"]["reasoning_effort"], "high")
-        self.assertEqual(models["codex"]["metadata"]["agent"], "codex")
-        self.assertIn("price", models["codex"]["metadata"])
+        targets = {m["label"]: m for m in
+                   _study().protocol().handle("list", {})["evals"][0]["targets"]}
+        # config detail rides the target column for `mira run --group-by agent`
+        self.assertEqual(targets["openai-gpt-5.5-high"]["metadata"]["agent"], "yolop")
+        self.assertEqual(targets["openai-gpt-5.5-high"]["metadata"]["reasoning_effort"], "high")
+        self.assertEqual(targets["codex"]["metadata"]["agent"], "codex")
+        self.assertIn("price", targets["codex"]["metadata"])
 
 
 class RunTest(unittest.TestCase):
-    def _run(self, *, resolved=True, do_eval=True, model="llmsim", sample="org__repo-1"):
+    def _handle(self, method, *, resolved=True, do_eval=True, model="llmsim",
+                sample="org__repo-1"):
         study = _study()
         study.do_eval = do_eval
         with mock.patch.object(sv, "checkout", lambda *a, **k: None), \
@@ -80,10 +89,11 @@ class RunTest(unittest.TestCase):
              mock.patch.object(sv, "run_agent", _fake_agent_run), \
              mock.patch.object(sv, "evaluate_predictions",
                                lambda *a, **k: {sample: EvalResult(resolved, {"resolved": resolved})}):
-            return study.run({"eval": "swebench_verified", "sample": sample, "target": model})
+            return study.protocol().handle(
+                method, {"eval": "swebench_verified", "sample": sample, "target": model})
 
     def test_resolved_cell_passes(self):
-        res = self._run(resolved=True)
+        res = self._handle("run", resolved=True)
         self.assertTrue(res["passed"])
         self.assertFalse(res["skipped"])
         names = {s["scorer"]: s for s in res["scores"]}
@@ -92,11 +102,10 @@ class RunTest(unittest.TestCase):
         tr = res["transcript"]
         self.assertEqual(tr["usage"]["input_tokens"], 100)
         self.assertEqual(tr["usage"]["cost_usd"], 0.01)
-        self.assertIn("model_patch.diff", tr["files"])
-        # numeric metrics map (protocol 1.2): values are plain numbers
+        # numeric metrics map: values are plain numbers
         self.assertEqual(tr["metrics"]["tool_calls"], 2)
         self.assertEqual(tr["metrics"]["turns"], 3)
-        # open-ended metadata (protocol 1.4): structured, not stringified
+        # open-ended metadata: structured, not stringified
         md = tr["metadata"]
         self.assertIs(md["resolved"], True)
         self.assertEqual(md["repo"], "org/repo")
@@ -108,6 +117,13 @@ class RunTest(unittest.TestCase):
         self.assertNotIn("config", md)
         self.assertNotIn("error_kind", tr)  # clean run: no infra error
 
+    def test_files_ride_the_execute_transcript(self):
+        # The run summary is lightweight (no files); the model patch rides the
+        # full transcript returned by `execute` (the SDK's artifact path).
+        tr = self._handle("execute", resolved=True)["transcript"]
+        self.assertIn("model_patch.diff", tr["files"])
+        self.assertEqual(tr["files"]["model_patch.diff"], "diff --git a b")
+
     def test_infra_eval_failure_is_marked_na(self):
         # When the Docker harness fails to score, the cell is an infra error
         # (error_kind=infra) so the host treats it as N/A, not a model failure.
@@ -117,11 +133,12 @@ class RunTest(unittest.TestCase):
              mock.patch.object(sv, "run_agent", _fake_agent_run), \
              mock.patch.object(sv, "evaluate_predictions",
                                lambda *a, **k: {"org__repo-1": EvalResult(False, {}, "no report.json")}):
-            res = study.run({"eval": "swebench_verified", "sample": "org__repo-1", "target": "llmsim"})
+            res = study.protocol().handle(
+                "run", {"eval": "swebench_verified", "sample": "org__repo-1", "target": "llmsim"})
         self.assertEqual(res["transcript"]["error_kind"], "infra")
 
     def test_unresolved_cell_fails(self):
-        res = self._run(resolved=False)
+        res = self._handle("run", resolved=False)
         self.assertFalse(res["passed"])
         self.assertFalse({s["scorer"]: s for s in res["scores"]}["resolved"]["pass"])
 
@@ -133,24 +150,26 @@ class RunTest(unittest.TestCase):
              mock.patch.object(sv, "capture_patch", lambda *a, **k: "d"), \
              mock.patch.object(sv, "run_agent", _fake_agent_run), \
              mock.patch.object(sv, "evaluate_predictions", lambda *a, **k: called.append(1) or {}):
-            res = study.run({"eval": "swebench_verified", "sample": "org__repo-1", "target": "llmsim"})
+            res = study.protocol().handle(
+                "run", {"eval": "swebench_verified", "sample": "org__repo-1", "target": "llmsim"})
         self.assertFalse(res["passed"])   # unscored -> not resolved
         self.assertEqual(called, [])      # Docker scorer not invoked
 
     def test_unavailable_config_is_skipped(self):
         with mock.patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
-            res = _study().run(
-                {"eval": "swebench_verified", "sample": "org__repo-1", "target": "openai-gpt-5.5"}
-            )
+            res = _study().protocol().handle(
+                "run", {"eval": "swebench_verified", "sample": "org__repo-1", "target": "openai-gpt-5.5"})
         self.assertTrue(res["skipped"])
 
     def test_unknown_sample_raises(self):
         with self.assertRaises(ValueError):
-            _study().run({"eval": "swebench_verified", "sample": "nope", "target": "llmsim"})
+            _study().protocol().handle(
+                "run", {"eval": "swebench_verified", "sample": "nope", "target": "llmsim"})
 
     def test_unknown_model_raises(self):
         with self.assertRaises(ValueError):
-            _study().run({"eval": "swebench_verified", "sample": "org__repo-1", "target": "nope"})
+            _study().protocol().handle(
+                "run", {"eval": "swebench_verified", "sample": "org__repo-1", "target": "nope"})
 
 
 class StdoutCleanlinessTest(unittest.TestCase):
