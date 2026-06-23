@@ -184,8 +184,13 @@ with `AGENTS=codex,pi evals/swebench_verified/bootstrap.sh`. Manual equivalent:
 ```bash
 ( cd ../.. && cargo build --release )    # produces target/release/yolop
 brew install everruns/tap/mira           # the host CLI that drives the study
+# …or from crates.io:  cargo install mira-cli --locked
 # Python deps need nothing — `uv run swebench_verified.py` installs them on first use.
 ```
+
+This study speaks the Mira protocol directly (stdlib only). To author a new
+Python study ergonomically, the [`mira-eval`](https://pypi.org/project/mira-eval/)
+SDK is on PyPI (`pip install mira-eval`).
 
 Requires a running **Docker** daemon (SWE-bench runs the hidden tests in
 per-instance containers) and provider keys in the environment: `OPENAI_API_KEY`

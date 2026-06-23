@@ -12,9 +12,11 @@ agent, scoring). One study per subfolder.
 
 ## Running a study with mira
 
-Install the host CLI once (`brew install everruns/tap/mira`), then drive a study
-from its own directory so its `mira.toml` is found and `--save` archives land in
-that study's `results/`:
+Install the host CLI once (`brew install everruns/tap/mira`, or from crates.io
+with `cargo install mira-cli --locked`), then drive a study from its own
+directory so its `mira.toml` is found and `--save` archives land in that study's
+`results/`. (Authoring a Python study? The [`mira-eval`](https://pypi.org/project/mira-eval/)
+SDK is on PyPI — `pip install mira-eval`.)
 
 ```bash
 cd evals/swebench_verified
