@@ -148,11 +148,12 @@ MATRIX: dict[str, dict[str, Any]] = {
     # default effort to gpt-5.5, so these isolate how much of yolop's turn/cost
     # overhead is reasoning vs harness — and put it on equal footing with `pi`,
     # which runs gpt-5.5 with no reasoning controls. effort "none" omits the
-    # reasoning param entirely; "minimal" is the lowest reasoning tier.
+    # reasoning param entirely; "low" is the lowest reasoning tier. (gpt-5.5
+    # supports none/low/medium/high/xhigh — "minimal" is rejected by the API.)
     "openai-gpt-5.5-none": {"agent": "yolop", "provider": "openai", "model": "gpt-5.5",
                     "reasoning_effort": "none"},
-    "openai-gpt-5.5-minimal": {"agent": "yolop", "provider": "openai", "model": "gpt-5.5",
-                    "reasoning_effort": "minimal"},
+    "openai-gpt-5.5-low": {"agent": "yolop", "provider": "openai", "model": "gpt-5.5",
+                    "reasoning_effort": "low"},
     # yolop x Anthropic (secondary provider)
     "anthropic-claude-sonnet-4.5": {"agent": "yolop", "provider": "anthropic", "model": "claude-sonnet-4-5"},
     "anthropic-claude-opus-4.8": {"agent": "yolop", "provider": "anthropic", "model": "claude-opus-4-8"},

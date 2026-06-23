@@ -160,7 +160,8 @@ class RegistryTest(unittest.TestCase):
         # gpt-5.5 with no reasoning controls) on equal footing. effort flows to
         # the yolop CLI via run_yolop's --reasoning-effort.
         self.assertEqual(MATRIX["openai-gpt-5.5-none"]["reasoning_effort"], "none")
-        self.assertEqual(MATRIX["openai-gpt-5.5-minimal"]["reasoning_effort"], "minimal")
+        # gpt-5.5 supports none/low/medium/high/xhigh; "minimal" is rejected.
+        self.assertEqual(MATRIX["openai-gpt-5.5-low"]["reasoning_effort"], "low")
         self.assertEqual(MATRIX["openai-gpt-5.5-high"]["reasoning_effort"], "high")
         # the medium default rides the model profile, so it carries no explicit key
         self.assertNotIn("reasoning_effort", MATRIX["openai-gpt-5.5"])
