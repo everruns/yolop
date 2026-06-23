@@ -201,7 +201,12 @@ impl Tool for BashTool {
         Some("Bash")
     }
     fn description(&self) -> &str {
-        "Run a bash command from the workspace root. Captures stdout/stderr with configurable verbosity. 120s timeout."
+        "Run a bash command. Each call is a fresh non-interactive shell already \
+         rooted at the workspace, so no state persists between calls: the working \
+         directory, shell variables, and exports reset every time. A bare `cd` is \
+         pointless — you are already at the workspace root; use paths relative to \
+         it, or chain within one call (`cd sub && cmd`). Captures stdout/stderr \
+         with configurable verbosity. 120s timeout."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -361,6 +366,50 @@ mod tests {
         assert_eq!(tool.hints().long_running, Some(true));
         assert_eq!(tool.hints().supports_background, Some(true));
         assert!(tool.as_background_executable().is_some());
+    }
+
+    // The description must warn that the shell is stateless and already at the
+    // workspace root. A weak model (nemotron-3-ultra in the swebench matrix run)
+    // burned ~30 turns issuing bare `cd <workdir>` commands expecting the cwd to
+    // persist; spelling out the contract is what steers it away.
+    #[test]
+    fn bash_description_documents_stateless_shell() {
+        let tool = BashTool::new(Workspace::new(std::env::current_dir().unwrap()));
+        let desc = tool.description().to_lowercase();
+        assert!(desc.contains("no state persists") || desc.contains("state persists"));
+        assert!(desc.contains("cd"));
+        assert!(desc.contains("workspace root"));
+    }
+
+    // Lock the behavior the description promises: a `cd` in one call does not
+    // carry into the next; every call starts at the workspace root.
+    #[tokio::test]
+    async fn bash_cwd_does_not_persist_between_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+
+        let ToolExecutionResult::Success(first) =
+            tool.execute(json!({ "command": "cd sub && pwd" })).await
+        else {
+            panic!("expected success");
+        };
+        assert_eq!(first["success"], true);
+
+        // The next call must be back at the root, not in `sub`.
+        let ToolExecutionResult::Success(second) = tool
+            .execute(json!({ "command": "basename \"$PWD\"" }))
+            .await
+        else {
+            panic!("expected success");
+        };
+        let out = second["stdout"].as_str().unwrap_or("");
+        let root_name = dir.path().file_name().unwrap().to_string_lossy();
+        assert_eq!(
+            out.trim(),
+            root_name,
+            "cwd should reset to the workspace root between calls"
+        );
     }
 
     #[tokio::test]
