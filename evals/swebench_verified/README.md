@@ -258,17 +258,15 @@ sliced differently, not separate evals. A preset only subsets the grid;
 
 | Preset | Purpose | Samples | Targets | Typical run |
 |--------|---------|---------|---------|-------------|
-| `compare` | Evidence of how yolop benches vs other configs & coding agents | 1 (you supply) | 10 targets (yolop ×6, incl. gpt-5.5 none/low/medium/high + claude-code ×2 + codex + pi) | `./compare.sh <instance>` |
-| `astropy-12907` | The compare set with the instance **pinned** (`filter`) | astropy-12907 | same 10 targets | `mira … run --preset astropy-12907 --group-by agent --save` |
+| `astropy-12907-compare` | Evidence of how yolop benches vs other configs & coding agents on one **pinned** instance (`filter`) | astropy-12907 | 13 targets (yolop ×6 incl. gpt-5.5 none/low/medium/high + nvidia/glm/kimi OpenRouter top models + claude-code ×2 + codex + pi) | `mira … run --preset astropy-12907-compare --group-by agent --save` |
 | `tracking` | Weekly yolop quality tracking | 20 (`tracking-v1`) | gpt-5.5 high · glm-5.2 · opus-4.8 | `mira … run --preset tracking --group-by difficulty --save` |
 | `full` | Whole benchmark, run rarely | all 500 | same as tracking (edit as needed) | `mira … run --preset full --group-by repo --checkpoint ck/full.json --save` |
 
-`compare` is also wrapped by [`compare.sh`](compare.sh) (adds `--group-by agent
---save`); `COMPARE_TARGETS=…` overrides the set ad-hoc. A preset's `filter` is a
-substring on the case key `eval/sample@target`, so it can **pin a sample** — clone
-the `astropy-12907` block (new name + `filter`) to pin other instances. A
-**target** is Mira's comparison axis — a model *or* a harness — so agent configs
-are first-class targets, not models faked into the model slot.
+A preset's `filter` is a substring on the case key `eval/sample@target`, so it can
+**pin a sample** — clone the `astropy-12907-compare` block (new name + `filter`) to
+pin other instances. A **target** is Mira's comparison axis — a model *or* a
+harness — so agent configs are first-class targets, not models faked into the
+model slot.
 
 ## Config matrix
 

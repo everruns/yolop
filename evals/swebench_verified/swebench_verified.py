@@ -166,6 +166,8 @@ MATRIX: dict[str, dict[str, Any]] = {
     "openrouter-nemotron-3-ultra": {"agent": "yolop", "provider": "openrouter",
                             "model": "nvidia/nemotron-3-ultra-550b-a55b"},
     "openrouter-glm-5.2": {"agent": "yolop", "provider": "openrouter", "model": "z-ai/glm-5.2"},
+    "openrouter-kimi-k2.7-code": {"agent": "yolop", "provider": "openrouter",
+                            "model": "moonshotai/kimi-k2.7-code"},
     "openrouter-qwen3-coder": {"agent": "yolop", "provider": "openrouter", "model": "qwen/qwen3-coder"},
     # Offline plumbing check (no key; won't solve tasks)
     "llmsim": {"agent": "yolop", "provider": "llmsim"},
