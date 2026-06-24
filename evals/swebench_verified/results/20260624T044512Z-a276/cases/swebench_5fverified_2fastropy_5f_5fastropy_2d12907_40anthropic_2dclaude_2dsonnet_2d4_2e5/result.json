@@ -1,0 +1,138 @@
+{
+  "eval": "swebench_verified",
+  "sample": "astropy__astropy-12907",
+  "target": "anthropic-claude-sonnet-4.5",
+  "passed": false,
+  "aggregate": 0.5,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 0.0,
+      "pass": false,
+      "reason": "yolop exited 1: yolop: model \"claude-sonnet-4-5\" not available on anthropic; using anthropic/claude-sonnet-4-6 high instead\nturn error: LLM error: Anthropic API error (400 Bad Request): {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CcMVpifNdGSPTjoW9P2vp\"}\n"
+    },
+    {
+      "scorer": "resolved",
+      "value": 1.0,
+      "pass": true,
+      "reason": "FAIL_TO_PASS passed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=True",
+    "iterations": 35,
+    "tool_calls_count": 34,
+    "tool_calls": [
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "read_file",
+      "edit_file"
+    ],
+    "usage": {
+      "input_tokens": 82969,
+      "output_tokens": 8318,
+      "cache_read_tokens": 479360,
+      "cost_usd": 0.666184
+    },
+    "timing": {
+      "duration_ms": 198356
+    },
+    "metrics": {
+      "agent_reported_time_s": 153.201,
+      "cache_creation_tokens": 49567.0,
+      "cache_read_tokens": 479360.0,
+      "iterations": 35.0,
+      "tool_calls": 34.0,
+      "tool_calls_failed": 0.0,
+      "turns": 35.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "difficulty": "15 min - 1 hour",
+      "eval_report": {
+        "patch_exists": true,
+        "patch_is_None": false,
+        "patch_successfully_applied": true,
+        "resolved": true,
+        "tests_status": {
+          "FAIL_TO_FAIL": {
+            "failure": [],
+            "success": []
+          },
+          "FAIL_TO_PASS": {
+            "failure": [],
+            "success": [
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+            ]
+          },
+          "PASS_TO_FAIL": {
+            "failure": [],
+            "success": []
+          },
+          "PASS_TO_PASS": {
+            "failure": [],
+            "success": [
+              "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+              "astropy/modeling/tests/test_separable.py::test_cdot",
+              "astropy/modeling/tests/test_separable.py::test_cstack",
+              "astropy/modeling/tests/test_separable.py::test_arith_oper",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+              "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+            ]
+          }
+        }
+      },
+      "model": "claude-sonnet-4-5",
+      "provider": "anthropic",
+      "reasoning_effort": "high",
+      "repo": "astropy/astropy",
+      "resolved": true,
+      "stop_reason": "error",
+      "tools_used": {
+        "bash": 32,
+        "edit_file": 1,
+        "read_file": 1
+      }
+    },
+    "error": "yolop exited 1: yolop: model \"claude-sonnet-4-5\" not available on anthropic; using anthropic/claude-sonnet-4-6 high instead\nturn error: LLM error: Anthropic API error (400 Bad Request): {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CcMVpifNdGSPTjoW9P2vp\"}\n"
+  },
+  "skipped": false
+}

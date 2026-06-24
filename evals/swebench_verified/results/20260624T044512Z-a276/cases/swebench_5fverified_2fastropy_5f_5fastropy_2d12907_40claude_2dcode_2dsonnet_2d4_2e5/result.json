@@ -1,0 +1,116 @@
+{
+  "eval": "swebench_verified",
+  "sample": "astropy__astropy-12907",
+  "target": "claude-code-sonnet-4.5",
+  "passed": true,
+  "aggregate": 1.0,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 1.0,
+      "pass": true,
+      "reason": "FAIL_TO_PASS passed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=True",
+    "iterations": 21,
+    "tool_calls_count": 12,
+    "tool_calls": [
+      "Bash",
+      "Bash",
+      "Bash",
+      "Bash",
+      "Bash",
+      "Bash",
+      "Read",
+      "Read",
+      "Write",
+      "Write",
+      "Write",
+      "Edit"
+    ],
+    "usage": {
+      "input_tokens": 56,
+      "output_tokens": 4226,
+      "cache_read_tokens": 344998,
+      "cost_usd": 0.421361
+    },
+    "timing": {
+      "duration_ms": 123785
+    },
+    "metrics": {
+      "agent_reported_time_s": 122.3,
+      "cache_creation_tokens": 42208.0,
+      "cache_read_tokens": 344998.0,
+      "iterations": 21.0,
+      "tool_calls": 12.0,
+      "tool_calls_failed": 3.0,
+      "turns": 13.0
+    },
+    "metadata": {
+      "agent": "claude-code",
+      "difficulty": "15 min - 1 hour",
+      "eval_report": {
+        "patch_exists": true,
+        "patch_is_None": false,
+        "patch_successfully_applied": true,
+        "resolved": true,
+        "tests_status": {
+          "FAIL_TO_FAIL": {
+            "failure": [],
+            "success": []
+          },
+          "FAIL_TO_PASS": {
+            "failure": [],
+            "success": [
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+            ]
+          },
+          "PASS_TO_FAIL": {
+            "failure": [],
+            "success": []
+          },
+          "PASS_TO_PASS": {
+            "failure": [],
+            "success": [
+              "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+              "astropy/modeling/tests/test_separable.py::test_cdot",
+              "astropy/modeling/tests/test_separable.py::test_cstack",
+              "astropy/modeling/tests/test_separable.py::test_arith_oper",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+              "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+            ]
+          }
+        }
+      },
+      "model": "claude-sonnet-4-5",
+      "provider": "",
+      "reasoning_effort": null,
+      "repo": "astropy/astropy",
+      "resolved": true,
+      "stop_reason": "completed",
+      "tools_used": {
+        "Bash": 6,
+        "Edit": 1,
+        "Read": 2,
+        "Write": 3
+      }
+    }
+  },
+  "skipped": false
+}
