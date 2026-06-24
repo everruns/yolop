@@ -12,26 +12,27 @@ agent, scoring). One study per subfolder.
 
 ## Running a study with mira
 
-Install the host CLI once (`brew install everruns/tap/mira`, or from crates.io
-with `cargo install mira-cli --locked`), then drive a study from its own
+Install the host CLI once (`brew install everruns/tap/mira`, `cargo binstall
+mira-cli`, or `cargo install mira-cli --locked`), then drive a study from its own
 directory so its `mira.toml` is found and `--save` archives land in that study's
-`results/`. (Authoring a Python study? The [`mira-eval`](https://pypi.org/project/mira-eval/)
-SDK is on PyPI — `pip install mira-eval`.)
+`results/`. Each study's `mira.toml` declares a `default_launcher` (mira >=0.2.0),
+so a bare `mira run`/`mira list` from that directory starts it — no
+`--uv`/`--cmd` needed. (Authoring a Python study? The
+[`mira-eval`](https://pypi.org/project/mira-eval/) SDK is on PyPI —
+`pip install mira-eval`.)
 
 ```bash
 cd evals/swebench_verified
 ./bootstrap.sh                      # yolop build + mira + agent CLIs (+ pre-warm uv deps)
 
-STUDY="uv run swebench_verified.py"   # single-file study; uv installs its inline deps
-
 # What the study advertises: the eval, its samples, and the matrix of targets.
-mira --cmd "$STUDY" list
+mira list
 
 # Offline plumbing check — one instance, no API key, no Docker, not saved.
-SWEBENCH_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --targets llmsim
+SWEBENCH_NO_EVAL=1 mira run astropy__astropy-12907 --targets llmsim
 
 # Real run: solve + Docker-score one instance, archive the run under ./results.
-doppler run -- mira --cmd "$STUDY" run astropy__astropy-12907 \
+doppler run -- mira run astropy__astropy-12907 \
     --targets anthropic-claude-sonnet-4.5 --save
 ```
 

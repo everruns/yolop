@@ -53,12 +53,9 @@ elif have brew; then
   brew install everruns/tap/mira || echo "  ! mira install failed; install manually"
 elif have cargo-binstall || have cargo; then
   # Prefer a prebuilt binary (seconds) over compiling mira-cli from source
-  # (minutes). mira-cli ships no [package.metadata.binstall], and its release
-  # assets are named after the binary (mira-<target>.tar.gz, tag v<version>),
-  # not the crate, so cargo-binstall needs explicit URL/layout overrides.
-  if have cargo-binstall && cargo binstall -y mira-cli \
-       --pkg-url "{ repo }/releases/download/v{ version }/mira-{ target }.tar.gz" \
-       --pkg-fmt tgz --bin-dir "mira{ binary-ext }"; then
+  # (minutes). mira-cli >=0.2.0 ships [package.metadata.binstall], so
+  # cargo-binstall resolves the release tarball without URL/layout overrides.
+  if have cargo-binstall && cargo binstall -y mira-cli; then
     :
   else
     cargo install mira-cli --locked \
@@ -95,10 +92,10 @@ cat <<'EOF'
 
   Docker daemon must be running for SWE-bench evaluation.
 
-  Run from this study directory (so mira.toml is found and runs save here):
+  Run from this study directory (so mira.toml is found, its default_launcher
+  drives the study, and runs save here):
     cd evals/swebench_verified
 
   Smoke test (offline, skips Docker):
-    SWEBENCH_NO_EVAL=1 mira --cmd "uv run swebench_verified.py" \
-      run astropy__astropy-12907 --models llmsim
+    SWEBENCH_NO_EVAL=1 mira run astropy__astropy-12907 --targets llmsim
 EOF

@@ -8,7 +8,7 @@ protocol — owns the SWE-bench-specific work (loading instances, checking out
 repos, running agent CLIs, and the Docker `FAIL_TO_PASS` scoring). Designed to
 grow: new benchmarks and new agents plug in behind small interfaces.
 
-See [Usage](#usage) for the `mira --cmd …` invocations.
+See [Usage](#usage) for how to drive it with `mira`.
 
 ## Agents
 
@@ -91,9 +91,9 @@ column carries its config (`agent`, `model`, `reasoning_effort`, `price`, …), 
 the host can break results down by any of them:
 
 ```bash
-mira --cmd "$STUDY" run --tag tracking-v1 --group-by repo         # resolve rate per repo
-mira --cmd "$STUDY" run --group-by difficulty                     # per difficulty tier
-mira --cmd "$STUDY" run --group-by agent                          # yolop vs claude-code vs …
+mira run --tag tracking-v1 --group-by repo         # resolve rate per repo
+mira run --group-by difficulty                     # per difficulty tier
+mira run --group-by agent                          # yolop vs claude-code vs …
 ```
 
 Cost is cache-aware (`cache_read`/`cache_creation` tokens are priced), so cost
@@ -130,8 +130,8 @@ Every sample is tagged with the suites it belongs to. The **`tracking` preset**
 (gpt-5.5 high · glm-5.2 · opus-4.8); or select it ad-hoc with `--tag`:
 
 ```bash
-mira --cmd "uv run swebench_verified.py" run --preset tracking --group-by difficulty --save
-mira --cmd "uv run swebench_verified.py" run --tag tracking-v1 --targets openai-gpt-5.5 --save
+mira run --preset tracking --group-by difficulty --save
+mira run --tag tracking-v1 --targets openai-gpt-5.5 --save
 ```
 
 Re-running `select_tracking.py` on the same dataset reproduces the committed set
@@ -185,7 +185,8 @@ with `AGENTS=codex,pi evals/swebench_verified/bootstrap.sh`. Manual equivalent:
 ```bash
 ( cd ../.. && cargo build --release )    # produces target/release/yolop
 brew install everruns/tap/mira           # the host CLI (prebuilt binary, recommended)
-# …or from crates.io:  cargo install mira-cli --locked   (compiles from source)
+# …or:  cargo binstall mira-cli          # prebuilt binary (mira-cli >=0.2.0 ships binstall metadata)
+# …or:  cargo install mira-cli --locked  # compiles from source
 # bootstrap.sh prefers a prebuilt binary via cargo-binstall when available.
 # Python deps need nothing — `uv run swebench_verified.py` installs them on first use.
 ```
@@ -213,31 +214,32 @@ reproducible against the binaries it was produced with.
 `swebench_verified` is a [Mira](https://github.com/everruns/mira) eval study: the `mira`
 host CLI drives it over a stdio JSON protocol, owning the matrix, selection,
 checkpoints, and reporting, while the study owns the SWE-bench-specific run +
-Docker scoring. Drive it with `--cmd` pointed at the script:
+Docker scoring. `mira.toml` declares a `default_launcher` (mira >=0.2.0), so from
+this directory a bare `mira run`/`mira list` starts the study — no `--uv
+swebench_verified.py` (or the older `--cmd "uv run swebench_verified.py"`) needed:
 
 ```bash
 cd evals/swebench_verified      # so the adjacent mira.toml is found; --save lands in ./results
-STUDY="uv run swebench_verified.py"
 
 # What the study advertises: the eval, its samples (instances), and the models
 # (matrix configs); configs with a missing provider key show as unavailable.
-mira --cmd "$STUDY" list
+mira list
 
 # Plumbing only: one instance on the offline llmsim config, skip Docker eval.
-SWEBENCH_NO_EVAL=1 mira --cmd "$STUDY" run astropy__astropy-12907 --targets llmsim
+SWEBENCH_NO_EVAL=1 mira run astropy__astropy-12907 --targets llmsim
 
 # Real end-to-end on one instance, selected configs (substring selection on the
 # case key, like `cargo test`), archived under ./results.
-doppler run -- mira --cmd "$STUDY" run astropy__astropy-12907 \
+doppler run -- mira run astropy__astropy-12907 \
     --targets openai-gpt-5.5,openai-gpt-5.5-high --save
 
 # Whole benchmark (all 500), one config, resumable + saved run archive.
-doppler run -- mira --cmd "$STUDY" run --targets openai-gpt-5.5 \
+doppler run -- mira run --targets openai-gpt-5.5 \
     --checkpoint ck/openai-gpt-5.5.json --save
 ```
 
 Study-internal knobs that the host doesn't own are read from the environment so
-they can be set on the `--cmd` line: `SWEBENCH_NO_EVAL=1` (skip Docker scoring),
+they can be set on the `mira` line: `SWEBENCH_NO_EVAL=1` (skip Docker scoring),
 `SWEBENCH_MAX_WORKERS=N` (Docker eval parallelism), `SWEBENCH_NAMESPACE=none`
 (build images locally instead of pulling prebuilt), `SWEBENCH_EVAL_TIMEOUT`,
 `SWEBENCH_YOLOP_BIN` (override the yolop binary), `SWEBENCH_CACHE_LEVEL=instance`
