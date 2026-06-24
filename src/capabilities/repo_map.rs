@@ -29,19 +29,10 @@ const MAX_SIGNATURE_CHARS: usize = 180;
 // the candidate pool is bounded independently of `limit` to keep ranking work
 // predictable on large workspaces.
 const MAX_CANDIDATES: usize = 5000;
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    ".hg",
-    ".svn",
-    "target",
-    "node_modules",
-    ".next",
-    "dist",
-    "build",
-    ".direnv",
-    ".venv",
-    "venv",
-];
+// Non-hidden directories that are dependency/build output, not source. Hidden
+// entries (any name starting with `.` — `.git`, `.cache`, `.venv`, …) are
+// skipped separately, so they don't need listing here.
+const SKIP_DIRS: &[&str] = &["target", "node_modules", "dist", "build", "venv"];
 
 #[derive(Clone)]
 pub(crate) struct RepoMapCapability {
@@ -950,7 +941,15 @@ fn resolve_scope(root: &Path, path: Option<&str>) -> Result<PathBuf> {
     let Some(path) = path else {
         return Ok(root.to_path_buf());
     };
-    let relative = path.trim_start_matches('/');
+    // The file tools address the workspace through a VFS rooted at `/workspace`,
+    // so models naturally pass `/workspace` or `/workspace/<subpath>` to repo_map
+    // too (repo_map otherwise scans real host paths). Strip that root alias so
+    // the namespace matches read_file/grep_files instead of erroring with
+    // "path not found: /workspace". Mirrors the file store's own normalization.
+    let trimmed = path.trim_start_matches('/');
+    let relative = trimmed
+        .strip_prefix("workspace/")
+        .unwrap_or(if trimmed == "workspace" { "" } else { trimmed });
     let candidate = Path::new(relative);
     if candidate.components().any(|component| {
         matches!(
@@ -1001,12 +1000,20 @@ fn collect_supported_files(
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        // Skip hidden entries (files and dirs): VCS, caches, virtualenvs, tool
+        // config — noise that crowds out real source and truncates the map. The
+        // swebench eval run showed `.cache/work/<vendored astropy>` dominating
+        // the map of this repo. An explicit scope INTO a hidden dir is still
+        // honored: only the recursive walk filters them.
+        if name.starts_with('.') {
+            continue;
+        }
         if file_type.is_dir() {
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| SKIP_DIRS.contains(&name))
-            {
+            if SKIP_DIRS.contains(&name) {
                 continue;
             }
             collect_supported_files(&path, language_filter, files, skipped_unsupported_files)?;
@@ -1833,6 +1840,128 @@ trait Named {
             },
         )
         .expect_err("outside path should fail");
+
+        assert!(err.to_string().contains("inside the workspace"));
+    }
+
+    // The file tools expose the workspace as a VFS rooted at `/workspace`, so a
+    // model addresses repo_map the same way. The bare root alias must resolve to
+    // the workspace root rather than erroring with "path not found: /workspace"
+    // (the very first call the nemotron eval run wasted a turn on).
+    #[test]
+    fn accepts_workspace_root_alias() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(&dir.path().join("src/lib.rs"), "pub fn inside_fn() {}\n");
+
+        for alias in ["/workspace", "workspace", "/workspace/"] {
+            let report = collect_repo_symbols(
+                dir.path(),
+                SymbolScanOptions {
+                    path: Some(alias.to_string()),
+                    query: None,
+                    language: Some("rust".to_string()),
+                    limit: 20,
+                    max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+                },
+            )
+            .unwrap_or_else(|e| panic!("alias {alias:?} should resolve to root: {e}"));
+
+            assert!(
+                report.symbols.iter().any(|s| s.name == "inside_fn"),
+                "alias {alias:?} did not scan the workspace root"
+            );
+        }
+    }
+
+    // A `/workspace/<subpath>` prefix scopes to that subpath, matching how the
+    // file tools resolve the same string.
+    #[test]
+    fn accepts_workspace_prefixed_subpath() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(&dir.path().join("pkg/inside.rs"), "pub fn pkg_fn() {}\n");
+        write(
+            &dir.path().join("other/elsewhere.rs"),
+            "pub fn other_fn() {}\n",
+        );
+
+        let report = collect_repo_symbols(
+            dir.path(),
+            SymbolScanOptions {
+                path: Some("/workspace/pkg".to_string()),
+                query: None,
+                language: Some("rust".to_string()),
+                limit: 20,
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
+        )
+        .expect("subpath under /workspace should scan");
+
+        assert!(report.symbols.iter().any(|s| s.name == "pkg_fn"));
+        assert!(
+            !report.symbols.iter().any(|s| s.name == "other_fn"),
+            "scope should be limited to /workspace/pkg"
+        );
+    }
+
+    // Hidden files and directories (`.cache`, `.git`, `.env`, …) are noise for a
+    // symbol map and crowded out real source in the swebench eval run, where a
+    // vendored astropy checkout under `.cache/work/` dominated the map. The
+    // recursive walk skips every `.`-prefixed entry.
+    #[test]
+    fn recursive_scan_skips_hidden_files_and_dirs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(&dir.path().join("src/real.rs"), "pub fn real_fn() {}\n");
+        write(
+            &dir.path().join(".cache/work/vendored.rs"),
+            "pub fn vendored_fn() {}\n",
+        );
+        write(
+            &dir.path().join(".git/hooks/hook.rs"),
+            "pub fn hook_fn() {}\n",
+        );
+        write(
+            &dir.path().join(".hidden.rs"),
+            "pub fn hidden_file_fn() {}\n",
+        );
+
+        let report = collect_repo_symbols(
+            dir.path(),
+            SymbolScanOptions {
+                path: None,
+                query: None,
+                language: Some("rust".to_string()),
+                limit: 50,
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
+        )
+        .expect("scan");
+
+        let names: Vec<&str> = report.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"real_fn"), "real source should be mapped");
+        for hidden in ["vendored_fn", "hook_fn", "hidden_file_fn"] {
+            assert!(
+                !names.contains(&hidden),
+                "hidden entry {hidden} should be skipped"
+            );
+        }
+    }
+
+    // The alias must not become an escape hatch: `/workspace/../outside` still
+    // resolves through the root and is rejected.
+    #[test]
+    fn workspace_alias_does_not_bypass_containment() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = collect_repo_symbols(
+            dir.path(),
+            SymbolScanOptions {
+                path: Some("/workspace/../outside".to_string()),
+                query: None,
+                language: None,
+                limit: 20,
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
+        )
+        .expect_err("escaping the workspace via the alias should fail");
 
         assert!(err.to_string().contains("inside the workspace"));
     }
