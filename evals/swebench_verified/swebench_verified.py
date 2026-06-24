@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["mira-eval>=0.1.0", "pandas>=2.0", "pyarrow>=14.0", "swebench>=4.1.0"]
+# dependencies = ["mira-eval>=0.2.0", "pandas>=2.0", "pyarrow>=14.0", "swebench>=4.1.0"]
 # ///
 """swebench_verified — a single-file Mira eval study for SWE-bench Verified.
 
@@ -13,8 +13,11 @@ self-contained file with its dependencies declared inline (PEP 723), so `uv`
 builds an ephemeral env and runs it with no project scaffolding:
 
     cd evals/swebench_verified
-    mira --cmd "uv run swebench_verified.py" list
-    mira --cmd "uv run swebench_verified.py" run astropy__astropy-12907 --targets anthropic-claude-sonnet-4.5 --save
+    mira list                  # mira.toml's default_launcher drives this study
+    mira run astropy__astropy-12907 --targets anthropic-claude-sonnet-4.5 --save
+
+(`mira --uv swebench_verified.py …` is the explicit equivalent; `--cmd "uv run
+swebench_verified.py"` still works for arbitrary command lines.)
 
 The `mira` host owns the target matrix, selection, concurrency, checkpoints, and
 reporting; this study owns the SWE-bench-specific work:

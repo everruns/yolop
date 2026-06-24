@@ -8,6 +8,15 @@
 # Layout per saved run: results/<run_id>/{report.json,report.html,meta.json}
 # (run_id = YYYYMMDDThhmmssZ-xxxx, sortable by time).
 
+# Named launcher: how `mira` (>=0.2.0) starts this study. With `default_launcher`
+# set, a bare `mira list` / `mira run …` from this directory drives the study —
+# no `--uv swebench_verified.py` (or the older `--cmd "uv run
+# swebench_verified.py"`) needed. Explicit launch flags still override it.
+default_launcher = "study"
+
+[launchers.study]
+uv = "swebench_verified.py"   # single-file PEP 723 study; uv installs inline deps
+
 [results]
 dir = "./results"
 

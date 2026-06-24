@@ -23,6 +23,7 @@ else
   SELECT=(--preset compare)
 fi
 
-cd "$(dirname "$0")"   # so mira.toml (presets + results dir) is found
-exec doppler run -- "$MIRA" --cmd "uv run swebench_verified.py" \
+cd "$(dirname "$0")"   # so mira.toml (launcher + presets + results dir) is found
+# mira.toml's default_launcher starts the study, so no --uv/--cmd needed here.
+exec doppler run -- "$MIRA" \
   run "$INSTANCE" "${SELECT[@]}" --group-by agent --save "$@"
