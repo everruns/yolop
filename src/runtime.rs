@@ -3223,8 +3223,7 @@ mod tests {
     fn coding_harness_excludes_user_ask_by_default() {
         let ids = coding_harness_capabilities(false, None, &Settings::default());
         assert!(
-            !ids
-                .iter()
+            !ids.iter()
                 .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID),
             "user ask should be opt-in via settings"
         );
