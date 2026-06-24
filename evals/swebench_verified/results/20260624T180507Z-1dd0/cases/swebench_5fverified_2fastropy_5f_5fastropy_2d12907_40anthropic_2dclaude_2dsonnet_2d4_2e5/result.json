@@ -1,7 +1,7 @@
 {
   "eval": "swebench_verified",
   "sample": "astropy__astropy-12907",
-  "target": "claude-code-sonnet-4.5",
+  "target": "anthropic-claude-sonnet-4.5",
   "passed": true,
   "aggregate": 1.0,
   "scores": [
@@ -20,42 +20,54 @@
   ],
   "transcript": {
     "final_response": "resolved=True",
-    "iterations": 21,
-    "tool_calls_count": 12,
+    "iterations": 24,
+    "tool_calls_count": 24,
     "tool_calls": [
-      "Bash",
-      "Bash",
-      "Bash",
-      "Bash",
-      "Bash",
-      "Bash",
-      "Read",
-      "Read",
-      "Write",
-      "Write",
-      "Write",
-      "Edit"
+      "grep_files",
+      "grep_files",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "read_file",
+      "read_file",
+      "edit_file"
     ],
     "usage": {
-      "input_tokens": 56,
-      "output_tokens": 4226,
-      "cache_read_tokens": 344998,
-      "cost_usd": 0.421361
+      "input_tokens": 47163,
+      "output_tokens": 4652,
+      "cache_read_tokens": 281084,
+      "cost_usd": 0.402847
     },
     "timing": {
-      "duration_ms": 123785
+      "duration_ms": 137293
     },
     "metrics": {
-      "agent_reported_time_s": 122.3,
-      "cache_creation_tokens": 42208.0,
-      "cache_read_tokens": 344998.0,
-      "iterations": 21.0,
-      "tool_calls": 12.0,
-      "tool_calls_failed": 3.0,
-      "turns": 13.0
+      "agent_reported_time_s": 101.388,
+      "cache_creation_tokens": 35750.0,
+      "cache_read_tokens": 281084.0,
+      "iterations": 24.0,
+      "tool_calls": 24.0,
+      "tool_calls_failed": 0.0,
+      "turns": 24.0
     },
     "metadata": {
-      "agent": "claude-code",
+      "agent": "yolop",
       "difficulty": "15 min - 1 hour",
       "eval_report": {
         "patch_exists": true,
@@ -99,16 +111,16 @@
         }
       },
       "model": "claude-sonnet-4-5",
-      "provider": "",
-      "reasoning_effort": null,
+      "provider": "anthropic",
+      "reasoning_effort": "high",
       "repo": "astropy/astropy",
       "resolved": true,
       "stop_reason": "completed",
       "tools_used": {
-        "Bash": 6,
-        "Edit": 1,
-        "Read": 2,
-        "Write": 3
+        "bash": 19,
+        "edit_file": 1,
+        "grep_files": 2,
+        "read_file": 2
       }
     }
   },

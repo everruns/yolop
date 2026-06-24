@@ -20,639 +20,6 @@
         }
       ],
       "skipped": false,
-      "target": "openai-gpt-5.5",
-      "transcript": {
-        "final_response": "resolved=True",
-        "iterations": 21,
-        "metadata": {
-          "agent": "yolop",
-          "difficulty": "15 min - 1 hour",
-          "eval_report": {
-            "patch_exists": true,
-            "patch_is_None": false,
-            "patch_successfully_applied": true,
-            "resolved": true,
-            "tests_status": {
-              "FAIL_TO_FAIL": {
-                "failure": [],
-                "success": []
-              },
-              "FAIL_TO_PASS": {
-                "failure": [],
-                "success": [
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
-                ]
-              },
-              "PASS_TO_FAIL": {
-                "failure": [],
-                "success": []
-              },
-              "PASS_TO_PASS": {
-                "failure": [],
-                "success": [
-                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
-                  "astropy/modeling/tests/test_separable.py::test_cdot",
-                  "astropy/modeling/tests/test_separable.py::test_cstack",
-                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
-                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
-                ]
-              }
-            }
-          },
-          "model": "gpt-5.5",
-          "provider": "openai",
-          "reasoning_effort": "medium",
-          "repo": "astropy/astropy",
-          "resolved": true,
-          "stop_reason": "completed",
-          "tools_used": {
-            "bash": 5,
-            "edit_file": 2,
-            "grep_files": 4,
-            "list_directory": 4,
-            "read_file": 5
-          }
-        },
-        "metrics": {
-          "agent_reported_time_s": 90.058,
-          "cache_creation_tokens": 0.0,
-          "cache_read_tokens": 325120.0,
-          "iterations": 21.0,
-          "tool_calls": 20.0,
-          "tool_calls_failed": 1.0,
-          "turns": 21.0
-        },
-        "timing": {
-          "duration_ms": 115646
-        },
-        "tool_calls": [
-          "list_directory",
-          "list_directory",
-          "list_directory",
-          "list_directory",
-          "grep_files",
-          "grep_files",
-          "grep_files",
-          "grep_files",
-          "read_file",
-          "read_file",
-          "read_file",
-          "read_file",
-          "read_file",
-          "edit_file",
-          "edit_file",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash"
-        ],
-        "tool_calls_count": 20,
-        "usage": {
-          "cache_read_tokens": 325120,
-          "cost_usd": 0.57853,
-          "input_tokens": 388778,
-          "output_tokens": 3256
-        }
-      }
-    },
-    {
-      "aggregate": 1.0,
-      "eval": "swebench_verified",
-      "passed": true,
-      "sample": "astropy__astropy-12907",
-      "scores": [
-        {
-          "pass": true,
-          "reason": "no error",
-          "scorer": "succeeded",
-          "value": 1.0
-        },
-        {
-          "pass": true,
-          "reason": "FAIL_TO_PASS passed",
-          "scorer": "resolved",
-          "value": 1.0
-        }
-      ],
-      "skipped": false,
-      "target": "openai-gpt-5.5-high",
-      "transcript": {
-        "final_response": "resolved=True",
-        "iterations": 27,
-        "metadata": {
-          "agent": "yolop",
-          "difficulty": "15 min - 1 hour",
-          "eval_report": {
-            "patch_exists": true,
-            "patch_is_None": false,
-            "patch_successfully_applied": true,
-            "resolved": true,
-            "tests_status": {
-              "FAIL_TO_FAIL": {
-                "failure": [],
-                "success": []
-              },
-              "FAIL_TO_PASS": {
-                "failure": [],
-                "success": [
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
-                ]
-              },
-              "PASS_TO_FAIL": {
-                "failure": [],
-                "success": []
-              },
-              "PASS_TO_PASS": {
-                "failure": [],
-                "success": [
-                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
-                  "astropy/modeling/tests/test_separable.py::test_cdot",
-                  "astropy/modeling/tests/test_separable.py::test_cstack",
-                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
-                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
-                ]
-              }
-            }
-          },
-          "model": "gpt-5.5",
-          "provider": "openai",
-          "reasoning_effort": "high",
-          "repo": "astropy/astropy",
-          "resolved": true,
-          "stop_reason": "completed",
-          "tools_used": {
-            "bash": 9,
-            "edit_file": 1,
-            "grep_files": 7,
-            "list_directory": 2,
-            "read_file": 6,
-            "stat_file": 1
-          }
-        },
-        "metrics": {
-          "agent_reported_time_s": 126.786,
-          "cache_creation_tokens": 0.0,
-          "cache_read_tokens": 457728.0,
-          "iterations": 27.0,
-          "tool_calls": 26.0,
-          "tool_calls_failed": 0.0,
-          "turns": 27.0
-        },
-        "timing": {
-          "duration_ms": 153889
-        },
-        "tool_calls": [
-          "list_directory",
-          "list_directory",
-          "grep_files",
-          "grep_files",
-          "grep_files",
-          "grep_files",
-          "grep_files",
-          "grep_files",
-          "grep_files",
-          "read_file",
-          "read_file",
-          "read_file",
-          "read_file",
-          "read_file",
-          "read_file",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "edit_file",
-          "stat_file"
-        ],
-        "tool_calls_count": 26,
-        "usage": {
-          "cache_read_tokens": 457728,
-          "cost_usd": 0.630644,
-          "input_tokens": 509944,
-          "output_tokens": 4690
-        }
-      }
-    },
-    {
-      "aggregate": 1.0,
-      "eval": "swebench_verified",
-      "passed": true,
-      "sample": "astropy__astropy-12907",
-      "scores": [
-        {
-          "pass": true,
-          "reason": "no error",
-          "scorer": "succeeded",
-          "value": 1.0
-        },
-        {
-          "pass": true,
-          "reason": "FAIL_TO_PASS passed",
-          "scorer": "resolved",
-          "value": 1.0
-        }
-      ],
-      "skipped": false,
-      "target": "openai-gpt-5.5-none",
-      "transcript": {
-        "final_response": "resolved=True",
-        "iterations": 17,
-        "metadata": {
-          "agent": "yolop",
-          "difficulty": "15 min - 1 hour",
-          "eval_report": {
-            "patch_exists": true,
-            "patch_is_None": false,
-            "patch_successfully_applied": true,
-            "resolved": true,
-            "tests_status": {
-              "FAIL_TO_FAIL": {
-                "failure": [],
-                "success": []
-              },
-              "FAIL_TO_PASS": {
-                "failure": [],
-                "success": [
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
-                ]
-              },
-              "PASS_TO_FAIL": {
-                "failure": [],
-                "success": []
-              },
-              "PASS_TO_PASS": {
-                "failure": [],
-                "success": [
-                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
-                  "astropy/modeling/tests/test_separable.py::test_cdot",
-                  "astropy/modeling/tests/test_separable.py::test_cstack",
-                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
-                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
-                ]
-              }
-            }
-          },
-          "model": "gpt-5.5",
-          "provider": "openai",
-          "reasoning_effort": null,
-          "repo": "astropy/astropy",
-          "resolved": true,
-          "stop_reason": "completed",
-          "tools_used": {
-            "bash": 6,
-            "edit_file": 1,
-            "grep_files": 3,
-            "list_directory": 2,
-            "read_file": 4
-          }
-        },
-        "metrics": {
-          "agent_reported_time_s": 68.494,
-          "cache_creation_tokens": 0.0,
-          "cache_read_tokens": 227328.0,
-          "iterations": 17.0,
-          "tool_calls": 16.0,
-          "tool_calls_failed": 0.0,
-          "turns": 17.0
-        },
-        "timing": {
-          "duration_ms": 96319
-        },
-        "tool_calls": [
-          "list_directory",
-          "list_directory",
-          "grep_files",
-          "grep_files",
-          "grep_files",
-          "read_file",
-          "read_file",
-          "read_file",
-          "read_file",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "edit_file"
-        ],
-        "tool_calls_count": 16,
-        "usage": {
-          "cache_read_tokens": 227328,
-          "cost_usd": 0.376694,
-          "input_tokens": 263476,
-          "output_tokens": 2743
-        }
-      }
-    },
-    {
-      "aggregate": 1.0,
-      "eval": "swebench_verified",
-      "passed": true,
-      "sample": "astropy__astropy-12907",
-      "scores": [
-        {
-          "pass": true,
-          "reason": "no error",
-          "scorer": "succeeded",
-          "value": 1.0
-        },
-        {
-          "pass": true,
-          "reason": "FAIL_TO_PASS passed",
-          "scorer": "resolved",
-          "value": 1.0
-        }
-      ],
-      "skipped": false,
-      "target": "openai-gpt-5.5-low",
-      "transcript": {
-        "final_response": "resolved=True",
-        "iterations": 13,
-        "metadata": {
-          "agent": "yolop",
-          "difficulty": "15 min - 1 hour",
-          "eval_report": {
-            "patch_exists": true,
-            "patch_is_None": false,
-            "patch_successfully_applied": true,
-            "resolved": true,
-            "tests_status": {
-              "FAIL_TO_FAIL": {
-                "failure": [],
-                "success": []
-              },
-              "FAIL_TO_PASS": {
-                "failure": [],
-                "success": [
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
-                ]
-              },
-              "PASS_TO_FAIL": {
-                "failure": [],
-                "success": []
-              },
-              "PASS_TO_PASS": {
-                "failure": [],
-                "success": [
-                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
-                  "astropy/modeling/tests/test_separable.py::test_cdot",
-                  "astropy/modeling/tests/test_separable.py::test_cstack",
-                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
-                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
-                ]
-              }
-            }
-          },
-          "model": "gpt-5.5",
-          "provider": "openai",
-          "reasoning_effort": "low",
-          "repo": "astropy/astropy",
-          "resolved": true,
-          "stop_reason": "completed",
-          "tools_used": {
-            "bash": 5,
-            "edit_file": 1,
-            "grep_files": 3,
-            "list_directory": 1,
-            "read_file": 2
-          }
-        },
-        "metrics": {
-          "agent_reported_time_s": 58.55,
-          "cache_creation_tokens": 0.0,
-          "cache_read_tokens": 128512.0,
-          "iterations": 13.0,
-          "tool_calls": 12.0,
-          "tool_calls_failed": 0.0,
-          "turns": 13.0
-        },
-        "timing": {
-          "duration_ms": 84912
-        },
-        "tool_calls": [
-          "grep_files",
-          "grep_files",
-          "grep_files",
-          "list_directory",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "read_file",
-          "read_file",
-          "edit_file"
-        ],
-        "tool_calls_count": 12,
-        "usage": {
-          "cache_read_tokens": 128512,
-          "cost_usd": 0.305861,
-          "input_tokens": 164677,
-          "output_tokens": 2026
-        }
-      }
-    },
-    {
-      "aggregate": 0.5,
-      "eval": "swebench_verified",
-      "passed": false,
-      "sample": "astropy__astropy-12907",
-      "scores": [
-        {
-          "pass": false,
-          "reason": "yolop exited 1: yolop: model \"claude-sonnet-4-5\" not available on anthropic; using anthropic/claude-sonnet-4-6 high instead\nturn error: LLM error: Anthropic API error (400 Bad Request): {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CcMVpifNdGSPTjoW9P2vp\"}\n",
-          "scorer": "succeeded",
-          "value": 0.0
-        },
-        {
-          "pass": true,
-          "reason": "FAIL_TO_PASS passed",
-          "scorer": "resolved",
-          "value": 1.0
-        }
-      ],
-      "skipped": false,
-      "target": "anthropic-claude-sonnet-4.5",
-      "transcript": {
-        "error": "yolop exited 1: yolop: model \"claude-sonnet-4-5\" not available on anthropic; using anthropic/claude-sonnet-4-6 high instead\nturn error: LLM error: Anthropic API error (400 Bad Request): {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CcMVpifNdGSPTjoW9P2vp\"}\n",
-        "final_response": "resolved=True",
-        "iterations": 35,
-        "metadata": {
-          "agent": "yolop",
-          "difficulty": "15 min - 1 hour",
-          "eval_report": {
-            "patch_exists": true,
-            "patch_is_None": false,
-            "patch_successfully_applied": true,
-            "resolved": true,
-            "tests_status": {
-              "FAIL_TO_FAIL": {
-                "failure": [],
-                "success": []
-              },
-              "FAIL_TO_PASS": {
-                "failure": [],
-                "success": [
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
-                ]
-              },
-              "PASS_TO_FAIL": {
-                "failure": [],
-                "success": []
-              },
-              "PASS_TO_PASS": {
-                "failure": [],
-                "success": [
-                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
-                  "astropy/modeling/tests/test_separable.py::test_cdot",
-                  "astropy/modeling/tests/test_separable.py::test_cstack",
-                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
-                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
-                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
-                ]
-              }
-            }
-          },
-          "model": "claude-sonnet-4-5",
-          "provider": "anthropic",
-          "reasoning_effort": "high",
-          "repo": "astropy/astropy",
-          "resolved": true,
-          "stop_reason": "error",
-          "tools_used": {
-            "bash": 32,
-            "edit_file": 1,
-            "read_file": 1
-          }
-        },
-        "metrics": {
-          "agent_reported_time_s": 153.201,
-          "cache_creation_tokens": 49567.0,
-          "cache_read_tokens": 479360.0,
-          "iterations": 35.0,
-          "tool_calls": 34.0,
-          "tool_calls_failed": 0.0,
-          "turns": 35.0
-        },
-        "timing": {
-          "duration_ms": 198356
-        },
-        "tool_calls": [
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "bash",
-          "read_file",
-          "edit_file"
-        ],
-        "tool_calls_count": 34,
-        "usage": {
-          "cache_read_tokens": 479360,
-          "cost_usd": 0.666184,
-          "input_tokens": 82969,
-          "output_tokens": 8318
-        }
-      }
-    },
-    {
-      "aggregate": 1.0,
-      "eval": "swebench_verified",
-      "passed": true,
-      "sample": "astropy__astropy-12907",
-      "scores": [
-        {
-          "pass": true,
-          "reason": "no error",
-          "scorer": "succeeded",
-          "value": 1.0
-        },
-        {
-          "pass": true,
-          "reason": "FAIL_TO_PASS passed",
-          "scorer": "resolved",
-          "value": 1.0
-        }
-      ],
-      "skipped": false,
       "target": "anthropic-claude-opus-4.8",
       "transcript": {
         "final_response": "resolved=True",
@@ -714,16 +81,16 @@
           }
         },
         "metrics": {
-          "agent_reported_time_s": 31.466,
-          "cache_creation_tokens": 22246.0,
-          "cache_read_tokens": 92126.0,
+          "agent_reported_time_s": 27.738,
+          "cache_creation_tokens": 21642.0,
+          "cache_read_tokens": 92060.0,
           "iterations": 7.0,
           "tool_calls": 6.0,
           "tool_calls_failed": 0.0,
           "turns": 7.0
         },
         "timing": {
-          "duration_ms": 55341
+          "duration_ms": 48287
         },
         "tool_calls": [
           "read_file",
@@ -735,10 +102,10 @@
         ],
         "tool_calls_count": 6,
         "usage": {
-          "cache_read_tokens": 92126,
-          "cost_usd": 0.256972,
-          "input_tokens": 11976,
-          "output_tokens": 1592
+          "cache_read_tokens": 92060,
+          "cost_usd": 0.255713,
+          "input_tokens": 11765,
+          "output_tokens": 1706
         }
       }
     },
@@ -762,12 +129,12 @@
         }
       ],
       "skipped": false,
-      "target": "claude-code-sonnet-4.5",
+      "target": "anthropic-claude-sonnet-4.5",
       "transcript": {
         "final_response": "resolved=True",
-        "iterations": 21,
+        "iterations": 24,
         "metadata": {
-          "agent": "claude-code",
+          "agent": "yolop",
           "difficulty": "15 min - 1 hour",
           "eval_report": {
             "patch_exists": true,
@@ -811,50 +178,62 @@
             }
           },
           "model": "claude-sonnet-4-5",
-          "provider": "",
-          "reasoning_effort": null,
+          "provider": "anthropic",
+          "reasoning_effort": "high",
           "repo": "astropy/astropy",
           "resolved": true,
           "stop_reason": "completed",
           "tools_used": {
-            "Bash": 6,
-            "Edit": 1,
-            "Read": 2,
-            "Write": 3
+            "bash": 19,
+            "edit_file": 1,
+            "grep_files": 2,
+            "read_file": 2
           }
         },
         "metrics": {
-          "agent_reported_time_s": 122.3,
-          "cache_creation_tokens": 42208.0,
-          "cache_read_tokens": 344998.0,
-          "iterations": 21.0,
-          "tool_calls": 12.0,
-          "tool_calls_failed": 3.0,
-          "turns": 13.0
+          "agent_reported_time_s": 101.388,
+          "cache_creation_tokens": 35750.0,
+          "cache_read_tokens": 281084.0,
+          "iterations": 24.0,
+          "tool_calls": 24.0,
+          "tool_calls_failed": 0.0,
+          "turns": 24.0
         },
         "timing": {
-          "duration_ms": 123785
+          "duration_ms": 137293
         },
         "tool_calls": [
-          "Bash",
-          "Bash",
-          "Bash",
-          "Bash",
-          "Bash",
-          "Bash",
-          "Read",
-          "Read",
-          "Write",
-          "Write",
-          "Write",
-          "Edit"
+          "grep_files",
+          "grep_files",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "read_file",
+          "read_file",
+          "edit_file"
         ],
-        "tool_calls_count": 12,
+        "tool_calls_count": 24,
         "usage": {
-          "cache_read_tokens": 344998,
-          "cost_usd": 0.421361,
-          "input_tokens": 56,
-          "output_tokens": 4226
+          "cache_read_tokens": 281084,
+          "cost_usd": 0.402847,
+          "input_tokens": 47163,
+          "output_tokens": 4652
         }
       }
     },
@@ -939,16 +318,16 @@
           }
         },
         "metrics": {
-          "agent_reported_time_s": 62.438,
-          "cache_creation_tokens": 27192.0,
-          "cache_read_tokens": 146688.0,
+          "agent_reported_time_s": 62.199,
+          "cache_creation_tokens": 26987.0,
+          "cache_read_tokens": 146568.0,
           "iterations": 12.0,
           "tool_calls": 6.0,
           "tool_calls_failed": 1.0,
           "turns": 7.0
         },
         "timing": {
-          "duration_ms": 63751
+          "duration_ms": 63599
         },
         "tool_calls": [
           "Read",
@@ -960,10 +339,142 @@
         ],
         "tool_calls_count": 6,
         "usage": {
-          "cache_read_tokens": 146688,
-          "cost_usd": 0.40521,
+          "cache_read_tokens": 146568,
+          "cost_usd": 0.402665,
           "input_tokens": 2668,
-          "output_tokens": 1822
+          "output_tokens": 1805
+        }
+      }
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "swebench_verified",
+      "passed": true,
+      "sample": "astropy__astropy-12907",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "FAIL_TO_PASS passed",
+          "scorer": "resolved",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "claude-code-sonnet-4.5",
+      "transcript": {
+        "final_response": "resolved=True",
+        "iterations": 52,
+        "metadata": {
+          "agent": "claude-code",
+          "difficulty": "15 min - 1 hour",
+          "eval_report": {
+            "patch_exists": true,
+            "patch_is_None": false,
+            "patch_successfully_applied": true,
+            "resolved": true,
+            "tests_status": {
+              "FAIL_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "FAIL_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+                ]
+              },
+              "PASS_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "PASS_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+                  "astropy/modeling/tests/test_separable.py::test_cdot",
+                  "astropy/modeling/tests/test_separable.py::test_cstack",
+                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+                ]
+              }
+            }
+          },
+          "model": "claude-sonnet-4-5",
+          "provider": "",
+          "reasoning_effort": null,
+          "repo": "astropy/astropy",
+          "resolved": true,
+          "stop_reason": "completed",
+          "tools_used": {
+            "Bash": 13,
+            "Edit": 1,
+            "Read": 7,
+            "Write": 7
+          }
+        },
+        "metrics": {
+          "agent_reported_time_s": 232.17,
+          "cache_creation_tokens": 47703.0,
+          "cache_read_tokens": 950161.0,
+          "iterations": 52.0,
+          "tool_calls": 28.0,
+          "tool_calls_failed": 5.0,
+          "turns": 29.0
+        },
+        "timing": {
+          "duration_ms": 233784
+        },
+        "tool_calls": [
+          "Bash",
+          "Bash",
+          "Bash",
+          "Bash",
+          "Bash",
+          "Bash",
+          "Bash",
+          "Bash",
+          "Bash",
+          "Bash",
+          "Bash",
+          "Bash",
+          "Bash",
+          "Read",
+          "Read",
+          "Read",
+          "Read",
+          "Read",
+          "Read",
+          "Read",
+          "Write",
+          "Write",
+          "Write",
+          "Write",
+          "Write",
+          "Write",
+          "Write",
+          "Edit"
+        ],
+        "tool_calls_count": 28,
+        "usage": {
+          "cache_read_tokens": 950161,
+          "cost_usd": 0.726552,
+          "input_tokens": 75,
+          "output_tokens": 10267
         }
       }
     },
@@ -1042,20 +553,20 @@
           "resolved": true,
           "stop_reason": "completed",
           "tools_used": {
-            "command": 17,
+            "command": 24,
             "file_change": 1
           }
         },
         "metrics": {
           "cache_creation_tokens": 0.0,
-          "cache_read_tokens": 279168.0,
+          "cache_read_tokens": 292736.0,
           "iterations": 1.0,
-          "tool_calls": 18.0,
-          "tool_calls_failed": 3.0,
+          "tool_calls": 25.0,
+          "tool_calls_failed": 2.0,
           "turns": 1.0
         },
         "timing": {
-          "duration_ms": 85309
+          "duration_ms": 79603
         },
         "tool_calls": [
           "command",
@@ -1075,14 +586,1133 @@
           "command",
           "command",
           "command",
+          "command",
+          "command",
+          "command",
+          "command",
+          "command",
+          "command",
+          "command",
           "file_change"
         ],
-        "tool_calls_count": 18,
+        "tool_calls_count": 25,
         "usage": {
-          "cache_read_tokens": 279168,
-          "cost_usd": 0.112156,
-          "input_tokens": 32304,
-          "output_tokens": 3688
+          "cache_read_tokens": 292736,
+          "cost_usd": 0.143152,
+          "input_tokens": 48384,
+          "output_tokens": 4608
+        }
+      }
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "swebench_verified",
+      "passed": true,
+      "sample": "astropy__astropy-12907",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "FAIL_TO_PASS passed",
+          "scorer": "resolved",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "openai-gpt-5.5",
+      "transcript": {
+        "final_response": "resolved=True",
+        "iterations": 23,
+        "metadata": {
+          "agent": "yolop",
+          "difficulty": "15 min - 1 hour",
+          "eval_report": {
+            "patch_exists": true,
+            "patch_is_None": false,
+            "patch_successfully_applied": true,
+            "resolved": true,
+            "tests_status": {
+              "FAIL_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "FAIL_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+                ]
+              },
+              "PASS_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "PASS_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+                  "astropy/modeling/tests/test_separable.py::test_cdot",
+                  "astropy/modeling/tests/test_separable.py::test_cstack",
+                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+                ]
+              }
+            }
+          },
+          "model": "gpt-5.5",
+          "provider": "openai",
+          "reasoning_effort": "medium",
+          "repo": "astropy/astropy",
+          "resolved": true,
+          "stop_reason": "completed",
+          "tools_used": {
+            "bash": 8,
+            "edit_file": 2,
+            "grep_files": 3,
+            "list_directory": 2,
+            "read_file": 7
+          }
+        },
+        "metrics": {
+          "agent_reported_time_s": 115.502,
+          "cache_creation_tokens": 0.0,
+          "cache_read_tokens": 338432.0,
+          "iterations": 23.0,
+          "tool_calls": 22.0,
+          "tool_calls_failed": 1.0,
+          "turns": 23.0
+        },
+        "timing": {
+          "duration_ms": 144483
+        },
+        "tool_calls": [
+          "list_directory",
+          "list_directory",
+          "grep_files",
+          "grep_files",
+          "grep_files",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "edit_file",
+          "edit_file"
+        ],
+        "tool_calls_count": 22,
+        "usage": {
+          "cache_read_tokens": 338432,
+          "cost_usd": 0.664936,
+          "input_tokens": 412928,
+          "output_tokens": 4108
+        }
+      }
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "swebench_verified",
+      "passed": true,
+      "sample": "astropy__astropy-12907",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "FAIL_TO_PASS passed",
+          "scorer": "resolved",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "openai-gpt-5.5-high",
+      "transcript": {
+        "final_response": "resolved=True",
+        "iterations": 27,
+        "metadata": {
+          "agent": "yolop",
+          "difficulty": "15 min - 1 hour",
+          "eval_report": {
+            "patch_exists": true,
+            "patch_is_None": false,
+            "patch_successfully_applied": true,
+            "resolved": true,
+            "tests_status": {
+              "FAIL_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "FAIL_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+                ]
+              },
+              "PASS_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "PASS_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+                  "astropy/modeling/tests/test_separable.py::test_cdot",
+                  "astropy/modeling/tests/test_separable.py::test_cstack",
+                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+                ]
+              }
+            }
+          },
+          "model": "gpt-5.5",
+          "provider": "openai",
+          "reasoning_effort": "high",
+          "repo": "astropy/astropy",
+          "resolved": true,
+          "stop_reason": "completed",
+          "tools_used": {
+            "bash": 11,
+            "edit_file": 2,
+            "grep_files": 3,
+            "list_directory": 4,
+            "read_file": 6
+          }
+        },
+        "metrics": {
+          "agent_reported_time_s": 150.066,
+          "cache_creation_tokens": 0.0,
+          "cache_read_tokens": 512000.0,
+          "iterations": 27.0,
+          "tool_calls": 26.0,
+          "tool_calls_failed": 1.0,
+          "turns": 27.0
+        },
+        "timing": {
+          "duration_ms": 173189
+        },
+        "tool_calls": [
+          "list_directory",
+          "list_directory",
+          "list_directory",
+          "list_directory",
+          "grep_files",
+          "grep_files",
+          "grep_files",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "edit_file",
+          "edit_file",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 26,
+        "usage": {
+          "cache_read_tokens": 512000,
+          "cost_usd": 0.725055,
+          "input_tokens": 575457,
+          "output_tokens": 5059
+        }
+      }
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "swebench_verified",
+      "passed": true,
+      "sample": "astropy__astropy-12907",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "FAIL_TO_PASS passed",
+          "scorer": "resolved",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "openai-gpt-5.5-low",
+      "transcript": {
+        "final_response": "resolved=True",
+        "iterations": 14,
+        "metadata": {
+          "agent": "yolop",
+          "difficulty": "15 min - 1 hour",
+          "eval_report": {
+            "patch_exists": true,
+            "patch_is_None": false,
+            "patch_successfully_applied": true,
+            "resolved": true,
+            "tests_status": {
+              "FAIL_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "FAIL_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+                ]
+              },
+              "PASS_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "PASS_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+                  "astropy/modeling/tests/test_separable.py::test_cdot",
+                  "astropy/modeling/tests/test_separable.py::test_cstack",
+                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+                ]
+              }
+            }
+          },
+          "model": "gpt-5.5",
+          "provider": "openai",
+          "reasoning_effort": "low",
+          "repo": "astropy/astropy",
+          "resolved": true,
+          "stop_reason": "completed",
+          "tools_used": {
+            "bash": 5,
+            "edit_file": 1,
+            "grep_files": 2,
+            "list_directory": 2,
+            "read_file": 3
+          }
+        },
+        "metrics": {
+          "agent_reported_time_s": 70.129,
+          "cache_creation_tokens": 0.0,
+          "cache_read_tokens": 142848.0,
+          "iterations": 14.0,
+          "tool_calls": 13.0,
+          "tool_calls_failed": 0.0,
+          "turns": 14.0
+        },
+        "timing": {
+          "duration_ms": 91167
+        },
+        "tool_calls": [
+          "grep_files",
+          "grep_files",
+          "list_directory",
+          "list_directory",
+          "read_file",
+          "read_file",
+          "read_file",
+          "edit_file",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 13,
+        "usage": {
+          "cache_read_tokens": 142848,
+          "cost_usd": 0.417254,
+          "input_tokens": 197278,
+          "output_tokens": 2456
+        }
+      }
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "swebench_verified",
+      "passed": true,
+      "sample": "astropy__astropy-12907",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "FAIL_TO_PASS passed",
+          "scorer": "resolved",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "openai-gpt-5.5-none",
+      "transcript": {
+        "final_response": "resolved=True",
+        "iterations": 20,
+        "metadata": {
+          "agent": "yolop",
+          "difficulty": "15 min - 1 hour",
+          "eval_report": {
+            "patch_exists": true,
+            "patch_is_None": false,
+            "patch_successfully_applied": true,
+            "resolved": true,
+            "tests_status": {
+              "FAIL_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "FAIL_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+                ]
+              },
+              "PASS_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "PASS_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+                  "astropy/modeling/tests/test_separable.py::test_cdot",
+                  "astropy/modeling/tests/test_separable.py::test_cstack",
+                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+                ]
+              }
+            }
+          },
+          "model": "gpt-5.5",
+          "provider": "openai",
+          "reasoning_effort": null,
+          "repo": "astropy/astropy",
+          "resolved": true,
+          "stop_reason": "completed",
+          "tools_used": {
+            "bash": 8,
+            "edit_file": 1,
+            "grep_files": 3,
+            "list_directory": 3,
+            "read_file": 4
+          }
+        },
+        "metrics": {
+          "agent_reported_time_s": 89.711,
+          "cache_creation_tokens": 0.0,
+          "cache_read_tokens": 279040.0,
+          "iterations": 20.0,
+          "tool_calls": 19.0,
+          "tool_calls_failed": 0.0,
+          "turns": 20.0
+        },
+        "timing": {
+          "duration_ms": 111532
+        },
+        "tool_calls": [
+          "list_directory",
+          "list_directory",
+          "list_directory",
+          "grep_files",
+          "grep_files",
+          "grep_files",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "edit_file",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 19,
+        "usage": {
+          "cache_read_tokens": 279040,
+          "cost_usd": 0.596805,
+          "input_tokens": 348555,
+          "output_tokens": 3657
+        }
+      }
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "swebench_verified",
+      "passed": true,
+      "sample": "astropy__astropy-12907",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "FAIL_TO_PASS passed",
+          "scorer": "resolved",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "openrouter-glm-5.2",
+      "transcript": {
+        "final_response": "resolved=True",
+        "iterations": 122,
+        "metadata": {
+          "agent": "yolop",
+          "difficulty": "15 min - 1 hour",
+          "eval_report": {
+            "patch_exists": true,
+            "patch_is_None": false,
+            "patch_successfully_applied": true,
+            "resolved": true,
+            "tests_status": {
+              "FAIL_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "FAIL_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+                ]
+              },
+              "PASS_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "PASS_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+                  "astropy/modeling/tests/test_separable.py::test_cdot",
+                  "astropy/modeling/tests/test_separable.py::test_cstack",
+                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+                ]
+              }
+            }
+          },
+          "model": "z-ai/glm-5.2",
+          "provider": "openrouter",
+          "reasoning_effort": null,
+          "repo": "astropy/astropy",
+          "resolved": true,
+          "stop_reason": "completed",
+          "tools_used": {
+            "bash": 106,
+            "edit_file": 1,
+            "read_file": 14
+          }
+        },
+        "metrics": {
+          "agent_reported_time_s": 820.06,
+          "cache_creation_tokens": 0.0,
+          "cache_read_tokens": 2561099.0,
+          "iterations": 122.0,
+          "tool_calls": 121.0,
+          "tool_calls_failed": 0.0,
+          "turns": 122.0
+        },
+        "timing": {
+          "duration_ms": 1266229
+        },
+        "tool_calls": [
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "edit_file"
+        ],
+        "tool_calls_count": 121,
+        "usage": {
+          "cache_read_tokens": 2561099,
+          "cost_usd": 1.000223,
+          "input_tokens": 2744022,
+          "output_tokens": 18173
+        }
+      }
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "swebench_verified",
+      "passed": true,
+      "sample": "astropy__astropy-12907",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "FAIL_TO_PASS passed",
+          "scorer": "resolved",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "openrouter-kimi-k2.7-code",
+      "transcript": {
+        "final_response": "resolved=True",
+        "iterations": 72,
+        "metadata": {
+          "agent": "yolop",
+          "difficulty": "15 min - 1 hour",
+          "eval_report": {
+            "patch_exists": true,
+            "patch_is_None": false,
+            "patch_successfully_applied": true,
+            "resolved": true,
+            "tests_status": {
+              "FAIL_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "FAIL_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+                ]
+              },
+              "PASS_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "PASS_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+                  "astropy/modeling/tests/test_separable.py::test_cdot",
+                  "astropy/modeling/tests/test_separable.py::test_cstack",
+                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+                ]
+              }
+            }
+          },
+          "model": "moonshotai/kimi-k2.7-code",
+          "provider": "openrouter",
+          "reasoning_effort": "low",
+          "repo": "astropy/astropy",
+          "resolved": true,
+          "stop_reason": "completed",
+          "tools_used": {
+            "bash": 44,
+            "edit_file": 1,
+            "grep_files": 4,
+            "list_directory": 2,
+            "read_file": 21
+          }
+        },
+        "metrics": {
+          "agent_reported_time_s": 324.922,
+          "cache_creation_tokens": 0.0,
+          "cache_read_tokens": 1009472.0,
+          "iterations": 72.0,
+          "tool_calls": 72.0,
+          "tool_calls_failed": 0.0,
+          "turns": 72.0
+        },
+        "timing": {
+          "duration_ms": 461442
+        },
+        "tool_calls": [
+          "list_directory",
+          "list_directory",
+          "grep_files",
+          "grep_files",
+          "grep_files",
+          "grep_files",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "edit_file"
+        ],
+        "tool_calls_count": 72,
+        "usage": {
+          "cache_read_tokens": 1009472,
+          "cost_usd": 0.406991,
+          "input_tokens": 1237709,
+          "output_tokens": 13472
+        }
+      }
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "swebench_verified",
+      "passed": true,
+      "sample": "astropy__astropy-12907",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "FAIL_TO_PASS passed",
+          "scorer": "resolved",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "openrouter-nemotron-3-ultra",
+      "transcript": {
+        "final_response": "resolved=True",
+        "iterations": 108,
+        "metadata": {
+          "agent": "yolop",
+          "difficulty": "15 min - 1 hour",
+          "eval_report": {
+            "patch_exists": true,
+            "patch_is_None": false,
+            "patch_successfully_applied": true,
+            "resolved": true,
+            "tests_status": {
+              "FAIL_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "FAIL_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+                ]
+              },
+              "PASS_TO_FAIL": {
+                "failure": [],
+                "success": []
+              },
+              "PASS_TO_PASS": {
+                "failure": [],
+                "success": [
+                  "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+                  "astropy/modeling/tests/test_separable.py::test_cdot",
+                  "astropy/modeling/tests/test_separable.py::test_cstack",
+                  "astropy/modeling/tests/test_separable.py::test_arith_oper",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+                  "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+                  "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+                ]
+              }
+            }
+          },
+          "model": "nvidia/nemotron-3-ultra-550b-a55b",
+          "provider": "openrouter",
+          "reasoning_effort": null,
+          "repo": "astropy/astropy",
+          "resolved": true,
+          "stop_reason": "completed",
+          "tools_used": {
+            "bash": 78,
+            "edit_file": 5,
+            "grep_files": 1,
+            "read_file": 23
+          }
+        },
+        "metrics": {
+          "agent_reported_time_s": 485.338,
+          "cache_creation_tokens": 0.0,
+          "cache_read_tokens": 1382016.0,
+          "iterations": 108.0,
+          "tool_calls": 107.0,
+          "tool_calls_failed": 3.0,
+          "turns": 108.0
+        },
+        "timing": {
+          "duration_ms": 638840
+        },
+        "tool_calls": [
+          "grep_files",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "edit_file",
+          "edit_file",
+          "edit_file",
+          "edit_file",
+          "edit_file"
+        ],
+        "tool_calls_count": 107,
+        "usage": {
+          "cache_read_tokens": 1382016,
+          "cost_usd": 1.520362,
+          "input_tokens": 3227490,
+          "output_tokens": 37964
         }
       }
     },
@@ -1109,7 +1739,7 @@
       "target": "pi",
       "transcript": {
         "final_response": "resolved=True",
-        "iterations": 6,
+        "iterations": 5,
         "metadata": {
           "agent": "pi",
           "difficulty": "15 min - 1 hour",
@@ -1161,35 +1791,34 @@
           "resolved": true,
           "stop_reason": "completed",
           "tools_used": {
-            "bash": 3,
+            "bash": 2,
             "edit": 1,
             "read": 1
           }
         },
         "metrics": {
           "cache_creation_tokens": 0.0,
-          "cache_read_tokens": 21504.0,
-          "iterations": 6.0,
-          "tool_calls": 5.0,
+          "cache_read_tokens": 22016.0,
+          "iterations": 5.0,
+          "tool_calls": 4.0,
           "tool_calls_failed": 0.0,
-          "turns": 6.0
+          "turns": 5.0
         },
         "timing": {
-          "duration_ms": 26748
+          "duration_ms": 24884
         },
         "tool_calls": [
-          "bash",
           "bash",
           "bash",
           "read",
           "edit"
         ],
-        "tool_calls_count": 5,
+        "tool_calls_count": 4,
         "usage": {
-          "cache_read_tokens": 21504,
-          "cost_usd": 0.118567,
-          "input_tokens": 17411,
-          "output_tokens": 692
+          "cache_read_tokens": 22016,
+          "cost_usd": 0.083513,
+          "input_tokens": 8915,
+          "output_tokens": 931
         }
       }
     }
@@ -1209,20 +1838,20 @@
         "scored": 1
       },
       "yolop": {
-        "passed": 5,
-        "scored": 6
+        "passed": 9,
+        "scored": 9
       }
     }
   },
   "summary": {
-    "failed": 1,
+    "failed": 0,
     "na": 0,
-    "passed": 9,
-    "scored": 10,
+    "passed": 13,
+    "scored": 13,
     "skipped": 0,
-    "total_cost_usd": 3.8721790000000005,
-    "total_duration_ms": 1004056,
-    "total_tokens": 1507312,
-    "total_tool_calls": 155
+    "total_cost_usd": 7.346067999999999,
+    "total_duration_ms": 3474332,
+    "total_tokens": 8971267,
+    "total_tool_calls": 473
   }
 }

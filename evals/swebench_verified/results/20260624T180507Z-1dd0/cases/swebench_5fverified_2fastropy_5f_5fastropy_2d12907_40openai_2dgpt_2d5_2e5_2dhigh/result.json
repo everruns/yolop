@@ -1,7 +1,7 @@
 {
   "eval": "swebench_verified",
   "sample": "astropy__astropy-12907",
-  "target": "codex",
+  "target": "openai-gpt-5.5-high",
   "passed": true,
   "aggregate": 1.0,
   "scores": [
@@ -20,47 +20,56 @@
   ],
   "transcript": {
     "final_response": "resolved=True",
-    "iterations": 1,
-    "tool_calls_count": 18,
+    "iterations": 27,
+    "tool_calls_count": 26,
     "tool_calls": [
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "command",
-      "file_change"
+      "list_directory",
+      "list_directory",
+      "list_directory",
+      "list_directory",
+      "grep_files",
+      "grep_files",
+      "grep_files",
+      "read_file",
+      "read_file",
+      "read_file",
+      "read_file",
+      "read_file",
+      "read_file",
+      "edit_file",
+      "edit_file",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash"
     ],
     "usage": {
-      "input_tokens": 32304,
-      "output_tokens": 3688,
-      "cache_read_tokens": 279168,
-      "cost_usd": 0.112156
+      "input_tokens": 575457,
+      "output_tokens": 5059,
+      "cache_read_tokens": 512000,
+      "cost_usd": 0.725055
     },
     "timing": {
-      "duration_ms": 85309
+      "duration_ms": 173189
     },
     "metrics": {
+      "agent_reported_time_s": 150.066,
       "cache_creation_tokens": 0.0,
-      "cache_read_tokens": 279168.0,
-      "iterations": 1.0,
-      "tool_calls": 18.0,
-      "tool_calls_failed": 3.0,
-      "turns": 1.0
+      "cache_read_tokens": 512000.0,
+      "iterations": 27.0,
+      "tool_calls": 26.0,
+      "tool_calls_failed": 1.0,
+      "turns": 27.0
     },
     "metadata": {
-      "agent": "codex",
+      "agent": "yolop",
       "difficulty": "15 min - 1 hour",
       "eval_report": {
         "patch_exists": true,
@@ -104,14 +113,17 @@
         }
       },
       "model": "gpt-5.5",
-      "provider": "",
-      "reasoning_effort": null,
+      "provider": "openai",
+      "reasoning_effort": "high",
       "repo": "astropy/astropy",
       "resolved": true,
       "stop_reason": "completed",
       "tools_used": {
-        "command": 17,
-        "file_change": 1
+        "bash": 11,
+        "edit_file": 2,
+        "grep_files": 3,
+        "list_directory": 4,
+        "read_file": 6
       }
     }
   },

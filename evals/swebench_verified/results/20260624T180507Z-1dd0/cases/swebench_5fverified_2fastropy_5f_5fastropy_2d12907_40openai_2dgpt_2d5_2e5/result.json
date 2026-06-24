@@ -1,7 +1,7 @@
 {
   "eval": "swebench_verified",
   "sample": "astropy__astropy-12907",
-  "target": "openai-gpt-5.5-high",
+  "target": "openai-gpt-5.5",
   "passed": true,
   "aggregate": 1.0,
   "scores": [
@@ -20,25 +20,21 @@
   ],
   "transcript": {
     "final_response": "resolved=True",
-    "iterations": 27,
-    "tool_calls_count": 26,
+    "iterations": 23,
+    "tool_calls_count": 22,
     "tool_calls": [
       "list_directory",
       "list_directory",
       "grep_files",
       "grep_files",
       "grep_files",
-      "grep_files",
-      "grep_files",
-      "grep_files",
-      "grep_files",
       "read_file",
       "read_file",
       "read_file",
       "read_file",
       "read_file",
       "read_file",
-      "bash",
+      "read_file",
       "bash",
       "bash",
       "bash",
@@ -48,25 +44,25 @@
       "bash",
       "bash",
       "edit_file",
-      "stat_file"
+      "edit_file"
     ],
     "usage": {
-      "input_tokens": 509944,
-      "output_tokens": 4690,
-      "cache_read_tokens": 457728,
-      "cost_usd": 0.630644
+      "input_tokens": 412928,
+      "output_tokens": 4108,
+      "cache_read_tokens": 338432,
+      "cost_usd": 0.664936
     },
     "timing": {
-      "duration_ms": 153889
+      "duration_ms": 144483
     },
     "metrics": {
-      "agent_reported_time_s": 126.786,
+      "agent_reported_time_s": 115.502,
       "cache_creation_tokens": 0.0,
-      "cache_read_tokens": 457728.0,
-      "iterations": 27.0,
-      "tool_calls": 26.0,
-      "tool_calls_failed": 0.0,
-      "turns": 27.0
+      "cache_read_tokens": 338432.0,
+      "iterations": 23.0,
+      "tool_calls": 22.0,
+      "tool_calls_failed": 1.0,
+      "turns": 23.0
     },
     "metadata": {
       "agent": "yolop",
@@ -114,17 +110,16 @@
       },
       "model": "gpt-5.5",
       "provider": "openai",
-      "reasoning_effort": "high",
+      "reasoning_effort": "medium",
       "repo": "astropy/astropy",
       "resolved": true,
       "stop_reason": "completed",
       "tools_used": {
-        "bash": 9,
-        "edit_file": 1,
-        "grep_files": 7,
+        "bash": 8,
+        "edit_file": 2,
+        "grep_files": 3,
         "list_directory": 2,
-        "read_file": 6,
-        "stat_file": 1
+        "read_file": 7
       }
     }
   },

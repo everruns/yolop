@@ -1,7 +1,7 @@
 {
   "eval": "swebench_verified",
   "sample": "astropy__astropy-12907",
-  "target": "pi",
+  "target": "claude-code-opus-4.8",
   "passed": true,
   "aggregate": 1.0,
   "scores": [
@@ -20,34 +20,36 @@
   ],
   "transcript": {
     "final_response": "resolved=True",
-    "iterations": 6,
-    "tool_calls_count": 5,
+    "iterations": 12,
+    "tool_calls_count": 6,
     "tool_calls": [
-      "bash",
-      "bash",
-      "bash",
-      "read",
-      "edit"
+      "Read",
+      "Edit",
+      "Bash",
+      "Bash",
+      "Bash",
+      "Bash"
     ],
     "usage": {
-      "input_tokens": 17411,
-      "output_tokens": 692,
-      "cache_read_tokens": 21504,
-      "cost_usd": 0.118567
+      "input_tokens": 2668,
+      "output_tokens": 1805,
+      "cache_read_tokens": 146568,
+      "cost_usd": 0.402665
     },
     "timing": {
-      "duration_ms": 26748
+      "duration_ms": 63599
     },
     "metrics": {
-      "cache_creation_tokens": 0.0,
-      "cache_read_tokens": 21504.0,
-      "iterations": 6.0,
-      "tool_calls": 5.0,
-      "tool_calls_failed": 0.0,
-      "turns": 6.0
+      "agent_reported_time_s": 62.199,
+      "cache_creation_tokens": 26987.0,
+      "cache_read_tokens": 146568.0,
+      "iterations": 12.0,
+      "tool_calls": 6.0,
+      "tool_calls_failed": 1.0,
+      "turns": 7.0
     },
     "metadata": {
-      "agent": "pi",
+      "agent": "claude-code",
       "difficulty": "15 min - 1 hour",
       "eval_report": {
         "patch_exists": true,
@@ -90,16 +92,16 @@
           }
         }
       },
-      "model": "gpt-5.5",
-      "provider": "openai",
+      "model": "claude-opus-4-8",
+      "provider": "",
       "reasoning_effort": null,
       "repo": "astropy/astropy",
       "resolved": true,
       "stop_reason": "completed",
       "tools_used": {
-        "bash": 3,
-        "edit": 1,
-        "read": 1
+        "Bash": 4,
+        "Edit": 1,
+        "Read": 1
       }
     }
   },
