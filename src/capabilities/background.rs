@@ -16,6 +16,7 @@
 // Results survive a restart; in-flight processes do not. See specs/background.md.
 
 use crate::capabilities::narration::stable_labeled;
+use crate::workspace_path::{self, SharedWorkspaceRoot};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
@@ -203,7 +204,7 @@ pub struct BackgroundRegistry {
     inner: Arc<Mutex<Inner>>,
     dir: PathBuf,
     index_path: PathBuf,
-    workspace_root: PathBuf,
+    workspace_root: SharedWorkspaceRoot,
     max_runtime_secs: u64,
     /// Present only when this session may spawn sub-agents (absent in child
     /// sessions — see [`AgentSpawner`]).
@@ -214,7 +215,7 @@ impl BackgroundRegistry {
     /// Open (or restore) the registry for a session. Reads the index if present;
     /// any task still marked `running` is re-labelled `interrupted` (its process
     /// died with the previous yolop) and the corrected index is re-persisted.
-    pub fn load(session_dir: &Path, workspace_root: PathBuf) -> Self {
+    pub fn load(session_dir: &Path, workspace_root: SharedWorkspaceRoot) -> Self {
         let dir = session_dir.join(BACKGROUND_SUBDIR);
         let index_path = dir.join(INDEX_FILE);
         let mut records = read_index(&index_path);
@@ -418,7 +419,11 @@ impl BackgroundRegistry {
         let max_runtime = self.max_runtime_secs;
         let task_id = id.clone();
         let handle = tokio::spawn(async move {
-            let outcome = run_script(&dir, &log_file, &workspace_root, &command, max_runtime).await;
+            let root = workspace_root
+                .read()
+                .map(|guard| guard.clone())
+                .unwrap_or_else(|_| PathBuf::from("."));
+            let outcome = run_script(&dir, &log_file, &root, &command, max_runtime).await;
             update_record(&inner, &index_path, &task_id, |r| {
                 // Only apply the outcome if the task is still running. A
                 // concurrent `cancel` may have already marked it `cancelled`
@@ -702,10 +707,20 @@ async fn run_script(
         let _ = tokio::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600)).await;
     }
 
+    let cwd = match workspace_path::resolve_spawn_cwd(workspace_root) {
+        Ok(cwd) => cwd,
+        Err(message) => {
+            return ScriptOutcome {
+                status: BackgroundStatus::Failed,
+                exit_code: None,
+                summary: message,
+            };
+        }
+    };
     let mut child = match Command::new("bash")
         .arg("-lc")
         .arg(command)
-        .current_dir(workspace_root)
+        .current_dir(&cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -1516,9 +1531,10 @@ impl Tool for BackgroundCancelTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::RwLock;
 
     fn registry_in(dir: &Path) -> BackgroundRegistry {
-        BackgroundRegistry::load(dir, dir.to_path_buf())
+        BackgroundRegistry::load(dir, Arc::new(RwLock::new(dir.to_path_buf())))
     }
 
     /// Test spawner that returns a canned outcome, so the registry's sub-agent

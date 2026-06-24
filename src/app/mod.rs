@@ -1302,7 +1302,8 @@ impl App {
     }
 
     fn start_shell_command(&mut self, command: String) {
-        let workspace_root = self.startup.workspace_root.clone();
+        let workspace_root = self.worktree.active_root();
+        self.startup.workspace_root = workspace_root.clone();
         self.push_user(format!("!shell {command}"));
         let handle = self.session.run_shell(command, workspace_root);
         self.begin_turn(handle, Some("running shell command".into()));

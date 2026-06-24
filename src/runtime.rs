@@ -2261,8 +2261,8 @@ pub async fn build_with_options(
     capabilities.register(crate::capabilities::skills::SkillManagementCapability::new(
         skill_dirs.clone(),
     ));
-    capabilities.register(RepoMapCapability::new(effective_root.clone()));
-    capabilities.register(AstGrepCapability::new(effective_root.clone()));
+    capabilities.register(RepoMapCapability::new(shared_workspace_root.clone()));
+    capabilities.register(AstGrepCapability::new(shared_workspace_root.clone()));
     capabilities.register(InfinityContextCapability);
     capabilities.register(CompactionCapability);
     capabilities.register(StatelessTodoListCapability);
@@ -2361,7 +2361,8 @@ pub async fn build_with_options(
     // to `<session_dir>/background/` so results survive a restart. Reuses this
     // session's folder, the same durability substrate as the JSONL event log.
     // See specs/background.md.
-    let mut background_registry = BackgroundRegistry::load(&session_dir, effective_root.clone());
+    let mut background_registry =
+        BackgroundRegistry::load(&session_dir, shared_workspace_root.clone());
     // Top-level sessions can spawn sub-agents; child sub-agent sessions cannot
     // (depth bound). The spawner builds a fresh child session per sub-agent,
     // reusing the live provider, this session's sessions dir, and settings.

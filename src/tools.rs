@@ -7,6 +7,7 @@
 // security model for unsandboxed shell-on-host needs yolop-specific policy
 // (timeout, output cap). See EVE-478 for the eventual runtime-side story.
 
+use crate::workspace_path;
 use async_trait::async_trait;
 use everruns_core::exec_tool_result::ExecToolResultPayload;
 use everruns_core::tool_narration::ToolNarrationPhase;
@@ -80,6 +81,12 @@ impl BashTool {
         sink: Option<Arc<dyn BackgroundEventSink>>,
     ) -> Result<BashRunOutput, ToolExecutionResult> {
         let root = self.ws.root().to_path_buf();
+        let cwd = match workspace_path::resolve_spawn_cwd(&root) {
+            Ok(cwd) => cwd,
+            Err(message) => {
+                return Err(ToolExecutionResult::tool_error(message));
+            }
+        };
         let timeout = Duration::from_secs(self.timeout_secs);
         let max_bytes = self.max_output_bytes;
 
@@ -92,7 +99,7 @@ impl BashTool {
         let mut child = Command::new("bash")
             .arg("-lc")
             .arg(command)
-            .current_dir(&root)
+            .current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -409,6 +416,22 @@ mod tests {
             out.trim(),
             root_name,
             "cwd should reset to the workspace root between calls"
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_reports_missing_workspace_directory_instead_of_spawn_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("removed");
+        let tool = BashTool::new(Workspace::new(missing));
+
+        let result = tool.execute(json!({ "command": "true" })).await;
+        let ToolExecutionResult::ToolError(message) = result else {
+            panic!("expected tool error, got {result:?}");
+        };
+        assert!(
+            message.contains("workspace directory does not exist"),
+            "got: {message}"
         );
     }
 

@@ -29,6 +29,7 @@ mod test_env;
 mod tools;
 mod transcript;
 mod version;
+mod workspace_path;
 mod worktree;
 
 #[cfg(test)]
