@@ -166,8 +166,12 @@ MATRIX: dict[str, dict[str, Any]] = {
     "openrouter-nemotron-3-ultra": {"agent": "yolop", "provider": "openrouter",
                             "model": "nvidia/nemotron-3-ultra-550b-a55b"},
     "openrouter-glm-5.2": {"agent": "yolop", "provider": "openrouter", "model": "z-ai/glm-5.2"},
+    # kimi-k2.7-code's endpoint rejects requests with reasoning disabled
+    # ("Reasoning is mandatory for this endpoint"), so an effort must be set. Keep
+    # it low: at high effort the model emits long silent thinking blocks that
+    # exceed yolop's 120s stream-stall guard ("no tokens for 120s") and abort.
     "openrouter-kimi-k2.7-code": {"agent": "yolop", "provider": "openrouter",
-                            "model": "moonshotai/kimi-k2.7-code"},
+                            "model": "moonshotai/kimi-k2.7-code", "reasoning_effort": "low"},
     "openrouter-qwen3-coder": {"agent": "yolop", "provider": "openrouter", "model": "qwen/qwen3-coder"},
     # Offline plumbing check (no key; won't solve tasks)
     "llmsim": {"agent": "yolop", "provider": "llmsim"},
