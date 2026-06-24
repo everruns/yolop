@@ -721,24 +721,71 @@ def _git(args: list[str], cwd: str | Path | None = None) -> subprocess.Completed
                           capture_output=True, text=True)
 
 
+def _instance_image_key(instance_id: str, namespace: str) -> str:
+    """The SWE-bench instance Docker image that hosts the repo at base_commit.
+
+    Derived via swebench's own `make_test_spec` so the name matches exactly what
+    the scorer pulls (e.g. `swebench/sweb.eval.x86_64.astropy_1776_…:latest`)."""
+    from swebench.harness.test_spec.test_spec import make_test_spec
+
+    raw = _RAW.get(instance_id)
+    if not raw:
+        raise RuntimeError(f"{instance_id}: dataset row not loaded; cannot derive image key")
+    return make_test_spec(raw, namespace=namespace).instance_image_key
+
+
 def checkout(instance: Instance, dest: Path) -> None:
-    """SHA-targeted shallow fetch of instance.repo at base_commit into dest."""
+    """Materialize instance.repo at base_commit in dest from the SWE-bench image.
+
+    Copies `/testbed` out of the instance's prebuilt SWE-bench Docker image — the
+    authoritative repo state the scorer evaluates against — rather than cloning
+    github, which some network egress policies deny (403 on git-upload-pack). The
+    working tree is reset to a pristine base_commit so HEAD == base_commit and
+    `capture_patch` (git diff --cached) yields exactly the agent's edits.
+    """
     if not instance.repo or not instance.base_commit:
         raise RuntimeError(f"{instance.instance_id}: missing repo/base_commit")
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True, exist_ok=True)
-    url = f"https://github.com/{instance.repo}.git"
-    for step in (["init", "-q"], ["remote", "add", "origin", url]):
-        r = _git(step, dest)
-        if r.returncode != 0:
-            raise RuntimeError(f"git {step[0]} failed for {instance.instance_id}: {r.stderr.strip()}")
-    fetch = _git(["fetch", "-q", "--depth", "1", "origin", instance.base_commit], dest)
-    if fetch.returncode != 0:
-        raise RuntimeError(f"fetch failed for {instance.instance_id}: {fetch.stderr.strip()}")
-    co = _git(["checkout", "-q", "FETCH_HEAD"], dest)
-    if co.returncode != 0:
-        raise RuntimeError(f"checkout failed for {instance.instance_id}: {co.stderr.strip()}")
+
+    namespace = os.environ.get("SWEBENCH_NAMESPACE", "swebench")
+    image = _instance_image_key(instance.instance_id, namespace)
+
+    # Pull the image if absent (cached per instance via SWEBENCH_CACHE_LEVEL).
+    if subprocess.run(["docker", "image", "inspect", image],
+                      capture_output=True).returncode != 0:
+        pull = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
+        if pull.returncode != 0:
+            raise RuntimeError(f"docker pull {image} failed for {instance.instance_id}: "
+                               f"{pull.stderr.strip()}")
+
+    # Copy /testbed out of a throwaway container, then make the working tree
+    # pristine at base_commit (the image may carry build artifacts / generated
+    # files that would otherwise leak into the captured patch).
+    create = subprocess.run(["docker", "create", image], capture_output=True, text=True)
+    if create.returncode != 0:
+        raise RuntimeError(f"docker create {image} failed for {instance.instance_id}: "
+                           f"{create.stderr.strip()}")
+    cid = create.stdout.strip()
+    try:
+        cp = subprocess.run(["docker", "cp", f"{cid}:/testbed/.", str(dest)],
+                            capture_output=True, text=True)
+        if cp.returncode != 0:
+            raise RuntimeError(f"docker cp from {image} failed for {instance.instance_id}: "
+                               f"{cp.stderr.strip()}")
+    finally:
+        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
+
+    if not (dest / ".git").exists():
+        raise RuntimeError(f"{instance.instance_id}: /testbed has no git repo")
+    reset = _git(["reset", "-q", "--hard", instance.base_commit], dest)
+    if reset.returncode != 0:  # fall back to a detached checkout of the SHA
+        reset = _git(["checkout", "-q", "-f", instance.base_commit], dest)
+    if reset.returncode != 0:
+        raise RuntimeError(f"git reset to base_commit failed for {instance.instance_id}: "
+                           f"{reset.stderr.strip()}")
+    _git(["clean", "-qfd"], dest)  # drop untracked, non-ignored cruft
 
 
 def capture_patch(workdir: Path) -> str:
