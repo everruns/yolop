@@ -14,7 +14,8 @@ use crate::capabilities::{
     ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
     ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, GOAL_CAPABILITY_ID, GoalCapability,
     HOOKS_CAPABILITY_ID, HooksCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
-    SETUP_CAPABILITY_ID, SetupCapability, WorktreeCapability,
+    SETUP_CAPABILITY_ID, SetupCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
+    WorktreeCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::connectors::{
@@ -25,6 +26,7 @@ use crate::goal::GoalStore;
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
+use crate::user_ask::UserAskStore;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use everruns_core::capabilities::{
@@ -1772,6 +1774,9 @@ pub struct BuiltRuntime {
     pub startup: StartupInfo,
     pub model: ModelState,
     pub goal_store: Arc<GoalStore>,
+    pub user_ask_store: Arc<UserAskStore>,
+    /// Whether `yolop_user_ask` is on the session harness (off by default).
+    pub user_ask_enabled: bool,
     pub worktree: Arc<WorktreeManager>,
     /// Settings store shared with the runtime capabilities. The TUI uses it
     /// to resolve credentials when querying provider models APIs and to show
@@ -2311,6 +2316,12 @@ pub async fn build_with_options(
     capabilities.register(GoalCapability {
         store: goal_store.clone(),
     });
+    let user_ask_store = Arc::new(UserAskStore::open(session_dir.clone()));
+    user_ask_store.load_session(session_id)?;
+    capabilities.register(UserAskCapability {
+        store: user_ask_store.clone(),
+        session_id,
+    });
     capabilities.register(WorktreeCapability {
         manager: worktree.clone(),
     });
@@ -2448,6 +2459,9 @@ pub async fn build_with_options(
         hook_capability_config,
         &settings_snapshot,
     );
+    let user_ask_enabled = harness_capabilities
+        .iter()
+        .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID);
     let session_mcp_servers = mcp_servers.clone();
 
     let mut harness_builder = HarnessBuilder::new("yolop", HARNESS_PROMPT)
@@ -2538,6 +2552,8 @@ pub async fn build_with_options(
         ui_rx,
         background: background_registry,
         goal_store,
+        user_ask_store,
+        user_ask_enabled,
         worktree,
     })
 }
@@ -3132,6 +3148,102 @@ mod tests {
             goal.description.contains("completion"),
             "descriptor: {}",
             goal.description
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn user_ask_command_is_registered_when_enabled_in_settings() {
+        use crate::capability_settings::CapabilityOverride;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        settings
+            .append_capability_override(CapabilityOverride {
+                capability_ref: USER_ASK_CAPABILITY_ID.to_string(),
+                enabled: Some(true),
+                append: false,
+                config: serde_json::json!({}),
+            })
+            .expect("append user ask override");
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        assert!(built.user_ask_enabled);
+
+        let commands = built
+            .handles
+            .runtime
+            .list_commands(built.handles.session_id)
+            .await
+            .expect("commands");
+        let ask = commands
+            .iter()
+            .find(|c| c.name == "ask")
+            .expect("/ask surfaced when capability is enabled");
+
+        let result = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "ask".to_string(),
+                    arguments: Some("upgrade dependencies".to_string()),
+                    controls: None,
+                },
+            )
+            .await
+            .expect("execute /ask");
+        assert!(result.success, "result: {}", result.message);
+        assert!(built.user_ask_store.is_active(built.handles.session_id));
+        assert_eq!(
+            built
+                .user_ask_store
+                .active_text(built.handles.session_id)
+                .as_deref(),
+            Some("upgrade dependencies")
+        );
+        assert!(
+            ask.description.contains("tracked"),
+            "descriptor: {}",
+            ask.description
+        );
+    }
+
+    #[test]
+    fn coding_harness_excludes_user_ask_by_default() {
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+        assert!(
+            !ids.iter()
+                .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID),
+            "user ask should be opt-in via settings"
+        );
+    }
+
+    #[test]
+    fn harness_applies_user_ask_from_settings() {
+        use crate::capability_settings::CapabilityOverride;
+
+        let mut settings = Settings::default();
+        settings.capabilities.push(CapabilityOverride {
+            capability_ref: USER_ASK_CAPABILITY_ID.to_string(),
+            enabled: Some(true),
+            append: false,
+            config: serde_json::json!({}),
+        });
+        let ids = coding_harness_capabilities(false, None, &settings);
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID)
         );
     }
 

@@ -31,6 +31,7 @@ pub(crate) struct PresentationState {
     pub approval_mode: String,
     pub background: Option<(usize, usize)>,
     pub goal_indicator: Option<String>,
+    pub ask_indicator: Option<String>,
     pub worktree_compact: Option<String>,
     pub worktree_expanded: Option<(String, String)>,
 }
@@ -159,6 +160,7 @@ fn expanded_status_lines(state: &PresentationState) -> Vec<StatusLine> {
                 status_field("approval", state.approval_mode.clone()),
                 status_field("hooks", state.hooks_summary.clone()),
                 status_field("goal", goal_label(state)),
+                status_field("ask", ask_label(state)),
             ],
         },
         StatusLine { fields: counts },
@@ -199,13 +201,20 @@ fn status_contributions(state: &PresentationState) -> Vec<Vec<StatusField>> {
             status_field("effort", effort_label(state)),
             status_field("approval", state.approval_mode.clone()),
         ],
-        vec![status_field("goal", goal_label(state))],
+        vec![
+            status_field("goal", goal_label(state)),
+            status_field("ask", ask_label(state)),
+        ],
         counts,
     ]
 }
 
 fn goal_label(state: &PresentationState) -> String {
     state.goal_indicator.clone().unwrap_or_else(|| "—".into())
+}
+
+fn ask_label(state: &PresentationState) -> String {
+    state.ask_indicator.clone().unwrap_or_else(|| "—".into())
 }
 
 fn background_label(counts: Option<(usize, usize)>) -> Option<String> {
@@ -272,6 +281,7 @@ mod tests {
             approval_mode: "normal".to_string(),
             background: None,
             goal_indicator: None,
+            ask_indicator: None,
             worktree_compact: None,
             worktree_expanded: None,
         }
