@@ -14,7 +14,7 @@ builds an ephemeral env and runs it with no project scaffolding:
 
     cd evals/swebench_verified
     mira list                  # mira.toml's default_launcher drives this study
-    mira run astropy__astropy-12907 --targets anthropic-claude-sonnet-4.5 --save
+    mira run astropy__astropy-12907 --targets anthropic-claude-sonnet-4.5
 
 (`mira --uv swebench_verified.py …` is the explicit equivalent; `--cmd "uv run
 swebench_verified.py"` still works for arbitrary command lines.)

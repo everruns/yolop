@@ -100,7 +100,7 @@ Cost is cache-aware (`cache_read`/`cache_creation` tokens are priced), so cost
 per resolved instance is a fair cross-model comparison. The host surfaces all of
 the above per cell in its JSON and HTML reports — emit one with
 `mira ... run --format html --out report.html` (a single self-contained file) or
-`--format json --out run.json` for the raw rows. Each `--save` run also stamps
+`--format json --out run.json` for the raw rows. Each saved run also stamps
 `meta.json` with an `environment` block (git commit/branch/dirty, box, mira
 version) plus the `benchmark` label from `mira.toml`.
 
@@ -130,8 +130,8 @@ Every sample is tagged with the suites it belongs to. The **`tracking` preset**
 (gpt-5.5 high · glm-5.2 · opus-4.8); or select it ad-hoc with `--tag`:
 
 ```bash
-mira run --preset tracking --group-by difficulty --save
-mira run --tag tracking-v1 --targets openai-gpt-5.5 --save
+mira run --preset tracking --group-by difficulty
+mira run --tag tracking-v1 --targets openai-gpt-5.5
 ```
 
 Re-running `select_tracking.py` on the same dataset reproduces the committed set
@@ -154,7 +154,7 @@ evals/swebench_verified/
   mira.toml              # host config: [results].dir -> ./results
   suites/                # curated instance subsets (tracking-v1.json + selector)
   tests/                 # unit tests; need the SDK (uv run --with mira-eval -m unittest …)
-  results/               # mira --save run archives (<run_id>/) + pre-Mira history
+  results/               # mira run archives (<run_id>/) + pre-Mira history
   .cache/                # gitignored: dataset parquet, checkouts, raw logs, eval scratch
 ```
 
@@ -162,7 +162,7 @@ The study is a single self-contained file with its dependencies declared inline
 ([PEP 723](https://peps.python.org/pep-0723/)), so `uv run swebench_verified.py`
 builds an ephemeral env and runs it — no package, `pyproject.toml`, or venv.
 
-The `mira` host owns durable run output. `--save` archives a self-contained run
+The `mira` host owns durable run output. Every run auto-archives a self-contained run
 folder under `results/` (`results/<run_id>/{report.json,report.html,meta.json}`,
 `run_id = YYYYMMDDThhmmssZ-xxxx`); the dir comes from `mira.toml`'s
 `[results].dir`. For a resumable long run point `--checkpoint <path>` at a JSON
@@ -219,7 +219,7 @@ this directory a bare `mira run`/`mira list` starts the study — no `--uv
 swebench_verified.py` (or the older `--cmd "uv run swebench_verified.py"`) needed:
 
 ```bash
-cd evals/swebench_verified      # so the adjacent mira.toml is found; --save lands in ./results
+cd evals/swebench_verified      # so the adjacent mira.toml is found; saved runs land in ./results
 
 # What the study advertises: the eval, its samples (instances), and the models
 # (matrix configs); configs with a missing provider key show as unavailable.
@@ -231,11 +231,11 @@ SWEBENCH_NO_EVAL=1 mira run astropy__astropy-12907 --targets llmsim
 # Real end-to-end on one instance, selected configs (substring selection on the
 # case key, like `cargo test`), archived under ./results.
 doppler run -- mira run astropy__astropy-12907 \
-    --targets openai-gpt-5.5,openai-gpt-5.5-high --save
+    --targets openai-gpt-5.5,openai-gpt-5.5-high
 
 # Whole benchmark (all 500), one config, resumable + saved run archive.
 doppler run -- mira run --targets openai-gpt-5.5 \
-    --checkpoint ck/openai-gpt-5.5.json --save
+    --checkpoint ck/openai-gpt-5.5.json
 ```
 
 Study-internal knobs that the host doesn't own are read from the environment so
@@ -254,13 +254,13 @@ A **preset** (`[presets.NAME]` in `mira.toml`, applied with `--preset NAME`) is 
 saved *selection* bundle — which samples (`tag`/`filter`) and which targets — so
 the recurring run scenarios have names. It's the same one eval (`swebench_verified`)
 sliced differently, not separate evals. A preset only subsets the grid;
-`--group-by` and `--save` aren't selection, so pass them too.
+`--group-by` isn't selection, so pass it too (the run folder is always saved).
 
 | Preset | Purpose | Samples | Targets | Typical run |
 |--------|---------|---------|---------|-------------|
-| `astropy-12907-compare` | Evidence of how yolop benches vs other configs & coding agents on one **pinned** instance (`filter`) | astropy-12907 | 13 targets (yolop ×6 incl. gpt-5.5 none/low/medium/high + nvidia/glm/kimi OpenRouter top models + claude-code ×2 + codex + pi) | `mira … run --preset astropy-12907-compare --group-by agent --save` |
-| `tracking` | Weekly yolop quality tracking | 20 (`tracking-v1`) | gpt-5.5 high · glm-5.2 · opus-4.8 | `mira … run --preset tracking --group-by difficulty --save` |
-| `full` | Whole benchmark, run rarely | all 500 | same as tracking (edit as needed) | `mira … run --preset full --group-by repo --checkpoint ck/full.json --save` |
+| `astropy-12907-compare` | Evidence of how yolop benches vs other configs & coding agents on one **pinned** instance (`filter`) | astropy-12907 | 13 targets (yolop ×6 incl. gpt-5.5 none/low/medium/high + nvidia/glm/kimi OpenRouter top models + claude-code ×2 + codex + pi) | `mira … run --preset astropy-12907-compare --group-by agent` |
+| `tracking` | Weekly yolop quality tracking | 20 (`tracking-v1`) | gpt-5.5 high · glm-5.2 · opus-4.8 | `mira … run --preset tracking --group-by difficulty` |
+| `full` | Whole benchmark, run rarely | all 500 | same as tracking (edit as needed) | `mira … run --preset full --group-by repo --checkpoint ck/full.json` |
 
 A preset's `filter` is a substring on the case key `eval/sample@target`, so it can
 **pin a sample** — clone the `astropy-12907-compare` block (new name + `filter`) to
