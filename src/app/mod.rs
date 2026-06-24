@@ -30,7 +30,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 mod markdown_table;
@@ -62,6 +62,9 @@ pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
 /// so this bounds a permanently dead terminal to ~10s before exit while
 /// letting a briefly unresponsive emulator recover.
 const MAX_TERMINAL_IO_FAILURES: usize = 5;
+/// After the first Ctrl+C arms exit, typing does not disarm the prompt until
+/// this grace elapses so a slow second Ctrl+C still exits.
+const CTRL_C_EXIT_ARM_GRACE: Duration = Duration::from_secs(5);
 const MAX_INPUT_HEIGHT: u16 = 12;
 const RECENT_TRANSCRIPT_SOURCE_LINES: usize = 80;
 const RECENT_TRANSCRIPT_MAX_TEXT_BYTES: usize = 4_000;
@@ -86,8 +89,8 @@ pub struct App {
     pub busy: bool,
     pub should_quit: bool,
     ctrl_c_exit: bool,
-    /// First Ctrl+C armed exit; a second press quits.
-    ctrl_c_pending_exit: bool,
+    /// When the first Ctrl+C armed exit; a second press quits.
+    ctrl_c_pending_exit_at: Option<Instant>,
     /// First Esc during a busy turn armed cancellation; a second press cancels.
     esc_pending_cancel: bool,
     busy_frame: u64,
@@ -305,7 +308,7 @@ impl App {
             busy: false,
             should_quit: false,
             ctrl_c_exit: false,
-            ctrl_c_pending_exit: false,
+            ctrl_c_pending_exit_at: None,
             esc_pending_cancel: false,
             busy_frame: 0,
             turn_activity: None,
@@ -740,7 +743,7 @@ impl App {
                 KeyCode::Char('b') => {
                     // Clear the armed single-Ctrl+C exit ourselves, since this
                     // branch returns before the shared reset below.
-                    self.ctrl_c_pending_exit = false;
+                    self.disarm_ctrl_c_pending_exit();
                     self.toggle_background_panel();
                     return;
                 }
@@ -752,7 +755,7 @@ impl App {
             }
         }
 
-        self.ctrl_c_pending_exit = false;
+        self.disarm_ctrl_c_pending_exit_if_grace_elapsed();
 
         // The background panel overlay captures navigation keys (even mid-turn,
         // so you can watch tasks while a turn runs).
@@ -1160,20 +1163,36 @@ impl App {
             && mouse.column < status_rect.x.saturating_add(status_rect.width)
     }
 
+    fn ctrl_c_pending_exit(&self) -> bool {
+        self.ctrl_c_pending_exit_at.is_some()
+    }
+
+    fn disarm_ctrl_c_pending_exit(&mut self) {
+        self.ctrl_c_pending_exit_at = None;
+    }
+
+    fn disarm_ctrl_c_pending_exit_if_grace_elapsed(&mut self) {
+        if let Some(armed_at) = self.ctrl_c_pending_exit_at
+            && armed_at.elapsed() >= CTRL_C_EXIT_ARM_GRACE
+        {
+            self.ctrl_c_pending_exit_at = None;
+        }
+    }
+
     fn handle_ctrl_c(&mut self) {
         if !self.busy && !self.input_text().trim().is_empty() {
             self.reset_input();
-            self.ctrl_c_pending_exit = false;
+            self.disarm_ctrl_c_pending_exit();
             return;
         }
 
-        if self.ctrl_c_pending_exit {
+        if self.ctrl_c_pending_exit() {
             self.ctrl_c_exit = true;
             self.should_quit = true;
             return;
         }
 
-        self.ctrl_c_pending_exit = true;
+        self.ctrl_c_pending_exit_at = Some(Instant::now());
         self.push_system("Press Ctrl+C again to exit".into());
     }
 
@@ -3114,12 +3133,12 @@ mod tests {
         let app = &mut test.app;
         app.setup = None;
         app.handle_ctrl_c(); // first Ctrl+C arms the pending exit
-        assert!(app.ctrl_c_pending_exit);
+        assert!(app.ctrl_c_pending_exit());
 
         app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL))
             .await;
         assert!(
-            !app.ctrl_c_pending_exit,
+            !app.ctrl_c_pending_exit(),
             "Ctrl+B must disarm the pending Ctrl+C exit"
         );
         assert_eq!(app.background_panel, Some(0));
@@ -3792,7 +3811,7 @@ mod tests {
             .await;
 
         assert!(!app.should_quit, "first Ctrl-C should not quit immediately");
-        assert!(app.ctrl_c_pending_exit, "first Ctrl-C should arm exit");
+        assert!(app.ctrl_c_pending_exit(), "first Ctrl-C should arm exit");
         assert!(
             app.lines
                 .iter()
@@ -3832,13 +3851,13 @@ mod tests {
             "Ctrl-C should clear draft input"
         );
         assert!(
-            !app.ctrl_c_pending_exit,
+            !app.ctrl_c_pending_exit(),
             "clearing input should not arm exit"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn typing_after_first_ctrl_c_disarms_exit_prompt() {
+    async fn typing_within_ctrl_c_grace_keeps_exit_prompt_armed() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.setup = None;
@@ -3849,10 +3868,44 @@ mod tests {
             .await;
 
         assert!(
-            !app.ctrl_c_pending_exit,
-            "typing should disarm the pending exit prompt"
+            app.ctrl_c_pending_exit(),
+            "typing during the grace window should not disarm exit"
         );
         assert!(!app.should_quit);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typing_after_ctrl_c_grace_disarms_exit_prompt() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+        tokio::time::sleep(CTRL_C_EXIT_ARM_GRACE + Duration::from_millis(50)).await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()))
+            .await;
+
+        assert!(
+            !app.ctrl_c_pending_exit(),
+            "typing after the grace window should disarm the pending exit prompt"
+        );
+        assert!(!app.should_quit);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn second_ctrl_c_within_grace_exits_after_prompt() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+        app.handle_key(ctrl_c).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        app.handle_key(ctrl_c).await;
+
+        assert!(app.should_quit, "second Ctrl-C within grace should quit");
+        assert!(app.ctrl_c_exit, "second Ctrl-C should count as Ctrl-C exit");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
