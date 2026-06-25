@@ -20,7 +20,7 @@ path = "src/main.rs"
 [dependencies]
 agent-client-protocol = "1.0.0"
 anyhow = "1.0"
-ast-grep-core = "0.43"
+ast-grep-core = "0.44"
 ast-grep-language = { version = "0.43", default-features = false, features = [
     "tree-sitter-bash",
     "tree-sitter-c-sharp",
