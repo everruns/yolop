@@ -166,6 +166,33 @@ class RegistryTest(unittest.TestCase):
         # the medium default rides the model profile, so it carries no explicit key
         self.assertNotIn("reasoning_effort", MATRIX["openai-gpt-5.5"])
 
+    def test_openrouter_top_models(self):
+        # The nvidia/glm/kimi OpenRouter top models share the yolop x openrouter
+        # config shape. kimi-k2.7-code's endpoint rejects reasoning-disabled
+        # requests, so it must carry an explicit effort (low, to stay under
+        # yolop's stream-stall guard at high effort).
+        for name, model in [
+            ("openrouter-nemotron-3-ultra", "nvidia/nemotron-3-ultra-550b-a55b"),
+            ("openrouter-glm-5.2", "z-ai/glm-5.2"),
+            ("openrouter-kimi-k2.7-code", "moonshotai/kimi-k2.7-code"),
+        ]:
+            self.assertEqual(MATRIX[name]["provider"], "openrouter", name)
+            self.assertEqual(MATRIX[name]["model"], model, name)
+        self.assertEqual(MATRIX["openrouter-kimi-k2.7-code"]["reasoning_effort"], "low")
+
+    def test_presets_reference_known_targets(self):
+        # Guard the mira.toml preset edits: every preset target must be a real
+        # MATRIX config, else `mira run --preset …` silently selects nothing.
+        import tomllib
+        toml = Path(__file__).resolve().parents[1] / "mira.toml"
+        presets = tomllib.loads(toml.read_text())["presets"]
+        self.assertIn("astropy-12907-compare", presets)
+        self.assertNotIn("compare", presets)          # removed: unpinned wrapper
+        self.assertNotIn("astropy-12907", presets)    # renamed
+        for pname, pcfg in presets.items():
+            for target in pcfg.get("targets", []):
+                self.assertIn(target, MATRIX, f"{pname} -> {target}")
+
     def test_unknown_agent_raises(self):
         # dispatch rejects an unknown agent before touching the workspace
         with self.assertRaises(ValueError):

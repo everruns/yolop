@@ -1,0 +1,35 @@
+{
+  "format": 1,
+  "run_id": "20260624T180507Z-1dd0",
+  "study": "swebench_verified",
+  "study_version": "0.5.0",
+  "started_unix": 1782324307,
+  "finished_unix": 1782328212,
+  "environment": {
+    "git": {
+      "commit": "06496b7000d65a532411c8da1d4c7d05961b96f7",
+      "branch": "claude/tender-wright-93m252",
+      "dirty": false
+    },
+    "os": "linux",
+    "arch": "x86_64",
+    "hostname": "vm",
+    "cpus": 4,
+    "mem_total_mib": 16075,
+    "mira_version": "0.2.0",
+    "labels": {
+      "benchmark": "swebench_verified"
+    }
+  },
+  "summary": {
+    "scored": 13,
+    "passed": 13,
+    "failed": 0,
+    "na": 0,
+    "skipped": 0,
+    "total_tokens": 8971267,
+    "total_cost_usd": 7.346067999999999,
+    "total_tool_calls": 473,
+    "total_duration_ms": 3474332
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "eval": "swebench_verified",
+  "sample": "astropy__astropy-12907",
+  "target": "anthropic-claude-opus-4.8",
+  "passed": true,
+  "aggregate": 1.0,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 1.0,
+      "pass": true,
+      "reason": "FAIL_TO_PASS passed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=True",
+    "iterations": 7,
+    "tool_calls_count": 6,
+    "tool_calls": [
+      "read_file",
+      "edit_file",
+      "bash",
+      "bash",
+      "bash",
+      "bash"
+    ],
+    "usage": {
+      "input_tokens": 11765,
+      "output_tokens": 1706,
+      "cache_read_tokens": 92060,
+      "cost_usd": 0.255713
+    },
+    "timing": {
+      "duration_ms": 48287
+    },
+    "metrics": {
+      "agent_reported_time_s": 27.738,
+      "cache_creation_tokens": 21642.0,
+      "cache_read_tokens": 92060.0,
+      "iterations": 7.0,
+      "tool_calls": 6.0,
+      "tool_calls_failed": 0.0,
+      "turns": 7.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "difficulty": "15 min - 1 hour",
+      "eval_report": {
+        "patch_exists": true,
+        "patch_is_None": false,
+        "patch_successfully_applied": true,
+        "resolved": true,
+        "tests_status": {
+          "FAIL_TO_FAIL": {
+            "failure": [],
+            "success": []
+          },
+          "FAIL_TO_PASS": {
+            "failure": [],
+            "success": [
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+            ]
+          },
+          "PASS_TO_FAIL": {
+            "failure": [],
+            "success": []
+          },
+          "PASS_TO_PASS": {
+            "failure": [],
+            "success": [
+              "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+              "astropy/modeling/tests/test_separable.py::test_cdot",
+              "astropy/modeling/tests/test_separable.py::test_cstack",
+              "astropy/modeling/tests/test_separable.py::test_arith_oper",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+              "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+            ]
+          }
+        }
+      },
+      "model": "claude-opus-4-8",
+      "provider": "anthropic",
+      "reasoning_effort": "high",
+      "repo": "astropy/astropy",
+      "resolved": true,
+      "stop_reason": "completed",
+      "tools_used": {
+        "bash": 4,
+        "edit_file": 1,
+        "read_file": 1
+      }
+    }
+  },
+  "skipped": false
+}

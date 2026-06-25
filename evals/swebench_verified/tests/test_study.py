@@ -170,6 +170,112 @@ class CellTest(unittest.TestCase):
             _study()._subject(mira.Sample("org__repo-1"), mira.RunCx(target="nope"))
 
 
+class ImageKeyTest(unittest.TestCase):
+    """`_instance_image_key`: derive the scorer's instance image from the raw row."""
+
+    def test_requires_loaded_row(self):
+        sv._RAW.clear()
+        with self.assertRaises(RuntimeError):
+            sv._instance_image_key("missing", "swebench")
+
+    def test_delegates_to_make_test_spec(self):
+        # swebench isn't in the test env; inject a fake so the lazy import resolves.
+        import types
+        spec_mod = types.ModuleType("swebench.harness.test_spec.test_spec")
+        spec_mod.make_test_spec = lambda raw, namespace: types.SimpleNamespace(
+            instance_image_key=f"{namespace}/img.{raw['instance_id']}:latest")
+        pkgs = {
+            "swebench": types.ModuleType("swebench"),
+            "swebench.harness": types.ModuleType("swebench.harness"),
+            "swebench.harness.test_spec": types.ModuleType("swebench.harness.test_spec"),
+            "swebench.harness.test_spec.test_spec": spec_mod,
+        }
+        sv._RAW.clear()
+        sv._RAW["iid"] = {"instance_id": "iid", "repo": "org/repo"}
+        with mock.patch.dict(sys.modules, pkgs):
+            key = sv._instance_image_key("iid", "swebench")
+        self.assertEqual(key, "swebench/img.iid:latest")
+
+
+class CheckoutTest(unittest.TestCase):
+    """`checkout`: materialize the repo from the instance Docker image, resetting
+    the working tree to a pristine base_commit. All docker/git calls go through
+    `subprocess.run`, so we mock that boundary and assert the behavior."""
+
+    def _fake_subprocess(self, dest, *, image_present=False, fail=None, make_git=True):
+        """A subprocess.run stand-in that records calls and fakes docker/git.
+
+        `fail` names a step ("pull"/"create"/"cp") that returns a non-zero rc.
+        `make_git` controls whether the faked `docker cp` materializes a .git dir.
+        """
+        calls = []
+
+        def run(cmd, *a, **k):
+            calls.append(cmd)
+            argv = list(cmd)
+            rc, out = 0, ""
+            if argv[:3] == ["docker", "image", "inspect"]:
+                rc = 0 if image_present else 1          # present -> skip pull
+            elif argv[:2] == ["docker", "pull"]:
+                rc = 1 if fail == "pull" else 0
+            elif argv[:2] == ["docker", "create"]:
+                rc, out = (1, "") if fail == "create" else (0, "fakecid\n")
+            elif argv[:2] == ["docker", "cp"]:
+                rc = 1 if fail == "cp" else 0
+                if rc == 0 and make_git:
+                    (Path(dest) / ".git").mkdir(parents=True, exist_ok=True)
+            # docker rm / git reset / git clean default to rc 0
+            return mock.Mock(returncode=rc, stdout=out, stderr="err")
+
+        return run, calls
+
+    def _checkout(self, dest, **kw):
+        run, calls = self._fake_subprocess(dest, **kw)
+        with mock.patch.object(sv, "_instance_image_key", lambda iid, ns: "ns/img:latest"), \
+             mock.patch.object(sv.subprocess, "run", run):
+            sv.checkout(_INSTANCE, Path(dest))
+        return calls
+
+    def test_pulls_when_absent_and_resets_to_base_commit(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / "wd"
+            calls = self._checkout(dest, image_present=False)
+            self.assertIn(["docker", "pull", "ns/img:latest"], calls)
+            self.assertTrue(any(c[:2] == ["docker", "cp"] for c in calls))
+            # working tree reset to the instance's base_commit, then cleaned
+            self.assertIn(["git", "reset", "-q", "--hard", _INSTANCE.base_commit], calls)
+            self.assertTrue(any(c[:2] == ["git", "clean"] for c in calls))
+
+    def test_skips_pull_when_image_present(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            calls = self._checkout(Path(d) / "wd", image_present=True)
+            self.assertFalse(any(c[:2] == ["docker", "pull"] for c in calls))
+
+    def test_pull_failure_raises(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(RuntimeError) as cm:
+                self._checkout(Path(d) / "wd", image_present=False, fail="pull")
+            self.assertIn("docker pull", str(cm.exception))
+
+    def test_missing_git_repo_raises(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(RuntimeError) as cm:
+                self._checkout(Path(d) / "wd", make_git=False)
+            self.assertIn("no git repo", str(cm.exception))
+
+    def test_missing_base_commit_raises(self):
+        import tempfile
+        bad = Instance(instance_id="x", problem_statement="p", repo="o/r", base_commit=None)
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(sv, "_instance_image_key", lambda *a: "i"):
+                with self.assertRaises(RuntimeError):
+                    sv.checkout(bad, Path(d) / "wd")
+
+
 class SdkIntegrationTest(unittest.TestCase):
     """One smoke that the study registers with the SDK and a run flows through —
     not a re-test of the SDK's dispatch/scoring internals."""
