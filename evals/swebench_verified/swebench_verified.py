@@ -732,11 +732,11 @@ def _instance_image_key(instance_id: str, namespace: str) -> str:
 
     Derived via swebench's own `make_test_spec` so the name matches exactly what
     the scorer pulls (e.g. `swebench/sweb.eval.x86_64.astropy_1776_…:latest`)."""
-    from swebench.harness.test_spec.test_spec import make_test_spec
-
     raw = _RAW.get(instance_id)
     if not raw:
         raise RuntimeError(f"{instance_id}: dataset row not loaded; cannot derive image key")
+    from swebench.harness.test_spec.test_spec import make_test_spec
+
     return make_test_spec(raw, namespace=namespace).instance_image_key
 
 
