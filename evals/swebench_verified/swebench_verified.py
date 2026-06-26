@@ -508,6 +508,7 @@ def extract_codex(log_path: str | Path, price: dict | None = None) -> RunMetrics
         return m
     summed = TokenUsage()
     cumulative: dict | None = None
+    reasoning_steps = 0
     for ev in iter_events(path):
         msg = ev.get("msg") or {}
         etype = ev.get("type") or msg.get("type")
@@ -523,6 +524,8 @@ def extract_codex(log_path: str | Path, price: dict | None = None) -> RunMetrics
             m.tools_used["file_change"] = m.tools_used.get("file_change", 0) + 1
         elif etype == "item.completed" and itype == "agent_message":
             m.assistant_messages += 1
+        elif etype == "item.completed" and itype == "reasoning":
+            reasoning_steps += 1
         elif etype == "exec_command_end":  # older schema
             m.tool_calls += 1
             m.tools_used["command"] = m.tools_used.get("command", 0) + 1
@@ -530,6 +533,8 @@ def extract_codex(log_path: str | Path, price: dict | None = None) -> RunMetrics
                 m.tool_calls_failed += 1
         elif etype == "agent_message":  # older schema
             m.assistant_messages += 1
+        elif etype == "agent_reasoning":  # older schema
+            reasoning_steps += 1
         elif etype == "token_count":  # older schema, cumulative
             info = msg.get("info") or {}
             cumulative = info.get("total_token_usage") or cumulative
@@ -542,7 +547,12 @@ def extract_codex(log_path: str | Path, price: dict | None = None) -> RunMetrics
     else:
         m.tokens = summed
     m.llm_calls = m.assistant_messages
-    m.iterations = m.turns or m.assistant_messages
+    # `codex exec` emits a single turn.completed for the whole run, so `turns`
+    # is not a measure of agentic loop steps. Count model round-trips instead:
+    # each round-trip emits one `reasoning` item (codex runs reasoning models
+    # here). Fall back to assistant messages, then turns, when reasoning
+    # summaries are absent.
+    m.iterations = reasoning_steps or m.assistant_messages or m.turns
     if not m.turns:
         m.turns = m.iterations
     _finalize_cost(m, None, price)  # codex reports no cost

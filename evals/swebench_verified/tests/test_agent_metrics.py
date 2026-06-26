@@ -87,11 +87,14 @@ class CodexMetricsTest(unittest.TestCase):
         events = [
             {"type": "thread.started"},
             {"type": "turn.started"},
+            {"type": "item.completed", "item": {"type": "reasoning"}},
             {"type": "item.completed", "item": {"type": "command_execution",
                                                 "exit_code": 0}},
             {"type": "item.completed", "item": {"type": "command_execution",
                                                 "exit_code": 1}},
+            {"type": "item.completed", "item": {"type": "reasoning"}},
             {"type": "item.completed", "item": {"type": "file_change"}},
+            {"type": "item.completed", "item": {"type": "reasoning"}},
             {"type": "item.completed", "item": {"type": "agent_message"}},
             {"type": "turn.completed", "usage": {"input_tokens": 100,
                                                  "cached_input_tokens": 40,
@@ -104,12 +107,28 @@ class CodexMetricsTest(unittest.TestCase):
         self.assertEqual(m.tools_used, {"command": 2, "file_change": 1})
         self.assertEqual(m.assistant_messages, 1)
         self.assertEqual(m.turns, 1)
+        # codex emits one turn.completed for the whole run; iterations must come
+        # from per-round-trip reasoning items, not the single turn count.
+        self.assertEqual(m.iterations, 3)
         # input_tokens (100) includes the 40 cached -> 60 non-cached reported
         self.assertEqual(m.tokens.input_tokens, 60)
         self.assertEqual(m.tokens.cache_read_tokens, 40)
         self.assertEqual(m.tokens.output_tokens, 25)
         self.assertAlmostEqual(
             m.cost_usd, (60 * 1.0 + 25 * 10.0 + 40 * 0.1) / 1e6, places=9)
+
+    def test_iterations_fall_back_when_no_reasoning_items(self):
+        # Models without reasoning summaries emit no `reasoning` items; iterations
+        # then fall back to assistant messages (and finally the turn count).
+        events = [
+            {"type": "item.completed", "item": {"type": "agent_message"}},
+            {"type": "item.completed", "item": {"type": "agent_message"}},
+            {"type": "turn.completed", "usage": {"input_tokens": 10,
+                                                 "output_tokens": 5}},
+        ]
+        m = extract_codex(_write_log(events))
+        self.assertEqual(m.turns, 1)
+        self.assertEqual(m.iterations, 2)  # 2 assistant messages, not 1 turn
 
 
 class PiMetricsTest(unittest.TestCase):
