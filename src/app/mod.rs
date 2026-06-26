@@ -557,6 +557,19 @@ impl App {
             match self.run_loop_iteration(terminal).await {
                 Ok(()) => io_failures = 0,
                 Err(err) => {
+                    // Redraw/anchoring can fail before input polling; let a
+                    // queued exit key terminate instead of waiting for retries.
+                    if let Err(input_err) =
+                        self.drain_terminal_input(terminal, Duration::ZERO).await
+                    {
+                        tracing::warn!(
+                            "terminal input drain failed after terminal i/o error: {input_err:#}"
+                        );
+                    }
+                    if self.should_quit {
+                        return Ok(());
+                    }
+
                     io_failures += 1;
                     if io_failures >= MAX_TERMINAL_IO_FAILURES {
                         return Err(err);
@@ -664,7 +677,20 @@ impl App {
         }
 
         // 4) direct terminal input.
-        let mut poll_timeout = Duration::from_millis(80);
+        self.drain_terminal_input(terminal, Duration::from_millis(80))
+            .await
+    }
+
+    async fn drain_terminal_input<B>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        initial_poll_timeout: Duration,
+    ) -> Result<()>
+    where
+        B: Backend,
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let mut poll_timeout = initial_poll_timeout;
         while event::poll(poll_timeout)? {
             poll_timeout = Duration::ZERO;
             match event::read()? {
