@@ -388,7 +388,7 @@ pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &Ap
         width: panel.width.saturating_sub(4),
         height: panel.height.saturating_sub(2),
     };
-    let body = app.background.render_task_list();
+    let body = app.background_panel_body();
     let texts = background_panel_lines(&body, offset, inner.height as usize);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(texts.len());
     for (i, text) in texts.into_iter().enumerate() {

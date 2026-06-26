@@ -16,15 +16,18 @@
 // Results survive a restart; in-flight processes do not. See specs/background.md.
 
 use crate::capabilities::narration::stable_labeled;
+use crate::session_tasks_view::render_combined_task_list;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::command::{
     CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource, ExecuteCommandRequest,
 };
+use everruns_core::session_task::SessionTaskRegistry;
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str};
 use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::typed_id::SessionId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -1076,6 +1079,8 @@ fn write_index(path: &Path, records: &[BackgroundRecord]) -> std::io::Result<()>
 
 pub(crate) struct BackgroundCapability {
     pub(crate) registry: Arc<BackgroundRegistry>,
+    pub(crate) session_id: SessionId,
+    pub(crate) task_registry: Arc<dyn SessionTaskRegistry>,
 }
 
 #[async_trait]
@@ -1118,9 +1123,18 @@ impl Capability for BackgroundCapability {
                 request.name
             )));
         }
+        let (tasks, task_error) = match self.task_registry.list(self.session_id, None).await {
+            Ok(tasks) => (tasks, None),
+            Err(err) => (Vec::new(), Some(err.to_string())),
+        };
         Ok(CommandResult {
             success: true,
-            message: self.registry.render_task_list(),
+            message: render_combined_task_list(
+                &tasks,
+                task_error.as_deref(),
+                self.registry.counts(),
+                &self.registry.render_task_list(),
+            ),
             error_code: None,
             error_fields: None,
         })
@@ -1516,9 +1530,28 @@ impl Tool for BackgroundCancelTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_core::session_task::{
+        CreateSessionTask, SessionTaskState, TASK_KIND_BACKGROUND_TOOL,
+    };
+    use everruns_local::{LocalSessionTaskRegistry, SqliteDb};
 
     fn registry_in(dir: &Path) -> BackgroundRegistry {
         BackgroundRegistry::load(dir, dir.to_path_buf())
+    }
+
+    fn task_registry_in(dir: &Path) -> Arc<dyn SessionTaskRegistry> {
+        Arc::new(
+            LocalSessionTaskRegistry::new(SqliteDb::open(dir.join("tasks.sqlite")).unwrap())
+                .unwrap(),
+        )
+    }
+
+    fn capability_in(dir: &Path, registry: Arc<BackgroundRegistry>) -> BackgroundCapability {
+        BackgroundCapability {
+            registry,
+            session_id: SessionId::from_seed(123),
+            task_registry: task_registry_in(dir),
+        }
     }
 
     /// Test spawner that returns a canned outcome, so the registry's sub-agent
@@ -1703,9 +1736,7 @@ mod tests {
         let record = reg.spawn_script(Some("ci".into()), "echo hi".into());
         wait_terminal(&reg, &record.id, 100).await;
 
-        let cap = BackgroundCapability {
-            registry: reg.clone(),
-        };
+        let cap = capability_in(tmp.path(), reg.clone());
         let names: Vec<String> = cap.tools().iter().map(|t| t.name().to_string()).collect();
         assert_eq!(
             names,
@@ -1845,11 +1876,57 @@ mod tests {
     #[test]
     fn capability_contributes_background_command() {
         let tmp = tempfile::tempdir().unwrap();
-        let cap = BackgroundCapability {
-            registry: Arc::new(registry_in(tmp.path())),
-        };
+        let cap = capability_in(tmp.path(), Arc::new(registry_in(tmp.path())));
         let names: Vec<String> = cap.commands().iter().map(|c| c.name.clone()).collect();
         assert_eq!(names, vec!["background"]);
+    }
+
+    #[tokio::test]
+    async fn background_command_lists_everruns_session_tasks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy = Arc::new(registry_in(tmp.path()));
+        let session_id = SessionId::from_seed(123);
+        let task_registry = task_registry_in(tmp.path());
+        task_registry
+            .create(CreateSessionTask {
+                session_id,
+                id: Some("task_cmd".to_string()),
+                kind: TASK_KIND_BACKGROUND_TOOL.to_string(),
+                display_name: "write marker".to_string(),
+                spec: json!({ "tool": "bash", "command": "echo hi" }),
+                state: SessionTaskState::Running,
+                links: Default::default(),
+                wake_policy: Default::default(),
+            })
+            .await
+            .expect("create session task");
+        let cap = BackgroundCapability {
+            registry: legacy,
+            session_id,
+            task_registry,
+        };
+
+        let result = cap
+            .execute_command(
+                &ExecuteCommandRequest {
+                    name: "background".to_string(),
+                    arguments: None,
+                    controls: None,
+                },
+                &CommandExecutionContext::without_host(session_id),
+            )
+            .await
+            .expect("execute /background");
+
+        assert!(result.success);
+        assert!(result.message.contains("Everruns session task"));
+        assert!(
+            result
+                .message
+                .contains("[task_cmd] background_tool running: write marker"),
+            "unexpected /background output: {}",
+            result.message
+        );
     }
 
     #[tokio::test]
@@ -1968,9 +2045,7 @@ mod tests {
         assert!(!reg.can_spawn_agents());
         assert!(reg.spawn_agent(None, "x".into(), None).is_err());
 
-        let cap = BackgroundCapability {
-            registry: Arc::new(reg),
-        };
+        let cap = capability_in(tmp.path(), Arc::new(reg));
         let names: Vec<String> = cap.tools().iter().map(|t| t.name().to_string()).collect();
         assert!(!names.contains(&"background_agent".to_string()));
         assert_eq!(names.len(), 4);
@@ -1983,9 +2058,7 @@ mod tests {
             final_text: None,
             success: true,
         }));
-        let cap = BackgroundCapability {
-            registry: Arc::new(reg),
-        };
+        let cap = capability_in(tmp.path(), Arc::new(reg));
         let names: Vec<String> = cap.tools().iter().map(|t| t.name().to_string()).collect();
         assert!(names.contains(&"background_agent".to_string()));
         assert_eq!(names.len(), 5);
