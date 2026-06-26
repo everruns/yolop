@@ -137,3 +137,7 @@ Unsupported files are counted and skipped rather than failing the scan.
 - **Sandboxed.** Scans cannot escape the workspace root.
 - **Bounded.** Per-file size limits, a candidate cap, and the `limit` parameter
   keep responses compact and fast; `truncated` reports when output was clipped.
+
+## Related
+
+- Diagram source: [`repo-map.mmd`](repo-map.mmd)
