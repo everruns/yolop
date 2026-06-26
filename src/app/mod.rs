@@ -19,6 +19,7 @@ use crossterm::event::{
 };
 use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_core::message::ContentPart;
+use everruns_core::session_task::{SessionTask, SessionTaskRegistry};
 use everruns_core::typed_id::SessionId;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -56,6 +57,7 @@ pub(crate) struct CommandSuggestion {
 }
 
 pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
+const SESSION_TASK_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// Consecutive failed event-loop iterations tolerated before the terminal is
 /// considered gone and the error becomes fatal. The slowest failure mode (an
 /// unanswered cursor-position query) blocks ~2s per attempt inside crossterm,
@@ -126,11 +128,18 @@ pub struct App {
     model_discovery_enabled: bool,
     models_tx: mpsc::UnboundedSender<ModelDiscovery>,
     models_rx: mpsc::UnboundedReceiver<ModelDiscovery>,
-    /// This session's background task registry, polled each frame for the
-    /// status-bar task count. Same registry the `background` capability owns.
+    /// Legacy Yolop background registry. Kept during migration for task types
+    /// that have not moved to Everruns `session_tasks` yet.
     background: Arc<crate::capabilities::BackgroundRegistry>,
-    /// Open background-tasks panel overlay, holding its scroll offset (in lines).
-    /// `None` when closed. Toggled with Ctrl+B; read-only view of the registry.
+    /// Everruns session-task registry used by `spawn_background`; the TUI reads
+    /// it for the background status segment and panel.
+    task_registry: Arc<dyn SessionTaskRegistry>,
+    session_tasks: Vec<SessionTask>,
+    session_tasks_error: Option<String>,
+    last_session_tasks_refresh: Option<Instant>,
+    /// Open background-tasks panel overlay, holding its scroll offset (in
+    /// lines). `None` when closed. Toggled with Ctrl+B; read-only view of the
+    /// session task list.
     background_panel: Option<usize>,
     goal_store: Arc<GoalStore>,
     user_ask_store: Arc<UserAskStore>,
@@ -326,6 +335,10 @@ impl App {
             models_tx,
             models_rx,
             background: runtime.background,
+            task_registry: runtime.task_registry,
+            session_tasks: Vec::new(),
+            session_tasks_error: None,
+            last_session_tasks_refresh: None,
             background_panel: None,
             goal_store,
             user_ask_store,
@@ -395,10 +408,7 @@ impl App {
                 .approval_mode()
                 .as_str()
                 .to_string(),
-            background: match self.background.counts() {
-                (_, 0) => None,
-                counts => Some(counts),
-            },
+            background: self.background_counts(),
             goal_indicator: self.goal_indicator(),
             ask_indicator: self.ask_indicator(),
             worktree_compact: self.worktree.status_bar_compact(),
@@ -420,6 +430,47 @@ impl App {
             .map(|active| active.evaluated_turns)
             .unwrap_or(0);
         Some(format!("? ask ({turns})"))
+    }
+
+    fn background_counts(&self) -> Option<(usize, usize)> {
+        crate::session_tasks_view::combined_counts(&self.session_tasks, self.background.counts())
+    }
+
+    fn background_panel_body(&self) -> String {
+        crate::session_tasks_view::render_combined_task_list(
+            &self.session_tasks,
+            self.session_tasks_error.as_deref(),
+            self.background.counts(),
+            &self.background.render_task_list(),
+        )
+    }
+
+    async fn refresh_session_tasks(&mut self) {
+        match self
+            .task_registry
+            .list(self.session.session_id(), None)
+            .await
+        {
+            Ok(tasks) => {
+                self.session_tasks = tasks;
+                self.session_tasks_error = None;
+            }
+            Err(err) => {
+                self.session_tasks.clear();
+                self.session_tasks_error = Some(err.to_string());
+            }
+        }
+        self.last_session_tasks_refresh = Some(Instant::now());
+    }
+
+    async fn refresh_session_tasks_if_due(&mut self) {
+        if self
+            .last_session_tasks_refresh
+            .is_some_and(|last| last.elapsed() < SESSION_TASK_REFRESH_INTERVAL)
+        {
+            return;
+        }
+        self.refresh_session_tasks().await;
     }
 
     fn goal_indicator(&self) -> Option<String> {
@@ -535,6 +586,7 @@ impl App {
         B::Error: std::error::Error + Send + Sync + 'static,
     {
         self.flush_transcript(terminal)?;
+        self.refresh_session_tasks_if_due().await;
         // Ratatui keeps the inline viewport row fixed across vertical grows and
         // resets it to the top on horizontal shrinks. Re-anchor before each draw
         // so the composer stays pinned to the terminal bottom after resize.
@@ -939,8 +991,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 // Clamp so scrolling can't run past the last line of content.
                 let max = self
-                    .background
-                    .render_task_list()
+                    .background_panel_body()
                     .lines()
                     .count()
                     .saturating_sub(1);
@@ -1665,6 +1716,9 @@ mod tests {
         OutputMessageStartedData, ReasonCompletedData, ToolCompletedData,
     };
     use everruns_core::message::Message;
+    use everruns_core::session_task::{
+        CreateSessionTask, SessionTaskState, TASK_KIND_BACKGROUND_TOOL,
+    };
     use everruns_core::tool_types::ToolCall;
     use everruns_core::{SessionId, TurnId};
 
@@ -3157,19 +3211,36 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn background_panel_renders_task_rows() {
+    async fn background_panel_renders_everruns_session_task_rows() {
         let mut test = app_with_llmsim().await;
         let app = &mut test.app;
         app.setup = None;
-        app.background
-            .spawn_script(Some("ci".into()), "echo hi".into());
+        app.task_registry
+            .create(CreateSessionTask {
+                session_id: app.session.session_id(),
+                id: Some("task_panel".to_string()),
+                kind: TASK_KIND_BACKGROUND_TOOL.to_string(),
+                display_name: "write marker".to_string(),
+                spec: serde_json::json!({ "tool": "bash", "command": "echo hi" }),
+                state: SessionTaskState::Running,
+                links: Default::default(),
+                wake_policy: Default::default(),
+            })
+            .await
+            .expect("create session task");
+        app.refresh_session_tasks().await;
         app.background_panel = Some(0);
 
+        assert_eq!(app.presentation_state().background, Some((1, 1)));
         let lines = render_app_lines(app, 120, 20).join("\n");
         assert!(lines.contains("Background tasks"), "panel header: {lines}");
         assert!(
-            lines.contains("script"),
-            "panel should list the task: {lines}"
+            lines.contains("Everruns session task"),
+            "panel should list session tasks: {lines}"
+        );
+        assert!(
+            lines.contains("[task_panel] background_tool running: write marker"),
+            "panel should list the Everruns task row: {lines}"
         );
     }
 

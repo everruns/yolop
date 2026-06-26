@@ -1,8 +1,10 @@
 # Background execution — background tasks and background agents
 
-Status: implemented — scripted background tasks, background sub-agents, user
-surfaces (status-bar indicator + `/background` command), and proactive wake
-(auto-run a turn when a task finishes).
+Status: partially moved to Everruns primitives. Generic `spawn_background`
+tasks are recorded in Everruns `session_tasks` through `everruns-local`; Yolop's
+status bar, `/background` command, and panel read those session tasks first.
+Legacy Yolop `background_run` / `background_agent` tasks still use
+`BackgroundRegistry` until they are migrated.
 
 ## Why
 
@@ -22,17 +24,33 @@ a process restart except the conversation itself (replayed from
 `events.jsonl`). Background execution is the missing primitive.
 
 The design goal is a **single generic background-execution core** that both
-scripted tasks and background agents are *kinds* of — not two parallel
-mechanisms. yolop already has the right substrate for durability: every session
-owns a private folder under `<data_dir>/yolop/sessions/<session_id>/` (see
-`specs/` neighbours and `src/session_log.rs`). Background state lives there, so
-it is naturally per-session, owner-only, and restorable on `--session` resume.
+scripted tasks and background agents are *kinds* of, not two parallel
+mechanisms. The target owner is Everruns `session_tasks`: a generic runtime
+task registry, backed locally by `everruns-local`, with task ids, kind, state,
+display name, result paths, links, wake policy, and messages. Yolop should add
+domain-specific launchers on top of that generic model, not own a competing
+task system.
+
+Yolop currently keeps a transitional legacy registry for `background_run` and
+`background_agent`. That registry remains only for task types that have not
+moved to `session_tasks`; user-facing status/listing surfaces now prefer
+Everruns session tasks and append legacy tasks separately.
 
 ## Core abstraction
 
 A **background task** is a unit of work that runs detached from the foreground
-turn. It has an id, a kind, a lifecycle status, captured output, and is
-cancellable and observable. The registry owns them:
+turn. It has an id, a kind, a lifecycle status, captured output or result
+artifacts, and is cancellable and observable. In the generic path, Everruns'
+`SessionTaskRegistry` owns that record:
+
+- `SessionTaskRegistry` — generic Everruns task table for a session. In local
+  Yolop runs it is backed by `everruns-local`, so `spawn_background` tasks are
+  durable through the same runtime-local backend stack as other session data.
+- `SessionTask` — the runtime-owned task record: `id`, `kind`, `display_name`,
+  `state`, optional `state_detail`, `summary`, `result_path`, `links`, wake
+  policy, and timestamps.
+
+The legacy Yolop registry remains during migration:
 
 - `BackgroundRegistry` — an `Arc`-shared handle holding the live task table and
   persisting an index to `<session_dir>/background/index.json`. One registry per
@@ -45,9 +63,12 @@ cancellable and observable. The registry owns them:
 
 ### Status lifecycle
 
+Everruns session tasks use the generic runtime lifecycle (`queued`, `running`,
+`succeeded`, `failed`, `canceled`, and other states supported by
+`SessionTaskState`). Legacy Yolop tasks still use
 `running → {completed | failed | cancelled | timed_out}`, plus `interrupted`
 which is assigned on restore (below). `completed`/`failed`/`cancelled`/
-`timed_out`/`interrupted` are terminal.
+`timed_out`/`interrupted` are terminal for the legacy registry.
 
 ### Surviving a restart
 
@@ -71,7 +92,12 @@ transcript is durable and its child session id is recorded for resume.
 
 ### Tools
 
-The `background` capability contributes:
+The generic Everruns runtime contributes `spawn_background` for tools that
+implement the runtime's background-executable abstraction. Yolop's bash tool
+uses that path, so detached bash work can be recorded as Everruns session tasks.
+
+The Yolop `background` capability still contributes legacy tools during
+migration:
 
 - `background_run` — start a scripted task. `command` (required), `label`
   (optional human tag). Returns the new task id and status. Non-blocking.
@@ -136,12 +162,15 @@ refuse new work past the cap until a running task finishes or is cancelled.
 Background work is visible to the *user*, not just the model:
 
 - The TUI status bar shows a compact `bg <running>▸/<total>` segment whenever
-  the session has background tasks (hidden otherwise). The `App` reads the
-  shared registry (exposed on `BuiltRuntime`) each frame via a cheap `counts()`.
+  the session has background tasks (hidden otherwise). The `App` reads Everruns
+  `session_tasks` from the runtime's task registry and includes legacy Yolop
+  registry counts only for task types that have not moved to the generic
+  session-task path yet.
 - `/background` is a `System` command (contributed by the capability) that lists
-  every task with its kind, status, exit code, summary, and — for sub-agents —
-  the child session id. It works over the TUI and ACP uniformly because it
-  returns a plain `CommandResult`.
+  Everruns session tasks first, including kind, state, display name, detail, and
+  result path. During migration it appends a separate legacy Yolop task section
+  for task types that still use the old registry. It works over the TUI and ACP
+  uniformly because it returns a plain `CommandResult`.
 - The TUI also has a **read-only panel overlay** (toggle with `Ctrl+B`, ↑/↓ to
   scroll, `Esc` to close) showing the same `/background` listing live. It mirrors
   the setup-overlay modal pattern, is suppressed while the setup overlay is open,
@@ -193,7 +222,8 @@ without a user prompt.
   final state survive a restart.
 - No cross-session background work — tasks belong to the session that spawned
   them and live in that session's folder.
-- No second persistence engine — the per-session folder and atomic-write
-  pattern already used by `session_log.rs` / `memory` are reused as-is.
+- No new Yolop-owned persistence engine for generic task records — local
+  session-task durability belongs to `everruns-local`; the legacy background
+  index remains only for unmigrated Yolop task types.
 - No new approval gate — `background_run` runs the same unsandboxed shell as the
   `bash` tool and inherits the same standing guardrails.

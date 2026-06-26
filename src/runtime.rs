@@ -49,6 +49,7 @@ use everruns_core::in_memory::InMemoryMessageRetriever;
 use everruns_core::llmsim_driver::LlmSimConfig;
 use everruns_core::message::{ContentPart, MessageRole};
 use everruns_core::session_file::{FileInfo, FileStat, GrepMatch, InitialFile, SessionFile};
+use everruns_core::session_task::SessionTaskRegistry;
 use everruns_core::typed_id::SessionId;
 use everruns_core::{
     AgentCapabilityConfig, CapabilityRegistry, Controls, InputMessage, PlatformDefinition,
@@ -1791,6 +1792,10 @@ pub struct BuiltRuntime {
     /// show a live task count in the status bar (the same registry the
     /// `background` capability owns).
     pub background: Arc<BackgroundRegistry>,
+    /// Shared Everruns session task registry, backed by `everruns-local`. The
+    /// TUI reads this to show `spawn_background` tasks through the generic
+    /// runtime task model.
+    pub task_registry: Arc<dyn SessionTaskRegistry>,
 }
 
 #[derive(Clone)]
@@ -2210,9 +2215,10 @@ pub async fn build_with_options(
         .with_connection_resolver(connection_resolver);
     let local_profile = LocalProfile::new(sessions_dir.join("everruns-local"))
         .with_workspace_root(effective_root.clone());
-    let backends = LocalBackends::new(local_profile, base_backends)
-        .context("initialize everruns-local backend stores")?
-        .runtime_backends;
+    let local_backends = LocalBackends::new(local_profile, base_backends)
+        .context("initialize everruns-local backend stores")?;
+    let task_registry: Arc<dyn SessionTaskRegistry> = local_backends.task_registry.clone();
+    let backends = local_backends.runtime_backends;
     // Shared between `ModelState` (for banner labels) and
     // `SetupCapability` (which mutates it on a successful `/setup`).
     let provider_state = Arc::new(RwLock::new(provider.clone()));
@@ -2388,6 +2394,8 @@ pub async fn build_with_options(
     let background_registry = Arc::new(background_registry);
     capabilities.register(BackgroundCapability {
         registry: background_registry.clone(),
+        session_id,
+        task_registry: task_registry.clone(),
     });
     // Terminal-side commands. Registered only when the host can apply
     // their effects (the TUI). The capability declares help/tools/mcp/cwd/model/
@@ -2551,6 +2559,7 @@ pub async fn build_with_options(
         settings,
         ui_rx,
         background: background_registry,
+        task_registry,
         goal_store,
         user_ask_store,
         user_ask_enabled,

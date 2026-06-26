@@ -23,6 +23,7 @@ mod presentation;
 mod runtime;
 mod session;
 mod session_log;
+mod session_tasks_view;
 mod settings;
 #[cfg(test)]
 mod test_env;
