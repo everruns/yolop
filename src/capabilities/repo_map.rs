@@ -5,6 +5,7 @@
 //! lexical search is too narrow.
 
 use crate::capabilities::narration::stable_labeled;
+use crate::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
@@ -15,7 +16,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tree_sitter::{Language, Node, Parser};
 
 pub(crate) const REPO_MAP_CAPABILITY_ID: &str = "repo_map";
@@ -36,12 +38,12 @@ const SKIP_DIRS: &[&str] = &["target", "node_modules", "dist", "build", "venv"];
 
 #[derive(Clone)]
 pub(crate) struct RepoMapCapability {
-    workspace_root: PathBuf,
+    workspace: Arc<WorkspaceHost>,
 }
 
 impl RepoMapCapability {
-    pub(crate) fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+    pub(crate) fn new(workspace: Arc<WorkspaceHost>) -> Self {
+        Self { workspace }
     }
 }
 
@@ -90,17 +92,17 @@ impl Capability for RepoMapCapability {
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
             Box::new(RepoMapTool {
-                workspace_root: self.workspace_root.clone(),
+                workspace: self.workspace.clone(),
             }),
             Box::new(RepoSymbolsTool {
-                workspace_root: self.workspace_root.clone(),
+                workspace: self.workspace.clone(),
             }),
         ]
     }
 }
 
 struct RepoMapTool {
-    workspace_root: PathBuf,
+    workspace: Arc<WorkspaceHost>,
 }
 
 #[async_trait]
@@ -136,10 +138,16 @@ impl Tool for RepoMapTool {
     }
 
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        match scan_from_arguments(&self.workspace_root, &arguments) {
+        let workspace_root = match self.workspace.host_root() {
+            Ok(root) => root,
+            Err(err) => {
+                return ToolExecutionResult::tool_error(err.to_string());
+            }
+        };
+        match scan_from_arguments(&workspace_root, &arguments) {
             Ok(report) => ToolExecutionResult::success(json!({
                 "ok": true,
-                "workspace_root": self.workspace_root.display().to_string(),
+                "workspace_root": workspace_root.display().to_string(),
                 "path": report.path,
                 "query": report.query,
                 "languages": report.languages,
@@ -158,7 +166,7 @@ impl Tool for RepoMapTool {
 }
 
 struct RepoSymbolsTool {
-    workspace_root: PathBuf,
+    workspace: Arc<WorkspaceHost>,
 }
 
 #[async_trait]
@@ -194,10 +202,16 @@ impl Tool for RepoSymbolsTool {
     }
 
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        match scan_from_arguments(&self.workspace_root, &arguments) {
+        let workspace_root = match self.workspace.host_root() {
+            Ok(root) => root,
+            Err(err) => {
+                return ToolExecutionResult::tool_error(err.to_string());
+            }
+        };
+        match scan_from_arguments(&workspace_root, &arguments) {
             Ok(report) => ToolExecutionResult::success(json!({
                 "ok": true,
-                "workspace_root": self.workspace_root.display().to_string(),
+                "workspace_root": workspace_root.display().to_string(),
                 "path": report.path,
                 "query": report.query,
                 "languages": report.languages,
@@ -353,7 +367,7 @@ fn collect_repo_symbols(
     let root = workspace_root
         .canonicalize()
         .with_context(|| format!("canonicalize workspace root {}", workspace_root.display()))?;
-    let scope = resolve_scope(&root, options.path.as_deref())?;
+    let scope = crate::workspace_host::resolve_host_scope(&root, options.path.as_deref())?;
     let language_filter = options.language.as_deref().map(normalize_language_filter);
     if let Some(filter) = language_filter.as_deref()
         && !LANGUAGES
@@ -937,38 +951,6 @@ fn normalize_language_filter(language: &str) -> String {
     language.trim().to_ascii_lowercase()
 }
 
-fn resolve_scope(root: &Path, path: Option<&str>) -> Result<PathBuf> {
-    let Some(path) = path else {
-        return Ok(root.to_path_buf());
-    };
-    // The file tools address the workspace through a VFS rooted at `/workspace`,
-    // so models naturally pass `/workspace` or `/workspace/<subpath>` to repo_map
-    // too (repo_map otherwise scans real host paths). Strip that root alias so
-    // the namespace matches read_file/grep_files instead of erroring with
-    // "path not found: /workspace". Mirrors the file store's own normalization.
-    let trimmed = path.trim_start_matches('/');
-    let relative = trimmed
-        .strip_prefix("workspace/")
-        .unwrap_or(if trimmed == "workspace" { "" } else { trimmed });
-    let candidate = Path::new(relative);
-    if candidate.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
-        bail!("`path` must stay inside the workspace");
-    }
-    let scope = root.join(candidate);
-    let canonical = scope
-        .canonicalize()
-        .with_context(|| format!("path not found: {path}"))?;
-    if !canonical.starts_with(root) {
-        bail!("`path` must stay inside the workspace");
-    }
-    Ok(canonical)
-}
-
 fn collect_supported_files(
     path: &Path,
     language_filter: Option<&str>,
@@ -1407,6 +1389,17 @@ fn truncate_chars(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    fn host(path: &Path) -> Arc<WorkspaceHost> {
+        Arc::new(
+            WorkspaceHost::new(
+                Arc::new(std::sync::RwLock::new(path.to_path_buf())),
+                path.to_path_buf(),
+            )
+            .expect("workspace host"),
+        )
+    }
 
     fn write(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
@@ -1764,7 +1757,7 @@ trait Named {
         let dir = tempfile::tempdir().expect("tempdir");
         write(&dir.path().join("app.py"), "def py_fn():\n    pass\n");
 
-        let capability = RepoMapCapability::new(dir.path().to_path_buf());
+        let capability = RepoMapCapability::new(host(dir.path()));
         let tools = capability.tools();
         let tool = tools
             .iter()

@@ -31,6 +31,7 @@ mod tools;
 mod transcript;
 mod user_ask;
 mod version;
+mod workspace_host;
 mod worktree;
 
 #[cfg(test)]

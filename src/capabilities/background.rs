@@ -17,6 +17,7 @@
 
 use crate::capabilities::narration::stable_labeled;
 use crate::session_tasks_view::render_combined_task_list;
+use crate::workspace_host::WorkspaceHost;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
@@ -206,7 +207,7 @@ pub struct BackgroundRegistry {
     inner: Arc<Mutex<Inner>>,
     dir: PathBuf,
     index_path: PathBuf,
-    workspace_root: PathBuf,
+    workspace: Arc<WorkspaceHost>,
     max_runtime_secs: u64,
     /// Present only when this session may spawn sub-agents (absent in child
     /// sessions — see [`AgentSpawner`]).
@@ -217,7 +218,7 @@ impl BackgroundRegistry {
     /// Open (or restore) the registry for a session. Reads the index if present;
     /// any task still marked `running` is re-labelled `interrupted` (its process
     /// died with the previous yolop) and the corrected index is re-persisted.
-    pub fn load(session_dir: &Path, workspace_root: PathBuf) -> Self {
+    pub fn load(session_dir: &Path, workspace: Arc<WorkspaceHost>) -> Self {
         let dir = session_dir.join(BACKGROUND_SUBDIR);
         let index_path = dir.join(INDEX_FILE);
         let mut records = read_index(&index_path);
@@ -249,7 +250,7 @@ impl BackgroundRegistry {
             })),
             dir,
             index_path,
-            workspace_root,
+            workspace,
             max_runtime_secs: DEFAULT_MAX_RUNTIME_SECS,
             spawner: None,
         };
@@ -417,11 +418,11 @@ impl BackgroundRegistry {
         let inner = self.inner.clone();
         let index_path = self.index_path.clone();
         let dir = self.dir.clone();
-        let workspace_root = self.workspace_root.clone();
+        let workspace = self.workspace.clone();
         let max_runtime = self.max_runtime_secs;
         let task_id = id.clone();
         let handle = tokio::spawn(async move {
-            let outcome = run_script(&dir, &log_file, &workspace_root, &command, max_runtime).await;
+            let outcome = run_script(&dir, &log_file, &workspace, &command, max_runtime).await;
             update_record(&inner, &index_path, &task_id, |r| {
                 // Only apply the outcome if the task is still running. A
                 // concurrent `cancel` may have already marked it `cancelled`
@@ -674,7 +675,7 @@ struct ScriptOutcome {
 async fn run_script(
     dir: &Path,
     log_file: &str,
-    workspace_root: &Path,
+    workspace: &WorkspaceHost,
     command: &str,
     max_runtime_secs: u64,
 ) -> ScriptOutcome {
@@ -705,10 +706,20 @@ async fn run_script(
         let _ = tokio::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600)).await;
     }
 
+    let cwd = match workspace.spawn_cwd() {
+        Ok(cwd) => cwd,
+        Err(message) => {
+            return ScriptOutcome {
+                status: BackgroundStatus::Failed,
+                exit_code: None,
+                summary: message,
+            };
+        }
+    };
     let mut child = match Command::new("bash")
         .arg("-lc")
         .arg(command)
-        .current_dir(workspace_root)
+        .current_dir(&cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -1534,9 +1545,14 @@ mod tests {
         CreateSessionTask, SessionTaskState, TASK_KIND_BACKGROUND_TOOL,
     };
     use everruns_local::{LocalSessionTaskRegistry, SqliteDb};
+    use std::sync::RwLock;
 
     fn registry_in(dir: &Path) -> BackgroundRegistry {
-        BackgroundRegistry::load(dir, dir.to_path_buf())
+        let host = Arc::new(
+            WorkspaceHost::new(Arc::new(RwLock::new(dir.to_path_buf())), dir.to_path_buf())
+                .expect("workspace host"),
+        );
+        BackgroundRegistry::load(dir, host)
     }
 
     fn task_registry_in(dir: &Path) -> Arc<dyn SessionTaskRegistry> {

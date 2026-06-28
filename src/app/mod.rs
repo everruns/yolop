@@ -145,6 +145,7 @@ pub struct App {
     user_ask_store: Arc<UserAskStore>,
     user_ask_enabled: bool,
     worktree: Arc<WorktreeManager>,
+    workspace_host: Arc<crate::workspace_host::WorkspaceHost>,
     /// Images from `--image` / `-i` on the CLI, consumed on the first turn.
     pending_images: Vec<ContentPart>,
     /// Large paste placeholders mapped to their full clipboard/terminal payloads.
@@ -344,6 +345,7 @@ impl App {
             user_ask_store,
             user_ask_enabled,
             worktree: runtime.worktree,
+            workspace_host: runtime.workspace_host,
             pending_images,
             pending_pastes: Vec::new(),
         };
@@ -1467,9 +1469,9 @@ impl App {
     }
 
     fn start_shell_command(&mut self, command: String) {
-        let workspace_root = self.startup.workspace_root.clone();
+        self.startup.workspace_root = self.worktree.active_root();
         self.push_user(format!("!shell {command}"));
-        let handle = self.session.run_shell(command, workspace_root);
+        let handle = self.session.run_shell(command, self.workspace_host.clone());
         self.begin_turn(handle, Some("running shell command".into()));
     }
 
