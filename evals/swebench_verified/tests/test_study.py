@@ -7,7 +7,7 @@ don't re-test them here. These tests exercise only what this study owns:
 * sample tagging (instance -> repo/difficulty/suite tags),
 * the target matrix (availability from env, config metadata),
 * transcript building (usage/metrics/metadata/files mapping, infra error_kind),
-* the `resolved` scorer and the cell orchestration (checkout + agent + score),
+* the `resolved` scorer and the case orchestration (checkout + agent + score),
 * stdout cleanliness of the Docker scorer.
 
 Plus one thin integration smoke that the study registers with the SDK and a run
@@ -130,36 +130,36 @@ class ResolvedScorerTest(unittest.TestCase):
         self.assertFalse(bad.pass_)
 
 
-class CellTest(unittest.TestCase):
-    """`_run_agent_cell` / `_subject`: checkout + agent + Docker-score one cell,
+class CaseTest(unittest.TestCase):
+    """`_run_agent_case` / `_subject`: checkout + agent + Docker-score one case,
     classifying infra failures and honouring do_eval."""
 
-    def _cell(self, *, do_eval, run_agent=_fake_agent_run, evaluate=None):
+    def _case(self, *, do_eval, run_agent=_fake_agent_run, evaluate=None):
         evaluate = evaluate or (lambda *a, **k: {_INSTANCE.instance_id: EvalResult(True, {"resolved": True})})
         with mock.patch.object(sv, "checkout", lambda *a, **k: None), \
              mock.patch.object(sv, "capture_patch", lambda *a, **k: "diff --git a b"), \
              mock.patch.object(sv, "run_agent", run_agent), \
              mock.patch.object(sv, "evaluate_predictions", evaluate):
-            return sv._run_agent_cell(_INSTANCE, "llmsim", {"agent": "yolop"},
+            return sv._run_agent_case(_INSTANCE, "llmsim", {"agent": "yolop"},
                                       max_workers=1, namespace="x", eval_timeout=1, do_eval=do_eval)
 
     def test_runner_failure_is_infra(self):
         def boom(*_a, **_k):
             raise RuntimeError("boom")
-        run, _resolved, _report, error_kind = self._cell(do_eval=False, run_agent=boom)
+        run, _resolved, _report, error_kind = self._case(do_eval=False, run_agent=boom)
         self.assertEqual(error_kind, "infra")
         self.assertTrue(run.error.startswith("runner:"))
 
     def test_eval_failure_is_infra(self):
         evaluate = lambda *a, **k: {_INSTANCE.instance_id: EvalResult(False, {}, "no report.json")}
-        run, _resolved, _report, error_kind = self._cell(do_eval=True, evaluate=evaluate)
+        run, _resolved, _report, error_kind = self._case(do_eval=True, evaluate=evaluate)
         self.assertEqual(error_kind, "infra")
         self.assertEqual(run.error, "no report.json")
 
     def test_no_eval_skips_scoring(self):
         called = []
         evaluate = lambda *a, **k: called.append(1) or {}
-        _run, resolved, _report, error_kind = self._cell(do_eval=False, evaluate=evaluate)
+        _run, resolved, _report, error_kind = self._case(do_eval=False, evaluate=evaluate)
         self.assertFalse(resolved)        # unscored -> not resolved
         self.assertIsNone(error_kind)     # a clean (if unscored) run
         self.assertEqual(called, [])      # Docker scorer not invoked
@@ -295,7 +295,7 @@ class SdkIntegrationTest(unittest.TestCase):
             res = study.protocol().handle(
                 "run", {"eval": "swebench_verified", "sample": "org__repo-1", "target": "llmsim"})
         self.assertEqual({s["scorer"] for s in res["scores"]}, {"succeeded", "resolved"})
-        self.assertTrue(res["passed"])  # both scorers pass on a resolved cell
+        self.assertTrue(res["passed"])  # both scorers pass on a resolved case
         self.assertEqual(res["transcript"]["metadata"]["repo"], "org/repo")  # our data flows out
 
 

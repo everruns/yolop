@@ -45,7 +45,7 @@ else
 fi
 
 # --- Mira host CLI ---------------------------------------------------------- #
-# The study is driven by `mira` (matrix, selection, checkpoints, reporting).
+# The study is driven by `mira` (matrix, selection, saved run folders, reporting).
 note "mira host CLI"
 if have mira; then
   mira --version 2>&1 | head -1 || true
@@ -97,5 +97,5 @@ cat <<'EOF'
     cd evals/swebench_verified
 
   Smoke test (offline, skips Docker):
-    SWEBENCH_NO_EVAL=1 mira run astropy__astropy-12907 --targets llmsim
+    SWEBENCH_NO_EVAL=1 mira run --samples astropy__astropy-12907 --targets llmsim --dry-run
 EOF

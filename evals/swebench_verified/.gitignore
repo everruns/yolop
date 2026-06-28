@@ -6,7 +6,3 @@ __pycache__/
 # Local caches: dataset parquet, repo checkouts, raw session logs, eval scratch.
 # Results (results/**/*.json) are committed; raw logs are uploaded separately.
 .cache/
-
-# Mira checkpoints — transient run/resume state (the durable artifact is the
-# --save run archive under results/<run_id>/).
-ck/

@@ -2,7 +2,7 @@
 
 Benchmarks yolop on coding benchmarks, starting with **SWE-bench Verified**.
 swebench_verified is a [Mira](https://github.com/everruns/mira) eval **study**: the
-generic `mira` host CLI owns the target matrix, selection, checkpoints, and
+generic `mira` host CLI owns the target matrix, selection, saved run folders, and
 JSON/HTML/JUnit reporting, while this Python study — driven over Mira's stdio
 protocol — owns the SWE-bench-specific work (loading instances, checking out
 repos, running agent CLIs, and the Docker `FAIL_TO_PASS` scoring). Designed to
@@ -61,7 +61,7 @@ run the full set per config for leaderboard-comparable numbers.
 
 ## What it measures
 
-For every `(instance, config)` cell it records, mined from the agent's event log
+For every `(instance, config)` case it records, mined from the agent's event log
 and surfaced in the host's transcript/usage:
 
 - **success** — `resolved` (did the hidden test suite pass?)
@@ -71,11 +71,11 @@ and surfaced in the host's transcript/usage:
 - **tokens** — input, output, `cache_read_tokens`, `cache_creation_tokens`, total
 - **cost** — `cost_usd` (tool-reported where available, else estimated from `price`)
 - **efficiency** — cost per resolved instance ("score per dollar"), computable
-  from the host's per-cell `resolved` + `cost_usd`
+  from the host's per-case `resolved` + `cost_usd`
 - **stop_reason** — `completed` / `timeout` / `budget` / `error`
 - **config metadata** — agent, provider, model, reasoning effort, stop reason
 
-Each cell's transcript carries these on Mira's open channels: a numeric
+Each case's transcript carries these on Mira's open channels: a numeric
 **`metrics`** map (`turns`, `iterations`, `tool_calls`, `tool_calls_failed`,
 cache tokens, `agent_reported_time_s`) that feeds the host's generic budget
 scorers, and structured **`metadata`** (`agent`, `provider`, `model`,
@@ -98,9 +98,10 @@ mira run --group-by agent                          # yolop vs claude-code vs …
 
 Cost is cache-aware (`cache_read`/`cache_creation` tokens are priced), so cost
 per resolved instance is a fair cross-model comparison. The host surfaces all of
-the above per cell in its JSON and HTML reports — emit one with
-`mira ... run --format html --out report.html` (a single self-contained file) or
-`--format json --out run.json` for the raw rows. Each saved run also stamps
+the above per case in its JSON and HTML reports — emit one with
+`mira ... run --format html --out report.html` (a single self-contained file),
+`--format json --out run.json` for the raw rows, or `--format jsonl`/`--format csv`
+for un-aggregated, analysis-ready exports (one row per case, resp. per case × score). Each saved run also stamps
 `meta.json` with an `environment` block (git commit/branch/dirty, box, mira
 version) plus the `benchmark` label from `mira.toml`.
 
@@ -139,9 +140,8 @@ exactly; bump to `tracking-v2` rather than editing v1, so historical numbers sta
 comparable.
 
 **Baseline:** yolop · gpt-5.5 (OpenAI) scores **14/20** on tracking-v1 (all cases
-ran to completion). Point `--checkpoint` at a per-suite path (e.g.
-`--checkpoint ck/tracking-v1.json`) to keep a run resumable and its results
-self-contained.
+ran to completion). The run folder saves each case as it lands, so an interrupted
+run resumes with `mira run --resume <run_id>`.
 
 ## Layout
 
@@ -165,9 +165,9 @@ builds an ephemeral env and runs it — no package, `pyproject.toml`, or venv.
 The `mira` host owns durable run output. Every run auto-archives a self-contained run
 folder under `results/` (`results/<run_id>/{report.json,report.html,meta.json}`,
 `run_id = YYYYMMDDThhmmssZ-xxxx`); the dir comes from `mira.toml`'s
-`[results].dir`. For a resumable long run point `--checkpoint <path>` at a JSON
-session (saved after every cell); for a one-off report use `--format html --out
-report.html`. Raw `events.jsonl` logs stay in `.cache/sessions/` and are **not**
+`[results].dir`. An interrupted long run resumes with `mira run --resume <run_id>`
+(it skips the cases already saved under `cases/` and runs only what's missing); a
+saved run's reports re-render later with `mira report <run_id>`. Raw `events.jsonl` logs stay in `.cache/sessions/` and are **not**
 committed (see [Session data upload](#session-data-upload)). The `swebench_verified/`
 subdirs under `results/` are pre-Mira historical runs in the old per-config format.
 
@@ -213,8 +213,9 @@ reproducible against the binaries it was produced with.
 
 `swebench_verified` is a [Mira](https://github.com/everruns/mira) eval study: the `mira`
 host CLI drives it over a stdio JSON protocol, owning the matrix, selection,
-checkpoints, and reporting, while the study owns the SWE-bench-specific run +
-Docker scoring. `mira.toml` declares a `default_launcher` (mira >=0.2.0), so from
+saved run folders, and reporting, while the study owns the SWE-bench-specific run +
+Docker scoring. `mira.toml` declares a `default_launcher` (and uses mira >=0.3.0
+`samples` presets), so from
 this directory a bare `mira run`/`mira list` starts the study — no `--uv
 swebench_verified.py` (or the older `--cmd "uv run swebench_verified.py"`) needed:
 
@@ -226,16 +227,16 @@ cd evals/swebench_verified      # so the adjacent mira.toml is found; saved runs
 mira list
 
 # Plumbing only: one instance on the offline llmsim config, skip Docker eval.
-SWEBENCH_NO_EVAL=1 mira run astropy__astropy-12907 --targets llmsim
+SWEBENCH_NO_EVAL=1 mira run --samples astropy__astropy-12907 --targets llmsim --dry-run
 
 # Real end-to-end on one instance, selected configs (substring selection on the
 # case key, like `cargo test`), archived under ./results.
-doppler run -- mira run astropy__astropy-12907 \
+doppler run -- mira run --samples astropy__astropy-12907 \
     --targets openai-gpt-5.5,openai-gpt-5.5-high
 
-# Whole benchmark (all 500), one config, resumable + saved run archive.
-doppler run -- mira run --targets openai-gpt-5.5 \
-    --checkpoint ck/openai-gpt-5.5.json
+# Whole benchmark (all 500), one config; the run folder saves each case as it
+# lands, so an interrupted run resumes with `mira run --resume <run_id>`.
+doppler run -- mira run --targets openai-gpt-5.5
 ```
 
 Study-internal knobs that the host doesn't own are read from the environment so
@@ -244,27 +245,28 @@ they can be set on the `mira` line: `SWEBENCH_NO_EVAL=1` (skip Docker scoring),
 (build images locally instead of pulling prebuilt), `SWEBENCH_EVAL_TIMEOUT`,
 `SWEBENCH_YOLOP_BIN` (override the yolop binary), `SWEBENCH_CACHE_LEVEL=instance`
 (keep the per-instance Docker image so a multi-target matrix pulls it once
-rather than re-pulling per cell — avoids Docker Hub anonymous pull-rate limits;
+rather than re-pulling per case — avoids Docker Hub anonymous pull-rate limits;
 default `env`). The per-instance USD cap is set per config in the matrix
 (`max_cost_usd`, default `$5`).
 
 ### Presets — named runs
 
 A **preset** (`[presets.NAME]` in `mira.toml`, applied with `--preset NAME`) is a
-saved *selection* bundle — which samples (`tag`/`filter`) and which targets — so
+saved *selection* bundle — which samples (`tag`/`samples`) and which targets — so
 the recurring run scenarios have names. It's the same one eval (`swebench_verified`)
 sliced differently, not separate evals. A preset only subsets the grid;
 `--group-by` isn't selection, so pass it too (the run folder is always saved).
 
 | Preset | Purpose | Samples | Targets | Typical run |
 |--------|---------|---------|---------|-------------|
-| `astropy-12907-compare` | Evidence of how yolop benches vs other configs & coding agents on one **pinned** instance (`filter`) | astropy-12907 | 13 targets (yolop ×6 incl. gpt-5.5 none/low/medium/high + nvidia/glm/kimi OpenRouter top models + claude-code ×2 + codex + pi) | `mira … run --preset astropy-12907-compare --group-by agent` |
+| `astropy-12907-compare` | Evidence of how yolop benches vs other configs & coding agents on one **pinned** instance (`samples`) | astropy-12907 | 13 targets (yolop ×6 incl. gpt-5.5 none/low/medium/high + nvidia/glm/kimi OpenRouter top models + claude-code ×2 + codex + pi) | `mira … run --preset astropy-12907-compare --group-by agent` |
 | `tracking` | Weekly yolop quality tracking | 20 (`tracking-v1`) | gpt-5.5 high · glm-5.2 · opus-4.8 | `mira … run --preset tracking --group-by difficulty` |
-| `full` | Whole benchmark, run rarely | all 500 | same as tracking (edit as needed) | `mira … run --preset full --group-by repo --checkpoint ck/full.json` |
+| `full` | Whole benchmark, run rarely | all 500 | same as tracking (edit as needed) | `mira … run --preset full --group-by repo` |
 
-A preset's `filter` is a substring on the case key `eval/sample@target`, so it can
-**pin a sample** — clone the `astropy-12907-compare` block (new name + `filter`) to
-pin other instances. A **target** is Mira's comparison axis — a model *or* a
+A preset's `samples` is a glob on the sample id (here the instance id), so it can
+**pin a sample** — clone the `astropy-12907-compare` block (new name + `samples`) to
+pin other instances. (The cross-cutting case-key substring stays available as the
+positional `mira run [filter]`.) A **target** is Mira's comparison axis — a model *or* a
 harness — so agent configs are first-class targets, not models faked into the
 model slot.
 
@@ -303,7 +305,7 @@ It's one file — extend it in place:
 ## Session data upload
 
 Full `events.jsonl` logs are large and noisy, so they stay out of git (in
-`.cache/sessions/`). The agent records each log's path; the cell transcript
+`.cache/sessions/`). The agent records each log's path; the case transcript
 returned to the host carries the metrics mined from it. Uploading these logs to
 durable storage (object store /
 dataset) is a deliberate, still-open integration point — the harness keeps the
@@ -313,11 +315,11 @@ result record).
 
 ## How an instance runs
 
-The host asks the study to run one `(instance, config)` cell at a time; for each:
+The host asks the study to run one `(instance, config)` case at a time; for each:
 
 1. Shallow-fetch the repo at `base_commit` into a scratch worktree.
 2. Run `yolop -C <worktree> -p "<problem statement prompt>" --session-dir …`.
 3. Capture `git diff` as the model patch.
 4. Hand the patch to SWE-bench's official Docker evaluator and parse the
-   `report.json` for `resolved`, returned to the host as the cell's score.
+   `report.json` for `resolved`, returned to the host as the case's score.
 ```

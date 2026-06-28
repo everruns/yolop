@@ -8,10 +8,11 @@
 # Layout per saved run: results/<run_id>/{report.json,report.html,meta.json}
 # (run_id = YYYYMMDDThhmmssZ-xxxx, sortable by time).
 
-# Named launcher: how `mira` (>=0.2.0) starts this study. With `default_launcher`
-# set, a bare `mira list` / `mira run …` from this directory drives the study —
-# no `--uv swebench_verified.py` (or the older `--cmd "uv run
-# swebench_verified.py"`) needed. Explicit launch flags still override it.
+# Named launcher: how `mira` starts this study (this config targets mira >=0.3.0,
+# for the glob `samples` presets below). With `default_launcher` set, a bare
+# `mira list` / `mira run …` from this directory drives the study — no `--uv
+# swebench_verified.py` (or the older `--cmd "uv run swebench_verified.py"`)
+# needed. Explicit launch flags still override it.
 default_launcher = "study"
 
 [launchers.study]
@@ -26,19 +27,19 @@ dir = "./results"
 benchmark = "swebench_verified"
 
 # Named selection presets, applied with `mira run --preset NAME` (explicit flags
-# override). A preset only *subsets* the declared grid (targets / samples via
-# tag|filter). `--group-by` is not selection, so pass it too. The run folder
-# is always saved (use `--dry-run` to skip).
+# override). A preset only *subsets* the declared grid: `targets`/`samples`/`evals`
+# (each a glob, or a list of globs) plus `tag`. `--group-by` is not selection, so
+# pass it too. The run folder is always saved (use `--dry-run` to skip).
 # The README "Presets" table documents each one's purpose.
 
 # ASTROPY-12907-COMPARE — evidence of how yolop benches against different configs
 # and other coding agents on ONE instance (astropy__astropy-12907, pinned via
-# `filter`, a substring on the case key `eval/sample@target`): yolop across
+# `samples`, a glob on the sample id — here the instance id): yolop across
 # providers/effort + the nvidia/glm/kimi OpenRouter top models + claude-code,
-# codex, pi. Clone this block (new name + filter) to pin other instances.
+# codex, pi. Clone this block (new name + samples) to pin other instances.
 #   mira ... run --preset astropy-12907-compare --group-by agent
 [presets.astropy-12907-compare]
-filter = "astropy__astropy-12907"
+samples = "astropy__astropy-12907"
 targets = ["anthropic-claude-sonnet-4.5", "openai-gpt-5.5", "openai-gpt-5.5-high",
            "openai-gpt-5.5-low", "openai-gpt-5.5-none", "anthropic-claude-opus-4.8",
            "openrouter-nemotron-3-ultra", "openrouter-glm-5.2", "openrouter-kimi-k2.7-code",
@@ -53,7 +54,8 @@ targets = ["openai-gpt-5.5-high", "openrouter-glm-5.2", "anthropic-claude-opus-4
 
 # FULL — the whole SWE-bench Verified (all 500), run rarely (e.g. a release
 # headline). Same model matrix as tracking by default — edit the targets for the
-# run you want. This is large (500 × targets cells); use --checkpoint to resume.
-#   mira ... run --preset full --group-by repo --checkpoint ck/full.json
+# run you want. This is large (500 × targets cases); the run folder saves each
+# case as it lands, so an interrupted run resumes with `mira run --resume <run_id>`.
+#   mira ... run --preset full --group-by repo
 [presets.full]
 targets = ["openai-gpt-5.5-high", "openrouter-glm-5.2", "anthropic-claude-opus-4.8"]
