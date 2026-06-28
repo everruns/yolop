@@ -416,9 +416,8 @@ mod tests {
     async fn bash_reports_missing_workspace_directory_instead_of_spawn_error() {
         let dir = tempfile::tempdir().unwrap();
         let active = Arc::new(std::sync::RwLock::new(dir.path().to_path_buf()));
-        let host = Arc::new(
-            WorkspaceHost::new(active.clone(), dir.path().to_path_buf()).expect("host"),
-        );
+        let host =
+            Arc::new(WorkspaceHost::new(active.clone(), dir.path().to_path_buf()).expect("host"));
         *active.write().expect("lock") = dir.path().join("removed");
         let tool = BashTool::new(Workspace::new(host));
 
