@@ -72,7 +72,7 @@ use crate::session_log::{
 };
 use crate::worktree::{WorktreeManager, detect_repo_root, restore_worktree_from_metadata};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::mpsc;
 
 // The harness prompt is the durable instruction surface — borrowed in shape
@@ -180,6 +180,12 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
 
 struct CodingCliSessionFileStore {
     workspace_root: Arc<RwLock<PathBuf>>,
+    // Single workspace store, repointed via `set_host_root` (EVE-660) when the
+    // active worktree changes, instead of recreating it per file operation.
+    workspace: RealDiskFileStore,
+    // Raw active root last pushed to `workspace`. Lets steady state skip the
+    // canonicalize+repoint syscall and only re-resolve on an actual switch.
+    applied_root: Mutex<PathBuf>,
     session: RealDiskFileStore,
     // Backing stores for the global/system skill scope VFS roots, served from
     // real directories outside the workspace (see `capabilities::skills`).
@@ -199,7 +205,13 @@ impl CodingCliSessionFileStore {
             |dir: Option<PathBuf>| -> everruns_core::Result<Option<RealDiskFileStore>> {
                 dir.map(RealDiskFileStore::new).transpose()
             };
+        let initial_root = workspace_root
+            .read()
+            .map_err(|_| AgentLoopError::config("workspace lock poisoned"))?
+            .clone();
         Ok(Self {
+            workspace: RealDiskFileStore::new(initial_root.clone())?,
+            applied_root: Mutex::new(initial_root),
             workspace_root,
             session: RealDiskFileStore::new(session_dir.clone())?,
             skill_global: skill_store(skill_global)?,
@@ -208,13 +220,25 @@ impl CodingCliSessionFileStore {
         })
     }
 
-    fn workspace_store(&self) -> everruns_core::Result<RealDiskFileStore> {
-        let root = self
+    /// The single workspace store, repointed via `set_host_root` (EVE-660) when
+    /// the active worktree changes. Recreating the store per file operation would
+    /// re-canonicalize the root on every read/write/grep; tracking the
+    /// last-applied root lets steady state skip that and repoint only on a switch.
+    fn workspace_store(&self) -> everruns_core::Result<&RealDiskFileStore> {
+        let current = self
             .workspace_root
             .read()
             .map_err(|_| AgentLoopError::config("workspace lock poisoned"))?
             .clone();
-        RealDiskFileStore::new(root)
+        let mut applied = self
+            .applied_root
+            .lock()
+            .map_err(|_| AgentLoopError::config("workspace root lock poisoned"))?;
+        if *applied != current {
+            self.workspace.set_host_root(current.clone())?;
+            *applied = current;
+        }
+        Ok(&self.workspace)
     }
 
     fn skill_or_session_route(&self, path: &str) -> Option<(&RealDiskFileStore, String)> {
@@ -4291,6 +4315,96 @@ mod tests {
             "workspace note"
         );
         assert!(!session.path().join("notes.md").exists());
+    }
+
+    #[tokio::test]
+    async fn yolop_file_store_repoints_workspace_on_worktree_switch() {
+        // A worktree switch mutates the shared active-root lock; the workspace
+        // store must follow it via `set_host_root` (EVE-660) rather than staying
+        // pinned to the original checkout.
+        let first = tempfile::tempdir().expect("first workspace");
+        let second = tempfile::tempdir().expect("second workspace");
+        let session = tempfile::tempdir().expect("session");
+        let active_root = Arc::new(RwLock::new(first.path().to_path_buf()));
+        let store = CodingCliSessionFileStore::new(
+            active_root.clone(),
+            session.path().to_path_buf(),
+            None,
+            None,
+        )
+        .expect("store");
+        let session_id = SessionId::from_seed(7);
+
+        store
+            .write_file(session_id, "/before.md", "in first", "text")
+            .await
+            .expect("write to first workspace");
+        assert_eq!(
+            std::fs::read_to_string(first.path().join("before.md")).expect("first file"),
+            "in first"
+        );
+        assert_eq!(
+            store.display_root(),
+            std::fs::canonicalize(first.path())
+                .expect("canonical first")
+                .display()
+                .to_string()
+        );
+
+        // Simulate the worktree activating: swap the shared active root.
+        *active_root.write().expect("lock") = second.path().to_path_buf();
+
+        store
+            .write_file(session_id, "/after.md", "in second", "text")
+            .await
+            .expect("write to second workspace");
+        assert_eq!(
+            std::fs::read_to_string(second.path().join("after.md")).expect("second file"),
+            "in second"
+        );
+        // The new file must land in the switched-to root, not the original.
+        assert!(!first.path().join("after.md").exists());
+        assert_eq!(
+            store.display_root(),
+            std::fs::canonicalize(second.path())
+                .expect("canonical second")
+                .display()
+                .to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn yolop_file_store_enforces_seeded_readonly_across_operations() {
+        // The persistent workspace store keeps `is_readonly` marks from
+        // `seed_initial_file`; recreating it per operation (the prior behavior)
+        // dropped them, so a seeded read-only file was silently writable.
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let store = test_file_store(workspace.path(), session.path());
+        let session_id = SessionId::from_seed(11);
+
+        store
+            .seed_initial_file(
+                session_id,
+                &InitialFile {
+                    path: "/locked.md".to_string(),
+                    content: "do not touch".to_string(),
+                    encoding: "text".to_string(),
+                    is_readonly: true,
+                },
+            )
+            .await
+            .expect("seed readonly workspace file");
+
+        // A later write to the same path — a distinct operation — must be rejected.
+        store
+            .write_file(session_id, "/locked.md", "tampered", "text")
+            .await
+            .expect_err("write to seeded read-only file must be rejected");
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("locked.md")).expect("locked file"),
+            "do not touch"
+        );
     }
 
     #[tokio::test]
