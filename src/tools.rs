@@ -7,6 +7,7 @@
 // security model for unsandboxed shell-on-host needs yolop-specific policy
 // (timeout, output cap). See EVE-478 for the eventual runtime-side story.
 
+use crate::workspace_host::WorkspaceHost;
 use async_trait::async_trait;
 use everruns_core::exec_tool_result::ExecToolResultPayload;
 use everruns_core::tool_narration::ToolNarrationPhase;
@@ -17,36 +18,30 @@ use everruns_core::{
     ToolContext,
 };
 use serde_json::{Value, json};
-use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-/// Workspace context for the bash tool. The root may be updated when a session
-/// worktree is activated mid-session.
+/// Workspace context for the bash tool. The host disk repoints when a session
+/// worktree is activated mid-session (EVE-660).
 #[derive(Clone)]
 pub struct Workspace {
-    root: Arc<RwLock<PathBuf>>,
+    host: Arc<WorkspaceHost>,
 }
 
 impl Workspace {
-    pub fn new(root: PathBuf) -> Self {
-        Self {
-            root: Arc::new(RwLock::new(root)),
-        }
+    pub fn new(host: Arc<WorkspaceHost>) -> Self {
+        Self { host }
     }
 
-    pub fn with_shared(root: Arc<RwLock<PathBuf>>) -> Self {
-        Self { root }
-    }
-
-    pub fn root(&self) -> PathBuf {
-        self.root
-            .read()
-            .map(|guard| guard.clone())
-            .unwrap_or_else(|_| PathBuf::from("."))
+    #[cfg(test)]
+    pub fn from_path(root: std::path::PathBuf) -> Self {
+        use std::sync::RwLock;
+        Self::new(Arc::new(
+            WorkspaceHost::new(Arc::new(RwLock::new(root.clone())), root).expect("workspace host"),
+        ))
     }
 }
 
@@ -79,7 +74,12 @@ impl BashTool {
         command: &str,
         sink: Option<Arc<dyn BackgroundEventSink>>,
     ) -> Result<BashRunOutput, ToolExecutionResult> {
-        let root = self.ws.root().to_path_buf();
+        let cwd = match self.ws.host.spawn_cwd() {
+            Ok(cwd) => cwd,
+            Err(message) => {
+                return Err(ToolExecutionResult::tool_error(message));
+            }
+        };
         let timeout = Duration::from_secs(self.timeout_secs);
         let max_bytes = self.max_output_bytes;
 
@@ -92,7 +92,7 @@ impl BashTool {
         let mut child = Command::new("bash")
             .arg("-lc")
             .arg(command)
-            .current_dir(&root)
+            .current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn bash_tool_requests_output_persistence() {
-        let tool = BashTool::new(Workspace::new(std::env::current_dir().unwrap()));
+        let tool = BashTool::new(Workspace::from_path(std::env::current_dir().unwrap()));
 
         assert_eq!(tool.hints().persist_output, Some(true));
         assert_eq!(tool.hints().long_running, Some(true));
@@ -374,7 +374,7 @@ mod tests {
     // persist; spelling out the contract is what steers it away.
     #[test]
     fn bash_description_documents_stateless_shell() {
-        let tool = BashTool::new(Workspace::new(std::env::current_dir().unwrap()));
+        let tool = BashTool::new(Workspace::from_path(std::env::current_dir().unwrap()));
         let desc = tool.description().to_lowercase();
         assert!(desc.contains("no state persists") || desc.contains("state persists"));
         assert!(desc.contains("cd"));
@@ -387,7 +387,7 @@ mod tests {
     async fn bash_cwd_does_not_persist_between_calls() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
 
         let ToolExecutionResult::Success(first) =
             tool.execute(json!({ "command": "cd sub && pwd" })).await
@@ -409,6 +409,25 @@ mod tests {
             out.trim(),
             root_name,
             "cwd should reset to the workspace root between calls"
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_reports_missing_workspace_directory_instead_of_spawn_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let active = Arc::new(std::sync::RwLock::new(dir.path().to_path_buf()));
+        let host =
+            Arc::new(WorkspaceHost::new(active.clone(), dir.path().to_path_buf()).expect("host"));
+        *active.write().expect("lock") = dir.path().join("removed");
+        let tool = BashTool::new(Workspace::new(host));
+
+        let result = tool.execute(json!({ "command": "true" })).await;
+        let ToolExecutionResult::ToolError(message) = result else {
+            panic!("expected tool error, got {result:?}");
+        };
+        assert!(
+            message.contains("workspace directory does not exist"),
+            "got: {message}"
         );
     }
 
@@ -441,7 +460,7 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
         let sink = Arc::new(RecordingSink::default());
         let outcome = tool
             .as_background_executable()
@@ -498,7 +517,7 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
         let err = tool
             .as_background_executable()
             .expect("background executor")
@@ -545,7 +564,7 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let mut tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let mut tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
         tool.max_output_bytes = 5;
         let sink = Arc::new(RecordingSink::default());
         let output = tool
@@ -569,7 +588,7 @@ mod tests {
     #[tokio::test]
     async fn bash_tool_uses_exec_payload_shape_and_raw_output() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
 
         let result = tool
             .execute(json!({
@@ -593,7 +612,7 @@ mod tests {
     #[tokio::test]
     async fn bash_tool_output_persistence_hook_saves_full_output_to_outputs_folder() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
         let call = ToolCall {
             id: "call-persist".to_string(),
             name: "bash".to_string(),
@@ -646,7 +665,7 @@ mod tests {
     #[tokio::test]
     async fn bash_success_output_should_be_persistent_first_when_output_is_saved() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
         let call = ToolCall {
             id: "call-auto-compact".to_string(),
             name: "bash".to_string(),
@@ -688,7 +707,7 @@ mod tests {
     async fn bash_defaults_to_auto_mode_for_compact_success() {
         // No `output` parameter at all — the new default must behave like `auto`.
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
 
         let result = tool
             .execute(json!({
@@ -714,7 +733,7 @@ mod tests {
     #[tokio::test]
     async fn bash_auto_failure_returns_diagnostic_inline_output() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
 
         // Produce lots of stdout, then exit non-zero with a useful stderr line.
         let result = tool
@@ -746,7 +765,7 @@ mod tests {
     #[tokio::test]
     async fn bash_explicit_normal_still_returns_larger_inline_output() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
 
         let result = tool
             .execute(json!({
@@ -775,7 +794,7 @@ mod tests {
     #[tokio::test]
     async fn bash_tool_missing_command_argument_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
 
         let result = tool.execute(json!({})).await;
         match result {
@@ -789,7 +808,7 @@ mod tests {
     #[tokio::test]
     async fn bash_tool_non_string_command_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
 
         let result = tool.execute(json!({ "command": 42 })).await;
         match result {
@@ -803,7 +822,7 @@ mod tests {
     #[tokio::test]
     async fn bash_explicit_full_returns_unlimited_inline_output() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::new(dir.path().to_path_buf()));
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
 
         let result = tool
             .execute(json!({

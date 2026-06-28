@@ -9,7 +9,7 @@
 //! makes the turn lifecycle independently testable.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use everruns_core::command::ExecuteCommandRequest;
@@ -263,12 +263,16 @@ impl Session {
 
     /// Run a host-local `!shell` command (not part of a tool-call lifecycle).
     /// Output is rendered inline; nothing is persisted to the session.
-    pub fn run_shell(&self, command: String, workspace_root: PathBuf) -> TurnHandle {
+    pub fn run_shell(
+        &self,
+        command: String,
+        workspace: Arc<crate::workspace_host::WorkspaceHost>,
+    ) -> TurnHandle {
         let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
         let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
 
         tokio::spawn(async move {
-            let tool = BashTool::new(Workspace::new(workspace_root));
+            let tool = BashTool::new(Workspace::new(workspace));
             let run = tool.execute(serde_json::json!({
                 "command": command,
                 // Direct shell output is not persisted through a tool-call

@@ -4,6 +4,7 @@
 //! code shapes: call expressions, function declarations, wrappers, and other
 //! patterns where lexical search is too noisy.
 
+use crate::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, bail};
 use ast_grep_core::matcher::Pattern;
 use ast_grep_core::meta_var::MetaVariable;
@@ -18,7 +19,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub(crate) const AST_GREP_CAPABILITY_ID: &str = "ast_grep";
 
@@ -44,12 +46,12 @@ const SKIP_DIRS: &[&str] = &[
 
 #[derive(Clone)]
 pub(crate) struct AstGrepCapability {
-    workspace_root: PathBuf,
+    workspace: Arc<WorkspaceHost>,
 }
 
 impl AstGrepCapability {
-    pub(crate) fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+    pub(crate) fn new(workspace: Arc<WorkspaceHost>) -> Self {
+        Self { workspace }
     }
 }
 
@@ -97,13 +99,13 @@ impl Capability for AstGrepCapability {
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![Box::new(AstGrepTool {
-            workspace_root: self.workspace_root.clone(),
+            workspace: self.workspace.clone(),
         })]
     }
 }
 
 struct AstGrepTool {
-    workspace_root: PathBuf,
+    workspace: Arc<WorkspaceHost>,
 }
 
 #[async_trait]
@@ -169,10 +171,16 @@ impl Tool for AstGrepTool {
     }
 
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        match ast_grep_from_arguments(&self.workspace_root, &arguments) {
+        let workspace_root = match self.workspace.host_root() {
+            Ok(root) => root,
+            Err(err) => {
+                return ToolExecutionResult::tool_error(err.to_string());
+            }
+        };
+        match ast_grep_from_arguments(&workspace_root, &arguments) {
             Ok(report) => ToolExecutionResult::success(json!({
                 "ok": true,
-                "workspace_root": self.workspace_root.display().to_string(),
+                "workspace_root": workspace_root.display().to_string(),
                 "path": report.path,
                 "pattern": report.pattern,
                 "language": report.language,
@@ -386,7 +394,7 @@ fn ast_grep(workspace_root: &Path, options: AstGrepOptions) -> Result<AstGrepRep
     let root = workspace_root
         .canonicalize()
         .context("canonicalize workspace root")?;
-    let scope = resolve_scope(&root, options.path.as_deref())?;
+    let scope = crate::workspace_host::resolve_host_scope(&root, options.path.as_deref())?;
     let language_filter = match options.language.as_deref() {
         Some(language) => Some(resolve_language_filter(language)?),
         None => None,
@@ -577,33 +585,6 @@ fn bounded_usize(value: Option<&Value>, default: usize, max: usize, name: &str) 
     Ok(number as usize)
 }
 
-fn resolve_scope(root: &Path, path: Option<&str>) -> Result<PathBuf> {
-    let Some(path) = path else {
-        return Ok(root.to_path_buf());
-    };
-    let relative = path.trim().trim_start_matches('/');
-    if relative.is_empty() || relative == "." {
-        return Ok(root.to_path_buf());
-    }
-    let candidate = Path::new(relative);
-    if candidate.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
-        bail!("`path` must stay inside the workspace");
-    }
-    let scope = root.join(candidate);
-    let canonical = scope
-        .canonicalize()
-        .with_context(|| format!("path not found: {path}"))?;
-    if !canonical.starts_with(root) {
-        bail!("`path` must stay inside the workspace");
-    }
-    Ok(canonical)
-}
-
 fn collect_supported_files(
     path: &Path,
     language_filter: Option<&str>,
@@ -695,6 +676,17 @@ fn truncate_chars(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    fn host(path: &Path) -> Arc<WorkspaceHost> {
+        Arc::new(
+            WorkspaceHost::new(
+                Arc::new(std::sync::RwLock::new(path.to_path_buf())),
+                path.to_path_buf(),
+            )
+            .expect("workspace host"),
+        )
+    }
 
     fn write(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
@@ -769,7 +761,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write(&dir.path().join("src/lib.rs"), "fn target() {}\n");
 
-        let capability = AstGrepCapability::new(dir.path().to_path_buf());
+        let capability = AstGrepCapability::new(host(dir.path()));
         let tools = capability.tools();
         let tool = tools
             .iter()
@@ -790,6 +782,27 @@ mod tests {
         assert_eq!(value["matches"][0]["path"], json!("src/lib.rs"));
         assert_eq!(value["matches"][0]["captures"][0]["name"], json!("NAME"));
         assert_eq!(value["matches"][0]["captures"][0]["text"], json!("target"));
+    }
+
+    #[test]
+    fn accepts_workspace_root_alias() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(&dir.path().join("src/lib.rs"), "fn target() {}\n");
+
+        let report = ast_grep(
+            dir.path(),
+            AstGrepOptions {
+                pattern: "fn $NAME() {}".to_string(),
+                path: Some("/workspace/src".to_string()),
+                language: Some("rust".to_string()),
+                limit: 20,
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
+        )
+        .expect("vfs subpath should scan");
+
+        assert_eq!(report.matches.len(), 1);
+        assert_eq!(report.matches[0].path, "src/lib.rs");
     }
 
     #[test]
