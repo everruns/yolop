@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["mira-eval>=0.2.0", "pandas>=2.0", "pyarrow>=14.0", "swebench>=4.1.0"]
+# dependencies = ["mira-eval>=0.3.0", "pandas>=2.0", "pyarrow>=14.0", "swebench>=4.1.0"]
 # ///
 """swebench_verified — a single-file Mira eval study for SWE-bench Verified.
 
@@ -14,13 +14,13 @@ builds an ephemeral env and runs it with no project scaffolding:
 
     cd evals/swebench_verified
     mira list                  # mira.toml's default_launcher drives this study
-    mira run astropy__astropy-12907 --targets anthropic-claude-sonnet-4.5
+    mira run --samples astropy__astropy-12907 --targets anthropic-claude-sonnet-4.5
 
 (`mira --uv swebench_verified.py …` is the explicit equivalent; `--cmd "uv run
 swebench_verified.py"` still works for arbitrary command lines.)
 
-The `mira` host owns the target matrix, selection, concurrency, checkpoints, and
-reporting; this study owns the SWE-bench-specific work:
+The `mira` host owns the target matrix, selection, concurrency, saved run folders,
+and reporting; this study owns the SWE-bench-specific work:
 
 * loads SWE-bench Verified instances (the HF parquet),
 * runs a coding agent (yolop, claude-code, codex, or pi) in a fresh checkout,
@@ -38,7 +38,7 @@ flags): `SWEBENCH_NO_EVAL=1` skips Docker scoring, `SWEBENCH_MAX_WORKERS`,
 `SWEBENCH_NAMESPACE` (`none` builds images locally), `SWEBENCH_EVAL_TIMEOUT`,
 `SWEBENCH_YOLOP_BIN` (override the yolop binary path), `SWEBENCH_CACHE_LEVEL`
 (SWE-bench image cache level; `instance` keeps the per-instance image so a
-matrix run pulls it once instead of re-pulling per cell — default `env`).
+matrix run pulls it once instead of re-pulling per case — default `env`).
 
 stdout carries ONLY protocol JSON (one object per line); logs go to stderr.
 """
@@ -64,7 +64,7 @@ import mira  # the mira-eval SDK: protocol types + the stdio serve loop
 # The mira-eval SDK pins the protocol version (`mira.PROTOCOL_VERSION`, currently
 # "1.0"); everything we emit (open-ended `metadata`, the numeric `metrics` map,
 # `error_kind`, and per-target `metadata` columns) is part of that 1.0 baseline.
-STUDY_VERSION = "0.5.0"
+STUDY_VERSION = "0.6.0"
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]                      # evals/swebench_verified -> repo root
@@ -806,7 +806,7 @@ def checkout(instance: Instance, dest: Path) -> None:
 
 def capture_patch(workdir: Path) -> str:
     # Fail loudly: a silent git error here would yield an empty/partial patch and
-    # mis-score the cell. The caller treats the raise as an infra error.
+    # mis-score the case. The caller treats the raise as an infra error.
     add = _git(["add", "-A"], workdir)
     if add.returncode != 0:
         raise RuntimeError(f"git add failed in {workdir}: {add.stderr.strip()}")
@@ -887,8 +887,8 @@ def evaluate_predictions(predictions: Mapping[str, str], instances: list[Instanc
             fh.write(json.dumps({"instance_id": iid, "model_name_or_path": model_name,
                                  "model_patch": predictions.get(iid, "")}) + "\n")
     # SWE-bench's default cache_level "env" deletes the per-instance image after
-    # each cell, so a multi-target matrix re-pulls the same prebuilt image once
-    # per cell — which trips Docker Hub's anonymous pull rate limit. "instance"
+    # each case, so a multi-target matrix re-pulls the same prebuilt image once
+    # per case — which trips Docker Hub's anonymous pull rate limit. "instance"
     # keeps the instance image so the matrix pulls it once and reuses it.
     cache_level = os.environ.get("SWEBENCH_CACHE_LEVEL", "env")
     cmd = [sys.executable, "-m", "swebench.harness.run_evaluation",
@@ -956,10 +956,10 @@ def _sanitize(s: str) -> str:
     return "".join(c if c.isalnum() or c in "-._" else "_" for c in s)
 
 
-def _run_agent_cell(inst: Instance, target: str, spec: dict, *,
+def _run_agent_case(inst: Instance, target: str, spec: dict, *,
                     max_workers: int, namespace: str, eval_timeout: int,
                     do_eval: bool) -> tuple[AgentRun, bool, dict, str | None]:
-    """Checkout + run the agent + (optionally) Docker-score one cell. Module-level
+    """Checkout + run the agent + (optionally) Docker-score one case. Module-level
     so the unit tests can patch `checkout`/`run_agent`/`capture_patch`/
     `evaluate_predictions` as globals. Returns (run, resolved, report, error_kind)."""
     run = _run_agent(inst, target, spec)
@@ -1081,7 +1081,7 @@ class Study:
         return self._instances
 
     def _subject(self, sample: mira.Sample, cx: mira.RunCx) -> mira.Transcript:
-        """Run one (instance, config) cell. The SDK has already skipped
+        """Run one (instance, config) case. The SDK has already skipped
         unavailable targets, so any target reaching here is runnable."""
         spec = MATRIX.get(cx.target)
         if spec is None:
@@ -1089,7 +1089,7 @@ class Study:
         inst = self.instances().get(sample.id)
         if inst is None:
             raise ValueError(f"unknown sample/instance: {sample.id!r}")
-        run, resolved, report, error_kind = _run_agent_cell(
+        run, resolved, report, error_kind = _run_agent_case(
             inst, cx.target, spec, max_workers=self.max_workers, namespace=self.namespace,
             eval_timeout=self.eval_timeout, do_eval=self.do_eval)
         return _build_transcript(run, resolved, report, spec, inst, error_kind)
