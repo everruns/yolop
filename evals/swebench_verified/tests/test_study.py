@@ -170,6 +170,34 @@ class CaseTest(unittest.TestCase):
             _study()._subject(mira.Sample("org__repo-1"), mira.RunCx(target="nope"))
 
 
+class ContainerModeTest(unittest.TestCase):
+    """`_yolop_in_container` gating + `_run_agent` routing to the in-container
+    runner (which skips the host checkout/diff)."""
+
+    def test_gating(self):
+        with mock.patch.dict("os.environ", {"SWEBENCH_IN_CONTAINER": ""}):
+            self.assertTrue(sv._yolop_in_container({"agent": "yolop", "container": True}))
+            self.assertFalse(sv._yolop_in_container({"agent": "yolop", "container": False}))
+            self.assertFalse(sv._yolop_in_container({"agent": "yolop"}))
+            # only yolop runs in-container; the external CLIs never do
+            self.assertFalse(sv._yolop_in_container({"agent": "claude-code", "container": True}))
+        with mock.patch.dict("os.environ", {"SWEBENCH_IN_CONTAINER": "1"}):
+            self.assertTrue(sv._yolop_in_container({"agent": "yolop"}))
+            # an explicit per-config False still wins over the global env
+            self.assertFalse(sv._yolop_in_container({"agent": "yolop", "container": False}))
+
+    def test_run_agent_routes_to_container_and_skips_host_checkout(self):
+        calls = []
+        with mock.patch.object(sv, "run_yolop_container",
+                               lambda spec, inst, sd: calls.append("container") or _fake_agent_run()), \
+             mock.patch.object(sv, "checkout", lambda *a, **k: calls.append("checkout")), \
+             mock.patch.object(sv, "run_agent", lambda *a, **k: calls.append("host")):
+            run = sv._run_agent(_INSTANCE, "openrouter-glm-5.2",
+                                {"agent": "yolop", "container": True})
+        self.assertEqual(calls, ["container"])      # container runner only
+        self.assertEqual(run.patch, "diff --git a b")  # patch from the runner, no host diff
+
+
 class ImageKeyTest(unittest.TestCase):
     """`_instance_image_key`: derive the scorer's instance image from the raw row."""
 

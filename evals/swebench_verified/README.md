@@ -323,3 +323,20 @@ The host asks the study to run one `(instance, config)` case at a time; for each
 4. Hand the patch to SWE-bench's official Docker evaluator and parse the
    `report.json` for `resolved`, returned to the host as the case's score.
 ```
+
+### Host vs container execution (yolop)
+
+Steps 1–3 above default to running on the **host**: `/testbed` is copied out of
+the instance image and yolop edits that copy. The host has no compiled/installed
+copy of the project, so the agent can't `import` it or run its tests — and weak
+models then burn 60–100+ turns trying to build the package before they can check
+their fix (a confound that dwarfs the actual reasoning). Set `container: True` on
+a yolop config (or `SWEBENCH_IN_CONTAINER=1` for all of them) to run the agent
+**inside the instance container** instead — the standard SWE-bench setup, where
+the project is already installed in the image's `testbed` env. The agent edits
+`/testbed` in place; the patch is captured there; scoring is unchanged (the
+official evaluator still runs in its own fresh container). Container mode
+bind-mounts the host `yolop`, so point `SWEBENCH_YOLOP_BIN` at a binary built for
+the image ABI — a static musl build (`cargo build --release --target
+x86_64-unknown-linux-musl`) runs in every instance image; the host glibc build
+will not.
