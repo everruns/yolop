@@ -1,0 +1,119 @@
+{
+  "eval": "swebench_verified",
+  "sample": "astropy__astropy-12907",
+  "target": "openai-gpt-5.5-low",
+  "passed": true,
+  "aggregate": 1.0,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 1.0,
+      "pass": true,
+      "reason": "FAIL_TO_PASS passed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=True",
+    "iterations": 15,
+    "tool_calls_count": 14,
+    "tool_calls": [
+      "grep_files",
+      "grep_files",
+      "list_directory",
+      "list_directory",
+      "read_file",
+      "read_file",
+      "read_file",
+      "read_file",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "edit_file"
+    ],
+    "usage": {
+      "input_tokens": 40520,
+      "output_tokens": 2241,
+      "cache_read_tokens": 165888,
+      "cost_usd": 0.352774
+    },
+    "timing": {
+      "duration_ms": 75699
+    },
+    "metrics": {
+      "agent_reported_time_s": 55.51,
+      "cache_creation_tokens": 0.0,
+      "cache_read_tokens": 165888.0,
+      "iterations": 15.0,
+      "tool_calls": 14.0,
+      "tool_calls_failed": 1.0,
+      "turns": 15.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "difficulty": "15 min - 1 hour",
+      "eval_report": {
+        "patch_exists": true,
+        "patch_is_None": false,
+        "patch_successfully_applied": true,
+        "resolved": true,
+        "tests_status": {
+          "FAIL_TO_FAIL": {
+            "failure": [],
+            "success": []
+          },
+          "FAIL_TO_PASS": {
+            "failure": [],
+            "success": [
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+            ]
+          },
+          "PASS_TO_FAIL": {
+            "failure": [],
+            "success": []
+          },
+          "PASS_TO_PASS": {
+            "failure": [],
+            "success": [
+              "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+              "astropy/modeling/tests/test_separable.py::test_cdot",
+              "astropy/modeling/tests/test_separable.py::test_cstack",
+              "astropy/modeling/tests/test_separable.py::test_arith_oper",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+              "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+              "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+            ]
+          }
+        }
+      },
+      "model": "gpt-5.5",
+      "provider": "openai",
+      "reasoning_effort": "low",
+      "repo": "astropy/astropy",
+      "resolved": true,
+      "stop_reason": "completed",
+      "tools_used": {
+        "bash": 5,
+        "edit_file": 1,
+        "grep_files": 2,
+        "list_directory": 2,
+        "read_file": 4
+      }
+    }
+  },
+  "skipped": false
+}

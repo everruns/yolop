@@ -38,7 +38,21 @@ flags): `SWEBENCH_NO_EVAL=1` skips Docker scoring, `SWEBENCH_MAX_WORKERS`,
 `SWEBENCH_NAMESPACE` (`none` builds images locally), `SWEBENCH_EVAL_TIMEOUT`,
 `SWEBENCH_YOLOP_BIN` (override the yolop binary path), `SWEBENCH_CACHE_LEVEL`
 (SWE-bench image cache level; `instance` keeps the per-instance image so a
-matrix run pulls it once instead of re-pulling per case — default `env`).
+matrix run pulls it once instead of re-pulling per case — default `env`),
+`SWEBENCH_IN_CONTAINER=1` (run every yolop config *inside* the instance's
+SWE-bench container instead of a host checkout — see below).
+
+By default a yolop case copies `/testbed` out of the image and runs the agent on
+the host. That host has no compiled/installed copy of the project (astropy is a
+C-extension package, and the host Python is a different version), so the agent
+cannot `import` the project or run its tests — weaker models then burn dozens of
+turns trying to build the package locally. Running the agent *inside* the
+instance container (`container: True` per config, or `SWEBENCH_IN_CONTAINER=1`
+for all yolop configs) is the standard SWE-bench setup: the repo is already
+installed in the image's `testbed` env, so `import`/tests work immediately and
+the agent measures reasoning, not environment-debugging grit. Container mode
+needs a yolop binary built for the image's ABI (glibc 2.35 / musl) via
+`SWEBENCH_YOLOP_BIN`; the host-built binary will not run in the container.
 
 stdout carries ONLY protocol JSON (one object per line); logs go to stderr.
 """
@@ -162,17 +176,23 @@ MATRIX: dict[str, dict[str, Any]] = {
     # yolop x Anthropic (secondary provider)
     "anthropic-claude-sonnet-4.5": {"agent": "yolop", "provider": "anthropic", "model": "claude-sonnet-4-5"},
     "anthropic-claude-opus-4.8": {"agent": "yolop", "provider": "anthropic", "model": "claude-opus-4-8"},
-    # yolop x OpenRouter (needs OPENROUTER_API_KEY)
+    # yolop x OpenRouter (needs OPENROUTER_API_KEY). `container: True` runs the
+    # agent inside the instance's SWE-bench image, where the project is already
+    # installed — without it these open models waste 60-100+ turns trying to
+    # build astropy on the host before they can test their fix.
     "openrouter-nemotron-3-ultra": {"agent": "yolop", "provider": "openrouter",
-                            "model": "nvidia/nemotron-3-ultra-550b-a55b"},
-    "openrouter-glm-5.2": {"agent": "yolop", "provider": "openrouter", "model": "z-ai/glm-5.2"},
+                            "model": "nvidia/nemotron-3-ultra-550b-a55b", "container": True},
+    "openrouter-glm-5.2": {"agent": "yolop", "provider": "openrouter", "model": "z-ai/glm-5.2",
+                            "container": True},
     # kimi-k2.7-code's endpoint rejects requests with reasoning disabled
     # ("Reasoning is mandatory for this endpoint"), so an effort must be set. Keep
     # it low: at high effort the model emits long silent thinking blocks that
     # exceed yolop's 120s stream-stall guard ("no tokens for 120s") and abort.
     "openrouter-kimi-k2.7-code": {"agent": "yolop", "provider": "openrouter",
-                            "model": "moonshotai/kimi-k2.7-code", "reasoning_effort": "low"},
-    "openrouter-qwen3-coder": {"agent": "yolop", "provider": "openrouter", "model": "qwen/qwen3-coder"},
+                            "model": "moonshotai/kimi-k2.7-code", "reasoning_effort": "low",
+                            "container": True},
+    "openrouter-qwen3-coder": {"agent": "yolop", "provider": "openrouter",
+                            "model": "qwen/qwen3-coder", "container": True},
     # Offline plumbing check (no key; won't solve tasks)
     "llmsim": {"agent": "yolop", "provider": "llmsim"},
     # Other coding agents (need their CLI on PATH + provider keys)
@@ -210,7 +230,8 @@ def _target_metadata(spec: dict) -> dict[str, Any]:
     surface it per column and group results with `mira run --group-by agent`."""
     cfg = {**DEFAULTS, **spec}
     md: dict[str, Any] = {"agent": cfg.get("agent", "yolop")}
-    for k in ("model", "provider", "reasoning_effort", "sandbox", "max_cost_usd", "price"):
+    for k in ("model", "provider", "reasoning_effort", "sandbox", "container",
+              "max_cost_usd", "price"):
         if cfg.get(k) is not None:
             md[k] = cfg[k]
     return md
@@ -655,6 +676,142 @@ def run_yolop(cfg: dict, instance: Instance, workdir: str, session_dir: str) -> 
     return AgentRun(patch="", metrics=metrics, session_log_path=str(log_path), error=error)
 
 
+# Env that lets the in-container agent reach the LLM provider through the host's
+# egress proxy (the SWE-bench image carries no proxy/CA config of its own).
+_PROXY_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy",
+              "no_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+              "GIT_SSL_CAINFO", "NODE_EXTRA_CA_CERTS")
+_PROVIDER_KEY_ENV = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY")
+
+
+def _yolop_in_container(spec: dict) -> bool:
+    """True when this yolop config should run inside the instance container
+    (per-config `container: True`, or `SWEBENCH_IN_CONTAINER` for all)."""
+    if spec.get("agent", "yolop") != "yolop":
+        return False
+    if spec.get("container") is not None:
+        return bool(spec["container"])
+    return os.environ.get("SWEBENCH_IN_CONTAINER", "").lower() in ("1", "true", "yes")
+
+
+def _docker(args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(["docker", *args], capture_output=True, text=True)
+
+
+def _container_yolop_bin() -> str:
+    """The yolop binary to bind-mount into the instance image. The image ABI
+    (glibc 2.35) differs from the host, so prefer an explicit override, then a
+    static musl build (runs in any image), then fall back to the host binary."""
+    explicit = os.environ.get("SWEBENCH_YOLOP_BIN")
+    if explicit:
+        return explicit
+    musl = REPO_ROOT / "target/x86_64-unknown-linux-musl/release/yolop"
+    return str(musl) if musl.exists() else YOLOP_BIN
+
+
+def _container_patch(cid: str) -> str:
+    """The agent's edits as a patch, captured from /testbed inside the container
+    (mirrors the host `capture_patch`: stage all, diff cached)."""
+    git = ["exec", cid, "git", "-c", "safe.directory=/testbed", "-C", "/testbed"]
+    add = _docker([*git, "add", "-A"])
+    if add.returncode != 0:
+        raise RuntimeError(f"container git add failed: {add.stderr.strip()}")
+    diff = _docker([*git, "diff", "--cached", "--no-color"])
+    if diff.returncode != 0:
+        raise RuntimeError(f"container git diff failed: {diff.stderr.strip()}")
+    return diff.stdout
+
+
+def run_yolop_container(cfg: dict, instance: Instance, session_dir: str) -> AgentRun:
+    """Run yolop *inside* the instance's SWE-bench image, where the project is
+    already installed (the image's `testbed` env). The agent edits /testbed in
+    place and the patch is captured there — so `import`/tests work immediately
+    and the agent never has to build the package. The host `YOLOP_BIN` is
+    bind-mounted, so it must be built for the image ABI (glibc 2.35 / musl); set
+    `SWEBENCH_YOLOP_BIN`. Decoupled from scoring: `_score` still runs the official
+    evaluator in its own fresh container against the captured patch.
+    """
+    cfg = {**DEFAULTS, **cfg}  # the host path merges these in run_agent; mirror it
+    session_id = "session_" + uuid.uuid4().hex
+    image = _ensure_image(instance)
+    sess = Path(session_dir)
+    sess.mkdir(parents=True, exist_ok=True)
+    log_path = sess / session_id / "events.jsonl"
+
+    # worktrees off so edits land in /testbed (not a linked branch); settings
+    # live under the mounted session dir.
+    cfg_home = sess / "xdg_config"
+    (cfg_home / "yolop").mkdir(parents=True, exist_ok=True)
+    (cfg_home / "yolop" / "settings.toml").write_text('worktrees = "off"\n', encoding="utf-8")
+
+    # Long-lived container on the host network so it can reach the egress proxy.
+    run_cmd = ["run", "-d", "--rm", "--network", "host",
+               "-v", f"{_container_yolop_bin()}:/usr/local/bin/yolop:ro", "-v", f"{sess}:{sess}"]
+    ca = os.environ.get("SSL_CERT_FILE")
+    if ca and os.path.exists(ca):
+        run_cmd += ["-v", f"{ca}:{ca}:ro"]
+    run_cmd += [image, "sleep", "infinity"]
+    created = _docker(run_cmd)
+    if created.returncode != 0:
+        raise RuntimeError(f"docker run {image} failed: {created.stderr.strip()}")
+    cid = created.stdout.strip()
+
+    error: str | None = None
+    patch = ""
+    try:
+        # Pristine base_commit; `clean -qfd` drops untracked cruft but keeps
+        # gitignored build artifacts (compiled extensions) so the project stays
+        # importable.
+        gitc = ["exec", cid, "git", "-c", "safe.directory=/testbed", "-C", "/testbed"]
+        if _docker([*gitc, "reset", "-q", "--hard", instance.base_commit]).returncode != 0:
+            _docker([*gitc, "checkout", "-q", "-f", instance.base_commit])
+        _docker([*gitc, "clean", "-qfd"])
+
+        exec_cmd = ["docker", "exec", "-w", "/testbed", "-e", f"XDG_CONFIG_HOME={cfg_home}"]
+        # Forward proxy/CA + provider keys by NAME only; `docker exec` reads the
+        # value from this process's env (passed below), so secrets never appear
+        # in argv (host `ps`).
+        for k in (*_PROXY_ENV, *_PROVIDER_KEY_ENV):
+            if os.environ.get(k):
+                exec_cmd += ["-e", k]
+        for k, v in (cfg.get("env") or {}).items():
+            exec_cmd += ["-e", f"{k}={v}"]
+        # A login shell activates the image's `testbed` conda env (via .bashrc),
+        # so `python`/`pip` in the agent's tool calls resolve to the installed
+        # project; `exec yolop "$@"` passes argv through unparsed (no shell
+        # quoting of the problem statement).
+        yargs = ["-C", "/testbed"]
+        if cfg.get("provider"):
+            yargs += ["--provider", cfg["provider"]]
+        if cfg.get("model"):
+            yargs += ["--model", cfg["model"]]
+        if cfg.get("reasoning_effort"):
+            yargs += ["--reasoning-effort", cfg["reasoning_effort"]]
+        yargs += list(cfg.get("extra_args") or [])
+        yargs += ["--session", session_id, "--session-dir", str(sess), "-p", _prompt(instance)]
+        exec_cmd += [cid, "bash", "-lc", 'exec yolop "$@"', "yolop", *yargs]
+
+        start = time.monotonic()
+        res = run_agent_process(
+            exec_cmd, env=dict(os.environ), name="yolop", timeout=cfg["timeout"],
+            max_cost_usd=cfg.get("max_cost_usd"), cost_probe=lambda: running_cost(log_path),
+        )
+        error, stop_reason = res.error, res.stop_reason
+        patch = _container_patch(cid)
+    finally:
+        _docker(["rm", "-f", cid])
+
+    if log_path.exists():
+        metrics = extract_yolop(log_path)
+    else:
+        metrics = RunMetrics()
+        if error is None:
+            error, stop_reason = f"no session log at {log_path}", "error"
+    metrics.wall_time_s = round(time.monotonic() - start, 3)
+    metrics.stop_reason = stop_reason
+    return AgentRun(patch=patch, metrics=metrics, session_log_path=str(log_path), error=error)
+
+
 def _run_cli_agent(cfg: dict, instance: Instance, workdir: str, session_dir: str, *,
                    name: str, log_name: str, build_cmd, extract, env_extra=None) -> AgentRun:
     """Shared body for the stdout-JSON agents (claude-code, codex, pi)."""
@@ -750,6 +907,21 @@ def _instance_image_key(instance_id: str, namespace: str) -> str:
     return make_test_spec(raw, namespace=namespace).instance_image_key
 
 
+def _ensure_image(instance: Instance) -> str:
+    """Resolve the instance's SWE-bench image key, pulling it if absent. Shared by
+    the host checkout (copies /testbed out) and container mode (runs the agent in
+    the image directly). Cached per instance via SWEBENCH_CACHE_LEVEL."""
+    namespace = os.environ.get("SWEBENCH_NAMESPACE", "swebench")
+    image = _instance_image_key(instance.instance_id, namespace)
+    if subprocess.run(["docker", "image", "inspect", image],
+                      capture_output=True).returncode != 0:
+        pull = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
+        if pull.returncode != 0:
+            raise RuntimeError(f"docker pull {image} failed for {instance.instance_id}: "
+                               f"{pull.stderr.strip()}")
+    return image
+
+
 def checkout(instance: Instance, dest: Path) -> None:
     """Materialize instance.repo at base_commit in dest from the SWE-bench image.
 
@@ -765,16 +937,7 @@ def checkout(instance: Instance, dest: Path) -> None:
         shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True, exist_ok=True)
 
-    namespace = os.environ.get("SWEBENCH_NAMESPACE", "swebench")
-    image = _instance_image_key(instance.instance_id, namespace)
-
-    # Pull the image if absent (cached per instance via SWEBENCH_CACHE_LEVEL).
-    if subprocess.run(["docker", "image", "inspect", image],
-                      capture_output=True).returncode != 0:
-        pull = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
-        if pull.returncode != 0:
-            raise RuntimeError(f"docker pull {image} failed for {instance.instance_id}: "
-                               f"{pull.stderr.strip()}")
+    image = _ensure_image(instance)
 
     # Copy /testbed out of a throwaway container, then make the working tree
     # pristine at base_commit (the image may carry build artifacts / generated
@@ -976,9 +1139,18 @@ def _run_agent_case(inst: Instance, target: str, spec: dict, *,
 
 def _run_agent(inst: Instance, target: str, spec: dict) -> AgentRun:
     run_id = f"{_sanitize(target)}-{_sanitize(inst.instance_id)}-{uuid.uuid4().hex[:6]}"
-    workdir = CACHE_DIR / "work" / run_id
     session_dir = CACHE_DIR / "sessions" / run_id
     session_dir.mkdir(parents=True, exist_ok=True)
+    # Container mode (yolop only): run the agent inside the instance image, where
+    # the project is installed. No host checkout/diff — the patch is captured in
+    # /testbed by the runner.
+    if _yolop_in_container(spec):
+        try:
+            return run_yolop_container(spec, inst, str(session_dir))
+        except Exception as e:  # report, don't crash the study loop
+            log(f"agent run failed for {target}/{inst.instance_id}: {e}")
+            return AgentRun(patch="", metrics=RunMetrics(), error=f"runner: {e}")
+    workdir = CACHE_DIR / "work" / run_id
     try:
         checkout(inst, workdir)
         run = run_agent(spec, inst, str(workdir), str(session_dir))
