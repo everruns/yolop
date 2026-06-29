@@ -1,0 +1,35 @@
+{
+  "format": 1,
+  "run_id": "20260629T000426Z-d0ca",
+  "study": "swebench_verified",
+  "study_version": "0.6.0",
+  "started_unix": 1782691466,
+  "finished_unix": 1782693920,
+  "environment": {
+    "git": {
+      "commit": "e6a4f61e3f555647c3d5913073d9b527d368e992",
+      "branch": "claude/nvidia-glm-performance-qnahqk",
+      "dirty": true
+    },
+    "os": "linux",
+    "arch": "x86_64",
+    "hostname": "vm",
+    "cpus": 4,
+    "mem_total_mib": 16075,
+    "mira_version": "0.3.0",
+    "labels": {
+      "benchmark": "swebench_verified"
+    }
+  },
+  "summary": {
+    "scored": 13,
+    "passed": 13,
+    "failed": 0,
+    "na": 0,
+    "skipped": 0,
+    "total_tokens": 699872,
+    "total_cost_usd": 4.932520000000001,
+    "total_tool_calls": 300,
+    "total_duration_ms": 2044235
+  }
+}
