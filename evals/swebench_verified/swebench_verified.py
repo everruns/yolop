@@ -757,9 +757,7 @@ def run_yolop_container(cfg: dict, instance: Instance, session_dir: str) -> Agen
     cid = created.stdout.strip()
 
     error: str | None = None
-    stop_reason = "completed"
     patch = ""
-    start = time.monotonic()
     try:
         # Pristine base_commit; `clean -qfd` drops untracked cruft but keeps
         # gitignored build artifacts (compiled extensions) so the project stays
