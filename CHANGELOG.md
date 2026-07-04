@@ -10,6 +10,151 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.4.0] - 2026-07-04
+
+### Highlights
+
+- **Autonomous background work.** Background execution grew from a core task
+  runner into sub-agents, proactive wakeups, a read-only Ctrl+B panel,
+  status-bar visibility, task caps, model overrides, and cost-efficiency
+  reporting.
+- **Richer coding context.** yolop now includes multi-language repo maps,
+  ranked symbol search, structural ast-grep search, structured global memory,
+  project instruction loading, and hidden-file handling improvements.
+- **Worktree and session polish.** Native git worktree support, `/worktree`,
+  ignored-file copying via `.worktreeinclude`, resume-root restoration, and
+  compact provider/worktree status make long-running development loops easier
+  to follow.
+- **More capable prompts and TUI.** Users can attach images from CLI flags or
+  clipboard paste, attach large text pastes as placeholders, invoke commands
+  from prompts, use `/help`, and rely on sturdier exit/cancel/layout behavior.
+- **Evaluation and runtime refresh.** The release adopts newer everruns
+  runtimes, everruns-local backends, ACP 1.0 dependencies, Mira-based eval
+  studies, and a containerized SWE-bench Verified harness.
+
+### What's Changed
+
+* chore(deps): bump the cargo-minor-and-patch group with 4 updates ([#222](https://github.com/everruns/yolop/pull/222)) by @dependabot[bot]
+* feat(evals): run yolop inside the SWE-bench container ([#221](https://github.com/everruns/yolop/pull/221)) by @chaliy
+* chore(evals): bump mira-eval to 0.3.0; adopt case terms and configs ([#220](https://github.com/everruns/yolop/pull/220)) by @chaliy
+* feat(runtime): adopt MountFs and WorkspaceHost on 0.17.1 ([`b7594e0`](https://github.com/everruns/yolop/commit/b7594e07b229c521554de2a7d375645703bbbd5b)) by @chaliy
+* feat(runtime): bump everruns to 0.17.1 and adopt set_host_root ([#219](https://github.com/everruns/yolop/pull/219)) by @chaliy
+* revert: restore Related diagrams section on repo-map page ([#217](https://github.com/everruns/yolop/pull/217)) by @chaliy
+* fix(evals): count codex iterations from per-round-trip events ([#216](https://github.com/everruns/yolop/pull/216)) by @chaliy
+* fix(tui): drain exit keys after redraw failures ([`731242c`](https://github.com/everruns/yolop/commit/731242c7182613a0bb9258c8a6f8543bc84b5a7f)) by @chaliy
+* feat(background): show everruns session tasks ([`77f5694`](https://github.com/everruns/yolop/commit/77f56941659b156f631af26196256e0460bd0525)) by @chaliy
+* chore(deps): bump everruns runtime crates to 0.17.0 ([#212](https://github.com/everruns/yolop/pull/212)) by @chaliy
+* docs(repo-map): drop Related diagrams section from feature page ([#213](https://github.com/everruns/yolop/pull/213)) by @chaliy
+* chore(deps): bump ast-grep-core and ast-grep-language to 0.44 ([#211](https://github.com/everruns/yolop/pull/211)) by @chaliy
+* chore(deps): bump agent-client-protocol from 0.15.0 to 1.0.0 ([#207](https://github.com/everruns/yolop/pull/207)) by @dependabot[bot]
+* chore(deps): bump actions/checkout from 5 to 7 ([#206](https://github.com/everruns/yolop/pull/206)) by @dependabot[bot]
+* feat(evals): astropy-12907-compare preset + image-based checkout ([#210](https://github.com/everruns/yolop/pull/210)) by @chaliy
+* fix(tui): extend Ctrl+C exit grace to 5 seconds ([#205](https://github.com/everruns/yolop/pull/205)) by @chaliy
+* feat(user-ask): track user requests and validate after turns ([#190](https://github.com/everruns/yolop/pull/190)) by @chaliy
+* chore(evals): adopt mira 0.2.0 launchers; bump mira-eval to 0.2.0 ([#203](https://github.com/everruns/yolop/pull/203)) by @chaliy
+* fix(tools): repo_map /workspace + hidden-skip; document stateless bash ([#202](https://github.com/everruns/yolop/pull/202)) by @chaliy
+* feat: cut gpt-5.5 harness overhead (edit_file + prompt steering) ([#201](https://github.com/everruns/yolop/pull/201)) by @chaliy
+* refactor(evals): adopt mira-eval SDK; install mira from registries ([#200](https://github.com/everruns/yolop/pull/200)) by @chaliy
+* chore(deps): bump everruns crates to 0.16.2 ([#199](https://github.com/everruns/yolop/pull/199)) by @chaliy
+* chore(deps): bump everruns crates to 0.16.1 ([#198](https://github.com/everruns/yolop/pull/198)) by @chaliy
+* refactor(evals): single source of truth for swebench target id ([#196](https://github.com/everruns/yolop/pull/196)) by @chaliy
+* refactor(evals): Mira-driven single-file SWE-bench Verified study ([`497c2fc`](https://github.com/everruns/yolop/commit/497c2fcc1196a1d0703ba097a2420c207bf0fd5c)) by @chaliy
+* feat(runtime): enable spawn_background for bash ([#194](https://github.com/everruns/yolop/pull/194)) by @chaliy
+* feat(runtime): adopt everruns-local backends ([`ee4d90c`](https://github.com/everruns/yolop/commit/ee4d90cd9da9d27722c15f75a64e22fff8f4a570)) by @chaliy
+* feat(tui): add testable presentation model ([`e28670f`](https://github.com/everruns/yolop/commit/e28670fbdba0539accec61af14a287a7d68548c9)) by @chaliy
+* fix(acp): align schema imports with ACP 0.15 ([`cd933c2`](https://github.com/everruns/yolop/commit/cd933c26bdf9335a0934482449376dee26cba9f0)) by @chaliy
+* feat(tui): show worktree in status bar with lighter switch notice ([#188](https://github.com/everruns/yolop/pull/188)) by @chaliy
+* fix(prompt): require empirical verification ([`0282517`](https://github.com/everruns/yolop/commit/02825174fb199126482cd25c6639bbcec468a709)) by @chaliy
+* feat(tui): attach large text pastes as placeholders ([#187](https://github.com/everruns/yolop/pull/187)) by @chaliy
+* docs: group repo-map doc with its assets in a subfolder ([#186](https://github.com/everruns/yolop/pull/186)) by @chaliy
+* feat(background): sub-agent model override + cost-efficiency report ([`24ebd0f`](https://github.com/everruns/yolop/commit/24ebd0fa8c7b59c0779693bd0d109d98c85f8a27)) by @chaliy
+* docs: add yolop name origin and approvals guide ([`065c5a3`](https://github.com/everruns/yolop/commit/065c5a38bde2b631e1c13fee8ce5376c80f63bbc)) by @chaliy
+* feat(repo-map): rank query results and add 7 grammars ([#181](https://github.com/everruns/yolop/pull/181)) by @chaliy
+* chore(deps): bump everruns runtime to 0.15.0 ([#183](https://github.com/everruns/yolop/pull/183)) by @chaliy
+* fix(runtime): require verification before finishing edits ([`38b6097`](https://github.com/everruns/yolop/commit/38b60977c7c4e84c383cd506202b5ef3db454688)) by @chaliy
+* feat(bench): representative tracking suite + durable results ([#180](https://github.com/everruns/yolop/pull/180)) by @chaliy
+* feat(tui): add human-readable narration for yolop tools ([#173](https://github.com/everruns/yolop/pull/173)) by @chaliy
+* feat(tui): add /help command with command list and keyboard shortcuts ([`c9c6b6a`](https://github.com/everruns/yolop/commit/c9c6b6afd884a28842f1b04116b5545e08d2da73)) by @chaliy
+* fix(client-commands): reflow CLIENT_COMMANDS_PROMPT to fit 80 columns ([`195d32e`](https://github.com/everruns/yolop/commit/195d32e08b0ad6f3ac393f696f0abb660ed02c8f)) by @chaliy
+* refactor(narration): move tool labels to capability narrate() ([`3e72b97`](https://github.com/everruns/yolop/commit/3e72b973763a8ea1659c1334c5a5fa6d059015b5)) by @chaliy
+* chore(deps): update Rust dependencies ([#167](https://github.com/everruns/yolop/pull/167)) by @chaliy
+* docs(cli): clarify --reasoning-effort applies to all providers ([#177](https://github.com/everruns/yolop/pull/177)) by @chaliy
+* refactor(runtime): single canonical Provider enum for identity ([#179](https://github.com/everruns/yolop/pull/179)) by @chaliy
+* refactor(runtime): typed capability ids + declarative deps ([#178](https://github.com/everruns/yolop/pull/178)) by @chaliy
+* fix(tui): re-anchor inline viewport after terminal resize ([#175](https://github.com/everruns/yolop/pull/175)) by @chaliy
+* refactor(capabilities): rename your to yolop framing layer ([#176](https://github.com/everruns/yolop/pull/176)) by @chaliy
+* refactor(app): introduce Session facade + transcript boundary ([#174](https://github.com/everruns/yolop/pull/174)) by @chaliy
+* feat(tui): render markdown tables with comfy-table ([#163](https://github.com/everruns/yolop/pull/163)) by @chaliy
+* fix(goal): pause continuation on turn cancel ([`2c20d12`](https://github.com/everruns/yolop/commit/2c20d123abdd02b708432218bf6451df7db95f51)) by @chaliy
+* fix(runtime): order volatile prompt context last ([`6cab4a1`](https://github.com/everruns/yolop/commit/6cab4a1398cf00a8070a9402872cfb0281f2a7f4)) by @chaliy
+* refactor(runtime): read only AGENTS.md for project instructions ([#169](https://github.com/everruns/yolop/pull/169)) by @chaliy
+* feat(bench): yoloeval harness for benchmarking yolop and peer agents ([#166](https://github.com/everruns/yolop/pull/166)) by @chaliy
+* refactor(attribution): extract AttributionCapability into its own module ([#168](https://github.com/everruns/yolop/pull/168)) by @chaliy
+* feat(setup): live model/provider/effort tools + delete_skill ([#165](https://github.com/everruns/yolop/pull/165)) by @chaliy
+* chore(deps): bump sha2 from 0.10.9 to 0.11.0 ([#154](https://github.com/everruns/yolop/pull/154)) by @dependabot[bot]
+* chore(deps): bump rand from 0.9.4 to 0.10.1 ([#155](https://github.com/everruns/yolop/pull/155)) by @dependabot[bot]
+* feat(worktree): copy ignored local files via .worktreeinclude ([#164](https://github.com/everruns/yolop/pull/164)) by @chaliy
+* refactor(narration): drop yolop fallback, narrate in capabilities ([#162](https://github.com/everruns/yolop/pull/162)) by @chaliy
+* fix(model): derive effort from model profiles ([`bcbdb3d`](https://github.com/everruns/yolop/commit/bcbdb3db8fc71e9ae7b54fce23a8b69385245603)) by @chaliy
+* fix(runtime): keep recent tool output window ([`78d517a`](https://github.com/everruns/yolop/commit/78d517ac6300d5a7c97bf60a85a18b2393401449)) by @chaliy
+* feat(skills): add ast-grep structural-search skill ([#158](https://github.com/everruns/yolop/pull/158)) by @chaliy
+* feat(worktree): /worktree command and prune CLI ([#157](https://github.com/everruns/yolop/pull/157)) by @chaliy
+* feat(session): native git worktree support ([#156](https://github.com/everruns/yolop/pull/156)) by @chaliy
+* refactor(skills): use upstream ScopedSkillsCapability, drop vendored copy ([#153](https://github.com/everruns/yolop/pull/153)) by @chaliy
+* feat: bump everruns to 0.14.0 with OpenRouter attribution ([#152](https://github.com/everruns/yolop/pull/152)) by @chaliy
+* fix(prompt): address run_yolop_command review comments ([#111](https://github.com/everruns/yolop/pull/111)) by @chaliy
+* fix(ui): improve fallback tool narration ([#149](https://github.com/everruns/yolop/pull/149)) by @chaliy
+* fix(tui): add missing horizontal bounds check for status bar mouse clicks ([#150](https://github.com/everruns/yolop/pull/150)) by @chaliy
+* fix(prompt): split tool guidance sections ([`537f0b7`](https://github.com/everruns/yolop/commit/537f0b761957c4754ed8b1e4f858f2f238754032)) by @chaliy
+* fix(tui): tighten idle layout spacing ([`ece0419`](https://github.com/everruns/yolop/commit/ece04198d518e2be44ca51dfc3ef80b7f8daf873)) by @chaliy
+* fix(runtime): keep todo schema loaded ([`adf7e5f`](https://github.com/everruns/yolop/commit/adf7e5f4384aeaa224b08a83eba0aa5e837f4a34)) by @chaliy
+* feat(tui): paste clipboard images with Ctrl+V ([#145](https://github.com/everruns/yolop/pull/145)) by @chaliy
+* feat(cli): attach images to prompts via --image/-i ([#133](https://github.com/everruns/yolop/pull/133)) by @chaliy
+* feat(goal): add autonomous /goal completion loops ([#134](https://github.com/everruns/yolop/pull/134)) by @chaliy
+* feat(background): read-only Ctrl+B background-tasks panel ([#144](https://github.com/everruns/yolop/pull/144)) by @chaliy
+* feat(background): proactive_wake setting and concurrent-task cap ([#143](https://github.com/everruns/yolop/pull/143)) by @chaliy
+* feat(background): proactive wake when a task finishes ([#142](https://github.com/everruns/yolop/pull/142)) by @chaliy
+* feat(background): TUI status bar count and /background command ([#141](https://github.com/everruns/yolop/pull/141)) by @chaliy
+* feat(background): add background sub-agents ([#140](https://github.com/everruns/yolop/pull/140)) by @chaliy
+* feat(background): background execution core with scripted tasks ([#139](https://github.com/everruns/yolop/pull/139)) by @chaliy
+* feat(ast-grep): add structural search tool ([`f5b47e4`](https://github.com/everruns/yolop/commit/f5b47e44cd4153855ca20c4f3953fe7337ca8f82)) by @chaliy
+* feat(repo-map): add multi-language symbol map ([`6267d9a`](https://github.com/everruns/yolop/commit/6267d9afb6c436eef9f649a0b7465f2844e2d3bd)) by @chaliy
+* chore: add keywords, categories, authors to crate metadata ([#136](https://github.com/everruns/yolop/pull/136)) by @chaliy
+* fix(tui): harden layout and text selection ([`e4d6ee7`](https://github.com/everruns/yolop/commit/e4d6ee7520a3cc2b98dfd5053c098e1321a0d8f2)) by @chaliy
+* feat(tui): show provider in compact status ([`fb23052`](https://github.com/everruns/yolop/commit/fb2305221038dcc8c30bd66d9d3ec5414819daba)) by @chaliy
+* chore(deps): refresh cargo lockfile ([`1c3028e`](https://github.com/everruns/yolop/commit/1c3028e072b04e41ed72d1c4e9a2b34fca3c1fbe)) by @chaliy
+* fix(config): safe provider/model resolution on switch ([#128](https://github.com/everruns/yolop/pull/128)) by @chaliy
+* feat(codex): add subscription provider ([`f15d42f`](https://github.com/everruns/yolop/commit/f15d42f4a8eb476589c67e3abb46c0fec7a755a7)) by @chaliy
+* feat(app): expand session status bar ([#129](https://github.com/everruns/yolop/pull/129)) by @chaliy
+* feat(openrouter): rank model picker with recommended section ([#127](https://github.com/everruns/yolop/pull/127)) by @chaliy
+* fix(session): restore workspace root on resume ([`a9989d8`](https://github.com/everruns/yolop/commit/a9989d8bb6afce8a8da1a63b7909203d272bde73)) by @chaliy
+* feat(runtime): send yolop metadata to everruns ([`b9770f5`](https://github.com/everruns/yolop/commit/b9770f5bccba441536f7925378a5865a406d5278)) by @chaliy
+* chore(deps): bump everruns family to 0.13.0 ([#124](https://github.com/everruns/yolop/pull/124)) by @chaliy
+* fix(app): cancel turns with double escape ([`867f12d`](https://github.com/everruns/yolop/commit/867f12dd7cfffebb9645fbc102712ff05c260055)) by @chaliy
+* fix(app): render compact write_todos transcript ([`9604a59`](https://github.com/everruns/yolop/commit/9604a596561ee89988d09da5d3e72e408da0988b)) by @chaliy
+* chore(deps): bump everruns family to 0.12.0 ([#120](https://github.com/everruns/yolop/pull/120)) by @chaliy
+* refactor(hooks): move tools into hooks capability ([`54c4e95`](https://github.com/everruns/yolop/commit/54c4e95554315109ebc3aa2b62358582903daccf)) by @chaliy
+* feat(connectors): Daytona sandbox and generic connectors ([#117](https://github.com/everruns/yolop/pull/117)) by @chaliy
+* feat(config): add harness capability settings in TOML ([#116](https://github.com/everruns/yolop/pull/116)) by @chaliy
+* feat(memory): structured global memory with progressive disclosure ([#118](https://github.com/everruns/yolop/pull/118)) by @chaliy
+* feat(btw): enable upstream /btw ephemeral side-question command ([#115](https://github.com/everruns/yolop/pull/115)) by @chaliy
+* refactor: use upstream tool_search capability, drop vendored copy ([#114](https://github.com/everruns/yolop/pull/114)) by @chaliy
+* chore(deps): bump everruns crates to 0.11.0 ([#113](https://github.com/everruns/yolop/pull/113)) by @chaliy
+* feat(commands): add direct shell command ([`feed4a6`](https://github.com/everruns/yolop/commit/feed4a6b4cf52d4ef589988cda4c05df412d39cb)) by @chaliy
+* fix(approval): keep approval tools fully loaded ([`8642596`](https://github.com/everruns/yolop/commit/864259608ca8be84f3795106a49afe3cb1f7fba3)) by @chaliy
+* feat(tui): add shell command alias ([`a2f40cb`](https://github.com/everruns/yolop/commit/a2f40cb78a9ebec9cccab5252465b8e72d2fe84c)) by @chaliy
+* fix(tui): stop mirroring flushed transcript lines ([`3e51b50`](https://github.com/everruns/yolop/commit/3e51b50f045d6a14e2c0ff8f550297fcbb6e48d6)) by @chaliy
+* Let prompts invoke TUI commands ([#108](https://github.com/everruns/yolop/pull/108)) by @chaliy
+* feat(app): require double Ctrl+C to exit TUI ([`70cd66e`](https://github.com/everruns/yolop/commit/70cd66e418f45fe1de19361c7de1ed5bf4f13ef6)) by @chaliy
+* fix(app): grow composer height when wrapped input wraps ([#106](https://github.com/everruns/yolop/pull/106)) by @chaliy
+* fix(tool-search): defer MCP tool schemas like the long tail ([#104](https://github.com/everruns/yolop/pull/104)) by @chaliy
+* refactor(app): split app.rs into mod/setup/transcript/render modules ([#103](https://github.com/everruns/yolop/pull/103)) by @chaliy
+* chore(ci): bump codecov-action v4→v7, set fail_ci_if_error conditional ([#102](https://github.com/everruns/yolop/pull/102)) by @chaliy
+* refactor(setup): read config through ConfigService ([#101](https://github.com/everruns/yolop/pull/101)) by @chaliy
+* refactor(config): rename provider key, slim ConfigService ([#99](https://github.com/everruns/yolop/pull/99)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.3.0...v0.4.0
+
 ## [0.3.0] - 2026-06-11
 
 ### Highlights
