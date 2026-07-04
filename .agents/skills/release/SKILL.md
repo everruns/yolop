@@ -35,9 +35,10 @@ change), use [`/ship`](../ship/SKILL.md) instead.
    since the previous tag, in descending order, with PR numbers and authors.
 3. **Publish-readiness is proven before merge.** `cargo publish --dry-run -p
    yolop` succeeds. The PR body includes a publish-readiness report.
-4. **CI publishes to both registries.** crates.io shows `X.Y.Z`. The
-   Homebrew tap's `Formula/yolop.rb` is bumped to `X.Y.Z`. A "release" is
-   not done until both are confirmed.
+4. **Post-merge verification is a hard gate.** After the release PR merges,
+   the agent must monitor CI and independently confirm that crates.io serves
+   `X.Y.Z` and the Homebrew tap formula points at `vX.Y.Z`. A "release" is
+   not done, shipped, or closed out until both are confirmed.
 5. **A failure rolls forward, not backward.** If a publish fails, open a
    hotfix PR (or fix-forward in the same PR if not yet merged). Do not
    leave the release half-shipped.
@@ -186,8 +187,18 @@ Body must include:
   - [x] `Cargo.toml` + `Cargo.lock` agree on `X.Y.Z`
   ```
 
-- A **Post-merge plan** noting that `release.yml` will tag + dispatch
-  `publish.yml` and `cli-binaries.yml`.
+- A **Post-merge verification** block stating that the release is not complete
+  until the agent has checked:
+
+  ```markdown
+  ## Post-merge verification
+
+  - [ ] `release.yml` created tag `vX.Y.Z` and the GitHub Release
+  - [ ] `publish.yml` finished green
+  - [ ] `cli-binaries.yml` finished green
+  - [ ] crates.io serves `X.Y.Z`
+  - [ ] Homebrew tap formula points at `vX.Y.Z`
+  ```
 
 ### 8. Monitor publishing after merge
 
@@ -200,7 +211,9 @@ gh run list --workflow=publish.yml      --limit 1
 gh run list --workflow=cli-binaries.yml --limit 1
 ```
 
-Confirm each finishes green, then run the post-release checks:
+Confirm each finishes green, then run the post-release checks yourself. Do not
+ask the user to verify these manually and do not declare the release shipped
+from workflow status alone.
 
 ```bash
 # crates.io
@@ -211,13 +224,14 @@ gh release view "vX.Y.Z"       # tag + 3 tarballs + 3 sha256 files
 
 # Homebrew tap
 curl -sSfL https://raw.githubusercontent.com/everruns/homebrew-tap/main/Formula/yolop.rb \
-  | grep '^  version "'        # shows X.Y.Z
+  | grep -oE 'download/v[0-9][^/]*' | sed 's|download/||'   # shows vX.Y.Z
 ```
 
-Declare **shipped** only when crates.io and the Homebrew tap both report
-`X.Y.Z`. If a workflow fails, inspect logs (`gh run view <id> --log-failed`)
-and either re-run (transient — network / registry propagation) or open a
-hotfix PR (packaging bug — see `specs/release.md` § Hotfix Releases).
+Declare **shipped** only when crates.io reports `X.Y.Z` and the Homebrew tap
+formula points at `vX.Y.Z`. If a workflow fails, inspect logs (`gh run view
+<id> --log-failed`) and either re-run (transient — network / registry
+propagation) or open a hotfix PR (packaging bug — see `specs/release.md` §
+Hotfix Releases).
 
 ## Common Pitfalls
 
