@@ -18,7 +18,7 @@ name = "yolop"
 path = "src/main.rs"
 
 [dependencies]
-agent-client-protocol = "1.0.0"
+agent-client-protocol = "1.0.1"
 anyhow = "1.0"
 ast-grep-core = "0.44"
 ast-grep-language = { version = "0.44", default-features = false, features = [
@@ -35,7 +35,7 @@ ast-grep-language = { version = "0.44", default-features = false, features = [
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 crossterm = "0.29"
 dirs = "6"
 eventsource-stream = "0.2"
@@ -47,13 +47,13 @@ ratatui = "0.30.2"
 # Already in the tree via the everruns driver crates; used directly only for
 # the OpenAI-compatible `GET <base>/models` discovery fallback.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
-ratatui-textarea = "0.9.1"
+ratatui-textarea = "0.9.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
 toml = "1"
 textwrap = "0.16"
-tokio = { version = "1.50", features = ["full"] }
+tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
@@ -77,18 +77,18 @@ tree-sitter-zig = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-everruns-anthropic = "0.17.1"
-everruns-core = "0.17.1"
-everruns-openai = "0.17.1"
+everruns-anthropic = "0.17.3"
+everruns-core = "0.17.3"
+everruns-openai = "0.17.3"
 # OpenRouter's first-class driver was split out of everruns-openai into its own
 # crate in 0.13.0; register it alongside openai to keep DriverId::OpenRouter.
-everruns-openrouter = "0.17.1"
-everruns-local = "0.17.1"
+everruns-openrouter = "0.17.3"
+everruns-local = "0.17.3"
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
 # everruns server/worker never enable it (specs/mcp.md, upstream runtime-mcp.md D2).
-everruns-runtime = { version = "0.17.1", features = ["mcp-stdio"] }
-everruns-integrations-duckduckgo = "0.17.1"
-everruns-integrations-daytona = "0.17.1"
+everruns-runtime = { version = "0.17.3", features = ["mcp-stdio"] }
+everruns-integrations-duckduckgo = "0.17.3"
+everruns-integrations-daytona = "0.17.3"
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
