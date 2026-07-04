@@ -110,7 +110,7 @@ The schema reaches the agent two ways:
 1. An always-on pointer: `ConfigCapability::system_prompt_contribution` adds a
    compact note (settings path + "use `get_config`/`set_config` or the
    `yolop-config` skill") to every turn.
-2. The `yolop-config` built-in skill (`skills/yolop-config/SKILL.md`) is the
+2. The bundled `yolop-config` system skill is the
    detailed, on-demand reference. It instructs the agent to read the live schema
    via `get_config` rather than duplicating key lists, and points at the
    adjacent surfaces (`memory`, `yolop-hooks`, `/setup`).

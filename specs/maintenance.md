@@ -51,8 +51,8 @@ Deferred items are not failures. Untracked ones are.
 
 A feature is not release-ready merely because one surface exists. Yolop's
 surfaces are the CLI flags, the presentation model, the TUI behavior, `--print`
-output, ACP output, `specs/`, `README.md`, the test suite, and the bundled
-`skills/`. Maintenance should catch:
+output, ACP output, `specs/`, `README.md`, the test suite, and bundled system
+skills. Maintenance should catch:
 
 - flags or behavior present in `src/` but absent from `README.md` or `specs/`
 - specs or README describing behavior the binary no longer has

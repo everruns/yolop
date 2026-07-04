@@ -237,8 +237,8 @@ Implemented:
 3. `StartupInfo` includes effective hook counts; `--print` shows loaded hooks.
 4. `HooksCapability` includes the hook self-configuration tools described in
    [Natural-Language Setup](#natural-language-setup).
-5. `skills/yolop-hooks/SKILL.md` ships the self-configuration recipes used for
-   natural-language hook setup.
+5. The bundled `yolop-hooks` system skill ships the self-configuration recipes
+   used for natural-language hook setup.
 6. Tests cover merge behavior, `hooks` tools, and a scripted llmsim
    `pre_tool_use` hook that blocks a matching `bash` tool call.
 
