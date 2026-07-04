@@ -106,16 +106,18 @@ When asked to release, the agent:
    changelog excerpt and a **publish-readiness report** (which dry-runs ran,
    what the registry currently shows).
 
-8. **Monitor post-merge publishing.** After the human squash-merges the PR:
+8. **Monitor and verify post-merge publishing.** After the human
+   squash-merges the PR:
    - Watch `release.yml` complete and confirm tag `vX.Y.Z` + the GitHub
      Release were created.
    - Watch `publish.yml` and `cli-binaries.yml` to completion. Surface any
      failure immediately.
-   - Run post-release verification (see below) and report which targets show
-     the new version.
-   - Only declare the release **shipped** when both crates.io and the
-     Homebrew tap report `X.Y.Z`. If one fails, open a hotfix PR rather
-     than leaving the release half-published.
+   - Run post-release verification (see below) yourself and report which
+     targets show the new version. Workflow success is not enough: the agent
+     must independently check crates.io and the Homebrew tap after merge.
+   - Only declare the release **shipped** when crates.io reports `X.Y.Z` and
+     the Homebrew tap formula points at `vX.Y.Z`. If one fails, open a hotfix
+     PR rather than leaving the release half-published.
 
 ## CI Automation
 
@@ -167,7 +169,9 @@ The agent verifies before opening the release PR:
 
 ## Post-Release Verification
 
-Run after both publish workflows finish:
+Run after both publish workflows finish. This is a required post-merge gate;
+the release is not complete until crates.io serves `X.Y.Z` and the Homebrew
+tap formula points at `vX.Y.Z`.
 
 ```bash
 # crates.io
