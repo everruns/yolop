@@ -92,10 +92,11 @@ a labeled VFS root that yolop's file store maps to a **real on-disk directory**:
     skill that tells the agent how to inspect, install, search for, and upgrade
     skills, including reconstructing `npx skill add ...` style installs by
     fetching source files directly and writing them with `write_skill`.
-12. **User guide is bundled.** Yolop ships a `yolop` system skill (`skills/yolop/SKILL.md`)
-    as the durable reference for slash commands, keyboard shortcuts, CLI flags,
-    and session controls. `/help` in the TUI summarizes the live command registry
-    and shortcuts; the skill carries the full guide for conversational help.
+12. **User guide is bundled.** Yolop ships a `yolop` system skill from the
+    private bundled asset tree as the durable reference for slash commands,
+    keyboard shortcuts, CLI flags, and session controls. `/help` in the TUI
+    summarizes the live command registry and shortcuts; the skill carries the
+    full guide for conversational help.
 
 ## Ownership Boundary
 

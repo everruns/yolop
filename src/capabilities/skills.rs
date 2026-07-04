@@ -51,9 +51,10 @@ pub const GLOBAL_SKILLS_VFS: &str = "/.yolop/global-skills";
 /// materialized system skills directory.
 pub const SYSTEM_SKILLS_VFS: &str = "/.yolop/system-skills";
 
-/// System skills shipped inside the binary. The crate-root `skills/` directory is
-/// embedded at compile time so a `cargo install` / Homebrew build carries them.
-static SYSTEM_SKILLS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/skills");
+/// System skills shipped inside the binary. Keep the source tree away from
+/// well-known skill discovery paths so it cannot be mistaken for a writable
+/// workspace/global skill location.
+static SYSTEM_SKILLS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/src/bundled/system-skills");
 
 /// The host directories backing each skill scope for a session.
 #[derive(Clone, Debug)]
@@ -151,11 +152,11 @@ pub fn global_skills_dir() -> Option<PathBuf> {
 /// System skills directory, materializing the embedded skills first.
 ///
 /// Honors `YOLOP_SYSTEM_SKILLS_DIR` (used verbatim). Otherwise the embedded
-/// `skills/` tree is written to `<data_dir>/yolop/system-skills` and that path is
-/// returned. Materialization is idempotent and concurrency-safe (atomic per-file
-/// writes, skipping files already present with identical bytes), so parallel
-/// processes/tests do not race. Any failure is non-fatal: it logs and returns
-/// `None`, leaving the system scope unavailable.
+/// bundled system-skill tree is written to `<data_dir>/yolop/system-skills` and
+/// that path is returned. Materialization is idempotent and concurrency-safe
+/// (atomic per-file writes, skipping files already present with identical
+/// bytes), so parallel processes/tests do not race. Any failure is non-fatal:
+/// it logs and returns `None`, leaving the system scope unavailable.
 pub fn system_skills_dir() -> Option<PathBuf> {
     if let Ok(value) = std::env::var(SYSTEM_SKILLS_DIR_ENV)
         && !value.is_empty()
