@@ -514,6 +514,11 @@ fn tool_started_label(data: &ToolStartedData) -> String {
 
 /// One-line summary of a tool result, used in the transcript and `--print` output.
 pub fn summarize_tool_result(data: &ToolCompletedData) -> String {
+    if !data.success
+        && let Some(err) = &data.error
+    {
+        return format!("error: {}", first_line(err, 120));
+    }
     let Some(v) = result_value(data) else {
         if let Some(err) = &data.error {
             return format!("error: {}", first_line(err, 120));
@@ -711,5 +716,29 @@ mod tests {
         data.display_name = None;
 
         assert_eq!(tool_started_label(&data), "tool_search");
+    }
+
+    #[test]
+    fn failed_unknown_tool_with_result_payload_still_summarizes_error() {
+        let data = ToolCompletedData {
+            tool_call_id: "call-1".into(),
+            tool_name: "web_fetch".into(),
+            tool_call_fingerprint: None,
+            tool_result_fingerprint: None,
+            display_name: Some("Web Fetch".into()),
+            success: false,
+            status: "error".into(),
+            result: Some(vec![ContentPart::text(json!({ "ok": false }).to_string())]),
+            error: Some("Invalid URL: must start with http:// or https://".into()),
+            duration_ms: None,
+            capability_id: None,
+            capability_name: None,
+            narration: None,
+        };
+
+        assert_eq!(
+            summarize_tool_result(&data),
+            "error: Invalid URL: must start with http:// or https://"
+        );
     }
 }

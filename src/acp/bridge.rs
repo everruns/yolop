@@ -393,6 +393,39 @@ mod tests {
     }
 
     #[test]
+    fn tool_completed_failure_with_result_payload_still_includes_error_content() {
+        let mut t = Translator::new();
+        let updates = t.on_event(&event(EventData::ToolCompleted(ToolCompletedData {
+            tool_call_id: "call_1".into(),
+            tool_name: "web_fetch".into(),
+            tool_call_fingerprint: None,
+            tool_result_fingerprint: None,
+            display_name: Some("Web Fetch".into()),
+            success: false,
+            status: "error".into(),
+            result: Some(vec![ContentPart::text(json!({ "ok": false }).to_string())]),
+            error: Some("Invalid URL: must start with http:// or https://".into()),
+            duration_ms: None,
+            capability_id: None,
+            capability_name: None,
+            narration: None,
+        })));
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            SessionUpdate::ToolCallUpdate(update) => {
+                assert_eq!(update.fields.status, Some(ToolCallStatus::Failed));
+                assert_eq!(
+                    update.fields.content,
+                    Some(vec![protocol::content(
+                        "error: Invalid URL: must start with http:// or https://"
+                    )])
+                );
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn write_todos_started_becomes_plan() {
         let mut t = Translator::new();
         let updates = t.on_event(&event(EventData::ToolStarted(ToolStartedData {
