@@ -856,4 +856,93 @@ mod tests {
             .expect("serve task joins")
             .expect("serve returns Ok");
     }
+
+    /// A background task that finishes while the ACP session is idle must wake
+    /// the agent: the per-session poller drives an unsolicited `[automatic]`
+    /// turn without the client sending another prompt. This is the ACP analogue
+    /// of the TUI's idle proactive wake. See specs/background.md.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn background_task_completion_wakes_agent() {
+        // Turn 1 (user prompt): start a fast background task. Turn 2 closes that
+        // turn. Turn 3 is the response the poller's wake turn asks for once the
+        // task finishes — its text proves the agent was driven with no new
+        // client prompt.
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "background_run".to_string(),
+                arguments: json!({ "command": "true", "label": "ci" }),
+                id: None,
+            }]),
+            SimTurn::Assistant("started ci watch".to_string()),
+            SimTurn::Assistant("reviewed background result".to_string()),
+        ]);
+
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        let (mut client_w, mut reader, _server) = start_raw_server(config, sessions);
+
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd.to_str().unwrap(), "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string();
+
+        // Drive the user prompt turn to completion (it starts the background
+        // task and streams "started ci watch").
+        send_json(
+            &mut client_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "watch ci" }] },
+            }),
+        )
+        .await;
+        let (_prompt_response, prompt_updates) = collect_until_response_id(&mut reader, 2).await;
+        assert!(
+            update_texts(&prompt_updates, "agent_message_chunk")
+                .iter()
+                .any(|t| t.contains("started ci watch")),
+            "expected the user turn to run, got: {prompt_updates:?}"
+        );
+
+        // Now the `true` task has finished. Without sending another prompt, the
+        // idle poller must drive a wake turn; watch for its streamed text.
+        let woke = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let msg = next_json(&mut reader).await;
+                if msg.get("method").and_then(Value::as_str) != Some("session/update") {
+                    continue;
+                }
+                if let Some(text) = msg
+                    .get("params")
+                    .and_then(|p| p.get("update"))
+                    .and_then(|u| u.get("content"))
+                    .and_then(|c| c.get("text"))
+                    .and_then(Value::as_str)
+                    && text.contains("reviewed background result")
+                {
+                    return true;
+                }
+            }
+        })
+        .await;
+        assert!(
+            woke.unwrap_or(false),
+            "expected a proactive wake turn after the background task finished"
+        );
+    }
 }

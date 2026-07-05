@@ -185,18 +185,28 @@ starts a turn so the agent reacts (reads the result, continues, or reports)
 without a user prompt.
 
 - The registry tracks which terminal tasks have been reported
-  (`drain_finished_for_wake`); the TUI's idle event loop polls it and, on a
-  non-empty result, prints a one-line notice and starts a turn with a synthetic
-  `[automatic]` prompt (`wake_prompt`). The prompt is explicitly framed as *not*
-  a user message and points at `background_output`.
+  (`drain_finished_for_wake`); a host polls it and, on a non-empty result,
+  surfaces a one-line notice and starts a turn with a synthetic `[automatic]`
+  prompt (`wake_prompt`). The prompt is explicitly framed as *not* a user message
+  and points at `background_output`.
 - It only fires when idle, so it never interrupts an in-flight turn; each task
   wakes at most once; and tasks restored from a previous run are pre-marked, so
   a resumed session never wakes for work that finished before the restart.
 - Opt-out: the `proactive_wake` setting (on by default) disables the auto-turn.
-  With it off, a finished task still prints a one-line notice (drained once) but
-  the agent waits for the user's next prompt.
-- Scope: the interactive TUI only (the loop that owns turn submission).
-  `--print` is one-shot and ACP turns are editor-driven, so neither auto-wakes.
+  With it off, a finished task still surfaces a one-line notice (drained once)
+  but the agent waits for the user's next prompt.
+- Hosts: two poll the registry.
+  - The **TUI** polls from its idle event loop
+    (`App::maybe_wake_for_background`).
+  - The **ACP** server, whose request/response loop only runs turns while a
+    client prompt is in flight, instead spawns a per-session poller
+    (`spawn_wake_poller`, every `WAKE_POLL_INTERVAL`). When idle — it takes the
+    session's `turn_lock` with `try_lock`, so it never overlaps a client prompt
+    (which holds the same lock) — it drains finished tasks and drives the wake
+    turn, streaming it to the client like any other turn. The poller stops when
+    the connection winds down, and `serve` joins it on teardown so the session's
+    runtime is fully released before it returns.
+  - `--print` is one-shot, so it does not auto-wake.
 
 ## Phased plan
 
