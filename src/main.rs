@@ -172,25 +172,22 @@ struct IntoCommand {
 
 #[derive(Subcommand, Debug)]
 enum IntoTarget {
+    /// Configure Paseo to launch yolop as a custom ACP provider.
+    Paseo(PaseoIntoArgs),
     /// Configure Zed to launch yolop as a custom ACP agent.
     Zed(ZedIntoArgs),
 }
 
 #[derive(Args, Debug)]
-struct ZedIntoArgs {
-    /// Zed settings file to update (default: ~/.config/zed/settings.json).
-    #[arg(long = "settings")]
-    settings_path: Option<PathBuf>,
-
-    /// Agent server name to write under `agent_servers`.
-    #[arg(long, default_value = "yolop")]
-    name: String,
-
-    /// Command path Zed should spawn (default: this yolop executable).
+struct PaseoIntoArgs {
+    /// Replace an existing `agents.providers.yolop` entry instead of preserving its env/extra fields.
     #[arg(long)]
-    command: Option<PathBuf>,
+    force: bool,
+}
 
-    /// Replace an existing `agent_servers.<name>` entry instead of preserving its env/extra fields.
+#[derive(Args, Debug)]
+struct ZedIntoArgs {
+    /// Replace an existing `agent_servers.yolop` entry instead of preserving its env/extra fields.
     #[arg(long)]
     force: bool,
 }
@@ -505,14 +502,46 @@ fn run_command(command: Commands) -> Result<()> {
         }
         Commands::Worktree(args) => run_worktree_command(args.command),
         Commands::Into(into) => match into.target {
+            IntoTarget::Paseo(args) => {
+                let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));
+                let result = into::into_paseo(into::PaseoIntoOptions {
+                    settings_path: None,
+                    agent_name: "yolop".to_string(),
+                    command,
+                    force: args.force,
+                })?;
+                match result.status {
+                    into::IntoStatus::Unchanged => {
+                        println!(
+                            "yolop: Paseo already has `{}` ACP provider configured at {}",
+                            result.agent_name,
+                            result.settings_path.display()
+                        );
+                    }
+                    into::IntoStatus::Created => {
+                        println!(
+                            "yolop: added `{}` ACP provider to {}",
+                            result.agent_name,
+                            result.settings_path.display()
+                        );
+                    }
+                    into::IntoStatus::Updated => {
+                        println!(
+                            "yolop: updated `{}` ACP provider in {}",
+                            result.agent_name,
+                            result.settings_path.display()
+                        );
+                    }
+                }
+                println!("yolop: Paseo command: {} --acp", result.command);
+                println!("yolop: restart the Paseo daemon to reload this configuration");
+                Ok(())
+            }
             IntoTarget::Zed(args) => {
-                let command = match args.command {
-                    Some(path) => path,
-                    None => std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop")),
-                };
+                let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));
                 let result = into::into_zed(into::ZedIntoOptions {
-                    settings_path: args.settings_path,
-                    agent_name: args.name,
+                    settings_path: None,
+                    agent_name: "yolop".to_string(),
                     command,
                     force: args.force,
                 })?;

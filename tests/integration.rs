@@ -105,17 +105,13 @@ fn assert_version_output(stdout: &str) {
 #[test]
 fn into_zed_command_writes_acp_settings() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let settings = tmp.path().join("zed/settings.json");
+    let settings = tmp.path().join(".config/zed/settings.json");
+    let binary = yolop_binary();
 
-    let output = Command::new(yolop_binary())
-        .args([
-            "into",
-            "zed",
-            "--settings",
-            settings.to_str().unwrap(),
-            "--command",
-            "/tmp/yolop",
-        ])
+    let output = Command::new(&binary)
+        .args(["into", "zed"])
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path().join(".config"))
         .output()
         .expect("spawn yolop into zed");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -131,10 +127,48 @@ fn into_zed_command_writes_acp_settings() {
     let value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(settings).expect("settings")).unwrap();
     assert_eq!(value["agent_servers"]["yolop"]["type"], "custom");
-    assert_eq!(value["agent_servers"]["yolop"]["command"], "/tmp/yolop");
+    assert_eq!(
+        value["agent_servers"]["yolop"]["command"],
+        serde_json::Value::String(binary.to_string_lossy().into_owned())
+    );
     assert_eq!(
         value["agent_servers"]["yolop"]["args"],
         serde_json::json!(["--acp"])
+    );
+}
+
+#[test]
+fn into_paseo_command_writes_acp_provider() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let settings = tmp.path().join(".paseo/config.json");
+    let binary = yolop_binary();
+
+    let output = Command::new(&binary)
+        .args(["into", "paseo"])
+        .env("HOME", tmp.path())
+        .output()
+        .expect("spawn yolop into paseo");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "into paseo failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("added `yolop` ACP provider"),
+        "unexpected into stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("restart the Paseo daemon to reload this configuration"),
+        "missing restart hint: {stdout}"
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(settings).expect("settings")).unwrap();
+    assert_eq!(value["agents"]["providers"]["yolop"]["extends"], "acp");
+    assert_eq!(value["agents"]["providers"]["yolop"]["label"], "yolop");
+    assert_eq!(
+        value["agents"]["providers"]["yolop"]["command"],
+        serde_json::json!([binary.to_string_lossy(), "--acp"])
     );
 }
 
