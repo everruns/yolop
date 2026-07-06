@@ -1772,6 +1772,10 @@ pub struct BuiltRuntime {
     /// show a live task count in the status bar (the same registry the
     /// `background` capability owns).
     pub background: Arc<BackgroundRegistry>,
+    /// Receiver for everruns background-task completion signals, delivered via
+    /// the wake seam (`background_wake`). The host (TUI/ACP) drains it and runs
+    /// a streamed turn so the agent reacts to finished `spawn_background` work.
+    pub background_wake: crate::background_wake::WakeReceiver,
     /// Shared repointable workspace disk for host-path tools (`bash`, `!shell`).
     pub workspace_host: Arc<WorkspaceHost>,
     /// Shared Everruns session task registry, backed by `everruns-local`. The
@@ -2204,6 +2208,16 @@ pub async fn build_with_options(
     let local_backends = LocalBackends::new(local_profile, base_backends)
         .context("initialize everruns-local backend stores")?;
     let task_registry: Arc<dyn SessionTaskRegistry> = local_backends.task_registry.clone();
+    // Install the wake seam: a `LocalPlatformStore` whose `send_message`
+    // enqueues everruns background-task completion signals onto `background_wake`
+    // for the host to run as a streamed turn (see `background_wake` and
+    // specs/background.md). Without a platform store, `spawn_background`'s
+    // completion signal is a silent no-op and finished background work never
+    // reaches the agent.
+    let (background_wake_tx, background_wake_rx) = mpsc::unbounded_channel::<String>();
+    let local_backends = local_backends.with_platform_runner(Arc::new(
+        crate::background_wake::WakeRunner::new(background_wake_tx),
+    ));
     let backends = local_backends.runtime_backends;
     // Shared between `ModelState` (for banner labels) and
     // `SetupCapability` (which mutates it on a successful `/setup`).
@@ -2545,6 +2559,7 @@ pub async fn build_with_options(
         settings,
         ui_rx,
         background: background_registry,
+        background_wake: background_wake_rx,
         workspace_host,
         task_registry,
         goal_store,

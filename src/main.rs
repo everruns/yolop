@@ -4,6 +4,7 @@
 
 mod acp;
 mod app;
+mod background_wake;
 mod capabilities;
 mod capability_settings;
 mod clipboard_paste;

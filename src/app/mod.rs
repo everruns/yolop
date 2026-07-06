@@ -131,6 +131,10 @@ pub struct App {
     /// Legacy Yolop background registry. Kept during migration for task types
     /// that have not moved to Everruns `session_tasks` yet.
     background: Arc<crate::capabilities::BackgroundRegistry>,
+    /// Wake channel for everruns `spawn_background` completions. Drained while
+    /// idle to auto-start a turn — the everruns-native counterpart to the
+    /// legacy registry's `drain_finished_for_wake`. See specs/background.md.
+    background_wake: crate::background_wake::WakeReceiver,
     /// Everruns session-task registry used by `spawn_background`; the TUI reads
     /// it for the background status segment and panel.
     task_registry: Arc<dyn SessionTaskRegistry>,
@@ -336,6 +340,7 @@ impl App {
             models_tx,
             models_rx,
             background: runtime.background,
+            background_wake: runtime.background_wake,
             task_registry: runtime.task_registry,
             session_tasks: Vec::new(),
             session_tasks_error: None,
@@ -674,7 +679,12 @@ impl App {
 
         // 3b) proactive wake: when background tasks finish while the session is
         // idle, auto-start a turn so the agent reacts without a user prompt.
+        // Both the legacy registry wake and the everruns `spawn_background` wake
+        // seam run during the migration.
         if self.maybe_wake_for_background() {
+            return Ok(());
+        }
+        if self.maybe_wake_from_background_channel() {
             return Ok(());
         }
 
@@ -1066,6 +1076,31 @@ impl App {
         ));
         let prompt = crate::capabilities::background::wake_prompt(&finished);
         self.start_turn(prompt);
+        true
+    }
+
+    /// everruns-native proactive wake: drain any `spawn_background` completion
+    /// signals delivered over [`crate::background_wake`] and, while idle, start a
+    /// turn so the agent reacts. The everruns counterpart to
+    /// [`Self::maybe_wake_for_background`]; both run during the migration. Only
+    /// the first pending message wakes a turn (draining the rest would lose
+    /// them); the remainder wake on subsequent idle ticks. Returns true if it
+    /// started a turn.
+    fn maybe_wake_from_background_channel(&mut self) -> bool {
+        if self.busy || self.rx.is_some() || self.setup.is_some() {
+            return false;
+        }
+        let Ok(message) = self.background_wake.try_recv() else {
+            return false;
+        };
+        if !self.settings.snapshot().proactive_wake_enabled() {
+            self.push_system(
+                "✓ background task finished — see /background (proactive wake off)".to_string(),
+            );
+            return false;
+        }
+        self.push_system("↻ background task finished — waking agent to review".to_string());
+        self.start_turn(crate::background_wake::frame_wake_prompt(&message));
         true
     }
 

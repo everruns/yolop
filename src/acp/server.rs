@@ -32,6 +32,7 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use crate::background_wake::{WakeReceiver, frame_wake_prompt};
 use crate::capabilities::background::{BackgroundRegistry, wake_prompt};
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 use crate::settings::SettingsStore;
@@ -432,10 +433,67 @@ fn register_session<F: RuntimeFactory>(
         .unwrap()
         .insert(acp_id.clone(), session.clone());
 
-    let poller = spawn_wake_poller(session, peer.clone(), server.shutdown.clone());
-    server.poller_handles.lock().unwrap().push(poller);
+    let poller = spawn_wake_poller(session.clone(), peer.clone(), server.shutdown.clone());
+    let wake_drain = spawn_background_wake_drain(
+        session,
+        peer.clone(),
+        built.background_wake,
+        server.shutdown.clone(),
+    );
+    {
+        let mut handles = server.poller_handles.lock().unwrap();
+        handles.push(poller);
+        handles.push(wake_drain);
+    }
 
     acp_id
+}
+
+/// Drain this session's everruns `spawn_background` completion wakes and drive a
+/// streamed turn for each. The everruns-native counterpart to
+/// [`spawn_wake_poller`] (which watches the legacy yolop registry); both run
+/// during the migration. Unlike the poller this is push-based — it awaits the
+/// wake channel rather than polling — and it takes the same `turn_lock` so a
+/// wake turn never overlaps a client prompt. Stops on connection teardown or
+/// when the runtime (and its wake sender) drops. See specs/background.md.
+fn spawn_background_wake_drain(
+    session: Arc<Session>,
+    peer: Arc<Peer>,
+    mut wake_rx: WakeReceiver,
+    mut shutdown: watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let message = tokio::select! {
+                _ = shutdown.changed() => break,
+                recv = wake_rx.recv() => match recv {
+                    Some(message) => message,
+                    None => break,
+                },
+            };
+            if *shutdown.borrow() {
+                break;
+            }
+            // Serialize with client prompts and the legacy poller's wake turns.
+            let _turn = session.turn_lock.lock().await;
+            if !session.settings.snapshot().proactive_wake_enabled() {
+                peer.session_update(
+                    &session.acp_id,
+                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                        "✓ background task finished — see /background (proactive wake off)",
+                    )),
+                );
+                continue;
+            }
+            peer.session_update(
+                &session.acp_id,
+                SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                    "↻ background task finished — waking agent to review",
+                )),
+            );
+            run_prompt(peer.clone(), session.clone(), frame_wake_prompt(&message)).await;
+        }
+    })
 }
 
 /// Spawn this session's background wake poller. The ACP loop only drives a turn

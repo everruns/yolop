@@ -945,4 +945,92 @@ mod tests {
             "expected a proactive wake turn after the background task finished"
         );
     }
+
+    /// The everruns-native path: a `spawn_background` run that finishes while the
+    /// ACP session is idle must wake the agent through the platform-store wake
+    /// seam (`background_wake`), with no client prompt. Proves the seam delivers
+    /// everruns background completions, not just the legacy yolop registry.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_background_completion_wakes_agent() {
+        // Turn 1: spawn_background wrapping bash `true`. Turn 2 closes the user
+        // turn. Turn 3 is what the seam-driven wake turn asks for once the run
+        // completes and signals the session.
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "spawn_background".to_string(),
+                arguments: json!({
+                    "tool": "bash",
+                    "args": { "command": "true" },
+                    "signal_on_completion": true,
+                }),
+                id: None,
+            }]),
+            SimTurn::Assistant("spawned background bash".to_string()),
+            SimTurn::Assistant("reviewed spawn_background result".to_string()),
+        ]);
+
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        let (mut client_w, mut reader, _server) = start_raw_server(config, sessions);
+
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd.to_str().unwrap(), "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string();
+
+        send_json(
+            &mut client_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "run something in the background" }] },
+            }),
+        )
+        .await;
+        let (_prompt_response, prompt_updates) = collect_until_response_id(&mut reader, 2).await;
+        assert!(
+            update_texts(&prompt_updates, "agent_message_chunk")
+                .iter()
+                .any(|t| t.contains("spawned background bash")),
+            "expected the user turn to run spawn_background, got: {prompt_updates:?}"
+        );
+
+        let woke = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let msg = next_json(&mut reader).await;
+                if msg.get("method").and_then(Value::as_str) != Some("session/update") {
+                    continue;
+                }
+                if let Some(text) = msg
+                    .get("params")
+                    .and_then(|p| p.get("update"))
+                    .and_then(|u| u.get("content"))
+                    .and_then(|c| c.get("text"))
+                    .and_then(Value::as_str)
+                    && text.contains("reviewed spawn_background result")
+                {
+                    return true;
+                }
+            }
+        })
+        .await;
+        assert!(
+            woke.unwrap_or(false),
+            "expected a proactive wake turn after spawn_background finished (via the wake seam)"
+        );
+    }
 }
