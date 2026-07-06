@@ -19,12 +19,13 @@ benchmark = "harness_basic"
 # A preset only subsets the declared grid: targets/samples/evals/tag, plus
 # `axes` to restrict the secondary axes (harness, effort).
 
-# SMOKE — offline plumbing: every sample through both harness variants on the
-# bundled llmsim provider. No API key, no cost; functional checks report N/A
-# (llmsim replies with a canned message), succeeded/budget scorers stay real.
-#   mira run --preset smoke
+# SMOKE — a cheap sanity check: the two `smoke`-tagged samples on one model,
+# default effort, both harness variants (4 cases). Needs ANTHROPIC_API_KEY;
+# without any provider key every target is unavailable and a run just skips.
+#   doppler run -- mira run --preset smoke
 [presets.smoke]
-targets = ["llmsim"]
+tag = "smoke"
+targets = ["anthropic/claude-sonnet-4-5"]
 axes = { effort = ["default"] }
 
 # HARNESS-COMPARE — the study's core purpose: the same samples and model across

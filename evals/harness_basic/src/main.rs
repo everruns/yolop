@@ -6,7 +6,7 @@
 //! seeded workdir per case, and mines the session `events.jsonl` for metrics.
 //!
 //! The matrix is samples × three axes:
-//!   * **target** — provider models (llmsim offline, Anthropic, OpenAI, OpenRouter)
+//!   * **target** — provider models (Anthropic, OpenAI, OpenRouter)
 //!   * **effort** — `--reasoning-effort` (`default` = yolop's per-model default)
 //!   * **harness** — yolop configuration variants (out-of-the-box, ast-grep off, …),
 //!     applied as a per-case `settings.toml` in an isolated `XDG_CONFIG_HOME`
@@ -31,8 +31,7 @@ use serde_json::{Value, json};
 // ============================================================================
 
 /// `--reasoning-effort` values. `default` omits the flag so yolop applies the
-/// model profile's own default (and is the only value llmsim accepts — the
-/// subject also skips the flag there, since offline llmsim rejects it).
+/// model profile's own default.
 const EFFORTS: &[&str] = &["default", "low", "high"];
 
 /// One yolop configuration under test. `settings` is TOML appended to the
@@ -67,12 +66,11 @@ fn settings_for_variant(name: &str) -> Option<String> {
         .map(|v| format!("{BASE_SETTINGS}{}", v.settings))
 }
 
-/// The model matrix. Cloud targets gate on their provider key env var and are
-/// skipped (not failed) when it is missing; `llmsim` is yolop's bundled
-/// offline provider, so a keyless run still exercises the full plumbing.
+/// The model matrix. Every target gates on its provider key env var and is
+/// skipped (not failed) when it is missing, so a keyless `mira run` is a
+/// no-op rather than a wall of failures.
 fn targets() -> Vec<Target> {
     vec![
-        Target::new("llmsim", "llmsim", "llmsim-yolop").meta("purpose", "offline plumbing"),
         Target::anthropic("claude-sonnet-4-5"),
         Target::anthropic("claude-opus-4-8"),
         Target::openai("gpt-5.5"),
@@ -214,13 +212,9 @@ fn dataset() -> Dataset {
 
 /// Grades each sample against its own `checks` metadata (file contents captured
 /// from the workdir after the run, and/or the final response). N/A — not a
-/// failure — on offline llmsim cases (canned answer; only plumbing is checked)
-/// and on samples that declare no checks.
+/// failure — on samples that declare no checks.
 fn checks_scorer() -> Box<dyn Scorer> {
     scorer("checks", |sample, t| {
-        if t.metadata.get("provider").and_then(Value::as_str) == Some("llmsim") {
-            return Score::na("checks", "offline llmsim run; plumbing only");
-        }
         let Some(specs) = sample.metadata.get("checks").and_then(Value::as_array) else {
             return Score::na("checks", "sample declares no checks");
         };
@@ -531,9 +525,8 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     if !cx.target.model.is_empty() {
         cmd.arg("--model").arg(&cx.target.model);
     }
-    // `default` leaves yolop's per-model default effort in place; llmsim
-    // rejects the flag outright, so its cases always run without it.
-    if effort != "default" && cx.target.provider != "llmsim" {
+    // `default` leaves yolop's per-model default effort in place.
+    if effort != "default" {
         cmd.arg("--reasoning-effort").arg(&effort);
     }
     cmd.arg("--session")
@@ -823,12 +816,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn checks_scorer_is_na_offline_and_without_checks() {
-        let s = Sample::new("a", "x").meta("checks", json!([{"response_contains": ["z"]}]));
-        let mut t = graded_transcript();
-        t.metadata.insert("provider".into(), json!("llmsim"));
-        assert!(checks_scorer().score(&s, &t).await.na);
-
+    async fn checks_scorer_is_na_without_checks() {
         let unchecked = Sample::new("b", "x");
         assert!(
             checks_scorer()
@@ -839,29 +827,15 @@ mod tests {
     }
 
     #[test]
-    fn effort_flag_rules() {
-        // The subject omits --reasoning-effort for `default` and for llmsim;
-        // encode the rule here so a refactor can't silently drop it.
-        let skip = |effort: &str, provider: &str| effort == "default" || provider == "llmsim";
-        assert!(skip("default", "openai"));
-        assert!(skip("low", "llmsim"));
-        assert!(!skip("high", "openai"));
-        assert!(!skip("low", "anthropic"));
-    }
-
-    #[test]
     fn matrix_shape() {
         let eval = basic_coding();
-        assert_eq!(eval.targets.len(), 5);
+        assert_eq!(eval.targets.len(), 4);
         // harness × effort axis cross-product
         assert_eq!(
             eval.axis_combinations().len(),
             HARNESS_VARIANTS.len() * EFFORTS.len()
         );
-        assert!(
-            eval.targets
-                .iter()
-                .any(|t| t.provider == "llmsim" && t.available)
-        );
+        // Every target is a key-gated cloud model; none is unconditionally on.
+        assert!(eval.targets.iter().all(|t| !t.is_sim()));
     }
 }

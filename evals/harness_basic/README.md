@@ -13,19 +13,33 @@ the runtime path; the TUI is never involved).
 
 ## The matrix
 
-Three axes, crossed with 6 samples (~small edit / refactor / search tasks):
+Three axes, crossed with 6 samples (small edit / refactor / search tasks):
 
 | Axis | Values | Where |
 |------|--------|-------|
-| **target** (model) | `llmsim` (offline) · `anthropic/claude-sonnet-4-5` · `anthropic/claude-opus-4-8` · `openai/gpt-5.5` · `openrouter/z-ai/glm-5.2` | `targets()` in `src/main.rs` |
+| **target** (model) | `anthropic/claude-sonnet-4-5` · `anthropic/claude-opus-4-8` · `openai/gpt-5.5` · `openrouter/z-ai/glm-5.2` | `targets()` in `src/main.rs` |
 | **effort** | `default` (yolop's per-model default; no flag) · `low` · `high` | `EFFORTS` |
 | **harness** | `default` (out-of-the-box yolop) · `no-ast-grep` | `HARNESS_VARIANTS` |
 
-Cloud targets gate on their key env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-`OPENROUTER_API_KEY`) and are *skipped* when it's missing, so a keyless run
-stays green on `llmsim`. Offline `llmsim` replies with a canned message, so its
-cases verify plumbing only: the functional `checks` scorer reports **N/A**
-there (not a failure), while `succeeded` and the budget scorers stay real.
+Every target gates on its provider key env var (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `OPENROUTER_API_KEY`) and is *skipped* (not failed) when the
+key is missing — a keyless run is a no-op, not a wall of red.
+
+## Samples — what each case tests
+
+Small, deterministic, seeded-workdir tasks; each declares its own pass
+criteria (see [Scoring](#scoring)). Together they cover the harness surfaces a
+feature change is most likely to move: targeted edits, multi-file
+search/refactor, and read-only code navigation.
+
+| Sample | Seed | Task | Passes when | Exercises |
+|--------|------|------|-------------|-----------|
+| `add-fn` [smoke] | Rust lib with empty `src/lib.rs` | Add `pub fn greet()` returning `"hello, yolop"` | `src/lib.rs` contains `fn greet` and `hello, yolop` | basic read → edit loop |
+| `fix-off-by-one` | `sum()` that drops the last element via `take(len-1)` | Fix it to sum every element | `src/lib.rs` keeps `fn sum`, no longer contains `take(` | bug comprehension, minimal in-place fix |
+| `rename-across-files` | Python: `fetcher.py` defines `fetch_records`; `app.py`/`report.py` import + call it | Rename to `load_records` everywhere | all 3 files contain the new name, none contains the old | project-wide search + consistent multi-file edit (where ast-grep/grep should shine) |
+| `find-constant` [smoke] | 3 Python files; `MAGIC_TIMEOUT_MS = 7321` buried in `settings/defaults.py` | Answer its value, number only | final response contains `7321` | read-only navigation/search, no edits |
+| `implement-todo` | JS `clamp()` stub that throws, with a TODO spec comment | Implement per the TODO, remove the comment | `utils.js` has `function clamp` + `module.exports`, no `TODO`/`not implemented` | spec-comment comprehension, stub completion |
+| `add-module` | Rust lib with one existing fn | Create `src/util.rs` with `pub fn double`, wire `pub mod util;` into lib.rs | both files contain the required items | new-file creation + wiring across files |
 
 ### Harness variants — the point of this study
 
@@ -102,7 +116,9 @@ to `target/release/yolop`, then `target/debug/yolop`).
 cd evals/harness_basic     # so mira.toml is found; runs archive to ./results
 
 mira list                  # the eval, samples, targets, axes
-mira run --preset smoke    # offline: llmsim × both harness variants, no key
+
+# Cheap sanity check: 2 smoke-tagged samples × both harness variants, one model.
+doppler run -- mira run --preset smoke
 
 # The core loop: A/B the harness variants on one model.
 doppler run -- mira run --preset harness-compare --group-by harness
@@ -117,12 +133,12 @@ doppler run -- mira run --preset models --group-by target
 doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --samples add-fn
 ```
 
-| Preset | Purpose | Targets | Axes |
-|--------|---------|---------|------|
-| `smoke` | offline plumbing check, keyless & free | llmsim | effort=default |
-| `harness-compare` | **A/B yolop configurations** | claude-sonnet-4-5 | effort=default, all harness |
-| `effort-compare` | effort sweep | gpt-5.5 | harness=default, all efforts |
-| `models` | model sweep, out-of-the-box yolop | all | harness=default, effort=default |
+| Preset | Purpose | Samples | Targets | Axes |
+|--------|---------|---------|---------|------|
+| `smoke` | cheap sanity check (4 cases) | tag `smoke` | claude-sonnet-4-5 | effort=default, all harness |
+| `harness-compare` | **A/B yolop configurations** | all | claude-sonnet-4-5 | effort=default, all harness |
+| `effort-compare` | effort sweep | all | gpt-5.5 | harness=default, all efforts |
+| `models` | model sweep, out-of-the-box yolop | all | all | harness=default, effort=default |
 
 Every run archives to `results/<run_id>/` (`report.json`, `report.html`,
 `meta.json`, per-case `cases/`); resume an interrupted run with
@@ -131,10 +147,9 @@ against the selected model's supported values, so an unsupported
 model × effort combination fails that case with yolop's error — subset the
 axis rather than treating those rows as signal.
 
-**Baseline:** the committed `results/` run is the offline smoke (12/12 pass,
-llmsim, both harness variants). Verified separately: with the `no-ast-grep`
-settings applied, the `ast_grep` tool is absent from the registered toolset
-(and each case's input tokens drop by the removed schema's size).
+Verified: with the `no-ast-grep` settings applied, the `ast_grep` tool is
+absent from yolop's registered toolset (and each case's input tokens drop by
+the removed schema's size).
 
 ## Layout
 
