@@ -1,0 +1,76 @@
+{
+  "eval": "basic_coding",
+  "sample": "add-module",
+  "target": "llmsim",
+  "params": {
+    "effort": "default",
+    "harness": "default"
+  },
+  "input": [
+    "Create a new module `util` (src/util.rs) containing `pub fn double(x: i32) -> i32` that returns `2 * x`, and declare `pub mod util;` in src/lib.rs. Make the edits directly; do not ask questions."
+  ],
+  "passed": true,
+  "aggregate": 1.0,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "checks",
+      "value": 0.0,
+      "pass": false,
+      "na": true,
+      "reason": "offline llmsim run; plumbing only"
+    },
+    {
+      "scorer": "turns_within",
+      "value": 1.0,
+      "pass": true,
+      "reason": "1 <= 32"
+    },
+    {
+      "scorer": "tool_calls_within",
+      "value": 1.0,
+      "pass": true,
+      "reason": "0 <= 64"
+    },
+    {
+      "scorer": "cost_within",
+      "value": 1.0,
+      "pass": true,
+      "reason": "$0.0000 <= $2"
+    }
+  ],
+  "transcript": {
+    "final_response": "I'm running in offline mode (llmsim — no API key set). Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real responses.",
+    "iterations": 1,
+    "tool_calls_count": 0,
+    "usage": {
+      "input_tokens": 2973,
+      "output_tokens": 29,
+      "cost_usd": 0.0
+    },
+    "timing": {
+      "duration_ms": 225
+    },
+    "metrics": {
+      "agent_reported_ms": 20.0,
+      "cache_creation_tokens": 0.0,
+      "llm_calls": 1.0,
+      "tool_calls_failed": 0.0,
+      "turns": 1.0
+    },
+    "metadata": {
+      "effort": "default",
+      "harness": "default",
+      "model": "llmsim-yolop",
+      "provider": "llmsim",
+      "session_log": ".cache/sessions/add-module-llmsim-default-default-18bfd4bc2226475e00006ce70000000a.events.jsonl",
+      "stop_reason": "completed"
+    }
+  },
+  "skipped": false
+}
