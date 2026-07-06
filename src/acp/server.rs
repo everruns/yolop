@@ -28,10 +28,13 @@ use everruns_core::typed_id::SessionId as RuntimeSessionId;
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
+use tokio::task::JoinHandle;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use crate::background_wake::{WakeReceiver, frame_wake_prompt};
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
+use crate::settings::SettingsStore;
 use crate::worktree::WorktreeManager;
 
 use super::bridge::Translator;
@@ -84,6 +87,11 @@ struct Session {
     worktree: Arc<WorktreeManager>,
     commands: StdMutex<Vec<CommandDescriptor>>,
     cancel: StdMutex<Option<oneshot::Sender<()>>>,
+    /// Settings source, read for the `proactive_wake` opt-out.
+    settings: Arc<SettingsStore>,
+    /// Serializes turns for this session. Both a client prompt and a background
+    /// wake turn take it, so two `run_turn`s never overlap.
+    turn_lock: tokio::sync::Mutex<()>,
 }
 
 impl Session {
@@ -105,6 +113,15 @@ impl Session {
 struct Server<F: RuntimeFactory> {
     factory: Arc<F>,
     sessions: StdMutex<HashMap<String, Arc<Session>>>,
+    /// Flipped to `true` when the connection winds down, so each session's wake
+    /// poller exits instead of looping against a dead client.
+    shutdown: watch::Receiver<bool>,
+    /// Handles to the per-session wake pollers. `serve` awaits these on teardown
+    /// so each poller drops its `Arc<Session>` (and the runtime it keeps alive)
+    /// *before* `serve` returns. Without that join, a poller could outlive the
+    /// connection and hold the session open while a later `serve` loads the same
+    /// session id from disk — a data race on the session's on-disk state.
+    poller_handles: StdMutex<Vec<JoinHandle<()>>>,
 }
 
 impl<F: RuntimeFactory> Server<F> {
@@ -121,9 +138,12 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
     F: RuntimeFactory,
 {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server = Arc::new(Server {
         factory,
         sessions: StdMutex::new(HashMap::new()),
+        shutdown: shutdown_rx,
+        poller_handles: StdMutex::new(Vec::new()),
     });
     let next_tool_id = Arc::new(AtomicI64::new(1));
     let (eof_tx, eof_rx) = oneshot::channel::<()>();
@@ -177,7 +197,7 @@ where
                         cx: cx.clone(),
                         next_id: next_tool_id.clone(),
                     });
-                    match handle_new_session(&server, params).await {
+                    match handle_new_session(&server, &peer, params).await {
                         Ok(result) => {
                             let session_id = result.session_id.to_string();
                             responder.respond(result)?;
@@ -255,6 +275,16 @@ where
         })
         .await;
 
+    // The connection has wound down: stop every session's wake poller so no
+    // detached task keeps polling (and sending to a dead client) after return,
+    // then join them so each drops its `Arc<Session>` — and the runtime it holds
+    // open — before `serve` returns.
+    let _ = shutdown_tx.send(true);
+    let pollers: Vec<JoinHandle<()>> = server.poller_handles.lock().unwrap().drain(..).collect();
+    for poller in pollers {
+        let _ = poller.await;
+    }
+
     match result {
         Ok(()) => Ok(()),
         Err(err) if is_client_disconnect_error(&err) => {
@@ -315,6 +345,7 @@ fn handle_initialize(params: InitializeParams) -> InitializeResult {
 
 async fn handle_new_session<F: RuntimeFactory>(
     server: &Arc<Server<F>>,
+    peer: &Arc<Peer>,
     params: NewSessionParams,
 ) -> std::result::Result<NewSessionResult, agent_client_protocol::Error> {
     let cwd = params.cwd;
@@ -325,7 +356,7 @@ async fn handle_new_session<F: RuntimeFactory>(
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
-    let acp_id = register_session(server, built);
+    let acp_id = register_session(server, peer, built);
 
     Ok(NewSessionResult::new(acp_id))
 }
@@ -353,7 +384,7 @@ async fn handle_load_session<F: RuntimeFactory>(
                 .build(params.cwd, Some(resume_session_id))
                 .await
                 .map_err(|e| internal_error(format!("load runtime: {e}")))?;
-            let acp_id = register_session(server, built);
+            let acp_id = register_session(server, peer, built);
             server
                 .session(&acp_id)
                 .ok_or_else(|| internal_error("loaded session was not registered"))?
@@ -364,7 +395,11 @@ async fn handle_load_session<F: RuntimeFactory>(
     Ok((LoadSessionResult::new(), session.acp_id.clone()))
 }
 
-fn register_session<F: RuntimeFactory>(server: &Arc<Server<F>>, built: BuiltRuntime) -> String {
+fn register_session<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    peer: &Arc<Peer>,
+    built: BuiltRuntime,
+) -> String {
     let acp_id = built.handles.session_id.to_string();
     let commands = built.startup.capability_commands.clone();
     let session = Arc::new(Session {
@@ -374,14 +409,72 @@ fn register_session<F: RuntimeFactory>(server: &Arc<Server<F>>, built: BuiltRunt
         worktree: built.worktree,
         commands: StdMutex::new(commands.clone()),
         cancel: StdMutex::new(None),
+        settings: built.settings,
+        turn_lock: tokio::sync::Mutex::new(()),
     });
     server
         .sessions
         .lock()
         .unwrap()
-        .insert(acp_id.clone(), session);
+        .insert(acp_id.clone(), session.clone());
+
+    let wake_drain = spawn_background_wake_drain(
+        session,
+        peer.clone(),
+        built.background_wake,
+        server.shutdown.clone(),
+    );
+    server.poller_handles.lock().unwrap().push(wake_drain);
 
     acp_id
+}
+
+/// Drain this session's everruns `spawn_background` completion wakes and drive a
+/// streamed turn for each. The ACP request/response loop only runs turns while a
+/// client prompt is in flight, so — unlike the TUI's idle event loop — nothing
+/// otherwise reacts to a background task finishing between prompts. This closes
+/// that gap: it awaits the wake channel (fed by the platform-store wake seam,
+/// `crate::background_wake`) and takes the same `turn_lock` as client prompts so
+/// a wake turn never overlaps one. Stops on connection teardown or when the
+/// runtime (and its wake sender) drops. See specs/background.md.
+fn spawn_background_wake_drain(
+    session: Arc<Session>,
+    peer: Arc<Peer>,
+    mut wake_rx: WakeReceiver,
+    mut shutdown: watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let message = tokio::select! {
+                _ = shutdown.changed() => break,
+                recv = wake_rx.recv() => match recv {
+                    Some(message) => message,
+                    None => break,
+                },
+            };
+            if *shutdown.borrow() {
+                break;
+            }
+            // Serialize with client prompts so two turns never overlap.
+            let _turn = session.turn_lock.lock().await;
+            if !session.settings.snapshot().proactive_wake_enabled() {
+                peer.session_update(
+                    &session.acp_id,
+                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                        "✓ background task finished — see /background (proactive wake off)",
+                    )),
+                );
+                continue;
+            }
+            peer.session_update(
+                &session.acp_id,
+                SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                    "↻ background task finished — waking agent to review",
+                )),
+            );
+            run_prompt(peer.clone(), session.clone(), frame_wake_prompt(&message)).await;
+        }
+    })
 }
 
 async fn replay_session_history(
@@ -417,9 +510,14 @@ async fn handle_prompt<F: RuntimeFactory>(
         .ok_or_else(|| invalid_params("unknown session id"))?;
     let prompt = protocol::prompt_text(&params.prompt);
 
+    // Serialize with any proactive background wake turn (and any other in-flight
+    // prompt) so two turns never run for one session at once. Held for the whole
+    // dispatch; `run_prompt` does not take the lock itself, so the poller can
+    // reuse it under its own guard.
+    let _turn = session.turn_lock.lock().await;
     let stop_reason = match parse_command_prompt(&prompt) {
-        Some(command) => run_slash_command(peer, session, command).await,
-        None => run_prompt(peer, session, prompt).await,
+        Some(command) => run_slash_command(peer, session.clone(), command).await,
+        None => run_prompt(peer, session.clone(), prompt).await,
     };
     Ok(PromptResult::new(stop_reason))
 }

@@ -93,19 +93,14 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   under the session folder and stays readable for model tool calls. Use
   `/shell <command>` or `!<command>` in interactive sessions to run a command
   directly with bounded inline output.
-- **Background tasks** — `background_run` starts a shell command that runs
-  detached from the current turn (e.g. `gh pr checks <pr> --watch` waiting on
-  CI), and `background_agent` spins off a focused sub-agent (its own child
-  session, same tools and workspace) for a self-contained piece of work —
-  optionally on a cheaper model (same provider) via its `model` argument, so an
-  expensive lead can delegate grunt work;
-  `background_list`, `background_output`, and `background_cancel` track and read
-  them. Output streams to the session folder and a task's *result* survives a
-  restart (a task still running when yolop exits is restored as `interrupted`; a
-  sub-agent's child session is resumable with `--session`). When a task finishes
-  while the TUI is idle, yolop proactively wakes the agent with a turn so it
-  reacts without waiting for your next prompt (turn off with the `proactive_wake`
-  setting). Concurrent tasks are capped to keep fan-out bounded.
+- **Background tasks** — `spawn_background` runs a shell command detached from
+  the current turn (e.g. `gh pr checks <pr> --watch` waiting on CI): it streams
+  to a session-file log, writes a `result.json`, and tracks a background session
+  task. Inspect and control them with `list_tasks`, `get_task`, and
+  `cancel_task` (the `/background` command and the `Ctrl+B` panel list them). A
+  task's result survives a restart. When a task finishes while the session is
+  idle, yolop proactively wakes the agent with a turn so it reacts without
+  waiting for your next prompt (turn off with the `proactive_wake` setting).
   See [`specs/background.md`](./specs/background.md).
 - **Web** — `web_fetch` (HTTP GET/HEAD with markdown/text conversion, DNS-pinned
   SSRF protection) and `duckduckgo_search` (free, no API key). Setting

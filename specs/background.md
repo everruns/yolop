@@ -1,229 +1,99 @@
-# Background execution — background tasks and background agents
+# Background execution
 
-Status: partially moved to Everruns primitives. Generic `spawn_background`
-tasks are recorded in Everruns `session_tasks` through `everruns-local`; Yolop's
-status bar, `/background` command, and panel read those session tasks first.
-Legacy Yolop `background_run` / `background_agent` tasks still use
-`BackgroundRegistry` until they are migrated.
+Status: consolidated onto Everruns primitives. Detached background work runs
+through Everruns `spawn_background` and is tracked in Everruns `session_tasks`
+(backed locally by `everruns-local`). Yolop owns no competing task registry; it
+adds only the wake delivery seam and the `/background` command.
 
 ## Why
 
-A coding session often spawns work that should not block the foreground turn:
+A coding session often spawns work that should not block the foreground turn.
+The canonical case is *waiting for CI*: `gh pr checks <pr> --watch` (or a poll
+loop) runs for minutes, then the agent should read the result and continue.
 
-- **Scripted waits** — kick off a long command and react when it finishes. The
-  canonical case is *waiting for CI*: `gh pr checks <pr> --watch` (or a poll
-  loop) runs for minutes, then the agent reads the result and continues.
-- **Background sub-agents** — when a request fans out (analyse this subtree,
-  draft an integration, review a diff) it is cheaper and faster to spin off
-  focused sub-agents than to do everything inline in one context window.
+Yolop has one agent loop per session and every unit of work is *turn-scoped*: a
+turn is `runtime.run_turn`. Background execution is the primitive that lets work
+outlive a turn and then call the agent back when it finishes.
 
-Today yolop has exactly one agent loop per session and every unit of work is
-*turn-scoped*: a turn is `runtime.run_turn`, and cancellation is a hard
-`JoinHandle::abort()`. Nothing survives the end of a turn, and nothing survives
-a process restart except the conversation itself (replayed from
-`events.jsonl`). Background execution is the missing primitive.
+The design goal is a **single generic background-execution core**, not a
+Yolop-specific one. That owner is Everruns `session_tasks` + `spawn_background`:
+a generic runtime task registry (task ids, kind, state, result paths, wake
+policy, messages) plus a meta-tool that runs any background-capable built-in
+tool detached. Yolop rides that model rather than maintaining a parallel system.
 
-The design goal is a **single generic background-execution core** that both
-scripted tasks and background agents are *kinds* of, not two parallel
-mechanisms. The target owner is Everruns `session_tasks`: a generic runtime
-task registry, backed locally by `everruns-local`, with task ids, kind, state,
-display name, result paths, links, wake policy, and messages. Yolop should add
-domain-specific launchers on top of that generic model, not own a competing
-task system.
+## How it works
 
-Yolop currently keeps a transitional legacy registry for `background_run` and
-`background_agent`. That registry remains only for task types that have not
-moved to `session_tasks`; user-facing status/listing surfaces now prefer
-Everruns session tasks and append legacy tasks separately.
+### Launching
 
-## Core abstraction
+`spawn_background` (Everruns `background_execution` capability) wraps any tool
+whose `ToolHints::supports_background` is `Some(true)`. Yolop's `bash` tool
+declares it, so the model runs detached shell work with:
 
-A **background task** is a unit of work that runs detached from the foreground
-turn. It has an id, a kind, a lifecycle status, captured output or result
-artifacts, and is cancellable and observable. In the generic path, Everruns'
-`SessionTaskRegistry` owns that record:
+```
+spawn_background { tool: "bash", args: { command: "gh pr checks 42 --watch" } }
+```
 
-- `SessionTaskRegistry` — generic Everruns task table for a session. In local
-  Yolop runs it is backed by `everruns-local`, so `spawn_background` tasks are
-  durable through the same runtime-local backend stack as other session data.
-- `SessionTask` — the runtime-owned task record: `id`, `kind`, `display_name`,
-  `state`, optional `state_detail`, `summary`, `result_path`, `links`, wake
-  policy, and timestamps.
+The run executes on a detached task, streams to a session-file log
+(`/.background/<run_id>/output.log`), writes a `result.json`, and mirrors its
+lifecycle onto a `background_tool` session task (`Running` → `Succeeded` /
+`Failed` / `Canceled`). `signal_on_completion` defaults to `true`.
 
-The legacy Yolop registry remains during migration:
+Sub-agents were intentionally **not** migrated: Everruns' `spawn_subagent` is
+foreground/blocking, and Yolop's former detached `background_agent` was dropped
+rather than reimplemented. If detached sub-agents return, they should be a
+background-capable tool wrapped by `spawn_background`, not a separate registry.
 
-- `BackgroundRegistry` — an `Arc`-shared handle holding the live task table and
-  persisting an index to `<session_dir>/background/index.json`. One registry per
-  session, constructed during `runtime::build` and shared with the capability.
-- `BackgroundRecord` — the serialized, restart-survivable description of a task:
-  `id`, `kind`, `label`, optional `command`, `status`, `created`/`updated`,
-  optional `exit_code`, `summary`, and the `log_file` holding full output.
-- `BackgroundKind` — `script` in v1; `agent` is the Phase 2 extension and reuses
-  the same record, index, status model, and surfaces.
+### Inspecting and controlling
 
-### Status lifecycle
+The Everruns `session_tasks` capability exposes the model-facing tools:
+`list_tasks`, `get_task` (returns state, summary, and `result_path` — read it
+with the file tools), `cancel_task`, `message_task`, and `wait_task`. Yolop adds
+one host-facing surface: the `/background` command (and the `Ctrl+B` TUI panel /
+status-bar count) lists the session's tasks via
+`session_tasks_view::render_task_list`.
 
-Everruns session tasks use the generic runtime lifecycle (`queued`, `running`,
-`succeeded`, `failed`, `canceled`, and other states supported by
-`SessionTaskState`). Legacy Yolop tasks still use
-`running → {completed | failed | cancelled | timed_out}`, plus `interrupted`
-which is assigned on restore (below). `completed`/`failed`/`cancelled`/
-`timed_out`/`interrupted` are terminal for the legacy registry.
+### Proactive wake (the callback)
 
-### Surviving a restart
+On completion `spawn_background`'s sink calls
+`platform_store.send_message(session_id, <completion message>)`. Without a
+platform store that call is a silent no-op — which is why finished background
+work previously never reached the agent.
 
-The index is the durable record. On `BackgroundRegistry::load`:
+Yolop installs a platform store to close that gap (`crate::background_wake`):
 
-- terminal tasks are restored verbatim — a `completed`/`failed` task's
-  `exit_code`, `summary`, and full `log_file` are still readable after a
-  restart, so the agent can act on a result produced before the crash;
-- any task still marked `running` is re-labelled **`interrupted`**. Its OS
-  process was a child of the previous yolop and did not survive — yolop does not
-  pretend otherwise (this mirrors Claude Code, where background bash is not
-  resurrected on resume). The model sees the interrupted task and can re-launch
-  it. The corrected index is re-persisted immediately.
+- `runtime.rs` wires a `LocalPlatformStore` backed by a `WakeRunner` via
+  `LocalBackends::with_platform_runner`. The runner's `send_message` does **not**
+  run a turn synchronously (the `LocalSessionRunner` contract's synchronous mode
+  only fits child sub-agent sessions; running a turn there would re-enter the
+  session from a detached task and bypass the host's streaming turn loop).
+  Instead it hands the completion message to the host over an unbounded channel
+  (`BuiltRuntime::background_wake`).
+- The **TUI** drains the channel from its idle event loop
+  (`App::maybe_wake_from_background_channel`) and starts a streamed turn.
+- The **ACP** server, whose request/response loop only runs turns while a client
+  prompt is in flight, drains the channel from a push-based per-session task
+  (`spawn_background_wake_drain`) that takes the same `turn_lock` as client
+  prompts so a wake turn never overlaps one, and joins on connection teardown.
+- Both frame the completion message as an `[automatic]` prompt
+  (`frame_wake_prompt`): explicitly not a user message, pointing the model at the
+  run's result before it continues.
+- Opt-out: the `proactive_wake` setting (on by default) suppresses the auto-turn
+  and surfaces a one-line notice instead.
+- `--print` is one-shot, so it does not auto-wake.
 
-This is the honest contract: *results* survive a restart; *in-flight OS
-processes* do not. Background **agents** are different — an agent is itself a
-`session_id` with its own `events.jsonl`, so even an interrupted agent's
-transcript is durable and its child session id is recorded for resume.
+## Durability and restart
 
-## Surfaces
+Session tasks and their `result.json` / `output.log` artifacts live in
+`everruns-local` (SQLite) and the session file store, so results survive a
+restart. In-flight OS processes do not: a run whose worker died is not resumed
+unless an orphan reaper re-attaches it (Yolop runs none, so non-reattachable
+runs simply stop). The wake is a live, in-process signal — a completion that
+happened while Yolop was down is observed on the next `/background` / `get_task`,
+not replayed as a wake.
 
-### Tools
+## Safety
 
-The generic Everruns runtime contributes `spawn_background` for tools that
-implement the runtime's background-executable abstraction. Yolop's bash tool
-uses that path, so detached bash work can be recorded as Everruns session tasks.
-
-The Yolop `background` capability still contributes legacy tools during
-migration:
-
-- `background_run` — start a scripted task. `command` (required), `label`
-  (optional human tag). Returns the new task id and status. Non-blocking.
-- `background_agent` — spin off a sub-agent. `task` (required, a complete
-  standalone instruction — the sub-agent does not see the parent conversation),
-  `label` (optional), `model` (optional model override — see [Sub-agents](#sub-agents)).
-  Returns the new task id. Offered only when the session can spawn agents.
-- `background_list` — list every task with its status and one-line summary.
-- `background_output` — read a task's captured output by `id` (tail-capped),
-  with its status and exit code.
-- `background_cancel` — cancel a running task by `id`.
-
-### Sub-agents
-
-A sub-agent (`background_agent`) is a real child yolop session built with
-`runtime::build` (the pattern the ACP server already uses to run N concurrent
-runtimes), reusing the parent's workspace, live provider, and settings. The
-registry runs one turn on a detached task and records the final assistant
-message as the result; the child's full transcript lives in its own session
-folder (`background_output` reports the child session id for `--session` resume).
-
-The capability holds an injected `AgentSpawner` only in top-level sessions;
-child sessions are built with sub-agent spawning disabled, so the
-`background_agent` tool is absent there. That bounds sub-agent depth at one
-level — a sub-agent cannot recursively spawn its own sub-agents.
-
-By default a sub-agent inherits the parent's live model. An optional `model`
-argument overrides it per spawn, swapping the model on the **same provider**.
-The id is checked for compatibility with the parent's provider before the child
-is built — a cross-provider or unrecognized model is an error, not a silent
-fall-back (open-catalog providers like openrouter/ollama/custom accept any id by
-design). This lets an expensive lead delegate
-self-contained grunt work — reading a subtree, running tests, boilerplate edits —
-to a cheaper model, the in-harness routing seam that keeps cost down without
-upfront whole-task routing. The override is recorded in the task log for
-traceability.
-
-### System-prompt disclosure
-
-Like `memory`, the capability injects a compact `<background_tasks>` block each
-turn listing current tasks (most-recent first, capped) with status and summary.
-This is how a turn-based agent *learns a task finished*: it started the task,
-ended (or continued) its turn, and on a later turn the disclosure shows
-`completed`/`failed` with a pointer to `background_output`. Restart-survivable
-because it is rebuilt from the persisted index. When there are no tasks the
-block is omitted entirely.
-
-### Output and limits
-
-Each task streams stdout+stderr into `<session_dir>/background/<id>.log`
-(owner-only) as it runs, so `background_output` can show partial progress while
-the task is still running. A per-task output cap (256 KiB) and a wall-clock
-safety ceiling (30 min, → `timed_out`) keep a runaway background command from
-filling the disk or living forever; both are generous for the CI-wait case. The
-same cap and ceiling apply to sub-agents (a `timed_out` sub-agent abandons its
-child turn). A cap on concurrently-running tasks (8, scripts + sub-agents
-combined) guards against unbounded fan-out: `background_run` / `background_agent`
-refuse new work past the cap until a running task finishes or is cancelled.
-
-### User surfaces
-
-Background work is visible to the *user*, not just the model:
-
-- The TUI status bar shows a compact `bg <running>▸/<total>` segment whenever
-  the session has background tasks (hidden otherwise). The `App` reads Everruns
-  `session_tasks` from the runtime's task registry and includes legacy Yolop
-  registry counts only for task types that have not moved to the generic
-  session-task path yet.
-- `/background` is a `System` command (contributed by the capability) that lists
-  Everruns session tasks first, including kind, state, display name, detail, and
-  result path. During migration it appends a separate legacy Yolop task section
-  for task types that still use the old registry. It works over the TUI and ACP
-  uniformly because it returns a plain `CommandResult`.
-- The TUI also has a **read-only panel overlay** (toggle with `Ctrl+B`, ↑/↓ to
-  scroll, `Esc` to close) showing the same `/background` listing live. It mirrors
-  the setup-overlay modal pattern, is suppressed while the setup overlay is open,
-  and captures keys even mid-turn so tasks can be watched during a turn.
-
-### Proactive wake
-
-The system-prompt disclosure lets the agent notice a finished task *on its next
-turn*. Proactive wake closes the gap for true fire-and-forget: when a task
-reaches a terminal state while the TUI session is **idle**, yolop automatically
-starts a turn so the agent reacts (reads the result, continues, or reports)
-without a user prompt.
-
-- The registry tracks which terminal tasks have been reported
-  (`drain_finished_for_wake`); the TUI's idle event loop polls it and, on a
-  non-empty result, prints a one-line notice and starts a turn with a synthetic
-  `[automatic]` prompt (`wake_prompt`). The prompt is explicitly framed as *not*
-  a user message and points at `background_output`.
-- It only fires when idle, so it never interrupts an in-flight turn; each task
-  wakes at most once; and tasks restored from a previous run are pre-marked, so
-  a resumed session never wakes for work that finished before the restart.
-- Opt-out: the `proactive_wake` setting (on by default) disables the auto-turn.
-  With it off, a finished task still prints a one-line notice (drained once) but
-  the agent waits for the user's next prompt.
-- Scope: the interactive TUI only (the loop that owns turn submission).
-  `--print` is one-shot and ACP turns are editor-driven, so neither auto-wakes.
-
-## Phased plan
-
-1. **Scripted background tasks (implemented).** The core registry, persistence +
-   restore, the script tools, and system-prompt disclosure. Delivers the CI-wait
-   use case end to end.
-2. **Background sub-agents (implemented).** The `background_agent` tool builds a
-   child session and drives one turn on a detached task; the parent reads the
-   child's result via `background_output`. Each sub-agent is a real session
-   folder, so its transcript is resumable. Depth is bounded at one level.
-3. **User surfaces (implemented).** A compact `bg` count in the TUI status bar,
-   a `/background` command, and a read-only `Ctrl+B` panel overlay (see
-   [User surfaces](#user-surfaces)). Interactive per-task actions in the panel
-   (peek into a task's output, in-place cancel) à la Claude Code's agent view
-   remain a possible enhancement; the current panel is view-only.
-4. **Proactive wake (implemented).** When a task finishes while the TUI session
-   is idle, yolop auto-starts a turn so the agent reacts immediately rather than
-   waiting for the next user prompt (see [Proactive wake](#proactive-wake)).
-
-## Non-goals (for now)
-
-- No resurrection of an interrupted OS process — only its captured output and
-  final state survive a restart.
-- No cross-session background work — tasks belong to the session that spawned
-  them and live in that session's folder.
-- No new Yolop-owned persistence engine for generic task records — local
-  session-task durability belongs to `everruns-local`; the legacy background
-  index remains only for unmigrated Yolop task types.
-- No new approval gate — `background_run` runs the same unsandboxed shell as the
-  `bash` tool and inherits the same standing guardrails.
+`spawn_background{bash}` runs the same unsandboxed shell as the `bash` tool, so
+it inherits that tool's approval policy; there is no separate background approval
+gate. Concurrency is bounded by Everruns' per-worker / per-session background-run
+limits.
