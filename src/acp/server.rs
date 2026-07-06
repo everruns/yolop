@@ -33,7 +33,6 @@ use tokio::task::JoinHandle;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::background_wake::{WakeReceiver, frame_wake_prompt};
-use crate::capabilities::background::{BackgroundRegistry, wake_prompt};
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 use crate::settings::SettingsStore;
 use crate::worktree::WorktreeManager;
@@ -50,14 +49,6 @@ use super::protocol::{
 /// How often the prompt loop wakes to check whether the turn task finished,
 /// in case the final event was already drained from the broadcast.
 const TURN_POLL_INTERVAL: Duration = Duration::from_millis(150);
-
-/// How often each session's background wake poller checks the registry for a
-/// task that finished while the session was idle. The ACP request/response loop
-/// only runs turns while a client prompt is in flight, so — unlike the TUI's
-/// idle loop — nothing otherwise reacts to background work completing between
-/// prompts. Half a second is well below the minutes-scale latency of a CI wait
-/// and cheap: a lock probe plus a `HashSet` check. See specs/background.md.
-const WAKE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Builds a runtime for a freshly opened ACP session. Abstracted so tests can
 /// substitute a scripted llmsim runtime for the real provider wiring.
@@ -96,15 +87,10 @@ struct Session {
     worktree: Arc<WorktreeManager>,
     commands: StdMutex<Vec<CommandDescriptor>>,
     cancel: StdMutex<Option<oneshot::Sender<()>>>,
-    /// This session's background task registry (the same `Arc` the `background`
-    /// capability owns). The wake poller drains finished tasks from it.
-    background: Arc<BackgroundRegistry>,
     /// Settings source, read for the `proactive_wake` opt-out.
     settings: Arc<SettingsStore>,
-    /// Serializes turns for this session. Both a client prompt and a proactive
-    /// wake turn take it, so two `run_turn`s never overlap. The poller uses
-    /// `try_lock`, so it skips a tick while a turn is in flight rather than
-    /// queueing a stale wake behind it.
+    /// Serializes turns for this session. Both a client prompt and a background
+    /// wake turn take it, so two `run_turn`s never overlap.
     turn_lock: tokio::sync::Mutex<()>,
 }
 
@@ -423,7 +409,6 @@ fn register_session<F: RuntimeFactory>(
         worktree: built.worktree,
         commands: StdMutex::new(commands.clone()),
         cancel: StdMutex::new(None),
-        background: built.background,
         settings: built.settings,
         turn_lock: tokio::sync::Mutex::new(()),
     });
@@ -433,29 +418,25 @@ fn register_session<F: RuntimeFactory>(
         .unwrap()
         .insert(acp_id.clone(), session.clone());
 
-    let poller = spawn_wake_poller(session.clone(), peer.clone(), server.shutdown.clone());
     let wake_drain = spawn_background_wake_drain(
         session,
         peer.clone(),
         built.background_wake,
         server.shutdown.clone(),
     );
-    {
-        let mut handles = server.poller_handles.lock().unwrap();
-        handles.push(poller);
-        handles.push(wake_drain);
-    }
+    server.poller_handles.lock().unwrap().push(wake_drain);
 
     acp_id
 }
 
 /// Drain this session's everruns `spawn_background` completion wakes and drive a
-/// streamed turn for each. The everruns-native counterpart to
-/// [`spawn_wake_poller`] (which watches the legacy yolop registry); both run
-/// during the migration. Unlike the poller this is push-based — it awaits the
-/// wake channel rather than polling — and it takes the same `turn_lock` so a
-/// wake turn never overlaps a client prompt. Stops on connection teardown or
-/// when the runtime (and its wake sender) drops. See specs/background.md.
+/// streamed turn for each. The ACP request/response loop only runs turns while a
+/// client prompt is in flight, so — unlike the TUI's idle event loop — nothing
+/// otherwise reacts to a background task finishing between prompts. This closes
+/// that gap: it awaits the wake channel (fed by the platform-store wake seam,
+/// `crate::background_wake`) and takes the same `turn_lock` as client prompts so
+/// a wake turn never overlaps one. Stops on connection teardown or when the
+/// runtime (and its wake sender) drops. See specs/background.md.
 fn spawn_background_wake_drain(
     session: Arc<Session>,
     peer: Arc<Peer>,
@@ -474,7 +455,7 @@ fn spawn_background_wake_drain(
             if *shutdown.borrow() {
                 break;
             }
-            // Serialize with client prompts and the legacy poller's wake turns.
+            // Serialize with client prompts so two turns never overlap.
             let _turn = session.turn_lock.lock().await;
             if !session.settings.snapshot().proactive_wake_enabled() {
                 peer.session_update(
@@ -492,68 +473,6 @@ fn spawn_background_wake_drain(
                 )),
             );
             run_prompt(peer.clone(), session.clone(), frame_wake_prompt(&message)).await;
-        }
-    })
-}
-
-/// Spawn this session's background wake poller. The ACP loop only drives a turn
-/// while a client prompt is in flight, so nothing otherwise reacts to a
-/// background task finishing between prompts. This task closes that gap: when a
-/// task reaches a terminal state while the session is idle, it drives a
-/// synthetic `[automatic]` wake turn (`wake_prompt`) so the agent reads the
-/// result and continues — the ACP equivalent of `App::maybe_wake_for_background`
-/// in the TUI. It stops when the connection winds down (`server.shutdown`). See
-/// specs/background.md.
-fn spawn_wake_poller(
-    session: Arc<Session>,
-    peer: Arc<Peer>,
-    mut shutdown: watch::Receiver<bool>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = shutdown.changed() => break,
-                _ = tokio::time::sleep(WAKE_POLL_INTERVAL) => {}
-            }
-            if *shutdown.borrow() {
-                break;
-            }
-            // Only look while the session is idle. Holding `turn_lock` across the
-            // drain-and-wake below also guarantees the wake turn never overlaps a
-            // client prompt (which takes the same lock in `handle_prompt`). A
-            // contended lock means a turn is running, so skip and retry next tick
-            // rather than draining tasks the running turn may already surface.
-            let Ok(_turn) = session.turn_lock.try_lock() else {
-                continue;
-            };
-            let finished = session.background.drain_finished_for_wake();
-            if finished.is_empty() {
-                continue;
-            }
-            let ids = finished
-                .iter()
-                .map(|t| t.id.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            // Honor the `proactive_wake` opt-out: surface a one-line notice but
-            // don't drive a turn. The tasks are already drained, so each is
-            // reported exactly once (matching the TUI).
-            if !session.settings.snapshot().proactive_wake_enabled() {
-                peer.session_update(
-                    &session.acp_id,
-                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
-                        "✓ background task finished ({ids}) — see /background (proactive wake off)"
-                    ))),
-                );
-                continue;
-            }
-            peer.session_update(
-                &session.acp_id,
-                SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
-                    "↻ background task finished ({ids}) — waking agent to review"
-                ))),
-            );
-            run_prompt(peer.clone(), session.clone(), wake_prompt(&finished)).await;
         }
     })
 }

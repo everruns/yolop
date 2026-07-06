@@ -128,12 +128,10 @@ pub struct App {
     model_discovery_enabled: bool,
     models_tx: mpsc::UnboundedSender<ModelDiscovery>,
     models_rx: mpsc::UnboundedReceiver<ModelDiscovery>,
-    /// Legacy Yolop background registry. Kept during migration for task types
-    /// that have not moved to Everruns `session_tasks` yet.
-    background: Arc<crate::capabilities::BackgroundRegistry>,
-    /// Wake channel for everruns `spawn_background` completions. Drained while
-    /// idle to auto-start a turn — the everruns-native counterpart to the
-    /// legacy registry's `drain_finished_for_wake`. See specs/background.md.
+    /// Wake channel for everruns `spawn_background` completions (fed by the
+    /// platform-store wake seam, `crate::background_wake`). Drained while idle to
+    /// auto-start a turn so the agent reacts to finished work. See
+    /// specs/background.md.
     background_wake: crate::background_wake::WakeReceiver,
     /// Everruns session-task registry used by `spawn_background`; the TUI reads
     /// it for the background status segment and panel.
@@ -339,7 +337,6 @@ impl App {
             model_discovery_enabled: true,
             models_tx,
             models_rx,
-            background: runtime.background,
             background_wake: runtime.background_wake,
             task_registry: runtime.task_registry,
             session_tasks: Vec::new(),
@@ -440,15 +437,13 @@ impl App {
     }
 
     fn background_counts(&self) -> Option<(usize, usize)> {
-        crate::session_tasks_view::combined_counts(&self.session_tasks, self.background.counts())
+        crate::session_tasks_view::counts(&self.session_tasks)
     }
 
     fn background_panel_body(&self) -> String {
-        crate::session_tasks_view::render_combined_task_list(
+        crate::session_tasks_view::render_task_list(
             &self.session_tasks,
             self.session_tasks_error.as_deref(),
-            self.background.counts(),
-            &self.background.render_task_list(),
         )
     }
 
@@ -677,13 +672,9 @@ impl App {
             return Ok(());
         }
 
-        // 3b) proactive wake: when background tasks finish while the session is
-        // idle, auto-start a turn so the agent reacts without a user prompt.
-        // Both the legacy registry wake and the everruns `spawn_background` wake
-        // seam run during the migration.
-        if self.maybe_wake_for_background() {
-            return Ok(());
-        }
+        // 3b) proactive wake: when an everruns `spawn_background` task finishes
+        // while the session is idle, auto-start a turn so the agent reacts
+        // without a user prompt.
         if self.maybe_wake_from_background_channel() {
             return Ok(());
         }
@@ -1039,53 +1030,13 @@ impl App {
         }
     }
 
-    /// Proactive wake (Phase 4): when background tasks reach a terminal state
-    /// while the session is idle, automatically start a turn so the agent reacts
-    /// to the result (reads output, continues, or reports) without waiting for a
-    /// user prompt. Returns true if it started a turn. Only fires when idle, so
-    /// it never interrupts an in-flight turn; each task wakes at most once.
-    fn maybe_wake_for_background(&mut self) -> bool {
-        if self.busy || self.rx.is_some() || self.setup.is_some() {
-            return false;
-        }
-        let finished = self.background.drain_finished_for_wake();
-        if finished.is_empty() {
-            return false;
-        }
-        // Honor the `proactive_wake` setting: when off, surface a notice but do
-        // not auto-start a turn (the tasks are already drained, so this reports
-        // each finished task exactly once without waking).
-        if !self.settings.snapshot().proactive_wake_enabled() {
-            let ids = finished
-                .iter()
-                .map(|t| t.id.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            self.push_system(format!(
-                "✓ background task finished ({ids}) — see /background (proactive wake off)"
-            ));
-            return false;
-        }
-        let ids = finished
-            .iter()
-            .map(|t| t.id.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
-        self.push_system(format!(
-            "↻ background task finished ({ids}) — waking agent to review"
-        ));
-        let prompt = crate::capabilities::background::wake_prompt(&finished);
-        self.start_turn(prompt);
-        true
-    }
-
-    /// everruns-native proactive wake: drain any `spawn_background` completion
-    /// signals delivered over [`crate::background_wake`] and, while idle, start a
-    /// turn so the agent reacts. The everruns counterpart to
-    /// [`Self::maybe_wake_for_background`]; both run during the migration. Only
-    /// the first pending message wakes a turn (draining the rest would lose
-    /// them); the remainder wake on subsequent idle ticks. Returns true if it
-    /// started a turn.
+    /// Proactive wake: drain any everruns `spawn_background` completion signal
+    /// delivered over [`crate::background_wake`] and, while idle, start a turn so
+    /// the agent reacts to the finished work (reads the result, continues, or
+    /// reports) without waiting for a user prompt. Only fires when idle, so it
+    /// never interrupts an in-flight turn. Only the first pending message wakes a
+    /// turn (draining the rest would lose them); the remainder wake on subsequent
+    /// idle ticks. Returns true if it started a turn.
     fn maybe_wake_from_background_channel(&mut self) -> bool {
         if self.busy || self.rx.is_some() || self.setup.is_some() {
             return false;
@@ -3135,6 +3086,17 @@ mod tests {
         }
     }
 
+    /// Seed a synthetic everruns completion signal onto the app's wake channel,
+    /// standing in for the platform-store `send_message` a finished
+    /// `spawn_background` run makes. Returns the sender so the caller can push
+    /// more (or drop it to close the channel).
+    fn seed_background_wake(app: &mut App, message: &str) -> mpsc::UnboundedSender<String> {
+        let (tx, rx) = mpsc::unbounded_channel::<String>();
+        app.background_wake = rx;
+        tx.send(message.to_string()).expect("seed wake");
+        tx
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn proactive_wake_starts_turn_when_background_task_finishes() {
         let mut test = app_with_llmsim().await;
@@ -3144,33 +3106,18 @@ mod tests {
         // suppressed while it's open, so clear it to exercise the idle path.
         app.setup = None;
 
-        // Idle with no tasks: nothing to wake for.
-        assert!(!app.maybe_wake_for_background());
+        // Idle with no signal: nothing to wake for.
+        assert!(!app.maybe_wake_from_background_channel());
 
-        // Start a quick background script and wait for it to finish.
-        let record = app.background.spawn_script(None, "echo hi".to_string());
-        for _ in 0..100 {
-            if app.background.counts() == (0, 1) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert_eq!(
-            app.background.counts(),
-            (0, 1),
-            "background script should finish"
-        );
-
-        // Idle + a freshly-finished task ⇒ a turn is auto-started.
+        // A completion signal arrives on the wake channel ⇒ a turn is started.
+        let _tx = seed_background_wake(app, "Background run completed.\n- run_id: bg_1");
         assert!(
-            app.maybe_wake_for_background(),
+            app.maybe_wake_from_background_channel(),
             "a finished background task should wake the agent"
         );
         assert!(app.busy, "proactive wake must start a turn");
         assert!(
-            app.lines
-                .iter()
-                .any(|l| l.text.contains(&record.id) && l.text.contains("waking")),
+            app.lines.iter().any(|l| l.text.contains("waking")),
             "a notice explaining the auto-wake should be shown"
         );
     }
@@ -3179,26 +3126,21 @@ mod tests {
     async fn proactive_wake_suppressed_during_setup_overlay() {
         let mut test = app_with_llmsim().await;
         let app = &mut test.app;
-        // With the setup overlay open, a finished task must NOT auto-start a turn.
-        app.setup = None;
-        let record = app.background.spawn_script(None, "echo hi".to_string());
-        for _ in 0..100 {
-            if app.background.counts() == (0, 1) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        // Re-open the overlay, then confirm wake is suppressed and the task is
-        // left undrained (so it can still wake once the overlay closes).
+        // With the setup overlay open, a finished task must NOT auto-start a turn
+        // and must NOT consume the signal (so it can still wake once closed).
+        let _tx = seed_background_wake(app, "Background run completed.\n- run_id: bg_1");
         app.setup = Some(SetupStep::Provider { selected: 0 });
-        assert!(!app.maybe_wake_for_background(), "no wake during setup");
+        assert!(
+            !app.maybe_wake_from_background_channel(),
+            "no wake during setup"
+        );
         assert!(!app.busy);
         app.setup = None;
         assert!(
-            app.maybe_wake_for_background(),
-            "wake should fire once the overlay closes — the task wasn't consumed"
+            app.maybe_wake_from_background_channel(),
+            "wake should fire once the overlay closes — the signal wasn't consumed"
         );
-        assert!(app.background.get(&record.id).is_some());
+        assert!(app.busy);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3210,18 +3152,14 @@ mod tests {
             .set_proactive_wake(false)
             .expect("disable wake");
 
-        let record = app.background.spawn_script(None, "echo hi".to_string());
-        for _ in 0..100 {
-            if app.background.counts() == (0, 1) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let _tx = seed_background_wake(app, "Background run completed.\n- run_id: bg_1");
         // Setting off: no turn, but the completion is still surfaced once.
-        assert!(!app.maybe_wake_for_background());
+        assert!(!app.maybe_wake_from_background_channel());
         assert!(!app.busy, "wake setting off must not start a turn");
         assert!(
-            app.lines.iter().any(|l| l.text.contains(&record.id)),
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("background task finished")),
             "finished task should still be surfaced as a notice"
         );
     }
@@ -3298,12 +3236,12 @@ mod tests {
         let lines = render_app_lines(app, 120, 20).join("\n");
         assert!(lines.contains("Background tasks"), "panel header: {lines}");
         assert!(
-            lines.contains("Everruns session task"),
-            "panel should list session tasks: {lines}"
+            lines.contains("background task(s), 1 active"),
+            "panel should summarize session tasks: {lines}"
         );
         assert!(
             lines.contains("[task_panel] background_tool running: write marker"),
-            "panel should list the Everruns task row: {lines}"
+            "panel should list the session task row: {lines}"
         );
     }
 

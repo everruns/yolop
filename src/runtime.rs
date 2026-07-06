@@ -7,9 +7,8 @@
 use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, MemoryStore};
 use crate::capabilities::yolop::{YOLOP_CAPABILITY_ID, YolopCapability};
 use crate::capabilities::{
-    APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, AgentRunResult,
-    AgentSpawner, ApprovalCapability, AstGrepCapability, AttributionCapability,
-    BACKGROUND_CAPABILITY_ID, BackgroundCapability, BackgroundRegistry,
+    APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability,
+    AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID, BackgroundCapability,
     CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID,
     ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
     ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, GOAL_CAPABILITY_ID, GoalCapability,
@@ -1768,10 +1767,6 @@ pub struct BuiltRuntime {
     /// other hosts ignore it. Empty/never-written when
     /// [`BuildOptions::client_commands`] is `false`.
     pub ui_rx: mpsc::UnboundedReceiver<UiCommand>,
-    /// Shared handle to this session's background task registry, so the TUI can
-    /// show a live task count in the status bar (the same registry the
-    /// `background` capability owns).
-    pub background: Arc<BackgroundRegistry>,
     /// Receiver for everruns background-task completion signals, delivered via
     /// the wake seam (`background_wake`). The host (TUI/ACP) drains it and runs
     /// a streamed turn so the agent reacts to finished `spawn_background` work.
@@ -1957,102 +1952,6 @@ pub struct BuildOptions {
     /// the effects sets this: the interactive TUI (and the `app` unit tests
     /// that exercise it). ACP and `--print` leave it `false`.
     pub client_commands: bool,
-    /// Disable background sub-agent spawning for this session. Set when building
-    /// a child sub-agent session so it cannot recursively spawn its own
-    /// sub-agents — this bounds depth at one level. Top-level sessions leave it
-    /// `false`, so the `background_agent` tool is available.
-    pub disable_background_agents: bool,
-}
-
-/// Spawns background sub-agents by building a fresh child session and driving
-/// one turn. Each sub-agent is a real yolop session with its own JSONL folder,
-/// so its transcript is durable and resumable with `--session <id>`. The child
-/// is built with `disable_background_agents: true`, so it cannot spawn further
-/// sub-agents (depth is bounded at one level).
-struct YolopAgentSpawner {
-    workspace_root: PathBuf,
-    /// The live provider/model handle, shared with `SetupCapability`, so a
-    /// sub-agent uses whatever provider the session is currently on.
-    provider: Arc<RwLock<ProviderChoice>>,
-    sessions_dir: PathBuf,
-    settings: Arc<SettingsStore>,
-}
-
-#[async_trait]
-impl AgentSpawner for YolopAgentSpawner {
-    async fn run(
-        &self,
-        prompt: String,
-        model: Option<String>,
-    ) -> std::result::Result<AgentRunResult, String> {
-        let mut provider = self
-            .provider
-            .read()
-            .map_err(|_| "provider lock poisoned".to_string())?
-            .clone();
-        // A per-spawn model override swaps the model on the parent's provider, so
-        // an expensive lead can delegate grunt work to a cheaper model. The id is
-        // checked for compatibility with the parent's provider first (the same
-        // gate `default_model` resolution uses) so a cross-provider or
-        // unrecognized model is surfaced to the caller rather than silently
-        // accepted and only failing at the API call. Open-catalog providers
-        // (openrouter/ollama/custom) accept any id by design.
-        if let Some(model) = model {
-            let provider_name = provider.provider_name();
-            if !model_compatible_with_provider(&model, provider_name) {
-                return Err(format!(
-                    "sub-agent model {model:?} is not recognized for provider \
-                     {provider_name}; overrides must name a model on the parent's provider"
-                ));
-            }
-            provider = provider
-                .with_current_provider_model(model, None)
-                .map_err(|e| format!("invalid sub-agent model override: {e}"))?;
-        }
-        let built = build_with_options(
-            self.workspace_root.clone(),
-            provider,
-            None,
-            self.sessions_dir.clone(),
-            self.settings.clone(),
-            BuildOptions {
-                disable_background_agents: true,
-                ..BuildOptions::default()
-            },
-        )
-        .await
-        .map_err(|e| format!("failed to build sub-agent session: {e}"))?;
-
-        let session_id = built.handles.session_id;
-        let input = built.model.input_message(prompt);
-        let result = built
-            .handles
-            .runtime
-            .run_turn(session_id, input)
-            .await
-            .map_err(|e| format!("sub-agent turn failed: {e}"))?;
-
-        // The sub-agent's answer is its last assistant message with no pending
-        // tool calls. Its full transcript lives in the child session folder.
-        let messages = built
-            .handles
-            .runtime
-            .messages(session_id)
-            .await
-            .unwrap_or_default();
-        let final_text = messages
-            .iter()
-            .rev()
-            .find(|m| m.role == everruns_core::message::MessageRole::Agent && !m.has_tool_calls())
-            .and_then(|m| m.text().map(|t| t.trim().to_string()))
-            .filter(|t| !t.is_empty());
-
-        Ok(AgentRunResult {
-            session_id: session_id.to_string(),
-            final_text,
-            success: result.success,
-        })
-    }
 }
 
 pub async fn build(
@@ -2373,27 +2272,11 @@ pub async fn build_with_options(
         workspace: workspace.clone(),
         expose_command: !options.client_commands,
     });
-    // `background` — generic background execution. Scripted tasks (e.g. waiting
-    // for CI) and sub-agents run detached from the turn and persist their state
-    // to `<session_dir>/background/` so results survive a restart. Reuses this
-    // session's folder, the same durability substrate as the JSONL event log.
-    // See specs/background.md.
-    let mut background_registry = BackgroundRegistry::load(&session_dir, workspace_host.clone());
-    // Top-level sessions can spawn sub-agents; child sub-agent sessions cannot
-    // (depth bound). The spawner builds a fresh child session per sub-agent,
-    // reusing the live provider, this session's sessions dir, and settings.
-    if !options.disable_background_agents {
-        let spawner: Arc<dyn AgentSpawner> = Arc::new(YolopAgentSpawner {
-            workspace_root: effective_root.clone(),
-            provider: provider_state.clone(),
-            sessions_dir: sessions_dir.clone(),
-            settings: settings.clone(),
-        });
-        background_registry = background_registry.with_spawner(spawner);
-    }
-    let background_registry = Arc::new(background_registry);
+    // `background` — the `/background` command listing this session's everruns
+    // tasks. Detached work runs through everruns `spawn_background` (which wraps
+    // the background-capable `bash` tool) and completions wake the agent via the
+    // platform-store wake seam (`crate::background_wake`). See specs/background.md.
     capabilities.register(BackgroundCapability {
-        registry: background_registry.clone(),
         session_id,
         task_registry: task_registry.clone(),
     });
@@ -2558,7 +2441,6 @@ pub async fn build_with_options(
         model: ModelState::new(provider_state),
         settings,
         ui_rx,
-        background: background_registry,
         background_wake: background_wake_rx,
         workspace_host,
         task_registry,
@@ -2629,117 +2511,6 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("offline llmsim only supports llmsim-yolop")
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn background_agent_spawner_runs_child_session_offline() {
-        // Exercises the real sub-agent path end to end offline: build a child
-        // session, run one turn (bundled llmsim), and extract its result.
-        let workspace = tempfile::tempdir().expect("workspace");
-        let sessions = tempfile::tempdir().expect("sessions");
-        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
-
-        let spawner = YolopAgentSpawner {
-            workspace_root: workspace.path().to_path_buf(),
-            provider: Arc::new(RwLock::new(ProviderChoice::Sim)),
-            sessions_dir: sessions.path().to_path_buf(),
-            settings,
-        };
-
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(20),
-            spawner.run("say hello".to_string(), None),
-        )
-        .await
-        .expect("sub-agent timed out")
-        .expect("sub-agent run failed");
-
-        assert!(result.success, "child turn should succeed: {result:?}");
-        assert!(
-            !result.session_id.is_empty(),
-            "child session id must be reported for resume"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn background_agent_rejects_incompatible_model_override() {
-        // A per-spawn model override is checked for compatibility with the
-        // parent's provider before any child session is built: a cross-provider
-        // id (an OpenAI model while on Anthropic) is rejected up front, not
-        // silently accepted and only failed at the API call. No key or network is
-        // touched because validation precedes the session build.
-        let workspace = tempfile::tempdir().expect("workspace");
-        let sessions = tempfile::tempdir().expect("sessions");
-        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
-
-        let spawner = YolopAgentSpawner {
-            workspace_root: workspace.path().to_path_buf(),
-            provider: Arc::new(RwLock::new(ProviderChoice::Anthropic {
-                model: "claude-sonnet-4-6".to_string(),
-                reasoning_effort: None,
-            })),
-            sessions_dir: sessions.path().to_path_buf(),
-            settings,
-        };
-
-        let err = spawner
-            .run("say hello".to_string(), Some("gpt-5.5".into()))
-            .await
-            .expect_err("cross-provider model override must error");
-        assert!(
-            err.contains("not recognized for provider anthropic"),
-            "got: {err}"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn background_agent_tool_present_at_top_level_absent_in_children() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let sessions = tempfile::tempdir().expect("sessions");
-        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
-
-        // Top-level build: background_agent is offered.
-        let top = build_with_options(
-            workspace.path().to_path_buf(),
-            ProviderChoice::Sim,
-            None,
-            sessions.path().to_path_buf(),
-            settings.clone(),
-            BuildOptions::default(),
-        )
-        .await
-        .expect("build top-level");
-        assert!(
-            top.startup
-                .tool_names
-                .contains(&"background_agent".to_string()),
-            "top-level session should offer background_agent: {:?}",
-            top.startup.tool_names
-        );
-
-        // Child build (as a sub-agent would be built): no background_agent, so a
-        // sub-agent cannot spawn its own sub-agents.
-        let child = build_with_options(
-            workspace.path().to_path_buf(),
-            ProviderChoice::Sim,
-            None,
-            sessions.path().to_path_buf(),
-            settings,
-            BuildOptions {
-                disable_background_agents: true,
-                ..BuildOptions::default()
-            },
-        )
-        .await
-        .expect("build child");
-        assert!(
-            !child
-                .startup
-                .tool_names
-                .contains(&"background_agent".to_string()),
-            "child sub-agent session must NOT offer background_agent: {:?}",
-            child.startup.tool_names
         );
     }
 
