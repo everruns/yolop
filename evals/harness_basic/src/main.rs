@@ -49,6 +49,10 @@ const HARNESS_VARIANTS: &[HarnessVariant] = &[
         settings: "",
     },
     HarnessVariant {
+        name: "no-progress-guard",
+        settings: "[[capabilities]]\nref = \"progress_guard\"\nenabled = false\n",
+    },
+    HarnessVariant {
         name: "no-ast-grep",
         settings: "[[capabilities]]\nref = \"ast_grep\"\nenabled = false\n",
     },
@@ -89,6 +93,28 @@ fn targets() -> Vec<Target> {
 /// {"file": "src/lib.rs", "contains": ["fn greet"], "lacks": ["TODO"]}
 /// {"response_contains": ["7321"]}
 /// ```
+fn progress_guard_probe_sample() -> Sample {
+    let mut sample = Sample::new(
+        "progress-guard-sequential-read",
+        "This is a stepwise file-reading evaluation. Read notes/01.txt through \
+         notes/24.txt in numeric order, one file at a time, using the file-read \
+         tool for each file. Do not use grep, bash, directory listing, or search \
+         shortcuts. Do not stop before notes/24.txt. Reply with only the \
+         FINAL_CODE value from notes/24.txt.",
+    )
+    .tag("progress-guard")
+    .meta("kind", "guardrail")
+    .meta("checks", json!([{"response_contains": ["KITE-7429"]}]));
+
+    for i in 1..24 {
+        sample = sample.file(
+            format!("notes/{i:02}.txt"),
+            format!("note {i:02}: keep reading; FINAL_CODE is not in this file.\n"),
+        );
+    }
+    sample.file("notes/24.txt", "note 24: FINAL_CODE=KITE-7429\n")
+}
+
 fn dataset() -> Dataset {
     let cargo_toml = "[package]\nname = \"seed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
     Dataset::new(vec![
@@ -203,6 +229,7 @@ fn dataset() -> Dataset {
                 {"file": "src/lib.rs", "contains": ["pub mod util"]}
             ]),
         ),
+        progress_guard_probe_sample(),
     ])
 }
 
@@ -344,10 +371,147 @@ struct Mined {
     tool_calls_failed: u64,
     final_response: String,
     effort_applied: Option<String>,
+    exploration_tools_before_first_mutation: u64,
+    max_exploration_tools_without_progress: u64,
+    progress_guard_warnings: u64,
+}
+
+fn normalized_command(command: &str) -> String {
+    command.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn tool_result_value(data: &Value) -> Option<Value> {
+    let result = data.get("result")?;
+    if let Some(items) = result.as_array() {
+        for item in items {
+            if item.get("type").and_then(Value::as_str) != Some("text") {
+                continue;
+            }
+            let Some(text) = item.get("text").and_then(Value::as_str) else {
+                continue;
+            };
+            return Some(serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.into())));
+        }
+    }
+    Some(result.clone())
+}
+
+fn tool_command(data: &Value) -> String {
+    tool_result_value(data)
+        .and_then(|v| v.get("command").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn has_progress_guard_warning(data: &Value) -> bool {
+    match tool_result_value(data) {
+        Some(Value::Object(obj)) => obj
+            .get("progress_guard_warning")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty()),
+        Some(Value::String(text)) => {
+            text.contains("progress_guard_warning") || text.starts_with("progress_guard:")
+        }
+        _ => false,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ToolKind {
+    Exploration,
+    Mutation,
+    Validation,
+    Other,
+}
+
+fn is_status_command(command: &str) -> bool {
+    matches!(
+        command,
+        "git status" | "git status --short" | "git status --short --branch" | "git diff"
+    ) || command.starts_with("git status ")
+        || command.starts_with("git diff ")
+}
+
+fn classify_tool(data: &Value) -> ToolKind {
+    let name = data
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    match name {
+        "read_file" | "grep_files" | "repo_map" | "ast_grep" | "list_directory" | "stat_file" => {
+            return ToolKind::Exploration;
+        }
+        "write_file" | "edit_file" | "delete_file" | "edit" => return ToolKind::Mutation,
+        "bash" => {}
+        _ => return ToolKind::Other,
+    }
+
+    let command = normalized_command(&tool_command(data));
+    if command.is_empty() {
+        return ToolKind::Other;
+    }
+    if is_status_command(&command)
+        || [
+            "rg",
+            "grep",
+            "find",
+            "sed",
+            "cat",
+            "ls",
+            "git show",
+            "git log",
+            "git blame",
+            "git grep",
+            "git ls-files",
+        ]
+        .iter()
+        .any(|prefix| command.starts_with(prefix))
+    {
+        return ToolKind::Exploration;
+    }
+    if [
+        "cargo test",
+        "cargo clippy",
+        "cargo fmt --check",
+        "npm test",
+        "npm run test",
+        "pnpm test",
+        "pnpm run test",
+        "yarn test",
+        "pytest",
+        "uv run",
+        "go test",
+        "python -m unittest",
+    ]
+    .iter()
+    .any(|prefix| command.starts_with(prefix))
+    {
+        return ToolKind::Validation;
+    }
+    if [
+        "apply_patch",
+        "cargo fmt",
+        "npm run format",
+        "pnpm run format",
+        "git apply",
+        "git commit",
+        "git add",
+        "mv ",
+        "cp ",
+        "rm ",
+        "mkdir ",
+    ]
+    .iter()
+    .any(|part| command.contains(part))
+    {
+        return ToolKind::Mutation;
+    }
+    ToolKind::Other
 }
 
 fn parse_events(jsonl: &str) -> Mined {
     let mut m = Mined::default();
+    let mut current_exploration_without_progress = 0_u64;
+    let mut saw_mutation = false;
     for line in jsonl.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -406,6 +570,28 @@ fn parse_events(jsonl: &str) -> Mined {
                 m.tool_calls.push(name.to_string());
                 if data.get("success") == Some(&Value::Bool(false)) {
                     m.tool_calls_failed += 1;
+                }
+                if has_progress_guard_warning(&data) {
+                    m.progress_guard_warnings += 1;
+                }
+                match classify_tool(&data) {
+                    ToolKind::Mutation => {
+                        saw_mutation = true;
+                        current_exploration_without_progress = 0;
+                    }
+                    ToolKind::Validation => {
+                        current_exploration_without_progress = 0;
+                    }
+                    ToolKind::Exploration => {
+                        current_exploration_without_progress += 1;
+                        m.max_exploration_tools_without_progress = m
+                            .max_exploration_tools_without_progress
+                            .max(current_exploration_without_progress);
+                        if !saw_mutation {
+                            m.exploration_tools_before_first_mutation += 1;
+                        }
+                    }
+                    ToolKind::Other => {}
                 }
             }
             "reason.completed" => {
@@ -506,9 +692,14 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
             return Transcript::infra_error(format!("seed {rel}: {e}"));
         }
     }
+    let home = scratch.path().join("home");
     let xdg_config = scratch.path().join("xdg-config");
-    if std::fs::create_dir_all(xdg_config.join("yolop")).is_err()
-        || std::fs::write(xdg_config.join("yolop/settings.toml"), &settings).is_err()
+    let xdg_settings_dir = xdg_config.join("yolop");
+    let macos_settings_dir = home.join("Library/Application Support/yolop");
+    if std::fs::create_dir_all(&xdg_settings_dir).is_err()
+        || std::fs::write(xdg_settings_dir.join("settings.toml"), &settings).is_err()
+        || std::fs::create_dir_all(&macos_settings_dir).is_err()
+        || std::fs::write(macos_settings_dir.join("settings.toml"), &settings).is_err()
     {
         return Transcript::infra_error("failed to write case settings.toml");
     }
@@ -535,12 +726,13 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         .arg(&sessions)
         .arg("-p")
         .arg(&prompt);
-    // Full XDG isolation: the case must see the variant's settings.toml, never
-    // the developer's real ~/.config/yolop (or shared data/state/cache).
+    // Full config isolation: Linux honors XDG_CONFIG_HOME; macOS `dirs` uses
+    // HOME/Library/Application Support, so set HOME to the scratch tree too.
     cmd.env("XDG_CONFIG_HOME", &xdg_config)
         .env("XDG_DATA_HOME", scratch.path().join("xdg-data"))
         .env("XDG_STATE_HOME", scratch.path().join("xdg-state"))
         .env("XDG_CACHE_HOME", scratch.path().join("xdg-cache"))
+        .env("HOME", &home)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -617,6 +809,18 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     t.metrics.insert(
         "cache_creation_tokens".into(),
         mined.cache_creation_tokens as f64,
+    );
+    t.metrics.insert(
+        "exploration_tools_before_first_mutation".into(),
+        mined.exploration_tools_before_first_mutation as f64,
+    );
+    t.metrics.insert(
+        "max_exploration_tools_without_progress".into(),
+        mined.max_exploration_tools_without_progress as f64,
+    );
+    t.metrics.insert(
+        "progress_guard_warnings".into(),
+        mined.progress_guard_warnings as f64,
     );
     let agent_ms = if mined.turn_ms > 0 {
         mined.turn_ms
@@ -720,6 +924,11 @@ mod tests {
         assert!(no_ast.contains("ref = \"ast_grep\""));
         assert!(no_ast.contains("enabled = false"));
 
+        let no_progress = settings_for_variant("no-progress-guard").unwrap();
+        assert!(no_progress.contains("worktrees = \"off\""));
+        assert!(no_progress.contains("ref = \"progress_guard\""));
+        assert!(no_progress.contains("enabled = false"));
+
         assert!(settings_for_variant("nope").is_none());
     }
 
@@ -739,6 +948,8 @@ mod tests {
         let jsonl = r#"
 {"type":"input.message","data":{"message":{"role":"user","content":[{"type":"text","text":"do it"}]}}}
 {"type":"tool.completed","data":{"tool_name":"grep_files","success":true}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"git status --short\",\"progress_guard_warning\":\"progress_guard: repeated status\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"cargo test --all-features\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"edit_file","success":false}}
 {"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"text","text":"Done."}],"metadata":{"reasoning_effort":"high"}},"usage":{"input_tokens":100,"output_tokens":10,"cache_read_tokens":40,"cache_creation_tokens":5,"estimated_cost_usd":0.02}}}
 {"type":"reason.completed","data":{"success":true,"duration_ms":900,"usage":{"input_tokens":100,"output_tokens":10,"estimated_cost_usd":0.02}}}
@@ -760,10 +971,16 @@ mod tests {
         assert_eq!(m.iterations, 2);
         assert_eq!(m.turns, 1);
         assert_eq!(m.turn_ms, 1500);
-        assert_eq!(m.tool_calls, vec!["grep_files", "edit_file"]);
+        assert_eq!(
+            m.tool_calls,
+            vec!["grep_files", "bash", "bash", "edit_file"]
+        );
         assert_eq!(m.tool_calls_failed, 1);
         assert_eq!(m.final_response, "All finished.");
         assert_eq!(m.effort_applied.as_deref(), Some("high"));
+        assert_eq!(m.exploration_tools_before_first_mutation, 2);
+        assert_eq!(m.max_exploration_tools_without_progress, 2);
+        assert_eq!(m.progress_guard_warnings, 1);
     }
 
     #[test]
@@ -849,7 +1066,7 @@ mod tests {
             eprintln!("skipping: no yolop binary (cargo build at the repo root first)");
             return;
         }
-        for harness in ["default", "no-ast-grep"] {
+        for harness in ["default", "no-progress-guard", "no-ast-grep"] {
             let mut cx = RunCx::new(Target::new("llmsim", "llmsim", "llmsim-yolop"));
             cx.params.insert("harness".into(), harness.into());
             let sample = Sample::new("e2e", "say hi").file("note.txt", "seed\n");

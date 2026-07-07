@@ -36,6 +36,15 @@ axes = { effort = ["default"] }
 targets = ["anthropic/claude-sonnet-4-5"]
 axes = { effort = ["default"] }
 
+# PROGRESS-GUARD — focused guardrail proof: the long sequential-read sample
+# should emit progress_guard warnings with the default harness and none when the
+# capability is disabled.
+#   doppler run -- mira run --preset progress-guard --group-by harness
+[presets.progress-guard]
+tag = "progress-guard"
+targets = ["anthropic/claude-sonnet-4-5"]
+axes = { effort = ["default"], harness = ["default", "no-progress-guard"] }
+
 # EFFORT-COMPARE — one model, out-of-the-box harness, across reasoning efforts.
 #   doppler run -- mira run --preset effort-compare --group-by effort
 [presets.effort-compare]

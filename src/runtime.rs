@@ -12,9 +12,9 @@ use crate::capabilities::{
     CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID,
     ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
     ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, GOAL_CAPABILITY_ID, GoalCapability,
-    HOOKS_CAPABILITY_ID, HooksCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
-    SETUP_CAPABILITY_ID, SetupCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
-    WorktreeCapability,
+    HOOKS_CAPABILITY_ID, HooksCapability, PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability,
+    REPO_MAP_CAPABILITY_ID, RepoMapCapability, SETUP_CAPABILITY_ID, SetupCapability,
+    USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::connectors::{
@@ -1623,6 +1623,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         ),
         AgentCapabilityConfig::new(STATELESS_TODO_LIST_CAPABILITY_ID),
         AgentCapabilityConfig::new(LOOP_DETECTION_CAPABILITY_ID),
+        AgentCapabilityConfig::new(PROGRESS_GUARD_CAPABILITY_ID),
         AgentCapabilityConfig::new(PROMPT_CACHING_CAPABILITY_ID),
         // Provider-agnostic deferred tool loading. Core tools stay fully
         // loaded; the long tail is stubbed until the model loads it via the
@@ -2262,6 +2263,9 @@ pub async fn build_with_options(
     capabilities.register(HooksCapability { hooks: hooks_store });
     // `yolop` — framing when the user addresses yolop itself, not the project.
     capabilities.register(YolopCapability);
+    // `progress_guard` — runtime-visible warnings when tool use stops making
+    // observable progress.
+    capabilities.register(ProgressGuardCapability::new());
     // Soft approval — spoken-consent guidance + audit tool, gated by the
     // central `approval_mode` setting (read live each turn).
     capabilities.register(ApprovalCapability {
@@ -4686,6 +4690,16 @@ mod tests {
         assert!(
             ids.iter()
                 .any(|cap| cap.capability_id() == LOOP_DETECTION_CAPABILITY_ID)
+        );
+    }
+
+    #[test]
+    fn coding_harness_enables_progress_guard() {
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == PROGRESS_GUARD_CAPABILITY_ID)
         );
     }
 
