@@ -4,7 +4,8 @@ A [Mira](https://github.com/everruns/mira) eval **study** for evaluating
 **yolop feature improvements**: the same small, self-contained coding tasks run
 across models × reasoning efforts × **yolop harness configurations**, so a
 feature (a new tool, a capability toggle, a prompt change) can be A/B'd on pass
-rate, turns, tool calls, tokens, and cost.
+rate, turns, tool calls, tokens, cost, and trajectory metrics such as
+exploration before first mutation.
 
 Unlike `swebench_verified/` (Python, benchmark-scale), this study is pure Rust
 on the [`mira-eval`](https://crates.io/crates/mira-eval) SDK — no Python
@@ -13,13 +14,13 @@ the runtime path; the TUI is never involved).
 
 ## The matrix
 
-Three axes, crossed with 6 samples (small edit / refactor / search tasks):
+Three axes, crossed with 7 samples (small edit / refactor / search / guardrail tasks):
 
 | Axis | Values | Where |
 |------|--------|-------|
 | **target** (model) | `anthropic/claude-sonnet-4-5` · `anthropic/claude-opus-4-8` · `openai/gpt-5.5` · `openrouter/z-ai/glm-5.2` | `targets()` in `src/main.rs` |
 | **effort** | `default` (yolop's per-model default; no flag) · `low` · `high` | `EFFORTS` |
-| **harness** | `default` (out-of-the-box yolop) · `no-ast-grep` | `HARNESS_VARIANTS` |
+| **harness** | `default` (out-of-the-box yolop) · `no-progress-guard` · `no-ast-grep` | `HARNESS_VARIANTS` |
 
 Every target gates on its provider key env var (`ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`) and is *skipped* (not failed) when the
@@ -40,13 +41,16 @@ search/refactor, and read-only code navigation.
 | `find-constant` [smoke] | 3 Python files; `MAGIC_TIMEOUT_MS = 7321` buried in `settings/defaults.py` | Answer its value, number only | final response contains `7321` | read-only navigation/search, no edits |
 | `implement-todo` | JS `clamp()` stub that throws, with a TODO spec comment | Implement per the TODO, remove the comment | `utils.js` has `function clamp` + `module.exports`, no `TODO`/`not implemented` | spec-comment comprehension, stub completion |
 | `add-module` | Rust lib with one existing fn | Create `src/util.rs` with `pub fn double`, wire `pub mod util;` into lib.rs | both files contain the required items | new-file creation + wiring across files |
+| `progress-guard-sequential-read` [`progress-guard`] | 24 numbered notes; answer in `notes/24.txt` | Read notes sequentially and answer the final code | final response contains `KITE-7429` | long exploration streak that should trigger `progress_guard` |
 
 ### Harness variants — the point of this study
 
-A variant is a yolop `settings.toml` written into an isolated per-case
-`XDG_CONFIG_HOME`, on top of a base that only turns linked worktrees off
+A variant is a yolop `settings.toml` written into isolated per-case config dirs
+(`XDG_CONFIG_HOME` and a scratch `HOME` for macOS), on top of a base that only turns linked worktrees off
 (study plumbing: the case workdir is a plain temp dir and file scorers read
 edits back from it). `default` adds nothing — it is yolop out of the box.
+`no-progress-guard` disables the progress-guard capability so guardrail
+changes can be compared against the same binary with that capability removed.
 
 Adding a configuration to the matrix is one entry in `src/main.rs`:
 
@@ -60,13 +64,13 @@ HarnessVariant {
 Any `settings.toml` content works (capability toggles and configs, feature
 settings), so future yolop features slot in without new plumbing. The variant
 name becomes the `harness` axis value in case keys
-(`basic_coding/add-fn@openai/gpt-5.5[effort=default,harness=no-ast-grep]`),
-selection (`--axis harness=no-ast-grep`), and `--group-by harness`.
+(`basic_coding/add-fn@openai/gpt-5.5[effort=default,harness=no-progress-guard]`),
+selection (`--axis harness=no-progress-guard`), and `--group-by harness`.
 
 ## How a case runs
 
 1. Seed the sample's files into a fresh temp workdir (never a git repo).
-2. Write the variant's `settings.toml` into a scratch `XDG_CONFIG_HOME`
+2. Write the variant's `settings.toml` into scratch config dirs
    (config/data/state/cache are all isolated — the developer's real
    `~/.config/yolop` never leaks in).
 3. Spawn `yolop -C <workdir> --provider … --model … [--reasoning-effort …]
@@ -74,8 +78,8 @@ selection (`--axis harness=no-ast-grep`), and `--group-by harness`.
    `HARNESS_BASIC_TIMEOUT_S`).
 4. Mine the session `events.jsonl` for usage/cost (once per
    `output.message.completed`; yolop repeats usage on `reason.completed`),
-   tool calls + failures, iterations/turns, the final response, and the
-   reasoning effort actually applied.
+  tool calls + failures, trajectory counters, iterations/turns, the final
+  response, and the reasoning effort actually applied.
 5. Read the workdir back so file scorers grade what yolop actually wrote.
 
 Raw per-case `events.jsonl` logs are kept under the gitignored
@@ -94,9 +98,10 @@ one generic scorer — adding a sample needs no new code:
 Alongside it: `succeeded` (yolop exited cleanly) and lenient guardrail budgets
 (`turns_within(32)`, `tool_calls_within(64)`, `cost_within($2)`). The A/B
 comparison itself reads the per-case numbers the transcript carries — tokens,
-cost, `llm_calls`, `turns`, `tool_calls_failed`, `agent_reported_ms` — plus
-metadata (`provider`, `model`, `effort`, `reasoning_effort_applied`,
-`harness`, `stop_reason`) for `--group-by`.
+cost, `llm_calls`, `turns`, `tool_calls_failed`, `agent_reported_ms`,
+`exploration_tools_before_first_mutation`, `max_exploration_tools_without_progress`,
+and `progress_guard_warnings` — plus metadata (`provider`, `model`, `effort`,
+`reasoning_effort_applied`, `harness`, `stop_reason`) for `--group-by`.
 
 ## Setup
 
@@ -123,6 +128,9 @@ doppler run -- mira run --preset smoke
 # The core loop: A/B the harness variants on one model.
 doppler run -- mira run --preset harness-compare --group-by harness
 
+# Focused guardrail proof: default vs no-progress-guard on the long-read trap.
+doppler run -- mira run --preset progress-guard --group-by harness
+
 # Reasoning-effort sweep, out-of-the-box harness.
 doppler run -- mira run --preset effort-compare --group-by effort
 
@@ -137,6 +145,7 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 |--------|---------|---------|---------|------|
 | `smoke` | cheap sanity check (4 cases) | tag `smoke` | claude-sonnet-4-5 | effort=default, all harness |
 | `harness-compare` | **A/B yolop configurations** | all | claude-sonnet-4-5 | effort=default, all harness |
+| `progress-guard` | focused warning-behavior check | tag `progress-guard` | claude-sonnet-4-5 | effort=default, default vs no-progress-guard |
 | `effort-compare` | effort sweep | all | gpt-5.5 | harness=default, all efforts |
 | `models` | model sweep, out-of-the-box yolop | all | all | harness=default, effort=default |
 

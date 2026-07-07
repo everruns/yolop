@@ -17,6 +17,7 @@ pub(crate) mod memory;
 pub(crate) mod model_discovery;
 pub(crate) mod model_ranking;
 pub(crate) mod narration;
+pub(crate) mod progress_guard;
 pub(crate) mod repo_map;
 pub mod skills;
 pub(crate) mod user_ask;
@@ -37,6 +38,7 @@ pub(crate) use host::{
     CODING_BASH_CAPABILITY_ID, CodingBashCapability, CodingCliEnvironmentCapability,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
 };
+pub(crate) use progress_guard::{PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability};
 pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
 pub(crate) use user_ask::UserAskCapability;
 pub(crate) use worktree_cmd::WorktreeCapability;

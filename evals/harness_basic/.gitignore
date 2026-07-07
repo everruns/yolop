@@ -2,3 +2,5 @@
 /target
 # Raw per-case session logs (events.jsonl) preserved for debugging.
 /.cache
+# Timestamped Mira reports from local runs.
+/results
