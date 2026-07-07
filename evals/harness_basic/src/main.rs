@@ -838,4 +838,29 @@ mod tests {
         // Every target is a key-gated cloud model; none is unconditionally on.
         assert!(eval.targets.iter().all(|t| !t.is_sim()));
     }
+
+    /// Drives the subject end-to-end: spawns the real yolop binary against its
+    /// bundled offline llmsim provider (no key, no cost — llmsim is not a
+    /// matrix target, but it still proves the spawn → settings → events.jsonl →
+    /// transcript pipeline). Skips when no yolop binary is built.
+    #[tokio::test]
+    async fn run_yolop_end_to_end_offline() {
+        if yolop_bin().is_err() {
+            eprintln!("skipping: no yolop binary (cargo build at the repo root first)");
+            return;
+        }
+        for harness in ["default", "no-ast-grep"] {
+            let mut cx = RunCx::new(Target::new("llmsim", "llmsim", "llmsim-yolop"));
+            cx.params.insert("harness".into(), harness.into());
+            let sample = Sample::new("e2e", "say hi").file("note.txt", "seed\n");
+            let t = run_yolop(sample, cx).await;
+            assert!(t.error.is_none(), "harness={harness}: {:?}", t.error);
+            assert!(!t.final_response.is_empty(), "harness={harness}");
+            assert!(t.usage.input_tokens > 0, "harness={harness}");
+            assert!(t.iterations >= 1, "harness={harness}");
+            assert_eq!(t.files.get("note.txt").map(String::as_str), Some("seed\n"));
+            assert_eq!(t.metadata["stop_reason"], json!("completed"));
+            assert_eq!(t.metadata["harness"], json!(harness));
+        }
+    }
 }
