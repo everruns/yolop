@@ -75,8 +75,11 @@ built on the `mira-eval` Python SDK, with PEP 723 inline deps; the `mira` host
 CLI drives it from that directory (`mira --cmd "uv run swebench_verified.py"
 run`). It is outside the Cargo workspace; `uv run` provisions its deps on first
 use, and its tests (which import the SDK) run with `uv run --with mira-eval -m
-unittest discover -s evals/swebench_verified/tests`. See
-[`evals/README.md`](evals/README.md).
+unittest discover -s evals/swebench_verified/tests`. `evals/harness_basic/` is
+a pure-Rust study on the `mira-eval` SDK (its own standalone crate, outside
+this Cargo package) that A/Bs yolop harness configurations on basic coding
+cases through headless `yolop -p`; `cargo test` inside that directory runs its
+tests. See [`evals/README.md`](evals/README.md).
 
 ## Git and commits
 

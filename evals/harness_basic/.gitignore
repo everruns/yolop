@@ -1,0 +1,4 @@
+# Standalone cargo project: its own build dir.
+/target
+# Raw per-case session logs (events.jsonl) preserved for debugging.
+/.cache

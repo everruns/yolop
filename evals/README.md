@@ -9,6 +9,7 @@ agent, scoring). One study per subfolder.
 | Study | What it measures |
 |-------|------------------|
 | [`swebench_verified/`](swebench_verified/) | yolop (and other coding agents) on **SWE-bench Verified** — resolve rate via the official Docker `FAIL_TO_PASS` harness, plus tokens/cost/latency. |
+| [`harness_basic/`](harness_basic/) | **yolop feature A/Bs** on basic coding cases — models × reasoning effort × yolop harness configurations (out-of-the-box, ast-grep off, …), pure Rust on the `mira-eval` SDK, driving headless `yolop -p`. |
 
 ## Running a study with mira
 

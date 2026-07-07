@@ -1,0 +1,48 @@
+# Mira host config for the harness_basic eval study.
+#
+# The `mira` CLI finds this by walking up from the working directory; run it
+# from evals/harness_basic/ so saved runs land in ./results. The study is a
+# Rust binary (mira-eval SDK), so the launcher is `cargo run -q --bin …` — it
+# compiles on first use, no other setup.
+default_launcher = "study"
+
+[launchers.study]
+bin = "harness_basic"
+
+[results]
+dir = "./results"
+
+[environment.labels]
+benchmark = "harness_basic"
+
+# Named selection presets (`mira run --preset NAME`; explicit flags override).
+# A preset only subsets the declared grid: targets/samples/evals/tag, plus
+# `axes` to restrict the secondary axes (harness, effort).
+
+# SMOKE — a cheap sanity check: the two `smoke`-tagged samples on one model,
+# default effort, both harness variants (4 cases). Needs ANTHROPIC_API_KEY;
+# without any provider key every target is unavailable and a run just skips.
+#   doppler run -- mira run --preset smoke
+[presets.smoke]
+tag = "smoke"
+targets = ["anthropic/claude-sonnet-4-5"]
+axes = { effort = ["default"] }
+
+# HARNESS-COMPARE — the study's core purpose: the same samples and model across
+# every yolop configuration variant. Add a variant to HARNESS_VARIANTS in
+# src/main.rs and it shows up here automatically.
+#   doppler run -- mira run --preset harness-compare --group-by harness
+[presets.harness-compare]
+targets = ["anthropic/claude-sonnet-4-5"]
+axes = { effort = ["default"] }
+
+# EFFORT-COMPARE — one model, out-of-the-box harness, across reasoning efforts.
+#   doppler run -- mira run --preset effort-compare --group-by effort
+[presets.effort-compare]
+targets = ["openai/gpt-5.5"]
+axes = { harness = ["default"] }
+
+# MODELS — out-of-the-box yolop across the whole model matrix (default effort).
+#   doppler run -- mira run --preset models --group-by target
+[presets.models]
+axes = { harness = ["default"], effort = ["default"] }
