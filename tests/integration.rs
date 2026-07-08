@@ -214,6 +214,62 @@ fn llmsim_print_smoke() {
 }
 
 #[test]
+fn llmsim_print_writes_atif_trajectory() {
+    // End-to-end offline smoke for `--trajectory-out`: a one-shot llmsim run
+    // must leave a parseable ATIF-v1.7 document with the user prompt and at
+    // least one agent step.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let trajectory_path = tmp.path().join("trajectory.json");
+    let output = Command::new(yolop_binary())
+        .args([
+            "--provider",
+            "llmsim",
+            "--session-dir",
+            tmp.path().to_str().unwrap(),
+            "-p",
+            "hi",
+            "--trajectory-out",
+            trajectory_path.to_str().unwrap(),
+        ])
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("OLLAMA_BASE_URL")
+        .env_remove("OLLAMA_API_KEY")
+        .output()
+        .expect("spawn yolop --provider llmsim -p hi --trajectory-out");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "yolop llmsim run failed: stdout={stdout} stderr={stderr}"
+    );
+
+    let raw = std::fs::read_to_string(&trajectory_path)
+        .unwrap_or_else(|e| panic!("trajectory file missing: {e} stderr={stderr}"));
+    let trajectory: serde_json::Value =
+        serde_json::from_str(&raw).expect("trajectory is valid JSON");
+    assert_eq!(trajectory["schema_version"], "ATIF-v1.7");
+    assert_eq!(trajectory["agent"]["name"], "yolop");
+    assert_eq!(trajectory["agent"]["version"], env!("CARGO_PKG_VERSION"));
+    let steps = trajectory["steps"].as_array().expect("steps array");
+    assert!(!steps.is_empty(), "steps must not be empty: {raw}");
+    assert_eq!(steps[0]["source"], "user");
+    assert_eq!(steps[0]["message"], "hi");
+    assert!(
+        steps.iter().any(|s| s["source"] == "agent"),
+        "expected at least one agent step: {raw}"
+    );
+    for (i, step) in steps.iter().enumerate() {
+        assert_eq!(
+            step["step_id"].as_u64(),
+            Some(i as u64 + 1),
+            "step ids must be 1-based and sequential: {raw}"
+        );
+    }
+}
+
+#[test]
 fn llmsim_resume_replays_prior_events() {
     // Two-shot test: the first invocation starts a fresh session and writes a
     // JSONL log; the second invocation resumes that session via `--session <id>`
