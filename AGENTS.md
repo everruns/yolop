@@ -97,6 +97,10 @@ agent-like, stop and ask before committing.
 
 ## PRs and CI
 
+- Use `.github/pull_request_template.md`. Center the description on functional
+  change and impact, not a code-location walkthrough (the diff shows that). Add a
+  Before / After with proof — CLI output, logs, or screenshots for UI — whenever
+  behavior changes.
 - PR titles must be Conventional Commits and under 70 characters.
 - Use **Squash and Merge**.
 - GitHub Actions is the CI source of truth.
