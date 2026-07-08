@@ -90,6 +90,13 @@ error at call time with install/override guidance — never a startup failure.
   full-text `didChange` when content moved), so edits made by other tools are
   always visible to the server.
 
+## Measuring it
+
+[`evals/lsp_integration/`](../evals/lsp_integration/) is the dedicated A/B
+study: semantic-navigation traps (decoy renames, re-export chains, no-build
+diagnostics) run with the capability off vs on, reporting pass rate, `lsp_*`
+adoption, turns, tokens, and cost.
+
 ## Non-goals
 
 - No always-on background indexing or diagnostics streaming into the prompt;

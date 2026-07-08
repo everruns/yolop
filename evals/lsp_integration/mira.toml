@@ -1,0 +1,41 @@
+# Mira host config for the lsp_integration eval study.
+#
+# The `mira` CLI finds this by walking up from the working directory; run it
+# from evals/lsp_integration/ so saved runs land in ./results. The study is a
+# Rust binary (mira-eval SDK), so the launcher is `cargo run -q --bin …` — it
+# compiles on first use; language servers come from ./bootstrap.sh.
+default_launcher = "study"
+
+[launchers.study]
+bin = "lsp_integration"
+
+[results]
+dir = "./results"
+
+[environment.labels]
+benchmark = "lsp_integration"
+
+# Named selection presets (`mira run --preset NAME`; explicit flags override).
+
+# SMOKE — the two cheap read-only navigation samples on one model, both
+# harness variants (4 cases). Needs ANTHROPIC_API_KEY and pyright.
+#   doppler run -- mira run --preset smoke --group-by harness
+[presets.smoke]
+tag = "smoke"
+targets = ["anthropic/claude-sonnet-4-5"]
+
+# COMPARE — the study's core purpose: every sample on one model, LSP off vs on.
+#   doppler run -- mira run --preset compare --group-by harness
+[presets.compare]
+targets = ["anthropic/claude-sonnet-4-5"]
+
+# RUST — just the rust-analyzer case (pull-diagnostics path), both variants.
+#   doppler run -- mira run --preset rust --group-by harness
+[presets.rust]
+tag = "rust"
+targets = ["anthropic/claude-sonnet-4-5"]
+
+# MODELS — the whole model matrix, LSP on only (cross-model adoption check).
+#   doppler run -- mira run --preset models --group-by target
+[presets.models]
+axes = { harness = ["lsp"] }

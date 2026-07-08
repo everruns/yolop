@@ -1,0 +1,14 @@
+# Standalone Mira study crate — deliberately outside the yolop Cargo package
+# (evals/ are not part of the shipped crate). Built on the mira-eval Rust SDK,
+# so the whole study is Rust: no Python plumbing.
+[package]
+name = "lsp_integration"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+mira-eval = "0.3"
+serde_json = "1.0"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util"] }
