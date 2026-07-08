@@ -12,9 +12,9 @@ use crate::capabilities::{
     CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID,
     ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
     ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, GOAL_CAPABILITY_ID, GoalCapability,
-    HOOKS_CAPABILITY_ID, HooksCapability, PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability,
-    REPO_MAP_CAPABILITY_ID, RepoMapCapability, SETUP_CAPABILITY_ID, SetupCapability,
-    USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability,
+    HOOKS_CAPABILITY_ID, HooksCapability, LspCapability, PROGRESS_GUARD_CAPABILITY_ID,
+    ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability, SETUP_CAPABILITY_ID,
+    SetupCapability, USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::connectors::{
@@ -490,6 +490,18 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "spawn_background",
     "write_todos",
     "run_yolop_command",
+    // LSP tools exist only when the optional `lsp` capability is enabled
+    // (absent names are ignored by the allowlist). When they exist, stub
+    // schemas behind `tool_search` add enough friction that models fall back
+    // to grep instead of adopting them (measured in evals/lsp_integration),
+    // so keep their real schemas loaded.
+    "lsp_definition",
+    "lsp_references",
+    "lsp_hover",
+    "lsp_diagnostics",
+    "lsp_rename",
+    "lsp_symbols",
+    "lsp_code_actions",
 ];
 const YOLOP_KEEP_RECENT_TOOL_OUTPUTS: u64 = 3;
 
@@ -2174,6 +2186,12 @@ pub async fn build_with_options(
     ));
     capabilities.register(RepoMapCapability::new(workspace_host.clone()));
     capabilities.register(AstGrepCapability::new(workspace_host.clone()));
+    // `lsp` — real language servers (diagnostics, go-to-def, references,
+    // rename, symbols, code actions). Registered so it appears in the catalog
+    // and can be switched on, but intentionally NOT part of the default
+    // harness: it spawns external server processes, so it is opt-in via
+    // `[[capabilities]] ref = "lsp"` in settings.toml. See specs/lsp.md.
+    capabilities.register(LspCapability::new(workspace_host.clone()));
     capabilities.register(InfinityContextCapability);
     capabilities.register(CompactionCapability);
     capabilities.register(StatelessTodoListCapability);
@@ -4631,6 +4649,37 @@ mod tests {
             ids.iter()
                 .any(|cap| cap.capability_id() == AST_GREP_CAPABILITY_ID),
             "ast_grep should be available for structural code search"
+        );
+    }
+
+    /// LSP spawns external language-server processes, so it must stay opt-in:
+    /// registered (enable-able via `[[capabilities]] ref = "lsp"`) but never
+    /// part of the default harness.
+    #[test]
+    fn coding_harness_does_not_enable_lsp_by_default() {
+        use crate::capabilities::lsp::LSP_CAPABILITY_ID;
+
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+        assert!(
+            !ids.iter()
+                .any(|cap| cap.capability_id() == LSP_CAPABILITY_ID),
+            "lsp must remain opt-in; it starts external server processes"
+        );
+
+        let mut settings = Settings::default();
+        settings
+            .capabilities
+            .push(crate::capability_settings::CapabilityOverride {
+                capability_ref: LSP_CAPABILITY_ID.to_string(),
+                enabled: Some(true),
+                append: false,
+                config: serde_json::Value::Null,
+            });
+        let ids = coding_harness_capabilities(false, None, &settings);
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == LSP_CAPABILITY_ID),
+            "a [[capabilities]] override should enable lsp"
         );
     }
 

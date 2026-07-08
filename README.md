@@ -95,6 +95,13 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **AST grep** — `ast_grep` runs read-only structural pattern search with
   ast-grep syntax across Rust, Python, TypeScript/TSX, JavaScript/JSX, C#,
   Go, CSS, HTML, and Bash.
+- **LSP** *(optional, off by default)* — real language servers
+  (rust-analyzer, typescript-language-server, pyright, gopls, clangd, or any
+  configured binary) behind `lsp_diagnostics`, `lsp_definition`,
+  `lsp_references`, `lsp_hover`, `lsp_rename` (workspace-wide, fixes every
+  reference), `lsp_symbols`, and `lsp_code_actions`. Servers spawn lazily
+  per language on first use. Enable with `[[capabilities]] ref = "lsp"` in
+  `settings.toml`. See [`specs/lsp.md`](./specs/lsp.md).
 - **Shell** — `bash -lc` from the workspace root, with a 120 s wall-clock
   timeout and per-stream 1 MiB output cap; large output is spilled to disk
   under the session folder and stays readable for model tool calls. Use

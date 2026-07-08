@@ -10,6 +10,7 @@ agent, scoring). One study per subfolder.
 |-------|------------------|
 | [`swebench_verified/`](swebench_verified/) | yolop (and other coding agents) on **SWE-bench Verified** — resolve rate via the official Docker `FAIL_TO_PASS` harness, plus tokens/cost/latency. |
 | [`harness_basic/`](harness_basic/) | **yolop feature A/Bs** on basic coding cases — models × reasoning effort × yolop harness configurations (out-of-the-box, ast-grep off, …), pure Rust on the `mira-eval` SDK, driving headless `yolop -p`. |
+| [`lsp_integration/`](lsp_integration/) | The optional **LSP capability**, isolated — semantic-navigation traps (decoy renames, re-export chains, no-build diagnostics) run with the capability off vs on, plus `lsp_*` adoption metrics. Same pure-Rust `mira-eval` pattern as `harness_basic/`; language servers come from its `bootstrap.sh`. |
 
 ## Running a study with mira
 
