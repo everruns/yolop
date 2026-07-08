@@ -1,5 +1,12 @@
 # Yolop
 
+[![CI](https://github.com/everruns/yolop/actions/workflows/ci.yml/badge.svg)](https://github.com/everruns/yolop/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/yolop.svg)](https://crates.io/crates/yolop)
+[![docs.rs](https://img.shields.io/docsrs/yolop)](https://docs.rs/yolop)
+[![Homebrew](https://img.shields.io/badge/Homebrew-everruns%2Ftap-blue)](https://github.com/everruns/homebrew-tap)
+[![Repo: Agent Friendly](https://img.shields.io/badge/Repo-Agent%20Friendly-blue)](AGENTS.md)
+
 A terminal coding agent built on
 [`everruns-runtime`](https://crates.io/crates/everruns-runtime). One binary
 that plans, edits, runs, and verifies code in your repository — autonomous by
