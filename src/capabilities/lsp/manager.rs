@@ -100,6 +100,10 @@ pub(crate) struct LanguageServer {
     pub client: LspClient,
     pub capabilities: Value,
     pub encoding: PositionEncoding,
+    /// When the server finished its `initialize` handshake. Cross-file
+    /// queries retry on empty results while the server is younger than the
+    /// warmup window (see `request_retrying_warmup`).
+    pub started_at: std::time::Instant,
     // Held only so `kill_on_drop` fires when the manager (and thus this
     // entry) is dropped; absent for in-process test transports.
     _child: Option<tokio::process::Child>,
@@ -311,6 +315,7 @@ async fn finish_initialize(
         client,
         capabilities,
         encoding,
+        started_at: std::time::Instant::now(),
         _child: child,
     })
 }

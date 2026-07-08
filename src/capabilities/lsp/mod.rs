@@ -35,6 +35,12 @@ use std::time::Duration;
 pub(crate) const LSP_CAPABILITY_ID: &str = "lsp";
 
 const MAX_LOCATIONS: usize = 500;
+/// Servers answer cross-file queries with empty (but successful) results
+/// while still analyzing the workspace — pyright returns zero references
+/// right after startup and the correct set seconds later. Retry empty
+/// results while the server is younger than this window.
+const WARMUP_WINDOW: Duration = Duration::from_secs(15);
+const WARMUP_RETRY_DELAYS_MS: &[u64] = &[1_000, 2_000, 4_000];
 const DEFAULT_REFERENCE_LIMIT: usize = 200;
 const MAX_PREVIEW_CHARS: usize = 200;
 const MAX_HOVER_CHARS: usize = 8_000;
@@ -521,6 +527,57 @@ async fn open_at(manager: &LspManager, arguments: &Value) -> Result<(OpenedDocum
     Ok((doc, position))
 }
 
+/// Send a cross-file request, retrying while the server warms up and keeps
+/// answering with `looks_empty` results. Returns the last response either way
+/// — an empty result after the window is a real answer, not a warmup artifact.
+async fn request_retrying_warmup(
+    server: &manager::LanguageServer,
+    method: &str,
+    params: Value,
+    looks_empty: impl Fn(&Value) -> bool,
+) -> Result<Value> {
+    let mut result = server.client.request(method, params.clone()).await?;
+    for delay_ms in WARMUP_RETRY_DELAYS_MS {
+        if !looks_empty(&result) || server.started_at.elapsed() > WARMUP_WINDOW {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(*delay_ms)).await;
+        result = server.client.request(method, params.clone()).await?;
+    }
+    Ok(result)
+}
+
+fn no_locations(result: &Value) -> bool {
+    normalize_locations(result).is_empty()
+}
+
+/// A null, empty, or single-file rename edit during warmup may reflect
+/// incomplete workspace analysis (cross-file references not resolved yet);
+/// two or more touched files proves cross-file resolution happened. The
+/// worst case for a genuinely single-file symbol is a few extra seconds,
+/// bounded by the warmup window.
+fn rename_looks_incomplete(edit: &Value) -> bool {
+    if edit.is_null() {
+        return true;
+    }
+    let mut files = std::collections::BTreeSet::new();
+    if let Some(changes) = edit.get("changes").and_then(Value::as_object) {
+        files.extend(changes.keys().cloned());
+    }
+    if let Some(document_changes) = edit.get("documentChanges").and_then(Value::as_array) {
+        for change in document_changes {
+            if let Some(uri) = change
+                .pointer("/textDocument/uri")
+                .or_else(|| change.get("uri"))
+                .and_then(Value::as_str)
+            {
+                files.insert(uri.to_string());
+            }
+        }
+    }
+    files.len() < 2
+}
+
 // ---------------------------------------------------------------------------
 // Location rendering
 
@@ -757,14 +814,13 @@ async fn definition(manager: &LspManager, arguments: &Value) -> Result<Value> {
         other => bail!("unsupported definition kind: {other}"),
     };
     let (doc, position) = open_at(manager, arguments).await?;
-    let result = doc
-        .server
-        .client
-        .request(
-            method,
-            json!({ "textDocument": { "uri": doc.uri }, "position": position }),
-        )
-        .await?;
+    let result = request_retrying_warmup(
+        &doc.server,
+        method,
+        json!({ "textDocument": { "uri": doc.uri }, "position": position }),
+        no_locations,
+    )
+    .await?;
     let (locations, truncated) =
         render_location_list(manager, &result, doc.server.encoding, MAX_LOCATIONS)?;
     Ok(json!({
@@ -787,18 +843,17 @@ async fn references(manager: &LspManager, arguments: &Value) -> Result<Value> {
         .map(|limit| (limit as usize).clamp(1, MAX_LOCATIONS))
         .unwrap_or(DEFAULT_REFERENCE_LIMIT);
     let (doc, position) = open_at(manager, arguments).await?;
-    let result = doc
-        .server
-        .client
-        .request(
-            "textDocument/references",
-            json!({
-                "textDocument": { "uri": doc.uri },
-                "position": position,
-                "context": { "includeDeclaration": include_declaration },
-            }),
-        )
-        .await?;
+    let result = request_retrying_warmup(
+        &doc.server,
+        "textDocument/references",
+        json!({
+            "textDocument": { "uri": doc.uri },
+            "position": position,
+            "context": { "includeDeclaration": include_declaration },
+        }),
+        no_locations,
+    )
+    .await?;
     let (locations, truncated) =
         render_location_list(manager, &result, doc.server.encoding, limit)?;
     Ok(json!({
@@ -857,18 +912,20 @@ async fn rename(manager: &LspManager, arguments: &Value) -> Result<Value> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let (doc, position) = open_at(manager, arguments).await?;
-    let edit = doc
-        .server
-        .client
-        .request(
-            "textDocument/rename",
-            json!({
-                "textDocument": { "uri": doc.uri },
-                "position": position,
-                "newName": new_name,
-            }),
-        )
-        .await?;
+    // Renames computed mid-analysis can silently miss cross-file references
+    // (the exact failure this tool exists to prevent), so retry while the
+    // server warms up and the edit stays empty or single-file.
+    let edit = request_retrying_warmup(
+        &doc.server,
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": doc.uri },
+            "position": position,
+            "newName": new_name,
+        }),
+        rename_looks_incomplete,
+    )
+    .await?;
     if edit.is_null() {
         bail!("the server returned no rename edit (symbol may not be renameable here)");
     }
@@ -1022,10 +1079,13 @@ async fn symbols(manager: &LspManager, arguments: &Value) -> Result<Value> {
                      language) when no language server is running yet",
                 )?,
             };
-            let result = server
-                .client
-                .request("workspace/symbol", json!({ "query": query }))
-                .await?;
+            let result = request_retrying_warmup(
+                &server,
+                "workspace/symbol",
+                json!({ "query": query }),
+                |result| result.as_array().is_none_or(Vec::is_empty),
+            )
+            .await?;
             let root = workspace_root(manager)?;
             let items = result.as_array().cloned().unwrap_or_default();
             let total = items.len();
@@ -1288,11 +1348,14 @@ mod tests {
     }
 
     /// In-process fake language server covering every request the tools send.
-    /// Speaks utf-8 positions so ASCII test fixtures assert 1:1.
+    /// Speaks utf-8 positions so ASCII test fixtures assert 1:1. The first
+    /// `references` request returns an empty result to exercise the warmup
+    /// retry path — tools must transparently ask again and get the real set.
     async fn fake_server(transport: tokio::io::DuplexStream, root: PathBuf) {
         let (read_half, mut write_half) = tokio::io::split(transport);
         let mut reader = tokio::io::BufReader::new(read_half);
         let uri = |name: &str| path_to_uri(&root.join(name));
+        let mut references_requests = 0u32;
         let diagnostic = json!({
             "range": range(0, 3, 0, 6),
             "severity": 1,
@@ -1331,10 +1394,18 @@ mod tests {
                     "uri": uri("target.rs"),
                     "range": range(0, 3, 0, 12),
                 }]),
-                "textDocument/references" => json!([
-                    { "uri": uri("main.rs"), "range": range(0, 3, 0, 6) },
-                    { "uri": uri("main.rs"), "range": range(1, 14, 1, 17) },
-                ]),
+                "textDocument/references" => {
+                    references_requests += 1;
+                    if references_requests == 1 {
+                        // Warmup artifact: empty-but-successful first answer.
+                        json!([])
+                    } else {
+                        json!([
+                            { "uri": uri("main.rs"), "range": range(0, 3, 0, 6) },
+                            { "uri": uri("main.rs"), "range": range(1, 14, 1, 17) },
+                        ])
+                    }
+                }
                 "textDocument/hover" => json!({
                     "contents": { "kind": "markdown", "value": "```rust\nfn old()\n```" }
                 }),
