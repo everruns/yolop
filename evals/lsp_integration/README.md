@@ -113,6 +113,21 @@ The headline questions, in order:
    input tokens, and `agent_reported_ms`. Server startup makes the *first*
    LSP call per case slower; judge end-to-end cost, not per-call latency.
 
+## Verified results (2026-07-08, runs `f175` → `f80c`)
+
+The first full run surfaced two real capability bugs — pyright stalling
+without a `didChangeConfiguration` push, and pyright answering cross-file
+queries with empty-but-successful results during warmup (which sent one model
+into a 173-`read_file` spiral) — both fixed and covered by tests. After those
+fixes plus the adoption levers (never-defer schemas, directive prompt guidance),
+the clean run `20260708T064759Z-f80c` (opus-4.8 + gpt-5.5, 20 cases) showed:
+**20/20 checks pass on both variants** (samples don't yet separate correctness
+for frontier models), organic adoption in 5/10 LSP cases (9 `lsp_*` calls,
+0 failures), and shorter trajectories where adopted — opus averaged 5.4 turns /
+$0.61 with LSP vs 8.6 turns / $1.02 without; gpt-5.5 used fewer turns/tools but
+paid a small input-token overhead from the always-loaded schemas. Single-trial,
+n=5 per cell: treat as directional until samples are hardened and trials added.
+
 ## Tests
 
 `cargo test` in this directory: dataset/trap consistency, settings variants,
