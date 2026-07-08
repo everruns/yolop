@@ -202,16 +202,27 @@ impl Capability for LspCapability {
     }
 
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
+        // Directive on purpose: with a softer "prefer them" phrasing, models
+        // solved symbol-level tasks around these tools with grep/read
+        // (adoption measured near zero in evals/lsp_integration).
         Some(
             "<capability id=\"lsp\">\n\
-             Language-server tools are enabled. Prefer them over grep for semantic \
-             questions: `lsp_definition` / `lsp_references` to trace a symbol, \
-             `lsp_hover` for types and docs, `lsp_diagnostics` to check a file after \
-             editing, `lsp_rename` for workspace-wide renames (it fixes every \
-             reference, including re-exports), `lsp_symbols` to list or search \
-             symbols, and `lsp_code_actions` for server-suggested fixes. The first \
-             call per language starts its server, so it may be slow while the \
-             project indexes; results improve on retry.\n\
+             Language-server tools are enabled. For symbol-level questions, call \
+             the `lsp_*` tool FIRST, before any grep/read exploration — the server \
+             resolves semantics that text search gets wrong (same-named symbols, \
+             aliases, re-exports):\n\
+             - where is X defined / what is X → `lsp_definition`, `lsp_hover`\n\
+             - who uses X / count call sites → `lsp_references`\n\
+             - rename X everywhere → `lsp_rename` (fixes every reference, \
+             including imports, aliases, and re-exports; never rename a symbol \
+             with text edits when this tool is available)\n\
+             - errors/warnings in a file → `lsp_diagnostics` (no build needed; \
+             also run it on files you just edited)\n\
+             - outline or fuzzy symbol search → `lsp_symbols`; server quick \
+             fixes → `lsp_code_actions`\n\
+             The first call per language starts its server, so it may be slow \
+             while the project indexes; results improve on retry. Fall back to \
+             grep only for plain-text matters (strings, comments, config).\n\
              </capability>"
                 .to_string(),
         )

@@ -490,6 +490,18 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "spawn_background",
     "write_todos",
     "run_yolop_command",
+    // LSP tools exist only when the optional `lsp` capability is enabled
+    // (absent names are ignored by the allowlist). When they exist, stub
+    // schemas behind `tool_search` add enough friction that models fall back
+    // to grep instead of adopting them (measured in evals/lsp_integration),
+    // so keep their real schemas loaded.
+    "lsp_definition",
+    "lsp_references",
+    "lsp_hover",
+    "lsp_diagnostics",
+    "lsp_rename",
+    "lsp_symbols",
+    "lsp_code_actions",
 ];
 const YOLOP_KEEP_RECENT_TOOL_OUTPUTS: u64 = 3;
 
