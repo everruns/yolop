@@ -585,6 +585,24 @@ fn workspace_file(root: &Path, uri: &str) -> Result<PathBuf> {
             path.display()
         );
     }
+    // Workspace edits bypass the platform filesystem stack (they come from
+    // the language server, not a file tool), so enforce the same write
+    // blocklist here: no mutations inside vendored/build directories.
+    for component in resolved
+        .strip_prefix(root)
+        .unwrap_or(&resolved)
+        .components()
+    {
+        if let Component::Normal(name) = component
+            && let Some(name) = name.to_str()
+            && everruns_runtime::DEFAULT_WRITE_BLOCKLIST.contains(&name)
+        {
+            bail!(
+                "server proposed an edit inside the protected directory `{name}`: {}",
+                path.display()
+            );
+        }
+    }
     Ok(resolved)
 }
 
@@ -848,6 +866,27 @@ mod tests {
         assert!(workspace_file(&root, &sneaky).is_err());
         let inside = path_to_uri(&root.join("new/file.rs"));
         assert!(workspace_file(&root, &inside).is_ok());
+    }
+
+    /// Workspace edits skip the platform filesystem stack, so the write
+    /// blocklist must be enforced here too — a server-proposed edit into
+    /// `.git/` or a vendored/build directory is rejected at any depth.
+    #[test]
+    fn workspace_file_rejects_write_blocklisted_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("canonicalize");
+        for blocked in [
+            ".git/config",
+            "node_modules/pkg/index.js",
+            "sub/target/out.rs",
+        ] {
+            let uri = path_to_uri(&root.join(blocked));
+            let err = workspace_file(&root, &uri).expect_err(blocked);
+            assert!(err.to_string().contains("protected directory"), "{err}");
+        }
+        // A file merely *named* like a blocklist entry is fine.
+        let file = path_to_uri(&root.join("targets.rs"));
+        assert!(workspace_file(&root, &file).is_ok());
     }
 
     #[test]
