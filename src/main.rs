@@ -4,6 +4,7 @@
 
 mod acp;
 mod app;
+mod atif;
 mod background_wake;
 mod capabilities;
 mod capability_settings;
@@ -132,6 +133,12 @@ struct Cli {
     /// `%APPDATA%\yolop\sessions\` on Windows).
     #[arg(long)]
     session_dir: Option<PathBuf>,
+
+    /// Write the full session as an ATIF v1.7 trajectory JSON file to this
+    /// path at end of run. Works interactively and with `-p/--print`; see
+    /// `specs/trajectory.md`.
+    #[arg(long, value_name = "PATH")]
+    trajectory_out: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -407,6 +414,9 @@ async fn main() -> Result<()> {
     // ACP mode builds runtimes per session (cwd arrives via `session/new`), so
     // it bypasses the up-front runtime build and the TUI.
     if cli.acp {
+        if cli.trajectory_out.is_some() {
+            eprintln!("yolop: --trajectory-out is ignored in --acp mode");
+        }
         return acp::run_stdio(provider, settings, sessions_dir).await;
     }
 
@@ -429,10 +439,10 @@ async fn main() -> Result<()> {
 
     if let Some(prompt) = cli.print {
         let image_parts = image_input::load_image_parts(&cli.images)?;
-        return run_print_mode(runtime, prompt, image_parts).await;
+        return run_print_mode(runtime, prompt, image_parts, cli.trajectory_out).await;
     }
     let pending_images = image_input::load_image_parts(&cli.images)?;
-    run_tui(runtime, pending_images).await
+    run_tui(runtime, pending_images, cli.trajectory_out).await
 }
 
 fn resolve_workspace_root(
@@ -576,7 +586,15 @@ fn run_command(command: Commands) -> Result<()> {
     }
 }
 
-async fn run_tui(runtime: BuiltRuntime, pending_images: Vec<ContentPart>) -> Result<()> {
+async fn run_tui(
+    runtime: BuiltRuntime,
+    pending_images: Vec<ContentPart>,
+    trajectory_out: Option<PathBuf>,
+) -> Result<()> {
+    // Cheap Arc clones taken before `App` consumes the runtime, so the
+    // trajectory can be exported after the TUI loop ends.
+    let trajectory_handles = runtime.handles.clone();
+    let trajectory_model = runtime.model.clone();
     let mut raw_mode = RawModeGuard::new()?;
     let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
     let mut bracketed_paste = BracketedPasteGuard::new();
@@ -617,6 +635,13 @@ async fn run_tui(runtime: BuiltRuntime, pending_images: Vec<ContentPart>) -> Res
     bracketed_paste.disable();
     keyboard_enhancements.disable();
     raw_mode.disable()?;
+
+    write_trajectory_if_requested(
+        &trajectory_handles,
+        &trajectory_model,
+        trajectory_out.as_deref(),
+    )
+    .await;
 
     if show_resume_hint {
         println!();
@@ -731,10 +756,44 @@ fn print_centered_ukraine_banner() {
     );
 }
 
+/// Export the session as an ATIF trajectory when `--trajectory-out` was
+/// given. Best-effort: export problems are reported on stderr and never turn
+/// a finished run into a failure.
+async fn write_trajectory_if_requested(
+    handles: &runtime::RuntimeHandles,
+    model: &runtime::ModelState,
+    path: Option<&Path>,
+) {
+    let Some(path) = path else { return };
+    let events = match handles.runtime.events().await {
+        Ok(events) => events,
+        Err(err) => {
+            eprintln!("yolop: trajectory export failed to read session events: {err}");
+            return;
+        }
+    };
+    let trajectory = atif::trajectory_from_events(
+        atif::AgentInfo {
+            name: "yolop".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            model_name: Some(model.model_id()),
+        },
+        handles.session_id,
+        &events,
+    );
+    if let Err(err) = atif::write_trajectory_file(path, &trajectory) {
+        eprintln!(
+            "yolop: failed to write trajectory to {}: {err}",
+            path.display()
+        );
+    }
+}
+
 async fn run_print_mode(
     runtime: BuiltRuntime,
     prompt: String,
     images: Vec<ContentPart>,
+    trajectory_out: Option<PathBuf>,
 ) -> Result<()> {
     let BuiltRuntime {
         handles,
@@ -796,7 +855,9 @@ async fn run_print_mode(
 
     let trimmed = prompt.trim();
     if let Some(goal_args) = trimmed.strip_prefix("/goal") {
-        return run_print_goal(
+        // `run_print_goal` reports failure as a flag (not `process::exit`)
+        // so the trajectory export still runs on failed goal runs.
+        let success = run_print_goal(
             &handles,
             &worktree,
             &model,
@@ -804,7 +865,12 @@ async fn run_print_mode(
             goal_args.trim(),
             color,
         )
-        .await;
+        .await?;
+        write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
+        if !success {
+            std::process::exit(1);
+        }
+        return Ok(());
     }
 
     if user_ask_enabled
@@ -815,6 +881,7 @@ async fn run_print_mode(
 
     let result = run_print_turn(&handles, &worktree, &model, trimmed, images, color).await?;
     if !result.success {
+        write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
         std::process::exit(1);
     }
     if user_ask_enabled && user_ask_store.is_active(handles.session_id) {
@@ -840,9 +907,12 @@ async fn run_print_mode(
             eprintln!("user ask evaluation failed: {}", evaluation.message);
         }
     }
+    write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
     Ok(())
 }
 
+/// Returns `Ok(false)` on goal/turn failure instead of exiting so the caller
+/// can finish end-of-run work (trajectory export) before setting the exit code.
 async fn run_print_goal(
     handles: &runtime::RuntimeHandles,
     worktree: &crate::worktree::WorktreeManager,
@@ -850,7 +920,7 @@ async fn run_print_goal(
     goal_store: &goal::GoalStore,
     arguments: &str,
     color: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let session_id = handles.session_id;
     let request = ExecuteCommandRequest {
         name: "goal".to_string(),
@@ -867,15 +937,15 @@ async fn run_print_goal(
     }
     if !result.success {
         eprintln!("goal command failed: {}", result.message);
-        std::process::exit(1);
+        return Ok(false);
     }
 
     if !goal_store.take_pending_turn(session_id) {
-        return Ok(());
+        return Ok(true);
     }
 
     let Some(mut turn_prompt) = goal_store.active_condition(session_id) else {
-        return Ok(());
+        return Ok(true);
     };
 
     loop {
@@ -883,10 +953,10 @@ async fn run_print_goal(
         println!("{}", paint(color, "90", &format!("› {turn_prompt}")));
         let turn = run_print_turn(handles, worktree, model, &turn_prompt, vec![], color).await?;
         if !turn.success {
-            std::process::exit(1);
+            return Ok(false);
         }
         if !goal_store.is_active(session_id) {
-            return Ok(());
+            return Ok(true);
         }
 
         let evaluation = handles
@@ -902,7 +972,7 @@ async fn run_print_goal(
             .await?;
         if !evaluation.success {
             eprintln!("goal evaluation failed: {}", evaluation.message);
-            std::process::exit(1);
+            return Ok(false);
         }
         let parsed = goal::parse_evaluation_response(&evaluation.message)?;
         if parsed.met {
@@ -910,7 +980,7 @@ async fn run_print_goal(
                 "{}",
                 paint(color, "92", &format!("goal achieved: {}", parsed.reason))
             );
-            return Ok(());
+            return Ok(true);
         }
         println!(
             "{}",
@@ -1057,6 +1127,7 @@ mod tests {
             acp: false,
             session: None,
             session_dir: None,
+            trajectory_out: None,
         }
     }
 
@@ -1112,6 +1183,7 @@ mod tests {
             acp: false,
             session: None,
             session_dir: None,
+            trajectory_out: None,
         };
 
         let (provider, _notes) = pick_provider(&cli, &settings);

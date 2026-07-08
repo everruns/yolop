@@ -286,6 +286,7 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 | `--session <ID>`           | Resume a previous session by id                                      |
 | `--session-dir <PATH>`     | Override the parent directory for session folders                    |
 | `--reasoning-effort <E>`   | Reasoning effort override when the selected model profile supports it |
+| `--trajectory-out <PATH>`  | Write the session as an [ATIF](https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md) v1.7 trajectory JSON file at end of run (interactive and `--print`) |
 
 ### Commands
 
