@@ -16,6 +16,8 @@ use std::sync::{Arc, Mutex};
 pub(crate) const PROGRESS_GUARD_CAPABILITY_ID: &str = "progress_guard";
 
 const EXPLORATION_WITHOUT_PROGRESS_THRESHOLD: usize = 24;
+const CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD: usize = 48;
+const REPEATED_EXPLORATION_THRESHOLD: usize = 5;
 const REPEATED_STATUS_THRESHOLD: usize = 3;
 
 pub(crate) struct ProgressGuardCapability {
@@ -61,8 +63,10 @@ impl Capability for ProgressGuardCapability {
             "<capability id=\"progress_guard\">\n\
              The runtime tracks investigation, mutation, and validation tool usage. If a \
              progress_guard warning appears in a tool result, stop broad exploration, state \
-             the current hypothesis, inspect only the missing evidence, or make/verify the \
-             smallest relevant change before continuing.\n\
+             the current hypothesis, inspect only the missing evidence, make/verify the \
+             smallest relevant change, or end with a no-change diagnosis before continuing. \
+             Escalated warnings require a checkpoint: facts, hypothesis, and next decisive \
+             action.\n\
              </capability>"
                 .to_string(),
         )
@@ -95,6 +99,8 @@ struct SessionProgress {
     validation_count: usize,
     repeated_status_count: usize,
     last_status_command: Option<String>,
+    repeated_exploration_count: usize,
+    last_exploration_signature: Option<String>,
     warning_count: usize,
 }
 
@@ -109,6 +115,8 @@ impl SessionProgress {
                 self.exploration_since_progress = 0;
                 self.repeated_status_count = 0;
                 self.last_status_command = None;
+                self.repeated_exploration_count = 0;
+                self.last_exploration_signature = None;
                 None
             }
             ToolClass::Validation => {
@@ -116,6 +124,8 @@ impl SessionProgress {
                 self.exploration_since_progress = 0;
                 self.repeated_status_count = 0;
                 self.last_status_command = None;
+                self.repeated_exploration_count = 0;
+                self.last_exploration_signature = None;
                 None
             }
             ToolClass::Status(command) => {
@@ -138,6 +148,9 @@ impl SessionProgress {
             }
             ToolClass::Exploration => {
                 self.exploration_since_progress += 1;
+                if let Some(warning) = self.repetition_warning(tool_call) {
+                    return Some(warning);
+                }
                 self.exploration_warning()
             }
             ToolClass::Other => None,
@@ -150,6 +163,36 @@ impl SessionProgress {
             return Some(format!(
                 "progress_guard: {EXPLORATION_WITHOUT_PROGRESS_THRESHOLD} investigation tools have run without an edit or validation. Narrow the hypothesis now: identify the exact missing evidence, make the smallest relevant change, or run one decisive verification command."
             ));
+        }
+        if self.exploration_since_progress >= CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+            self.warning_count += 1;
+            return Some(format!(
+                "progress_guard: checkpoint required after {count} investigation tools without an edit or validation. Stop reading broadly and produce a checkpoint before more exploration: facts learned, current hypothesis, and the next decisive action (edit, validation, or no-change diagnosis).",
+                count = self.exploration_since_progress
+            ));
+        }
+        None
+    }
+
+    fn repetition_warning(&mut self, tool_call: &ToolCall) -> Option<String> {
+        let Some(signature) = exploration_signature(tool_call) else {
+            self.repeated_exploration_count = 0;
+            self.last_exploration_signature = None;
+            return None;
+        };
+        if self.last_exploration_signature.as_deref() == Some(signature.as_str()) {
+            self.repeated_exploration_count += 1;
+        } else {
+            self.repeated_exploration_count = 1;
+            self.last_exploration_signature = Some(signature);
+        }
+        if self.repeated_exploration_count >= REPEATED_EXPLORATION_THRESHOLD {
+            self.warning_count += 1;
+            self.repeated_exploration_count = 0;
+            return Some(
+                "progress_guard: repeated the same investigation target without an intervening edit or validation. Use the evidence already gathered, state the hypothesis, or switch to a decisive test/change."
+                    .to_string(),
+            );
         }
         None
     }
@@ -235,6 +278,52 @@ fn classify_bash_command(command: &str) -> ToolClass {
 
 fn normalize_command(command: &str) -> String {
     command.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn exploration_signature(tool_call: &ToolCall) -> Option<String> {
+    match tool_call.name.as_str() {
+        "read_file" => {
+            let path = tool_call.arguments.get("path").and_then(Value::as_str)?;
+            let offset = tool_call
+                .arguments
+                .get("offset")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            Some(format!("read_file:{path}:{offset}"))
+        }
+        "grep_files" => {
+            let pattern = tool_call
+                .arguments
+                .get("pattern")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let path_pattern = tool_call
+                .arguments
+                .get("path_pattern")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            Some(format!("grep_files:{path_pattern}:{pattern}"))
+        }
+        "repo_map" | "ast_grep" | "list_directory" | "stat_file" => Some(format!(
+            "{}:{}",
+            tool_call.name,
+            normalize_value(&tool_call.arguments)
+        )),
+        "bash" => {
+            let command = tool_call
+                .arguments
+                .get("command")
+                .and_then(Value::as_str)
+                .map(normalize_command)
+                .unwrap_or_default();
+            is_exploration_command(&command).then(|| format!("bash:{command}"))
+        }
+        _ => None,
+    }
+}
+
+fn normalize_value(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
 }
 
 fn is_status_command(command: &str) -> bool {
@@ -396,6 +485,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hook_escalates_to_checkpoint_after_more_exploration() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let mut last = result();
+
+        for i in 0..CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+            last = result();
+            hook.after_exec(
+                &call("read_file", json!({ "path": format!("/src/{i}.rs") })),
+                &tool_def("read_file"),
+                &mut last,
+                &context,
+            )
+            .await;
+        }
+
+        assert!(
+            last.result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str)
+                .is_some_and(|warning| warning.contains("checkpoint required"))
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_keeps_warning_after_checkpoint_until_progress() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let mut last = result();
+
+        for i in 0..=CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+            last = result();
+            hook.after_exec(
+                &call("grep_files", json!({ "pattern": format!("needle{i}") })),
+                &tool_def("grep_files"),
+                &mut last,
+                &context,
+            )
+            .await;
+        }
+
+        assert!(
+            last.result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str)
+                .is_some_and(|warning| warning.contains("checkpoint required"))
+        );
+    }
+
+    #[tokio::test]
     async fn mutation_resets_exploration_warning_counter() {
         let state = Arc::new(Mutex::new(ProgressGuardState::default()));
         let hook = ProgressGuardHook { state };
@@ -434,6 +577,179 @@ mod tests {
                 .as_ref()
                 .and_then(|value| value.get("progress_guard_warning"))
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn validation_resets_checkpoint_warning_counter() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let mut last = result();
+
+        for i in 0..CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+            hook.after_exec(
+                &call("read_file", json!({ "path": format!("/src/{i}.rs") })),
+                &tool_def("read_file"),
+                &mut result(),
+                &context,
+            )
+            .await;
+        }
+        hook.after_exec(
+            &call("bash", json!({ "command": "cargo test --all-features" })),
+            &tool_def("bash"),
+            &mut result(),
+            &context,
+        )
+        .await;
+        for i in 0..(EXPLORATION_WITHOUT_PROGRESS_THRESHOLD - 1) {
+            last = result();
+            hook.after_exec(
+                &call("read_file", json!({ "path": format!("/src/after/{i}.rs") })),
+                &tool_def("read_file"),
+                &mut last,
+                &context,
+            )
+            .await;
+        }
+
+        assert!(
+            last.result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_exploration_target_warns() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let mut last = result();
+
+        for _ in 0..REPEATED_EXPLORATION_THRESHOLD {
+            last = result();
+            hook.after_exec(
+                &call("read_file", json!({ "path": "/src/lib.rs", "offset": 10 })),
+                &tool_def("read_file"),
+                &mut last,
+                &context,
+            )
+            .await;
+        }
+
+        assert!(
+            last.result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str)
+                .is_some_and(|warning| warning.contains("same investigation target"))
+        );
+    }
+
+    #[tokio::test]
+    async fn original_session_pattern_gets_interrupted_before_runaway_reads() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let mut warnings = Vec::new();
+
+        let observe = |tool_call: ToolCall| {
+            let hook = &hook;
+            let context = &context;
+            async move {
+                let mut out = result();
+                hook.after_exec(&tool_call, &tool_def(&tool_call.name), &mut out, context)
+                    .await;
+                out.result
+                    .as_ref()
+                    .and_then(|value| value.get("progress_guard_warning"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }
+        };
+
+        // Same shape as the failed investigation: broad searches, then many
+        // repeated reads of the callback-adjacent files, with no edit/test.
+        let broad_searches = [
+            "scheduled|schedule|signal_on_completion|callback|background",
+            "spawn_background|signal_on_completion|scheduled_at",
+            "cron|completion|task|background_run|Background|Task",
+            "drain_finished_for_wake|wake_prompt|BackgroundRegistry",
+            "SessionScheduleStore|schedule_store|create_schedule",
+            "maybe_wake_for_background|TaskRegistryEvent",
+        ];
+        for pattern in broad_searches {
+            if let Some(warning) = observe(call(
+                "grep_files",
+                json!({ "pattern": pattern, "path_pattern": "src/**/*.rs" }),
+            ))
+            .await
+            {
+                warnings.push(warning);
+            }
+        }
+        for offset in [180, 388, 633, 940, 1370, 1540, 180, 388, 633] {
+            if let Some(warning) = observe(call(
+                "read_file",
+                json!({ "path": "/workspace/src/capabilities/background.rs", "offset": offset }),
+            ))
+            .await
+            {
+                warnings.push(warning);
+            }
+        }
+        for offset in [1000, 1020, 1010, 1028, 1000, 1020, 1010, 1028, 1000] {
+            if let Some(warning) = observe(call(
+                "read_file",
+                json!({ "path": "/workspace/src/app/mod.rs", "offset": offset }),
+            ))
+            .await
+            {
+                warnings.push(warning);
+            }
+        }
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("investigation tools")),
+            "first threshold should warn before the session keeps circling: {warnings:?}"
+        );
+
+        for i in 0..24 {
+            if let Some(warning) = observe(call(
+                "read_file",
+                json!({ "path": format!("/workspace/src/runtime.rs"), "offset": 2100 + i }),
+            ))
+            .await
+            {
+                warnings.push(warning);
+            }
+        }
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("checkpoint required")),
+            "checkpoint escalation should trigger by 48 read/search calls: {warnings:?}"
+        );
+
+        for _ in 0..REPEATED_EXPLORATION_THRESHOLD {
+            if let Some(warning) = observe(call(
+                "read_file",
+                json!({ "path": "/workspace/src/app/mod.rs", "offset": 1000 }),
+            ))
+            .await
+            {
+                warnings.push(warning);
+            }
+        }
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("same investigation target")),
+            "semantic repetition should catch rereading the same range: {warnings:?}"
         );
     }
 

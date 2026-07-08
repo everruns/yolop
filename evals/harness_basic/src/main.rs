@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mira::scorer::{Scorer, cost_within, scorer, succeeded, tool_calls_within, turns_within};
+use mira::scorer::{Scorer, cost_within, scorer, succeeded};
 use mira::subject::subject_fn;
 use mira::{Dataset, Eval, RunCx, Sample, Score, Target, Transcript, eval};
 use serde_json::{Value, json};
@@ -113,6 +113,159 @@ fn progress_guard_probe_sample() -> Sample {
         );
     }
     sample.file("notes/24.txt", "note 24: FINAL_CODE=KITE-7429\n")
+}
+
+fn progress_guard_checkpoint_sample() -> Sample {
+    let mut sample = Sample::new(
+        "progress-guard-checkpoint-read",
+        "This is a long stepwise file-reading evaluation. Read checkpoint/01.txt \
+         through checkpoint/50.txt in numeric order, one file at a time, using \
+         the file-read tool for each file. Do not use grep, bash, directory \
+         listing, or search shortcuts. Do not stop before checkpoint/50.txt. \
+         Reply with only the FINAL_CODE value from checkpoint/50.txt.",
+    )
+    .tag("progress-guard")
+    .meta("kind", "guardrail")
+    .meta("max_turns", 64)
+    .meta("checks", json!([{"response_contains": ["WREN-5081"]}]));
+
+    for i in 1..50 {
+        sample = sample.file(
+            format!("checkpoint/{i:02}.txt"),
+            format!("checkpoint note {i:02}: keep reading; FINAL_CODE is later.\n"),
+        );
+    }
+    sample.file(
+        "checkpoint/50.txt",
+        "checkpoint note 50: FINAL_CODE=WREN-5081\n",
+    )
+}
+
+fn background_callback_bridge_sample() -> Sample {
+    Sample::new(
+        "background-callback-bridge",
+        "A regression test in this small Rust crate shows that spawn_background \
+         completions recorded in SessionTaskRegistry never wake the app. \
+         Investigate the callback path, fix the root cause, and keep the legacy \
+         background wake behavior working. Add or keep a focused regression test. \
+         Make the edits directly; do not ask questions.",
+    )
+    .tag("progress-guard")
+    .meta("kind", "realistic-guardrail")
+    .file("Cargo.toml", "[package]\nname = \"callback_bridge\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+    .file(
+        "src/lib.rs",
+        r#"#[derive(Default)]
+pub struct LegacyBackgroundRegistry {
+    finished: Vec<String>,
+}
+
+impl LegacyBackgroundRegistry {
+    pub fn push_finished(&mut self, id: impl Into<String>) {
+        self.finished.push(id.into());
+    }
+
+    pub fn drain_finished_for_wake(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.finished)
+    }
+}
+
+#[derive(Default)]
+pub struct SessionTaskRegistry {
+    completions: Vec<String>,
+}
+
+impl SessionTaskRegistry {
+    pub fn record_spawn_background_completion(&mut self, message: impl Into<String>) {
+        self.completions.push(message.into());
+    }
+
+    pub fn drain_completion_messages(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.completions)
+    }
+}
+
+#[derive(Default)]
+pub struct App {
+    legacy: LegacyBackgroundRegistry,
+    tasks: SessionTaskRegistry,
+    pub wakes: Vec<String>,
+}
+
+impl App {
+    pub fn legacy_mut(&mut self) -> &mut LegacyBackgroundRegistry {
+        &mut self.legacy
+    }
+
+    pub fn tasks_mut(&mut self) -> &mut SessionTaskRegistry {
+        &mut self.tasks
+    }
+
+    pub fn maybe_wake_for_background(&mut self) -> bool {
+        let finished = self.legacy.drain_finished_for_wake();
+        if finished.is_empty() {
+            return false;
+        }
+        self.wakes
+            .push(format!("legacy background finished: {}", finished.join(", ")));
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_completion_still_wakes() {
+        let mut app = App::default();
+        app.legacy_mut().push_finished("legacy-1");
+
+        assert!(app.maybe_wake_for_background());
+        assert_eq!(app.wakes, vec!["legacy background finished: legacy-1"]);
+    }
+
+    #[test]
+    fn spawn_background_completion_wakes_agent() {
+        let mut app = App::default();
+        app.tasks_mut()
+            .record_spawn_background_completion("Background run completed: CI checks passed");
+
+        assert!(
+            app.maybe_wake_for_background(),
+            "spawn_background completion should wake the app even though it bypasses the legacy registry"
+        );
+        assert!(
+            app.wakes
+                .iter()
+                .any(|wake| wake.contains("CI checks passed")),
+            "wake should carry the completion message: {:?}",
+            app.wakes
+        );
+    }
+}
+"#,
+    )
+    .meta(
+        "checks",
+        json!([
+            {
+                "file": "src/lib.rs",
+                "contains": [
+                    "drain_completion_messages",
+                    "self.tasks",
+                    "spawn_background_completion_wakes_agent",
+                    "legacy_completion_still_wakes"
+                ]
+            },
+            {
+                "file": "src/lib.rs",
+                "lacks": [
+                    "let finished = self.legacy.drain_finished_for_wake();\n        if finished.is_empty() {\n            return false;\n        }"
+                ]
+            }
+        ]),
+    )
 }
 
 fn dataset() -> Dataset {
@@ -230,6 +383,8 @@ fn dataset() -> Dataset {
             ]),
         ),
         progress_guard_probe_sample(),
+        progress_guard_checkpoint_sample(),
+        background_callback_bridge_sample(),
     ])
 }
 
@@ -254,6 +409,43 @@ fn checks_scorer() -> Box<dyn Scorer> {
             Score::pass("checks", format!("{passed} check(s) passed"))
         } else {
             Score::fail("checks", failures.join("; "))
+        }
+    })
+}
+
+fn turns_budget_scorer() -> Box<dyn Scorer> {
+    scorer("turns_within", |sample, t| {
+        let limit = sample
+            .metadata
+            .get("max_turns")
+            .and_then(Value::as_u64)
+            .unwrap_or(32);
+        let actual = t
+            .metrics
+            .get("turns")
+            .copied()
+            .unwrap_or(t.iterations as f64)
+            .round() as u64;
+        if actual <= limit {
+            Score::pass("turns_within", format!("{actual} <= {limit}"))
+        } else {
+            Score::fail("turns_within", format!("{actual} > {limit}"))
+        }
+    })
+}
+
+fn tool_calls_budget_scorer() -> Box<dyn Scorer> {
+    scorer("tool_calls_within", |sample, t| {
+        let limit = sample
+            .metadata
+            .get("max_tool_calls")
+            .and_then(Value::as_u64)
+            .unwrap_or(64);
+        let actual = t.tool_calls_count as u64;
+        if actual <= limit {
+            Score::pass("tool_calls_within", format!("{actual} <= {limit}"))
+        } else {
+            Score::fail("tool_calls_within", format!("{actual} > {limit}"))
         }
     })
 }
@@ -874,10 +1066,10 @@ fn basic_coding() -> Eval {
         .scorer(checks_scorer())
         // Guardrails, not the comparison itself: the per-case numbers (turns,
         // tool calls, tokens, cost) surface in the report for A/B reading.
-        .scorer(turns_within(32))
-        .scorer(tool_calls_within(64))
+        .scorer(turns_budget_scorer())
+        .scorer(tool_calls_budget_scorer())
         .scorer(cost_within(2.0))
-        .max_turns(32)
+        .max_turns(64)
         .meta("suite", "harness-basic-v1")
         .build()
 }
@@ -949,6 +1141,7 @@ mod tests {
 {"type":"input.message","data":{"message":{"role":"user","content":[{"type":"text","text":"do it"}]}}}
 {"type":"tool.completed","data":{"tool_name":"grep_files","success":true}}
 {"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"git status --short\",\"progress_guard_warning\":\"progress_guard: repeated status\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"read_file","success":true,"result":[{"type":"text","text":"{\"progress_guard_warning\":\"progress_guard: checkpoint required\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"cargo test --all-features\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"edit_file","success":false}}
 {"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"text","text":"Done."}],"metadata":{"reasoning_effort":"high"}},"usage":{"input_tokens":100,"output_tokens":10,"cache_read_tokens":40,"cache_creation_tokens":5,"estimated_cost_usd":0.02}}}
@@ -973,14 +1166,14 @@ mod tests {
         assert_eq!(m.turn_ms, 1500);
         assert_eq!(
             m.tool_calls,
-            vec!["grep_files", "bash", "bash", "edit_file"]
+            vec!["grep_files", "bash", "read_file", "bash", "edit_file"]
         );
         assert_eq!(m.tool_calls_failed, 1);
         assert_eq!(m.final_response, "All finished.");
         assert_eq!(m.effort_applied.as_deref(), Some("high"));
-        assert_eq!(m.exploration_tools_before_first_mutation, 2);
-        assert_eq!(m.max_exploration_tools_without_progress, 2);
-        assert_eq!(m.progress_guard_warnings, 1);
+        assert_eq!(m.exploration_tools_before_first_mutation, 3);
+        assert_eq!(m.max_exploration_tools_without_progress, 3);
+        assert_eq!(m.progress_guard_warnings, 2);
     }
 
     #[test]
