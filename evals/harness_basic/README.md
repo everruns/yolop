@@ -14,7 +14,7 @@ the runtime path; the TUI is never involved).
 
 ## The matrix
 
-Three axes, crossed with 7 samples (small edit / refactor / search / guardrail tasks):
+Three axes, crossed with 9 samples (small edit / refactor / search / guardrail tasks):
 
 | Axis | Values | Where |
 |------|--------|-------|
@@ -42,6 +42,8 @@ search/refactor, and read-only code navigation.
 | `implement-todo` | JS `clamp()` stub that throws, with a TODO spec comment | Implement per the TODO, remove the comment | `utils.js` has `function clamp` + `module.exports`, no `TODO`/`not implemented` | spec-comment comprehension, stub completion |
 | `add-module` | Rust lib with one existing fn | Create `src/util.rs` with `pub fn double`, wire `pub mod util;` into lib.rs | both files contain the required items | new-file creation + wiring across files |
 | `progress-guard-sequential-read` [`progress-guard`] | 24 numbered notes; answer in `notes/24.txt` | Read notes sequentially and answer the final code | final response contains `KITE-7429` | long exploration streak that should trigger `progress_guard` |
+| `progress-guard-checkpoint-read` [`progress-guard`] | 50 numbered notes; answer in `checkpoint/50.txt` | Read notes sequentially and answer the final code | final response contains `WREN-5081` | escalation from first warning to checkpoint warnings |
+| `background-callback-bridge` [`progress-guard`] | Rust crate where `spawn_background` completions land in `SessionTaskRegistry`, but app wake only drains legacy background state | Fix the callback bridge while keeping the legacy wake test passing | source drains session-task completions and keeps focused regression tests | realistic investigation based on the background-callback failure mode |
 
 ### Harness variants — the point of this study
 
