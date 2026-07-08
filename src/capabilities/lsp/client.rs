@@ -176,6 +176,15 @@ impl LspClient {
             )
             .await?;
         self.notify("initialized", json!({})).await?;
+        // Some servers (pyright) defer all analysis until the client pushes a
+        // configuration; without this, every later request stalls until
+        // timeout. Servers that pull config via `workspace/configuration`
+        // (answered with nulls by the reader loop) ignore the empty push.
+        self.notify(
+            "workspace/didChangeConfiguration",
+            json!({ "settings": {} }),
+        )
+        .await?;
         Ok(response.get("capabilities").cloned().unwrap_or(Value::Null))
     }
 
