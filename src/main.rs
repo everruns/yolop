@@ -797,7 +797,7 @@ async fn run_print_mode(
 ) -> Result<()> {
     let BuiltRuntime {
         handles,
-        mut startup,
+        startup,
         model,
         goal_store,
         user_ask_store,
@@ -806,52 +806,10 @@ async fn run_print_mode(
         ..
     } = runtime;
     let color = io::stdout().is_terminal();
-    let display_prompt = image_input::user_display_text(&prompt, images.len());
-    println!("{}", paint(color, "90", &format!("› {display_prompt}")));
-    println!();
     if let Err(err) = worktree.ensure_before_turn(prompt.trim()) {
         eprintln!("worktree: {err}");
     }
-    startup.workspace_root = worktree.active_root();
-    println!(
-        "{} {}",
-        paint(color, "90", "workspace"),
-        startup.workspace_root.display()
-    );
-    println!(
-        "{}  {}",
-        paint(color, "90", "provider"),
-        paint(color, "96", &model.provider_label())
-    );
-    println!(
-        "{}     {}",
-        paint(color, "90", "tools"),
-        startup.tool_names.join(", ")
-    );
-    println!(
-        "{}   {} (folder: {}; log: {}; {} prior event(s))",
-        paint(color, "90", "session"),
-        handles.session_id,
-        startup.session_dir.display(),
-        startup.session_log_path.display(),
-        startup.replayed_events,
-    );
-    if !startup.capability_commands.is_empty() {
-        let names: Vec<String> = startup
-            .capability_commands
-            .iter()
-            .map(|c| format!("/{}", c.name))
-            .collect();
-        println!("{} {}", paint(color, "90", "commands"), names.join(", "));
-    }
-    if startup.hook_configured {
-        println!(
-            "{}     {}",
-            paint(color, "90", "hooks"),
-            startup.hook_summary()
-        );
-    }
-    println!();
+    let _ = (&startup.session_dir, &startup.session_log_path);
 
     let trimmed = prompt.trim();
     if let Some(goal_args) = trimmed.strip_prefix("/goal") {
@@ -879,8 +837,9 @@ async fn run_print_mode(
         eprintln!("user ask: {err}");
     }
 
-    let result = run_print_turn(&handles, &worktree, &model, trimmed, images, color).await?;
-    if !result.success {
+    let turn = collect_print_turn(&handles, &worktree, &model, trimmed, images).await?;
+    print_final_output(&turn.output);
+    if !turn.result.success {
         write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
         std::process::exit(1);
     }
@@ -897,12 +856,7 @@ async fn run_print_mode(
             )
             .await?;
         if evaluation.success {
-            if let Ok(parsed) = user_ask::parse_evaluation_response(&evaluation.message) {
-                println!(
-                    "{}",
-                    paint(color, "94", &user_ask::evaluation_status_message(&parsed))
-                );
-            }
+            let _ = user_ask::parse_evaluation_response(&evaluation.message);
         } else {
             eprintln!("user ask evaluation failed: {}", evaluation.message);
         }
@@ -932,15 +886,15 @@ async fn run_print_goal(
         controls: None,
     };
     let result = handles.runtime.execute_command(session_id, request).await?;
-    if !result.message.is_empty() {
-        println!("{}", paint(color, "90", &result.message));
-    }
     if !result.success {
         eprintln!("goal command failed: {}", result.message);
         return Ok(false);
     }
 
     if !goal_store.take_pending_turn(session_id) {
+        if !result.message.is_empty() {
+            println!("{}", paint(color, "90", &result.message));
+        }
         return Ok(true);
     }
 
@@ -949,13 +903,13 @@ async fn run_print_goal(
     };
 
     loop {
-        println!();
-        println!("{}", paint(color, "90", &format!("› {turn_prompt}")));
-        let turn = run_print_turn(handles, worktree, model, &turn_prompt, vec![], color).await?;
-        if !turn.success {
+        let turn = collect_print_turn(handles, worktree, model, &turn_prompt, vec![]).await?;
+        if !turn.result.success {
+            print_final_output(&turn.output);
             return Ok(false);
         }
         if !goal_store.is_active(session_id) {
+            print_final_output(&turn.output);
             return Ok(true);
         }
 
@@ -976,34 +930,30 @@ async fn run_print_goal(
         }
         let parsed = goal::parse_evaluation_response(&evaluation.message)?;
         if parsed.met {
-            println!(
-                "{}",
-                paint(color, "92", &format!("goal achieved: {}", parsed.reason))
-            );
+            print_final_output(&turn.output);
             return Ok(true);
         }
-        println!(
-            "{}",
-            paint(color, "94", &format!("goal: {}", parsed.reason))
-        );
         turn_prompt = goal_store
             .continuation_prompt(session_id)
             .unwrap_or_else(|| turn_prompt.clone());
     }
 }
 
-async fn run_print_turn(
+struct PrintTurn {
+    result: everruns_runtime::TurnResult,
+    output: Vec<String>,
+}
+
+async fn collect_print_turn(
     handles: &runtime::RuntimeHandles,
     worktree: &crate::worktree::WorktreeManager,
     model: &runtime::ModelState,
     prompt: &str,
     images: Vec<ContentPart>,
-    color: bool,
-) -> Result<everruns_runtime::TurnResult> {
+) -> Result<PrintTurn> {
     if let Err(err) = worktree.ensure_before_turn(prompt) {
         eprintln!("worktree: {err}");
     }
-    let before_events = handles.runtime.events().await.map(|e| e.len()).unwrap_or(0);
     let before_msgs = handles
         .runtime
         .messages(handles.session_id)
@@ -1013,21 +963,13 @@ async fn run_print_turn(
 
     let input = model.input_message_with_images(prompt, images);
     let result = handles.runtime.run_turn(handles.session_id, input).await?;
-    let events = handles.runtime.events().await.unwrap_or_default();
     let messages = handles
         .runtime
         .messages(handles.session_id)
         .await
         .unwrap_or_default();
 
-    for event in events.iter().skip(before_events) {
-        if let Some(status) = transcript::status_for_event(event) {
-            print_status_line(&status.text, color);
-        }
-        for line in transcript::lines_for_event(event) {
-            print_transcript_line(&line, color);
-        }
-    }
+    let mut output = Vec::new();
     for msg in messages.iter().skip(before_msgs) {
         if msg.role == MessageRole::Agent
             && !msg.has_tool_calls()
@@ -1035,72 +977,25 @@ async fn run_print_turn(
         {
             let t = text.trim();
             if !t.is_empty() {
-                println!();
-                print_transcript_line(
-                    &transcript::ChatLine {
-                        author: transcript::Author::Assistant,
-                        text: t.to_string(),
-                    },
-                    color,
-                );
+                output.push(t.to_string());
             }
         }
     }
-    println!(
-        "\n{} success={} iterations={} tool_calls={}",
-        paint(color, if result.success { "92" } else { "91" }, "done"),
-        result.success,
-        result.iterations,
-        result.tool_calls_count
-    );
     if !result.success
         && let Some(err) = &result.error
     {
         eprintln!("turn error: {err}");
     }
-    Ok(result)
+    Ok(PrintTurn { result, output })
 }
 
-fn print_transcript_line(line: &transcript::ChatLine, color: bool) {
-    match line.author {
-        transcript::Author::Assistant => {
-            println!("{} {}", paint(color, "90", "•"), line.text);
+fn print_final_output(output: &[String]) {
+    for (index, text) in output.iter().enumerate() {
+        if index > 0 {
+            println!();
         }
-        transcript::Author::Narration => {
-            println!(
-                "{} {} {}",
-                paint(color, "90", "•"),
-                paint(color, "90", line.author.label()),
-                paint(color, "90", &line.text)
-            );
-        }
-        transcript::Author::Tool => {
-            println!(
-                "{} {} {}",
-                paint(color, "92", "•"),
-                paint(color, "93", line.author.label()),
-                line.text
-            );
-        }
-        transcript::Author::ToolDetail => {
-            println!("           {}", line.text);
-        }
-        transcript::Author::Diff => {
-            println!("  {}", paint(color, "95", &line.text));
-        }
-        transcript::Author::System | transcript::Author::User => {
-            println!(
-                "{} {} {}",
-                paint(color, "90", "•"),
-                paint(color, "90", line.author.label()),
-                line.text
-            );
-        }
+        println!("{text}");
     }
-}
-
-fn print_status_line(text: &str, color: bool) {
-    println!("{} {}", paint(color, "94", "•"), text);
 }
 
 fn paint(enabled: bool, code: &str, text: &str) -> String {
