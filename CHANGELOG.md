@@ -10,6 +10,43 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.5.0] - 2026-07-09
+
+### Highlights
+
+- **Optional LSP navigation.** An opt-in language-server capability adds
+  semantic go-to-definition, references, and hover for supported languages,
+  with an isolated eval study to measure the benefit.
+- **Progress guard.** The runtime now detects stalled investigations and
+  escalates with targeted nudges so long-running turns do not spin silently.
+- **Background execution on everruns.** Background work is consolidated onto
+  the everruns session task model, simplifying sub-agent lifecycle and
+  status reporting.
+- **Trajectory export.** `--trajectory-out` writes ATIF trajectory files for
+  offline analysis and benchmarking.
+- **Eval and integration polish.** A `harness_basic` study A/Bs yolop harness
+  configs, the Paseo `Into` target lands, and the web UI surfaces failed tool
+  errors instead of swallowing them.
+
+### What's Changed
+
+* chore: standardize PR descriptions on functional change + before/after ([#237](https://github.com/everruns/yolop/pull/237)) by @chaliy
+* feat(lsp): optional language-server capability with isolated eval ([#236](https://github.com/everruns/yolop/pull/236)) by @chaliy
+* docs(readme): add project badges ([#235](https://github.com/everruns/yolop/pull/235)) by @chaliy
+* feat(progress-guard): escalate stalled investigations ([#234](https://github.com/everruns/yolop/pull/234)) by @chaliy
+* feat(cli): add --trajectory-out ATIF trajectory export ([#233](https://github.com/everruns/yolop/pull/233)) by @chaliy
+* feat(runtime): add progress guard ([#232](https://github.com/everruns/yolop/pull/232)) by @chaliy
+* feat(evals): add harness_basic study for yolop config A/Bs ([#231](https://github.com/everruns/yolop/pull/231)) by @chaliy
+* feat(background): consolidate background execution onto everruns ([#230](https://github.com/everruns/yolop/pull/230)) by @chaliy
+* fix(web): surface failed tool errors ([#229](https://github.com/everruns/yolop/pull/229)) by @chaliy
+* chore(deps): bump everruns to 0.17.4 ([#228](https://github.com/everruns/yolop/pull/228)) by @chaliy
+* feat(into): add paseo target ([#227](https://github.com/everruns/yolop/pull/227)) by @chaliy
+* chore(deps): upgrade dependencies ([#226](https://github.com/everruns/yolop/pull/226)) by @chaliy
+* docs(release): require post-merge publish verification ([#225](https://github.com/everruns/yolop/pull/225)) by @chaliy
+* refactor(skills): hide bundled system skills ([#224](https://github.com/everruns/yolop/pull/224)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.4.0...v0.5.0
+
 ## [0.4.0] - 2026-07-04
 
 ### Highlights
