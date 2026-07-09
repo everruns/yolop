@@ -22,7 +22,7 @@
 mod support;
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -38,6 +38,43 @@ use support::tui_harness::{
 fn yolop_binary() -> PathBuf {
     // CARGO_BIN_EXE_<name> is set by Cargo for integration tests.
     PathBuf::from(env!("CARGO_BIN_EXE_yolop"))
+}
+
+fn session_ids(sessions_dir: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = std::fs::read_dir(sessions_dir)
+        .expect("read sessions dir")
+        .filter_map(|entry| {
+            let entry = entry.expect("session dir entry");
+            entry
+                .file_type()
+                .expect("session entry type")
+                .is_dir()
+                .then(|| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .expect("utf8 session dir")
+                        .to_string()
+                })
+        })
+        .filter(|name| name.starts_with("session_"))
+        .collect();
+    ids.sort();
+    ids
+}
+
+fn single_session_id(sessions_dir: &Path) -> String {
+    let ids = session_ids(sessions_dir);
+    assert_eq!(ids.len(), 1, "expected one session dir: {ids:?}");
+    ids[0].clone()
+}
+
+fn session_log_line_count(sessions_dir: &Path, session_id: &str) -> usize {
+    let log = sessions_dir.join(session_id).join("events.jsonl");
+    std::fs::read_to_string(&log)
+        .unwrap_or_else(|e| panic!("read session log {}: {e}", log.display()))
+        .lines()
+        .count()
 }
 
 #[test]
@@ -200,17 +237,27 @@ fn llmsim_print_smoke() {
         output.status.success(),
         "yolop llmsim run failed: stdout={stdout} stderr={stderr}"
     );
-    // The print driver always emits a `done success=...` summary line.
     assert!(
-        stdout.contains("done") && stdout.contains("success="),
-        "missing done summary line: {stdout}"
+        stdout.contains("offline mode") && stdout.contains("OPENAI_API_KEY"),
+        "expected only the llmsim final response in stdout: {stdout}"
     );
-    // Session line should mention the llmsim model so we know the provider
-    // wiring picked the offline driver.
-    assert!(
-        stdout.contains("llmsim"),
-        "expected llmsim in stdout: {stdout}"
-    );
+    for hidden in [
+        "› hi",
+        "workspace",
+        "provider",
+        "tools",
+        "session",
+        "commands",
+        "thinking",
+        "iteration",
+        "done",
+        "success=",
+    ] {
+        assert!(
+            !stdout.contains(hidden),
+            "print mode should not emit {hidden:?}: {stdout}"
+        );
+    }
 }
 
 #[test]
@@ -273,8 +320,7 @@ fn llmsim_print_writes_atif_trajectory() {
 fn llmsim_resume_replays_prior_events() {
     // Two-shot test: the first invocation starts a fresh session and writes a
     // JSONL log; the second invocation resumes that session via `--session <id>`
-    // and must replay the prior events (startup line reports "N prior event(s)"
-    // with N > 0). Proves the session_dir + session id wiring round-trips.
+    // and appends to the same log without relying on print-mode chrome.
     let tmp = tempfile::tempdir().expect("tempdir");
     let session_dir = tmp.path().to_str().unwrap();
 
@@ -300,12 +346,9 @@ fn llmsim_resume_replays_prior_events() {
         first.status.success(),
         "first run failed: stdout={first_stdout} stderr={first_stderr}"
     );
-    let session_id = extract_session_id(&first_stdout)
-        .unwrap_or_else(|| panic!("could not find session id in stdout: {first_stdout}"));
-    assert!(
-        first_stdout.contains("0 prior event(s)"),
-        "first run should start with no replayed events: {first_stdout}"
-    );
+    let session_id = single_session_id(tmp.path());
+    let first_log_lines = session_log_line_count(tmp.path(), &session_id);
+    assert!(first_log_lines > 0, "first run should write a session log");
 
     let second = Command::new(yolop_binary())
         .args([
@@ -331,17 +374,13 @@ fn llmsim_resume_replays_prior_events() {
         second.status.success(),
         "resume run failed: stdout={second_stdout} stderr={second_stderr}"
     );
-    // Resume should reuse the same session id and report a non-zero replay count.
+    let sessions = session_ids(tmp.path());
     assert!(
-        second_stdout.contains(&session_id),
-        "resume stdout should mention reused session id {session_id}: {second_stdout}"
+        sessions == [session_id.clone()],
+        "resume should reuse the existing session dir: {sessions:?}"
     );
-    let prior = parse_prior_events(&second_stdout)
-        .unwrap_or_else(|| panic!("could not find prior event count in stdout: {second_stdout}"));
-    assert!(
-        prior > 0,
-        "resume run must replay >0 events, got {prior}: {second_stdout}"
-    );
+    let second_log_lines = session_log_line_count(tmp.path(), &session_id);
+    assert!(second_log_lines > first_log_lines);
 }
 
 #[test]
@@ -911,14 +950,7 @@ fn print_mode_sends_saved_model_selection_to_endpoint() {
         output.status.success(),
         "saved-model run failed: stdout={stdout} stderr={stderr}"
     );
-    assert!(
-        stdout.contains("custom/picked-model-x"),
-        "startup banner should show the restored model: {stdout}"
-    );
-    assert!(
-        stdout.contains("hello from custom endpoint"),
-        "mock reply should reach the transcript: {stdout}"
-    );
+    assert_eq!(stdout.trim(), "hello from custom endpoint");
 
     let request = mock.next_request(Duration::from_secs(5));
     assert_eq!(
@@ -989,10 +1021,7 @@ fn print_mode_attaches_images_to_provider_request() {
         output.status.success(),
         "image attach run failed: stdout={stdout} stderr={stderr}"
     );
-    assert!(
-        stdout.contains("[Image #1]"),
-        "prompt banner should mention attached image: {stdout}"
-    );
+    assert_eq!(stdout.trim(), "saw the image");
 
     let request = mock.next_request(Duration::from_secs(5));
     let messages = request["messages"]
@@ -1129,42 +1158,6 @@ fn tui_startup_does_not_enable_mouse_capture() {
         "double Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
     );
-}
-
-/// Parse the session id printed on the `session …` line of `--print` stdout.
-/// The line shape is:
-/// `session   <id> (folder: ...; log: ...; N prior event(s))`
-fn extract_session_id(stdout: &str) -> Option<String> {
-    for line in stdout.lines() {
-        // The line begins with a possibly-coloured "session" token and a run
-        // of whitespace before the id. Strip ANSI escapes defensively.
-        let stripped = strip_ansi(line);
-        let trimmed = stripped.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("session") {
-            let rest = rest.trim_start();
-            // First whitespace-delimited token is the id.
-            let id = rest.split_whitespace().next()?;
-            if !id.is_empty() {
-                return Some(id.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Parse the `N prior event(s)` count from the same session line.
-fn parse_prior_events(stdout: &str) -> Option<u64> {
-    for line in stdout.lines() {
-        let stripped = strip_ansi(line);
-        if let Some(idx) = stripped.find(" prior event(s)") {
-            let head = &stripped[..idx];
-            let count = head.rsplit(|c: char| !c.is_ascii_digit()).next()?;
-            if !count.is_empty() {
-                return count.parse().ok();
-            }
-        }
-    }
-    None
 }
 
 /// Result of one scripted ACP handshake against the real binary.
@@ -1458,10 +1451,7 @@ fn openai_print_smoke() {
         stdout.to_lowercase().contains("pong"),
         "expected `pong` in stdout: {stdout}"
     );
-    assert!(
-        stdout.contains("success=true"),
-        "expected success=true: {stdout}"
-    );
+    assert!(!stdout.contains("success="), "unexpected footer: {stdout}");
 }
 
 /// Model used by the live OpenRouter smoke tests. Defaults to a Nemotron 3
@@ -1527,10 +1517,7 @@ fn openrouter_print_smoke() {
         stdout.to_lowercase().contains("pong"),
         "expected `pong` in stdout: {stdout}"
     );
-    assert!(
-        stdout.contains("success=true"),
-        "expected success=true: {stdout}"
-    );
+    assert!(!stdout.contains("success="), "unexpected footer: {stdout}");
 }
 
 /// Live regression test for the OpenRouter tool-calling path (everruns EVE-522
@@ -1600,8 +1587,5 @@ fn openrouter_tool_call_executes_end_to_end() {
         "expected sentinel {sentinel} in stdout (proves read_file executed and \
          its result reached the model): {stdout}"
     );
-    assert!(
-        stdout.contains("success=true"),
-        "expected success=true: {stdout}"
-    );
+    assert!(!stdout.contains("success="), "unexpected footer: {stdout}");
 }
