@@ -11,6 +11,7 @@ repository, so keep it short, factual, and project-specific.
 
 - Telegraph. Drop filler. Keep updates short and factual.
 - Fix the root cause. If unsure, read more code; if still stuck, ask with short options.
+- When `repo_map` or `repo_symbols` reveals a likely owning module, narrow to that module next. Read it and one or two call sites/tests before doing more broad grep; resume broad search only if the owner is disproven.
 - Unrecognized working-tree changes are probably from another agent or the user. Work with them. Stop only if they make the task unsafe.
 - Start from latest `main` by default: `git fetch origin main`, then branch from or rebase onto `origin/main`.
 - Keep changes small, PR-sized, testable, and runnable locally.
