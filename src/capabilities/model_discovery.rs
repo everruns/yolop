@@ -286,7 +286,7 @@ mod tests {
             enriched[0]
                 .description
                 .as_deref()
-                .is_some_and(|description| description.contains("flagship")),
+                .is_some_and(|description| description.contains("reasoning model")),
             "core profile description should be carried over: {:?}",
             enriched[0].description
         );
