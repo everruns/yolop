@@ -1,0 +1,12 @@
+id = "yaml-lsp"
+name = "YAML Language Support"
+version = "0.1.0"
+description = "Adds yaml-language-server for .yaml and .yml files via the lsp capability."
+publisher = "yolop"
+
+# Contributes an LSP server definition. Installing this extension auto-enables
+# the `lsp` capability and merges the server into its config — no recompilation.
+[contributions.capabilities.lsp.servers.yaml]
+command = "yaml-language-server"
+args = ["--stdio"]
+extensions = ["yaml", "yml"]

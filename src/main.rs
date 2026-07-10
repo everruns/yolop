@@ -14,6 +14,7 @@ mod codex_driver;
 mod config_schema;
 mod config_service;
 mod connectors;
+mod extensions;
 mod goal;
 mod hooks_config;
 mod host_ui;
@@ -149,6 +150,52 @@ enum Commands {
     Into(IntoCommand),
     /// Git worktree maintenance.
     Worktree(WorktreeArgs),
+    /// Installable extensions (capabilities, MCP, …).
+    Ext(ExtArgs),
+}
+
+#[derive(Args, Debug)]
+struct ExtArgs {
+    #[command(subcommand)]
+    command: ExtCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum ExtCommand {
+    /// List installed extensions (global and workspace).
+    List {
+        /// Workspace root for workspace-scoped extensions (default: current dir).
+        #[arg(short = 'C', long = "cwd")]
+        cwd: Option<PathBuf>,
+    },
+    /// Install an extension from a local directory.
+    Install {
+        /// Path to an extension bundle directory containing `extension.toml`.
+        path: PathBuf,
+        /// Install into the global extensions directory.
+        #[arg(long, conflicts_with = "workspace")]
+        global: bool,
+        /// Install into the workspace `.yolop/extensions/` directory (default).
+        #[arg(long, conflicts_with = "global")]
+        workspace: bool,
+        /// Replace an existing installation with the same id.
+        #[arg(long)]
+        force: bool,
+        /// Workspace root when installing to workspace scope.
+        #[arg(short = 'C', long = "cwd")]
+        cwd: Option<PathBuf>,
+    },
+    /// Remove an installed extension by id.
+    Uninstall {
+        /// Extension id (manifest `id` field).
+        id: String,
+        #[arg(long, conflicts_with = "workspace")]
+        global: bool,
+        #[arg(long, conflicts_with = "global")]
+        workspace: bool,
+        #[arg(short = 'C', long = "cwd")]
+        cwd: Option<PathBuf>,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -462,6 +509,68 @@ fn resolve_workspace_root(
     std::env::current_dir().context("resolve current workspace directory")
 }
 
+fn run_ext_command(command: ExtCommand) -> Result<()> {
+    use extensions::{ExtensionScope, discover_extensions, install_extension, uninstall_extension};
+
+    match command {
+        ExtCommand::List { cwd } => {
+            let workspace = cwd.unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+            let extensions = discover_extensions(&workspace);
+            if extensions.is_empty() {
+                println!("no extensions installed");
+                return Ok(());
+            }
+            for ext in extensions {
+                println!(
+                    "{}  {} v{}  [{}]  {}",
+                    ext.manifest.id,
+                    ext.manifest.name,
+                    ext.manifest.version,
+                    ext.scope.label(),
+                    ext.root.display()
+                );
+                if let Some(desc) = &ext.manifest.description {
+                    println!("  {desc}");
+                }
+            }
+            Ok(())
+        }
+        ExtCommand::Install {
+            path,
+            global,
+            workspace: _,
+            force,
+            cwd,
+        } => {
+            let scope = if global {
+                ExtensionScope::Global
+            } else {
+                ExtensionScope::Workspace
+            };
+            let workspace_root = cwd.unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+            let dest = install_extension(&path, scope, &workspace_root, force)?;
+            println!("installed extension to {}", dest.display());
+            Ok(())
+        }
+        ExtCommand::Uninstall {
+            id,
+            global,
+            workspace: _,
+            cwd,
+        } => {
+            let scope = if global {
+                ExtensionScope::Global
+            } else {
+                ExtensionScope::Workspace
+            };
+            let workspace_root = cwd.unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+            uninstall_extension(&id, scope, &workspace_root)?;
+            println!("removed extension `{id}`");
+            Ok(())
+        }
+    }
+}
+
 fn run_worktree_command(command: WorktreeCommand) -> Result<()> {
     match command {
         WorktreeCommand::List => {
@@ -512,6 +621,7 @@ fn run_command(command: Commands) -> Result<()> {
             Ok(())
         }
         Commands::Worktree(args) => run_worktree_command(args.command),
+        Commands::Ext(args) => run_ext_command(args.command),
         Commands::Into(into) => match into.target {
             IntoTarget::Paseo(args) => {
                 let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));

@@ -2062,8 +2062,6 @@ pub async fn build_with_options(
     // best-effort per scope: a malformed file is warned about and skipped, so
     // it never sinks the session or masks the other scope.
     let mcp_servers: ScopedMcpServers = crate::mcp_config::load_mcp_servers(&canonical_root);
-    let mut mcp_server_names: Vec<String> = mcp_servers.keys().cloned().collect();
-    mcp_server_names.sort();
     let hooks_store = Arc::new(crate::hooks_config::HooksStore::beside_settings(
         &settings,
         canonical_root.clone(),
@@ -2316,10 +2314,11 @@ pub async fn build_with_options(
     for cap in capabilities.list() {
         catalog.register_arc(cap.clone());
     }
+    let catalog = Arc::new(catalog);
 
     capabilities.register(ConfigCapability {
         settings: settings.clone(),
-        catalog: Arc::new(catalog),
+        catalog: catalog.clone(),
     });
 
     let mut driver_registry = DriverRegistry::new();
@@ -2364,18 +2363,29 @@ pub async fn build_with_options(
         }))
         .build();
 
+    // User-installable extensions (global + workspace). Contributions merge
+    // into the harness and MCP config without recompilation.
+    let discovered_extensions = crate::extensions::discover_extensions(&canonical_root);
+
     // Seed harness/agent/session explicitly so Yolop can attach harness
     // metadata that Everruns forwards to LLM calls and observability.
     let session_title = format!("yolop @ {}", effective_root.display());
-    let harness_capabilities = coding_harness_capabilities(
-        options.client_commands,
-        hook_capability_config,
-        &settings_snapshot,
+    let harness_capabilities = crate::extensions::apply_extension_capability_contributions(
+        coding_harness_capabilities(
+            options.client_commands,
+            hook_capability_config,
+            &settings_snapshot,
+        ),
+        &discovered_extensions,
+        catalog.as_ref(),
     );
     let user_ask_enabled = harness_capabilities
         .iter()
         .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID);
-    let session_mcp_servers = mcp_servers.clone();
+    let session_mcp_servers =
+        crate::extensions::apply_extension_mcp_contributions(mcp_servers, &discovered_extensions);
+    let mut mcp_server_names: Vec<String> = session_mcp_servers.keys().cloned().collect();
+    mcp_server_names.sort();
 
     let mut harness_builder = HarnessBuilder::new("yolop", HARNESS_PROMPT)
         .metadata_entry("app", "yolop")
@@ -4680,6 +4690,57 @@ mod tests {
             ids.iter()
                 .any(|cap| cap.capability_id() == LSP_CAPABILITY_ID),
             "a [[capabilities]] override should enable lsp"
+        );
+    }
+
+    #[test]
+    fn extension_contribution_auto_enables_lsp_with_yaml_server() {
+        use crate::capabilities::lsp::LSP_CAPABILITY_ID;
+        use crate::extensions::{
+            ExtensionScope, apply_extension_capability_contributions, discover_extensions,
+            install_extension,
+        };
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+
+        let bundle = workspace.join("bundle");
+        std::fs::create_dir_all(&bundle).expect("bundle");
+        std::fs::copy(
+            std::path::Path::new("extensions/yaml-lsp/extension.toml"),
+            bundle.join("extension.toml"),
+        )
+        .expect("copy example extension");
+
+        install_extension(&bundle, ExtensionScope::Workspace, &workspace, false)
+            .expect("install yaml-lsp");
+
+        let extensions = discover_extensions(&workspace);
+        assert_eq!(extensions.len(), 1);
+
+        let mut catalog = CapabilityCatalog::new();
+        let host = Arc::new(
+            WorkspaceHost::new(
+                Arc::new(std::sync::RwLock::new(workspace.clone())),
+                workspace.clone(),
+            )
+            .expect("workspace host"),
+        );
+        catalog.register_arc(Arc::new(LspCapability::new(host)));
+
+        let caps = apply_extension_capability_contributions(
+            coding_harness_capabilities(false, None, &Settings::default()),
+            &extensions,
+            &catalog,
+        );
+        let lsp = caps
+            .iter()
+            .find(|c| c.capability_id() == LSP_CAPABILITY_ID)
+            .expect("yaml-lsp extension should auto-enable lsp");
+        assert_eq!(
+            lsp.config["servers"]["yaml"]["command"],
+            "yaml-language-server"
         );
     }
 
