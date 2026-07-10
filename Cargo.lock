@@ -1523,9 +1523,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-anthropic"
-version = "0.17.5"
+version = "0.17.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59cc342a90254183d23e60b1cbc58e223cb8d192f22510d5baaf1268187909a5"
+checksum = "04cd0f70bcf83d6ca8558bf417ad08d2ca4e0848340c06752e2c083ac2d4d56d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1541,9 +1541,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-core"
-version = "0.17.5"
+version = "0.17.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5e5be8798fe4132320359eb3aa31be224aac07e8a0bcf3bd93bd03f87417265"
+checksum = "50e5f6529af12477ffc344690d958b99dbfd35862179e1dd1bcbe022e4fac25e"
 dependencies = [
  "a2a-client-lf",
  "a2a-lf",
@@ -1585,9 +1585,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-daytona"
-version = "0.17.5"
+version = "0.17.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96082f25469bb78ce26953d11b8a35be5f368ba929d3344c8005f0302b27621"
+checksum = "ae5853ec5646e76c381c3fe59cb17b7d448f78b310be417c0e0da04a703f193b"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1602,9 +1602,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-duckduckgo"
-version = "0.17.5"
+version = "0.17.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98ae98b6ab1007fe618b6f7e7bf9315b41839c75707bbac684fd76fe627930b2"
+checksum = "390637b8430b405b6589eec32e6348966c33b749ab44bfae8fbcf6387824b248"
 dependencies = [
  "async-trait",
  "everruns-core",
@@ -1618,9 +1618,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-local"
-version = "0.17.5"
+version = "0.17.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5a09aee1eda89b0927dc3b4ea4e3b363b31bf33ae19a53f19d7a877195e7bcd"
+checksum = "247213428b01a401e4f767e42abda4a4c03c11f94ca23330e2a8455566342566"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1639,9 +1639,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-mcp"
-version = "0.17.5"
+version = "0.17.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8df0f347e4a715520966ebde0fb7748f840cac9de98fdab3b9edccf1d5a72d1"
+checksum = "b68c302b291a7e2dfee7cf37c4a4352882bf4ecca1dca81d8eb4a39df664c92b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1654,9 +1654,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-openai"
-version = "0.17.5"
+version = "0.17.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ca42b9929229d2ce6999810f7557faa9ccdca1c51025dfa439823425678ca30"
+checksum = "c87d75106761ec3756e201f740fe6d690b213d9ee8814c35f37da0cf97bba26c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1675,9 +1675,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-openrouter"
-version = "0.17.5"
+version = "0.17.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6746fd3e1ce17bca8a99b90599415f664ac73930cec0550c3b00eac922593476"
+checksum = "cc875ce7f41873676f283e66d1aa94278c79be16a9ac9ccc99f1e52c912795a9"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1689,9 +1689,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-runtime"
-version = "0.17.5"
+version = "0.17.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96fe7f6692874a3b8738525082536345f03fb18f8af219efe75151a0b0c41ab1"
+checksum = "4109d35d38a0f3fb458d894a0f23d553970b16bcefb34c231fd6ce44440570ec"
 dependencies = [
  "async-trait",
  "chrono",
