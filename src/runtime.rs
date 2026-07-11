@@ -74,7 +74,7 @@ use crate::session_log::{
 use crate::workspace_host::WorkspaceHost;
 use crate::worktree::{WorktreeManager, detect_repo_root, restore_worktree_from_metadata};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use tokio::sync::mpsc;
 
 // The harness prompt is the durable instruction surface — borrowed in shape
@@ -1050,7 +1050,8 @@ impl ProviderChoice {
             Self::Codex { model, .. } => crate::codex_driver::model_profile(model),
             _ => {
                 let resolved = self.model_without_stored_key();
-                get_model_profile(&resolved.provider_type, &resolved.model)
+                local_model_profile(&resolved.provider_type, &resolved.model)
+                    .or_else(|| get_model_profile(&resolved.provider_type, &resolved.model))
             }
         }
     }
@@ -1095,6 +1096,9 @@ impl ProviderChoice {
     pub fn model_suggestions_for_provider(provider: &str) -> &'static [&'static str] {
         match provider {
             "openai" => &[
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
                 "gpt-5.5",
                 "gpt-5.4",
                 "gpt-5.4-mini",
@@ -1102,6 +1106,9 @@ impl ProviderChoice {
                 "gpt-5.2",
             ],
             "codex" => &[
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
                 "gpt-5.5",
                 "gpt-5.4",
                 "gpt-5.4-mini",
@@ -1125,6 +1132,9 @@ impl ProviderChoice {
             ],
             "google" => &["gemini-2.5-flash", "gemini-2.5-pro"],
             "openrouter" => &[
+                "openai/gpt-5.6-sol",
+                "openai/gpt-5.6-terra",
+                "openai/gpt-5.6-luna",
                 "openai/gpt-5.5",
                 "anthropic/claude-opus-4-8",
                 "nvidia/nemotron-3-super-120b-a12b high",
@@ -1582,9 +1592,33 @@ pub(crate) fn normalize_reasoning_effort(reasoning_effort: Option<String>) -> Op
         .filter(|effort| !effort.is_empty())
 }
 
+fn model_profile(provider_type: &DriverId, model: &str) -> Option<ModelProfile> {
+    local_model_profile(provider_type, model).or_else(|| get_model_profile(provider_type, model))
+}
+
+fn local_model_profile(provider_type: &DriverId, model: &str) -> Option<ModelProfile> {
+    if *provider_type == DriverId::OpenAI
+        && matches!(model, "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna")
+    {
+        return Some(GPT_5_6_PROFILE.clone());
+    }
+
+    None
+}
+
+static GPT_5_6_PROFILE: LazyLock<ModelProfile> = LazyLock::new(|| {
+    let mut profile = get_model_profile(&DriverId::OpenAI, "gpt-5.5")
+        .or_else(|| get_model_profile(&DriverId::OpenAI, "gpt-5.4"))
+        .expect("GPT-5 profile metadata should be available")
+        .clone();
+    profile.name = "GPT-5.6".to_string();
+    profile.family = "gpt-5.6".to_string();
+    profile
+});
+
 fn profile_default_reasoning_effort(provider_type: &DriverId, model: &str) -> Option<String> {
-    get_model_profile(provider_type, model)
-        .and_then(|profile| profile.reasoning_effort)
+    model_profile(provider_type, model)
+        .and_then(|profile| profile.reasoning_effort.clone())
         .and_then(|config| reasoning_effort_value(&config.default))
 }
 
@@ -3435,6 +3469,46 @@ mod tests {
         };
         let next = provider.resolve_model_spec("claude-fable-5").unwrap();
         assert_eq!(next.label(), "anthropic/claude-fable-5 high");
+    }
+
+    #[test]
+    fn model_suggestions_include_gpt_5_6_variants() {
+        let suggestions = ProviderChoice::model_suggestions_for_provider("openai");
+        assert_eq!(suggestions[0], "gpt-5.6-sol");
+        assert_eq!(suggestions[1], "gpt-5.6-terra");
+        assert_eq!(suggestions[2], "gpt-5.6-luna");
+        let codex = ProviderChoice::model_suggestions_for_provider("codex");
+        assert!(codex.contains(&"gpt-5.6-sol"));
+        assert!(codex.contains(&"gpt-5.6-terra"));
+        assert!(codex.contains(&"gpt-5.6-luna"));
+        let openrouter = ProviderChoice::model_suggestions_for_provider("openrouter");
+        assert!(openrouter.contains(&"openai/gpt-5.6-sol"));
+        assert!(openrouter.contains(&"openai/gpt-5.6-terra"));
+        assert!(openrouter.contains(&"openai/gpt-5.6-luna"));
+    }
+
+    #[test]
+    fn gpt_5_6_models_have_reasoning_effort_controls() {
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let provider = ProviderChoice::OpenAi {
+                model: "gpt-5.5".to_string(),
+                reasoning_effort: None,
+            };
+            let next = provider.resolve_model_spec(model).unwrap();
+
+            let profile = next.model_profile().expect("gpt-5.6 variant profile");
+            let efforts = profile.reasoning_effort.expect("reasoning effort config");
+            assert_eq!(
+                reasoning_effort_value(&efforts.default).as_deref(),
+                Some("medium")
+            );
+            assert!(
+                efforts
+                    .values
+                    .iter()
+                    .any(|value| reasoning_effort_value(&value.value).as_deref() == Some("xhigh"))
+            );
+        }
     }
 
     #[test]
