@@ -1,16 +1,17 @@
 //! Inline-viewport anchoring helpers. Ratatui anchors inline viewports to the
 //! cursor row at init and keeps that row fixed across vertical grows; a
-//! horizontal shrink resets the origin to the top. Yolop wants the composer
-//! pinned to the terminal bottom, so we re-insert blank scrollback lines when
-//! the viewport drifts away from that target.
+//! horizontal shrink resets the origin to the top. Yolop pins the composer to
+//! the terminal bottom by moving the backend cursor there and recomputing the
+//! inline origin instead of inserting blank scrollback lines.
 
 use anyhow::Result;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
+use ratatui::layout::{Position, Rect};
 
-/// Blank lines to insert above the inline viewport so its bottom edge sits on
-/// the terminal bottom.
-pub(crate) fn blank_lines_after_inline_viewport(
+/// How many rows remain between the inline viewport bottom edge and the
+/// terminal bottom. Zero means the composer is flush with the terminal bottom.
+pub(crate) fn rows_below_inline_viewport(
     viewport_top: u16,
     viewport_height: u16,
     terminal_height: u16,
@@ -25,14 +26,29 @@ where
     B: Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    let terminal_height = terminal.size()?.height;
+    let terminal_size = terminal.size()?;
     let viewport_area = terminal.get_frame().area();
-    let blank_lines =
-        blank_lines_after_inline_viewport(viewport_area.y, viewport_area.height, terminal_height);
-    if blank_lines == 0 {
+    let rows_below =
+        rows_below_inline_viewport(viewport_area.y, viewport_area.height, terminal_size.height);
+    if rows_below == 0 {
         return Ok(());
     }
-    terminal.insert_before(blank_lines, |_| {})?;
+
+    // Wait until crossterm has observed a PTY resize before recomputing the
+    // inline origin from the terminal bottom.
+    let viewport_bottom = viewport_area.y.saturating_add(viewport_area.height);
+    if viewport_bottom > terminal_size.height {
+        return Ok(());
+    }
+
+    // Recompute the inline origin from a bottom-row cursor. Blank scrollback
+    // lines would leave a visible gap above the composer.
+    let bottom_row = terminal_size.height.saturating_sub(1);
+    terminal.backend_mut().set_cursor_position(Position {
+        x: 0,
+        y: bottom_row,
+    })?;
+    terminal.resize(Rect::new(0, 0, terminal_size.width, terminal_size.height))?;
     Ok(())
 }
 
@@ -68,9 +84,10 @@ mod tests {
 
         terminal.backend_mut().resize(80, 40);
         terminal.autoresize().expect("autoresize grow");
+        let bottom_before_reanchor = viewport_bottom(&mut terminal);
         assert!(
-            viewport_bottom(&mut terminal) < 40,
-            "ratatui keeps the viewport row fixed across a grow"
+            bottom_before_reanchor <= 40,
+            "inline viewport should stay within the grown terminal before re-anchor"
         );
 
         maybe_reanchor_inline_viewport(&mut terminal).expect("re-anchor after grow");

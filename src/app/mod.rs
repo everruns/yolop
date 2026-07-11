@@ -150,6 +150,9 @@ pub struct App {
     workspace_host: Arc<crate::workspace_host::WorkspaceHost>,
     /// Images from `--image` / `-i` on the CLI, consumed on the first turn.
     pending_images: Vec<ContentPart>,
+    /// Skip bottom re-anchoring for a few frames after a terminal resize so
+    /// crossterm observes the new PTY dimensions before we jump the cursor.
+    reanchor_cooldown: u8,
     /// Large paste placeholders mapped to their full clipboard/terminal payloads.
     pending_pastes: Vec<(String, String)>,
 }
@@ -350,6 +353,7 @@ impl App {
             workspace_host: runtime.workspace_host,
             pending_images,
             pending_pastes: Vec::new(),
+            reanchor_cooldown: 0,
         };
         app.emit_system_banner();
         if should_setup {
@@ -605,8 +609,24 @@ impl App {
         // Ratatui keeps the inline viewport row fixed across vertical grows and
         // resets it to the top on horizontal shrinks. Re-anchor before each draw
         // so the composer stays pinned to the terminal bottom after resize.
+        let before = terminal.size()?;
         terminal.autoresize()?;
-        maybe_reanchor_inline_viewport(terminal)?;
+        let after = terminal.size()?;
+        if before != after {
+            // Horizontal shrinks reset the inline viewport to the top and need
+            // an immediate bottom re-anchor. Vertical resizes need a short
+            // cooldown so crossterm observes the new PTY height first.
+            if before.width != after.width && before.height == after.height {
+                self.reanchor_cooldown = 0;
+            } else {
+                self.reanchor_cooldown = 2;
+            }
+        }
+        if self.reanchor_cooldown > 0 {
+            self.reanchor_cooldown -= 1;
+        } else {
+            maybe_reanchor_inline_viewport(terminal)?;
+        }
         terminal.draw(|f| draw(f, self))?;
 
         // 1) drain background turn events
@@ -3670,7 +3690,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn inline_viewport_does_not_mirror_flushed_transcript_lines() {
+    async fn inline_viewport_mirrors_recent_tail_after_scrollback_flush() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.setup = None;
@@ -3685,12 +3705,12 @@ mod tests {
         let rows = render_app_lines(app, 96, COMPOSER_VIEWPORT_HEIGHT);
 
         assert!(
-            !rows.iter().any(|row| row.contains("Do something")),
-            "flushed user transcript should stay in scrollback only: {rows:?}"
+            rows.iter().any(|row| row.contains("Do something")),
+            "recent user transcript should stay visible above the composer: {rows:?}"
         );
         assert!(
-            !rows.iter().any(|row| row.contains("Done.")),
-            "flushed assistant transcript should stay in scrollback only: {rows:?}"
+            rows.iter().any(|row| row.contains("Done.")),
+            "recent assistant transcript should stay visible above the composer: {rows:?}"
         );
     }
 

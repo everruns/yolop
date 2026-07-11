@@ -31,8 +31,9 @@ use std::time::{Duration, Instant};
 use support::mock_openai::MockOpenAiServer;
 use support::strip_ansi;
 use support::tui_harness::{
-    TuiSpawnOptions, assert_cursor_near_bottom, max_absolute_cursor_position, spawn_tui_llmsim,
-    spawn_tui_llmsim_with, spawn_tui_llmsim_with_settings, wait_for_exit,
+    TuiSpawnOptions, assert_cursor_near_bottom, last_absolute_cursor_position,
+    max_absolute_cursor_position, spawn_tui_llmsim, spawn_tui_llmsim_with,
+    spawn_tui_llmsim_with_settings, wait_for_exit,
 };
 
 fn yolop_binary() -> PathBuf {
@@ -580,11 +581,12 @@ fn tui_resize_with_wrapped_input_keeps_cursor_inside_new_frame() {
     );
 
     let output = tui.output_text();
-    let (max_row, max_col) = max_absolute_cursor_position(output.as_bytes())
+    let (cursor_row, cursor_col) = last_absolute_cursor_position(output.as_bytes())
+        .or_else(|| max_absolute_cursor_position(output.as_bytes()))
         .unwrap_or_else(|| panic!("missing absolute cursor move after resize: {output:?}"));
     assert!(
-        max_row <= 10 && max_col <= 32,
-        "cursor moved outside resized frame ({max_row}, {max_col}) for 32x10 output: {output:?}"
+        cursor_row <= 10 && cursor_col <= 32,
+        "cursor moved outside resized frame ({cursor_row}, {cursor_col}) for 32x10 output: {output:?}"
     );
 
     tui.write_input(b"\x03\x03\x03");
@@ -754,6 +756,47 @@ fn tui_startup_anchors_composer_from_top_in_tall_terminal() {
     );
 
     assert_cursor_near_bottom(&mut tui, 40);
+}
+
+#[test]
+fn tui_turn_keeps_recent_transcript_adjacent_to_composer() {
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            rows: 40,
+            cols: 100,
+            cursor_row: 1,
+            ..TuiSpawnOptions::default()
+        },
+    );
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"hello composer gap\r");
+    assert!(
+        tui.wait_for_output("offline mode", Duration::from_secs(5)),
+        "turn did not complete: {}",
+        tui.output_text()
+    );
+
+    let transcript = strip_ansi(&tui.output_text());
+    let lines: Vec<&str> = transcript.lines().collect();
+    let assistant_line = lines
+        .iter()
+        .rposition(|line| line.contains("offline mode"))
+        .expect("assistant reply");
+    let separator_line = lines
+        .iter()
+        .rposition(|line| line.contains("Enter to send"))
+        .expect("composer separator");
+    let gap = separator_line.saturating_sub(assistant_line + 1);
+    assert!(
+        gap <= 2,
+        "recent transcript should sit directly above the composer (gap={gap}): {transcript}"
+    );
 }
 
 #[test]
