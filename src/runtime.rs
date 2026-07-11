@@ -2158,7 +2158,8 @@ pub async fn build_with_options(
     //   * stateless_todo_list  — write_todos tool for multi-step tasks
     //   * loop_detection       — safety net against repeated identical tool calls
     //   * prompt_caching       — Anthropic prompt caching; free token savings
-    //   * duckduckgo           — free web search (`duckduckgo_search`); no API key
+    //   * duckduckgo           — DuckDuckGo Instant Answer lookup (`duckduckgo_search`); no API key
+    //   * free_search          — best-effort free SERP/dev search (`free_web_search`); no API key
     //   * session_storage      — session kv/secret store (Daytona dependency)
     //   * daytona              — remote cloud sandboxes (`daytona_*` tools)
     //   * connectors           — connect/disconnect sandbox backends
@@ -2216,6 +2217,7 @@ pub async fn build_with_options(
     capabilities.register(DaytonaCapability);
     capabilities.register(UserHooksCapability);
     capabilities.register(DuckDuckGoCapability);
+    capabilities.register(crate::capabilities::FreeSearchCapability::new());
     capabilities.register(WebFetchCapability::from_env());
     capabilities.register(MessageMetadataCapability);
     capabilities.register(CodingCliEnvironmentCapability::new(
