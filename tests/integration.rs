@@ -911,8 +911,8 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
         "credential step should be skipped for a connected provider: {before_pick}"
     );
 
-    // Quick-select the second preset (gpt-5.4).
-    tui.write_input(b"2");
+    // Quick-select the third preset (gpt-5.4).
+    tui.write_input(b"3");
     assert!(
         tui.wait_for_output(
             "setup complete: openai/gpt-5.4 none",
