@@ -227,6 +227,28 @@ pub(crate) fn draw_recent_transcript(f: &mut ratatui::Frame, area: Rect, app: &A
     f.render_widget(Paragraph::new(rendered), render_area);
 }
 
+/// Whether a transcript line belongs in the inline viewport mirror.
+///
+/// Startup banner system lines stay scrollback-only. Once the session has user
+/// or assistant content, later system notices (image paste, turn status, etc.)
+/// should appear above the composer instead of only in the flushed band.
+pub(crate) fn include_line_in_recent_transcript_mirror(
+    line: &ChatLine,
+    index: usize,
+    lines: &[ChatLine],
+) -> bool {
+    if !matches!(line.author, Author::System) {
+        return true;
+    }
+    let Some(first_chat) = lines
+        .iter()
+        .position(|entry| !matches!(entry.author, Author::System))
+    else {
+        return false;
+    };
+    index >= first_chat
+}
+
 pub(crate) fn recent_transcript_lines(
     app: &App,
     width: usize,
@@ -242,13 +264,17 @@ pub(crate) fn recent_transcript_lines(
 
     // Keep the recent tail visible above the composer even after lines are
     // flushed into native scrollback.
-    for chat in app
+    let mirror_lines: Vec<&ChatLine> = app
         .lines
         .iter()
+        .enumerate()
         .rev()
-        .filter(|line| !matches!(line.author, Author::System))
+        .filter(|(index, line)| include_line_in_recent_transcript_mirror(line, *index, &app.lines))
         .take(RECENT_TRANSCRIPT_SOURCE_LINES)
-    {
+        .map(|(_, line)| line)
+        .collect();
+
+    for chat in mirror_lines {
         let chat = bounded_recent_chat_line(chat);
         let mut chunk = Vec::new();
         append_chat_lines(&mut chunk, &chat, width);
