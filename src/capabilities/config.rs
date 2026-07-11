@@ -565,6 +565,10 @@ impl SetConfigTool {
             KeyTarget::Capabilities | KeyTarget::CapabilityRef(_) => {
                 Err("capabilities are configured via set_config with key=capabilities".to_string())
             }
+            KeyTarget::Mcp => Err(
+                "mcp servers are configured in settings.toml under [mcp.servers.<name>]"
+                    .to_string(),
+            ),
         }
     }
 }

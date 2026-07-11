@@ -4,6 +4,7 @@
 // actual workspace. Only the `bash` tool is custom — it shells out to the host
 // instead of running against the VFS.
 
+use crate::capabilities::mcp::McpCapability as YolopMcpCapability;
 use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, MemoryStore};
 use crate::capabilities::yolop::{YOLOP_CAPABILITY_ID, YolopCapability};
 use crate::capabilities::{
@@ -23,6 +24,7 @@ use crate::connectors::{
 };
 use crate::goal::GoalStore;
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
+use crate::mcp_config::McpConfigStore;
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
 use crate::user_ask::UserAskStore;
@@ -2058,7 +2060,7 @@ pub async fn build_with_options(
     // config and the file-store factory's scope routing.
     let skill_dirs = crate::capabilities::skills::SkillDirs::resolve(&effective_root);
 
-    // MCP servers from `.mcp.json` (global + workspace, merged). Loading is
+    // MCP servers from global settings and workspace `.mcp.json`, merged. Loading is
     // best-effort per scope: a malformed file is warned about and skipped, so
     // it never sinks the session or masks the other scope.
     let mcp_servers: ScopedMcpServers = crate::mcp_config::load_mcp_servers(&canonical_root);
@@ -2281,6 +2283,9 @@ pub async fn build_with_options(
     capabilities.register(HooksCapability { hooks: hooks_store });
     // `yolop` — framing when the user addresses yolop itself, not the project.
     capabilities.register(YolopCapability);
+    capabilities.register(YolopMcpCapability {
+        store: Arc::new(McpConfigStore::default_for_workspace(&canonical_root)),
+    });
     // `progress_guard` — runtime-visible warnings when tool use stops making
     // observable progress.
     capabilities.register(ProgressGuardCapability::new());

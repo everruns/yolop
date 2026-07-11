@@ -281,6 +281,24 @@ merged (workspace overrides global by name):
 - Discovered tools are exposed to the model as `mcp_<server>__<tool>`;
   `/mcp` lists the configured servers.
 
+Linear works as a global HTTP MCP server. Put this in the global `mcp.json`,
+start yolop with `LINEAR_API_KEY` set, and keep any repo-specific Linear
+server in `.mcp.json` if that repo needs to override it:
+
+```json
+{
+  "mcpServers": {
+    "linear": {
+      "type": "http",
+      "url": "https://mcp.linear.app/sse",
+      "headers": {
+        "Authorization": "Bearer ${LINEAR_API_KEY}"
+      }
+    }
+  }
+}
+```
+
 Trust model: HTTP requests keep yolop's DNS-pinned SSRF protection; stdio
 servers run local processes you listed yourself, so authoring `.mcp.json` is
 the act of consent. MCP tools run autonomously like the rest of yolop's

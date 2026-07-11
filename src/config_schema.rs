@@ -206,6 +206,21 @@ pub fn schema() -> &'static [ConfigField] {
             ],
             provider_scoped: true,
         },
+        ConfigField {
+            key: "mcp",
+            aliases: &["mcp_servers"],
+            title: "Global MCP servers",
+            description: "Global Model Context Protocol servers loaded from settings.toml under \
+                          `[mcp.servers.<name>]`. Workspace `.mcp.json` entries override global \
+                          servers by name. Use `${ENV_VAR}` placeholders for secrets.",
+            kind: ValueKind::List,
+            default: Some("{}"),
+            examples: &[
+                "get_config key=mcp",
+                "[mcp.servers.linear] type = 'http' url = 'https://mcp.linear.app/sse'",
+            ],
+            provider_scoped: false,
+        },
     ];
     FIELDS
 }
@@ -228,6 +243,8 @@ pub enum KeyTarget {
     BaseUrl(String),
     /// The ordered `[[capabilities]]` override list.
     Capabilities,
+    /// Global MCP server table.
+    Mcp,
     /// Catalog metadata for one harness capability ref (`capabilities.<ref>`).
     CapabilityRef(String),
 }
@@ -246,6 +263,7 @@ impl KeyTarget {
             KeyTarget::Token(_) => "tokens",
             KeyTarget::BaseUrl(_) => "base_urls",
             KeyTarget::Capabilities | KeyTarget::CapabilityRef(_) => "capabilities",
+            KeyTarget::Mcp => "mcp",
         };
         schema()
             .iter()
@@ -297,6 +315,7 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "models" | "model_for" => scoped(KeyTarget::Model),
         "tokens" | "token" => scoped(KeyTarget::Token),
         "base_urls" | "base_url" | "url" => scoped(KeyTarget::BaseUrl),
+        "mcp" | "mcp_servers" => scalar(KeyTarget::Mcp),
         "capabilities" | "capability" => {
             if let Some(cap_ref) = sub.filter(|s| !s.is_empty()) {
                 Ok(KeyTarget::CapabilityRef(cap_ref.to_string()))
