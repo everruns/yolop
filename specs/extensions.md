@@ -398,18 +398,30 @@ upstream; yolop adds one facet:
     must already be resolvable (PATH or the package's `bin/`) — a missing
     binary is a call-time tool error with install guidance, exactly like a
     missing `rust-analyzer` today.
-  - `crates.io:<crate>[@version]` — the Rust-native path that provisions
-    package *and binary* in one step. Yolop downloads the `.crate` tarball
-    (checksummed via the registry index) and reads the extension manifest
-    from it — `plugin.json` at the crate root or
+  - `crates.io:<crate>[@version]` — provisions package *and binary* in one
+    step, **with no cargo or Rust toolchain required**. The pieces that
+    don't need a toolchain are compiled into yolop: the sparse index
+    (`index.crates.io`) is plain HTTPS + JSON and the `.crate` file is a
+    checksummed tar.gz, so yolop resolves the version, downloads the
+    tarball, verifies the registry checksum, and reads the extension
+    manifest from it — `plugin.json` at the crate root or
     `[package.metadata.yolop]` in `Cargo.toml` — **without executing
-    anything**, preserving the D4 invariant; after consent it runs
-    `cargo install <crate> --version <v> --locked --root
-    <config_dir>/yolop/extensions/<name>/` so the binary lands inside the
-    package dir, not in the user's cargo bin. Lock records crate, version,
-    and registry checksum (a stronger supply-chain pin than a git rev).
-    Requires a Rust toolchain — acceptable for yolop's audience; prebuilt
-    binaries (`cargo binstall`-style) are a deferred optimization.
+    anything**, preserving the D4 invariant. Binary provisioning after
+    consent, in order:
+    1. **Prebuilt artifact (primary).** The crate's metadata names
+       per-platform release artifacts (URL template + sha256 per target,
+       `cargo-binstall`-compatible metadata accepted); yolop downloads the
+       artifact for the host target, verifies the digest, and unpacks it
+       into the package dir. Chain of custody: the digests live inside the
+       registry-checksummed crate, so the lock's crate checksum transitively
+       pins the binary.
+    2. **`cargo install --locked --root <package dir>` (secondary).** Only
+       if no artifact matches the host target *and* a toolchain happens to
+       be present.
+    3. Otherwise: install completes package-only and the missing binary is
+       a call-time tool error with guidance — same policy as git installs.
+    Lock records crate, version, registry checksum, and the artifact
+    digest actually installed.
   - `<path>` — referenced in place, not copied (dev loop).
 - **Trust**: install is consent by action (same stance as authoring
   `.mcp.json`), preceded by a printed contribution summary (server command,
