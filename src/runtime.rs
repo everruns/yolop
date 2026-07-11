@@ -293,18 +293,21 @@ impl CodingCliSessionFileStore {
 #[async_trait]
 impl SessionFileSystem for CodingCliSessionFileStore {
     fn display_root(&self) -> String {
-        self.workspace_store()
-            .map(|store| store.display_root())
-            .unwrap_or_else(|_| "/workspace".to_string())
+        // Yolop's file tools and persisted output pointers use one stable
+        // model-facing namespace even while the host worktree root changes.
+        // Everruns 0.17.7 preserves real-disk backend identity through
+        // `MountFs`, so this embedder boundary must opt back into `/workspace`.
+        everruns_core::session_path::WORKSPACE_PREFIX.to_string()
     }
 
     fn display_path(&self, path: &str) -> String {
+        if Self::session_output_path(path).is_some() {
+            return everruns_core::session_path::to_display_path(path);
+        }
         if let Some((store, path)) = self.skill_or_session_route(path) {
             return store.display_path(&path);
         }
-        self.workspace_store()
-            .map(|store| store.display_path(path))
-            .unwrap_or_else(|_| path.to_string())
+        everruns_core::session_path::to_display_path(path)
     }
 
     async fn read_file(
@@ -2198,7 +2201,7 @@ pub async fn build_with_options(
     //   * stateless_todo_list  — write_todos tool for multi-step tasks
     //   * loop_detection       — safety net against repeated identical tool calls
     //   * prompt_caching       — Anthropic prompt caching; free token savings
-    //   * duckduckgo           — DuckDuckGo Instant Answer lookup (`duckduckgo_search`); no API key
+    //   * duckduckgo           — DuckDuckGo Instant Answer lookup (`duckduckgo_instant_answer`); no API key
     //   * free_search          — best-effort free SERP/dev search (`free_web_search`); no API key
     //   * session_storage      — session kv/secret store (Daytona dependency)
     //   * daytona              — remote cloud sandboxes (`daytona_*` tools)
@@ -2622,6 +2625,22 @@ mod tests {
                 built.startup.tool_names
             );
         }
+        assert!(
+            built
+                .startup
+                .tool_names
+                .contains(&"duckduckgo_instant_answer".to_string()),
+            "DuckDuckGo Instant Answer tool: {:?}",
+            built.startup.tool_names
+        );
+        assert!(
+            !built
+                .startup
+                .tool_names
+                .contains(&"duckduckgo_search".to_string()),
+            "retired DuckDuckGo tool name must not remain: {:?}",
+            built.startup.tool_names
+        );
         assert!(
             built
                 .handles

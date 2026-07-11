@@ -54,10 +54,13 @@ harness steers there at the three places poll loops start, on any repo:
   `spawn_background` instead of leaving the model to fall back to
   sleep-and-recheck turns.
 
-Sub-agents were intentionally **not** migrated: Everruns' `spawn_subagent` is
-foreground/blocking, and Yolop's former detached `background_agent` was dropped
-rather than reimplemented. If detached sub-agents return, they should be a
-background-capable tool wrapped by `spawn_background`, not a separate registry.
+Sub-agents are intentionally **not enabled**. Everruns 0.17.7 can run linked
+sub-agents in the background and spawn detached peer sessions, but both require a
+local session runner that can create and drive child sessions. Yolop's runner is
+deliberately narrower: it only delivers completion wakes for background tools.
+Registering the upstream sub-agent capability without a real child-session host
+would advertise tools that fail at execution time. `spawn_background` therefore
+remains Yolop's detached-work primitive.
 
 ### Inspecting and controlling
 

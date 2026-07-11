@@ -120,8 +120,10 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   idle, yolop proactively wakes the agent with a turn so it reacts without
   waiting for your next prompt (turn off with the `proactive_wake` setting).
   See [`specs/background.md`](./specs/background.md).
-- **Web** — `web_fetch` (HTTP GET/HEAD with markdown/text conversion, DNS-pinned
-  SSRF protection) and `duckduckgo_search` (free, no API key). Setting
+- **Web** — `free_web_search` (best-effort SERP/developer search), `web_fetch`
+  (HTTP GET/HEAD with markdown/text conversion and DNS-pinned SSRF protection),
+  and `duckduckgo_instant_answer` (curated facts and abstracts). All work
+  without an API key. Setting
   `EVERRUNS_SYSTEM_ALLOWLIST_ENABLED=true` restricts `web_fetch` to the
   runtime's curated allowlist of well-known public resources (package
   registries, source hosting, AI/cloud provider APIs, OS mirrors); off by
