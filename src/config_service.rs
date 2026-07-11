@@ -17,6 +17,7 @@ use crate::config_schema::{KeyTarget, parse_key};
 use crate::runtime::SUPPORTED_PROVIDERS;
 use crate::settings::{ApprovalMode, Settings, SettingsStore};
 use serde_json::Value;
+use toml::Value as TomlValue;
 
 /// Read-only view of yolop configuration, injectable into capabilities.
 ///
@@ -91,6 +92,10 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
         KeyTarget::Capabilities => {
             crate::capability_settings::overrides_to_json(&settings.capabilities)
         }
+        KeyTarget::Mcp => TomlValue::try_from(&settings.mcp)
+            .ok()
+            .and_then(|value| serde_json::to_value(value).ok())
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
         KeyTarget::CapabilityRef(cap_ref) => {
             let stored: Vec<Value> = settings
                 .capability_overrides_for(cap_ref)

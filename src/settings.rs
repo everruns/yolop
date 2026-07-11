@@ -15,6 +15,7 @@
 use crate::capability_settings::{
     CapabilityOverride, capabilities_to_toml, parse_capabilities_table,
 };
+use crate::mcp_config::McpSettings;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -148,6 +149,8 @@ pub struct Settings {
     pub proactive_wake: bool,
     /// Git worktree isolation for code changes (`auto`, `always`, `off`).
     pub worktrees: WorktreesMode,
+    /// Global MCP servers (`[mcp.servers.<name>]` in settings.toml). Repo `.mcp.json` entries override these by name.
+    pub mcp: McpSettings,
     /// Ordered harness capability overrides (`[[capabilities]]` in settings.toml).
     pub capabilities: Vec<CapabilityOverride>,
 }
@@ -165,6 +168,7 @@ impl Default for Settings {
             approval_mode: ApprovalMode::Normal,
             proactive_wake: true,
             worktrees: WorktreesMode::Auto,
+            mcp: McpSettings::default(),
             capabilities: Vec::new(),
         }
     }
@@ -227,6 +231,7 @@ impl Settings {
             approval_mode,
             proactive_wake,
             worktrees,
+            mcp: parse_mcp_settings(table),
             capabilities: parse_capabilities_table(table),
         }
     }
@@ -275,6 +280,12 @@ impl Settings {
             table.insert(
                 "codex_auth".to_string(),
                 Value::Table(codex_auth_to_table(auth)),
+            );
+        }
+        if !self.mcp.servers.is_empty() {
+            table.insert(
+                "mcp".to_string(),
+                Value::Table(mcp_settings_to_table(&self.mcp)),
             );
         }
         let caps = capabilities_to_toml(&self.capabilities);
@@ -341,6 +352,19 @@ impl Settings {
     }
 }
 
+fn parse_mcp_settings(table: &Table) -> McpSettings {
+    table
+        .get("mcp")
+        .and_then(|value| value.clone().try_into::<McpSettings>().ok())
+        .unwrap_or_default()
+}
+
+fn mcp_settings_to_table(settings: &McpSettings) -> Table {
+    toml::Value::try_from(settings)
+        .ok()
+        .and_then(|value| value.as_table().cloned())
+        .unwrap_or_default()
+}
 fn parse_codex_auth(table: &Table) -> Option<CodexAuth> {
     let access_token = table
         .get("access_token")
@@ -573,6 +597,12 @@ impl SettingsStore {
         Ok(existed)
     }
 
+    pub fn replace_mcp(&self, mcp: McpSettings) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.mcp = mcp;
+        save_to(&self.path, &guard)
+    }
+
     /// Append a harness capability override to the ordered settings list.
     pub fn append_capability_override(&self, entry: CapabilityOverride) -> Result<usize> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
@@ -593,6 +623,7 @@ impl SettingsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_core::McpServerAuthMode;
 
     #[test]
     fn default_provider_roundtrip_via_disk() {
@@ -805,6 +836,50 @@ mod tests {
         let store = SettingsStore::open(path);
         let removed = store.clear_token("openai").expect("clear");
         assert!(!removed);
+    }
+
+    #[test]
+    fn global_mcp_servers_roundtrip_via_settings_toml() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        std::fs::write(
+            &path,
+            r#"
+[mcp.servers.linear]
+type = "http"
+url = "https://mcp.linear.app/sse"
+auth_mode = "oauth"
+oauth_provider_id = "linear"
+
+[mcp.servers.linear.headers]
+Authorization = "Bearer ${LINEAR_API_KEY}"
+"#,
+        )
+        .expect("write");
+
+        let store = SettingsStore::open(path.clone());
+        let snapshot = store.snapshot();
+        let linear = snapshot.mcp.servers.get("linear").expect("linear server");
+        assert!(linear.enabled);
+        assert_eq!(linear.server.url, "https://mcp.linear.app/sse");
+        assert_eq!(linear.server.auth_mode, McpServerAuthMode::OAuth);
+        assert_eq!(linear.server.oauth_provider_id.as_deref(), Some("linear"));
+        assert_eq!(
+            linear
+                .server
+                .headers
+                .get("Authorization")
+                .map(String::as_str),
+            Some("Bearer ${LINEAR_API_KEY}")
+        );
+
+        save_to(&path, &snapshot).expect("save");
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(on_disk.contains("[mcp.servers.linear]"), "got: {on_disk}");
+        assert!(
+            on_disk.contains(r#"auth_mode = "o_auth""#),
+            "got: {on_disk}"
+        );
     }
 
     #[test]

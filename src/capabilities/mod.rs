@@ -14,6 +14,7 @@ pub(crate) mod goal;
 pub(crate) mod hooks;
 mod host;
 pub(crate) mod lsp;
+pub(crate) mod mcp;
 pub(crate) mod memory;
 pub(crate) mod model_discovery;
 pub(crate) mod model_ranking;
