@@ -111,8 +111,8 @@ yolop is an autonomous coding agent for the workspace it was started in.
 - **Shell** — `bash -lc` from the workspace root (120 s timeout, capped output)
 - **AST search** — structural `ast_grep` across common languages (default harness)
 - **AST edit** *(opt-in)* — previewed `ast_edit` rewrites; enable with `[[capabilities]] ref = "ast_edit"`
-- **Background work** — detached shell commands and focused sub-agents
-- **Web** — `web_fetch` and `duckduckgo_search`
+- **Background work** — detached shell commands with completion wakes
+- **Web** — `web_fetch`, `free_web_search`, and `duckduckgo_instant_answer`
 - **Memory** — durable cross-session notes via `remember` / `recall` / `forget`
 - **Skills** — `SKILL.md` packages in workspace, global, and bundled system scopes
 - **MCP** — extra tools from `.mcp.json` / global `mcp.json`
