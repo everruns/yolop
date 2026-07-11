@@ -192,7 +192,7 @@ configure the base URL, optional key, and model interactively via `/setup`.
 Enabled by default and configurable. When yolop creates commits, it keeps
 your git author/committer identity and appends
 `Co-Authored-By: yolop <yolop@everruns.com>` once. PR descriptions created or
-edited through `gh` get a `Generated with yolop` footer. Disable with
+edited through `gh` get a `Produced by [yolop](https://everruns.com/yolop)` footer. Disable with
 `/setup attribution off`.
 
 ### Soft approval

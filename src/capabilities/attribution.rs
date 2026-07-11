@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 pub(crate) const ATTRIBUTION_CAPABILITY_ID: &str = "yolop_attribution";
 pub(crate) const YOLOP_ATTRIBUTION_TRAILER: &str = "Co-Authored-By: yolop <yolop@everruns.com>";
-pub(crate) const YOLOP_PR_ATTRIBUTION: &str = "Generated with yolop";
+pub(crate) const YOLOP_PR_ATTRIBUTION: &str = "Produced by [yolop](https://everruns.com/yolop)";
 
 /// Render the `## Attribution` system-prompt block. Pure so it is unit-testable
 /// without a `SystemPromptContext`.
@@ -88,6 +88,10 @@ mod tests {
             .await
             .expect("enabled attribution prompt");
         assert!(enabled.contains(YOLOP_ATTRIBUTION_TRAILER));
+        assert_eq!(
+            YOLOP_PR_ATTRIBUTION,
+            "Produced by [yolop](https://everruns.com/yolop)"
+        );
         assert!(enabled.contains(YOLOP_PR_ATTRIBUTION));
 
         settings
