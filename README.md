@@ -172,6 +172,11 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **Sessions** — every run writes a durable per-session event log; resume any
   conversation with `--session <id>` (see
   [Session persistence](#session-persistence)).
+- **Session search** — `search_sessions` finds recent local sessions by a
+  distinctive user/assistant phrase, or lists recent sessions when no query is
+  supplied. This keeps investigations of prior or crashed runs grounded in the
+  saved event log before source-code analysis. See
+  [`specs/session-history.md`](specs/session-history.md).
 
 ### Providers
 

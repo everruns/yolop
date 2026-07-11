@@ -60,6 +60,15 @@ struct BashRunOutput {
     duration: Duration,
 }
 
+fn command_failure_hint(exit_code: i32, stderr: &str) -> Option<&'static str> {
+    (exit_code == 127 && stderr.to_ascii_lowercase().contains("command not found")).then_some(
+        "Command not found. Use a built-in tool when available (for repository search, use \
+         grep_files first); otherwise use a broadly available fallback such as grep -R. Use \
+         git grep only after confirming a Git worktree, or check PATH/install the executable \
+         before retrying.",
+    )
+}
+
 impl BashTool {
     pub fn new(ws: Workspace) -> Self {
         Self {
@@ -267,19 +276,21 @@ impl Tool for BashTool {
             raw_output,
         } = payload;
 
-        ToolExecutionResult::success_with_raw_output(
-            json!({
-                "command": command,
-                "exit_code": exit_code,
-                "success": success,
-                "stdout": stdout,
-                "stderr": stderr,
-                "truncated": truncated || output.out_truncated || output.err_truncated,
-                "total_lines": total_lines,
-                "output_limited": output.out_truncated || output.err_truncated,
-            }),
-            raw_output,
-        )
+        let mut result = json!({
+            "command": command,
+            "exit_code": exit_code,
+            "success": success,
+            "stdout": stdout,
+            "stderr": stderr,
+            "truncated": truncated || output.out_truncated || output.err_truncated,
+            "total_lines": total_lines,
+            "output_limited": output.out_truncated || output.err_truncated,
+        });
+        if let Some(hint) = command_failure_hint(exit_code, &output.stderr_text) {
+            result["hint"] = json!(hint);
+        }
+
+        ToolExecutionResult::success_with_raw_output(result, raw_output)
     }
 
     fn as_background_executable(&self) -> Option<&dyn BackgroundExecutableTool> {
@@ -349,8 +360,11 @@ impl BackgroundExecutableTool for BashTool {
                 raw_output: Some(raw_output),
             })
         } else {
+            let hint = command_failure_hint(exit_code, &output.stderr_text)
+                .map(|hint| format!(" {hint}"))
+                .unwrap_or_default();
             Err(ToolExecutionResult::tool_error(format!(
-                "Bash command exited with code {exit_code} after {} ms",
+                "Bash command exited with code {exit_code} after {} ms.{hint}",
                 output.duration.as_millis()
             )))
         }
@@ -437,6 +451,26 @@ mod tests {
             message.contains("workspace directory does not exist"),
             "got: {message}"
         );
+    }
+
+    #[tokio::test]
+    async fn bash_command_not_found_suggests_available_search_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+
+        let ToolExecutionResult::Success(result) = tool
+            .execute(json!({"command":"yolop-command-that-does-not-exist"}))
+            .await
+        else {
+            panic!("expected structured command result");
+        };
+
+        assert_eq!(result["exit_code"], 127);
+        let hint = result["hint"].as_str().expect("command-not-found hint");
+        assert!(hint.contains("grep_files first"));
+        assert!(hint.contains("grep -R"));
+        assert!(hint.contains("only after confirming a Git worktree"));
+        assert!(hint.contains("PATH"));
     }
 
     #[tokio::test]

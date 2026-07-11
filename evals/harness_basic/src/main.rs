@@ -5,8 +5,9 @@
 //! headless one-shot mode (`yolop -p`, the runtime path — no TUI) in a fresh
 //! seeded workdir per case, and mines the session `events.jsonl` for metrics.
 //!
-//! The matrix is samples × three axes:
+//! The matrix is samples × four axes:
 //!   * **target** — provider models (Anthropic, OpenAI, OpenRouter)
+//!   * **binary** — candidate versus explicit product/dependency baselines
 //!   * **effort** — `--reasoning-effort` (`default` = yolop's per-model default)
 //!   * **harness** — yolop configuration variants (out-of-the-box, ast-grep off, …),
 //!     applied as a per-case `settings.toml` in an isolated `XDG_CONFIG_HOME`
@@ -16,7 +17,7 @@
 //! otherwise-identical cases. Run it with the `mira` host CLI from this
 //! directory (`mira list`, `mira run --preset smoke`); see README.md.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -33,6 +34,7 @@ use serde_json::{Value, json};
 /// `--reasoning-effort` values. `default` omits the flag so yolop applies the
 /// model profile's own default.
 const EFFORTS: &[&str] = &["default", "low", "high"];
+const BINARIES: &[&str] = &["candidate", "baseline", "dependency-baseline"];
 
 /// One yolop configuration under test. `settings` is TOML appended to the
 /// study's base `settings.toml` (see [`settings_for_variant`]); `default` is
@@ -272,6 +274,243 @@ mod tests {
     )
 }
 
+fn prior_session_reference_sample() -> Sample {
+    Sample::new(
+        "prior-session-reference",
+        "A recent local Yolop session failed and recorded request reference \
+         817d582b-566c-46ed-8a25-29f1705916e5. Find that saved session first, \
+         then report the exact failure and whether a shell command caused it. \
+         Do not inspect project source before locating the session.",
+    )
+    .tag("search-efficiency")
+    .meta("kind", "session-discovery")
+    .meta(
+        "prior_sessions",
+        json!([{
+            "session_id": "session_000000000000000000000000000000aa",
+            "events": [
+                {
+                    "type":"input.message",
+                    "ts":"2026-07-11T18:51:22Z",
+                    "data":{"message":{"role":"user","content":[{"type":"text","text":"Analyze stale grounding"}]}}
+                },
+                {
+                    "type":"tool.completed",
+                    "ts":"2026-07-11T18:51:59Z",
+                    "data":{"tool_name":"grep_files","success":true}
+                },
+                {
+                    "type":"reason.completed",
+                    "ts":"2026-07-11T18:53:00Z",
+                    "data":{"success":false,"error":"LLM processing_error after 60.9 seconds. Include request ID 817d582b-566c-46ed-8a25-29f1705916e5."}
+                }
+            ]
+        }]),
+    )
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["processing_error", "60.9"],
+            "tool_called": ["search_sessions"],
+            "metric_equals": {
+                "search_sessions_tool_calls": 1.0,
+                "search_sessions_first_exploration": 1.0,
+                "tool_calls_failed": 0.0,
+                "duplicate_exploration_calls": 0.0
+            },
+            "metric_at_most": {
+                "tool_calls": 2.0,
+                "llm_calls": 3.0,
+                "total_tool_result_bytes": 15000.0
+            }
+        }]),
+    )
+}
+
+fn nested_glob_search_sample() -> Sample {
+    Sample::new(
+        "grep-files-nested-glob",
+        "Use grep_files with path_pattern `src/**/*.rs` to find \
+         NESTED_SEARCH_CODE. Reply with only its string value.",
+    )
+    .file(
+        "src/outer/inner/answer.rs",
+        "const NESTED_SEARCH_CODE: &str = \"GLOB-3917\";\n",
+    )
+    .file("src/decoy.rs", "const OTHER_CODE: &str = \"NOPE\";\n")
+    .file(
+        "docs/answer.rs",
+        "NESTED_SEARCH_CODE is not defined here.\n",
+    )
+    .tag("search-efficiency")
+    .meta("kind", "path-glob-search")
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["GLOB-3917"],
+            "tool_called": ["grep_files"],
+            "metric_equals": {
+                "tool_calls_failed": 0.0,
+                "duplicate_exploration_calls": 0.0
+            },
+            "metric_at_most": {
+                "tool_calls": 2.0,
+                "llm_calls": 3.0,
+                "total_tool_result_bytes": 15000.0
+            }
+        }]),
+    )
+}
+
+fn missing_rg_recovery_sample() -> Sample {
+    Sample::new(
+        "missing-rg-recovery",
+        "First run `rg -n RECOVERY_CODE .` with bash exactly as written. If the \
+         executable is unavailable, recover without installing anything, find \
+         RECOVERY_CODE using an available repository-search path, and reply with \
+         only its value.",
+    )
+    .file("notes/code.txt", "RECOVERY_CODE=PATH-127\n")
+    .tag("search-efficiency")
+    .meta("kind", "missing-executable-recovery")
+    .meta("restricted_path", true)
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["PATH-127"],
+            "tool_called": ["bash"],
+            "metric_equals": {
+                "tool_calls_failed": 1.0,
+                "inner_tool_failures": 1.0,
+                "git_grep_calls": 0.0,
+                "duplicate_exploration_calls": 0.0
+            },
+            "metric_at_most": {"tool_calls": 3.0, "llm_calls": 4.0}
+        }]),
+    )
+}
+
+fn zero_result_search_sample() -> Sample {
+    Sample::new(
+        "zero-result-search-recovery",
+        "Search with grep_files for MISSING_ALPHA, then MISSING_BETA, then \
+         MISSING_GAMMA as three separate calls. They do not exist. After the \
+         runtime warns that the searches are not producing evidence, search for \
+         RECOVERY_TARGET and reply with only its value.",
+    )
+    .file("src/answer.txt", "RECOVERY_TARGET=GUARD-203\n")
+    .tag("search-efficiency")
+    .tag("progress-guard")
+    .meta("kind", "zero-result-progress")
+    .meta(
+        "checks",
+        json!([
+            {"response_contains": ["GUARD-203"]},
+            {
+                "when_binary": "candidate",
+                "metric_at_least": {"progress_guard_warnings": 1.0},
+                "metric_at_most": {
+                    "calls_after_progress_warning": 1.0,
+                    "tool_calls": 4.0,
+                    "llm_calls": 5.0
+                },
+                "metric_equals": {"duplicate_exploration_calls": 0.0}
+            },
+            {
+                "when_binary": "baseline",
+                "metric_equals": {"progress_guard_warnings": 0.0}
+            }
+        ]),
+    )
+}
+
+fn bounded_repo_map_sample() -> Sample {
+    let mut source = String::new();
+    for index in 0..75 {
+        source.push_str(&format!(
+            "pub fn helper_{index:03}() -> usize {{ {index} }}\n"
+        ));
+    }
+    source.push_str("pub fn bounded_map_answer() -> &'static str { \"MAP-4182\" }\n");
+    for index in 76..260 {
+        source.push_str(&format!(
+            "pub fn helper_{index:03}() -> usize {{ {index} }}\n"
+        ));
+    }
+
+    Sample::new(
+        "repo-map-bounded",
+        "Call repo_map on path `src` without a query or explicit limit. Use its \
+         result to find bounded_map_answer and reply with only the returned string.",
+    )
+    .file("src/lib.rs", source)
+    .tag("search-efficiency")
+    .meta("kind", "bounded-repo-map")
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["MAP-4182"],
+            "tool_called": ["repo_map"],
+            "metric_equals": {"duplicate_exploration_calls": 0.0},
+            "metric_at_most": {"repo_map_max_result_bytes": 20000.0},
+        }, {
+            "when_binary": "candidate",
+            "metric_at_least": {"repo_map_narrowed_after_truncation": 1.0},
+            "metric_at_most": {
+                "tool_calls": 3.0,
+                "llm_calls": 4.0,
+                "total_tool_result_bytes": 30000.0
+            }
+        }]),
+    )
+}
+
+fn normal_output_preservation_sample() -> Sample {
+    let mut log = String::new();
+    for index in 0..30 {
+        log.push_str(&format!(
+            "src/preamble_{index:02}.rs: ordinary leading context line {index:02}\n"
+        ));
+    }
+    log.push_str("LEADING_MATCH=PRESERVE-8841\n");
+    for index in 0..1200 {
+        log.push_str(&format!(
+            "src/module_{index:04}.rs: ordinary source context line {index:04}\n"
+        ));
+    }
+    for index in 0..600 {
+        log.push_str(&format!(
+            "src/worker_{index:03}.rs: simulated Error context line {index:03}\n"
+        ));
+    }
+    Sample::new(
+        "normal-output-preserves-head",
+        "Use bash exactly once with command `cat search.log` \
+         and request output mode `normal`. Do not use any other tool and do not read \
+         a persisted output file. Reply with only the LEADING_MATCH value.",
+    )
+    .file("search.log", log)
+    .tag("search-efficiency")
+    .meta("kind", "output-preservation")
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["PRESERVE-8841"],
+            "tool_called": ["bash"],
+            "metric_equals": {
+                "bash_tool_calls": 1.0,
+                "read_file_tool_calls": 0.0,
+                "leading_marker_in_bash_result": 1.0
+            },
+            "metric_at_most": {
+                "tool_calls": 1.0,
+                "llm_calls": 2.0,
+                "total_tool_result_bytes": 40000.0
+            }
+        }]),
+    )
+}
+
 fn dataset() -> Dataset {
     let cargo_toml = "[package]\nname = \"seed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
     Dataset::new(vec![
@@ -389,6 +628,12 @@ fn dataset() -> Dataset {
         progress_guard_probe_sample(),
         progress_guard_checkpoint_sample(),
         background_callback_bridge_sample(),
+        prior_session_reference_sample(),
+        nested_glob_search_sample(),
+        missing_rg_recovery_sample(),
+        zero_result_search_sample(),
+        bounded_repo_map_sample(),
+        normal_output_preservation_sample(),
         Sample::new(
             "replace-console-log",
             "Replace every `console.log(...)` call with `logger.info(...)` across all \
@@ -540,6 +785,13 @@ fn ast_edit_used_scorer() -> Box<dyn Scorer> {
 }
 
 fn run_check(spec: &Value, t: &Transcript, passed: &mut usize, failures: &mut Vec<String>) {
+    for (condition, metadata_key) in [("when_binary", "binary"), ("when_harness", "harness")] {
+        if let Some(expected) = spec.get(condition).and_then(Value::as_str)
+            && t.metadata.get(metadata_key).and_then(Value::as_str) != Some(expected)
+        {
+            return;
+        }
+    }
     let strings = |key: &str| -> Vec<&str> {
         spec.get(key)
             .and_then(Value::as_array)
@@ -573,6 +825,55 @@ fn run_check(spec: &Value, t: &Transcript, passed: &mut usize, failures: &mut Ve
             failures.push(format!("response missing {needle:?}"));
         }
     }
+    for tool in strings("tool_called") {
+        if t.tool_calls.iter().any(|called| called == tool) {
+            *passed += 1;
+        } else {
+            failures.push(format!("tool {tool:?} was not called"));
+        }
+    }
+    for (key, minimum) in spec
+        .get("metric_at_least")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let minimum = minimum.as_f64().unwrap_or_default();
+        let actual = t.metrics.get(key).copied().unwrap_or_default();
+        if actual >= minimum {
+            *passed += 1;
+        } else {
+            failures.push(format!("metric {key} {actual} < {minimum}"));
+        }
+    }
+    for (key, maximum) in spec
+        .get("metric_at_most")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let maximum = maximum.as_f64().unwrap_or_default();
+        let actual = t.metrics.get(key).copied().unwrap_or_default();
+        if actual <= maximum {
+            *passed += 1;
+        } else {
+            failures.push(format!("metric {key} {actual} > {maximum}"));
+        }
+    }
+    for (key, expected) in spec
+        .get("metric_equals")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let expected = expected.as_f64().unwrap_or_default();
+        let actual = t.metrics.get(key).copied().unwrap_or_default();
+        if (actual - expected).abs() < f64::EPSILON {
+            *passed += 1;
+        } else {
+            failures.push(format!("metric {key} {actual} != {expected}"));
+        }
+    }
 }
 
 // ============================================================================
@@ -583,21 +884,34 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The yolop binary under test: `HARNESS_BASIC_YOLOP_BIN` override, else the
-/// repo's release build, else the debug build.
-fn yolop_bin() -> Result<PathBuf, String> {
-    if let Ok(explicit) = std::env::var("HARNESS_BASIC_YOLOP_BIN")
+/// Resolve the binary axis. Candidate keeps the historical override/fallback;
+/// baselines are explicit so a comparison can never silently run one binary twice.
+fn yolop_bin(binary: &str) -> Result<PathBuf, String> {
+    let axis_override = match binary {
+        "candidate" => "HARNESS_BASIC_CANDIDATE_BIN",
+        "baseline" => "HARNESS_BASIC_BASELINE_BIN",
+        "dependency-baseline" => "HARNESS_BASIC_DEPENDENCY_BASELINE_BIN",
+        other => return Err(format!("unknown binary axis value: {other}")),
+    };
+    let explicit = std::env::var(axis_override).ok().or_else(|| {
+        (binary == "candidate")
+            .then(|| std::env::var("HARNESS_BASIC_YOLOP_BIN").ok())
+            .flatten()
+    });
+    if let Some(explicit) = explicit
         && !explicit.trim().is_empty()
     {
         let p = PathBuf::from(explicit);
         return if p.exists() {
             Ok(p)
         } else {
-            Err(format!(
-                "HARNESS_BASIC_YOLOP_BIN not found: {}",
-                p.display()
-            ))
+            Err(format!("{axis_override} not found: {}", p.display()))
         };
+    }
+    if binary != "candidate" {
+        return Err(format!(
+            "baseline binary not configured — set {axis_override}"
+        ));
     }
     for profile in ["release", "debug"] {
         let p = repo_root().join("target").join(profile).join("yolop");
@@ -607,7 +921,7 @@ fn yolop_bin() -> Result<PathBuf, String> {
     }
     Err(
         "yolop binary not found — run `cargo build --release` at the repo root, \
-         or set HARNESS_BASIC_YOLOP_BIN"
+         or set HARNESS_BASIC_CANDIDATE_BIN"
             .to_string(),
     )
 }
@@ -650,6 +964,7 @@ struct Mined {
     turn_ms: u64,
     tool_calls: Vec<String>,
     tool_calls_failed: u64,
+    inner_tool_failures: u64,
     final_response: String,
     effort_applied: Option<String>,
     exploration_tools_before_first_mutation: u64,
@@ -657,6 +972,18 @@ struct Mined {
     progress_guard_warnings: u64,
     ast_edit_tool_calls: u64,
     ast_edit_tool_calls_failed: u64,
+    max_tool_result_bytes: u64,
+    total_tool_result_bytes: u64,
+    repo_map_max_result_bytes: u64,
+    repo_map_narrowed_after_truncation: u64,
+    search_sessions_tool_calls: u64,
+    search_sessions_first_exploration: u64,
+    duplicate_exploration_calls: u64,
+    calls_after_progress_warning: u64,
+    bash_tool_calls: u64,
+    read_file_tool_calls: u64,
+    git_grep_calls: u64,
+    leading_marker_in_bash_result: u64,
 }
 
 fn normalized_command(command: &str) -> String {
@@ -698,6 +1025,30 @@ fn has_progress_guard_warning(data: &Value) -> bool {
     }
 }
 
+fn inner_tool_failed(data: &Value) -> bool {
+    tool_result_value(data).is_some_and(|result| {
+        result.get("success") == Some(&Value::Bool(false))
+            || result
+                .get("exit_code")
+                .and_then(Value::as_i64)
+                .is_some_and(|code| code != 0)
+    })
+}
+
+fn result_is_truncated(data: &Value) -> bool {
+    tool_result_value(data).is_some_and(|result| {
+        result.get("truncated") == Some(&Value::Bool(true))
+            || result.pointer("/truncation/truncated") == Some(&Value::Bool(true))
+    })
+}
+
+fn result_has_query(data: &Value) -> bool {
+    tool_result_value(data)
+        .and_then(|result| result.get("query").cloned())
+        .and_then(|query| query.as_str().map(str::to_owned))
+        .is_some_and(|query| !query.trim().is_empty())
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ToolKind {
     Exploration,
@@ -720,7 +1071,8 @@ fn classify_tool(data: &Value) -> ToolKind {
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     match name {
-        "read_file" | "grep_files" | "repo_map" | "ast_grep" | "list_directory" | "stat_file" => {
+        "read_file" | "grep_files" | "repo_map" | "search_sessions" | "ast_grep"
+        | "list_directory" | "stat_file" => {
             return ToolKind::Exploration;
         }
         "write_file" | "edit_file" | "delete_file" | "ast_edit" | "edit" => {
@@ -797,6 +1149,10 @@ fn parse_events(jsonl: &str) -> Mined {
     let mut m = Mined::default();
     let mut current_exploration_without_progress = 0_u64;
     let mut saw_mutation = false;
+    let mut saw_exploration = false;
+    let mut saw_progress_warning = false;
+    let mut saw_truncated_repo_map = false;
+    let mut exploration_fingerprints = BTreeSet::new();
     for line in jsonl.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -853,11 +1209,59 @@ fn parse_events(jsonl: &str) -> Mined {
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
                 m.tool_calls.push(name.to_string());
-                if data.get("success") == Some(&Value::Bool(false)) {
+                if saw_progress_warning {
+                    m.calls_after_progress_warning += 1;
+                }
+                let result_bytes = data
+                    .get("result")
+                    .map(Value::to_string)
+                    .map(|value| value.len() as u64)
+                    .unwrap_or_default();
+                m.max_tool_result_bytes = m.max_tool_result_bytes.max(result_bytes);
+                m.total_tool_result_bytes += result_bytes;
+                if name == "repo_map" {
+                    m.repo_map_max_result_bytes = m.repo_map_max_result_bytes.max(result_bytes);
+                    if saw_truncated_repo_map && result_has_query(&data) {
+                        m.repo_map_narrowed_after_truncation += 1;
+                    }
+                    saw_truncated_repo_map |= result_is_truncated(&data);
+                }
+                if name == "search_sessions" {
+                    m.search_sessions_tool_calls += 1;
+                }
+                if name == "bash" {
+                    m.bash_tool_calls += 1;
+                    let command = normalized_command(&tool_command(&data));
+                    if command.starts_with("git grep") {
+                        m.git_grep_calls += 1;
+                    }
+                    if tool_result_value(&data)
+                        .and_then(|result| {
+                            result
+                                .get("stdout")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .is_some_and(|stdout| stdout.contains("PRESERVE-8841"))
+                    {
+                        m.leading_marker_in_bash_result += 1;
+                    }
+                }
+                if name == "read_file" {
+                    m.read_file_tool_calls += 1;
+                }
+                let outer_failed = data.get("success") == Some(&Value::Bool(false));
+                let inner_failed = inner_tool_failed(&data);
+                if inner_failed {
+                    m.inner_tool_failures += 1;
+                }
+                if outer_failed || inner_failed {
                     m.tool_calls_failed += 1;
                 }
-                if has_progress_guard_warning(&data) {
+                let progress_warning = has_progress_guard_warning(&data);
+                if progress_warning {
                     m.progress_guard_warnings += 1;
+                    saw_progress_warning = true;
                 }
                 if name == "ast_edit" {
                     m.ast_edit_tool_calls += 1;
@@ -874,6 +1278,16 @@ fn parse_events(jsonl: &str) -> Mined {
                         current_exploration_without_progress = 0;
                     }
                     ToolKind::Exploration => {
+                        if !saw_exploration && name == "search_sessions" {
+                            m.search_sessions_first_exploration = 1;
+                        }
+                        saw_exploration = true;
+                        if let Some(fingerprint) =
+                            data.get("tool_call_fingerprint").and_then(Value::as_str)
+                            && !exploration_fingerprints.insert(fingerprint.to_string())
+                        {
+                            m.duplicate_exploration_calls += 1;
+                        }
                         current_exploration_without_progress += 1;
                         m.max_exploration_tools_without_progress = m
                             .max_exploration_tools_without_progress
@@ -956,8 +1370,43 @@ fn preserve_session_log(events_path: &Path, slug: &str) -> Option<String> {
     Some(format!(".cache/sessions/{slug}.events.jsonl"))
 }
 
+fn seed_prior_sessions(sample: &Sample, sessions_dir: &Path) -> Result<(), String> {
+    let Some(sessions) = sample
+        .metadata
+        .get("prior_sessions")
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+    for session in sessions {
+        let id = session
+            .get("session_id")
+            .and_then(Value::as_str)
+            .ok_or("prior session missing session_id")?;
+        let events = session
+            .get("events")
+            .and_then(Value::as_array)
+            .ok_or("prior session missing events")?;
+        let dir = sessions_dir.join(id);
+        std::fs::create_dir_all(&dir).map_err(|error| format!("create {id}: {error}"))?;
+        let mut body = events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        body.push('\n');
+        std::fs::write(dir.join("events.jsonl"), body)
+            .map_err(|error| format!("write {id}: {error}"))?;
+    }
+    Ok(())
+}
+
 async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
-    let bin = match yolop_bin() {
+    let binary = cx
+        .param("binary")
+        .map(str::to_string)
+        .unwrap_or_else(|| "candidate".into());
+    let bin = match yolop_bin(&binary) {
         Ok(bin) => bin,
         // Not the model's fault: report as infra so the host shows N/A, not a failure.
         Err(e) => return Transcript::infra_error(e),
@@ -995,6 +1444,9 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         return Transcript::infra_error("failed to write case settings.toml");
     }
     let sessions = scratch.path().join("sessions");
+    if let Err(error) = seed_prior_sessions(&sample, &sessions) {
+        return Transcript::infra_error(error);
+    }
     let session_id = fresh_session_id();
 
     let prompt = sample.input.join("\n");
@@ -1028,6 +1480,14 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true); // dropping the wait future on timeout kills yolop
+    if sample
+        .metadata
+        .get("restricted_path")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        cmd.env("PATH", "/usr/bin:/bin");
+    }
 
     let started = std::time::Instant::now();
     let child = match cmd.spawn() {
@@ -1094,9 +1554,15 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     t.files = read_files_back(work.path());
 
     t.metrics.insert("llm_calls".into(), mined.llm_calls as f64);
+    t.metrics
+        .insert("tool_calls".into(), t.tool_calls_count as f64);
     t.metrics.insert("turns".into(), mined.turns as f64);
     t.metrics
         .insert("tool_calls_failed".into(), mined.tool_calls_failed as f64);
+    t.metrics.insert(
+        "inner_tool_failures".into(),
+        mined.inner_tool_failures as f64,
+    );
     t.metrics.insert(
         "cache_creation_tokens".into(),
         mined.cache_creation_tokens as f64,
@@ -1113,11 +1579,57 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         "progress_guard_warnings".into(),
         mined.progress_guard_warnings as f64,
     );
-    t.metrics
-        .insert("ast_edit_tool_calls".into(), mined.ast_edit_tool_calls as f64);
+    t.metrics.insert(
+        "ast_edit_tool_calls".into(),
+        mined.ast_edit_tool_calls as f64,
+    );
     t.metrics.insert(
         "ast_edit_tool_calls_failed".into(),
         mined.ast_edit_tool_calls_failed as f64,
+    );
+    t.metrics.insert(
+        "max_tool_result_bytes".into(),
+        mined.max_tool_result_bytes as f64,
+    );
+    t.metrics.insert(
+        "total_tool_result_bytes".into(),
+        mined.total_tool_result_bytes as f64,
+    );
+    t.metrics.insert(
+        "repo_map_max_result_bytes".into(),
+        mined.repo_map_max_result_bytes as f64,
+    );
+    t.metrics.insert(
+        "repo_map_narrowed_after_truncation".into(),
+        mined.repo_map_narrowed_after_truncation as f64,
+    );
+    t.metrics.insert(
+        "search_sessions_tool_calls".into(),
+        mined.search_sessions_tool_calls as f64,
+    );
+    t.metrics.insert(
+        "search_sessions_first_exploration".into(),
+        mined.search_sessions_first_exploration as f64,
+    );
+    t.metrics.insert(
+        "duplicate_exploration_calls".into(),
+        mined.duplicate_exploration_calls as f64,
+    );
+    t.metrics.insert(
+        "calls_after_progress_warning".into(),
+        mined.calls_after_progress_warning as f64,
+    );
+    t.metrics
+        .insert("bash_tool_calls".into(), mined.bash_tool_calls as f64);
+    t.metrics.insert(
+        "read_file_tool_calls".into(),
+        mined.read_file_tool_calls as f64,
+    );
+    t.metrics
+        .insert("git_grep_calls".into(), mined.git_grep_calls as f64);
+    t.metrics.insert(
+        "leading_marker_in_bash_result".into(),
+        mined.leading_marker_in_bash_result as f64,
     );
     let agent_ms = if mined.turn_ms > 0 {
         mined.turn_ms
@@ -1136,11 +1648,13 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
             .insert("reasoning_effort_applied".into(), json!(applied));
     }
     t.metadata.insert("harness".into(), json!(harness));
+    t.metadata.insert("binary".into(), json!(binary));
     t.metadata.insert("stop_reason".into(), json!(stop_reason));
     let slug = sanitize(&format!(
-        "{}-{}-{}-{}-{}",
+        "{}-{}-{}-{}-{}-{}",
         sample.id,
         cx.target.label,
+        binary,
         harness,
         effort,
         &session_id["session_".len()..]
@@ -1165,6 +1679,7 @@ fn basic_coding() -> Eval {
         .dataset(dataset())
         .subject(subject_fn(run_yolop))
         .targets(targets())
+        .axis("binary", BINARIES.iter().copied())
         .axis("harness", HARNESS_VARIANTS.iter().map(|v| v.name))
         .axis("effort", EFFORTS.iter().copied())
         .scorer(succeeded())
@@ -1300,6 +1815,31 @@ mod tests {
         assert_eq!(m.exploration_tools_before_first_mutation, 0);
     }
 
+    #[test]
+    fn parse_events_mines_search_efficiency_trajectory() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"search_sessions","success":true,"tool_call_fingerprint":"session-1","result":[{"type":"text","text":"{\"matches\":[]}"}]}}
+{"type":"tool.completed","data":{"tool_name":"repo_map","success":true,"tool_call_fingerprint":"map-broad","result":[{"type":"text","text":"{\"query\":null,\"truncated\":true}"}]}}
+{"type":"tool.completed","data":{"tool_name":"repo_map","success":true,"tool_call_fingerprint":"map-broad","result":[{"type":"text","text":"{\"query\":null,\"truncated\":true,\"progress_guard_warning\":\"narrow\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"repo_map","success":true,"tool_call_fingerprint":"map-narrow","result":[{"type":"text","text":"{\"query\":\"answer\",\"truncated\":false}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"tool_call_fingerprint":"bash-rg","result":[{"type":"text","text":"{\"command\":\"rg answer .\",\"exit_code\":127,\"success\":false,\"stdout\":\"PRESERVE-8841\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"read_file","success":true,"tool_call_fingerprint":"read-1"}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.search_sessions_tool_calls, 1);
+        assert_eq!(m.search_sessions_first_exploration, 1);
+        assert_eq!(m.duplicate_exploration_calls, 1);
+        assert_eq!(m.repo_map_narrowed_after_truncation, 1);
+        assert_eq!(m.progress_guard_warnings, 1);
+        assert_eq!(m.calls_after_progress_warning, 3);
+        assert_eq!(m.inner_tool_failures, 1);
+        assert_eq!(m.tool_calls_failed, 1);
+        assert_eq!(m.bash_tool_calls, 1);
+        assert_eq!(m.read_file_tool_calls, 1);
+        assert_eq!(m.leading_marker_in_bash_result, 1);
+        assert!(m.total_tool_result_bytes >= m.max_tool_result_bytes);
+    }
+
     #[tokio::test]
     async fn ast_edit_used_scorer_gates_on_variant() {
         let sample = Sample::new("a", "x");
@@ -1378,14 +1918,65 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn checks_scorer_applies_binary_conditions_and_exact_metrics() {
+        let sample = Sample::new("conditional", "x").meta(
+            "checks",
+            json!([
+                {"when_binary": "candidate", "metric_equals": {"warnings": 1.0}},
+                {"when_binary": "baseline", "metric_equals": {"warnings": 0.0}}
+            ]),
+        );
+        let mut transcript = graded_transcript();
+        transcript
+            .metadata
+            .insert("binary".into(), json!("candidate"));
+        transcript.metrics.insert("warnings".into(), 1.0);
+        let score = checks_scorer().score(&sample, &transcript).await;
+        assert!(score.pass, "{}", score.reason);
+
+        transcript.metrics.insert("warnings".into(), 0.0);
+        let score = checks_scorer().score(&sample, &transcript).await;
+        assert!(!score.pass);
+    }
+
+    #[test]
+    fn search_efficiency_preset_is_comparative_and_repeated() {
+        let config = include_str!("../mira.toml");
+        let section = config
+            .split("[presets.search-efficiency]")
+            .nth(1)
+            .expect("search-efficiency preset")
+            .split("[presets.output-persistence]")
+            .next()
+            .unwrap();
+        assert!(section.contains("binary = [\"baseline\", \"candidate\"]"));
+        assert!(
+            !section.contains("trials ="),
+            "Mira presets do not select trial count; invoke this preset with --trials 3"
+        );
+        assert!(section.contains("\"add-fn\""));
+        assert!(!section.contains("\"normal-output-preserves-head\""));
+
+        let output_section = config
+            .split("[presets.output-persistence]")
+            .nth(1)
+            .expect("output-persistence preset")
+            .split("[presets.ast-edit-compare]")
+            .next()
+            .unwrap();
+        assert!(output_section.contains("dependency-baseline"));
+        assert!(output_section.contains("\"normal-output-preserves-head\""));
+    }
+
     #[test]
     fn matrix_shape() {
         let eval = basic_coding();
         assert_eq!(eval.targets.len(), 4);
-        // harness × effort axis cross-product
+        // binary × harness × effort axis cross-product
         assert_eq!(
             eval.axis_combinations().len(),
-            HARNESS_VARIANTS.len() * EFFORTS.len()
+            BINARIES.len() * HARNESS_VARIANTS.len() * EFFORTS.len()
         );
         // Every target is a key-gated cloud model; none is unconditionally on.
         assert!(eval.targets.iter().all(|t| !t.is_sim()));
@@ -1397,13 +1988,19 @@ mod tests {
     /// transcript pipeline). Skips when no yolop binary is built.
     #[tokio::test]
     async fn run_yolop_end_to_end_offline() {
-        if yolop_bin().is_err() {
+        if yolop_bin("candidate").is_err() {
             eprintln!("skipping: no yolop binary (cargo build at the repo root first)");
             return;
         }
-        for harness in ["default", "with-ast-edit", "no-progress-guard", "no-ast-grep"] {
+        for harness in [
+            "default",
+            "with-ast-edit",
+            "no-progress-guard",
+            "no-ast-grep",
+        ] {
             let mut cx = RunCx::new(Target::new("llmsim", "llmsim", "llmsim-yolop"));
             cx.params.insert("harness".into(), harness.into());
+            cx.params.insert("binary".into(), "candidate".into());
             let sample = Sample::new("e2e", "say hi").file("note.txt", "seed\n");
             let t = run_yolop(sample, cx).await;
             assert!(t.error.is_none(), "harness={harness}: {:?}", t.error);

@@ -22,6 +22,7 @@ pub(crate) mod model_ranking;
 pub(crate) mod narration;
 pub(crate) mod progress_guard;
 pub(crate) mod repo_map;
+pub(crate) mod session_history;
 pub mod skills;
 pub(crate) mod user_ask;
 pub(crate) mod worktree_cmd;
@@ -45,5 +46,6 @@ pub(crate) use host::{
 pub(crate) use lsp::LspCapability;
 pub(crate) use progress_guard::{PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability};
 pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
+pub(crate) use session_history::{SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCapability};
 pub(crate) use user_ask::UserAskCapability;
 pub(crate) use worktree_cmd::WorktreeCapability;
