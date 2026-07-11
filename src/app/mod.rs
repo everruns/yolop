@@ -2998,6 +2998,54 @@ mod tests {
         assert!(!should_insert_chat_gap(&Author::ToolDetail, None));
     }
 
+    #[test]
+    fn recent_transcript_mirror_excludes_startup_banner_system_lines() {
+        let lines = vec![
+            ChatLine {
+                author: Author::System,
+                text: "workspace: /tmp".into(),
+            },
+            ChatLine {
+                author: Author::User,
+                text: "hello".into(),
+            },
+        ];
+        assert!(!include_line_in_recent_transcript_mirror(
+            &lines[0], 0, &lines
+        ));
+        assert!(include_line_in_recent_transcript_mirror(
+            &lines[1], 1, &lines
+        ));
+    }
+
+    #[test]
+    fn recent_transcript_mirror_includes_session_system_notices_after_chat() {
+        let lines = vec![
+            ChatLine {
+                author: Author::System,
+                text: "workspace: /tmp".into(),
+            },
+            ChatLine {
+                author: Author::User,
+                text: "hello".into(),
+            },
+            ChatLine {
+                author: Author::Assistant,
+                text: "hi".into(),
+            },
+            ChatLine {
+                author: Author::System,
+                text: "attached clipboard image #1 (640x480 PNG)".into(),
+            },
+        ];
+        assert!(!include_line_in_recent_transcript_mirror(
+            &lines[0], 0, &lines
+        ));
+        assert!(include_line_in_recent_transcript_mirror(
+            &lines[3], 3, &lines
+        ));
+    }
+
     // ====================================================================
     // ViewState + draw_chrome snapshot tests.
     //
@@ -3022,6 +3070,39 @@ mod tests {
 
     /// Render the composer through the same inline viewport + bottom anchoring
     /// path the real TUI uses (`Terminal::with_options` + `maybe_reanchor`).
+    fn inline_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
+        let mut backend = TestBackend::new(width, height);
+        backend
+            .set_cursor_position(Position { x: 0, y: 1 })
+            .unwrap();
+        let mut terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(COMPOSER_VIEWPORT_HEIGHT),
+            },
+        )
+        .expect("terminal");
+        maybe_reanchor_inline_viewport(&mut terminal).expect("anchor inline viewport");
+        terminal
+    }
+
+    fn inline_transcript_rows(terminal: &mut Terminal<TestBackend>) -> Vec<String> {
+        let viewport_top = terminal.get_frame().area().y;
+        let buffer = terminal.backend().buffer();
+        let height = buffer.area.height;
+        let width = buffer.area.width;
+        (viewport_top..height)
+            .map(|y| {
+                let mut row = String::with_capacity(width as usize);
+                for x in 0..width {
+                    row.push_str(buffer[(x, y)].symbol());
+                }
+                row.trim_end().to_string()
+            })
+            .filter(|row| row.contains('›'))
+            .collect()
+    }
+
     fn render_inline_composer(
         app: &mut App,
         width: u16,
@@ -3736,6 +3817,93 @@ mod tests {
             app.lines
         );
         assert!(app.pending_pastes.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_viewport_mirrors_session_system_notices_after_chat() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.push_user("first question".into());
+        app.lines.push(ChatLine {
+            author: Author::Assistant,
+            text: "first answer".into(),
+        });
+        app.push_system("attached clipboard image #1 (640x480 PNG)".into());
+
+        let rows = render_app_lines(app, 96, COMPOSER_VIEWPORT_HEIGHT);
+
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("attached clipboard image #1")),
+            "session system notices should mirror above the composer: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("workspace:")),
+            "startup banner should stay out of the inline viewport: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn incremental_system_notice_stays_adjacent_to_composer_after_flush() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.push_user("first question".into());
+        app.lines.push(ChatLine {
+            author: Author::Assistant,
+            text: "first answer".into(),
+        });
+
+        let mut terminal = inline_terminal(100, 60);
+        app.flush_transcript(&mut terminal)
+            .expect("flush prior turn");
+        app.push_system("attached clipboard image #1 (640x480 PNG)".into());
+        app.flush_transcript(&mut terminal)
+            .expect("flush image notice");
+        terminal.draw(|f| draw(f, app)).expect("draw after notice");
+
+        let inline_rows = inline_transcript_rows(&mut terminal);
+        let notice_row = inline_rows
+            .iter()
+            .position(|row| row.contains("attached clipboard image #1"))
+            .expect("image paste notice in inline viewport");
+
+        assert!(
+            notice_row + 1 >= inline_rows.len().saturating_sub(1),
+            "incremental system notice should sit near the composer, not above a mirrored tail: inline={inline_rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn incremental_turn_failed_notice_stays_adjacent_to_composer_after_flush() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.push_user("run it".into());
+        app.lines.push(ChatLine {
+            author: Author::Assistant,
+            text: "done".into(),
+        });
+
+        let mut terminal = inline_terminal(100, 60);
+        app.flush_transcript(&mut terminal)
+            .expect("flush prior turn");
+        app.push_system("turn failed: provider timeout".into());
+        app.flush_transcript(&mut terminal)
+            .expect("flush turn notice");
+        terminal.draw(|f| draw(f, app)).expect("draw after notice");
+
+        let inline_rows = inline_transcript_rows(&mut terminal);
+        assert!(
+            inline_rows
+                .iter()
+                .any(|row| row.contains("turn failed: provider timeout")),
+            "turn-failed notice should mirror above the composer: {inline_rows:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
