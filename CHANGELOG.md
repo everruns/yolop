@@ -10,6 +10,40 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.6.0] - 2026-07-11
+
+### Highlights
+
+- **Structural code edits with `ast_edit`.** An opt-in ast-grep–backed tool
+  performs syntax-aware find-and-replace across a codebase, with a harness
+  eval proving the benefit.
+- **Authenticated MCP server management.** First-class tools list, add,
+  update, remove, and enable/disable MCP servers, persisting to global
+  settings and workspace `.mcp.json` with authenticated (env-var bearer)
+  setup documented.
+- **GPT-5.6 in the model picker.** New GPT-5.6 entries are selectable from
+  the runtime model picker.
+- **Smarter background waits.** External-event waits are steered toward
+  detached watches so long-running turns don't block on foreground polling.
+- **Cleaner print mode.** Plain `-p/--print` runs now emit only the final
+  assistant output on stdout; banners, progress, and footers move to stderr.
+
+### What's Changed
+
+* fix(tui): anchor inline viewport to terminal bottom reliably ([#250](https://github.com/everruns/yolop/pull/250)) by @chaliy
+* feat(ast-grep): add opt-in ast_edit with harness eval proof ([#249](https://github.com/everruns/yolop/pull/249)) by @chaliy
+* feat(mcp): manage authenticated servers ([#248](https://github.com/everruns/yolop/pull/248)) by @chaliy
+* feat(background): steer external-event waits to detached watches ([#247](https://github.com/everruns/yolop/pull/247)) by @chaliy
+* docs(attribution): update PR footer text ([#246](https://github.com/everruns/yolop/pull/246)) by @chaliy
+* chore: guide agents to narrow after repo map ([#245](https://github.com/everruns/yolop/pull/245)) by @chaliy
+* feat(runtime): add GPT-5.6 model picker entries ([#244](https://github.com/everruns/yolop/pull/244)) by @chaliy
+* chore(deps): bump everruns runtime ([#243](https://github.com/everruns/yolop/pull/243)) by @chaliy
+* chore(deps): bump everruns runtime ([#242](https://github.com/everruns/yolop/pull/242)) by @chaliy
+* fix(print): emit only final output ([#240](https://github.com/everruns/yolop/pull/240)) by @chaliy
+* chore(deps): bump the cargo-minor-and-patch group across 1 directory with 9 updates ([#238](https://github.com/everruns/yolop/pull/238)) by @dependabot
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.5.0...v0.6.0
+
 ## [0.5.0] - 2026-07-09
 
 ### Highlights
