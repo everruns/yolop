@@ -175,10 +175,10 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 
 | Provider   | Credential                            | Default model     |
 | ---------- | ------------------------------------- | ----------------- |
-| OpenAI     | `OPENAI_API_KEY`                      | `gpt-5.5`         |
-| Codex subscription | browser/device ChatGPT login or `CODEX_ACCESS_TOKEN` | `gpt-5.5` |
-| Anthropic  | `ANTHROPIC_API_KEY`                   | `claude-sonnet-4-5` |
-| OpenRouter | `OPENROUTER_API_KEY`                  | `openai/gpt-5.5`  |
+| OpenAI     | `OPENAI_API_KEY`                      | `gpt-5.6-sol`     |
+| Codex subscription | browser/device ChatGPT login or `CODEX_ACCESS_TOKEN` | `gpt-5.6-sol` |
+| Anthropic  | `ANTHROPIC_API_KEY`                   | `claude-sonnet-4-6` |
+| OpenRouter | `OPENROUTER_API_KEY`                  | `openai/gpt-5.6-sol` |
 | Google     | `GEMINI_API_KEY` / `GOOGLE_API_KEY`   | `gemini-2.5-flash` |
 | Ollama     | `OLLAMA_BASE_URL` / `OLLAMA_API_KEY`  | `llama3.2`        |
 | Custom     | `CUSTOM_BASE_URL` (+ optional `CUSTOM_API_KEY`) | — (set via `/setup`) |

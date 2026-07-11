@@ -285,9 +285,14 @@ impl App {
         let mut models = match provider {
             "openai" => vec![
                 ModelOption {
+                    spec: Some("gpt-5.6-sol".to_string()),
+                    label: "gpt-5.6-sol".to_string(),
+                    hint: "frontier model for complex coding".to_string(),
+                },
+                ModelOption {
                     spec: Some("gpt-5.5".to_string()),
                     label: "gpt-5.5".to_string(),
-                    hint: "frontier model for complex coding".to_string(),
+                    hint: "previous frontier model".to_string(),
                 },
                 ModelOption {
                     spec: Some("gpt-5.4".to_string()),
@@ -312,9 +317,14 @@ impl App {
             ],
             "codex" => vec![
                 ModelOption {
+                    spec: Some("gpt-5.6-sol".to_string()),
+                    label: "gpt-5.6-sol".to_string(),
+                    hint: "frontier Codex model".to_string(),
+                },
+                ModelOption {
                     spec: Some("gpt-5.5".to_string()),
                     label: "gpt-5.5".to_string(),
-                    hint: "frontier Codex model".to_string(),
+                    hint: "previous frontier Codex model".to_string(),
                 },
                 ModelOption {
                     spec: Some("gpt-5.4".to_string()),
@@ -339,8 +349,8 @@ impl App {
             ],
             "anthropic" => vec![
                 ModelOption {
-                    spec: Some("claude-sonnet-4-5".to_string()),
-                    label: "claude-sonnet-4-5".to_string(),
+                    spec: Some("claude-sonnet-4-6".to_string()),
+                    label: "claude-sonnet-4-6".to_string(),
                     hint: "best default Claude model".to_string(),
                 },
                 ModelOption {
@@ -354,9 +364,9 @@ impl App {
                     hint: "fast answers".to_string(),
                 },
                 ModelOption {
-                    spec: Some("claude-sonnet-4-6".to_string()),
-                    label: "claude-sonnet-4-6".to_string(),
-                    hint: "newer Sonnet option".to_string(),
+                    spec: Some("claude-sonnet-4-5".to_string()),
+                    label: "claude-sonnet-4-5".to_string(),
+                    hint: "previous default Sonnet".to_string(),
                 },
                 ModelOption {
                     spec: Some("claude-fable-5".to_string()),
@@ -378,8 +388,8 @@ impl App {
             ],
             "openrouter" => vec![
                 ModelOption {
-                    spec: Some("openai/gpt-5.5".to_string()),
-                    label: "openai/gpt-5.5".to_string(),
+                    spec: Some("openai/gpt-5.6-sol".to_string()),
+                    label: "openai/gpt-5.6-sol".to_string(),
                     hint: "frontier OpenAI model through OpenRouter".to_string(),
                 },
                 ModelOption {

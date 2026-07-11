@@ -5135,7 +5135,7 @@ mod tests {
         ));
         // The curated list must remain usable after a failed fetch.
         let options = app.model_options("openai");
-        assert_eq!(options[0].spec.as_deref(), Some("gpt-5.5"));
+        assert_eq!(options[0].spec.as_deref(), Some("gpt-5.6-sol"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5159,7 +5159,7 @@ mod tests {
             "connected provider should skip the credential step: {:?}",
             app.setup
         );
-        assert_eq!(app.model.provider_label(), "openai/gpt-5.5 medium");
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.6-sol medium");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5183,7 +5183,9 @@ mod tests {
             app.setup
         );
 
-        // Navigate to the second preset (gpt-5.4) and confirm it.
+        // Navigate to the third preset (gpt-5.4) and confirm it.
+        app.handle_setup_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()))
+            .await;
         app.handle_setup_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()))
             .await;
         app.handle_setup_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
@@ -5359,7 +5361,7 @@ mod tests {
                 ref provider,
                 selected,
                 ..
-            }) if provider == "openai" && selected == 1
+            }) if provider == "openai" && selected == 2
         ));
     }
 
@@ -5377,7 +5379,7 @@ mod tests {
         app.lines.clear();
         app.dispatch_command_for_test("model gpt-5.4 high").await;
 
-        assert_eq!(app.model.provider_label(), "openai/gpt-5.5 medium");
+        assert_eq!(app.model.provider_label(), "openai/gpt-5.6-sol medium");
         assert!(matches!(
             app.setup,
             Some(SetupStep::PickModel {

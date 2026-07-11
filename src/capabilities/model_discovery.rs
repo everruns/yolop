@@ -311,7 +311,7 @@ mod tests {
         use std::collections::HashSet;
 
         let choice = ProviderChoice::default_for_provider_name("openai").unwrap();
-        let ids: HashSet<String> = ["gpt-5.5", "gpt-4o"]
+        let ids: HashSet<String> = ["gpt-5.6-sol", "gpt-4o"]
             .into_iter()
             .map(str::to_string)
             .collect();
@@ -322,7 +322,7 @@ mod tests {
                 description: None,
             },
             DiscoveredProviderModel {
-                model_id: "gpt-5.5".to_string(),
+                model_id: "gpt-5.6-sol".to_string(),
                 display_name: None,
                 description: None,
             },
