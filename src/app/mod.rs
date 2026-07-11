@@ -2247,7 +2247,7 @@ mod tests {
             vec![ToolCall {
                 id: "call_read".to_string(),
                 name: "read_file".to_string(),
-                arguments: serde_json::json!({ "path": "/workspace/Cargo.toml" }),
+                arguments: serde_json::json!({ "path": "/repo/Cargo.toml" }),
             }],
         );
         message.thinking = Some(
@@ -2773,7 +2773,7 @@ mod tests {
             &mut lines,
             &ChatLine {
                 author: Author::Diff,
-                text: "--- /workspace/src/app.rs (before)\n+++ /workspace/src/app.rs (after)\n@@ -1 +1 @@\n-old\n+new\n unchanged".to_string(),
+                text: "--- /repo/src/app.rs (before)\n+++ /repo/src/app.rs (after)\n@@ -1 +1 @@\n-old\n+new\n unchanged".to_string(),
             },
             96,
         );
@@ -2958,7 +2958,7 @@ mod tests {
             },
             ChatLine {
                 author: Author::Diff,
-                text: "+changed line with a very long path /workspace/src/app/render.rs".into(),
+                text: "+changed line with a very long path /repo/src/app/render.rs".into(),
             },
             ChatLine {
                 author: Author::ToolDetail,

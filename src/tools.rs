@@ -684,12 +684,12 @@ mod tests {
             .and_then(|value| value.as_array())
             .expect("output_files should be populated");
         assert_eq!(output_files.len(), 1);
-        let expected_display_path = std::fs::canonicalize(dir.path())
+        let expected_output = std::fs::canonicalize(dir.path())
             .expect("canonical tempdir")
             .join("outputs/call-persist.stdout");
         assert_eq!(
             output_files[0].as_str(),
-            Some(expected_display_path.to_string_lossy().as_ref())
+            Some(expected_output.to_string_lossy().as_ref())
         );
 
         let saved = tokio::fs::read_to_string(dir.path().join("outputs/call-persist.stdout"))

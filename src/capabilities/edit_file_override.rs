@@ -154,7 +154,7 @@ impl Tool for EditsOnlyEditFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute path to the existing text file (e.g., '/workspace/src/main.rs')"
+                    "description": "Absolute host path to the existing text file"
                 },
                 "expected_hash": {
                     "type": "string",
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn coerce_folds_scalars_into_edits() {
         let out = EditsOnlyEditFileTool::coerce_arguments(json!({
-            "path": "/workspace/f.rs", "expected_hash": "sha256:x",
+            "path": "/repo/f.rs", "expected_hash": "sha256:x",
             "old_text": "a", "new_text": "b"
         }));
         assert!(out.get("old_text").is_none());
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn coerce_drops_scalars_when_edits_present() {
         let out = EditsOnlyEditFileTool::coerce_arguments(json!({
-            "path": "/workspace/f.rs", "expected_hash": "sha256:x",
+            "path": "/repo/f.rs", "expected_hash": "sha256:x",
             "old_text": "a", "new_text": "b",
             "edits": [{ "old_text": "c", "new_text": "d" }]
         }));

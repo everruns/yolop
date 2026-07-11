@@ -1050,7 +1050,7 @@ mod tests {
             "read_file".to_string(),
             vec![ContentPart::text(
                 serde_json::json!({
-                    "path": "/workspace/src/lib.rs",
+                    "path": "/repo/src/lib.rs",
                     "content": "1|fn main() {}"
                 })
                 .to_string(),
@@ -1064,7 +1064,7 @@ mod tests {
             .and_then(|content| content.result.as_ref())
             .expect("tool result should be present");
 
-        assert_eq!(result["path"], "/workspace/src/lib.rs");
+        assert_eq!(result["path"], "/repo/src/lib.rs");
         assert_eq!(result["content"], "1|fn main() {}");
     }
 

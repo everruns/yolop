@@ -300,21 +300,18 @@ impl SessionFileSystem for CodingCliSessionFileStore {
     }
 
     fn display_root(&self) -> String {
-        // Yolop's file tools and persisted output pointers use one stable
-        // model-facing namespace even while the host worktree root changes.
-        // Everruns 0.17.7 preserves real-disk backend identity through
-        // `MountFs`, so this embedder boundary must opt back into `/workspace`.
-        everruns_core::session_path::WORKSPACE_PREFIX.to_string()
+        self.workspace_store()
+            .map(|store| store.display_root())
+            .unwrap_or_else(|_| self.workspace_disk.display_root())
     }
 
     fn display_path(&self, path: &str) -> String {
-        if Self::session_output_path(path).is_some() {
-            return everruns_core::session_path::to_display_path(path);
+        if self.skill_or_session_route(path).is_some() {
+            return everruns_core::session_path::to_session_path(path);
         }
-        if let Some((store, path)) = self.skill_or_session_route(path) {
-            return store.display_path(&path);
-        }
-        everruns_core::session_path::to_display_path(path)
+        self.workspace_store()
+            .map(|store| store.display_path(path))
+            .unwrap_or_else(|_| path.to_string())
     }
 
     async fn read_file(
@@ -4237,22 +4234,34 @@ mod tests {
                 .expect("store"),
         ));
         let session_id = SessionId::from_seed(7);
+        let first_root = std::fs::canonicalize(first.path()).expect("canonical first");
+        let second_root = std::fs::canonicalize(second.path()).expect("canonical second");
 
         store
-            .write_file(session_id, "/workspace/before.md", "in first", "text")
+            .write_file(
+                session_id,
+                &first_root.join("before.md").display().to_string(),
+                "in first",
+                "text",
+            )
             .await
             .expect("write to first workspace");
         assert_eq!(
             std::fs::read_to_string(first.path().join("before.md")).expect("first file"),
             "in first"
         );
-        assert_eq!(store.display_root(), "/workspace");
+        assert_eq!(store.display_root(), first_root.display().to_string());
 
         // Simulate the worktree activating: swap the shared active root.
         *active_root.write().expect("lock") = second.path().to_path_buf();
 
         store
-            .write_file(session_id, "/workspace/after.md", "in second", "text")
+            .write_file(
+                session_id,
+                &second_root.join("after.md").display().to_string(),
+                "in second",
+                "text",
+            )
             .await
             .expect("write to second workspace");
         assert_eq!(
@@ -4261,7 +4270,7 @@ mod tests {
         );
         // The new file must land in the switched-to root, not the original.
         assert!(!first.path().join("after.md").exists());
-        assert_eq!(store.display_root(), "/workspace");
+        assert_eq!(store.display_root(), second_root.display().to_string());
     }
 
     #[tokio::test]
@@ -4322,13 +4331,14 @@ mod tests {
         );
         assert!(!workspace.path().join("outputs/call.stdout").exists());
 
-        let via_workspace_prefix = store
-            .read_file(session_id, "/workspace/outputs/call.stdout")
+        let displayed_output = store.display_path("/outputs/call.stdout");
+        let via_display_path = store
+            .read_file(session_id, &displayed_output)
             .await
             .expect("read output")
             .expect("output file");
         assert_eq!(
-            via_workspace_prefix.content.as_deref(),
+            via_display_path.content.as_deref(),
             Some("large command output")
         );
 
@@ -4344,7 +4354,7 @@ mod tests {
             .await
             .expect("write workspace file");
         let workspace_grep = store
-            .grep_files(session_id, "grep target", Some("/workspace/src"))
+            .grep_files(session_id, "grep target", Some("src"))
             .await
             .expect("grep workspace");
         assert_eq!(workspace_grep.len(), 1);
@@ -4360,16 +4370,20 @@ mod tests {
     }
 
     #[test]
-    fn yolop_file_store_displays_workspace_and_session_paths() {
+    fn yolop_file_store_displays_real_workspace_and_session_paths() {
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
         let store = test_file_store(workspace.path(), session.path());
+        let workspace_root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
 
-        assert_eq!(store.display_root(), "/workspace");
-        assert_eq!(store.display_path("/src/lib.rs"), "/workspace/src/lib.rs");
+        assert_eq!(store.display_root(), workspace_root.display().to_string());
+        assert_eq!(
+            store.display_path("/src/lib.rs"),
+            workspace_root.join("src/lib.rs").display().to_string()
+        );
         assert_eq!(
             store.display_path("/outputs/call.stdout"),
-            "/workspace/outputs/call.stdout"
+            "/outputs/call.stdout"
         );
     }
 

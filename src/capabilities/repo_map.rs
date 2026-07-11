@@ -1901,39 +1901,28 @@ trait Named {
         assert!(err.to_string().contains("inside the workspace"));
     }
 
-    // The file tools expose the workspace as a VFS rooted at `/workspace`, so a
-    // model addresses repo_map the same way. The bare root alias must resolve to
-    // the workspace root rather than erroring with "path not found: /workspace"
-    // (the very first call the nemotron eval run wasted a turn on).
     #[test]
-    fn accepts_workspace_root_alias() {
+    fn accepts_host_workspace_root() {
         let dir = tempfile::tempdir().expect("tempdir");
         write(&dir.path().join("src/lib.rs"), "pub fn inside_fn() {}\n");
 
-        for alias in ["/workspace", "workspace", "/workspace/"] {
-            let report = collect_repo_symbols(
-                dir.path(),
-                SymbolScanOptions {
-                    path: Some(alias.to_string()),
-                    query: None,
-                    language: Some("rust".to_string()),
-                    limit: 20,
-                    max_file_bytes: DEFAULT_MAX_FILE_BYTES,
-                },
-            )
-            .unwrap_or_else(|e| panic!("alias {alias:?} should resolve to root: {e}"));
+        let report = collect_repo_symbols(
+            dir.path(),
+            SymbolScanOptions {
+                path: Some(dir.path().display().to_string()),
+                query: None,
+                language: Some("rust".to_string()),
+                limit: 20,
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
+        )
+        .expect("host root should scan");
 
-            assert!(
-                report.symbols.iter().any(|s| s.name == "inside_fn"),
-                "alias {alias:?} did not scan the workspace root"
-            );
-        }
+        assert!(report.symbols.iter().any(|s| s.name == "inside_fn"));
     }
 
-    // A `/workspace/<subpath>` prefix scopes to that subpath, matching how the
-    // file tools resolve the same string.
     #[test]
-    fn accepts_workspace_prefixed_subpath() {
+    fn accepts_host_absolute_subpath() {
         let dir = tempfile::tempdir().expect("tempdir");
         write(&dir.path().join("pkg/inside.rs"), "pub fn pkg_fn() {}\n");
         write(
@@ -1944,19 +1933,19 @@ trait Named {
         let report = collect_repo_symbols(
             dir.path(),
             SymbolScanOptions {
-                path: Some("/workspace/pkg".to_string()),
+                path: Some(dir.path().join("pkg").display().to_string()),
                 query: None,
                 language: Some("rust".to_string()),
                 limit: 20,
                 max_file_bytes: DEFAULT_MAX_FILE_BYTES,
             },
         )
-        .expect("subpath under /workspace should scan");
+        .expect("host subpath should scan");
 
         assert!(report.symbols.iter().any(|s| s.name == "pkg_fn"));
         assert!(
             !report.symbols.iter().any(|s| s.name == "other_fn"),
-            "scope should be limited to /workspace/pkg"
+            "scope should be limited to the requested host subpath"
         );
     }
 
@@ -2003,22 +1992,21 @@ trait Named {
         }
     }
 
-    // The alias must not become an escape hatch: `/workspace/../outside` still
-    // resolves through the root and is rejected.
     #[test]
-    fn workspace_alias_does_not_bypass_containment() {
+    fn absolute_host_path_does_not_bypass_containment() {
         let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
         let err = collect_repo_symbols(
             dir.path(),
             SymbolScanOptions {
-                path: Some("/workspace/../outside".to_string()),
+                path: Some(outside.path().display().to_string()),
                 query: None,
                 language: None,
                 limit: 20,
                 max_file_bytes: DEFAULT_MAX_FILE_BYTES,
             },
         )
-        .expect_err("escaping the workspace via the alias should fail");
+        .expect_err("an absolute path outside the workspace should fail");
 
         assert!(err.to_string().contains("inside the workspace"));
     }

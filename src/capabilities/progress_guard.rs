@@ -954,7 +954,7 @@ mod tests {
         for offset in [180, 388, 633, 940, 1370, 1540, 180, 388, 633] {
             if let Some(warning) = observe(call(
                 "read_file",
-                json!({ "path": "/workspace/src/capabilities/background.rs", "offset": offset }),
+                json!({ "path": "/repo/src/capabilities/background.rs", "offset": offset }),
             ))
             .await
             {
@@ -964,7 +964,7 @@ mod tests {
         for offset in [1000, 1020, 1010, 1028, 1000, 1020, 1010, 1028, 1000] {
             if let Some(warning) = observe(call(
                 "read_file",
-                json!({ "path": "/workspace/src/app/mod.rs", "offset": offset }),
+                json!({ "path": "/repo/src/app/mod.rs", "offset": offset }),
             ))
             .await
             {
@@ -981,7 +981,7 @@ mod tests {
         for i in 0..24 {
             if let Some(warning) = observe(call(
                 "read_file",
-                json!({ "path": format!("/workspace/src/runtime.rs"), "offset": 2100 + i }),
+                json!({ "path": "/repo/src/runtime.rs", "offset": 2100 + i }),
             ))
             .await
             {
@@ -998,7 +998,7 @@ mod tests {
         for _ in 0..REPEATED_EXPLORATION_THRESHOLD {
             if let Some(warning) = observe(call(
                 "read_file",
-                json!({ "path": "/workspace/src/app/mod.rs", "offset": 1000 }),
+                json!({ "path": "/repo/src/app/mod.rs", "offset": 1000 }),
             ))
             .await
             {
