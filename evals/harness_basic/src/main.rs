@@ -49,6 +49,10 @@ const HARNESS_VARIANTS: &[HarnessVariant] = &[
         settings: "",
     },
     HarnessVariant {
+        name: "with-ast-edit",
+        settings: "[[capabilities]]\nref = \"ast_edit\"\n",
+    },
+    HarnessVariant {
         name: "no-progress-guard",
         settings: "[[capabilities]]\nref = \"progress_guard\"\nenabled = false\n",
     },
@@ -385,6 +389,74 @@ fn dataset() -> Dataset {
         progress_guard_probe_sample(),
         progress_guard_checkpoint_sample(),
         background_callback_bridge_sample(),
+        Sample::new(
+            "replace-console-log",
+            "Replace every `console.log(...)` call with `logger.info(...)` across all \
+             TypeScript files. Keep imports and other logic unchanged. Make the edits \
+             directly; do not ask questions.",
+        )
+        .file(
+            "logger.ts",
+            "export const logger = {\n  info: (...args: unknown[]) => console.info(...args),\n};\n",
+        )
+        .file(
+            "api.ts",
+            "import { logger } from \"./logger\";\n\nexport function ping() {\n  console.log(\"ping\");\n  return true;\n}\n",
+        )
+        .file(
+            "worker.ts",
+            "import { logger } from \"./logger\";\n\nexport function run() {\n  console.log(\"start\");\n  console.log(\"done\");\n}\n",
+        )
+        .tag("ast-edit")
+        .meta("kind", "structural-rewrite")
+        .meta(
+            "checks",
+            json!([
+                {"file": "api.ts", "contains": ["logger.info"], "lacks": ["console.log"]},
+                {"file": "worker.ts", "contains": ["logger.info"], "lacks": ["console.log"]}
+            ]),
+        ),
+        Sample::new(
+            "strip-print-debug",
+            "Remove every standalone `print(...)` debug statement from the Python files. \
+             Do not remove real logic. Make the edits directly; do not ask questions.",
+        )
+        .file(
+            "app.py",
+            "from helpers import greet\n\n\ndef main():\n    print(\"boot\")\n    greet()\n    print(\"shutdown\")\n",
+        )
+        .file("helpers.py", "def greet():\n    print(\"hello\")\n    return \"ok\"\n")
+        .tag("ast-edit")
+        .meta("kind", "structural-rewrite")
+        .meta(
+            "checks",
+            json!([
+                {"file": "app.py", "lacks": ["print("]},
+                {"file": "helpers.py", "lacks": ["print("]}
+            ]),
+        ),
+        Sample::new(
+            "unwrap-to-expect",
+            "Replace every `.unwrap()` call in src/lib.rs with `.expect(\"failed\")`. \
+             Make the edit directly; do not ask questions.",
+        )
+        .file("Cargo.toml", cargo_toml)
+        .file(
+            "src/lib.rs",
+            "pub fn first(xs: &[i32]) -> i32 {\n    xs.first().unwrap()\n}\n\n\
+             pub fn last(xs: &[i32]) -> i32 {\n    xs.last().unwrap()\n}\n",
+        )
+        .tag("ast-edit")
+        .tag("smoke")
+        .meta("kind", "structural-rewrite")
+        .meta(
+            "checks",
+            json!([{
+                "file": "src/lib.rs",
+                "contains": [".expect(\"failed\")"],
+                "lacks": [".unwrap()"]
+            }]),
+        ),
     ])
 }
 
@@ -446,6 +518,23 @@ fn tool_calls_budget_scorer() -> Box<dyn Scorer> {
             Score::pass("tool_calls_within", format!("{actual} <= {limit}"))
         } else {
             Score::fail("tool_calls_within", format!("{actual} > {limit}"))
+        }
+    })
+}
+
+/// Adoption signal: on the `with-ast-edit` variant, did the model call `ast_edit`?
+/// A failed `ast_edit_used` next to a passed `checks` means the task was solved
+/// around the capability. N/A on the baseline variant.
+fn ast_edit_used_scorer() -> Box<dyn Scorer> {
+    scorer("ast_edit_used", |_sample, t| {
+        if t.metadata.get("harness") != Some(&json!("with-ast-edit")) {
+            return Score::na("ast_edit_used", "baseline variant; ast_edit not offered");
+        }
+        let calls = t.metrics.get("ast_edit_tool_calls").copied().unwrap_or(0.0);
+        if calls > 0.0 {
+            Score::pass("ast_edit_used", format!("{calls} ast_edit call(s)"))
+        } else {
+            Score::fail("ast_edit_used", "ast_edit enabled but tool was not called")
         }
     })
 }
@@ -566,6 +655,8 @@ struct Mined {
     exploration_tools_before_first_mutation: u64,
     max_exploration_tools_without_progress: u64,
     progress_guard_warnings: u64,
+    ast_edit_tool_calls: u64,
+    ast_edit_tool_calls_failed: u64,
 }
 
 fn normalized_command(command: &str) -> String {
@@ -632,7 +723,9 @@ fn classify_tool(data: &Value) -> ToolKind {
         "read_file" | "grep_files" | "repo_map" | "ast_grep" | "list_directory" | "stat_file" => {
             return ToolKind::Exploration;
         }
-        "write_file" | "edit_file" | "delete_file" | "edit" => return ToolKind::Mutation,
+        "write_file" | "edit_file" | "delete_file" | "ast_edit" | "edit" => {
+            return ToolKind::Mutation;
+        }
         "bash" => {}
         _ => return ToolKind::Other,
     }
@@ -765,6 +858,12 @@ fn parse_events(jsonl: &str) -> Mined {
                 }
                 if has_progress_guard_warning(&data) {
                     m.progress_guard_warnings += 1;
+                }
+                if name == "ast_edit" {
+                    m.ast_edit_tool_calls += 1;
+                    if data.get("success") == Some(&Value::Bool(false)) {
+                        m.ast_edit_tool_calls_failed += 1;
+                    }
                 }
                 match classify_tool(&data) {
                     ToolKind::Mutation => {
@@ -1014,6 +1113,12 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         "progress_guard_warnings".into(),
         mined.progress_guard_warnings as f64,
     );
+    t.metrics
+        .insert("ast_edit_tool_calls".into(), mined.ast_edit_tool_calls as f64);
+    t.metrics.insert(
+        "ast_edit_tool_calls_failed".into(),
+        mined.ast_edit_tool_calls_failed as f64,
+    );
     let agent_ms = if mined.turn_ms > 0 {
         mined.turn_ms
     } else {
@@ -1068,6 +1173,7 @@ fn basic_coding() -> Eval {
         // tool calls, tokens, cost) surface in the report for A/B reading.
         .scorer(turns_budget_scorer())
         .scorer(tool_calls_budget_scorer())
+        .scorer(ast_edit_used_scorer())
         .scorer(cost_within(2.0))
         .max_turns(64)
         .meta("suite", "harness-basic-v1")
@@ -1120,6 +1226,11 @@ mod tests {
         assert!(no_progress.contains("worktrees = \"off\""));
         assert!(no_progress.contains("ref = \"progress_guard\""));
         assert!(no_progress.contains("enabled = false"));
+
+        let with_ast_edit = settings_for_variant("with-ast-edit").unwrap();
+        assert!(with_ast_edit.contains("worktrees = \"off\""));
+        assert!(with_ast_edit.contains("ref = \"ast_edit\""));
+        assert!(!with_ast_edit.contains("enabled = false"));
 
         assert!(settings_for_variant("nope").is_none());
     }
@@ -1174,6 +1285,37 @@ mod tests {
         assert_eq!(m.exploration_tools_before_first_mutation, 3);
         assert_eq!(m.max_exploration_tools_without_progress, 3);
         assert_eq!(m.progress_guard_warnings, 2);
+    }
+
+    #[test]
+    fn parse_events_counts_ast_edit_tool_calls() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"ast_edit","success":true}}
+{"type":"tool.completed","data":{"tool_name":"ast_edit","success":false}}
+{"type":"tool.completed","data":{"tool_name":"edit_file","success":true}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.ast_edit_tool_calls, 2);
+        assert_eq!(m.ast_edit_tool_calls_failed, 1);
+        assert_eq!(m.exploration_tools_before_first_mutation, 0);
+    }
+
+    #[tokio::test]
+    async fn ast_edit_used_scorer_gates_on_variant() {
+        let sample = Sample::new("a", "x");
+        let mut t = graded_transcript();
+        t.metadata.insert("harness".into(), json!("with-ast-edit"));
+        t.metrics.insert("ast_edit_tool_calls".into(), 0.0);
+        let score = ast_edit_used_scorer().score(&sample, &t).await;
+        assert!(!score.pass && !score.na);
+
+        t.metrics.insert("ast_edit_tool_calls".into(), 2.0);
+        let score = ast_edit_used_scorer().score(&sample, &t).await;
+        assert!(score.pass);
+
+        t.metadata.insert("harness".into(), json!("default"));
+        let score = ast_edit_used_scorer().score(&sample, &t).await;
+        assert!(score.na);
     }
 
     #[test]
@@ -1259,7 +1401,7 @@ mod tests {
             eprintln!("skipping: no yolop binary (cargo build at the repo root first)");
             return;
         }
-        for harness in ["default", "no-progress-guard", "no-ast-grep"] {
+        for harness in ["default", "with-ast-edit", "no-progress-guard", "no-ast-grep"] {
             let mut cx = RunCx::new(Target::new("llmsim", "llmsim", "llmsim-yolop"));
             cx.params.insert("harness".into(), harness.into());
             let sample = Sample::new("e2e", "say hi").file("note.txt", "seed\n");

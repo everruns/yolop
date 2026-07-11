@@ -6,8 +6,9 @@ user-invocable: true
 
 # ast-grep structural search and rewrite
 
-Yolop ships built-in `ast_grep` (read-only search) and `ast_edit` (pattern/replacement
-rewrites) backed by the `ast-grep` engine compiled into the binary. This is **not** the
+Yolop ships built-in `ast_grep` (read-only search, default harness) and `ast_edit`
+(pattern/replacement rewrites, opt-in via `[[capabilities]] ref = "ast_edit"` in
+`settings.toml`) backed by the `ast-grep` engine compiled into the binary. This is **not** the
 `sg` command-line tool — there is no `sg run`/`sg scan`, no rule YAML files, and no
 `--rewrite` CLI. Drive the tools directly with their arguments.
 

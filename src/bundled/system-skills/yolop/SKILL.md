@@ -109,7 +109,8 @@ yolop is an autonomous coding agent for the workspace it was started in.
 
 - **Files** — read, write, edit, grep, delete, and map the repository
 - **Shell** — `bash -lc` from the workspace root (120 s timeout, capped output)
-- **AST search & rewrite** — structural `ast_grep` and previewed `ast_edit` across common languages
+- **AST search** — structural `ast_grep` across common languages (default harness)
+- **AST edit** *(opt-in)* — previewed `ast_edit` rewrites; enable with `[[capabilities]] ref = "ast_edit"`
 - **Background work** — detached shell commands and focused sub-agents
 - **Web** — `web_fetch` and `duckduckgo_search`
 - **Memory** — durable cross-session notes via `remember` / `recall` / `forget`

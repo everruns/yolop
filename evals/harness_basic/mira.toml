@@ -45,6 +45,14 @@ tag = "progress-guard"
 targets = ["anthropic/claude-sonnet-4-5"]
 axes = { effort = ["default"], harness = ["default", "no-progress-guard"] }
 
+# AST-EDIT-COMPARE — structural-rewrite traps: default harness vs ast_edit
+# enabled. Pass rate plus `ast_edit_used` adoption on the enabled variant.
+#   doppler run -- mira run --preset ast-edit-compare --group-by harness
+[presets.ast-edit-compare]
+tag = "ast-edit"
+targets = ["anthropic/claude-sonnet-4-5"]
+axes = { effort = ["default"], harness = ["default", "with-ast-edit"] }
+
 # EFFORT-COMPARE — one model, out-of-the-box harness, across reasoning efforts.
 #   doppler run -- mira run --preset effort-compare --group-by effort
 [presets.effort-compare]

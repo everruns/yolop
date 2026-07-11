@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(crate) const AST_GREP_CAPABILITY_ID: &str = "ast_grep";
+pub(crate) const AST_EDIT_CAPABILITY_ID: &str = "ast_edit";
 
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 500;
@@ -65,11 +66,11 @@ impl Capability for AstGrepCapability {
     }
 
     fn name(&self) -> &str {
-        "AST Grep & Edit"
+        "AST Grep"
     }
 
     fn description(&self) -> &str {
-        "Structural code search and ast-grep pattern rewrites across common languages."
+        "Read-only multi-language structural code search backed by ast-grep patterns."
     }
 
     fn status(&self) -> CapabilityStatus {
@@ -84,10 +85,8 @@ impl Capability for AstGrepCapability {
         Some(
             "<capability id=\"ast_grep\">\n\
              For structural code search, call `ast_grep` with an ast-grep pattern and usually \
-             a language filter. For shape-based rewrites, call `ast_edit` with `pattern` and \
-             `replacement` — preview with `dry_run=true` (the default), show the user the diff, \
-             then apply with `dry_run=false` after they accept. Use `ast_grep` first to confirm \
-             the pattern matches the intended nodes.\n\
+             a language filter. Use it after repo-map/grep have narrowed the area, and read \
+             matched files before editing.\n\
              </capability>"
                 .to_string(),
         )
@@ -96,21 +95,76 @@ impl Capability for AstGrepCapability {
     fn system_prompt_preview(&self) -> Option<String> {
         Some(
             "<capability id=\"ast_grep\">\n\
-             Use `ast_grep` for read-only structural search; use `ast_edit` for previewed rewrites.\n\
+             Use `ast_grep` for read-only structural pattern search.\n\
              </capability>"
                 .to_string(),
         )
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![
-            Box::new(AstGrepTool {
-                workspace: self.workspace.clone(),
-            }),
-            Box::new(AstEditTool {
-                workspace: self.workspace.clone(),
-            }),
-        ]
+        vec![Box::new(AstGrepTool {
+            workspace: self.workspace.clone(),
+        })]
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct AstEditCapability {
+    workspace: Arc<WorkspaceHost>,
+}
+
+impl AstEditCapability {
+    pub(crate) fn new(workspace: Arc<WorkspaceHost>) -> Self {
+        Self { workspace }
+    }
+}
+
+#[async_trait]
+impl Capability for AstEditCapability {
+    fn id(&self) -> &str {
+        AST_EDIT_CAPABILITY_ID
+    }
+
+    fn name(&self) -> &str {
+        "AST Edit"
+    }
+
+    fn description(&self) -> &str {
+        "Previewed ast-grep pattern rewrites across common languages (opt-in)."
+    }
+
+    fn status(&self) -> CapabilityStatus {
+        CapabilityStatus::Available
+    }
+
+    fn category(&self) -> Option<&str> {
+        Some("Code Navigation")
+    }
+
+    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
+        Some(
+            "<capability id=\"ast_edit\">\n\
+             For shape-based rewrites, call `ast_edit` with `pattern` and `replacement`. \
+             Preview with `dry_run=true` (the default), show the user the diff, then apply with \
+             `dry_run=false` after they accept. Confirm the pattern with `ast_grep` first.\n\
+             </capability>"
+                .to_string(),
+        )
+    }
+
+    fn system_prompt_preview(&self) -> Option<String> {
+        Some(
+            "<capability id=\"ast_edit\">\n\
+             Use `ast_edit` for previewed structural rewrites.\n\
+             </capability>"
+                .to_string(),
+        )
+    }
+
+    fn tools(&self) -> Vec<Box<dyn Tool>> {
+        vec![Box::new(AstEditTool {
+            workspace: self.workspace.clone(),
+        })]
     }
 }
 
@@ -1385,7 +1439,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write(&dir.path().join("app.ts"), "console.log(value);\n");
 
-        let capability = AstGrepCapability::new(host(dir.path()));
+        let capability = AstEditCapability::new(host(dir.path()));
         let tool = capability
             .tools()
             .into_iter()
@@ -1409,7 +1463,7 @@ mod tests {
     }
 
     #[test]
-    fn capability_exposes_ast_grep_and_ast_edit_tools() {
+    fn capability_exposes_ast_grep_tool() {
         let dir = tempfile::tempdir().expect("tempdir");
         let capability = AstGrepCapability::new(host(dir.path()));
         let names: Vec<String> = capability
@@ -1417,6 +1471,18 @@ mod tests {
             .iter()
             .map(|tool| tool.name().to_string())
             .collect();
-        assert_eq!(names, vec!["ast_grep", "ast_edit"]);
+        assert_eq!(names, vec!["ast_grep"]);
+    }
+
+    #[test]
+    fn capability_exposes_ast_edit_tool() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let capability = AstEditCapability::new(host(dir.path()));
+        let names: Vec<String> = capability
+            .tools()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
+        assert_eq!(names, vec!["ast_edit"]);
     }
 }
