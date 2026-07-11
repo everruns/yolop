@@ -150,6 +150,9 @@ pub struct App {
     workspace_host: Arc<crate::workspace_host::WorkspaceHost>,
     /// Images from `--image` / `-i` on the CLI, consumed on the first turn.
     pending_images: Vec<ContentPart>,
+    /// Skip bottom re-anchoring for a few frames after a terminal resize so
+    /// crossterm observes the new PTY dimensions before we jump the cursor.
+    reanchor_cooldown: u8,
     /// Large paste placeholders mapped to their full clipboard/terminal payloads.
     pending_pastes: Vec<(String, String)>,
 }
@@ -350,6 +353,7 @@ impl App {
             workspace_host: runtime.workspace_host,
             pending_images,
             pending_pastes: Vec::new(),
+            reanchor_cooldown: 0,
         };
         app.emit_system_banner();
         if should_setup {
@@ -605,8 +609,24 @@ impl App {
         // Ratatui keeps the inline viewport row fixed across vertical grows and
         // resets it to the top on horizontal shrinks. Re-anchor before each draw
         // so the composer stays pinned to the terminal bottom after resize.
+        let before = terminal.size()?;
         terminal.autoresize()?;
-        maybe_reanchor_inline_viewport(terminal)?;
+        let after = terminal.size()?;
+        if before != after {
+            // Horizontal shrinks reset the inline viewport to the top and need
+            // an immediate bottom re-anchor. Vertical resizes need a short
+            // cooldown so crossterm observes the new PTY height first.
+            if before.width != after.width && before.height == after.height {
+                self.reanchor_cooldown = 0;
+            } else {
+                self.reanchor_cooldown = 2;
+            }
+        }
+        if self.reanchor_cooldown > 0 {
+            self.reanchor_cooldown -= 1;
+        } else {
+            maybe_reanchor_inline_viewport(terminal)?;
+        }
         terminal.draw(|f| draw(f, self))?;
 
         // 1) drain background turn events
@@ -2922,7 +2942,58 @@ mod tests {
     // ====================================================================
 
     use ratatui::Terminal;
+    use ratatui::TerminalOptions;
+    use ratatui::Viewport;
     use ratatui::backend::TestBackend;
+    use ratatui::layout::Position;
+
+    struct InlineComposerRender {
+        lines: Vec<String>,
+        scrollback_height: u16,
+        viewport_bottom: u16,
+    }
+
+    /// Render the composer through the same inline viewport + bottom anchoring
+    /// path the real TUI uses (`Terminal::with_options` + `maybe_reanchor`).
+    fn render_inline_composer(
+        app: &mut App,
+        width: u16,
+        terminal_height: u16,
+        cursor_row: u16,
+    ) -> InlineComposerRender {
+        let mut backend = TestBackend::new(width, terminal_height);
+        backend
+            .set_cursor_position(Position {
+                x: 0,
+                y: cursor_row,
+            })
+            .unwrap();
+        let mut terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(COMPOSER_VIEWPORT_HEIGHT),
+            },
+        )
+        .expect("terminal");
+        maybe_reanchor_inline_viewport(&mut terminal).expect("anchor inline viewport");
+        terminal.draw(|f| draw(f, app)).expect("draw");
+        let viewport = terminal.get_frame().area();
+        let buffer = terminal.backend().buffer();
+        let lines = (0..buffer.area.height)
+            .map(|y| {
+                let mut row = String::with_capacity(buffer.area.width as usize);
+                for x in 0..buffer.area.width {
+                    row.push_str(buffer[(x, y)].symbol());
+                }
+                row.trim_end().to_string()
+            })
+            .collect();
+        InlineComposerRender {
+            lines,
+            scrollback_height: terminal.backend().scrollback().area.height,
+            viewport_bottom: viewport.y.saturating_add(viewport.height),
+        }
+    }
 
     fn presentation_state_idle() -> PresentationState {
         PresentationState {
@@ -3601,6 +3672,58 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_composer_anchor_leaves_scrollback_empty_in_tall_terminal() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        let rendered = render_inline_composer(app, 100, 60, 1);
+
+        assert_eq!(
+            rendered.viewport_bottom, 60,
+            "inline viewport should sit flush with the terminal bottom"
+        );
+        assert!(
+            rendered.scrollback_height < 20,
+            "cursor+resize anchoring should not push a tall blank band into scrollback (height={})",
+            rendered.scrollback_height
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_composer_keeps_transcript_adjacent_after_scrollback_flush() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.push_user("hello composer gap".into());
+        app.lines.push(ChatLine {
+            author: Author::Assistant,
+            text: "Latest answer tail".into(),
+        });
+        app.printed_lines = app.lines.len();
+
+        let rendered = render_inline_composer(app, 100, 60, 1);
+        let answer_row = rendered
+            .lines
+            .iter()
+            .position(|row| row.contains("Latest answer tail"))
+            .expect("recent answer rendered");
+        let separator_row = rendered
+            .lines
+            .iter()
+            .position(|row| row.contains("Enter to send"))
+            .expect("message separator rendered");
+
+        assert_eq!(
+            answer_row + 1,
+            separator_row,
+            "flushed transcript should stay adjacent to the composer chrome: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn startup_banner_is_kept_out_of_inline_viewport() {
         let mut fixture = app_with_llmsim().await;
         let rows = render_app_lines(&mut fixture.app, 96, COMPOSER_VIEWPORT_HEIGHT);
@@ -3670,7 +3793,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn inline_viewport_does_not_mirror_flushed_transcript_lines() {
+    async fn inline_viewport_mirrors_recent_tail_after_scrollback_flush() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.setup = None;
@@ -3685,12 +3808,12 @@ mod tests {
         let rows = render_app_lines(app, 96, COMPOSER_VIEWPORT_HEIGHT);
 
         assert!(
-            !rows.iter().any(|row| row.contains("Do something")),
-            "flushed user transcript should stay in scrollback only: {rows:?}"
+            rows.iter().any(|row| row.contains("Do something")),
+            "recent user transcript should stay visible above the composer: {rows:?}"
         );
         assert!(
-            !rows.iter().any(|row| row.contains("Done.")),
-            "flushed assistant transcript should stay in scrollback only: {rows:?}"
+            rows.iter().any(|row| row.contains("Done.")),
+            "recent assistant transcript should stay visible above the composer: {rows:?}"
         );
     }
 

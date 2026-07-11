@@ -240,10 +240,10 @@ pub(crate) fn recent_transcript_lines(
     let mut total_lines = 0;
     let mut newer_author: Option<Author> = None;
 
-    // Already-flushed lines live in native scrollback; mirroring them here
-    // makes prompts and outputs appear twice until the next redraw.
-    let pending_start = app.printed_lines.min(app.lines.len());
-    for chat in app.lines[pending_start..]
+    // Keep the recent tail visible above the composer even after lines are
+    // flushed into native scrollback.
+    for chat in app
+        .lines
         .iter()
         .rev()
         .filter(|line| !matches!(line.author, Author::System))

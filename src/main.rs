@@ -1137,17 +1137,17 @@ mod tests {
 
     #[test]
     fn inline_viewport_anchor_fills_space_above_bottom_target() {
-        assert_eq!(app::blank_lines_after_inline_viewport(4, 18, 60), 38);
+        assert_eq!(app::rows_below_inline_viewport(4, 18, 60), 38);
     }
 
     #[test]
     fn inline_viewport_anchor_does_not_scroll_when_already_low_enough() {
-        assert_eq!(app::blank_lines_after_inline_viewport(42, 18, 60), 0);
-        assert_eq!(app::blank_lines_after_inline_viewport(50, 18, 60), 0);
+        assert_eq!(app::rows_below_inline_viewport(42, 18, 60), 0);
+        assert_eq!(app::rows_below_inline_viewport(50, 18, 60), 0);
     }
 
     #[test]
     fn inline_viewport_anchor_handles_small_terminals() {
-        assert_eq!(app::blank_lines_after_inline_viewport(0, 18, 10), 0);
+        assert_eq!(app::rows_below_inline_viewport(0, 18, 10), 0);
     }
 }

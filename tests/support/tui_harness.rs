@@ -193,13 +193,15 @@ pub fn spawn_tui_llmsim_with_settings(
     // Real terminals answer every `CSI 6n` cursor-position query; ratatui's
     // inline viewport issues them at init, inside `insert_before` (via
     // `Terminal::clear`), and on resize. The reader thread plays terminal:
-    // it scans the output stream for queries and replies with the configured
-    // cursor row, unless paused or out of budget.
+    // it tracks cursor-position writes and replies to queries with the
+    // tracked row, unless paused or out of budget.
     let (output_tx, output_rx) = mpsc::channel();
     let mut reader = pair.master.try_clone_reader().expect("clone pty reader");
     let responder_writer = Arc::clone(&writer);
     let responder_enabled = Arc::clone(&answer_cursor_queries);
-    let cursor_row = options.cursor_row.clamp(1, options.rows.max(1));
+    let initial_cursor_row = options.cursor_row.clamp(1, options.rows.max(1));
+    let tracked_cursor_row = Arc::new(AtomicUsize::new(initial_cursor_row as usize));
+    let tracked_cursor_col = Arc::new(AtomicUsize::new(1));
     let reply_budget = AtomicUsize::new(options.cursor_reply_budget);
     thread::spawn(move || {
         const QUERY: &[u8] = b"\x1b[6n";
@@ -211,7 +213,9 @@ pub fn spawn_tui_llmsim_with_settings(
             if n == 0 {
                 break;
             }
-            pending.extend_from_slice(&buf[..n]);
+            let chunk = &buf[..n];
+            update_tracked_cursor_from_output(chunk, &tracked_cursor_row, &tracked_cursor_col);
+            pending.extend_from_slice(chunk);
             let mut queries = 0;
             while let Some(at) = find_subsequence(&pending, QUERY) {
                 pending.drain(..at + QUERY.len());
@@ -232,11 +236,13 @@ pub fn spawn_tui_llmsim_with_settings(
                 {
                     continue;
                 }
+                let cursor_row = tracked_cursor_row.load(Ordering::SeqCst);
+                let cursor_col = tracked_cursor_col.load(Ordering::SeqCst);
                 let mut writer = responder_writer.lock().expect("lock pty writer");
-                let _ = writer.write_all(format!("\x1b[{cursor_row};1R").as_bytes());
+                let _ = writer.write_all(format!("\x1b[{cursor_row};{cursor_col}R").as_bytes());
                 let _ = writer.flush();
             }
-            if output_tx.send(buf[..n].to_vec()).is_err() {
+            if output_tx.send(chunk.to_vec()).is_err() {
                 break;
             }
         }
@@ -260,6 +266,42 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+fn update_tracked_cursor_from_output(output: &[u8], row: &AtomicUsize, col: &AtomicUsize) {
+    let mut i = 0;
+    while i + 2 < output.len() {
+        if output[i] != 0x1b || output[i + 1] != b'[' {
+            i += 1;
+            continue;
+        }
+        let start = i + 2;
+        let mut end = start;
+        while end < output.len() && !matches!(output[end], 0x40..=0x7e) {
+            end += 1;
+        }
+        if end == output.len() {
+            break;
+        }
+        let final_byte = output[end];
+        if matches!(final_byte, b'H' | b'f') {
+            let params = std::str::from_utf8(&output[start..end]).unwrap_or("");
+            if !params.starts_with('?') {
+                let mut parts = params.split(';');
+                if let Some(row_value) = parts.next().filter(|value| !value.is_empty())
+                    && let Ok(parsed_row) = row_value.parse::<usize>()
+                {
+                    row.store(parsed_row.max(1), Ordering::SeqCst);
+                }
+                if let Some(col_value) = parts.next().filter(|value| !value.is_empty())
+                    && let Ok(parsed_col) = col_value.parse::<usize>()
+                {
+                    col.store(parsed_col.max(1), Ordering::SeqCst);
+                }
+            }
+        }
+        i = end + 1;
+    }
+}
+
 pub fn wait_for_exit(child: &mut dyn Child, timeout: Duration) -> Option<ExitStatus> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -272,18 +314,26 @@ pub fn wait_for_exit(child: &mut dyn Child, timeout: Duration) -> Option<ExitSta
 }
 
 pub fn assert_cursor_near_bottom(tui: &mut TuiHarness, rows: u16) {
-    let output = tui.output_text();
-    let cursor_row = max_absolute_cursor_row(output.as_bytes())
-        .unwrap_or_else(|| panic!("missing cursor move in TUI output: {output}"));
     let minimum_row = rows.saturating_sub(2).max(1);
-    assert!(
-        cursor_row >= minimum_row,
-        "composer cursor should be near terminal bottom (row {cursor_row}, expected >= {minimum_row}): {output}"
-    );
-}
-
-pub fn max_absolute_cursor_row(output: &[u8]) -> Option<u16> {
-    max_absolute_cursor_position(output).map(|(row, _)| row)
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        let output = tui.output_text();
+        if let Some((cursor_row, _)) = last_absolute_cursor_position(output.as_bytes())
+            && cursor_row >= minimum_row
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            let output = tui.output_text();
+            let cursor_row = last_absolute_cursor_position(output.as_bytes())
+                .map(|(row, _)| row)
+                .unwrap_or(0);
+            panic!(
+                "composer cursor should be near terminal bottom (row {cursor_row}, expected >= {minimum_row}): {output}"
+            );
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 pub fn max_absolute_cursor_position(output: &[u8]) -> Option<(u16, u16)> {
@@ -320,15 +370,15 @@ pub fn max_absolute_cursor_position(output: &[u8]) -> Option<(u16, u16)> {
                     .parse::<u16>()
                     .ok();
                 if let (Some(row), Some(col)) = (row, col) {
-                    position = Some(
-                        position.map_or((row, col), |(max_row, max_col): (u16, u16)| {
-                            (max_row.max(row), max_col.max(col))
-                        }),
-                    );
+                    position = Some((row, col));
                 }
             }
         }
         i = end + 1;
     }
     position
+}
+
+pub fn last_absolute_cursor_position(output: &[u8]) -> Option<(u16, u16)> {
+    max_absolute_cursor_position(output)
 }
