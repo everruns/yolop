@@ -292,8 +292,9 @@ impl Tool for AstEditTool {
     }
 
     fn description(&self) -> &str {
-        "Apply ast-grep pattern/replacement rewrites across workspace source files. Defaults to \
-         `dry_run=true` so the first call previews changes without writing; call again with \
+        "Apply ast-grep pattern/replacement rewrites across workspace source files. Supports \
+         Rust, Python, TypeScript/TSX, JavaScript/JSX, C#, Go, CSS, HTML, and Bash. Defaults \
+         to `dry_run=true` so the first call previews changes without writing; call again with \
          `dry_run=false` after the user accepts the preview."
     }
 
