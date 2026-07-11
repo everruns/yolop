@@ -6526,7 +6526,7 @@ dependencies = [
 
 [[package]]
 name = "yolop"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
