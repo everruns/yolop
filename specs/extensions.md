@@ -1,4 +1,4 @@
-# Extensions — capability servers over a subprocess protocol
+# Extensions — capability servers over the yolop extension protocol
 
 Status: **proposal** (design record, nothing implemented).
 
@@ -19,14 +19,15 @@ recompilation. Near-term: tools + prompt + config + hooks (the LSP class).
 Later: LLM providers, UI features, everruns plugins.
 
 **Scoping decision.** Declarative contributions (prompt text, skills,
-commands, plain MCP server registrations) are arriving upstream as **everruns
-plugins**: a plugin directory (Claude Code–compatible `plugin.json` dialect)
-compiles to a `DeclarativeCapabilityDefinition` carried *inside* the
-`plugin:{name}` capability config and hydrated at collection time. Yolop
-inherits that layer by staying in lockstep; this spec does not redesign it.
-What yolop must own is the tier upstream does not have: **executable,
-stateful, capability-level logic in a subprocess** — the *capability server*
-— and the protocol between yolop and it. That is the subject of this spec.
+commands, static MCP server registrations) are arriving upstream as
+**everruns plugins**: a plugin directory (Claude Code–compatible
+`plugin.json` dialect) compiles to a `DeclarativeCapabilityDefinition`
+carried *inside* the `plugin:{name}` capability config and hydrated at
+collection time. Yolop inherits that layer by staying in lockstep; this spec
+does not redesign it. What yolop must own is the tier upstream does not
+have: **executable, stateful, capability-level logic in a subprocess** — the
+*capability server* — and the protocol between yolop and it: the **yolop
+extension protocol (YEP)**.
 
 ## Prior art (compressed)
 
@@ -39,8 +40,8 @@ tier:
   property of having a scripting runtime, not a design yolop can copy.
 - **goose** proves "extension = MCP server" works but also shows its ceiling:
   tools/resources/prompts only — no prompt shaping, no loop hooks, no config
-  schema. That ceiling is exactly the gap between MCP and the `Capability`
-  trait.
+  schema, no streaming tool output. That ceiling is exactly the gap between
+  MCP and the `Capability` trait.
 - **Zed** shows the strongest versioning story (per-version WIT snapshots)
   and the control-plane/data-plane split: extension logic decides, host- or
   extension-spawned subprocesses do the heavy work.
@@ -49,87 +50,114 @@ tier:
   latency-critical path.
 - **pi**'s anti-MCP argument is really about context economics (tool schemas
   burning 5–10% of the window). The antidote is declared tool policy, not a
-  different transport.
+  particular transport.
 
 ## Design decisions
 
-### D1 — The protocol is an MCP superset, not a second protocol
+### D1 — YEP is its own protocol; MCP is a *contribution*, not the base
 
-A capability server **is an MCP server** (JSON-RPC 2.0 over stdio) that
-additionally negotiates a `yolop` extension block. MCP explicitly reserves
-`experimental`/vendor capabilities and tolerates unknown methods, so this is
-sanctioned, not a fork.
+A capability server speaks **YEP**: yolop-owned methods and lifecycle,
+JSON-RPC 2.0 as the message envelope (the same envelope LSP, DAP, and MCP
+use — it is framing, not semantics) over stdio, newline-delimited. The
+protocol mirrors the `Capability` trait directly instead of bending the
+contract to fit another protocol's shape.
 
-Why not bespoke LSP-style RPC: it would reimplement framing, handshake,
-lifecycle, and tool plumbing MCP already standardizes; it would orphan the
-SDK ecosystem extension authors get for free; and yolop would still need MCP
-alongside it for plain tool servers — two protocols forever. Why not plain
-MCP: the trait seams that make a capability a capability (config schema,
-prompt contribution, tool policy, hooks) have no MCP expression — goose's
-ceiling.
+Why not an MCP superset (the previous revision of this spec recommended one;
+recorded here as rejected):
 
-A capability server therefore degrades gracefully: in goose or Claude Code it
-is just an MCP tool server (prefixed names, no facets); under yolop it is a
-full capability. One binary, every host.
+- **The contract should evolve with the trait, not with MCP.** Tool policy,
+  hooks, prompt contributions, config push, streaming tool output — none of
+  these exist in MCP; a superset means forever expressing yolop semantics
+  through someone else's extension escape hatch and tracking their spec's
+  churn underneath.
+- **Tool calls need a richer lifecycle than MCP offers**: streamed
+  progress/partial output while a tool runs (yolop's TUI already renders
+  streaming `bash` output; extension tools must not regress to
+  spinner-until-done), cancellation, and structured result payloads aligned
+  with `ToolExecutionResult` — native YEP messages rather than bolted-on
+  progress notifications.
+- **The cross-host argument inverts.** The superset's main selling point was
+  "the same binary also works in goose/Claude Code." Composition achieves
+  that better: an extension that wants cross-host reach *provides an MCP
+  server* (next paragraph) and keeps the yolop-specific surface in YEP.
 
-Base-protocol versioning is MCP's own. The `yolop` block carries its own
-integer `protocolVersion`; yolop advertises the versions it supports in
-`initialize` and refuses (with a clear startup warning, never a crash) blocks
-it cannot speak.
+**MCP as a contribution.** An extension can announce, in its handshake:
+*"I provide these MCP servers"* — each entry a name plus transport (a stdio
+command, or an HTTP URL, typically `localhost` served by the extension
+process itself). Yolop merges them into scoped MCP config and consumes them
+through its **existing MCP client path**, exactly as if they came from
+`.mcp.json`. This is not a new seam: it is the wire form of
+`Capability::mcp_servers_with_config()`, which compiled-in capabilities
+already use. Division of labor:
 
-### D2 — Persistent processes (new transport mode)
+- **Native YEP tools** — streaming, stateful, policy-rich, session-scoped;
+  the LSP class.
+- **Contributed MCP servers** — wrapping/bundling the existing MCP
+  ecosystem: an extension can manage credentials, config, or lifecycle for a
+  third-party MCP server and hand yolop the endpoint. Stateful contributed
+  servers should prefer an extension-hosted HTTP endpoint (the extension
+  owns the process, so state survives) since yolop's stdio MCP transport is
+  spawn-per-call today.
 
-Today's stdio MCP transport spawns a process **per tool call** and tears it
-down (`everruns-mcp` D2: "per-invocation spawn keeps lifecycle trivial").
-That is fatal for the LSP class — warm state is the entire point (a
-rust-analyzer index takes tens of seconds to build).
+The cost of a bespoke protocol is the missing SDK ecosystem. Mitigations,
+owned by this repo: the protocol surface is deliberately small (a dozen
+methods over ndjson JSON-RPC — an afternoon in any language); a reference
+Rust SDK crate (`yolop-extension`) that `yolop-lsp` dogfoods; and a
+conformance harness (`/extensions doctor <cmd>` drives a server through
+handshake, tool call, streaming, cancellation, config push and reports what
+it got).
 
-Capability servers get a **session-persistent connection**: spawned once per
-session, kept alive, `kill_on_drop`, restarted with backoff on crash (pending
-requests fail with a clear message; next call respawns — the exact policy
-`lsp/manager.rs` already implements for language servers). Spawn is eager at
-session start when the extension contributes prompt text or hooks (needed
-before the first turn), lazy on first tool call otherwise.
+### D2 — Persistent, session-scoped processes
 
-This transport is useful beyond capability servers — stateful plain-MCP
-servers suffer under spawn-per-call too — so it lands as an opt-in
-(`"persistent": true`) for ordinary `.mcp.json` entries, with capability
-servers always persistent. Candidate for upstreaming into `everruns-mcp`.
+A capability server is spawned once per session and lives for it —
+persistence is intrinsic to YEP, not an option. Spawn is eager at session
+start when the extension contributes prompt text or hooks (needed before the
+first turn), lazy on first tool call otherwise. `kill_on_drop`; crash fails
+pending requests with a clear message and the next call respawns with
+backoff — the policy `lsp/manager.rs` already implements for language
+servers. Graceful path: `shutdown` request, then `exit` notification,
+SIGKILL after a grace window.
+
+The worktree caveat is first-class: yolop can repoint the active workspace
+mid-session (`WorkspaceHost`), so the workspace root arrives in `initialize`
+**and** changes arrive as `workspace/changed` notifications; servers that
+cache roots (the LSP class) must handle it.
 
 ### D3 — Every trait seam gets one of three treatments
 
-The core of the design. The `Capability` trait's seams split by how hot their
-call path is:
+The core of the design. The `Capability` trait's seams split by how hot
+their call path is:
 
 | Treatment | Seams | Mechanism |
 |---|---|---|
-| **Static** — declared, no RPC after startup | id/name/description/category, `config_schema`, static system prompt, tool policy (naming, never-defer, approval/risk hints, narration templates), commands, hook *subscriptions*, dependencies, features | Package manifest + `initialize` handshake; a generic yolop-side adapter answers the trait from this cache |
-| **RPC** — cold path, bounded, fallible | tool execution (`tools/call`), dynamic system prompt (`yolop/systemPrompt`, ≤1/turn, timeout + last-known-good fallback), hook firings (`yolop/hook`), user questions (MCP `elicitation` → `user_ask` bridge), config push (`yolop/configChanged`) | Requests over the persistent connection, each with a declared timeout and error policy |
+| **Static** — declared, no RPC after startup | id/name/description/category, `config_schema`, static system prompt, tool definitions + policy (naming, never-defer, approval/risk hints, narration templates), **provided MCP servers**, commands, hook *subscriptions*, dependencies, features | Package manifest + `initialize` handshake; a generic yolop-side adapter answers the trait from this cache |
+| **RPC** — cold path, bounded, fallible | tool execution (streamed), dynamic system prompt (≤1/turn, timeout + last-known-good fallback), hook firings, user questions, config push, workspace change | YEP requests/notifications over the persistent connection, each with a declared timeout and error policy |
 | **Excluded** from the wire (v1) | `facts`, `message_filter_provider`, `model_view_provider`, `tool_definition_hooks` | Per-request hot loop, documented "cheap and side-effect free" — a cross-process round-trip there is hostile to latency and prompt-cache stability. If real demand appears, this is the future WASM tier's job, not a protocol extension |
 
 Hooks over RPC deserve the explicit precedent: `user_hooks` today spawns a
 **whole bash process per event**. A request to an already-warm process is
-strictly cheaper than the mechanism yolop already ships, so hook RPC is not a
-new class of cost — but it is bounded anyway: subscriptions are static
-(event + tool-name matcher + `timeout_ms` + `on_error: warn|block`), a
-match-all matcher must be spelled `"*"` and is called out at approval time,
-and per-extension subscription count is capped.
+strictly cheaper than the mechanism yolop already ships — but bounded
+anyway: subscriptions are static (event + tool-name matcher + `timeout_ms` +
+`on_error: warn|block`), a match-all matcher must be spelled `"*"` and is
+called out at approval time, and per-extension subscription count is capped.
 
 ### D4 — The manifest is the approval boundary; the handshake may only narrow it
 
-Static facets live in **both** the package manifest and the handshake, with a
-strict relationship:
+Static facets live in **both** the package manifest and the handshake, with
+a strict relationship:
 
 - The **manifest** (`plugin.json` + `yolop` facet block) is what the user
   approves at install time — it must be inspectable *without executing the
   binary* (the VS Code lesson). It declares the server command and the upper
   bound of everything: tool names, never-defer list, hook subscriptions,
-  prompt size, config schema.
+  provided MCP servers, prompt size, config schema.
 - The **handshake** is the runtime truth, **clamped by the manifest**: a
-  server may declare fewer tools or hooks than approved (feature-gated
-  builds), but anything not in the approved manifest is refused and logged.
-  A server that tries to widen its grant after installation is the exact
-  attack the clamp exists for.
+  server may declare fewer tools, hooks, or MCP servers than approved
+  (feature-gated builds), but anything not in the approved manifest is
+  refused and logged. A server that tries to widen its grant after
+  installation is the exact attack the clamp exists for. Provided MCP
+  servers are clamped by *name and transport shape* — an approved stdio
+  command cannot silently become a remote URL.
 
 Content-hash approval (workspace packages inert until approved per hash,
 recorded in user state, re-prompt on change) makes the boundary durable.
@@ -142,66 +170,85 @@ overrides, catalog, and `set_config` tools unchanged. The declared
 `config_schema` plugs into `CapabilityCatalog` validation exactly like a
 built-in's.
 
-Delivery: validated config is passed in `initialize` params
-(`yolop.config`), and pushed on change as `yolop/configChanged`; the server
-answers `ok` or `restart-required` (yolop restarts it — the same
-"rebuild manager on config change" semantics `LspCapability` has today).
-Secrets stay in env (`${VAR}` expansion in the server spec, as `.mcp.json`
-does now); config is for structure, not credentials.
+Delivery: validated config is passed in `initialize` params, and pushed on
+change as `config/changed`; the server answers `ok` or `restart-required`
+(yolop restarts it — the same "rebuild manager on config change" semantics
+`LspCapability` has today). Secrets stay in env (`${VAR}` expansion in the
+server spec, as `.mcp.json` does now); config is for structure, not
+credentials.
 
-### D6 — Tool policy is part of the contract, not a courtesy
+### D6 — Tool policy is part of the tool definition
 
 The LSP eval produced two hard facts: tools deferred behind `tool_search`
-stubs get ~zero adoption, and prompt guidance names exact tool names. So the
-manifest declares, per tool:
+stubs get ~zero adoption, and prompt guidance names exact tool names. In a
+yolop-owned protocol this is native — each declared tool carries:
 
-- **canonical name** — surfaced unprefixed (`lsp_definition`, not
-  `mcp_lsp__lsp_definition`). Registered only if it collides with nothing
-  built-in or already-installed; on collision, fall back to the prefixed form
-  with a startup warning.
-- **`never_defer`** — schema always loaded, budgeted (≤8 per extension) so
-  one package cannot blow the context window. Everything else defers behind
-  `tool_search` as usual — this is the answer to pi's context-cost critique.
-- **approval/risk hints** consumed by the approval capability, and optional
-  narration templates (static templates beat narration RPC).
+- its **real name** (`lsp_definition` — no forced prefix; registered only if
+  it collides with nothing built-in or already installed; on collision, the
+  extension-qualified form with a startup warning),
+- **`never_defer`** (schema always loaded, budgeted: ≤8 per extension so one
+  package cannot blow the context window; everything else defers behind
+  `tool_search` — the answer to pi's context-cost critique),
+- **approval/risk hints** consumed by the approval capability, and an
+  optional **narration template** (static templates beat narration RPC),
+- **`streaming`** — whether the tool emits `tool/update` progress.
 
-### The wire, end to end
+## The protocol surface
+
+Envelope: JSON-RPC 2.0, newline-delimited JSON over stdio. Integer
+`protocolVersion`, negotiated at `initialize`; yolop advertises the versions
+it supports and refuses (with a startup warning, never a crash) servers it
+cannot speak.
+
+| Direction | Method | Kind | Purpose |
+|---|---|---|---|
+| →server | `initialize` | req | protocol version, session id, workspace root, locale, validated config, host feature set |
+| ←server | (result) | — | identity, contributions (prompt, tools, hooks, MCP servers, commands), clamped by manifest |
+| →server | `initialized` | ntf | handshake complete |
+| →server | `tool/call` | req | `{toolCallId, name, args}`; response is the final `ToolExecutionResult`-shaped payload |
+| ←server | `tool/update` | ntf | streamed progress/partial output for a running `toolCallId` |
+| →server | `tool/cancel` | ntf | cancel a running call (user interrupt, turn abort) |
+| →server | `prompt/contribution` | req | dynamic system prompt (only if declared `dynamic`); timeout + last-known-good |
+| →server | `hook/fire` | req | `{event, toolName, payload}` → decision per subscription (`allow/block/mutate`) |
+| →server | `config/changed` | req | new validated config → `ok` \| `restart-required` |
+| →server | `workspace/changed` | ntf | active worktree/root repointed |
+| ←server | `ui/ask` | req | user question/form — bridged to the `user_ask` capability |
+| ←server | `status/changed` | ntf | capability status (e.g. `degraded: rust-analyzer not found`) surfaced in `/extensions list` |
+| ←server | `log` | ntf | structured logs → yolop's tracing layer (`RUST_LOG` honored) |
+| →server | `shutdown` / `exit` | req/ntf | graceful stop before `kill_on_drop` |
 
 ```
 yolop                                   capability server (ext:lsp)
   |-- spawn (session start; prompt facet present)
-  |-- initialize { capabilities.experimental.yolop:
-  |                { protocolVersions: [1], config: {...} } }
-  |<- result { instructions: "<static prompt>",      # standard MCP field
-  |            capabilities.experimental.yolop:
-  |              { protocolVersion: 1,
-  |                tools:  { canonical: true, neverDefer: [...] },
-  |                hooks:  [ {event, matcher, timeoutMs, onError} ],
-  |                dynamicSystemPrompt: false } }    # clamped vs manifest
-  |-- notifications/initialized
-  |-- tools/list                        -> seven lsp_* tools
+  |-- initialize {protocolVersions:[1], sessionId, workspaceRoot,
+  |               config:{...}, host:{streaming:true, hooks:true}}
+  |<- result {name:"lsp", prompt:{static:"<directive text>"},
+  |           tools:[{name:"lsp_definition", schema:{...},
+  |                   never_defer:true, streaming:false}, ...x7],
+  |           mcpServers:[], hooks:[], commands:[]}     # clamped vs manifest
+  |-- initialized
   |   ... agent turn ...
-  |-- tools/call lsp_definition         -> (server keeps rust-analyzer warm)
-  |-- yolop/hook {event: post_tool_use, tool: edit_file, ...}   # if subscribed
+  |-- tool/call {toolCallId:"t1", name:"lsp_definition", args:{...}}
+  |<-   (server keeps rust-analyzer warm across calls)
+  |   ... long-running tool elsewhere ...
+  |-- tool/call {toolCallId:"t2", name:"lsp_rename", args:{...}}
+  |<- tool/update {toolCallId:"t2", output:"3/14 files patched"}
+  |<- (result t2)
   |   ... user edits settings ...
-  |-- yolop/configChanged {config}      <- "restart-required" -> respawn
+  |-- config/changed {config}          <- "restart-required" -> respawn
   |   ... session end ...
-  |-- shutdown / SIGKILL (kill_on_drop)
+  |-- shutdown / exit                   (SIGKILL after grace; kill_on_drop)
 ```
 
 The yolop side is one generic `ExtensionCapability` adapter implementing
 `Capability`: static answers from the clamped handshake cache; `tools()`
-proxied from `tools/list` with policy applied; `pre/post_tool_exec_hooks()`
-manufactured from subscriptions; `system_prompt_contribution()` from
-`instructions` (or the RPC when declared dynamic). Registered per
-installed+enabled extension at startup — `CapabilityRegistry::register`
-takes `Arc<dyn Capability>` at runtime, so no upstream change is needed to
-register; only the facets that touch collection (config schema exposure)
-need small hooks.
-
-Note the deliberate reuse of MCP's standard `instructions` field for the
-static prompt: even a plain MCP host that ignores every `yolop/*` method
-still gets the guidance text.
+manufactured from declared tools (calls proxied as `tool/call`, updates
+streamed to the TUI); `mcp_servers_with_config()` returns the contributed
+endpoints for the runtime's scoped-MCP merge; `pre/post_tool_exec_hooks()`
+manufactured from subscriptions; `system_prompt_contribution()` from the
+static text or the RPC. Registered per installed+enabled extension at
+startup — `CapabilityRegistry::register` takes `Arc<dyn Capability>` at
+runtime, so registration needs no upstream change.
 
 ## Packaging, install, trust
 
@@ -218,12 +265,16 @@ upstream; yolop adds one facet:
     "protocolVersion": 1,
     "capabilityServer": { "command": "yolop-lsp", "args": [] },
     "config_schema": { "$ref": "./config.schema.json" },
-    "tools": {
-      "canonical_names": true,
-      "never_defer": ["lsp_definition", "lsp_references", "lsp_hover",
-                       "lsp_diagnostics", "lsp_rename", "lsp_symbols",
-                       "lsp_code_actions"]
-    },
+    "tools": [
+      { "name": "lsp_definition", "never_defer": true },
+      { "name": "lsp_references", "never_defer": true },
+      { "name": "lsp_hover",      "never_defer": true },
+      { "name": "lsp_diagnostics","never_defer": true },
+      { "name": "lsp_rename",     "never_defer": true, "streaming": true },
+      { "name": "lsp_symbols",    "never_defer": true },
+      { "name": "lsp_code_actions","never_defer": true }
+    ],
+    "mcpServers": [],
     "hooks": []
   }
 }
@@ -234,20 +285,20 @@ upstream; yolop adds one facet:
   `<config_dir>/yolop/extensions/<name>/`; workspace overrides global by
   name; malformed packages warn, never sink startup.
 - **Install**: `/extensions install <git-url>[@rev] | <path>`, plus
-  `list | update | remove | enable | disable` — System commands *and*
-  capability tools, so both the user and the model can drive setup.
+  `list | update | remove | enable | disable | doctor` — System commands
+  *and* capability tools, so both the user and the model can drive setup.
   Git installs are pinned in `extensions.lock` (source, commit, content
   hash); `update` is explicit. Path installs are referenced, not copied
   (dev loop). Binaries: the manifest names the command; resolution is PATH
   plus the package's own `bin/`; a missing binary is a call-time tool error
   with install guidance, exactly like a missing `rust-analyzer` today.
 - **Trust**: a global install is consent by action (same stance as authoring
-  `.mcp.json`), preceded by a printed contribution summary (servers, hooks,
-  prompt size, tool names). Workspace packages arrive with someone else's
-  repo: discovered but **inert until approved once per content-hash**,
-  approval recorded in user state, changed package re-prompts. Hooks and
-  prompt text are the sharpest injection edges and are named explicitly in
-  the summary. No sandbox is claimed in v1.
+  `.mcp.json`), preceded by a printed contribution summary (server command,
+  tools, hooks, MCP servers, prompt size). Workspace packages arrive with
+  someone else's repo: discovered but **inert until approved once per
+  content-hash**, approval recorded in user state, changed package
+  re-prompts. Hooks and prompt text are the sharpest injection edges and are
+  named explicitly in the summary. No sandbox is claimed in v1.
 
 ## Illustration: `lsp` as a capability server
 
@@ -255,46 +306,54 @@ Decomposition of the existing capability:
 
 - **Data plane** — rust-analyzer, gopls, pyright, … : already subprocesses;
   now spawned and kept warm by the extension process instead of by yolop.
-- **Control plane** — `yolop-lsp`, a standalone binary: the transport-generic
-  LSP client, server lifecycle manager, position-encoding conversion, and
-  workspace-edit safety checks move there ~verbatim (`client.rs` is already
-  transport-generic; only `manager.rs` knows processes). It exposes the seven
-  `lsp_*` tools over MCP.
+- **Control plane** — `yolop-lsp`, a standalone binary on the reference SDK:
+  the transport-generic LSP client, server lifecycle manager,
+  position-encoding conversion, and workspace-edit safety checks move there
+  ~verbatim (`client.rs` is already transport-generic; only `manager.rs`
+  knows processes). It exposes the seven `lsp_*` tools natively over YEP —
+  streaming suits `lsp_rename` (per-file progress on large workspaces).
 - **Package** — manifest above + the directive prompt text (verbatim: the
   eval showed the "call `lsp_*` FIRST" wording is load-bearing) + the same
   config schema (`servers.<key>.command/args/extensions`, timeouts). Config
   changes to the servers map answer `restart-required`, matching today's
-  "rebuild manager, killing old servers" behavior.
-
-Workspace-root delivery uses MCP `roots`; out-of-root edit rejection stays in
-the extension (it owns the `WorkspaceEdit` application), while yolop's
-approval hooks still see every write the tools perform.
+  "rebuild manager, killing old servers" behavior. `workspace/changed`
+  re-roots the client, matching today's `WorkspaceHost` repointing.
 
 Migration gate: the built-in stays until the extension reaches parity on
 `evals/lsp_integration` (pass rate, `lsp_*` adoption, turns, tokens, plus
-tool-call latency overhead measured). Parity → retire the in-tree capability;
-the eval is the gate, the extension is the dogfood.
+tool-call latency overhead measured). Parity → retire the in-tree
+capability; the eval is the gate, the extension is the dogfood — for both
+the protocol and the SDK.
 
 ## Future facets on the same protocol
 
 - **LLM providers.** Tier 1 is declarative (OpenAI-compatible descriptor:
   base_url, auth env, model list/profiles) once `Provider` moves from a
-  closed enum to a catalog. Tier 2 rides *this* mechanism: the capability
-  server exposes an OpenAI-compatible endpoint on a local socket and
-  announces it in the handshake (`yolop.provider: { baseUrl, models }`) —
-  the pattern Ollama normalized, and `codex_driver`'s `DriverId::external`
-  already shows the driver-side seam. Native drivers stay compiled in.
-- **UI features.** Extensions never run TUI code. The protocol path is
-  declarative: `elicitation` already bridges to `user_ask` forms; if richer
-  needs appear, handshake-declared component *trees* (upstream `a2ui`/
-  `openui` precedent) rendered by yolop's own widgets.
-- **everruns plugins.** A yolop extension without the `yolop` facet *is* an
-  everruns plugin; hosts that grow capability-server support can adopt the
-  `yolop` block as-is — it is a candidate for upstreaming under a neutral
-  name once proven here.
+  closed enum to a catalog. Tier 2 rides the handshake: the server announces
+  `provider: { baseUrl: "http://127.0.0.1:<port>/v1", models: [...] }` — an
+  OpenAI-compatible endpoint it hosts (the pattern Ollama normalized;
+  `codex_driver`'s `DriverId::external` shows the driver-side seam). Native
+  drivers stay compiled in.
+- **UI features.** Extensions never run TUI code. `ui/ask` bridges to
+  `user_ask` forms now; if richer needs appear, handshake-declared component
+  *trees* (upstream `a2ui`/`openui` precedent) rendered by yolop's own
+  widgets.
+- **everruns plugins.** A package without the `yolop` facet *is* an everruns
+  plugin and loads through the upstream declarative path; the facet is
+  additive. If upstream grows capability-server support, YEP is the candidate
+  to upstream under a neutral name once proven here.
 
 ## Alternatives considered
 
+- **MCP superset** (previous revision's recommendation) — rejected: the
+  contract would be shaped by, and forever versioned under, a protocol that
+  lacks tool streaming, hooks, prompt policy, and config semantics; the
+  cross-host benefit is achieved better by composition — extensions
+  *provide* MCP servers through the handshake instead of *being* one.
+- **Pure MCP with no extension surface** — rejected as the ceiling goose
+  already demonstrates: tools only, no capability-level contract. Still
+  fully supported for plain tool servers via `.mcp.json` and via
+  extension-provided MCP servers.
 - **Rust dylibs** (`abi_stable`/`stabby`) — rejected: no stable ABI,
   toolchain lockstep, per-platform artifacts, no isolation.
 - **In-process scripting** (pi/OpenCode model; upstream `lua` exists) —
@@ -302,34 +361,34 @@ the eval is the gate, the extension is the dogfood.
   exactly the FS/process access the LSP class needs.
 - **WASM components** (wasmtime + WIT / Extism) — deferred, and *scoped*: it
   is the untrusted-marketplace endgame and the only honest home for the
-  excluded hot-loop seams (D3), but WASI cannot spawn the data plane, and the
-  host machinery (per-version WIT snapshots) is Zed-scale. When it comes, a
-  WASM module is one more facet in this same package format, not a new unit.
-- **Bespoke JSON-RPC protocol** — rejected in D1.
-- **Pure MCP with no extension block** — rejected as the ceiling goose
-  already demonstrates; it cannot express config schema, prompt policy,
-  tool economics, or hooks.
+  excluded hot-loop seams (D3), but WASI cannot spawn the data plane, and
+  the host machinery (per-version WIT snapshots) is Zed-scale. When it
+  comes, a WASM module is one more facet in this same package format, not a
+  new unit.
 
 ## Rollout
 
-1. **Persistent MCP transport.** Session-lifetime stdio connections with
-   crash/respawn policy behind `"persistent": true` in `.mcp.json`; measure
-   against spawn-per-call. Independently valuable; candidate upstream PR.
-2. **Handshake + adapter.** `yolop` extension block (protocolVersion, tool
-   policy, static prompt via `instructions`, config in `initialize`),
-   `ExtensionCapability` adapter, config-schema wiring into the catalog.
-   Exit: a hand-built capability server exercises every static facet in CI.
-3. **Packaging + trust.** `.agents/extensions/` + global scope discovery,
+1. **Protocol core + SDK + conformance.** `initialize`/`initialized`,
+   `tool/call` + `tool/update` + `tool/cancel`, `shutdown`/`exit`; the
+   `ExtensionCapability` adapter; the `yolop-extension` reference crate;
+   `/extensions doctor`. Exit: a hand-built server passes conformance and
+   its tools stream in the TUI.
+2. **Packaging + trust.** `.agents/extensions/` + global scope discovery,
    `extensions.lock`, `/extensions` verbs, manifest-clamps-handshake
-   enforcement, workspace content-hash approval. Exit: install from a git
-   URL to working tools in one command.
-4. **Hooks + dynamic prompt RPC.** `yolop/hook`, `yolop/systemPrompt`,
-   `yolop/configChanged`, elicitation bridge. Exit: a guardrail-style
-   reference extension (block writes to generated files) works.
-5. **`yolop-lsp` dogfood.** Extract the control plane; A/B on
+   enforcement, workspace content-hash approval, config schema into the
+   catalog + `config/changed`. Exit: install from a git URL to working
+   tools in one command.
+3. **Contributed MCP servers.** Handshake `mcpServers` merged into scoped
+   MCP config through the existing client; name/transport clamping. Exit: an
+   extension wrapping a third-party MCP server (credentials + lifecycle)
+   works end to end.
+4. **Hooks + dynamic prompt + ui/ask.** `hook/fire`, `prompt/contribution`,
+   `ui/ask`, `workspace/changed`. Exit: a guardrail-style reference
+   extension (block writes to generated files) works.
+5. **`yolop-lsp` dogfood.** Extract the control plane onto the SDK; A/B on
    `evals/lsp_integration`; parity retires the built-in.
 6. **Providers.** Descriptor tier after the Provider-catalog refactor;
-   provider-proxy handshake facet after.
+   provider handshake facet after.
 
 ## Non-goals
 
@@ -343,18 +402,21 @@ the eval is the gate, the extension is the dogfood.
 
 ## Open questions
 
-- Namespace: `ext:<name>` vs reusing upstream `plugin:<name>` for
-  capability-server extensions. `ext:` keeps "hydrates from serialized
-  config" (upstream plugin semantics) distinct from "proxied live process",
-  at the cost of a second prefix; decide when the loader lands.
-- Should the persistent transport multiplex several sessions over one
-  process (LSP servers are expensive to duplicate) or stay
-  process-per-session (simpler isolation)? Yolop is effectively
-  single-session per TUI today; background sessions may force the choice.
+- Namespace: `ext:<name>` vs reusing upstream `plugin:<name>`. `ext:` keeps
+  "hydrates from serialized config" (upstream plugin semantics) distinct
+  from "proxied live process", at the cost of a second prefix; decide when
+  the loader lands.
+- Multiplex several sessions over one server process (LSP servers are
+  expensive to duplicate) vs process-per-session (simpler isolation)? Yolop
+  is effectively single-session per TUI today; background sessions may force
+  the choice. The protocol reserves `sessionId` on every request either way.
 - `never_defer` budget size, and whether it should be model-adaptive
   (mirroring `auto_tool_search`).
-- Hook RPC while the extension process is crashed: fail-open with warning
+- Hook RPC while the server is crashed: fail-open with warning
   (availability) vs fail-closed per `on_error` (integrity). Leaning: honor
   the subscription's declared `on_error`, same as hook timeouts.
 - Whether workspace-scope packages may subscribe hooks at all, or only with
   per-hook approval.
+- Whether contributed *stdio* MCP servers should get a persistent connection
+  mode (today's transport is spawn-per-call), or whether stateful cases
+  should always be extension-hosted HTTP endpoints.
