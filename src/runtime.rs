@@ -469,7 +469,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
 
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.6-sol";
 const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-6";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
 // Gemini exposes an OpenAI-compatible surface at this base URL, driven through
 // `everruns_openai`. (OpenRouter has its own first-class driver since
@@ -3623,7 +3623,7 @@ mod tests {
         assert!(codex.label().starts_with("codex/gpt-5.6-sol"));
 
         let anthropic = ProviderChoice::default_for_provider_name("anthropic").unwrap();
-        assert_eq!(anthropic.label(), "anthropic/claude-sonnet-4-6 high");
+        assert_eq!(anthropic.label(), "anthropic/claude-opus-4-8 high");
 
         let google = ProviderChoice::default_for_provider_name("google").unwrap();
         assert_eq!(google.label(), "google/gemini-2.5-flash");
@@ -3858,7 +3858,7 @@ mod tests {
         };
 
         let resolved = resolve_for_settings("anthropic", &settings).expect("resolve");
-        assert_eq!(resolved.choice.label(), "anthropic/claude-sonnet-4-6 high");
+        assert_eq!(resolved.choice.label(), "anthropic/claude-opus-4-8 high");
         assert_eq!(resolved.source, ModelResolutionSource::ProviderDefault);
         assert!(
             resolved.notes.iter().any(|n| n.contains("default_model")),

@@ -349,24 +349,19 @@ impl App {
             ],
             "anthropic" => vec![
                 ModelOption {
-                    spec: Some("claude-sonnet-4-6".to_string()),
-                    label: "claude-sonnet-4-6".to_string(),
+                    spec: Some("claude-opus-4-8".to_string()),
+                    label: "claude-opus-4-8".to_string(),
                     hint: "best default Claude model".to_string(),
                 },
                 ModelOption {
-                    spec: Some("claude-opus-4-5".to_string()),
-                    label: "claude-opus-4-5".to_string(),
-                    hint: "more capable for complex work".to_string(),
+                    spec: Some("claude-sonnet-4-6".to_string()),
+                    label: "claude-sonnet-4-6".to_string(),
+                    hint: "faster everyday Sonnet".to_string(),
                 },
                 ModelOption {
                     spec: Some("claude-haiku-4-5".to_string()),
                     label: "claude-haiku-4-5".to_string(),
                     hint: "fast answers".to_string(),
-                },
-                ModelOption {
-                    spec: Some("claude-sonnet-4-5".to_string()),
-                    label: "claude-sonnet-4-5".to_string(),
-                    hint: "previous default Sonnet".to_string(),
                 },
                 ModelOption {
                     spec: Some("claude-fable-5".to_string()),
