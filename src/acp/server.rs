@@ -556,15 +556,9 @@ fn command_input(command: &CommandDescriptor) -> Option<AvailableCommandInput> {
     let hint = command
         .args
         .iter()
-        .map(|arg| {
-            if arg.description.trim().is_empty() {
-                arg.name.as_str()
-            } else {
-                arg.description.as_str()
-            }
-        })
+        .map(|arg| format!("<{}>", arg.name))
         .collect::<Vec<_>>()
-        .join(", ");
+        .join(" ");
     Some(AvailableCommandInput::Unstructured(
         UnstructuredCommandInput::new(hint),
     ))

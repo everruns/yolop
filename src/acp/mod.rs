@@ -527,6 +527,11 @@ mod tests {
             .iter()
             .find(|c| c["name"] == "setup")
             .expect("setup command");
+        assert_eq!(
+            setup["description"],
+            "Configure provider, API key, and model."
+        );
+        assert_eq!(setup["input"]["hint"], "<action>");
         let suggestions = setup["_meta"]["yolop.dev/command"]["args"][0]["suggestions"]
             .as_array()
             .expect("setup suggestions");
