@@ -166,8 +166,9 @@ a strict relationship:
   servers are clamped by *name and transport shape* — an approved stdio
   command cannot silently become a remote URL.
 
-Content-hash approval (workspace packages inert until approved per hash,
-recorded in user state, re-prompt on change) makes the boundary durable.
+The lockfile's content hash makes the boundary durable: what was approved
+is pinned, and an `update` whose manifest widens the grant re-asks with a
+contribution diff before anything runs.
 
 ### D5 — Config rides the existing capability machinery
 
@@ -379,25 +380,45 @@ upstream; yolop adds one facet:
 }
 ```
 
-- **Scopes** mirror skills/hooks/mcp: workspace
-  `<workspace>/.agents/extensions/<name>/` and global
-  `<config_dir>/yolop/extensions/<name>/`; workspace overrides global by
-  name; malformed packages warn, never sink startup.
-- **Install**: `/extensions install <git-url>[@rev] | <path>`, plus
+- **One scope: global.** Packages live in
+  `<config_dir>/yolop/extensions/<name>/`, installed per user; malformed
+  packages warn, never sink startup. There is deliberately **no workspace
+  scope** (no `.agents/extensions/` discovered from repos): a repository
+  must not carry agent-specific machinery — committing yolop extensions to
+  a repo would quietly couple that project to one agent. Projects keep
+  using the agent-neutral surfaces they already have (`.mcp.json`,
+  `.agents/skills/`, `.agents/hooks.json`); a project README may *recommend*
+  extensions, and the user installs them once, globally, by choice.
+- **Install**: `/extensions install <source>`, plus
   `list | update | remove | enable | disable | doctor` — System commands
   *and* capability tools, so both the user and the model can drive setup.
-  Git installs are pinned in `extensions.lock` (source, commit, content
-  hash); `update` is explicit. Path installs are referenced, not copied
-  (dev loop). Binaries: the manifest names the command; resolution is PATH
-  plus the package's own `bin/`; a missing binary is a call-time tool error
-  with install guidance, exactly like a missing `rust-analyzer` today.
-- **Trust**: a global install is consent by action (same stance as authoring
+  Sources, all pinned in `extensions.lock` and updated only explicitly:
+  - `<git-url>[@rev]` — cloned into the global dir; lock records source,
+    resolved commit, content hash. Carries the package; the server binary
+    must already be resolvable (PATH or the package's `bin/`) — a missing
+    binary is a call-time tool error with install guidance, exactly like a
+    missing `rust-analyzer` today.
+  - `crates.io:<crate>[@version]` — the Rust-native path that provisions
+    package *and binary* in one step. Yolop downloads the `.crate` tarball
+    (checksummed via the registry index) and reads the extension manifest
+    from it — `plugin.json` at the crate root or
+    `[package.metadata.yolop]` in `Cargo.toml` — **without executing
+    anything**, preserving the D4 invariant; after consent it runs
+    `cargo install <crate> --version <v> --locked --root
+    <config_dir>/yolop/extensions/<name>/` so the binary lands inside the
+    package dir, not in the user's cargo bin. Lock records crate, version,
+    and registry checksum (a stronger supply-chain pin than a git rev).
+    Requires a Rust toolchain — acceptable for yolop's audience; prebuilt
+    binaries (`cargo binstall`-style) are a deferred optimization.
+  - `<path>` — referenced in place, not copied (dev loop).
+- **Trust**: install is consent by action (same stance as authoring
   `.mcp.json`), preceded by a printed contribution summary (server command,
-  tools, hooks, MCP servers, prompt size). Workspace packages arrive with
-  someone else's repo: discovered but **inert until approved once per
-  content-hash**, approval recorded in user state, changed package
-  re-prompts. Hooks and prompt text are the sharpest injection edges and are
-  named explicitly in the summary. No sandbox is claimed in v1.
+  tools, hooks, MCP servers, prompt size) — readable straight from the
+  manifest, without executing the binary. `update` shows a **contribution
+  diff** against the approved manifest and re-asks when the grant widened
+  (new tools, new hooks, a changed server command); a hash-identical update
+  is silent. Hooks and prompt text are the sharpest injection edges and are
+  named explicitly in both summaries. No sandbox is claimed in v1.
 
 ## Illustration: `lsp` as a capability server
 
@@ -473,11 +494,11 @@ the protocol and the SDK.
    corpus; the `ExtensionCapability` adapter; the `yolop-extension`
    reference crate; `/extensions doctor`. Exit: a hand-built server passes
    conformance and its tools stream in the TUI.
-2. **Packaging + trust.** `.agents/extensions/` + global scope discovery,
-   `extensions.lock`, `/extensions` verbs, manifest-clamps-handshake
-   enforcement, workspace content-hash approval, config schema into the
-   catalog + `config/changed`. Exit: install from a git URL to working
-   tools in one command.
+2. **Packaging + trust.** Global-scope discovery, `extensions.lock`,
+   `/extensions` verbs, manifest-clamps-handshake enforcement,
+   update-time contribution diffs, config schema into the catalog +
+   `config/changed`. Exit: install from a git URL to working tools in one
+   command.
 3. **Contributed MCP servers.** Handshake `mcpServers` merged into scoped
    MCP config through the existing client; name/transport clamping. Exit: an
    extension wrapping a third-party MCP server (credentials + lifecycle)
@@ -496,6 +517,8 @@ the protocol and the SDK.
 - No TUI code from extensions.
 - No hot-loop seams over the wire (facts, message filters, model views,
   tool-definition transforms) — see D3.
+- No workspace scope — repos never carry (or auto-discover) yolop
+  extensions; projects stay agent-neutral.
 - No hot reload, central registry, or sandbox claims in v1.
 - No second hook engine, skills format, or enable/disable surface — every
   facet lands on an existing seam.
@@ -516,8 +539,6 @@ the protocol and the SDK.
 - Hook RPC while the server is crashed: fail-open with warning
   (availability) vs fail-closed per `on_error` (integrity). Leaning: honor
   the subscription's declared `on_error`, same as hook timeouts.
-- Whether workspace-scope packages may subscribe hooks at all, or only with
-  per-hook approval.
 - Whether contributed *stdio* MCP servers should get a persistent connection
   mode (today's transport is spawn-per-call), or whether stateful cases
   should always be extension-hosted HTTP endpoints.
