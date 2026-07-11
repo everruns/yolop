@@ -51,6 +51,14 @@ tier:
 - **pi**'s anti-MCP argument is really about context economics (tool schemas
   burning 5–10% of the window). The antidote is declared tool policy, not a
   particular transport.
+- **mira** (sibling project; its eval protocol is ACP-inspired) is the
+  in-house existence proof for building a protocol of exactly this shape:
+  stdio ndjson JSON-RPC dialect, field-classified messages, capability
+  tokens + `capability_params`, `MAJOR.MINOR` with hard forward-compat
+  rules, schema generated from Rust types with CI drift guards, native
+  zero-dependency SDKs generated from the schema, and staged unstable
+  additions. YEP adopts these conventions wholesale (see "Protocol
+  construction") rather than rediscovering them.
 
 ## Design decisions
 
@@ -99,13 +107,12 @@ already use. Division of labor:
   owns the process, so state survives) since yolop's stdio MCP transport is
   spawn-per-call today.
 
-The cost of a bespoke protocol is the missing SDK ecosystem. Mitigations,
-owned by this repo: the protocol surface is deliberately small (a dozen
-methods over ndjson JSON-RPC — an afternoon in any language); a reference
-Rust SDK crate (`yolop-extension`) that `yolop-lsp` dogfoods; and a
-conformance harness (`/extensions doctor <cmd>` drives a server through
-handshake, tool call, streaming, cancellation, config push and reports what
-it got).
+The cost of a bespoke protocol is the missing SDK ecosystem. The mitigation
+is not hand-waving — it is the pattern [mira](https://github.com/everruns/mira)
+already ships for its eval protocol (itself an ACP-inspired stdio dialect;
+YEP joins the same family and follows `mira/docs/protocol.md` as its style
+template): a schema-first contract with generated, native SDKs and a
+conformance harness. See "Protocol construction" below.
 
 ### D2 — Persistent, session-scoped processes
 
@@ -195,19 +202,66 @@ yolop-owned protocol this is native — each declared tool carries:
 
 ## The protocol surface
 
-Envelope: JSON-RPC 2.0, newline-delimited JSON over stdio. Integer
-`protocolVersion`, negotiated at `initialize`; yolop advertises the versions
-it supports and refuses (with a startup warning, never a crash) servers it
-cannot speak.
+### Wire model (mira conventions, adopted)
+
+YEP's wire model is lifted from the mira eval protocol — the ACP-inspired
+stdio dialect this codebase's sibling already specifies, generates, and
+tests — rather than invented fresh:
+
+- **Transport & framing.** Child-process stdio; newline-delimited JSON, one
+  UTF-8 object per line, blank lines ignored. `stdout` carries **only**
+  protocol JSON; `stderr` is free for the server's logs and is never parsed.
+  EOF on stdin signals clean exit (then `kill_on_drop` after grace).
+- **Field-based message classification.** A line bearing `method` is a
+  request (with `id`) or notification (without); only a `method`-less line
+  is a response. Classification is by fields, not by direction or pipe.
+- **Bidirectional from day one, with mira's reserved-seam invariants made
+  live**: independent `id` spaces per direction (a response matches pending
+  requests *on the same side* only), and each direction's optional methods
+  are capability-negotiated — a peer never emits a method the other side
+  did not advertise. YEP needs the reverse direction immediately
+  (`ui/ask`, `status/changed`, `log`), so these invariants are v1 behavior,
+  not a reservation.
+- **Correlated notifications.** A notification cannot carry the envelope
+  `id` (that would classify it as a response), so streamed `tool/update`
+  events correlate to their in-flight call via `request_id` in the payload —
+  the same demultiplexing key mira uses, which is what lets many tool calls
+  (and their update streams) multiplex over the single pipe.
+- **Errors are JSON-RPC-shaped and defaulted**: `code` (JSON-RPC
+  conventions, `0` = unclassified), required `message`, optional
+  `retryable` hint and structured `data`. A bare `{"message": …}` parses.
+- **Cancellation by request id.** `cancel {id}` is a generic method
+  addressing any in-flight request (mira semantics): best-effort, `false`
+  is benign, and the cancelled call itself resolves promptly with error
+  `cancelled` instead of hanging. This is the lever for user interrupts and
+  turn aborts.
+- **Multiplexing.** Yolop may keep many requests in flight; responses
+  correlate by `id` and arrive in any order. Parallel tool calls in one
+  turn ride this directly.
+
+### Versioning (mira rules, verbatim)
+
+`MAJOR.MINOR`, negotiated at `initialize`; v1 ships as `1.0`. Majors must
+match — yolop refuses a mismatched server with a startup warning, never a
+crash. Minors are additive. Forward compatibility is a hard requirement on
+both sides: **ignore unknown fields** (no deny-unknown-fields on the wire),
+**default missing fields**, and **feature-detect via capability tokens, not
+version sniffing**. The handshake's contribution facets are capability
+tokens with structured `capability_params` (open vocabulary, carried
+verbatim when unrecognized): `tools`, `streaming`, `hooks`, `prompt`,
+`dynamic_prompt`, `mcp_servers`, `commands`, `ui_ask`, `cancel`,
+`provider` (future). A server advertising only `tools` is fully conforming.
+
+### Methods
 
 | Direction | Method | Kind | Purpose |
 |---|---|---|---|
 | →server | `initialize` | req | protocol version, session id, workspace root, locale, validated config, host feature set |
 | ←server | (result) | — | identity, contributions (prompt, tools, hooks, MCP servers, commands), clamped by manifest |
 | →server | `initialized` | ntf | handshake complete |
-| →server | `tool/call` | req | `{toolCallId, name, args}`; response is the final `ToolExecutionResult`-shaped payload |
-| ←server | `tool/update` | ntf | streamed progress/partial output for a running `toolCallId` |
-| →server | `tool/cancel` | ntf | cancel a running call (user interrupt, turn abort) |
+| →server | `tool/call` | req | `{tool_call_id, name, args}`; response is the final `ToolExecutionResult`-shaped payload |
+| ←server | `tool/update` | ntf | streamed progress/partial output; correlates via `request_id` in the payload |
+| →server | `cancel` | req | `{id}` — abort any in-flight request (mira semantics: best-effort, aborted call resolves with error `cancelled`) |
 | →server | `prompt/contribution` | req | dynamic system prompt (only if declared `dynamic`); timeout + last-known-good |
 | →server | `hook/fire` | req | `{event, toolName, payload}` → decision per subscription (`allow/block/mutate`) |
 | →server | `config/changed` | req | new validated config → `ok` \| `restart-required` |
@@ -220,25 +274,70 @@ cannot speak.
 ```
 yolop                                   capability server (ext:lsp)
   |-- spawn (session start; prompt facet present)
-  |-- initialize {protocolVersions:[1], sessionId, workspaceRoot,
-  |               config:{...}, host:{streaming:true, hooks:true}}
-  |<- result {name:"lsp", prompt:{static:"<directive text>"},
-  |           tools:[{name:"lsp_definition", schema:{...},
-  |                   never_defer:true, streaming:false}, ...x7],
-  |           mcpServers:[], hooks:[], commands:[]}     # clamped vs manifest
+  |-- initialize {protocol_version:"1.0", session_id, workspace_root,
+  |               config:{...},
+  |               capabilities:["streaming","hooks","ui_ask","cancel"]}
+  |<- result {protocol_version:"1.0", name:"lsp",
+  |           capabilities:["tools","streaming","prompt"],
+  |           capability_params:{
+  |             prompt:{static:"<directive text>"},
+  |             tools:[{name:"lsp_definition", schema:{...},
+  |                     never_defer:true, streaming:false}, ...x7]}}
+  |                                     # ^ clamped vs manifest (D4)
   |-- initialized
   |   ... agent turn ...
-  |-- tool/call {toolCallId:"t1", name:"lsp_definition", args:{...}}
-  |<-   (server keeps rust-analyzer warm across calls)
-  |   ... long-running tool elsewhere ...
-  |-- tool/call {toolCallId:"t2", name:"lsp_rename", args:{...}}
-  |<- tool/update {toolCallId:"t2", output:"3/14 files patched"}
-  |<- (result t2)
+  |-- {id:1} tool/call {tool_call_id:"t1", name:"lsp_definition", args:{...}}
+  |<- {id:1} (result)                   # server keeps rust-analyzer warm
+  |-- {id:2} tool/call {tool_call_id:"t2", name:"lsp_rename", args:{...}}
+  |<- tool/update {request_id:2, output:"3/14 files patched"}
+  |<- {id:2} (result)
+  |-- {id:3} cancel {id:2}              # had it still been running:
+  |<- {id:3} {cancelled:true}           #   ...and id:2 resolves error "cancelled"
   |   ... user edits settings ...
   |-- config/changed {config}          <- "restart-required" -> respawn
   |   ... session end ...
-  |-- shutdown / exit                   (SIGKILL after grace; kill_on_drop)
+  |-- (close stdin) / shutdown          # EOF => exit; SIGKILL after grace
 ```
+
+### Protocol construction (the mira pattern)
+
+How the contract is defined, published, and kept honest — adopted wholesale
+from mira, which has already proven each piece for a protocol of this exact
+shape:
+
+- **Rust types are the source of truth; the schema is generated.** Wire
+  types live in one `yolop::yep` module; a schema-gen binary emits
+  `schema/yep/v1/schema.json` (JSON Schema 2020-12, root `anyOf` over the
+  three envelopes, every payload under `$defs`) and `meta.json` (protocol
+  version, method list, capability tokens, event vocabularies). The
+  directory is versioned by protocol **major**. CI runs the generator with
+  `--check` so a wire change cannot merge without a matching schema update;
+  a test suite validates real serialized messages against the committed
+  schema, and a conformance corpus lives beside it (`schema/yep/v1/
+  conformance/`).
+- **SDKs are native, zero-dependency libraries, never FFI bindings.** The
+  protocol is the seam by design; bindings would re-couple what the wire
+  decouples. Each SDK ships a small codegen with its own `--check` drift
+  mode that generates wire types from `schema.json` and protocol metadata
+  from `meta.json` — the version string and method/capability vocabulary
+  are generated, not hardcoded — plus a hand-written ergonomic layer: a
+  `serve()` stdio loop and tool/hook registration helpers. Rust
+  (`yolop-extension`, dogfooded by `yolop-lsp`) first; TypeScript and
+  Python when demand shows, following `mira/specs/sdks.md` including its
+  drift-guard table (handled-methods ⊇ meta methods, advertised
+  capabilities ⊆ meta tokens, emitted messages validate against schema).
+- **Unstable staging.** New wire *structure* develops behind a
+  `yep-unstable` cargo feature; the schema generator builds without it, so
+  the committed schema describes only the stable protocol and an addition
+  reaches the artifact (and a minor bump) only when promoted. Open
+  vocabularies (capability tokens, `capability_params`, metadata maps)
+  extend without any bump at all.
+- **Conformance harness in the product**: `/extensions doctor <cmd>` drives
+  a server through handshake, tool call, streaming, cancellation, and
+  config push, validating every message against the committed schema — the
+  runtime dual of the CI guards, pointed at third-party servers.
+
+### The adapter
 
 The yolop side is one generic `ExtensionCapability` adapter implementing
 `Capability`: static answers from the clamped handshake cache; `tools()`
@@ -262,7 +361,7 @@ upstream; yolop adds one facet:
   "description": "Semantic code intelligence from real language servers.",
   "engines": { "yolop": ">=0.6" },
   "yolop": {
-    "protocolVersion": 1,
+    "protocol_version": "1.0",
     "capabilityServer": { "command": "yolop-lsp", "args": [] },
     "config_schema": { "$ref": "./config.schema.json" },
     "tools": [
@@ -368,11 +467,12 @@ the protocol and the SDK.
 
 ## Rollout
 
-1. **Protocol core + SDK + conformance.** `initialize`/`initialized`,
-   `tool/call` + `tool/update` + `tool/cancel`, `shutdown`/`exit`; the
-   `ExtensionCapability` adapter; the `yolop-extension` reference crate;
-   `/extensions doctor`. Exit: a hand-built server passes conformance and
-   its tools stream in the TUI.
+1. **Protocol core + schema + SDK.** `initialize`/`initialized`,
+   `tool/call` + `tool/update` + `cancel`, `shutdown`; wire types +
+   schema-gen + `schema/yep/v1/` with CI `--check` and a conformance
+   corpus; the `ExtensionCapability` adapter; the `yolop-extension`
+   reference crate; `/extensions doctor`. Exit: a hand-built server passes
+   conformance and its tools stream in the TUI.
 2. **Packaging + trust.** `.agents/extensions/` + global scope discovery,
    `extensions.lock`, `/extensions` verbs, manifest-clamps-handshake
    enforcement, workspace content-hash approval, config schema into the
@@ -409,7 +509,8 @@ the protocol and the SDK.
 - Multiplex several sessions over one server process (LSP servers are
   expensive to duplicate) vs process-per-session (simpler isolation)? Yolop
   is effectively single-session per TUI today; background sessions may force
-  the choice. The protocol reserves `sessionId` on every request either way.
+  the choice. The protocol reserves `session_id` on every request either
+  way.
 - `never_defer` budget size, and whether it should be model-adaptive
   (mirroring `auto_tool_search`).
 - Hook RPC while the server is crashed: fail-open with warning
