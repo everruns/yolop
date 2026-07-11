@@ -98,7 +98,7 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **AST edit** *(optional, off by default)* — `ast_edit` applies
   pattern/replacement rewrites with a preview-first `dry_run` flow (default)
   before writing. Enable with `[[capabilities]] ref = "ast_edit"` in
-  `settings.toml`.
+  `settings.toml`. See [`specs/ast_edit.md`](./specs/ast_edit.md).
 - **LSP** *(optional, off by default)* — real language servers
   (rust-analyzer, typescript-language-server, pyright, gopls, clangd, or any
   configured binary) behind `lsp_diagnostics`, `lsp_definition`,
