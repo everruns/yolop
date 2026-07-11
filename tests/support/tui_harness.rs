@@ -336,10 +336,6 @@ pub fn assert_cursor_near_bottom(tui: &mut TuiHarness, rows: u16) {
     }
 }
 
-pub fn max_absolute_cursor_row(output: &[u8]) -> Option<u16> {
-    max_absolute_cursor_position(output).map(|(row, _)| row)
-}
-
 pub fn max_absolute_cursor_position(output: &[u8]) -> Option<(u16, u16)> {
     let mut position = None;
     let mut i = 0;
