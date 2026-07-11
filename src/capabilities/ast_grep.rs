@@ -1,8 +1,8 @@
-//! Read-only structural search backed by ast-grep.
+//! Structural search and rewrite backed by ast-grep.
 //!
-//! `grep_files` remains the right first move for exact text. This tool is for
-//! code shapes: call expressions, function declarations, wrappers, and other
-//! patterns where lexical search is too noisy.
+//! `grep_files` remains the right first move for exact text. `ast_grep` is for
+//! read-only code shapes; `ast_edit` applies pattern/replacement rewrites with a
+//! preview-first `dry_run` flow before writing.
 
 use crate::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, bail};
@@ -14,6 +14,7 @@ use ast_grep_language::SupportLang;
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::ToolNarrationPhase;
+use everruns_core::tool_types::ToolHints;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -30,6 +31,8 @@ const DEFAULT_MAX_FILE_BYTES: usize = 512 * 1024;
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MATCH_TEXT_CHARS: usize = 500;
 const MAX_CAPTURE_TEXT_CHARS: usize = 240;
+const MAX_REPLACEMENT_TEXT_CHARS: usize = 500;
+const MAX_PREVIEW_DIFF_CHARS: usize = 8_000;
 const SKIP_DIRS: &[&str] = &[
     ".git",
     ".hg",
@@ -62,11 +65,11 @@ impl Capability for AstGrepCapability {
     }
 
     fn name(&self) -> &str {
-        "AST Grep"
+        "AST Grep & Edit"
     }
 
     fn description(&self) -> &str {
-        "Read-only multi-language structural code search backed by ast-grep patterns."
+        "Structural code search and ast-grep pattern rewrites across common languages."
     }
 
     fn status(&self) -> CapabilityStatus {
@@ -81,8 +84,10 @@ impl Capability for AstGrepCapability {
         Some(
             "<capability id=\"ast_grep\">\n\
              For structural code search, call `ast_grep` with an ast-grep pattern and usually \
-             a language filter. Use it after repo-map/grep have narrowed the area, and read \
-             matched files before editing.\n\
+             a language filter. For shape-based rewrites, call `ast_edit` with `pattern` and \
+             `replacement` — preview with `dry_run=true` (the default), show the user the diff, \
+             then apply with `dry_run=false` after they accept. Use `ast_grep` first to confirm \
+             the pattern matches the intended nodes.\n\
              </capability>"
                 .to_string(),
         )
@@ -91,16 +96,21 @@ impl Capability for AstGrepCapability {
     fn system_prompt_preview(&self) -> Option<String> {
         Some(
             "<capability id=\"ast_grep\">\n\
-             Use `ast_grep` for read-only structural pattern search.\n\
+             Use `ast_grep` for read-only structural search; use `ast_edit` for previewed rewrites.\n\
              </capability>"
                 .to_string(),
         )
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![Box::new(AstGrepTool {
-            workspace: self.workspace.clone(),
-        })]
+        vec![
+            Box::new(AstGrepTool {
+                workspace: self.workspace.clone(),
+            }),
+            Box::new(AstEditTool {
+                workspace: self.workspace.clone(),
+            }),
+        ]
     }
 }
 
@@ -200,6 +210,171 @@ impl Tool for AstGrepTool {
     }
 }
 
+struct AstEditTool {
+    workspace: Arc<WorkspaceHost>,
+}
+
+#[async_trait]
+impl Tool for AstEditTool {
+    fn narrate(
+        &self,
+        tool_call: &everruns_core::tool_types::ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+    ) -> Option<String> {
+        Some(everruns_core::tool_narration::narrate_grep_files(
+            &tool_call.arguments,
+            phase,
+            locale,
+        ))
+    }
+
+    fn name(&self) -> &str {
+        "ast_edit"
+    }
+
+    fn display_name(&self) -> Option<&str> {
+        Some("AST edit")
+    }
+
+    fn description(&self) -> &str {
+        "Apply ast-grep pattern/replacement rewrites across workspace source files. Defaults to \
+         `dry_run=true` so the first call previews changes without writing; call again with \
+         `dry_run=false` after the user accepts the preview."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Required ast-grep pattern to match, for example `console.log($$$ARGS)`."
+                },
+                "replacement": {
+                    "type": "string",
+                    "description": "Replacement template using the same metavariables as `pattern`, for example `logger.info($$$ARGS)`."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Optional workspace-relative file or directory to rewrite. Defaults to the workspace root."
+                },
+                "language": {
+                    "type": "string",
+                    "description": "Optional language filter. Supported values include rust, python, typescript, tsx, javascript, csharp, go, css, html, and bash."
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Preview replacements without writing files. Defaults to true."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_LIMIT,
+                    "description": "Maximum number of replacements to apply across all scanned files. Defaults to 50."
+                },
+                "max_file_bytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_FILE_BYTES,
+                    "description": "Skip supported source files larger than this many bytes. Defaults to 524288."
+                }
+            },
+            "required": ["pattern", "replacement"],
+            "additionalProperties": false
+        })
+    }
+
+    fn hints(&self) -> ToolHints {
+        ToolHints::default().with_readonly(false)
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let workspace_root = match self.workspace.host_root() {
+            Ok(root) => root,
+            Err(err) => {
+                return ToolExecutionResult::tool_error(err.to_string());
+            }
+        };
+        match ast_edit_from_arguments(&workspace_root, &arguments) {
+            Ok(report) => ToolExecutionResult::success(json!({
+                "ok": true,
+                "workspace_root": workspace_root.display().to_string(),
+                "path": report.path,
+                "pattern": report.pattern,
+                "replacement": report.replacement,
+                "language": report.language,
+                "dry_run": report.dry_run,
+                "applied": report.applied,
+                "count": report.count,
+                "files_changed": report.files_changed,
+                "scanned_files": report.scanned_files,
+                "skipped_unsupported_files": report.skipped_unsupported_files,
+                "skipped_files": report.skipped_files,
+                "skipped_large_files": report.skipped_large_files,
+                "parse_error_files": report.parse_error_files,
+                "pattern_error_languages": report.pattern_error_languages,
+                "truncated": report.truncated,
+                "diff": report.diff,
+                "diff_truncated": report.diff_truncated,
+                "files": report.files,
+            })),
+            Err(err) => ToolExecutionResult::tool_error(err.to_string()),
+        }
+    }
+}
+
+fn ast_edit_from_arguments(workspace_root: &Path, arguments: &Value) -> Result<AstEditReport> {
+    let pattern = arguments
+        .get("pattern")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .context("`pattern` is required")?
+        .to_string();
+    let replacement = arguments
+        .get("replacement")
+        .and_then(Value::as_str)
+        .context("`replacement` is required")?
+        .to_string();
+    let path = arguments
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToOwned::to_owned);
+    let language = arguments
+        .get("language")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|language| !language.is_empty())
+        .map(ToOwned::to_owned);
+    let dry_run = arguments
+        .get("dry_run")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let limit = bounded_usize(arguments.get("limit"), DEFAULT_LIMIT, MAX_LIMIT, "limit")?;
+    let max_file_bytes = bounded_usize(
+        arguments.get("max_file_bytes"),
+        DEFAULT_MAX_FILE_BYTES,
+        MAX_FILE_BYTES,
+        "max_file_bytes",
+    )?;
+
+    ast_edit(
+        workspace_root,
+        AstEditOptions {
+            pattern,
+            replacement,
+            path,
+            language,
+            dry_run,
+            limit,
+            max_file_bytes,
+        },
+    )
+}
+
 fn ast_grep_from_arguments(workspace_root: &Path, arguments: &Value) -> Result<AstGrepReport> {
     let pattern = arguments
         .get("pattern")
@@ -238,6 +413,17 @@ fn ast_grep_from_arguments(workspace_root: &Path, arguments: &Value) -> Result<A
             max_file_bytes,
         },
     )
+}
+
+#[derive(Clone, Debug)]
+struct AstEditOptions {
+    pattern: String,
+    replacement: String,
+    path: Option<String>,
+    language: Option<String>,
+    dry_run: bool,
+    limit: usize,
+    max_file_bytes: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -390,6 +576,46 @@ struct AstGrepCapture {
     text: String,
 }
 
+#[derive(Debug, Serialize)]
+struct AstEditReport {
+    path: String,
+    pattern: String,
+    replacement: String,
+    language: Option<String>,
+    dry_run: bool,
+    applied: bool,
+    count: usize,
+    files_changed: usize,
+    scanned_files: usize,
+    skipped_unsupported_files: usize,
+    skipped_files: usize,
+    skipped_large_files: usize,
+    parse_error_files: usize,
+    pattern_error_languages: Vec<PatternLanguageError>,
+    truncated: bool,
+    diff: String,
+    diff_truncated: bool,
+    files: Vec<AstEditFileReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct AstEditFileReport {
+    path: String,
+    language: String,
+    replacements: usize,
+    replacements_detail: Vec<AstEditReplacement>,
+    #[serde(skip_serializing)]
+    diff: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AstEditReplacement {
+    line: usize,
+    column: usize,
+    old_text: String,
+    new_text: String,
+}
+
 fn ast_grep(workspace_root: &Path, options: AstGrepOptions) -> Result<AstGrepReport> {
     let root = workspace_root
         .canonicalize()
@@ -504,6 +730,226 @@ fn ast_grep(workspace_root: &Path, options: AstGrepOptions) -> Result<AstGrepRep
         truncated: matches.len() >= options.limit,
         matches,
     })
+}
+
+fn ast_edit(workspace_root: &Path, options: AstEditOptions) -> Result<AstEditReport> {
+    let root = workspace_root
+        .canonicalize()
+        .context("canonicalize workspace root")?;
+    let scope = crate::workspace_host::resolve_host_scope(&root, options.path.as_deref())?;
+    let language_filter = match options.language.as_deref() {
+        Some(language) => Some(resolve_language_filter(language)?),
+        None => None,
+    };
+
+    let mut files = Vec::new();
+    let mut skipped_unsupported_files = 0;
+    collect_supported_files(
+        &scope,
+        language_filter,
+        &mut files,
+        &mut skipped_unsupported_files,
+    )?;
+
+    let mut file_reports = Vec::new();
+    let mut total_replacements = 0;
+    let mut scanned_files = 0;
+    let mut skipped_files = 0;
+    let mut skipped_large_files = 0;
+    let mut parse_error_files = 0;
+    let mut pattern_errors = HashMap::<&'static str, String>::new();
+    let mut compiled_patterns = HashMap::<&'static str, Pattern>::new();
+
+    for file in files {
+        if total_replacements >= options.limit {
+            break;
+        }
+        let metadata = match fs::metadata(&file.path) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                skipped_files += 1;
+                continue;
+            }
+        };
+        if !metadata.is_file() {
+            skipped_files += 1;
+            continue;
+        }
+        if metadata.len() as usize > options.max_file_bytes {
+            skipped_large_files += 1;
+            continue;
+        }
+        let pattern = match compiled_patterns.get(file.language.name) {
+            Some(pattern) => pattern,
+            None if pattern_errors.contains_key(file.language.name) => continue,
+            None => match Pattern::try_new(&options.pattern, file.language.ast_lang) {
+                Ok(pattern) => {
+                    compiled_patterns.insert(file.language.name, pattern);
+                    compiled_patterns
+                        .get(file.language.name)
+                        .expect("compiled pattern inserted")
+                }
+                Err(err) => {
+                    pattern_errors.insert(file.language.name, err.to_string());
+                    continue;
+                }
+            },
+        };
+        let source = match fs::read_to_string(&file.path) {
+            Ok(source) => source,
+            Err(_) => {
+                skipped_files += 1;
+                continue;
+            }
+        };
+        scanned_files += 1;
+        let remaining = options.limit - total_replacements;
+        let rewrite = rewrite_source(
+            &source,
+            file.language.ast_lang,
+            pattern,
+            &options.replacement,
+            remaining,
+        );
+        let rewrite = match rewrite {
+            Ok(rewrite) => rewrite,
+            Err(_) => {
+                parse_error_files += 1;
+                continue;
+            }
+        };
+        if rewrite.replacements.is_empty() {
+            continue;
+        }
+        total_replacements += rewrite.replacements.len();
+        if !options.dry_run {
+            fs::write(&file.path, &rewrite.updated)
+                .with_context(|| format!("write rewritten file {}", file.path.display()))?;
+        }
+        let relative = relative_path(&root, &file.path);
+        let file_diff = render_file_diff(&relative, &source, &rewrite.updated);
+        file_reports.push(AstEditFileReport {
+            path: relative,
+            language: file.language.name.to_string(),
+            replacements: rewrite.replacements.len(),
+            replacements_detail: rewrite.replacements,
+            diff: file_diff,
+        });
+    }
+
+    let mut pattern_error_languages = pattern_errors
+        .into_iter()
+        .map(|(language, error)| PatternLanguageError {
+            language: language.to_string(),
+            error,
+        })
+        .collect::<Vec<_>>();
+    pattern_error_languages.sort_by(|left, right| left.language.cmp(&right.language));
+
+    let (diff, diff_truncated) = truncate_diff(
+        file_reports
+            .iter()
+            .map(|file| file.diff.as_str())
+            .filter(|chunk| !chunk.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+
+    Ok(AstEditReport {
+        path: options.path.unwrap_or_else(|| ".".to_string()),
+        pattern: options.pattern,
+        replacement: options.replacement,
+        language: options.language,
+        dry_run: options.dry_run,
+        applied: !options.dry_run && !file_reports.is_empty(),
+        count: total_replacements,
+        files_changed: file_reports.len(),
+        scanned_files,
+        skipped_unsupported_files,
+        skipped_files,
+        skipped_large_files,
+        parse_error_files,
+        pattern_error_languages,
+        truncated: total_replacements >= options.limit,
+        diff,
+        diff_truncated,
+        files: file_reports,
+    })
+}
+
+struct RewriteResult {
+    updated: String,
+    replacements: Vec<AstEditReplacement>,
+}
+
+fn rewrite_source(
+    source: &str,
+    lang: SupportLang,
+    pattern: &Pattern,
+    replacement: &str,
+    limit: usize,
+) -> Result<RewriteResult> {
+    let doc = StrDoc::try_new(source, lang).map_err(|err| anyhow::anyhow!(err))?;
+    let mut root = AstGrep::doc(doc);
+    let mut replacements = Vec::new();
+    while replacements.len() < limit {
+        let node = root.root();
+        let Some(node_match) = node.find(pattern) else {
+            break;
+        };
+        let matched_node = node_match.get_node();
+        let start = matched_node.start_pos();
+        let old_text = matched_node.text().to_string();
+        let edit = node_match.replace_by(replacement);
+        let new_text = String::from_utf8_lossy(&edit.inserted_text).into_owned();
+        replacements.push(AstEditReplacement {
+            line: start.line() + 1,
+            column: start.column(matched_node) + 1,
+            old_text: truncate_chars(&old_text, MAX_REPLACEMENT_TEXT_CHARS),
+            new_text: truncate_chars(&new_text, MAX_REPLACEMENT_TEXT_CHARS),
+        });
+        root.edit(edit).map_err(|err| anyhow::anyhow!(err))?;
+    }
+    Ok(RewriteResult {
+        updated: root.get_text().to_string(),
+        replacements,
+    })
+}
+
+fn render_file_diff(path: &str, before: &str, after: &str) -> String {
+    let mut out = format!("--- a/{path}\n+++ b/{path}\n");
+    let before_lines: Vec<&str> = before.lines().collect();
+    let after_lines: Vec<&str> = after.lines().collect();
+    let max = before_lines.len().max(after_lines.len());
+    for index in 0..max {
+        let old_line = before_lines.get(index).copied().unwrap_or("");
+        let new_line = after_lines.get(index).copied().unwrap_or("");
+        if old_line == new_line {
+            continue;
+        }
+        if !old_line.is_empty() {
+            out.push('-');
+            out.push_str(old_line);
+            out.push('\n');
+        }
+        if !new_line.is_empty() {
+            out.push('+');
+            out.push_str(new_line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn truncate_diff(diff: String) -> (String, bool) {
+    if diff.chars().count() <= MAX_PREVIEW_DIFF_CHARS {
+        return (diff, false);
+    }
+    let truncated: String = diff.chars().take(MAX_PREVIEW_DIFF_CHARS).collect();
+    (
+        format!("{truncated}\n... diff truncated after {MAX_PREVIEW_DIFF_CHARS} characters ..."),
+        true,
+    )
 }
 
 fn format_match(
@@ -872,5 +1318,105 @@ mod tests {
                 .iter()
                 .any(|mat| mat.text == "fn outside_fn() {}")
         );
+    }
+
+    #[test]
+    fn ast_edit_dry_run_previews_without_writing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("app.ts");
+        write(&path, "console.log(value);\n");
+
+        let report = ast_edit(
+            dir.path(),
+            AstEditOptions {
+                pattern: "console.log($$$ARGS)".to_string(),
+                replacement: "logger.info($$$ARGS)".to_string(),
+                path: None,
+                language: Some("typescript".to_string()),
+                dry_run: true,
+                limit: 20,
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
+        )
+        .expect("preview rewrite");
+
+        assert_eq!(report.count, 1);
+        assert!(report.dry_run);
+        assert!(!report.applied);
+        assert!(report.diff.contains("console.log"));
+        assert!(report.diff.contains("logger.info"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("read"),
+            "console.log(value);\n"
+        );
+    }
+
+    #[test]
+    fn ast_edit_applies_rewrite_when_dry_run_false() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("app.ts");
+        write(&path, "console.log(value);\n");
+
+        let report = ast_edit(
+            dir.path(),
+            AstEditOptions {
+                pattern: "console.log($$$ARGS)".to_string(),
+                replacement: "logger.info($$$ARGS)".to_string(),
+                path: None,
+                language: Some("typescript".to_string()),
+                dry_run: false,
+                limit: 20,
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
+        )
+        .expect("apply rewrite");
+
+        assert_eq!(report.count, 1);
+        assert!(!report.dry_run);
+        assert!(report.applied);
+        assert_eq!(
+            fs::read_to_string(&path).expect("read"),
+            "logger.info(value);\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn ast_edit_tool_defaults_to_preview_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(&dir.path().join("app.ts"), "console.log(value);\n");
+
+        let capability = AstGrepCapability::new(host(dir.path()));
+        let tool = capability
+            .tools()
+            .into_iter()
+            .find(|tool| tool.name() == "ast_edit")
+            .expect("ast_edit tool");
+        let result = tool
+            .execute(json!({
+                "pattern": "console.log($$$ARGS)",
+                "replacement": "logger.info($$$ARGS)",
+                "language": "typescript"
+            }))
+            .await;
+        let ToolExecutionResult::Success(value) = result else {
+            panic!("expected success, got {result:?}");
+        };
+
+        assert_eq!(value["dry_run"], json!(true));
+        assert_eq!(value["applied"], json!(false));
+        assert_eq!(value["count"], json!(1));
+        assert!(value["diff"].as_str().unwrap_or("").contains("logger.info"));
+    }
+
+    #[test]
+    fn capability_exposes_ast_grep_and_ast_edit_tools() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let capability = AstGrepCapability::new(host(dir.path()));
+        let names: Vec<String> = capability
+            .tools()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
+        assert_eq!(names, vec!["ast_grep", "ast_edit"]);
     }
 }

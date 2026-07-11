@@ -1,17 +1,15 @@
 ---
 name: ast-grep
-description: Write effective ast-grep patterns for the built-in `ast_grep` structural-search tool. Use when searching code by shape rather than text — call expressions, function/struct declarations, wrappers, imports — or when `grep_files` is too noisy, and when a pattern returns nothing or the wrong nodes.
+description: Write effective ast-grep patterns for the built-in `ast_grep` structural-search tool and `ast_edit` rewrites. Use when searching or refactoring code by shape rather than text — call expressions, function/struct declarations, wrappers, imports — or when a pattern returns nothing or the wrong nodes.
 user-invocable: true
 ---
 
-# ast-grep structural search
+# ast-grep structural search and rewrite
 
-Yolop ships a built-in `ast_grep` tool: read-only, multi-language structural
-code search backed by the `ast-grep` engine compiled into the binary. This is
-**not** the `sg` command-line tool — there is no `sg run`/`sg scan`, no rule
-YAML files, and no `--rewrite`. Drive the `ast_grep` tool directly with its
-arguments. It never edits code; read matched files with the file tools before
-changing anything.
+Yolop ships built-in `ast_grep` (read-only search) and `ast_edit` (pattern/replacement
+rewrites) backed by the `ast-grep` engine compiled into the binary. This is **not** the
+`sg` command-line tool — there is no `sg run`/`sg scan`, no rule YAML files, and no
+`--rewrite` CLI. Drive the tools directly with their arguments.
 
 ## When to reach for it
 
@@ -23,10 +21,15 @@ the area:
 - Wrappers and idioms: `unwrap()`, `try/except`, specific decorators/attributes.
 - Anywhere lexical search drowns in comments, strings, or false matches.
 
+Use `ast_edit` when the same ast-grep pattern should be **rewritten** everywhere it
+matches — rename a call shape, swap an import path, delete a wrapper, modernize an
+idiom. Always confirm the pattern with `ast_grep` first, then preview with `ast_edit`
+before applying.
+
 Prefer `grep_files` for exact text, identifiers, log strings, or non-code files.
 ast-grep only parses the supported languages below; everything else is skipped.
 
-## Tool arguments
+## Tool arguments (`ast_grep`)
 
 - `pattern` (required): an ast-grep pattern in the **target language's own
   syntax** (see metavariables below).
@@ -37,6 +40,28 @@ ast-grep only parses the supported languages below; everything else is skipped.
   workspace root. Must stay inside the workspace.
 - `limit` (optional): max matches, default 50, max 500.
 - `max_file_bytes` (optional): skip larger source files, default 512 KiB.
+
+## Tool arguments (`ast_edit`)
+
+- `pattern` (required): ast-grep pattern to match (same syntax as `ast_grep`).
+- `replacement` (required): rewrite template using the same metavariables, for
+  example `logger.info($$$ARGS)` or an empty string to delete matched nodes.
+- `language` (recommended): same values as `ast_grep`.
+- `path` (optional): workspace-relative file or directory scope.
+- `dry_run` (optional): preview without writing files. **Defaults to `true`.**
+  Show the user the returned `diff`, get acceptance, then call again with
+  `dry_run=false` to apply.
+- `limit` (optional): max replacements across all scanned files, default 50.
+- `max_file_bytes` (optional): skip larger source files, default 512 KiB.
+
+## Preview / apply workflow
+
+1. Narrow with `repo_map` / `grep_files`.
+2. Confirm matches with `ast_grep`.
+3. Call `ast_edit` with `dry_run=true` (default) and review `diff` + per-file
+   `replacements_detail`.
+4. After the user accepts, call `ast_edit` again with the same arguments and
+   `dry_run=false`.
 
 Always pass `language` when you know it: it scopes the scan, avoids cross-language
 pattern-compile noise, and is faster.
@@ -107,7 +132,8 @@ A valid-but-wrong pattern matches zero nodes silently. Work it like this:
 
 ## Limits
 
-- Read-only: no rewrite/codemod. Make edits with the file tools after locating.
+- `ast_grep` is read-only. `ast_edit` writes only after an explicit
+  `dry_run=false` call.
 - Single-pattern only: no relational rules, `inside`/`has`, or YAML configs.
 - Binary, oversized (> `max_file_bytes`), and unsupported-language files are
   skipped; the result reports those counts.

@@ -273,7 +273,7 @@ fn classify_tool_call(tool_call: &ToolCall) -> ToolClass {
         "read_file" | "grep_files" | "repo_map" | "ast_grep" | "list_directory" | "stat_file" => {
             ToolClass::Exploration
         }
-        "write_file" | "edit_file" | "delete_file" => ToolClass::Mutation,
+        "write_file" | "edit_file" | "delete_file" | "ast_edit" => ToolClass::Mutation,
         "bash" => classify_bash_command(
             tool_call
                 .arguments

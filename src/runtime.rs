@@ -488,6 +488,8 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "edit_file",
     "list_directory",
     "grep_files",
+    "ast_grep",
+    "ast_edit",
     "bash",
     "spawn_background",
     "write_todos",
@@ -2188,7 +2190,7 @@ pub async fn build_with_options(
     //
     // Non-filesystem, but useful for a coding agent:
     //   * repo_map            - on-demand multi-language symbol map for broad codebase orientation
-    //   * ast_grep            - read-only structural code search with ast-grep patterns
+    //   * ast_grep            - structural code search and ast_edit rewrites
     //   * infinity_context     — keeps long sessions usable; adds query_history
     //   * compaction           — proactively masks older large tool outputs
     //   * stateless_todo_list  — write_todos tool for multi-step tasks
