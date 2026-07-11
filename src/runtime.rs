@@ -9,13 +9,14 @@ use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, 
 use crate::capabilities::yolop::{YOLOP_CAPABILITY_ID, YolopCapability};
 use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability,
-    AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID, BackgroundCapability,
-    CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID,
-    ClientCommandsCapability, CodingBashCapability, CodingCliEnvironmentCapability,
-    ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, GOAL_CAPABILITY_ID, GoalCapability,
-    HOOKS_CAPABILITY_ID, HooksCapability, LspCapability, PROGRESS_GUARD_CAPABILITY_ID,
-    ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability, SETUP_CAPABILITY_ID,
-    SetupCapability, USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability,
+    AstEditCapability, AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID,
+    BackgroundCapability, CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID,
+    CONFIG_CAPABILITY_ID, ClientCommandsCapability, CodingBashCapability,
+    CodingCliEnvironmentCapability, ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
+    GOAL_CAPABILITY_ID, GoalCapability, HOOKS_CAPABILITY_ID, HooksCapability, LspCapability,
+    PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
+    RepoMapCapability, SETUP_CAPABILITY_ID, SetupCapability, USER_ASK_CAPABILITY_ID,
+    UserAskCapability, WorktreeCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::connectors::{
@@ -488,6 +489,8 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "edit_file",
     "list_directory",
     "grep_files",
+    "ast_grep",
+    "ast_edit",
     "bash",
     "spawn_background",
     "write_todos",
@@ -2188,7 +2191,8 @@ pub async fn build_with_options(
     //
     // Non-filesystem, but useful for a coding agent:
     //   * repo_map            - on-demand multi-language symbol map for broad codebase orientation
-    //   * ast_grep            - read-only structural code search with ast-grep patterns
+    //   * ast_grep            - read-only structural code search
+    //   * ast_edit            - previewed ast-grep rewrites (opt-in)
     //   * infinity_context     — keeps long sessions usable; adds query_history
     //   * compaction           — proactively masks older large tool outputs
     //   * stateless_todo_list  — write_todos tool for multi-step tasks
@@ -2222,6 +2226,10 @@ pub async fn build_with_options(
     ));
     capabilities.register(RepoMapCapability::new(workspace_host.clone()));
     capabilities.register(AstGrepCapability::new(workspace_host.clone()));
+    // `ast_edit` — structural rewrites with preview-first `dry_run`. Registered
+    // for the catalog but intentionally NOT part of the default harness; enable
+    // with `[[capabilities]] ref = "ast_edit"` in settings.toml.
+    capabilities.register(AstEditCapability::new(workspace_host.clone()));
     // `lsp` — real language servers (diagnostics, go-to-def, references,
     // rename, symbols, code actions). Registered so it appears in the catalog
     // and can be switched on, but intentionally NOT part of the default
@@ -4728,6 +4736,36 @@ mod tests {
             ids.iter()
                 .any(|cap| cap.capability_id() == AST_GREP_CAPABILITY_ID),
             "ast_grep should be available for structural code search"
+        );
+    }
+
+    /// `ast_edit` is registered for the catalog but stays off the default harness
+    /// until explicitly enabled in settings.toml.
+    #[test]
+    fn coding_harness_does_not_enable_ast_edit_by_default() {
+        use crate::capabilities::ast_grep::AST_EDIT_CAPABILITY_ID;
+
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+        assert!(
+            !ids.iter()
+                .any(|cap| cap.capability_id() == AST_EDIT_CAPABILITY_ID),
+            "ast_edit must remain opt-in"
+        );
+
+        let mut settings = Settings::default();
+        settings
+            .capabilities
+            .push(crate::capability_settings::CapabilityOverride {
+                capability_ref: AST_EDIT_CAPABILITY_ID.to_string(),
+                enabled: Some(true),
+                append: false,
+                config: serde_json::Value::Null,
+            });
+        let ids = coding_harness_capabilities(false, None, &settings);
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == AST_EDIT_CAPABILITY_ID),
+            "a [[capabilities]] override should enable ast_edit"
         );
     }
 

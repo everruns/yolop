@@ -109,7 +109,8 @@ yolop is an autonomous coding agent for the workspace it was started in.
 
 - **Files** — read, write, edit, grep, delete, and map the repository
 - **Shell** — `bash -lc` from the workspace root (120 s timeout, capped output)
-- **AST search** — structural `ast_grep` across common languages
+- **AST search** — structural `ast_grep` across common languages (default harness)
+- **AST edit** *(opt-in)* — previewed `ast_edit` rewrites; enable with `[[capabilities]] ref = "ast_edit"`
 - **Background work** — detached shell commands and focused sub-agents
 - **Web** — `web_fetch` and `duckduckgo_search`
 - **Memory** — durable cross-session notes via `remember` / `recall` / `forget`
@@ -146,7 +147,7 @@ Subcommands: `yolop version`, `yolop into zed`, `yolop worktree list|prune`.
 | `yolop-config` | Change `settings.toml` — provider, tokens, models, capabilities |
 | `yolop-hooks` | Configure behavioral hooks |
 | `skill-management` | Install, upgrade, or remove skills |
-| `ast-grep` | Structural code search patterns |
+| `ast-grep` | Structural code search and rewrite patterns |
 
 ## Answering help requests
 

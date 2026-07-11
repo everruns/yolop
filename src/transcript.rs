@@ -226,7 +226,7 @@ pub fn lines_for_event(event: &RuntimeEvent) -> Vec<ChatLine> {
                     format!("{marker} {label}  {summary}")
                 },
             }];
-            if data.tool_name == "edit_file"
+            if (data.tool_name == "edit_file" || data.tool_name == "ast_edit")
                 && let Some(diff) = extract_field(data, "diff")
             {
                 for line in diff.lines().take(40) {
@@ -557,6 +557,13 @@ pub fn summarize_tool_result(data: &ToolCompletedData) -> String {
             let path = v.get("path").and_then(Value::as_str).unwrap_or("");
             let n = v.get("applied_edits").and_then(Value::as_u64).unwrap_or(0);
             format!("{path} ({n} edit(s))")
+        }
+        "ast_edit" => {
+            let n = v.get("count").and_then(Value::as_u64).unwrap_or(0);
+            let files = v.get("files_changed").and_then(Value::as_u64).unwrap_or(0);
+            let preview = v.get("dry_run").and_then(Value::as_bool).unwrap_or(true);
+            let mode = if preview { "preview" } else { "applied" };
+            format!("{n} replacement(s) in {files} file(s) ({mode})")
         }
         "list_directory" => {
             let path = v.get("path").and_then(Value::as_str).unwrap_or("");

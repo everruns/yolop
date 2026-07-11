@@ -29,7 +29,7 @@ pub(crate) mod yolop;
 pub(crate) use crate::goal::GOAL_CAPABILITY_ID;
 pub(crate) use crate::user_ask::USER_ASK_CAPABILITY_ID;
 pub(crate) use approval::{APPROVAL_CAPABILITY_ID, ApprovalCapability};
-pub(crate) use ast_grep::{AST_GREP_CAPABILITY_ID, AstGrepCapability};
+pub(crate) use ast_grep::{AST_GREP_CAPABILITY_ID, AstEditCapability, AstGrepCapability};
 pub(crate) use attribution::{ATTRIBUTION_CAPABILITY_ID, AttributionCapability};
 pub(crate) use background::{BACKGROUND_CAPABILITY_ID, BackgroundCapability};
 pub(crate) use client_commands::{CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCapability};
