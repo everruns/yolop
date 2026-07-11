@@ -314,14 +314,26 @@ pub fn wait_for_exit(child: &mut dyn Child, timeout: Duration) -> Option<ExitSta
 }
 
 pub fn assert_cursor_near_bottom(tui: &mut TuiHarness, rows: u16) {
-    let output = tui.output_text();
-    let cursor_row = max_absolute_cursor_row(output.as_bytes())
-        .unwrap_or_else(|| panic!("missing cursor move in TUI output: {output}"));
     let minimum_row = rows.saturating_sub(2).max(1);
-    assert!(
-        cursor_row >= minimum_row,
-        "composer cursor should be near terminal bottom (row {cursor_row}, expected >= {minimum_row}): {output}"
-    );
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        let output = tui.output_text();
+        if let Some((cursor_row, _)) = last_absolute_cursor_position(output.as_bytes())
+            && cursor_row >= minimum_row
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            let output = tui.output_text();
+            let cursor_row = last_absolute_cursor_position(output.as_bytes())
+                .map(|(row, _)| row)
+                .unwrap_or(0);
+            panic!(
+                "composer cursor should be near terminal bottom (row {cursor_row}, expected >= {minimum_row}): {output}"
+            );
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 pub fn max_absolute_cursor_row(output: &[u8]) -> Option<u16> {
