@@ -19,6 +19,7 @@ const EXPLORATION_WITHOUT_PROGRESS_THRESHOLD: usize = 24;
 const CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD: usize = 48;
 const REPEATED_EXPLORATION_THRESHOLD: usize = 5;
 const REPEATED_STATUS_THRESHOLD: usize = 3;
+const REPEATED_WAITING_THRESHOLD: usize = 3;
 
 pub(crate) struct ProgressGuardCapability {
     state: Arc<Mutex<ProgressGuardState>>,
@@ -99,6 +100,7 @@ struct SessionProgress {
     validation_count: usize,
     repeated_status_count: usize,
     last_status_command: Option<String>,
+    repeated_waiting_count: usize,
     repeated_exploration_count: usize,
     last_exploration_signature: Option<String>,
     warning_count: usize,
@@ -115,6 +117,7 @@ impl SessionProgress {
                 self.exploration_since_progress = 0;
                 self.repeated_status_count = 0;
                 self.last_status_command = None;
+                self.repeated_waiting_count = 0;
                 self.repeated_exploration_count = 0;
                 self.last_exploration_signature = None;
                 None
@@ -124,12 +127,27 @@ impl SessionProgress {
                 self.exploration_since_progress = 0;
                 self.repeated_status_count = 0;
                 self.last_status_command = None;
+                self.repeated_waiting_count = 0;
                 self.repeated_exploration_count = 0;
                 self.last_exploration_signature = None;
                 None
             }
+            ToolClass::Waiting => {
+                self.exploration_since_progress += 1;
+                self.repeated_waiting_count += 1;
+                if self.repeated_waiting_count >= REPEATED_WAITING_THRESHOLD {
+                    self.warning_count += 1;
+                    self.repeated_waiting_count = 0;
+                    return Some(
+                        "progress_guard: repeated checks of an external event (CI run, PR checks/reviews) without other progress. Do not poll across turns: run one blocking watch detached via spawn_background (e.g. `gh pr checks --watch` or an `until <check>; do sleep 30; done` loop) and end the turn — completion wakes the agent. In one-shot mode, block on the spawned task with wait_task instead."
+                            .to_string(),
+                    );
+                }
+                self.exploration_warning()
+            }
             ToolClass::Status(command) => {
                 self.exploration_since_progress += 1;
+                self.repeated_waiting_count = 0;
                 if self.last_status_command.as_deref() == Some(command.as_str()) {
                     self.repeated_status_count += 1;
                 } else {
@@ -148,12 +166,19 @@ impl SessionProgress {
             }
             ToolClass::Exploration => {
                 self.exploration_since_progress += 1;
+                self.repeated_waiting_count = 0;
                 if let Some(warning) = self.repetition_warning(tool_call) {
                     return Some(warning);
                 }
                 self.exploration_warning()
             }
-            ToolClass::Other => None,
+            ToolClass::Other => {
+                // The waiting counter is strictly consecutive (any other tool
+                // resets it) so legitimate one-off PR/CI checks between real
+                // work never accumulate into a false poll warning.
+                self.repeated_waiting_count = 0;
+                None
+            }
         }
     }
 
@@ -236,6 +261,10 @@ enum ToolClass {
     Mutation,
     Validation,
     Status(String),
+    /// Checking on an external event (CI run, PR checks/reviews) or plain
+    /// sleeping — the poll-loop shape that should instead be one detached
+    /// `spawn_background` watch.
+    Waiting,
     Other,
 }
 
@@ -261,6 +290,18 @@ fn classify_bash_command(command: &str) -> ToolClass {
     if normalized.is_empty() {
         return ToolClass::Other;
     }
+    // A leading `sleep N && …` is a poll delay: classify the probed command
+    // (`sleep 5 && cargo test` is still validation). A bare `sleep` is pure
+    // waiting.
+    if let Some(tail) = poll_delay_tail(&normalized) {
+        if tail.is_empty() {
+            return ToolClass::Waiting;
+        }
+        return classify_bash_command(tail);
+    }
+    if is_waiting_command(&normalized) {
+        return ToolClass::Waiting;
+    }
     if is_status_command(&normalized) {
         return ToolClass::Status(normalized);
     }
@@ -274,6 +315,22 @@ fn classify_bash_command(command: &str) -> ToolClass {
         return ToolClass::Exploration;
     }
     ToolClass::Other
+}
+
+/// For a command starting with `sleep`, everything after the first `&&`/`;`
+/// (empty when the sleep is the whole command). `None` when the command does
+/// not start with a sleep.
+fn poll_delay_tail(command: &str) -> Option<&str> {
+    let rest = command.strip_prefix("sleep")?;
+    if !rest.is_empty() && !rest.starts_with(' ') {
+        return None;
+    }
+    let tail = rest
+        .find("&&")
+        .map(|at| &rest[at + 2..])
+        .or_else(|| rest.find(';').map(|at| &rest[at + 1..]))
+        .unwrap_or("");
+    Some(tail.trim())
 }
 
 fn normalize_command(command: &str) -> String {
@@ -324,6 +381,19 @@ fn exploration_signature(tool_call: &ToolCall) -> Option<String> {
 
 fn normalize_value(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+}
+
+fn is_waiting_command(command: &str) -> bool {
+    let prefixes = [
+        "gh pr checks",
+        "gh pr status",
+        "gh pr view",
+        "gh run list",
+        "gh run view",
+        "gh run watch",
+        "gh workflow view",
+    ];
+    prefixes.iter().any(|prefix| command.starts_with(prefix))
 }
 
 fn is_status_command(command: &str) -> bool {
@@ -455,6 +525,27 @@ mod tests {
             classify_bash_command("rg progress_guard"),
             ToolClass::Exploration
         );
+    }
+
+    #[test]
+    fn classify_bash_command_detects_external_event_waits() {
+        assert_eq!(classify_bash_command("gh pr checks 42"), ToolClass::Waiting);
+        assert_eq!(
+            classify_bash_command("gh run list --branch main --limit 5"),
+            ToolClass::Waiting
+        );
+        assert_eq!(classify_bash_command("sleep 120"), ToolClass::Waiting);
+        assert_eq!(
+            classify_bash_command("sleep 30 && gh pr checks 42"),
+            ToolClass::Waiting
+        );
+        // A sleep in front of real work classifies as the work itself.
+        assert_eq!(
+            classify_bash_command("sleep 5 && cargo test --all-features"),
+            ToolClass::Validation
+        );
+        // `sleepwalk` must not parse as a sleep prefix.
+        assert_eq!(classify_bash_command("sleepwalk"), ToolClass::Other);
     }
 
     #[tokio::test]
@@ -751,6 +842,74 @@ mod tests {
                 .any(|warning| warning.contains("same investigation target")),
             "semantic repetition should catch rereading the same range: {warnings:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn repeated_ci_polling_warns_toward_spawn_background() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let mut last = result();
+
+        // The classic poll loop: delay-then-check, over and over. Different
+        // probe commands still count — polling rarely repeats verbatim.
+        let polls = [
+            "gh pr checks 42",
+            "sleep 30 && gh pr checks 42",
+            "gh run list --limit 1",
+        ];
+        for command in polls {
+            last = result();
+            hook.after_exec(
+                &call("bash", json!({ "command": command })),
+                &tool_def("bash"),
+                &mut last,
+                &context,
+            )
+            .await;
+        }
+
+        assert!(
+            last.result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str)
+                .is_some_and(|warning| warning.contains("spawn_background"))
+        );
+    }
+
+    #[tokio::test]
+    async fn interleaved_work_resets_waiting_counter() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+
+        // Check CI, fix something, check again — legitimate, never a poll
+        // warning because the counter is strictly consecutive.
+        for _ in 0..(REPEATED_WAITING_THRESHOLD * 2) {
+            let mut check = result();
+            hook.after_exec(
+                &call("bash", json!({ "command": "gh pr checks 42" })),
+                &tool_def("bash"),
+                &mut check,
+                &context,
+            )
+            .await;
+            assert!(
+                check
+                    .result
+                    .as_ref()
+                    .and_then(|value| value.get("progress_guard_warning"))
+                    .is_none()
+            );
+            hook.after_exec(
+                &call("edit_file", json!({ "path": "/src/lib.rs" })),
+                &tool_def("edit_file"),
+                &mut result(),
+                &context,
+            )
+            .await;
+        }
     }
 
     #[tokio::test]

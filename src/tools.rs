@@ -161,8 +161,14 @@ impl BashTool {
             match tokio::time::timeout(timeout, run).await {
                 Ok(r) => r,
                 Err(_) => {
+                    // The timeout is where poll loops are born: a foreground
+                    // watch dies here and the model falls back to
+                    // sleep-and-recheck turns. Name the escape hatch instead.
                     return Err(ToolExecutionResult::tool_error(format!(
-                        "command timed out after {}s",
+                        "command timed out after {}s. If it was waiting on an external \
+                         event (CI run, deploy, long build), re-run it detached via \
+                         spawn_background and end the turn — completion wakes the agent \
+                         (in one-shot mode, block on the task with wait_task instead).",
                         self.timeout_secs
                     )));
                 }
@@ -206,7 +212,9 @@ impl Tool for BashTool {
          directory, shell variables, and exports reset every time. A bare `cd` is \
          pointless — you are already at the workspace root; use paths relative to \
          it, or chain within one call (`cd sub && cmd`). Captures stdout/stderr \
-         with configurable verbosity. 120s timeout."
+         with configurable verbosity. 120s timeout; run commands that wait on \
+         external events (CI runs, deploys) detached via `spawn_background` \
+         instead."
     }
     fn parameters_schema(&self) -> Value {
         json!({

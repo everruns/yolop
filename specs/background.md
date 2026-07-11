@@ -38,6 +38,22 @@ The run executes on a detached task, streams to a session-file log
 lifecycle onto a `background_tool` session task (`Running` → `Succeeded` /
 `Failed` / `Canceled`). `signal_on_completion` defaults to `true`.
 
+### Steering (poll-proofing)
+
+Detaching a wait only saves tokens if the model actually chooses it, so the
+harness steers there at the three places poll loops start, on any repo:
+
+- The `background` capability's system prompt says waits on external events
+  (CI, reviews, deploys) must not consume turns: detach one blocking watch,
+  end the turn, let the completion wake continue — or `wait_task` it in
+  one-shot mode, where there is no wake.
+- `progress_guard` classifies external-event probes (`gh pr checks`,
+  `gh run …`, bare/leading `sleep`) as *waiting* and, on consecutive repeats,
+  injects a warning that names `spawn_background` as the fix.
+- The `bash` tool's 120s-timeout error points foreground watches at
+  `spawn_background` instead of leaving the model to fall back to
+  sleep-and-recheck turns.
+
 Sub-agents were intentionally **not** migrated: Everruns' `spawn_subagent` is
 foreground/blocking, and Yolop's former detached `background_agent` was dropped
 rather than reimplemented. If detached sub-agents return, they should be a

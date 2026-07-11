@@ -14,7 +14,7 @@
 
 use crate::session_tasks_view::render_task_list;
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus};
+use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::command::{
     CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource, ExecuteCommandRequest,
 };
@@ -23,6 +23,21 @@ use everruns_core::typed_id::SessionId;
 use std::sync::Arc;
 
 pub(crate) const BACKGROUND_CAPABILITY_ID: &str = "background";
+
+// Prompt-side half of the poll-proofing seam (the runtime-enforced half is
+// `progress_guard`'s Waiting class): waiting on an external event must cost
+// zero turns, so steer the model to detach the wait and rely on the
+// completion wake instead of foreground watches or poll-sleep turns.
+const BACKGROUND_SYSTEM_PROMPT: &str = "<capability id=\"background\">\n\
+    Waiting on an external event — a CI run, a PR review window, a deploy, a long \
+    build — must not consume turns. Do not run watch commands in the foreground and \
+    do not poll status across turns. Start one blocking watch detached via \
+    `spawn_background` (e.g. `gh pr checks --watch`, `gh run watch --exit-status`, \
+    or `until <check>; do sleep 30; done`), say what you are waiting for, and end \
+    the turn: completion wakes you with the result. You can keep working on other \
+    steps while it runs. In one-shot (`-p`) runs there is no wake — block on the \
+    spawned task with `wait_task` instead of ending the turn.\n\
+    </capability>";
 
 pub(crate) struct BackgroundCapability {
     pub(crate) session_id: SessionId,
@@ -47,6 +62,17 @@ impl Capability for BackgroundCapability {
     }
     fn category(&self) -> Option<&str> {
         Some("Execution")
+    }
+
+    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
+        Some(BACKGROUND_SYSTEM_PROMPT.to_string())
+    }
+
+    fn system_prompt_preview(&self) -> Option<String> {
+        Some(
+            "<capability id=\"background\">\nDetach waits on external events via `spawn_background`; completion wakes the agent.\n</capability>"
+                .to_string(),
+        )
     }
 
     fn commands(&self) -> Vec<CommandDescriptor> {
@@ -80,5 +106,89 @@ impl Capability for BackgroundCapability {
             error_code: None,
             error_fields: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use everruns_core::session_task::{
+        CreateSessionTask, NewTaskMessage, SessionTask, SessionTaskFilter, SessionTaskUpdate,
+        TaskMessage,
+    };
+
+    /// The prompt contribution never touches the registry.
+    struct StubRegistry;
+
+    #[async_trait]
+    impl SessionTaskRegistry for StubRegistry {
+        async fn create(&self, _input: CreateSessionTask) -> everruns_core::Result<SessionTask> {
+            unimplemented!("stub")
+        }
+        async fn update(
+            &self,
+            _session_id: SessionId,
+            _task_id: &str,
+            _update: SessionTaskUpdate,
+        ) -> everruns_core::Result<Option<SessionTask>> {
+            unimplemented!("stub")
+        }
+        async fn get(
+            &self,
+            _session_id: SessionId,
+            _task_id: &str,
+        ) -> everruns_core::Result<Option<SessionTask>> {
+            unimplemented!("stub")
+        }
+        async fn list(
+            &self,
+            _session_id: SessionId,
+            _filter: Option<&SessionTaskFilter>,
+        ) -> everruns_core::Result<Vec<SessionTask>> {
+            Ok(Vec::new())
+        }
+        async fn request_cancel(
+            &self,
+            _session_id: SessionId,
+            _task_id: &str,
+        ) -> everruns_core::Result<Option<SessionTask>> {
+            unimplemented!("stub")
+        }
+        async fn record_message(
+            &self,
+            _session_id: SessionId,
+            _task_id: &str,
+            _message: NewTaskMessage,
+        ) -> everruns_core::Result<TaskMessage> {
+            unimplemented!("stub")
+        }
+        async fn list_messages(
+            &self,
+            _session_id: SessionId,
+            _task_id: &str,
+            _limit: Option<u32>,
+            _after_id: Option<&str>,
+        ) -> everruns_core::Result<Vec<TaskMessage>> {
+            unimplemented!("stub")
+        }
+    }
+
+    #[tokio::test]
+    async fn system_prompt_teaches_detached_waits_per_host() {
+        let capability = BackgroundCapability {
+            session_id: SessionId::new(),
+            task_registry: Arc::new(StubRegistry),
+        };
+        let ctx = SystemPromptContext::without_file_store(SessionId::new());
+
+        let prompt = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("background capability contributes a prompt");
+        // Interactive hosts detach and get woken; one-shot runs must block
+        // instead because `-p` exits before any wake can be delivered.
+        assert!(prompt.contains("spawn_background"));
+        assert!(prompt.contains("end the turn"));
+        assert!(prompt.contains("wait_task"));
     }
 }
