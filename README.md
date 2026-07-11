@@ -482,3 +482,20 @@ each version.
 ## License
 
 MIT — see [`LICENSE`](./LICENSE).
+
+## MCP servers
+
+Yolop can load MCP servers from global settings or a workspace `.mcp.json` file.
+Use `yolop mcp` to manage them from the CLI:
+
+```bash
+yolop mcp list --scope effective
+yolop mcp add linear --scope global --type http --url https://mcp.linear.app/mcp --auth-mode oauth --oauth-provider-id linear
+yolop mcp enable linear --scope global
+yolop mcp enable linear --scope global --disable
+yolop mcp remove linear --scope global
+```
+
+In an interactive session, `/mcp` lists startup MCP servers and
+`/mcp enable|disable|remove <name> [global|workspace]` updates the config. MCP
+connection changes take effect in the next yolop session.

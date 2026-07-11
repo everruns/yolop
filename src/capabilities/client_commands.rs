@@ -139,7 +139,7 @@ fn ui_command_for(name: &str, arg: Option<String>) -> Option<UiCommand> {
     match name {
         "help" => Some(UiCommand::ShowHelp),
         "tools" => Some(UiCommand::ShowTools),
-        "mcp" => Some(UiCommand::ShowMcp),
+        "mcp" => Some(UiCommand::ManageMcp { arg }),
         "cwd" => Some(UiCommand::ShowCwd),
         "status" => Some(UiCommand::SetStatusLayout { arg }),
         "clear" => Some(UiCommand::ClearTranscript),

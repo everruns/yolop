@@ -61,6 +61,7 @@ use crossterm::{execute, queue};
 use everruns_core::command::ExecuteCommandRequest;
 use everruns_core::message::{ContentPart, MessageRole};
 use everruns_core::typed_id::SessionId;
+use mcp_config::{McpConfigScope, McpConfigStore};
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use runtime::{BuiltRuntime, ProviderChoice, ResolvedProviderChoice, resolve_for_settings};
@@ -149,6 +150,104 @@ enum Commands {
     Into(IntoCommand),
     /// Git worktree maintenance.
     Worktree(WorktreeArgs),
+    /// Manage MCP servers in global settings or workspace `.mcp.json`.
+    Mcp(McpArgs),
+}
+
+#[derive(Args, Debug)]
+struct McpArgs {
+    #[command(subcommand)]
+    command: McpCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum McpCommand {
+    /// List configured MCP servers.
+    List {
+        /// Scope to inspect (`global`, `workspace`, or `effective`).
+        #[arg(long, default_value = "effective")]
+        scope: McpScopeArg,
+        /// Workspace root for workspace/effective config.
+        #[arg(short = 'C', long = "cwd")]
+        cwd: Option<PathBuf>,
+    },
+    /// Add or replace an MCP server.
+    Add {
+        /// Scope to write (`global` or `workspace`).
+        #[arg(long, default_value = "global")]
+        scope: McpScopeArg,
+        /// Server name.
+        name: String,
+        /// Transport type (`stdio`, `http`, or `sse`).
+        #[arg(long = "type")]
+        transport_type: String,
+        /// Command for stdio servers.
+        #[arg(long)]
+        command: Option<String>,
+        /// Command arguments for stdio servers. Repeat or comma-separate.
+        #[arg(long, value_delimiter = ',', num_args = 0..)]
+        args: Vec<String>,
+        /// URL for http/sse servers.
+        #[arg(long)]
+        url: Option<String>,
+        /// Header as KEY=VALUE. Repeat for multiple headers.
+        #[arg(long = "header", value_parser = parse_key_value)]
+        headers: Vec<(String, String)>,
+        /// Auth mode (`bearer`, `oauth`, or `none`).
+        #[arg(long)]
+        auth_mode: Option<String>,
+        /// OAuth provider id for auth-mode=oauth.
+        #[arg(long)]
+        oauth_provider_id: Option<String>,
+        /// Disable the server immediately after adding it.
+        #[arg(long, default_value_t = false)]
+        disabled: bool,
+        /// Workspace root when writing workspace config.
+        #[arg(short = 'C', long = "cwd")]
+        cwd: Option<PathBuf>,
+    },
+    /// Remove an MCP server.
+    Remove {
+        /// Scope to write (`global` or `workspace`).
+        #[arg(long, default_value = "global")]
+        scope: McpScopeArg,
+        /// Server name.
+        name: String,
+        /// Workspace root when writing workspace config.
+        #[arg(short = 'C', long = "cwd")]
+        cwd: Option<PathBuf>,
+    },
+    /// Enable or disable an MCP server without deleting it.
+    Enable {
+        /// Scope to write (`global` or `workspace`).
+        #[arg(long, default_value = "global")]
+        scope: McpScopeArg,
+        /// Server name.
+        name: String,
+        /// Disable instead of enable.
+        #[arg(long, default_value_t = false)]
+        disable: bool,
+        /// Workspace root when writing workspace config.
+        #[arg(short = 'C', long = "cwd")]
+        cwd: Option<PathBuf>,
+    },
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+enum McpScopeArg {
+    Global,
+    Workspace,
+    Effective,
+}
+
+fn parse_key_value(value: &str) -> Result<(String, String), String> {
+    let (key, val) = value
+        .split_once('=')
+        .ok_or_else(|| "expected KEY=VALUE".to_string())?;
+    if key.trim().is_empty() {
+        return Err("header key cannot be empty".to_string());
+    }
+    Ok((key.trim().to_string(), val.to_string()))
 }
 
 #[derive(Args, Debug)]
@@ -462,6 +561,195 @@ fn resolve_workspace_root(
     std::env::current_dir().context("resolve current workspace directory")
 }
 
+fn run_mcp_command(command: McpCommand) -> Result<()> {
+    use crate::mcp_config::{McpServerEntry, McpServerSummary};
+    use everruns_core::{McpServerTransportType, ScopedMcpServer};
+    use std::collections::HashMap;
+
+    fn store(cwd: Option<PathBuf>) -> Result<McpConfigStore> {
+        let workspace_root = match cwd {
+            Some(path) => path,
+            None => std::env::current_dir().context("resolve current workspace directory")?,
+        };
+        Ok(McpConfigStore::default_for_workspace(&workspace_root))
+    }
+
+    fn write_scope(scope: McpScopeArg) -> Result<McpConfigScope> {
+        match scope {
+            McpScopeArg::Global => Ok(McpConfigScope::Global),
+            McpScopeArg::Workspace => Ok(McpConfigScope::Workspace),
+            McpScopeArg::Effective => anyhow::bail!(
+                "effective scope is read-only; use --scope global or --scope workspace"
+            ),
+        }
+    }
+
+    match command {
+        McpCommand::List { scope, cwd } => {
+            let store = store(cwd)?;
+            let servers: Vec<McpServerSummary> = match scope {
+                McpScopeArg::Global => store
+                    .effective()
+                    .map_err(anyhow::Error::msg)?
+                    .servers
+                    .into_iter()
+                    .filter(|server| server.scope == McpConfigScope::Global)
+                    .collect(),
+                McpScopeArg::Workspace => store
+                    .effective()
+                    .map_err(anyhow::Error::msg)?
+                    .servers
+                    .into_iter()
+                    .filter(|server| server.scope == McpConfigScope::Workspace)
+                    .collect(),
+                McpScopeArg::Effective => store
+                    .effective()
+                    .map_err(anyhow::Error::msg)?
+                    .servers
+                    .into_iter()
+                    .filter(|server| server.effective)
+                    .collect(),
+            };
+            if servers.is_empty() {
+                println!("no MCP servers configured");
+            } else {
+                for server in servers {
+                    let enabled = if server.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    };
+                    println!(
+                        "{}	{}	{}",
+                        server.name,
+                        mcp_scope_label(server.scope),
+                        enabled
+                    );
+                }
+            }
+            Ok(())
+        }
+        McpCommand::Add {
+            scope,
+            name,
+            transport_type,
+            command,
+            args,
+            url,
+            headers,
+            auth_mode,
+            oauth_provider_id,
+            disabled,
+            cwd,
+        } => {
+            let transport = transport_type.to_ascii_lowercase();
+            let server = match transport.as_str() {
+                "stdio" => ScopedMcpServer {
+                    transport_type: McpServerTransportType::Stdio,
+                    command: Some(command.context("--command is required for stdio MCP servers")?),
+                    args,
+                    env: HashMap::new(),
+                    ..ScopedMcpServer::default()
+                },
+                "http" | "sse" => ScopedMcpServer {
+                    transport_type: McpServerTransportType::Http,
+                    url: url.context("--url is required for remote MCP servers")?,
+                    headers: headers.into_iter().collect(),
+                    auth_mode: auth_mode
+                        .as_deref()
+                        .map(parse_mcp_auth_mode)
+                        .transpose()?
+                        .unwrap_or_default(),
+                    oauth_provider_id,
+                    ..ScopedMcpServer::default()
+                },
+                other => anyhow::bail!(
+                    "unsupported MCP transport `{other}`; expected stdio, http, or sse"
+                ),
+            };
+            let store = store(cwd)?;
+            let _summary = store
+                .upsert(
+                    write_scope(scope)?,
+                    &name,
+                    McpServerEntry {
+                        enabled: !disabled,
+                        server,
+                    },
+                )
+                .map_err(anyhow::Error::msg)?;
+            let action = "saved";
+            println!(
+                "{action} MCP server `{name}` in {} scope",
+                mcp_scope_label(write_scope(scope)?)
+            );
+            println!(
+                "restart or start a new yolop session for MCP connection changes to take effect"
+            );
+            Ok(())
+        }
+        McpCommand::Remove { scope, name, cwd } => {
+            let store = store(cwd)?;
+            let removed = store
+                .remove(write_scope(scope)?, &name)
+                .map_err(anyhow::Error::msg)?;
+            if removed {
+                println!(
+                    "removed MCP server `{name}` from {} scope",
+                    mcp_scope_label(write_scope(scope)?)
+                );
+                println!(
+                    "restart or start a new yolop session for MCP connection changes to take effect"
+                );
+            } else {
+                println!(
+                    "MCP server `{name}` was not configured in {} scope",
+                    mcp_scope_label(write_scope(scope)?)
+                );
+            }
+            Ok(())
+        }
+        McpCommand::Enable {
+            scope,
+            name,
+            disable,
+            cwd,
+        } => {
+            let store = store(cwd)?;
+            store
+                .set_enabled(write_scope(scope)?, &name, !disable)
+                .map_err(anyhow::Error::msg)?;
+            println!(
+                "{} MCP server `{name}` in {} scope",
+                if disable { "disabled" } else { "enabled" },
+                mcp_scope_label(write_scope(scope)?)
+            );
+            println!(
+                "restart or start a new yolop session for MCP connection changes to take effect"
+            );
+            Ok(())
+        }
+    }
+}
+
+fn mcp_scope_label(scope: McpConfigScope) -> &'static str {
+    match scope {
+        McpConfigScope::Global => "global",
+        McpConfigScope::Workspace => "workspace",
+    }
+}
+
+fn parse_mcp_auth_mode(value: &str) -> Result<everruns_core::McpServerAuthMode> {
+    match value.to_ascii_lowercase().as_str() {
+        "none" => Ok(everruns_core::McpServerAuthMode::None),
+        "bearer" | "api_key" | "api-key" => Ok(everruns_core::McpServerAuthMode::ApiKey),
+        "oauth" | "o_auth" => Ok(everruns_core::McpServerAuthMode::OAuth),
+        other => anyhow::bail!(
+            "unsupported auth mode `{other}`; expected none, bearer/api_key, or oauth"
+        ),
+    }
+}
+
 fn run_worktree_command(command: WorktreeCommand) -> Result<()> {
     match command {
         WorktreeCommand::List => {
@@ -512,6 +800,7 @@ fn run_command(command: Commands) -> Result<()> {
             Ok(())
         }
         Commands::Worktree(args) => run_worktree_command(args.command),
+        Commands::Mcp(args) => run_mcp_command(args.command),
         Commands::Into(into) => match into.target {
             IntoTarget::Paseo(args) => {
                 let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));
