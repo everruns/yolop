@@ -1129,22 +1129,7 @@ impl App {
             UiCommand::ShowTools => {
                 self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
             }
-            UiCommand::ShowMcp => {
-                if self.startup.mcp_server_names.is_empty() {
-                    let global = crate::mcp_config::global_mcp_config_path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "the yolop config dir".to_string());
-                    self.push_system(format!(
-                        "no MCP servers configured (add them to .mcp.json in the workspace \
-                         root or {global})"
-                    ));
-                } else {
-                    self.push_system(format!(
-                        "MCP servers: {}",
-                        self.startup.mcp_server_names.join(", ")
-                    ));
-                }
-            }
+            UiCommand::ManageMcp { arg } => self.manage_mcp_command(arg.as_deref()),
             UiCommand::ShowCwd => {
                 self.push_system(format!(
                     "workspace root: {}",
@@ -1168,6 +1153,88 @@ impl App {
             UiCommand::OpenEffortOverlay { arg } => {
                 self.start_effort_setup(arg.as_deref().unwrap_or(""))
             }
+        }
+    }
+
+    fn manage_mcp_command(&mut self, raw: Option<&str>) {
+        let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+            if self.startup.mcp_server_names.is_empty() {
+                let global = crate::mcp_config::global_mcp_config_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "the yolop config dir".to_string());
+                self.push_system(format!(
+                    "no MCP servers configured (add them with `yolop mcp add`, .mcp.json in the workspace root, or {global})"
+                ));
+            } else {
+                self.push_system(format!(
+                    "MCP servers: {}",
+                    self.startup.mcp_server_names.join(", ")
+                ));
+            }
+            self.push_system(
+                "usage: /mcp [enable|disable|remove <name> [global|workspace]]".into(),
+            );
+            return;
+        };
+
+        let mut parts = raw.split_whitespace();
+        let action = parts.next().unwrap_or_default();
+        let name = parts.next();
+        let scope = match parts.next() {
+            None | Some("global") => crate::mcp_config::McpConfigScope::Global,
+            Some("workspace") => crate::mcp_config::McpConfigScope::Workspace,
+            Some(other) => {
+                self.push_system(format!(
+                    "usage: /mcp [enable|disable|remove <name> [global|workspace]] (unknown scope: {other})"
+                ));
+                return;
+            }
+        };
+        if parts.next().is_some() {
+            self.push_system(
+                "usage: /mcp [enable|disable|remove <name> [global|workspace]]".into(),
+            );
+            return;
+        }
+        let Some(name) = name else {
+            self.push_system(
+                "usage: /mcp [enable|disable|remove <name> [global|workspace]]".into(),
+            );
+            return;
+        };
+
+        let store =
+            crate::mcp_config::McpConfigStore::default_for_workspace(&self.startup.workspace_root);
+        let result = match action {
+            "enable" => store
+                .set_enabled(scope, name, true)
+                .map(|_| format!("enabled MCP server `{name}`")),
+            "disable" => store
+                .set_enabled(scope, name, false)
+                .map(|_| format!("disabled MCP server `{name}`")),
+            "remove" => store.remove(scope, name).map(|removed| {
+                if removed {
+                    format!("removed MCP server `{name}`")
+                } else {
+                    format!("MCP server `{name}` was not configured")
+                }
+            }),
+            other => {
+                self.push_system(format!(
+                    "usage: /mcp [enable|disable|remove <name> [global|workspace]] (unknown action: {other})"
+                ));
+                return;
+            }
+        };
+        match result {
+            Ok(message) => {
+                self.push_system(message);
+                self.push_system(
+                    "restart or start a new yolop session for MCP connection changes to take effect"
+                        .into(),
+                );
+            }
+            Err(error) => self.push_system(format!("failed to update MCP config: {error}")),
         }
     }
 

@@ -20,8 +20,8 @@ pub enum UiCommand {
     ShowHelp,
     /// Print the list of available tools.
     ShowTools,
-    /// Print the configured MCP servers.
-    ShowMcp,
+    /// Inspect or update configured MCP servers.
+    ManageMcp { arg: Option<String> },
     /// Print the workspace root.
     ShowCwd,
     /// Change the inline session status layout.
