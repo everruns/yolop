@@ -17,16 +17,16 @@ benchmark = "harness_basic"
 
 # Named selection presets (`mira run --preset NAME`; explicit flags override).
 # A preset only subsets the declared grid: targets/samples/evals/tag, plus
-# `axes` to restrict the secondary axes (harness, effort).
+# `axes` to restrict the secondary axes (binary, harness, effort).
 
-# SMOKE — a cheap sanity check: the two `smoke`-tagged samples on one model,
-# default effort, both harness variants (4 cases). Needs ANTHROPIC_API_KEY;
+# SMOKE — a cheap sanity check: the three `smoke`-tagged samples on one model,
+# default effort, every harness variant on the candidate binary. Needs ANTHROPIC_API_KEY;
 # without any provider key every target is unavailable and a run just skips.
 #   doppler run -- mira run --preset smoke
 [presets.smoke]
 tag = "smoke"
 targets = ["anthropic/claude-sonnet-4-5"]
-axes = { effort = ["default"] }
+axes = { binary = ["candidate"], effort = ["default"] }
 
 # HARNESS-COMPARE — the study's core purpose: the same samples and model across
 # every yolop configuration variant. Add a variant to HARNESS_VARIANTS in
@@ -34,7 +34,7 @@ axes = { effort = ["default"] }
 #   doppler run -- mira run --preset harness-compare --group-by harness
 [presets.harness-compare]
 targets = ["anthropic/claude-sonnet-4-5"]
-axes = { effort = ["default"] }
+axes = { binary = ["candidate"], effort = ["default"] }
 
 # PROGRESS-GUARD — focused guardrail proof: the long sequential-read sample
 # should emit progress_guard warnings with the default harness and none when the
@@ -43,7 +43,29 @@ axes = { effort = ["default"] }
 [presets.progress-guard]
 tag = "progress-guard"
 targets = ["anthropic/claude-sonnet-4-5"]
-axes = { effort = ["default"], harness = ["default", "no-progress-guard"] }
+axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "no-progress-guard"] }
+
+# SEARCH-EFFICIENCY — regressions from a real failed session: prior-session
+# discovery, nested grep globs, bounded repo maps, missing-rg recovery, and
+# warnings after repeated zero-result searches.
+# Two ordinary controls catch prompt/tool-surface regressions. Three trials make
+# trajectory variance visible without turning the focused run into a full suite.
+# Requires HARNESS_BASIC_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
+#   doppler run -- mira run --preset search-efficiency --trials 3 --group-by binary
+[presets.search-efficiency]
+samples = ["prior-session-reference", "grep-files-nested-glob", "missing-rg-recovery", "zero-result-search-recovery", "repo-map-bounded", "add-fn", "find-constant"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
+
+# OUTPUT-PERSISTENCE — isolates the Everruns output-persistence change from
+# yolop's other improvements. The dependency baseline is yolop candidate code
+# built against Everruns main without the output-persistence PR.
+# Requires HARNESS_BASIC_DEPENDENCY_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
+#   doppler run -- mira run --preset output-persistence --trials 3 --group-by binary
+[presets.output-persistence]
+samples = ["normal-output-preserves-head"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # AST-EDIT-COMPARE — structural-rewrite traps: default harness vs ast_edit
 # enabled. Pass rate plus `ast_edit_used` adoption on the enabled variant.
@@ -51,15 +73,15 @@ axes = { effort = ["default"], harness = ["default", "no-progress-guard"] }
 [presets.ast-edit-compare]
 tag = "ast-edit"
 targets = ["anthropic/claude-sonnet-4-5"]
-axes = { effort = ["default"], harness = ["default", "with-ast-edit"] }
+axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "with-ast-edit"] }
 
 # EFFORT-COMPARE — one model, out-of-the-box harness, across reasoning efforts.
 #   doppler run -- mira run --preset effort-compare --group-by effort
 [presets.effort-compare]
 targets = ["openai/gpt-5.5"]
-axes = { harness = ["default"] }
+axes = { binary = ["candidate"], harness = ["default"] }
 
 # MODELS — out-of-the-box yolop across the whole model matrix (default effort).
 #   doppler run -- mira run --preset models --group-by target
 [presets.models]
-axes = { harness = ["default"], effort = ["default"] }
+axes = { binary = ["candidate"], harness = ["default"], effort = ["default"] }

@@ -182,7 +182,7 @@ impl ChatDriver for CodexChatDriver {
                         &finish_reason,
                         &accumulated_tool_calls,
                     )),
-                    Err(err) => Ok(LlmStreamEvent::Error(format!("Codex stream error: {err}"))),
+                    Err(err) => Ok(stream_error(format!("Codex stream error: {err}"))),
                 }
             }
         }));
@@ -542,9 +542,16 @@ fn handle_event(
             cache_read_tokens,
             finish_reason,
         ),
-        Some("response.failed") | Some("error") => LlmStreamEvent::Error(format_codex_error(&json)),
+        Some("response.failed") | Some("error") => stream_error(format_codex_error(&json)),
         _ => LlmStreamEvent::TextDelta(String::new()),
     }
+}
+
+// Everruns 0.17.7 stores a String here; main uses the structured LlmStreamError
+// planned for 0.17.8. Keep this source compatible with both dependency states.
+#[allow(clippy::useless_conversion)]
+fn stream_error(message: String) -> LlmStreamEvent {
+    LlmStreamEvent::Error(message.into())
 }
 
 fn upsert_tool_call(item: &Value, accumulated_tool_calls: &Mutex<Vec<ToolCallAccumulator>>) {

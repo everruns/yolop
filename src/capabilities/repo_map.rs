@@ -22,7 +22,8 @@ use tree_sitter::{Language, Node, Parser};
 
 pub(crate) const REPO_MAP_CAPABILITY_ID: &str = "repo_map";
 
-const DEFAULT_LIMIT: usize = 200;
+const DEFAULT_UNQUERIED_LIMIT: usize = 50;
+const DEFAULT_QUERIED_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 1000;
 const DEFAULT_MAX_FILE_BYTES: usize = 512 * 1024;
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
@@ -74,7 +75,8 @@ impl Capability for RepoMapCapability {
             "<capability id=\"repo_map\">\n\
              For broad codebase orientation, call `repo_map` or `repo_symbols` to get an \
              on-demand symbol overview. Use grep/read for exact text and implementation \
-             details; the map is structural context, not a replacement for reading code.\n\
+             details; the map is structural context, not a replacement for reading code. \
+             If a map is truncated, do not repeat the same call: add `query` or narrow `path`.\n\
              </capability>"
                 .to_string(),
         )
@@ -158,6 +160,7 @@ impl Tool for RepoMapTool {
                 "skipped_large_files": report.skipped_large_files,
                 "parse_error_files": report.parse_error_files,
                 "truncated": report.truncated,
+                "truncation": truncation_metadata(&report),
                 "files": grouped_symbols(&report.symbols),
             })),
             Err(err) => ToolExecutionResult::tool_error(err.to_string()),
@@ -222,6 +225,7 @@ impl Tool for RepoSymbolsTool {
                 "skipped_large_files": report.skipped_large_files,
                 "parse_error_files": report.parse_error_files,
                 "truncated": report.truncated,
+                "truncation": truncation_metadata(&report),
                 "symbols": report.symbols,
             })),
             Err(err) => ToolExecutionResult::tool_error(err.to_string()),
@@ -253,7 +257,7 @@ fn scan_schema(query_description: &str) -> Value {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": MAX_LIMIT,
-                "description": "Maximum number of matching symbols to return. Defaults to 200."
+                "description": "Maximum number of matching symbols to return. Defaults to 50 for an unqueried map and 200 when query is provided."
             },
             "max_file_bytes": {
                 "type": "integer",
@@ -285,7 +289,12 @@ fn scan_from_arguments(workspace_root: &Path, arguments: &Value) -> Result<Symbo
         .map(str::trim)
         .filter(|language| !language.is_empty())
         .map(str::to_string);
-    let limit = bounded_usize(arguments, "limit", DEFAULT_LIMIT, MAX_LIMIT)?;
+    let limit = bounded_usize(
+        arguments,
+        "limit",
+        default_limit(query.as_deref()),
+        MAX_LIMIT,
+    )?;
     let max_file_bytes = bounded_usize(
         arguments,
         "max_file_bytes",
@@ -303,6 +312,23 @@ fn scan_from_arguments(workspace_root: &Path, arguments: &Value) -> Result<Symbo
             max_file_bytes,
         },
     )
+}
+
+fn default_limit(query: Option<&str>) -> usize {
+    if query.is_some() {
+        DEFAULT_QUERIED_LIMIT
+    } else {
+        DEFAULT_UNQUERIED_LIMIT
+    }
+}
+
+fn truncation_metadata(report: &SymbolScanReport) -> Option<Value> {
+    report.truncated.then(|| {
+        json!({
+            "reason": "symbol_limit",
+            "suggestion": "Do not repeat this call unchanged. Narrow with `query` or `path`; set an explicit `limit` only when the broader output is necessary."
+        })
+    })
 }
 
 fn bounded_usize(arguments: &Value, key: &str, default: usize, max: usize) -> Result<usize> {
@@ -1778,6 +1804,42 @@ trait Named {
         assert_eq!(value["count"], json!(1));
         assert_eq!(value["symbols"][0]["language"], json!("python"));
         assert_eq!(value["symbols"][0]["name"], json!("py_fn"));
+    }
+
+    #[tokio::test]
+    async fn unqueried_repo_map_uses_compact_default_and_explains_truncation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = (0..80)
+            .map(|index| format!("pub fn symbol_{index}() {{}}\n"))
+            .collect::<String>();
+        write(&dir.path().join("src/lib.rs"), &source);
+
+        let capability = RepoMapCapability::new(host(dir.path()));
+        let tools = capability.tools();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name() == "repo_map")
+            .expect("repo_map tool");
+        let result = tool.execute(json!({})).await;
+        let ToolExecutionResult::Success(value) = result else {
+            panic!("expected success, got {result:?}");
+        };
+
+        assert_eq!(value["count"], json!(50));
+        assert_eq!(value["truncated"], json!(true));
+        assert_eq!(value["truncation"]["reason"], json!("symbol_limit"));
+        assert!(
+            value["truncation"]["suggestion"]
+                .as_str()
+                .is_some_and(|suggestion| suggestion.contains("Do not repeat")
+                    && suggestion.contains("query"))
+        );
+    }
+
+    #[test]
+    fn queried_scans_keep_the_larger_default_limit() {
+        assert_eq!(default_limit(Some("needle")), 200);
+        assert_eq!(default_limit(None), 50);
     }
 
     #[cfg(unix)]

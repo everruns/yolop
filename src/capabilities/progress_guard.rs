@@ -18,6 +18,8 @@ pub(crate) const PROGRESS_GUARD_CAPABILITY_ID: &str = "progress_guard";
 const EXPLORATION_WITHOUT_PROGRESS_THRESHOLD: usize = 24;
 const CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD: usize = 48;
 const REPEATED_EXPLORATION_THRESHOLD: usize = 5;
+const ZERO_EVIDENCE_SEARCH_THRESHOLD: usize = 3;
+const TRUNCATED_EXPLORATION_THRESHOLD: usize = 2;
 const REPEATED_STATUS_THRESHOLD: usize = 3;
 const REPEATED_WAITING_THRESHOLD: usize = 3;
 
@@ -103,11 +105,13 @@ struct SessionProgress {
     repeated_waiting_count: usize,
     repeated_exploration_count: usize,
     last_exploration_signature: Option<String>,
+    consecutive_zero_evidence_searches: usize,
+    consecutive_truncated_exploration: usize,
     warning_count: usize,
 }
 
 impl SessionProgress {
-    fn observe(&mut self, tool_call: &ToolCall) -> Option<String> {
+    fn observe(&mut self, tool_call: &ToolCall, result: &ToolResult) -> Option<String> {
         self.tool_count += 1;
         let class = classify_tool_call(tool_call);
 
@@ -120,6 +124,7 @@ impl SessionProgress {
                 self.repeated_waiting_count = 0;
                 self.repeated_exploration_count = 0;
                 self.last_exploration_signature = None;
+                self.reset_result_streaks();
                 None
             }
             ToolClass::Validation => {
@@ -130,10 +135,12 @@ impl SessionProgress {
                 self.repeated_waiting_count = 0;
                 self.repeated_exploration_count = 0;
                 self.last_exploration_signature = None;
+                self.reset_result_streaks();
                 None
             }
             ToolClass::Waiting => {
                 self.exploration_since_progress += 1;
+                self.reset_result_streaks();
                 self.repeated_waiting_count += 1;
                 if self.repeated_waiting_count >= REPEATED_WAITING_THRESHOLD {
                     self.warning_count += 1;
@@ -147,6 +154,7 @@ impl SessionProgress {
             }
             ToolClass::Status(command) => {
                 self.exploration_since_progress += 1;
+                self.reset_result_streaks();
                 self.repeated_waiting_count = 0;
                 if self.last_status_command.as_deref() == Some(command.as_str()) {
                     self.repeated_status_count += 1;
@@ -167,6 +175,9 @@ impl SessionProgress {
             ToolClass::Exploration => {
                 self.exploration_since_progress += 1;
                 self.repeated_waiting_count = 0;
+                if let Some(warning) = self.result_warning(tool_call, result) {
+                    return Some(warning);
+                }
                 if let Some(warning) = self.repetition_warning(tool_call) {
                     return Some(warning);
                 }
@@ -177,9 +188,51 @@ impl SessionProgress {
                 // resets it) so legitimate one-off PR/CI checks between real
                 // work never accumulate into a false poll warning.
                 self.repeated_waiting_count = 0;
+                self.reset_result_streaks();
                 None
             }
         }
+    }
+
+    fn result_warning(&mut self, tool_call: &ToolCall, result: &ToolResult) -> Option<String> {
+        let Some(evidence) = exploration_evidence(tool_call, result) else {
+            self.reset_result_streaks();
+            return None;
+        };
+
+        if evidence.zero_matches {
+            self.consecutive_zero_evidence_searches += 1;
+        } else {
+            self.consecutive_zero_evidence_searches = 0;
+        }
+        if evidence.truncated {
+            self.consecutive_truncated_exploration += 1;
+        } else {
+            self.consecutive_truncated_exploration = 0;
+        }
+
+        if self.consecutive_zero_evidence_searches >= ZERO_EVIDENCE_SEARCH_THRESHOLD {
+            self.warning_count += 1;
+            self.consecutive_zero_evidence_searches = 0;
+            return Some(
+                "progress_guard: three consecutive searches returned zero matches. Stop varying broad terms: verify the path/scope and search contract, then use one targeted alternative or state that no evidence was found."
+                    .to_string(),
+            );
+        }
+        if self.consecutive_truncated_exploration >= TRUNCATED_EXPLORATION_THRESHOLD {
+            self.warning_count += 1;
+            self.consecutive_truncated_exploration = 0;
+            return Some(
+                "progress_guard: repeated exploration results were truncated. Narrow the query or path before requesting more output, then inspect the owning module and a small number of call sites."
+                    .to_string(),
+            );
+        }
+        None
+    }
+
+    fn reset_result_streaks(&mut self) {
+        self.consecutive_zero_evidence_searches = 0;
+        self.consecutive_truncated_exploration = 0;
     }
 
     fn exploration_warning(&mut self) -> Option<String> {
@@ -246,13 +299,43 @@ impl PostToolExecHook for ProgressGuardHook {
                 .sessions
                 .entry(context.session_id.to_string())
                 .or_default();
-            progress.observe(tool_call)
+            progress.observe(tool_call, result)
         };
 
         if let Some(warning) = warning {
             inject_warning(result, warning);
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct ExplorationEvidence {
+    zero_matches: bool,
+    truncated: bool,
+}
+
+fn exploration_evidence(tool_call: &ToolCall, result: &ToolResult) -> Option<ExplorationEvidence> {
+    if result.error.is_some() {
+        return None;
+    }
+    if !matches!(
+        tool_call.name.as_str(),
+        "grep_files" | "repo_map" | "ast_grep"
+    ) {
+        return None;
+    }
+    let value = result.result.as_ref()?;
+    let count = value
+        .get("count")
+        .or_else(|| value.get("match_count"))
+        .and_then(Value::as_u64)?;
+    Some(ExplorationEvidence {
+        zero_matches: count == 0,
+        truncated: value
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -511,6 +594,13 @@ mod tests {
         }
     }
 
+    fn result_value(value: Value) -> ToolResult {
+        ToolResult {
+            result: Some(value),
+            ..result()
+        }
+    }
+
     #[test]
     fn classify_bash_command_distinguishes_status_and_validation() {
         assert_eq!(
@@ -737,6 +827,85 @@ mod tests {
                 .and_then(|value| value.get("progress_guard_warning"))
                 .and_then(Value::as_str)
                 .is_some_and(|warning| warning.contains("same investigation target"))
+        );
+    }
+
+    #[tokio::test]
+    async fn three_zero_evidence_searches_warn_even_when_queries_differ() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let mut last = result();
+
+        for pattern in ["history", "ground", "session"] {
+            last = result_value(json!({ "ok": true, "count": 0, "matches": [] }));
+            hook.after_exec(
+                &call("grep_files", json!({ "pattern": pattern })),
+                &tool_def("grep_files"),
+                &mut last,
+                &context,
+            )
+            .await;
+        }
+
+        assert!(
+            last.result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str)
+                .is_some_and(|warning| warning.contains("zero matches"))
+        );
+    }
+
+    #[tokio::test]
+    async fn positive_search_evidence_resets_zero_result_streak() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+
+        for count in [0, 0, 1, 0, 0] {
+            let mut out = result_value(json!({ "ok": true, "count": count }));
+            hook.after_exec(
+                &call("repo_map", json!({ "query": format!("query-{count}") })),
+                &tool_def("repo_map"),
+                &mut out,
+                &context,
+            )
+            .await;
+            assert!(
+                out.result
+                    .as_ref()
+                    .and_then(|value| value.get("progress_guard_warning"))
+                    .is_none(),
+                "a positive result should break the zero-evidence streak"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_truncated_exploration_warns_to_narrow_scope() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let mut last = result();
+
+        for query in ["runtime", "capability"] {
+            last = result_value(json!({ "ok": true, "count": 50, "truncated": true }));
+            hook.after_exec(
+                &call("repo_map", json!({ "query": query })),
+                &tool_def("repo_map"),
+                &mut last,
+                &context,
+            )
+            .await;
+        }
+
+        assert!(
+            last.result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str)
+                .is_some_and(|warning| warning.contains("truncated"))
         );
     }
 

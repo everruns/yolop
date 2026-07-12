@@ -15,8 +15,9 @@ use crate::capabilities::{
     CodingCliEnvironmentCapability, ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
     GOAL_CAPABILITY_ID, GoalCapability, HOOKS_CAPABILITY_ID, HooksCapability, LspCapability,
     PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
-    RepoMapCapability, SETUP_CAPABILITY_ID, SetupCapability, USER_ASK_CAPABILITY_ID,
-    UserAskCapability, WorktreeCapability,
+    RepoMapCapability, SESSION_HISTORY_CAPABILITY_ID, SETUP_CAPABILITY_ID,
+    SessionHistoryCapability, SetupCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
+    WorktreeCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::connectors::{
@@ -93,9 +94,10 @@ read only needed files; batch reads. Make the smallest correct fix. Before
 finishing, verify with assertions for expected values (not non-crash checks);
 for parser, regex, math, date/time, or serialization fixes cover positive and
 edge cases. Check sibling call sites if the fix may be incomplete, then review
-your diff for regressions. Verify with a single decisive command, then stop;
-don't re-run passing checks. On failure, read output, fix root cause; never
-retry unchanged. If stuck twice, explain and ask.
+your diff for regressions. Verify with a single decisive command, then stop.
+Never repeat passing checks or unchanged searches; narrow a truncated
+`repo_map` by query/path. On failure, read output and fix root cause. If stuck
+twice, explain and ask.
 
 ## Permanent Tools
 
@@ -103,8 +105,7 @@ Use loaded tool descriptions and JSON schemas. Pick the smallest fitting tool.
 
 ## Searchable Tools
 
-Some schemas are hidden until loaded. If a visible tool name or description
-matches but its schema is missing, call `tool_search` with a short query first.
+If a visible tool's schema is hidden, call `tool_search` with a short query.
 
 For broad read-only questions, prefer one targeted `bash` script and stop once
 you have enough evidence.
@@ -492,6 +493,7 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "edit_file",
     "list_directory",
     "grep_files",
+    "search_sessions",
     "ast_grep",
     "ast_edit",
     "bash",
@@ -1661,6 +1663,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new(SESSION_FILE_SYSTEM_CAPABILITY_ID),
         AgentCapabilityConfig::new(SKILLS_CAPABILITY_ID),
         AgentCapabilityConfig::new(REPO_MAP_CAPABILITY_ID),
+        AgentCapabilityConfig::new(SESSION_HISTORY_CAPABILITY_ID),
         AgentCapabilityConfig::new(AST_GREP_CAPABILITY_ID),
         AgentCapabilityConfig::new(INFINITY_CONTEXT_CAPABILITY_ID),
         AgentCapabilityConfig::with_config(
@@ -2229,6 +2232,10 @@ pub async fn build_with_options(
         skill_dirs.clone(),
     ));
     capabilities.register(RepoMapCapability::new(workspace_host.clone()));
+    capabilities.register(SessionHistoryCapability::new(
+        sessions_dir.clone(),
+        session_id,
+    ));
     capabilities.register(AstGrepCapability::new(workspace_host.clone()));
     // `ast_edit` — structural rewrites with preview-first `dry_run`. Registered
     // for the catalog but intentionally NOT part of the default harness; enable
@@ -4743,6 +4750,17 @@ mod tests {
             ids.iter()
                 .any(|cap| cap.capability_id() == REPO_MAP_CAPABILITY_ID),
             "repo_map should be available for on-demand codebase orientation"
+        );
+    }
+
+    #[test]
+    fn coding_harness_enables_session_history() {
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == SESSION_HISTORY_CAPABILITY_ID),
+            "search_sessions should be available for grounding prior-session investigations"
         );
     }
 
