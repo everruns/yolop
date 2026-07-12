@@ -557,6 +557,9 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "bash",
     "spawn_background",
     "write_todos",
+    // Skill activation is a routing tool with required arguments; hiding its
+    // tiny schema makes malformed calls like activate_skill({}) more likely.
+    "activate_skill",
     "run_yolop_command",
     // LSP tools exist only when the optional `lsp` capability is enabled
     // (absent names are ignored by the allowlist). When they exist, stub
@@ -4843,7 +4846,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_search_keeps_write_todos_schema_loaded() {
+    fn tool_search_keeps_routing_tool_schemas_loaded() {
         use everruns_core::capabilities::{Capability, DEFAULT_TOOL_SEARCH_THRESHOLD};
         use everruns_core::tool_types::{
             BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy,
@@ -4867,21 +4870,38 @@ mod tests {
             })
         }
 
-        let mut tools = vec![ToolDefinition::Builtin(BuiltinTool {
-            name: "write_todos".to_string(),
-            display_name: None,
-            description: "write todos".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": { "todos": { "type": "array" } },
-                "required": ["todos"]
+        let mut tools = vec![
+            ToolDefinition::Builtin(BuiltinTool {
+                name: "write_todos".to_string(),
+                display_name: None,
+                description: "write todos".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "todos": { "type": "array" } },
+                    "required": ["todos"]
+                }),
+                policy: ToolPolicy::Auto,
+                category: None,
+                deferrable: DeferrablePolicy::Automatic,
+                hints: ToolHints::default(),
+                full_parameters: None,
             }),
-            policy: ToolPolicy::Auto,
-            category: None,
-            deferrable: DeferrablePolicy::Automatic,
-            hints: ToolHints::default(),
-            full_parameters: None,
-        })];
+            ToolDefinition::Builtin(BuiltinTool {
+                name: "activate_skill".to_string(),
+                display_name: None,
+                description: "activate skill".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "name": { "type": "string" } },
+                    "required": ["name"]
+                }),
+                policy: ToolPolicy::Auto,
+                category: None,
+                deferrable: DeferrablePolicy::Automatic,
+                hints: ToolHints::default(),
+                full_parameters: None,
+            }),
+        ];
         tools
             .extend((0..DEFAULT_TOOL_SEARCH_THRESHOLD).map(|idx| fake_tool(format!("fake_{idx}"))));
 
@@ -4900,6 +4920,15 @@ mod tests {
         assert!(
             write_todos.parameters().get("properties").is_some(),
             "write_todos must keep its full schema so models pass the required todos field"
+        );
+
+        let activate_skill = transformed
+            .iter()
+            .find(|tool| tool.name() == "activate_skill")
+            .expect("activate_skill definition");
+        assert!(
+            activate_skill.parameters().get("properties").is_some(),
+            "activate_skill must keep its full schema so models pass the required name field"
         );
 
         let fake = transformed
