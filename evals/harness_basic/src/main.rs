@@ -145,6 +145,33 @@ fn progress_guard_checkpoint_sample() -> Sample {
     )
 }
 
+fn stale_history_local_state_sample() -> Sample {
+    Sample::new(
+        "stale-history-local-state",
+        "A previous conversation from yesterday said the model picker listed \
+         gpt-5.6-sol because it appeared in docs/history.txt. The current local \
+         config may have changed. Answer with the CURRENT_PICKER_VALUE from the \
+         current workspace only; do not rely on the old conversation note.",
+    )
+    .tag("context-recency")
+    .meta("kind", "grounding")
+    .meta(
+        "checks",
+        json!([{"response_contains": ["claude-sonnet-4"], "response_lacks": ["gpt-5.6-sol"]}]),
+    )
+    .file(
+        "docs/history.txt",
+        "[time yesterday] User: I do not see gpt-5.6 sol in the model picker.
+[time yesterday] Assistant: The picker lists gpt-5.6-sol.
+",
+    )
+    .file(
+        "config/current-model-picker.txt",
+        "CURRENT_PICKER_VALUE=claude-sonnet-4
+",
+    )
+}
+
 fn background_callback_bridge_sample() -> Sample {
     Sample::new(
         "background-callback-bridge",
@@ -388,6 +415,7 @@ fn dataset() -> Dataset {
         ),
         progress_guard_probe_sample(),
         progress_guard_checkpoint_sample(),
+        stale_history_local_state_sample(),
         background_callback_bridge_sample(),
         Sample::new(
             "replace-console-log",
