@@ -341,6 +341,7 @@ impl Tool for DeleteSkillTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let detail = arg_str(&tool_call.arguments, &["name"]).map(|name| {

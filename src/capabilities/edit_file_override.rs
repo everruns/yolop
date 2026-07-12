@@ -203,8 +203,9 @@ impl Tool for EditsOnlyEditFileTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
-        self.inner.narrate(tool_call, phase, locale)
+        self.inner.narrate(tool_call, phase, locale, ctx)
     }
 
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {

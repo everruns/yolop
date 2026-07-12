@@ -164,6 +164,7 @@ impl Tool for RunYolopCommandTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let command = arg_str(&tool_call.arguments, &["command"]).map(|value| truncate(value, 48));
@@ -328,7 +329,12 @@ mod tests {
         };
 
         assert_eq!(
-            tool.narrate(&tool_call, ToolNarrationPhase::Started, None),
+            tool.narrate(
+                &tool_call,
+                ToolNarrationPhase::Started,
+                None,
+                everruns_core::tool_narration::ToolNarrationContext::default(),
+            ),
             Some("Run command: /model".to_string())
         );
     }

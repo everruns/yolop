@@ -158,6 +158,7 @@ impl Tool for SetUserAskTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let ask = arg_str(&tool_call.arguments, &["ask", "text", "request"])
@@ -223,6 +224,7 @@ impl Tool for ClearUserAskTool {
         _tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         Some(stable_labeled("Clear user ask", None, phase))

@@ -78,6 +78,7 @@ impl Tool for ListMcpServersTool {
         _tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         _locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         Some(stable_labeled("List MCP servers", None, phase))
     }
@@ -117,6 +118,7 @@ impl Tool for UpsertMcpServerTool {
         _tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         _locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         Some(stable_labeled("Upsert MCP server", None, phase))
     }
@@ -186,6 +188,7 @@ impl Tool for RemoveMcpServerTool {
         _tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         _locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         Some(stable_labeled("Remove MCP server", None, phase))
     }
@@ -238,6 +241,7 @@ impl Tool for SetMcpServerEnabledTool {
         _tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         _locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         Some(stable_labeled("Set MCP server enabled", None, phase))
     }

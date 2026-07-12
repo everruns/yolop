@@ -89,6 +89,8 @@ struct Session {
     cancel: StdMutex<Option<oneshot::Sender<()>>>,
     /// Settings source, read for the `proactive_wake` opt-out.
     settings: Arc<SettingsStore>,
+    /// Retained for the ACP session lifetime so due local schedules keep polling.
+    _schedule_runner: everruns_local::LocalScheduleRunnerHandle,
     /// Serializes turns for this session. Both a client prompt and a background
     /// wake turn take it, so two `run_turn`s never overlap.
     turn_lock: tokio::sync::Mutex<()>,
@@ -410,6 +412,7 @@ fn register_session<F: RuntimeFactory>(
         commands: StdMutex::new(commands.clone()),
         cancel: StdMutex::new(None),
         settings: built.settings,
+        _schedule_runner: built.schedule_runner,
         turn_lock: tokio::sync::Mutex::new(()),
     });
     server

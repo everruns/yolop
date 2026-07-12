@@ -114,6 +114,7 @@ impl Tool for RepoMapTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let query = scan_narration_query(&tool_call.arguments);
@@ -179,6 +180,7 @@ impl Tool for RepoSymbolsTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let query = scan_narration_query(&tool_call.arguments);

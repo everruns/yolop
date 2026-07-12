@@ -200,6 +200,7 @@ impl Tool for BashTool {
         tool_call: &everruns_core::tool_types::ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         Some(everruns_core::tool_narration::narrate_shell_exec(
             &tool_call.arguments,

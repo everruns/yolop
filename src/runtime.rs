@@ -62,7 +62,7 @@ use everruns_core::{
 use everruns_core::{DriverId, ModelProfile, ReasoningEffortConfig, ReasoningEffortValue};
 use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
-use everruns_local::{LocalBackends, LocalProfile};
+use everruns_local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
 use everruns_runtime::{
     AgentBuilder, HarnessBuilder, InProcessRuntime, InProcessRuntimeBuilder, RealDiskFileStore,
     RuntimeBackends, SessionBuilder, WriteBlocklistFileStore,
@@ -293,6 +293,12 @@ impl CodingCliSessionFileStore {
 
 #[async_trait]
 impl SessionFileSystem for CodingCliSessionFileStore {
+    fn is_mount_resolver(&self) -> bool {
+        // This store already routes the workspace, session artifacts, and skill
+        // scopes. Wrapping it in another MountFs would collapse that table.
+        true
+    }
+
     fn display_root(&self) -> String {
         // Yolop's file tools and persisted output pointers use one stable
         // model-facing namespace even while the host worktree root changes.
@@ -1829,6 +1835,10 @@ pub struct BuiltRuntime {
     /// the wake seam (`background_wake`). The host (TUI/ACP) drains it and runs
     /// a streamed turn so the agent reacts to finished `spawn_background` work.
     pub background_wake: crate::background_wake::WakeReceiver,
+    /// Owns the local schedule poller for this host session. Dropping the host
+    /// stops new schedule claims; due prompts share `background_wake` with
+    /// ordinary background-task completion signals.
+    pub schedule_runner: LocalScheduleRunnerHandle,
     /// Shared repointable workspace disk for host-path tools (`bash`, `!shell`).
     pub workspace_host: Arc<WorkspaceHost>,
     /// Shared Everruns session task registry, backed by `everruns-local`. The
@@ -2172,9 +2182,14 @@ pub async fn build_with_options(
     // completion signal is a silent no-op and finished background work never
     // reaches the agent.
     let (background_wake_tx, background_wake_rx) = mpsc::unbounded_channel::<String>();
-    let local_backends = local_backends.with_platform_runner(Arc::new(
-        crate::background_wake::WakeRunner::new(background_wake_tx),
+    let wake_runner = Arc::new(crate::background_wake::WakeRunner::new(
+        session_id,
+        background_wake_tx,
     ));
+    let schedule_runner = local_backends
+        .start_schedule_runner(wake_runner.clone())
+        .context("start everruns-local schedule runner")?;
+    let local_backends = local_backends.with_platform_runner(wake_runner);
     let backends = local_backends.runtime_backends;
     // Shared between `ModelState` (for banner labels) and
     // `SetupCapability` (which mutates it on a successful `/setup`).
@@ -2523,6 +2538,7 @@ pub async fn build_with_options(
         settings,
         ui_rx,
         background_wake: background_wake_rx,
+        schedule_runner,
         workspace_host,
         task_registry,
         goal_store,

@@ -802,6 +802,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono-tz"
+version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
+dependencies = [
+ "chrono",
+ "phf 0.12.1",
+]
+
+[[package]]
 name = "chunked_transfer"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1032,7 +1042,7 @@ checksum = "a5dcd6f69605c2956916ce24e8af637b754964c9a83f4662d3a2361654cdba09"
 dependencies = [
  "chrono",
  "once_cell",
- "phf",
+ "phf 0.11.3",
  "winnow 0.7.15",
 ]
 
@@ -1121,7 +1131,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eb2a7d3066da2de787b7f032c736763eb7ae5d355f81a68bab2675a96008b0bf"
 dependencies = [
  "lab",
- "phf",
+ "phf 0.11.3",
 ]
 
 [[package]]
@@ -1510,9 +1520,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-anthropic"
-version = "0.17.7"
+version = "0.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc609849a129c0f87c22eeeaa7f2c54f5e1ec90d1f82754e2f217777f294cb5c"
+checksum = "d40de0d921d088d72df731008043975d238bc7a4a9df4f786de214432f610195"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1528,9 +1538,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-core"
-version = "0.17.7"
+version = "0.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c8c4e3608b2e425363f19a05a2f62e2f963283f24861e946e8ce36dd0adecff"
+checksum = "58cecfd2d8bea37ef8879d328dca4a76456498ecf11cb6fba65ca21dcac17eba"
 dependencies = [
  "a2a-client-lf",
  "a2a-lf",
@@ -1572,9 +1582,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-daytona"
-version = "0.17.7"
+version = "0.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da054d7021b1c4912a7353fc376329bb68a37b2ac92bb6973b23c7ba84bbd0e4"
+checksum = "175c5d0273ad9e356978796cff872691dca8a52bf48aeab799978213601bc783"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1589,9 +1599,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-duckduckgo"
-version = "0.17.7"
+version = "0.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a61575d3b325e1ed807a60e1eacd6e2ed6979b5832fba4d37023fe4f2222d5ce"
+checksum = "86fea4828b2a8697ab31b6bacef184f749b62388da46d2a6331606a45da33b6e"
 dependencies = [
  "async-trait",
  "everruns-core",
@@ -1605,9 +1615,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-parallel"
-version = "0.17.7"
+version = "0.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62d49d573d262d289ec04be5bbf385fb719d99b4344ca039162bb994aaf959b0"
+checksum = "ba1e39ac8770b2ce2319d37937336a2feea24a37beae4859bd1dcf2539b62f8b"
 dependencies = [
  "async-trait",
  "everruns-core",
@@ -1619,15 +1629,18 @@ dependencies = [
 
 [[package]]
 name = "everruns-local"
-version = "0.17.7"
+version = "0.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddf870f2c8a31b33099e2108d9fa1413659864bc6662dfeb1ed453b63242870a"
+checksum = "c803eaaf9bcc778bc485ab29cbfec857851a156e0cb9ba4f5656a2f60c9f09e4"
 dependencies = [
  "async-trait",
  "chrono",
+ "chrono-tz",
+ "cron",
  "dirs",
  "everruns-core",
  "everruns-runtime",
+ "futures",
  "libc",
  "parking_lot",
  "rusqlite",
@@ -1640,9 +1653,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-mcp"
-version = "0.17.7"
+version = "0.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "998a46680c7b15d922d0a6503a75d2d89bb3ef4290e738a8e23b54b640225d44"
+checksum = "ea719527ec420ac82c195de3f694c3047e6000f78baaf5eacf13a3263a5ff9e1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1655,9 +1668,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-openai"
-version = "0.17.7"
+version = "0.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3b8c10dff5b8e9224108d68f0714722f134c737e9c58e006bb591c6817c6dcd"
+checksum = "6c4b2939204d6b6de614ca23faff059b317174a7f06af6b2259f660577a63c9d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1676,9 +1689,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-openrouter"
-version = "0.17.7"
+version = "0.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaf778d440736725974f0939ae047c327001e7df779cd32e80ccbf62148ccc3b"
+checksum = "30a1aa47aa9944d6e99f682508de4c796d654cb5945d8b71183b508087bcc6e4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1690,9 +1703,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-runtime"
-version = "0.17.7"
+version = "0.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa0eab743b3edf02123294199812c318d553c42be51c3fe26ff79702642f5298"
+checksum = "bfda8cdd17cbbcf90f27a325727925fe9df37a0c25effb35f204a20bb6d95414"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3467,7 +3480,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
 dependencies = [
  "phf_macros",
- "phf_shared",
+ "phf_shared 0.11.3",
+]
+
+[[package]]
+name = "phf"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
+dependencies = [
+ "phf_shared 0.12.1",
 ]
 
 [[package]]
@@ -3477,7 +3499,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aef8048c789fa5e851558d709946d6d79a8ff88c0440c587967f8e94bfb1216a"
 dependencies = [
  "phf_generator",
- "phf_shared",
+ "phf_shared 0.11.3",
 ]
 
 [[package]]
@@ -3486,7 +3508,7 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
- "phf_shared",
+ "phf_shared 0.11.3",
  "rand 0.8.7",
 ]
 
@@ -3497,7 +3519,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f84ac04429c13a7ff43785d75ad27569f2951ce0ffd30a3321230db2fc727216"
 dependencies = [
  "phf_generator",
- "phf_shared",
+ "phf_shared 0.11.3",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -3508,6 +3530,15 @@ name = "phf_shared"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
+dependencies = [
+ "siphasher",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
 dependencies = [
  "siphasher",
 ]
@@ -5005,7 +5036,7 @@ checksum = "d4ea810f0692f9f51b382fff5893887bb4580f5fa246fde546e0b13e7fcee662"
 dependencies = [
  "fnv",
  "nom 7.1.3",
- "phf",
+ "phf 0.11.3",
  "phf_codegen",
 ]
 
@@ -5042,7 +5073,7 @@ dependencies = [
  "ordered-float",
  "pest",
  "pest_derive",
- "phf",
+ "phf 0.11.3",
  "sha2 0.10.9",
  "signal-hook",
  "siphasher",
