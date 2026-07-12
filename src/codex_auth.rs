@@ -1,10 +1,8 @@
+use crate::oauth_flow;
 use crate::settings::CodexAuth;
 use anyhow::{Context, Result, anyhow};
-use base64::Engine as _;
-use rand::RngExt;
 use reqwest::Url;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -60,9 +58,9 @@ struct DeviceTokenResponse {
 
 pub async fn login_with_browser() -> Result<CodexAuth> {
     let redirect_uri = format!("http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}");
-    let state = random_token(32);
-    let verifier = random_pkce_verifier();
-    let challenge = pkce_challenge(&verifier);
+    let state = oauth_flow::random_token(32);
+    let verifier = oauth_flow::random_pkce_verifier();
+    let challenge = oauth_flow::pkce_challenge(&verifier);
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
         .await
         .with_context(|| format!("bind Codex OAuth callback on localhost:{CALLBACK_PORT}"))?;
@@ -193,7 +191,7 @@ pub fn now_epoch_millis() -> i64 {
 }
 
 pub fn extract_account_id(access_token: &str) -> Option<String> {
-    jwt_payload(access_token).and_then(|payload| {
+    oauth_flow::jwt_payload(access_token).and_then(|payload| {
         payload
             .get("https://api.openai.com/auth")
             .and_then(|auth| auth.get("chatgpt_account_id"))
@@ -209,7 +207,7 @@ pub fn extract_account_id(access_token: &str) -> Option<String> {
 }
 
 fn extract_email(access_token: &str) -> Option<String> {
-    jwt_payload(access_token).and_then(|payload| {
+    oauth_flow::jwt_payload(access_token).and_then(|payload| {
         payload
             .get("https://api.openai.com/profile")
             .and_then(|profile| profile.get("email"))
@@ -453,18 +451,18 @@ fn callback_page(status: &str, message: &str) -> String {
   </main>
 </body>
 </html>"#,
-        title = html_escape(title),
+        title = oauth_flow::html_escape(title),
         accent = if ok { "var(--gold)" } else { "var(--bad)" },
         class = class,
         logo = include_str!("../logo.svg"),
-        eyebrow = html_escape(eyebrow),
+        eyebrow = oauth_flow::html_escape(eyebrow),
         headline = if ok {
             "Codex is connected."
         } else {
             "Almost there."
         },
-        message = html_escape(message),
-        fun = html_escape(fun),
+        message = oauth_flow::html_escape(message),
+        fun = oauth_flow::html_escape(fun),
     )
 }
 
@@ -486,48 +484,10 @@ fn open_browser(url: &str) -> Result<()> {
     }
 }
 
-fn random_pkce_verifier() -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    let mut rng = rand::rng();
-    (0..64)
-        .map(|_| CHARS[rng.random_range(0..CHARS.len())] as char)
-        .collect()
-}
-
-fn random_token(bytes: usize) -> String {
-    let mut data = vec![0u8; bytes];
-    rand::rng().fill(data.as_mut_slice());
-    base64_url(&data)
-}
-
-fn pkce_challenge(verifier: &str) -> String {
-    let digest = Sha256::digest(verifier.as_bytes());
-    base64_url(&digest)
-}
-
-fn base64_url(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn jwt_payload(token: &str) -> Option<serde_json::Value> {
-    let payload = token.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-fn html_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     fn jwt_with_payload(payload: serde_json::Value) -> String {
         format!(

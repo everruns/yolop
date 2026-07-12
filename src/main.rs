@@ -20,6 +20,8 @@ mod host_ui;
 mod image_input;
 mod into;
 mod mcp_config;
+mod mcp_oauth;
+mod oauth_flow;
 mod paste_attachment;
 mod presentation;
 mod runtime;
@@ -50,6 +52,7 @@ use anyhow::{Context, Result};
 // Force-link integration crates whose inventory registrations must survive
 // LTO/dead-code elimination when we register capabilities explicitly.
 extern crate everruns_integrations_daytona;
+extern crate everruns_integrations_parallel;
 use app::{App, COMPOSER_VIEWPORT_HEIGHT, maybe_reanchor_inline_viewport};
 use clap::{Args, Parser, Subcommand};
 use crossterm::event::{
