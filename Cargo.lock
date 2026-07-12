@@ -1604,6 +1604,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "everruns-integrations-parallel"
+version = "0.17.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62d49d573d262d289ec04be5bbf385fb719d99b4344ca039162bb994aaf959b0"
+dependencies = [
+ "async-trait",
+ "everruns-core",
+ "inventory",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "everruns-local"
 version = "0.17.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6534,6 +6548,7 @@ dependencies = [
  "everruns-core",
  "everruns-integrations-daytona",
  "everruns-integrations-duckduckgo",
+ "everruns-integrations-parallel",
  "everruns-local",
  "everruns-openai",
  "everruns-openrouter",
@@ -6543,6 +6558,7 @@ dependencies = [
  "ignore",
  "image",
  "include_dir",
+ "inventory",
  "portable-pty",
  "rand 0.10.2",
  "ratatui",

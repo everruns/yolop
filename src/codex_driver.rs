@@ -431,6 +431,38 @@ fn sanitize_parameters(params: &Value) -> Value {
     params
 }
 
+/// The literal placeholder the OpenAI Responses API injects for an *empty*
+/// reasoning-summary part — a part that carries a `**bold heading**` but no
+/// prose. It arrives verbatim in `response.reasoning_summary_text.delta`.
+const REASONING_SUMMARY_PLACEHOLDER: &str = "<!-- -->";
+
+/// Drop empty reasoning-summary placeholders from a streamed summary delta.
+///
+/// Without this, `<!-- -->` reaches every downstream consumer of the thinking
+/// stream — the ACP thought view (`acp/bridge.rs`) and the session log — since
+/// the TUI is the only surface that already discards summary text. We strip the
+/// marker at the driver so all surfaces stay clean at the source.
+///
+/// This mirrors the Codex fix for the same OpenAI Responses behavior:
+///   - PR: https://github.com/openai/codex/pull/31652
+///   - `split_reasoning_summary_parts` in
+///     codex-rs/tui/src/history_cell/messages.rs (strips a part whose body
+///     equals `<!-- -->`).
+///
+/// FUTURE — recheck whether this workaround is still needed. OpenAI may stop
+/// emitting the placeholder server-side, at which point this can be deleted.
+/// To verify, stream a reasoning-heavy prompt with `summary: "detailed"` and
+/// grep the raw SSE for the marker across many runs; if it never appears, drop
+/// this guard:
+///   curl https://api.openai.com/v1/responses -H "Authorization: Bearer $KEY" \
+///     -d '{"model":"gpt-5.6-sol","stream":true,
+///          "reasoning":{"effort":"high","summary":"detailed"},
+///          "input":[{"role":"user","content":"<reasoning-heavy prompt>"}]}' \
+///     | grep -- '<!--'
+fn strip_reasoning_placeholder(delta: &str) -> String {
+    delta.replace(REASONING_SUMMARY_PLACEHOLDER, "")
+}
+
 fn handle_event(
     event_data: &str,
     model: &str,
@@ -454,7 +486,10 @@ fn handle_event(
         | Some("response.reasoning.delta") => json
             .get("delta")
             .and_then(Value::as_str)
-            .map(|delta| LlmStreamEvent::ThinkingDelta(delta.to_string()))
+            .map(|delta| match strip_reasoning_placeholder(delta) {
+                cleaned if cleaned.is_empty() => LlmStreamEvent::TextDelta(String::new()),
+                cleaned => LlmStreamEvent::ThinkingDelta(cleaned),
+            })
             .unwrap_or_else(|| LlmStreamEvent::TextDelta(String::new())),
         Some("response.function_call_arguments.delta") => {
             if let (Some(item_id), Some(delta)) = (
@@ -711,6 +746,48 @@ mod tests {
             &Mutex::new(Vec::new()),
         );
         assert!(matches!(event, LlmStreamEvent::TextDelta(text) if text == "hello"));
+    }
+
+    fn reasoning_event(delta_json: &str) -> LlmStreamEvent {
+        handle_event(
+            delta_json,
+            "gpt-test",
+            &Mutex::new(0),
+            &Mutex::new(0),
+            &Mutex::new(None),
+            &Mutex::new(None),
+            &Mutex::new(Vec::new()),
+        )
+    }
+
+    #[test]
+    fn keeps_reasoning_summary_prose() {
+        // A normal summary part with real prose passes through as thinking.
+        let event = reasoning_event(
+            r#"{"type":"response.reasoning_summary_text.delta","delta":"**Planning** real prose"}"#,
+        );
+        assert!(
+            matches!(event, LlmStreamEvent::ThinkingDelta(text) if text == "**Planning** real prose")
+        );
+    }
+
+    #[test]
+    fn drops_empty_reasoning_summary_placeholder() {
+        // An empty summary part arrives as the literal `<!-- -->` placeholder
+        // (see PR #31652 linked above). It must not reach the thinking stream.
+        let event = reasoning_event(
+            r#"{"type":"response.reasoning_summary_text.delta","delta":"<!-- -->"}"#,
+        );
+        assert!(matches!(event, LlmStreamEvent::TextDelta(text) if text.is_empty()));
+    }
+
+    #[test]
+    fn strips_placeholder_but_keeps_heading_in_same_delta() {
+        // When a whole part arrives in one delta, drop the marker and keep the heading.
+        let event = reasoning_event(
+            r#"{"type":"response.reasoning_summary_text.delta","delta":"**Header**\n\n<!-- -->"}"#,
+        );
+        assert!(matches!(event, LlmStreamEvent::ThinkingDelta(text) if text == "**Header**\n\n"));
     }
 
     #[test]
