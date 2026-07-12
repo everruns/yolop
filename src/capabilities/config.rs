@@ -140,6 +140,7 @@ impl Tool for GetConfigTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         Some(narrate_get_config(tool_call, phase))
@@ -276,6 +277,7 @@ impl Tool for SetConfigTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         Some(narrate_set_config(tool_call, phase))
@@ -627,7 +629,12 @@ mod tests {
             name: "set_config".to_owned(),
             arguments: json!({ "key": "attribution", "value": "on" }),
         };
-        let narration = tool.narrate(&call, ToolNarrationPhase::Completed, None);
+        let narration = tool.narrate(
+            &call,
+            ToolNarrationPhase::Completed,
+            None,
+            everruns_core::tool_narration::ToolNarrationContext::default(),
+        );
         assert_eq!(narration.as_deref(), Some("Set config: attribution=true"));
     }
 
@@ -640,7 +647,12 @@ mod tests {
             name: "get_config".to_owned(),
             arguments: json!({}),
         };
-        let narration = tool.narrate(&call, ToolNarrationPhase::Completed, None);
+        let narration = tool.narrate(
+            &call,
+            ToolNarrationPhase::Completed,
+            None,
+            everruns_core::tool_narration::ToolNarrationContext::default(),
+        );
         assert_eq!(narration.as_deref(), Some("Get config"));
     }
 

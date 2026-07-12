@@ -93,6 +93,7 @@ impl Tool for ListHooksTool {
         _tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         Some(stable_labeled("List hooks", None, phase))
@@ -139,6 +140,7 @@ impl Tool for ValidateHookTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let id = tool_call
@@ -193,6 +195,7 @@ impl Tool for UpsertHookTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let id = tool_call
@@ -268,6 +271,7 @@ impl Tool for RemoveHookTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let id = arg_str(&tool_call.arguments, &["id"]).map(|value| truncate(value, 48));

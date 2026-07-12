@@ -808,6 +808,7 @@ impl Tool for RememberTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let title = arg_str(&tool_call.arguments, &["title"]).map(|value| truncate(value, 48));
@@ -911,6 +912,7 @@ impl Tool for RecallTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let detail =
@@ -1018,6 +1020,7 @@ impl Tool for ForgetTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let detail =

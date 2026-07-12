@@ -38,6 +38,18 @@ The run executes on a detached task, streams to a session-file log
 lifecycle onto a `background_tool` session task (`Running` → `Succeeded` /
 `Failed` / `Canceled`). `signal_on_completion` defaults to `true`.
 
+For delayed or recurring work, `spawn_background` accepts a `schedule` instead
+of starting the wrapped tool immediately. Everruns persists the monitor and its
+payload in the local SQLite store. Yolop starts one `LocalScheduleRunner` per
+live host session; when a schedule becomes due, the runner sends the stored
+monitor prompt through the same `WakeRunner` used by background completions.
+The resulting turn starts the wrapped tool, and that tool's eventual completion
+produces the ordinary second wake. The TUI and ACP session objects retain the
+runner handle for their lifetimes, preventing polling from outliving its host.
+Schedule claims are org-scoped, so `WakeRunner` routes every delivery by
+`SessionId`; an inactive target rejects delivery and leaves the occurrence
+retryable rather than waking whichever ACP session happened to claim it.
+
 ### Steering (poll-proofing)
 
 Detaching a wait only saves tokens if the model actually chooses it, so the
@@ -78,6 +90,11 @@ On completion `spawn_background`'s sink calls
 platform store that call is a silent no-op — which is why finished background
 work previously never reached the agent.
 
+Due schedules enter through the same host boundary: `everruns-local` calls
+`LocalSessionRunner::send_message(session_id, <stored monitor prompt>)`. The
+single channel and host turn lock serialize schedule wakes, foreground prompts,
+and background completions.
+
 Yolop installs a platform store to close that gap (`crate::background_wake`):
 
 - `runtime.rs` wires a `LocalPlatformStore` backed by a `WakeRunner` via
@@ -109,6 +126,12 @@ unless an orphan reaper re-attaches it (Yolop runs none, so non-reattachable
 runs simply stop). The wake is a live, in-process signal — a completion that
 happened while Yolop was down is observed on the next `/background` / `get_task`,
 not replayed as a wake.
+
+Schedules are different: their trigger state is durable. The local runner uses
+atomic, leased SQLite claims, advances recurring schedules only after delivery,
+and disables successful one-shot schedules. A due schedule that could not fire
+while Yolop was down is claimed after the session is loaded again; stale claims
+from an interrupted runner become retryable after the upstream claim timeout.
 
 ## Safety
 

@@ -133,6 +133,8 @@ pub struct App {
     /// auto-start a turn so the agent reacts to finished work. See
     /// specs/background.md.
     background_wake: crate::background_wake::WakeReceiver,
+    /// Retained for the TUI lifetime so due local schedules keep polling.
+    _schedule_runner: everruns_local::LocalScheduleRunnerHandle,
     /// Everruns session-task registry used by `spawn_background`; the TUI reads
     /// it for the background status segment and panel.
     task_registry: Arc<dyn SessionTaskRegistry>,
@@ -341,6 +343,7 @@ impl App {
             models_tx,
             models_rx,
             background_wake: runtime.background_wake,
+            _schedule_runner: runtime.schedule_runner,
             task_registry: runtime.task_registry,
             session_tasks: Vec::new(),
             session_tasks_error: None,

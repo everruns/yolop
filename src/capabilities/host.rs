@@ -1115,6 +1115,7 @@ impl Tool for SetReasoningEffortTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let effort = arg_str(&tool_call.arguments, &["effort"]).map(|value| truncate(value, 24));
@@ -1166,6 +1167,7 @@ impl Tool for SetModelTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let model = arg_str(&tool_call.arguments, &["model"]).map(|value| truncate(value, 48));
@@ -1226,6 +1228,7 @@ impl Tool for SetProviderTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let provider =

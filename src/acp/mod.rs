@@ -949,4 +949,116 @@ mod tests {
             "expected a proactive wake turn after spawn_background finished (via the wake seam)"
         );
     }
+
+    /// A persisted local schedule must wake an idle ACP session at its due time,
+    /// let that turn start the requested background command, then deliver the
+    /// command's ordinary completion wake through the same serialized channel.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scheduled_background_run_wakes_agent_through_completion() {
+        let scheduled_at = (chrono::Utc::now() + chrono::Duration::seconds(3)).to_rfc3339();
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "spawn_background".to_string(),
+                arguments: json!({
+                    "tool": "bash",
+                    "args": { "command": "true" },
+                    "title": "scheduled ACP wake regression",
+                    "schedule": { "scheduled_at": scheduled_at },
+                    "signal_on_completion": true,
+                }),
+                id: None,
+            }]),
+            SimTurn::Assistant("scheduled background bash".to_string()),
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "spawn_background".to_string(),
+                arguments: json!({
+                    "tool": "bash",
+                    "args": { "command": "true" },
+                    "title": "scheduled ACP wake regression",
+                    "signal_on_completion": true,
+                }),
+                id: None,
+            }]),
+            SimTurn::Assistant("scheduled monitor fired and started run".to_string()),
+            SimTurn::Assistant("scheduled run completed".to_string()),
+        ]);
+
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        let (mut client_w, mut reader, _server) = start_raw_server(config, sessions);
+
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd.to_str().unwrap(), "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string();
+
+        send_json(
+            &mut client_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "check CI in a moment" }] },
+            }),
+        )
+        .await;
+        let (_prompt_response, prompt_updates) = collect_until_response_id(&mut reader, 2).await;
+        assert!(
+            update_texts(&prompt_updates, "agent_message_chunk")
+                .iter()
+                .any(|text| text.contains("scheduled background bash")),
+            "expected the foreground turn to create the schedule, got: {prompt_updates:?}"
+        );
+
+        let messages = tokio::time::timeout(Duration::from_secs(25), async {
+            let mut messages = Vec::new();
+            while !messages
+                .iter()
+                .any(|text: &String| text.contains("scheduled run completed"))
+            {
+                let msg = next_json(&mut reader).await;
+                if msg.get("method").and_then(Value::as_str) != Some("session/update") {
+                    continue;
+                }
+                if let Some(text) = msg
+                    .get("params")
+                    .and_then(|params| params.get("update"))
+                    .and_then(|update| update.get("content"))
+                    .and_then(|content| content.get("text"))
+                    .and_then(Value::as_str)
+                {
+                    messages.push(text.to_string());
+                }
+            }
+            messages
+        })
+        .await
+        .expect("scheduled run and its completion wake must arrive");
+
+        assert!(
+            messages
+                .iter()
+                .any(|text| text.contains("scheduled monitor fired and started run")),
+            "expected the due schedule to start a wake turn, got: {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|text| text.contains("scheduled run completed")),
+            "expected the scheduled run completion to wake the session, got: {messages:?}"
+        );
+    }
 }

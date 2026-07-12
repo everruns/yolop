@@ -116,9 +116,12 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   to a session-file log, writes a `result.json`, and tracks a background session
   task. Inspect and control them with `list_tasks`, `get_task`, and
   `cancel_task` (the `/background` command and the `Ctrl+B` panel list them). A
-  task's result survives a restart. When a task finishes while the session is
-  idle, yolop proactively wakes the agent with a turn so it reacts without
-  waiting for your next prompt (turn off with the `proactive_wake` setting).
+  task's result survives a restart. `spawn_background` can also schedule a
+  one-shot or recurring monitor; yolop executes due schedules while the TUI or
+  ACP session is running and recovers overdue schedules after restart. When a
+  schedule fires or a task finishes while the session is idle, yolop
+  proactively wakes the agent with a turn so it reacts without waiting for
+  your next prompt (turn off with the `proactive_wake` setting).
   See [`specs/background.md`](./specs/background.md).
 - **Web** — `free_web_search` (best-effort SERP/developer search), `web_fetch`
   (HTTP GET/HEAD with markdown/text conversion and DNS-pinned SSRF protection),

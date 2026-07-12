@@ -180,6 +180,7 @@ impl Tool for RecordApprovalTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let action = arg_str(&tool_call.arguments, &["action"]).map(|value| truncate(value, 48));
@@ -247,6 +248,7 @@ impl Tool for SetApprovalModeTool {
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         let _ = locale;
         let mode =
