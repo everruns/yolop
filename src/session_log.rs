@@ -53,7 +53,7 @@
 //   interleaving appends.
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use everruns_core::error::{AgentLoopError, Result};
 use everruns_core::events::{
     Event, EventData, EventRequest, INPUT_MESSAGE, OUTPUT_MESSAGE_COMPLETED,
@@ -131,7 +131,88 @@ pub struct SessionWorkspaceMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_root: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_repo_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub session_kind: SessionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeMetadata>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    #[default]
+    Interactive,
+    Print,
+    Nested,
+    Acp,
+    Test,
+    Automated,
+}
+
+impl SessionWorkspaceMetadata {
+    pub fn new(active_root: PathBuf, repo_root: Option<PathBuf>) -> Self {
+        let now = Utc::now();
+        let canonical_repo_root = repo_root.as_ref().map(|path| canonicalize_lossy(path));
+        let project_id = canonical_repo_root
+            .as_ref()
+            .map(|path| format!("file:{}", path.display()));
+
+        Self {
+            active_root,
+            repo_root,
+            canonical_repo_root,
+            project_id,
+            title: None,
+            summary: None,
+            created_at: Some(now),
+            updated_at: Some(now),
+            session_kind: SessionKind::Interactive,
+            parent_session_id: None,
+            worktree: None,
+        }
+    }
+
+    pub fn apply_initial_prompt(&mut self, prompt: &str) {
+        let title = prompt_title(prompt);
+        if title.is_empty() {
+            return;
+        }
+        if self.title.is_none() {
+            self.title = Some(title.clone());
+        }
+        if self.summary.is_none() {
+            self.summary = Some(title);
+        }
+    }
+}
+
+fn canonicalize_lossy(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn prompt_title(prompt: &str) -> String {
+    const MAX_TITLE_CHARS: usize = 80;
+    let collapsed = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = collapsed.chars();
+    let title: String = chars.by_ref().take(MAX_TITLE_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{title}…")
+    } else {
+        title
+    }
 }
 
 pub fn read_session_workspace_metadata(
@@ -190,7 +271,12 @@ pub fn write_session_workspace(
         )?;
     }
     let path = session_workspace_path(session_dir);
-    let bytes = serde_json::to_vec_pretty(metadata)
+    let mut metadata = metadata.clone();
+    metadata.updated_at = Some(Utc::now());
+    if metadata.created_at.is_none() {
+        metadata.created_at = metadata.updated_at;
+    }
+    let bytes = serde_json::to_vec_pretty(&metadata)
         .map_err(|e| AgentLoopError::config(format!("serialize session workspace: {e}")))?;
     write_private_file(&path, &bytes)
 }
@@ -739,6 +825,82 @@ mod tests {
         let workspace = read_session_workspace(&session_dir).expect("read workspace metadata");
 
         assert!(workspace.is_none());
+    }
+
+    #[test]
+    fn read_legacy_workspace_metadata_defaults_new_fields() {
+        let json = r#"{
+            "active_root": "/tmp/yolop-workspace",
+            "repo_root": "/tmp/yolop-repo"
+        }"#;
+
+        let metadata: SessionWorkspaceMetadata =
+            serde_json::from_str(json).expect("legacy workspace metadata deserializes");
+
+        assert_eq!(metadata.active_root, PathBuf::from("/tmp/yolop-workspace"));
+        assert_eq!(metadata.repo_root, Some(PathBuf::from("/tmp/yolop-repo")));
+        assert_eq!(metadata.canonical_repo_root, None);
+        assert_eq!(metadata.project_id, None);
+        assert_eq!(metadata.title, None);
+        assert_eq!(metadata.summary, None);
+        assert_eq!(metadata.created_at, None);
+        assert_eq!(metadata.updated_at, None);
+        assert_eq!(metadata.session_kind, SessionKind::Interactive);
+        assert_eq!(metadata.parent_session_id, None);
+        assert!(metadata.worktree.is_none());
+    }
+
+    #[test]
+    fn write_workspace_metadata_persists_agf_listing_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(48203);
+        let session_dir = session_dir_path(dir.path(), session_id);
+        let canonical_dir = dir.path().canonicalize().expect("canonical tempdir");
+        let mut metadata = SessionWorkspaceMetadata::new(
+            dir.path().join("worktree"),
+            Some(dir.path().to_path_buf()),
+        );
+        metadata.title = Some("Implement workspace metadata".to_string());
+        metadata.summary = Some("Add list-friendly Yolop session metadata.".to_string());
+        metadata.session_kind = SessionKind::Nested;
+        metadata.parent_session_id = Some(SessionId::from_seed(48204));
+        metadata.worktree = Some(WorktreeMetadata {
+            path: dir.path().join("worktree"),
+            branch: "feature/agf-metadata".to_string(),
+            base_ref: "origin/main".to_string(),
+            slug: "agf-metadata".to_string(),
+        });
+
+        write_session_workspace(&session_dir, &metadata).expect("write workspace metadata");
+        let written = read_session_workspace_metadata(&session_dir)
+            .expect("read workspace metadata")
+            .expect("metadata present");
+
+        assert_eq!(
+            written.title.as_deref(),
+            Some("Implement workspace metadata")
+        );
+        assert_eq!(
+            written.summary.as_deref(),
+            Some("Add list-friendly Yolop session metadata.")
+        );
+        assert_eq!(written.session_kind, SessionKind::Nested);
+        assert_eq!(written.parent_session_id, Some(SessionId::from_seed(48204)));
+        assert_eq!(written.canonical_repo_root, Some(canonical_dir.clone()));
+        assert_eq!(
+            written.project_id.as_deref(),
+            Some(format!("file:{}", canonical_dir.display()).as_str())
+        );
+        assert!(written.created_at.is_some(), "created_at is populated");
+        assert!(written.updated_at.is_some(), "updated_at is populated");
+        assert!(
+            written.updated_at >= written.created_at,
+            "updated_at should not precede created_at"
+        );
+        assert_eq!(
+            written.worktree.map(|worktree| worktree.branch),
+            Some("feature/agf-metadata".to_string())
+        );
     }
 
     #[cfg(unix)]
