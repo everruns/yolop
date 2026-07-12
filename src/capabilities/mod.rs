@@ -40,8 +40,9 @@ pub(crate) use free_search::FreeSearchCapability;
 pub(crate) use goal::GoalCapability;
 pub(crate) use hooks::{HOOKS_CAPABILITY_ID, HooksCapability};
 pub(crate) use host::{
-    CODING_BASH_CAPABILITY_ID, CodingBashCapability, CodingCliEnvironmentCapability,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID, SetupCapability,
+    CODING_BASH_CAPABILITY_ID, ClientUiContext, CodingBashCapability,
+    CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID,
+    SetupCapability,
 };
 pub(crate) use lsp::LspCapability;
 pub(crate) use progress_guard::{PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability};

@@ -23,7 +23,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::runtime::{self, BuiltRuntime, ProviderChoice};
+use crate::capabilities::ClientUiContext;
+use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
 use crate::session_log::{legacy_session_log_path, session_dir_path, session_log_path};
 use crate::settings::SettingsStore;
 use everruns_core::typed_id::SessionId as RuntimeSessionId;
@@ -53,12 +54,16 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         cwd: PathBuf,
         resume_session_id: Option<RuntimeSessionId>,
     ) -> Result<BuiltRuntime> {
-        runtime::build(
+        build_with_options(
             cwd,
             self.provider.clone(),
             resume_session_id,
             self.sessions_dir.clone(),
             self.settings.clone(),
+            BuildOptions {
+                client_ui: ClientUiContext::Acp,
+                ..BuildOptions::default()
+            },
         )
         .await
     }
@@ -83,7 +88,6 @@ pub async fn run_stdio(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::{BuildOptions, build_with_options};
     use agent_client_protocol::schema::v1::{
         InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, SessionId,
         SessionNotification, SessionUpdate, StopReason,
@@ -130,6 +134,7 @@ mod tests {
                 self.settings.clone(),
                 BuildOptions {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
+                    client_ui: ClientUiContext::Acp,
                     ..BuildOptions::default()
                 },
             )

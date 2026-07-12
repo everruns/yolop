@@ -29,13 +29,38 @@ pub(crate) const ENVIRONMENT_CONTEXT_CAPABILITY_ID: &str = "code_environment_con
 pub(crate) struct CodingCliEnvironmentCapability {
     repo_root: PathBuf,
     active_root: Arc<RwLock<PathBuf>>,
+    client_ui: ClientUiContext,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ClientUiContext {
+    Acp,
+    Print,
+    Tui,
+    None,
+}
+
+impl ClientUiContext {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Acp => "ACP",
+            Self::Print => "print",
+            Self::Tui => "TUI",
+            Self::None => "none",
+        }
+    }
 }
 
 impl CodingCliEnvironmentCapability {
-    pub(crate) fn new(repo_root: PathBuf, active_root: Arc<RwLock<PathBuf>>) -> Self {
+    pub(crate) fn new(
+        repo_root: PathBuf,
+        active_root: Arc<RwLock<PathBuf>>,
+        client_ui: ClientUiContext,
+    ) -> Self {
         Self {
             repo_root,
             active_root,
+            client_ui,
         }
     }
 
@@ -47,6 +72,7 @@ impl CodingCliEnvironmentCapability {
             .unwrap_or_else(|_| self.repo_root.clone());
         EnvironmentContext {
             cwd: active_path.display().to_string(),
+            client_ui: self.client_ui.clone(),
             shell: shell_name(),
             current_date: Local::now().format("%Y-%m-%d").to_string(),
             timezone: local_timezone(),
@@ -94,6 +120,7 @@ impl Capability for CodingCliEnvironmentCapability {
             "\
 <environment_context>
   <cwd>/path/to/workspace</cwd>
+  <client_ui>TUI|print|ACP|none</client_ui>
   <shell>zsh</shell>
   <current_date>YYYY-MM-DD</current_date>
   <timezone>Region/City</timezone>
@@ -110,6 +137,7 @@ impl Capability for CodingCliEnvironmentCapability {
 #[derive(Debug)]
 struct EnvironmentContext {
     cwd: String,
+    client_ui: ClientUiContext,
     shell: String,
     current_date: String,
     timezone: String,
@@ -125,6 +153,7 @@ fn render_environment_context(context: &EnvironmentContext) -> String {
     let mut out = String::new();
     out.push_str("<environment_context>\n");
     push_xml_field(&mut out, "cwd", &context.cwd);
+    push_xml_field(&mut out, "client_ui", context.client_ui.as_str());
     push_xml_field(&mut out, "repo_root", &context.repo_root);
     if let Some(path) = &context.worktree_path {
         out.push_str("  <git_worktree>\n");
@@ -1549,6 +1578,7 @@ mod tests {
     fn environment_context_renders_requested_fields() {
         let rendered = render_environment_context(&EnvironmentContext {
             cwd: "/repo".to_string(),
+            client_ui: ClientUiContext::Tui,
             shell: "zsh".to_string(),
             current_date: "2026-05-20".to_string(),
             timezone: "America/Chicago".to_string(),
@@ -1562,6 +1592,7 @@ mod tests {
 
         assert!(rendered.starts_with("<environment_context>\n"));
         assert!(rendered.contains("  <cwd>/repo</cwd>\n"));
+        assert!(rendered.contains("  <client_ui>TUI</client_ui>\n"));
         assert!(rendered.contains("  <shell>zsh</shell>\n"));
         assert!(rendered.contains("  <current_date>2026-05-20</current_date>\n"));
         assert!(rendered.contains("  <timezone>America/Chicago</timezone>\n"));
