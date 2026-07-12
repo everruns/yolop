@@ -1240,7 +1240,7 @@ mod tests {
             dir.path(),
             AstGrepOptions {
                 pattern: "console.log($A)".to_string(),
-                path: Some("/web".to_string()),
+                path: Some("web".to_string()),
                 language: Some("typescript".to_string()),
                 limit: 20,
                 max_file_bytes: DEFAULT_MAX_FILE_BYTES,
@@ -1288,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_workspace_root_alias() {
+    fn accepts_host_absolute_subpath() {
         let dir = tempfile::tempdir().expect("tempdir");
         write(&dir.path().join("src/lib.rs"), "fn target() {}\n");
 
@@ -1296,13 +1296,13 @@ mod tests {
             dir.path(),
             AstGrepOptions {
                 pattern: "fn $NAME() {}".to_string(),
-                path: Some("/workspace/src".to_string()),
+                path: Some(dir.path().join("src").display().to_string()),
                 language: Some("rust".to_string()),
                 limit: 20,
                 max_file_bytes: DEFAULT_MAX_FILE_BYTES,
             },
         )
-        .expect("vfs subpath should scan");
+        .expect("host subpath should scan");
 
         assert_eq!(report.matches.len(), 1);
         assert_eq!(report.matches[0].path, "src/lib.rs");

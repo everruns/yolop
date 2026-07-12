@@ -1,10 +1,8 @@
 // Shared workspace host for yolop tools that shell out against disk.
 //
-// everruns 0.17.1 (EVE-660) centralizes VFS addressing in `MountFs` and host
-// repointing in `RealDiskFileStore::set_host_root`. File tools see `/workspace`
-// through the mount resolver; repo_map, ast_grep, background, and bash still
-// run on the host and share one repointable disk handle synced from the
-// worktree's active-root lock.
+// Everruns centralizes path presentation and containment in `MountFs` and
+// `RealDiskFileStore`. File tools and host-backed capabilities share one
+// repointable disk handle synced from the worktree's active-root lock.
 
 use anyhow::{Context, Result, bail};
 use everruns_runtime::RealDiskFileStore;
@@ -82,7 +80,7 @@ pub fn resolve_host_scope(root: &Path, path: Option<&str>) -> Result<PathBuf> {
     };
     let trimmed = path.trim();
     let candidate = Path::new(trimmed);
-    if candidate.is_absolute() && candidate.starts_with(root) {
+    if candidate.is_absolute() {
         let canonical = candidate
             .canonicalize()
             .with_context(|| format!("path not found: {path}"))?;
@@ -92,20 +90,18 @@ pub fn resolve_host_scope(root: &Path, path: Option<&str>) -> Result<PathBuf> {
         return Ok(canonical);
     }
 
-    let normalized = if trimmed == "workspace" || trimmed == "workspace/" {
-        "/workspace"
-    } else {
-        trimmed
-    };
-    let session = everruns_core::session_path::to_session_path(normalized);
-    let relative = session.trim_start_matches('/');
-    if relative.is_empty() || relative == "." {
+    if trimmed.is_empty() || trimmed == "." {
         return Ok(root.to_path_buf());
     }
-    if relative.split('/').any(|segment| segment == "..") {
+    if candidate.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
         bail!("`path` must stay inside the workspace");
     }
-    let scope = root.join(relative);
+    let scope = root.join(candidate);
     let canonical = scope
         .canonicalize()
         .with_context(|| format!("path not found: {path}"))?;
@@ -135,26 +131,27 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn resolve_host_scope_accepts_workspace_alias() {
+    fn resolve_host_scope_accepts_host_and_relative_paths() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::create_dir_all(dir.path().join("pkg")).expect("pkg dir");
         let root = fs::canonicalize(dir.path()).expect("canonical root");
 
-        let scope = resolve_host_scope(&root, Some("/workspace/pkg")).expect("vfs subpath");
+        let host_path = root.join("pkg");
+        let scope = resolve_host_scope(&root, host_path.to_str()).expect("host subpath");
         assert_eq!(scope, root.join("pkg"));
 
-        let root_scope = resolve_host_scope(&root, Some("/workspace")).expect("vfs root");
+        let root_scope = resolve_host_scope(&root, root.to_str()).expect("host root");
         assert_eq!(root_scope, root);
 
-        let bare = resolve_host_scope(&root, Some("workspace")).expect("bare alias");
-        assert_eq!(bare, root);
+        let relative = resolve_host_scope(&root, Some("pkg")).expect("relative subpath");
+        assert_eq!(relative, root.join("pkg"));
     }
 
     #[test]
     fn resolve_host_scope_rejects_escape() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = fs::canonicalize(dir.path()).expect("canonical root");
-        let err = resolve_host_scope(&root, Some("/workspace/../outside")).expect_err("escape");
+        let err = resolve_host_scope(&root, Some("../outside")).expect_err("escape");
         assert!(err.to_string().contains("inside the workspace"));
     }
 
