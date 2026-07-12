@@ -294,9 +294,7 @@ impl CodingCliSessionFileStore {
 #[async_trait]
 impl SessionFileSystem for CodingCliSessionFileStore {
     fn is_mount_resolver(&self) -> bool {
-        // This store already routes the workspace, session artifacts, and skill
-        // scopes. Wrapping it in another MountFs would collapse that table.
-        true
+        false
     }
 
     fn display_root(&self) -> String {
@@ -4385,6 +4383,30 @@ mod tests {
             store.display_path("/outputs/call.stdout"),
             "/outputs/call.stdout"
         );
+    }
+
+    #[test]
+    fn file_tool_narration_uses_real_workspace_path() {
+        use everruns_core::tool_narration::{
+            ToolNarrationContext, ToolNarrationPhase, narrate_list_directory,
+        };
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let store = test_file_store(workspace.path(), session.path());
+        let workspace_root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
+        let narration = narrate_list_directory(
+            &serde_json::json!({ "path": "/workspace/src" }),
+            ToolNarrationPhase::Completed,
+            None,
+            ToolNarrationContext::new(Some(store.as_ref())),
+        );
+
+        assert!(
+            narration.contains(&workspace_root.join("src").display().to_string()),
+            "narration should use the active host path: {narration}"
+        );
+        assert!(!narration.contains("/workspace"));
     }
 
     #[tokio::test]
