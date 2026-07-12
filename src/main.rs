@@ -540,6 +540,12 @@ async fn main() -> Result<()> {
             } else {
                 ClientUiContext::Print
             },
+            session_kind: if interactive {
+                session_log::SessionKind::Interactive
+            } else {
+                session_log::SessionKind::Print
+            },
+            initial_prompt: cli.print.clone(),
             ..Default::default()
         },
     )
@@ -1392,11 +1398,7 @@ mod tests {
         let session_dir = session_log::session_dir_path(sessions.path(), session_id);
         session_log::write_session_workspace(
             &session_dir,
-            &session_log::SessionWorkspaceMetadata {
-                active_root: workspace.path().to_path_buf(),
-                repo_root: None,
-                worktree: None,
-            },
+            &session_log::SessionWorkspaceMetadata::new(workspace.path().to_path_buf(), None),
         )
         .expect("write workspace metadata");
 
@@ -1415,11 +1417,7 @@ mod tests {
         let session_dir = session_log::session_dir_path(sessions.path(), session_id);
         session_log::write_session_workspace(
             &session_dir,
-            &session_log::SessionWorkspaceMetadata {
-                active_root: saved.path().to_path_buf(),
-                repo_root: None,
-                worktree: None,
-            },
+            &session_log::SessionWorkspaceMetadata::new(saved.path().to_path_buf(), None),
         )
         .expect("write workspace metadata");
 

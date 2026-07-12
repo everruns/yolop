@@ -281,16 +281,13 @@ impl WorktreeManager {
     }
 
     fn persist_metadata(&self, info: &WorktreeInfo) -> Result<()> {
-        let metadata = SessionWorkspaceMetadata {
-            active_root: info.path.clone(),
-            repo_root: self.repo_root.clone(),
-            worktree: Some(WorktreeMetadata {
-                path: info.path.clone(),
-                branch: info.branch.clone(),
-                base_ref: info.base_ref.clone(),
-                slug: info.slug.clone(),
-            }),
-        };
+        let mut metadata = SessionWorkspaceMetadata::new(info.path.clone(), self.repo_root.clone());
+        metadata.worktree = Some(WorktreeMetadata {
+            path: info.path.clone(),
+            branch: info.branch.clone(),
+            base_ref: info.base_ref.clone(),
+            slug: info.slug.clone(),
+        });
         write_session_workspace(&self.session_dir, &metadata).map_err(|e| anyhow::anyhow!("{e}"))
     }
 

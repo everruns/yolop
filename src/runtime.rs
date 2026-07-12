@@ -69,7 +69,7 @@ use everruns_runtime::{
 };
 
 use crate::session_log::{
-    JsonlEventEmitter, SessionWorkspaceMetadata, migrate_legacy_session_log,
+    JsonlEventEmitter, SessionKind, SessionWorkspaceMetadata, migrate_legacy_session_log,
     read_session_workspace_metadata, replay, session_dir_path, session_log_path,
     write_session_workspace,
 };
@@ -2008,6 +2008,8 @@ impl ModelState {
 /// existing behavior.
 pub struct BuildOptions {
     pub llmsim_override: Option<LlmSimConfig>,
+    pub session_kind: SessionKind,
+    pub initial_prompt: Option<String>,
     /// Register [`ClientCommandsCapability`], which contributes the
     /// terminal-side commands (help/tools/mcp/cwd/model/effort/clear/shell/quit)
     /// and drives them through the host UI channel. Only a host that can apply
@@ -2021,6 +2023,8 @@ impl Default for BuildOptions {
     fn default() -> Self {
         Self {
             llmsim_override: None,
+            session_kind: SessionKind::Interactive,
+            initial_prompt: None,
             client_commands: false,
             client_ui: ClientUiContext::None,
         }
@@ -2069,18 +2073,20 @@ pub async fn build_with_options(
     if let Some(metadata) = saved_metadata.as_ref() {
         let _ = worktree.restore_from_metadata(metadata);
     } else {
-        let metadata = SessionWorkspaceMetadata {
-            active_root: worktree.active_root(),
-            repo_root: repo_root.clone(),
-            worktree: worktree
+        let mut metadata = SessionWorkspaceMetadata::new(worktree.active_root(), repo_root.clone());
+        metadata.session_kind = options.session_kind;
+        if let Some(prompt) = options.initial_prompt.as_deref() {
+            metadata.apply_initial_prompt(prompt);
+        }
+        metadata.worktree =
+            worktree
                 .worktree_info()
                 .map(|info| crate::session_log::WorktreeMetadata {
                     path: info.path,
                     branch: info.branch,
                     base_ref: info.base_ref,
                     slug: info.slug,
-                }),
-        };
+                });
         write_session_workspace(&session_dir, &metadata)?;
     }
     if worktrees_mode == crate::settings::WorktreesMode::Always {
