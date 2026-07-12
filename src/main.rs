@@ -47,6 +47,7 @@ mod mcp_e2e_tests;
 #[cfg(test)]
 mod agent_scenarios;
 
+use crate::capabilities::ClientUiContext;
 use anyhow::{Context, Result};
 
 // Force-link integration crates whose inventory registrations must survive
@@ -534,6 +535,11 @@ async fn main() -> Result<()> {
         settings,
         runtime::BuildOptions {
             client_commands: interactive,
+            client_ui: if interactive {
+                ClientUiContext::Tui
+            } else {
+                ClientUiContext::Print
+            },
             ..Default::default()
         },
     )

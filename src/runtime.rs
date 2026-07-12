@@ -11,7 +11,7 @@ use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability,
     AstEditCapability, AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID,
     BackgroundCapability, CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID,
-    CONFIG_CAPABILITY_ID, ClientCommandsCapability, CodingBashCapability,
+    CONFIG_CAPABILITY_ID, ClientCommandsCapability, ClientUiContext, CodingBashCapability,
     CodingCliEnvironmentCapability, ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
     GOAL_CAPABILITY_ID, GoalCapability, HOOKS_CAPABILITY_ID, HooksCapability, LspCapability,
     PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
@@ -2006,7 +2006,6 @@ impl ModelState {
 /// batch window) with one that produces real multi-delta streams. All
 /// fields default to "no override" so callers that don't care keep the
 /// existing behavior.
-#[derive(Default)]
 pub struct BuildOptions {
     pub llmsim_override: Option<LlmSimConfig>,
     /// Register [`ClientCommandsCapability`], which contributes the
@@ -2015,24 +2014,17 @@ pub struct BuildOptions {
     /// the effects sets this: the interactive TUI (and the `app` unit tests
     /// that exercise it). ACP and `--print` leave it `false`.
     pub client_commands: bool,
+    pub client_ui: ClientUiContext,
 }
 
-pub async fn build(
-    workspace_root: PathBuf,
-    provider: ProviderChoice,
-    resume_session_id: Option<SessionId>,
-    sessions_dir: PathBuf,
-    settings: Arc<SettingsStore>,
-) -> Result<BuiltRuntime> {
-    build_with_options(
-        workspace_root,
-        provider,
-        resume_session_id,
-        sessions_dir,
-        settings,
-        BuildOptions::default(),
-    )
-    .await
+impl Default for BuildOptions {
+    fn default() -> Self {
+        Self {
+            llmsim_override: None,
+            client_commands: false,
+            client_ui: ClientUiContext::None,
+        }
+    }
 }
 
 pub async fn build_with_options(
@@ -2287,6 +2279,7 @@ pub async fn build_with_options(
     capabilities.register(CodingCliEnvironmentCapability::new(
         repo_root.clone().unwrap_or_else(|| canonical_root.clone()),
         shared_workspace_root.clone(),
+        options.client_ui.clone(),
     ));
     // Read-only consumer of the shared config service. `SettingsStore`
     // implements `ConfigService`, so the same handle that backs writes also
