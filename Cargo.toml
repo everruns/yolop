@@ -88,6 +88,7 @@ everruns-local = "0.17.7"
 # everruns server/worker never enable it (specs/mcp.md, upstream runtime-mcp.md D2).
 everruns-runtime = { version = "0.17.7", features = ["mcp-stdio"] }
 everruns-integrations-duckduckgo = "0.17.7"
+everruns-integrations-parallel = "0.17.7"
 everruns-integrations-daytona = "0.17.7"
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
@@ -98,6 +99,7 @@ urlencoding = "2"
 comfy-table = { version = "7.2.2", default-features = false }
 
 [dev-dependencies]
+inventory = "0.3"
 portable-pty = "0.9.0"
 tempfile = "3"
 tiny_http = "0.12"
