@@ -63,6 +63,7 @@ use everruns_core::{DriverId, ModelProfile, ReasoningEffortConfig, ReasoningEffo
 use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
+use everruns_mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
 use everruns_runtime::{
     AgentBuilder, HarnessBuilder, InProcessRuntime, InProcessRuntimeBuilder, RealDiskFileStore,
     RuntimeBackends, SessionBuilder, WriteBlocklistFileStore,
@@ -83,6 +84,62 @@ use tokio::sync::mpsc;
 // from `crates/server/src/harnesses/coding_container.rs` and trimmed for
 // yolop's single-level (no-sandbox) execution model and our specific tool
 // names. The agent prompt below stays small on purpose; harness covers it.
+
+#[derive(Debug, Default)]
+struct EnvMcpAuthProvider;
+
+#[async_trait]
+impl McpAuthProvider for EnvMcpAuthProvider {
+    async fn authorization(
+        &self,
+        request: &McpAuthRequest<'_>,
+    ) -> anyhow::Result<Option<McpCredential>> {
+        let Some(token) = env_token_names(request)
+            .into_iter()
+            .find_map(|name| std::env::var(name).ok())
+        else {
+            return Ok(None);
+        };
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(McpCredential::bearer(token)))
+    }
+}
+
+fn env_token_names(request: &McpAuthRequest<'_>) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some(provider) = request.oauth_provider_id {
+        let prefix = env_key_prefix(provider);
+        keys.push(format!("{prefix}_ACCESS_TOKEN"));
+        keys.push(format!("{prefix}_API_KEY"));
+        keys.push(format!("{prefix}_TOKEN"));
+    }
+    let server = env_key_prefix(request.server_name);
+    keys.push(format!("MCP_{server}_ACCESS_TOKEN"));
+    keys.push(format!("MCP_{server}_API_KEY"));
+    keys.push(format!("MCP_{server}_TOKEN"));
+    keys
+}
+
+fn env_key_prefix(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
 const HARNESS_PROMPT: &str = "\
 You are an expert terminal coding agent. File tools write under the workspace
 root; `bash` runs on the host. There is no sandbox.
@@ -2481,6 +2538,7 @@ pub async fn build_with_options(
         .tag("coding");
 
     let mut builder = InProcessRuntimeBuilder::new()
+        .mcp_auth_provider(Arc::new(EnvMcpAuthProvider))
         .platform_definition(platform)
         .default_model(default_model)
         .backends(backends)
@@ -2546,7 +2604,68 @@ pub async fn build_with_options(
 mod tests {
     use super::*;
     use crate::capabilities::REPO_MAP_CAPABILITY_ID;
+    use everruns_core::McpServerAuthMode;
     use everruns_core::command::ExecuteCommandRequest;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn env_token_names_prefers_oauth_provider_then_server_specific_keys() {
+        let request = McpAuthRequest {
+            server_name: "linear-prod",
+            auth_mode: McpServerAuthMode::OAuth,
+            oauth_provider_id: Some("linear"),
+        };
+
+        assert_eq!(
+            env_token_names(&request),
+            vec![
+                "LINEAR_ACCESS_TOKEN",
+                "LINEAR_API_KEY",
+                "LINEAR_TOKEN",
+                "MCP_LINEAR_PROD_ACCESS_TOKEN",
+                "MCP_LINEAR_PROD_API_KEY",
+                "MCP_LINEAR_PROD_TOKEN",
+            ]
+        );
+    }
+
+    #[test]
+    fn env_key_prefix_normalizes_separators_and_case() {
+        assert_eq!(env_key_prefix("Acme Linear/OAuth"), "ACME_LINEAR_OAUTH");
+        assert_eq!(env_key_prefix("linear"), "LINEAR");
+    }
+
+    #[test]
+    fn env_mcp_auth_provider_returns_bearer_credential_from_provider_env() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::set_var("LINEAR_ACCESS_TOKEN", "linear-test-token");
+        }
+        let request = McpAuthRequest {
+            server_name: "linear",
+            auth_mode: McpServerAuthMode::OAuth,
+            oauth_provider_id: Some("linear"),
+        };
+
+        let credential = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime")
+            .block_on(EnvMcpAuthProvider.authorization(&request))
+            .expect("auth provider result")
+            .expect("credential from env");
+
+        assert_eq!(
+            credential.authorization.as_deref(),
+            Some("Bearer linear-test-token")
+        );
+        assert!(credential.headers.is_empty());
+        unsafe {
+            std::env::remove_var("LINEAR_ACCESS_TOKEN");
+        }
+    }
 
     fn test_file_store(
         workspace: &std::path::Path,

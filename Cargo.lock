@@ -6581,6 +6581,7 @@ dependencies = [
  "everruns-integrations-duckduckgo",
  "everruns-integrations-parallel",
  "everruns-local",
+ "everruns-mcp",
  "everruns-openai",
  "everruns-openrouter",
  "everruns-runtime",
