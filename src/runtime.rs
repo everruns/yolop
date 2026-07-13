@@ -2315,6 +2315,21 @@ pub async fn build_with_options(
     // harness: it spawns external server processes, so it is opt-in via
     // `[[capabilities]] ref = "lsp"` in settings.toml. See specs/lsp.md.
     capabilities.register(LspCapability::new(workspace_host.clone()));
+    // Installed extension packages (`<config_dir>/yolop/extensions/<name>/`,
+    // `YOLOP_EXTENSIONS_DIR` override) — each becomes an `ext:<name>`
+    // capability proxying a YEP capability server. Registered for the catalog
+    // but never on the default harness: enable with
+    // `[[capabilities]] ref = "ext:<name>"` in settings.toml, exactly like
+    // `lsp`. See specs/extensions.md.
+    let mut extension_never_defer: Vec<String> = Vec::new();
+    if let Some(extensions_dir) = crate::extensions::extensions_dir() {
+        for package in crate::extensions::discover_extensions(&extensions_dir) {
+            let capability =
+                crate::extensions::ExtensionCapability::new(package, effective_root.clone());
+            extension_never_defer.extend(capability.never_defer_tools());
+            capabilities.register(capability);
+        }
+    }
     capabilities.register(InfinityContextCapability);
     capabilities.register(CompactionCapability);
     capabilities.register(StatelessTodoListCapability);
@@ -2330,7 +2345,15 @@ pub async fn build_with_options(
     // Progressive disclosure + this allowlist landed upstream in EVE-527 (#2130),
     // which retired the previously vendored copy.
     capabilities.register(
-        ToolSearchCapability::new().with_never_defer(YOLOP_NEVER_DEFER_TOOLS.iter().copied()),
+        ToolSearchCapability::new().with_never_defer(
+            YOLOP_NEVER_DEFER_TOOLS
+                .iter()
+                .map(|name| name.to_string())
+                // Extension tools flagged `never_defer` in their manifest keep
+                // real schemas loaded (budgeted per extension) — the LSP eval
+                // showed deferred stubs get ~zero adoption.
+                .chain(extension_never_defer.iter().cloned()),
+        ),
     );
     capabilities.register(ToolOutputPersistenceCapability);
     capabilities.register(SessionTasksCapability);
