@@ -36,11 +36,15 @@ pub struct Translator {
     /// event across the live broadcast and the catch-up drain; dedup keeps
     /// the client from seeing doubles.
     seen: HashSet<String>,
+    /// Tool calls already introduced to the client. Persisted history keeps
+    /// completed assistant messages and tool completions, but not the
+    /// transient `tool.started` events used by the live bridge.
+    started_tool_calls: HashSet<String>,
     /// Replay mode is used only for `session/load`, where ACP requires the
     /// agent to stream the historical user turns back to the client. Live
     /// `session/prompt` handling leaves this off because the client already
     /// has the prompt it just sent.
-    replay_input_messages: bool,
+    replay_history: bool,
 }
 
 impl Translator {
@@ -50,7 +54,7 @@ impl Translator {
 
     pub fn for_replay() -> Self {
         Self {
-            replay_input_messages: true,
+            replay_history: true,
             ..Self::default()
         }
     }
@@ -63,7 +67,7 @@ impl Translator {
         }
         match &event.data {
             EventData::InputMessage(data) => {
-                if !self.replay_input_messages {
+                if !self.replay_history {
                     return Vec::new();
                 }
                 if data.message.role != MessageRole::User {
@@ -93,8 +97,34 @@ impl Translator {
                 if self.current_message_streamed {
                     return Vec::new();
                 }
-                if data.message.role != MessageRole::Agent || data.message.has_tool_calls() {
+                if data.message.role != MessageRole::Agent {
                     return Vec::new();
+                }
+                if data.message.has_tool_calls() {
+                    if !self.replay_history {
+                        return Vec::new();
+                    }
+                    return data
+                        .message
+                        .content
+                        .iter()
+                        .filter_map(|part| match part {
+                            ContentPart::ToolCall(call) if call.name == WRITE_TODOS => {
+                                plan_from_value(&call.arguments)
+                                    .map(|entries| SessionUpdate::Plan(Plan::new(entries)))
+                            }
+                            ContentPart::ToolCall(call)
+                                if self.started_tool_calls.insert(call.id.clone()) =>
+                            {
+                                Some(SessionUpdate::ToolCall(
+                                    ToolCall::new(call.id.clone(), call.name.clone())
+                                        .status(ToolCallStatus::InProgress)
+                                        .raw_input(non_null(call.arguments.clone())),
+                                ))
+                            }
+                            _ => None,
+                        })
+                        .collect();
                 }
                 match data.message.text().map(str::trim) {
                     Some(text) if !text.is_empty() => {
@@ -127,6 +157,9 @@ impl Translator {
                         .map(|entries| vec![SessionUpdate::Plan(Plan::new(entries))])
                         .unwrap_or_default();
                 }
+                if !self.started_tool_calls.insert(data.tool_call.id.clone()) {
+                    return Vec::new();
+                }
                 let title = data
                     .narration
                     .as_deref()
@@ -158,10 +191,29 @@ impl Translator {
                 let content = tool_result_content(data)
                     .map(|block| vec![ToolCallContent::Content(protocol::Content::new(block))])
                     .unwrap_or_default();
-                vec![SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                let title = data
+                    .narration
+                    .as_deref()
+                    .or(data.display_name.as_deref())
+                    .unwrap_or(&data.tool_name)
+                    .to_string();
+                let mut updates = Vec::new();
+                if self.replay_history && self.started_tool_calls.insert(data.tool_call_id.clone())
+                {
+                    updates.push(SessionUpdate::ToolCall(
+                        ToolCall::new(data.tool_call_id.clone(), title.clone())
+                            .status(ToolCallStatus::InProgress),
+                    ));
+                }
+                let mut fields = ToolCallUpdateFields::new().status(status).content(content);
+                if self.replay_history {
+                    fields = fields.title(title);
+                }
+                updates.push(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
                     data.tool_call_id.clone(),
-                    ToolCallUpdateFields::new().status(status).content(content),
-                ))]
+                    fields,
+                )));
+                updates
             }
             _ => Vec::new(),
         }
@@ -486,6 +538,100 @@ mod tests {
                 "prior prompt"
             ))]
         );
+    }
+
+    #[test]
+    fn replay_mode_reconstructs_tool_calls_from_completed_agent_messages() {
+        let mut t = Translator::for_replay();
+        let message = Message::assistant_with_tools(
+            "",
+            vec![ToolCall {
+                id: "call_1".into(),
+                name: "bash".into(),
+                arguments: json!({ "command": "ls" }),
+            }],
+        );
+
+        let updates = t.on_event(&event(EventData::OutputMessageCompleted(
+            OutputMessageCompletedData {
+                message,
+                metadata: None,
+                usage: None,
+                error_code: None,
+                error_fields: None,
+                error_disclosure: None,
+            },
+        )));
+
+        assert_eq!(
+            updates,
+            vec![SessionUpdate::ToolCall(
+                protocol::ToolCall::new("call_1", "bash")
+                    .status(ToolCallStatus::InProgress)
+                    .raw_input(json!({ "command": "ls" })),
+            )]
+        );
+    }
+
+    #[test]
+    fn replay_mode_does_not_duplicate_a_reconstructed_tool_start() {
+        let mut t = Translator::for_replay();
+        let call = ToolCall {
+            id: "call_1".into(),
+            name: "bash".into(),
+            arguments: json!({ "command": "ls" }),
+        };
+        let completed = event(EventData::OutputMessageCompleted(
+            OutputMessageCompletedData {
+                message: Message::assistant_with_tools("", vec![call.clone()]),
+                metadata: None,
+                usage: None,
+                error_code: None,
+                error_fields: None,
+                error_disclosure: None,
+            },
+        ));
+        let started = event(EventData::ToolStarted(ToolStartedData {
+            tool_call: call,
+            tool_call_fingerprint: None,
+            display_name: Some("Bash".into()),
+            narration: Some("Listing files".into()),
+        }));
+
+        assert_eq!(t.on_event(&completed).len(), 1);
+        assert!(t.on_event(&started).is_empty());
+    }
+
+    #[test]
+    fn replay_mode_never_emits_an_orphaned_tool_completion() {
+        let mut t = Translator::for_replay();
+        let updates = t.on_event(&event(EventData::ToolCompleted(ToolCompletedData {
+            tool_call_id: "call_1".into(),
+            tool_name: "bash".into(),
+            tool_call_fingerprint: None,
+            tool_result_fingerprint: None,
+            display_name: Some("Bash".into()),
+            success: true,
+            status: "success".into(),
+            result: None,
+            error: None,
+            duration_ms: None,
+            capability_id: None,
+            capability_name: None,
+            narration: Some("Listed files".into()),
+        })));
+
+        assert_eq!(updates.len(), 2);
+        match (&updates[0], &updates[1]) {
+            (SessionUpdate::ToolCall(call), SessionUpdate::ToolCallUpdate(update)) => {
+                assert_eq!(call.tool_call_id.to_string(), "call_1");
+                assert_eq!(call.title, "Listed files");
+                assert_eq!(update.tool_call_id.to_string(), "call_1");
+                assert_eq!(update.fields.title.as_deref(), Some("Listed files"));
+                assert_eq!(update.fields.status, Some(ToolCallStatus::Completed));
+            }
+            other => panic!("expected tool call followed by completion, got {other:?}"),
+        }
     }
 
     #[test]
