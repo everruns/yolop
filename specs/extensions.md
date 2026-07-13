@@ -323,7 +323,7 @@ shape:
   from `meta.json` — the version string and method/capability vocabulary
   are generated, not hardcoded — plus a hand-written ergonomic layer: a
   `serve()` stdio loop and tool/hook registration helpers. Rust
-  (`yolop-extension`, dogfooded by `yolop-lsp`) first; TypeScript and
+  (`yolop-extension`, dogfooded by `yolop-extension-lsp`) first; TypeScript and
   Python when demand shows, following `mira/specs/sdks.md` including its
   drift-guard table (handled-methods ⊇ meta methods, advertised
   capabilities ⊆ meta tokens, emitted messages validate against schema).
@@ -363,7 +363,7 @@ upstream; yolop adds one facet:
   "engines": { "yolop": ">=0.6" },
   "yolop": {
     "protocol_version": "1.0",
-    "capabilityServer": { "command": "yolop-lsp", "args": [] },
+    "capabilityServer": { "command": "yolop-extension-lsp", "args": [] },
     "config_schema": { "$ref": "./config.schema.json" },
     "tools": [
       { "name": "lsp_definition", "never_defer": true },
@@ -389,10 +389,20 @@ upstream; yolop adds one facet:
   using the agent-neutral surfaces they already have (`.mcp.json`,
   `.agents/skills/`, `.agents/hooks.json`); a project README may *recommend*
   extensions, and the user installs them once, globally, by choice.
+- **Naming convention**: crates.io extensions are named
+  `yolop-extension-<name>` (the `cargo-<subcommand>` pattern). The suffix is
+  the extension name — crate `yolop-extension-lsp` is extension `lsp`,
+  capability ref `ext:lsp`. The prefix gives yolop a de-facto namespace and
+  catalog on crates.io with no registry of its own: prefix search is
+  discovery (`/extensions search <term>` can ride the crates.io API later),
+  and squatting/typo risk is scoped to one greppable prefix. Crates should
+  also set `keywords = ["yolop-extension"]`.
 - **Install**: `/extensions install <source>`, plus
   `list | update | remove | enable | disable | doctor` — System commands
   *and* capability tools, so both the user and the model can drive setup.
   Sources, all pinned in `extensions.lock` and updated only explicitly:
+  - `<name>` (bare) — shorthand for `crates.io:yolop-extension-<name>`;
+    `/extensions install lsp` is the whole UX for the common case.
   - `<git-url>[@rev]` — cloned into the global dir; lock records source,
     resolved commit, content hash. Carries the package; the server binary
     must already be resolvable (PATH or the package's `bin/`) — a missing
@@ -438,7 +448,8 @@ Decomposition of the existing capability:
 
 - **Data plane** — rust-analyzer, gopls, pyright, … : already subprocesses;
   now spawned and kept warm by the extension process instead of by yolop.
-- **Control plane** — `yolop-lsp`, a standalone binary on the reference SDK:
+- **Control plane** — `yolop-extension-lsp` (crate name per the convention;
+  binary ditto), a standalone binary on the reference SDK:
   the transport-generic LSP client, server lifecycle manager,
   position-encoding conversion, and workspace-edit safety checks move there
   ~verbatim (`client.rs` is already transport-generic; only `manager.rs`
@@ -518,7 +529,7 @@ the protocol and the SDK.
 4. **Hooks + dynamic prompt + ui/ask.** `hook/fire`, `prompt/contribution`,
    `ui/ask`, `workspace/changed`. Exit: a guardrail-style reference
    extension (block writes to generated files) works.
-5. **`yolop-lsp` dogfood.** Extract the control plane onto the SDK; A/B on
+5. **`yolop-extension-lsp` dogfood.** Extract the control plane onto the SDK; A/B on
    `evals/lsp_integration`; parity retires the built-in.
 6. **Providers.** Descriptor tier after the Provider-catalog refactor;
    provider handshake facet after.
