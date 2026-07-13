@@ -3,7 +3,8 @@ use async_trait::async_trait;
 use eventsource_stream::Eventsource;
 use everruns_core::driver_registry::{
     ChatDriver, DriverConfig, LlmCallConfig, LlmCompletionMetadata, LlmContentPart, LlmMessage,
-    LlmMessageContent, LlmMessageRole, LlmResponseStream, LlmStreamEvent, ProviderMetadata,
+    LlmMessageContent, LlmMessageRole, LlmResponseStream, LlmStreamError, LlmStreamEvent,
+    ProviderMetadata,
 };
 use everruns_core::driver_registry::{DiscoveredModel, DriverRegistry};
 use everruns_core::error::{AgentLoopError, Result as EverrunsResult};
@@ -544,9 +545,7 @@ fn handle_event(
             cache_read_tokens,
             finish_reason,
         ),
-        Some("response.failed") | Some("error") => {
-            LlmStreamEvent::Error(format_codex_error(&json).into())
-        }
+        Some("response.failed") | Some("error") => LlmStreamEvent::Error(codex_stream_error(&json)),
         _ => LlmStreamEvent::TextDelta(String::new()),
     }
 }
@@ -670,16 +669,35 @@ fn done_event(
     }))
 }
 
-fn format_codex_error(json: &Value) -> String {
-    json.get("error")
+fn codex_stream_error(json: &Value) -> LlmStreamError {
+    let error = json.get("error").or_else(|| {
+        json.get("response")
+            .and_then(|response| response.get("error"))
+    });
+    let code = error
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str);
+    let status = error
+        .and_then(provider_error_status)
+        .or_else(|| provider_error_status(json));
+    let message = error
         .and_then(|error| {
             error
                 .get("message")
                 .and_then(Value::as_str)
                 .or_else(|| error.as_str())
         })
-        .unwrap_or_else(|| json.as_str().unwrap_or("Codex stream error"))
-        .to_string()
+        .unwrap_or("Codex stream error");
+
+    LlmStreamError::provider(code, status, message)
+}
+
+fn provider_error_status(value: &Value) -> Option<u16> {
+    value
+        .get("status_code")
+        .or_else(|| value.get("status"))
+        .and_then(Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok())
 }
 
 fn metadata_extra_string(metadata: &ProviderMetadata, key: &str) -> Option<String> {
@@ -743,6 +761,67 @@ mod tests {
             &Mutex::new(Vec::new()),
         );
         assert!(matches!(event, LlmStreamEvent::TextDelta(text) if text == "hello"));
+    }
+
+    #[test]
+    fn response_failed_preserves_provider_error_code() {
+        let event = handle_event(
+            r#"{
+                "type": "response.failed",
+                "response": {
+                    "id": "resp_failed",
+                    "status": "failed",
+                    "error": {
+                        "code": "processing_error",
+                        "message": "An error occurred while processing your request. Please include the request ID req_test_processing_error in your message."
+                    }
+                }
+            }"#,
+            "gpt-test",
+            &Mutex::new(0),
+            &Mutex::new(0),
+            &Mutex::new(None),
+            &Mutex::new(None),
+            &Mutex::new(Vec::new()),
+        );
+
+        let LlmStreamEvent::Error(error) = event else {
+            panic!("expected structured stream error");
+        };
+        assert_eq!(error.code.as_deref(), Some("processing_error"));
+        assert_eq!(error.status, None);
+        assert!(error.message.contains("req_test_processing_error"));
+        assert_eq!(
+            error.kind(),
+            everruns_core::error::LlmErrorKind::Unavailable
+        );
+    }
+
+    #[test]
+    fn error_event_preserves_provider_status() {
+        let event = handle_event(
+            r#"{
+                "type": "error",
+                "error": {
+                    "code": "server_error",
+                    "status_code": 503,
+                    "message": "Service temporarily unavailable"
+                }
+            }"#,
+            "gpt-test",
+            &Mutex::new(0),
+            &Mutex::new(0),
+            &Mutex::new(None),
+            &Mutex::new(None),
+            &Mutex::new(Vec::new()),
+        );
+
+        let LlmStreamEvent::Error(error) = event else {
+            panic!("expected structured stream error");
+        };
+        assert_eq!(error.code.as_deref(), Some("server_error"));
+        assert_eq!(error.status, Some(503));
+        assert_eq!(error.message, "Service temporarily unavailable");
     }
 
     fn reasoning_event(delta_json: &str) -> LlmStreamEvent {
