@@ -6,6 +6,7 @@
 //! dependency so transcript wording and status values can be tested without a
 //! terminal buffer.
 
+use crate::session_tasks_view::BackgroundCounts;
 use crate::transcript::{Author, ChatLine, StreamKind, StreamPreview};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,7 +30,7 @@ pub(crate) struct PresentationState {
     pub status_layout: StatusLayout,
     pub hooks_summary: String,
     pub approval_mode: String,
-    pub background: Option<(usize, usize)>,
+    pub background: Option<BackgroundCounts>,
     pub goal_indicator: Option<String>,
     pub ask_indicator: Option<String>,
     pub worktree_compact: Option<String>,
@@ -142,7 +143,7 @@ fn expanded_status_lines(state: &PresentationState) -> Vec<StatusLine> {
         status_value(message_count_label(state.lines_count)),
         status_field("tokens", token_label(state.session_tokens)),
     ];
-    if let Some(bg) = background_label(state.background) {
+    if let Some(bg) = background_label(state.background, false) {
         counts.push(status_field("bg", bg));
     }
 
@@ -185,7 +186,7 @@ fn status_contributions(state: &PresentationState) -> Vec<Vec<StatusField>> {
         StatusLayout::Expanded => "[collapse ↑]",
     };
     let mut counts = vec![status_value(message_count_label(state.lines_count))];
-    if let Some(bg) = background_label(state.background) {
+    if let Some(bg) = background_label(state.background, true) {
         counts.push(status_field("bg", bg));
     }
     if let Some(wt) = &state.worktree_compact {
@@ -217,12 +218,22 @@ fn ask_label(state: &PresentationState) -> String {
     state.ask_indicator.clone().unwrap_or_else(|| "—".into())
 }
 
-fn background_label(counts: Option<(usize, usize)>) -> Option<String> {
-    let (running, total) = counts?;
-    if total == 0 {
+fn background_label(counts: Option<BackgroundCounts>, compact: bool) -> Option<String> {
+    let counts = counts?;
+    if counts.total == 0 {
         return None;
     }
-    Some(format!("{running}▸/{total}"))
+    if compact {
+        Some(format!(
+            "{} run/{} sched/{}",
+            counts.running, counts.scheduled, counts.total
+        ))
+    } else {
+        Some(format!(
+            "{} running · {} scheduled · {} total",
+            counts.running, counts.scheduled, counts.total
+        ))
+    }
 }
 
 fn status_value(value: impl Into<String>) -> StatusField {
@@ -346,7 +357,11 @@ mod tests {
     fn status_model_exposes_expanded_background_and_session_values() {
         let model = PresentationState {
             status_layout: StatusLayout::Expanded,
-            background: Some((2, 5)),
+            background: Some(BackgroundCounts {
+                running: 2,
+                scheduled: 1,
+                total: 5,
+            }),
             ..state()
         };
 
@@ -356,7 +371,10 @@ mod tests {
         assert_eq!(lines[0].fields[1].label, Some("provider"));
         assert_eq!(lines[0].fields[1].value, "openai");
         assert_eq!(lines[2].fields[2].label, Some("bg"));
-        assert_eq!(lines[2].fields[2].value, "2▸/5");
+        assert_eq!(
+            lines[2].fields[2].value,
+            "2 running · 1 scheduled · 5 total"
+        );
         assert_eq!(lines[3].fields[0].label, Some("session"));
         assert_eq!(lines[3].fields[0].value, "sess_123");
     }

@@ -36,7 +36,9 @@ const BACKGROUND_SYSTEM_PROMPT: &str = "<capability id=\"background\">\n\
     or `until <check>; do sleep 30; done`), say what you are waiting for, and end \
     the turn: completion wakes you with the result. You can keep working on other \
     steps while it runs. In one-shot (`-p`) runs there is no wake — block on the \
-    spawned task with `wait_task` instead of ending the turn.\n\
+    spawned task with `wait_task` instead of ending the turn. To inspect background \
+    state, call `list_tasks` once without kind or state filters; scheduled work is a \
+    `monitor`, not a `background_tool`.\n\
     </capability>";
 
 pub(crate) struct BackgroundCapability {

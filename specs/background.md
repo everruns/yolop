@@ -37,6 +37,9 @@ The run executes on a detached task, streams to a session-file log
 (`/.background/<run_id>/output.log`), writes a `result.json`, and mirrors its
 lifecycle onto a `background_tool` session task (`Running` → `Succeeded` /
 `Failed` / `Canceled`). `signal_on_completion` defaults to `true`.
+Foreground shell calls retain the short interactive deadline; detached shell
+runs use a separate 24-hour wall-clock limit so CI watches can outlive a turn
+without becoming unbounded host processes.
 
 For delayed or recurring work, `spawn_background` accepts a `schedule` instead
 of starting the wrapped tool immediately. Everruns persists the monitor and its
@@ -81,7 +84,9 @@ The Everruns `session_tasks` capability exposes the model-facing tools:
 with the file tools), `cancel_task`, `message_task`, and `wait_task`. Yolop adds
 one host-facing surface: the `/background` command (and the `Ctrl+B` TUI panel /
 status-bar count) lists the session's tasks via
-`session_tasks_view::render_task_list`.
+`session_tasks_view::render_task_list`. Status counts distinguish executing
+tools from scheduled monitors so an armed schedule is not presented as a
+running command.
 
 ### Proactive wake (the callback)
 

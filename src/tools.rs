@@ -47,7 +47,8 @@ impl Workspace {
 
 pub struct BashTool {
     ws: Workspace,
-    timeout_secs: u64,
+    foreground_timeout_secs: u64,
+    background_timeout_secs: u64,
     max_output_bytes: usize,
 }
 
@@ -73,8 +74,17 @@ impl BashTool {
     pub fn new(ws: Workspace) -> Self {
         Self {
             ws,
-            timeout_secs: 120,
+            foreground_timeout_secs: 120,
+            background_timeout_secs: 24 * 60 * 60,
             max_output_bytes: 1024 * 1024,
+        }
+    }
+
+    fn timeout_secs(&self, background: bool) -> u64 {
+        if background {
+            self.background_timeout_secs
+        } else {
+            self.foreground_timeout_secs
         }
     }
 
@@ -89,7 +99,8 @@ impl BashTool {
                 return Err(ToolExecutionResult::tool_error(message));
             }
         };
-        let timeout = Duration::from_secs(self.timeout_secs);
+        let timeout_secs = self.timeout_secs(sink.is_some());
+        let timeout = Duration::from_secs(timeout_secs);
         let max_bytes = self.max_output_bytes;
 
         if let Some(sink) = &sink {
@@ -178,7 +189,7 @@ impl BashTool {
                          event (CI run, deploy, long build), re-run it detached via \
                          spawn_background and end the turn — completion wakes the agent \
                          (in one-shot mode, block on the task with wait_task instead).",
-                        self.timeout_secs
+                        timeout_secs
                     )));
                 }
             };
@@ -475,7 +486,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bash_background_executable_streams_and_returns_success_outcome() {
+    async fn bash_background_executable_uses_detached_timeout_and_streams_output() {
         #[derive(Default)]
         struct RecordingSink {
             output: Mutex<Vec<(String, String)>>,
@@ -503,13 +514,16 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+        let mut tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+        // A zero foreground timeout proves the background entry point selects
+        // its independent deadline instead of inheriting the interactive one.
+        tool.foreground_timeout_secs = 0;
         let sink = Arc::new(RecordingSink::default());
         let outcome = tool
             .as_background_executable()
             .expect("background executor")
             .execute_background(
-                json!({ "command": "printf stdout-line; printf stderr-line >&2" }),
+                json!({ "command": "sleep 0.05; printf stdout-line; printf stderr-line >&2" }),
                 ToolContext::new(SessionId::new()),
                 sink.clone(),
             )
