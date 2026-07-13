@@ -116,7 +116,9 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   to a session-file log, writes a `result.json`, and tracks a background session
   task. Inspect and control them with `list_tasks`, `get_task`, and
   `cancel_task` (the `/background` command and the `Ctrl+B` panel list them). A
-  task's result survives a restart. `spawn_background` can also schedule a
+  task's result survives a restart. Detached shell commands may run for up to
+  24 hours (foreground `bash` remains limited to 120 seconds).
+  `spawn_background` can also schedule a
   one-shot or recurring monitor; yolop executes due schedules while the TUI or
   ACP session is running and recovers overdue schedules after restart. When a
   schedule fires or a task finishes while the session is idle, yolop

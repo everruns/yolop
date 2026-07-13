@@ -443,7 +443,7 @@ impl App {
         Some(format!("? ask ({turns})"))
     }
 
-    fn background_counts(&self) -> Option<(usize, usize)> {
+    fn background_counts(&self) -> Option<crate::session_tasks_view::BackgroundCounts> {
         crate::session_tasks_view::counts(&self.session_tasks)
     }
 
@@ -3181,7 +3181,11 @@ mod tests {
         let state = ViewState {
             presentation: PresentationState {
                 status_layout: StatusLayout::Expanded,
-                background: Some((1, 2)),
+                background: Some(crate::session_tasks_view::BackgroundCounts {
+                    running: 1,
+                    scheduled: 0,
+                    total: 2,
+                }),
                 ..presentation_state_idle()
             },
             ..view_state_idle()
@@ -3192,8 +3196,8 @@ mod tests {
             "status should show bg segment: {lines}"
         );
         assert!(
-            lines.contains("1▸/2"),
-            "status should show running/total: {lines}"
+            lines.contains("1 running · 0 scheduled · 2 total"),
+            "status should distinguish running, scheduled, and total: {lines}"
         );
     }
 
@@ -3454,11 +3458,18 @@ mod tests {
         app.refresh_session_tasks().await;
         app.background_panel = Some(0);
 
-        assert_eq!(app.presentation_state().background, Some((1, 1)));
+        assert_eq!(
+            app.presentation_state().background,
+            Some(crate::session_tasks_view::BackgroundCounts {
+                running: 1,
+                scheduled: 0,
+                total: 1,
+            })
+        );
         let lines = render_app_lines(app, 120, 20).join("\n");
         assert!(lines.contains("Background tasks"), "panel header: {lines}");
         assert!(
-            lines.contains("background task(s), 1 active"),
+            lines.contains("background task(s): 1 running, 0 scheduled"),
             "panel should summarize session tasks: {lines}"
         );
         assert!(
