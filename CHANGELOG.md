@@ -10,6 +10,53 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.7.0] - 2026-07-14
+
+### Highlights
+
+- **YEP capability servers (extensions phase 1).** A new extensions
+  mechanism lets capability servers plug into yolop, landing the first phase
+  of the YEP (Yolop Extension Proposal) design.
+- **Free web search tool.** A built-in web search tool is now available to
+  the agent, no external provider key required.
+- **Authenticated MCP server management.** First-class tooling to add and
+  manage authenticated MCP servers, with bearer auth supplied from the
+  environment and the groundwork for MCP OAuth.
+- **Richer session and client context.** Sessions expose list-friendly
+  metadata and the active client UI, and workspace paths now resolve to
+  their real locations.
+- **More reliable background execution.** Scheduled monitors run locally,
+  obsolete monitors are disarmed, and task status and timeout reporting are
+  clearer.
+
+### What's Changed
+
+* fix(background): disarm obsolete scheduled monitors ([#274](https://github.com/everruns/yolop/pull/274)) by @chaliy
+* feat(extensions): YEP capability servers (phase 1) ([#275](https://github.com/everruns/yolop/pull/275)) by @chaliy
+* test(evals): cover stale history grounding ([#268](https://github.com/everruns/yolop/pull/268)) by @chaliy
+* fix(codex): preserve structured stream errors ([#273](https://github.com/everruns/yolop/pull/273)) by @chaliy
+* fix(acp): reconstruct tool calls on session replay ([#272](https://github.com/everruns/yolop/pull/272)) by @chaliy
+* fix(background): clarify task status and timeout ([#271](https://github.com/everruns/yolop/pull/271)) by @chaliy
+* chore(specs): add extensions mechanism proposal (YEP) ([#270](https://github.com/everruns/yolop/pull/270)) by @chaliy
+* fix(ci): update Node 24 workflow actions ([#269](https://github.com/everruns/yolop/pull/269)) by @chaliy
+* fix(runtime): keep activate skill schema visible ([#267](https://github.com/everruns/yolop/pull/267)) by @chaliy
+* feat(session): add list-friendly metadata ([#266](https://github.com/everruns/yolop/pull/266)) by @chaliy
+* fix(mcp): supply bearer auth from environment ([#265](https://github.com/everruns/yolop/pull/265)) by @chaliy
+* feat(context): expose active client UI ([#264](https://github.com/everruns/yolop/pull/264)) by @chaliy
+* fix(background): execute local scheduled monitors ([#263](https://github.com/everruns/yolop/pull/263)) by @chaliy
+* feat(auth): prepare MCP OAuth foundation ([#262](https://github.com/everruns/yolop/pull/262)) by @chaliy
+* fix(codex): strip empty HTML-comment reasoning summary placeholders ([#261](https://github.com/everruns/yolop/pull/261)) by @chaliy
+* fix(agent): improve search efficiency ([#260](https://github.com/everruns/yolop/pull/260)) by @chaliy
+* fix(tui): mirror session system notices above composer ([#259](https://github.com/everruns/yolop/pull/259)) by @chaliy
+* fix(paths): expose real workspace paths ([#258](https://github.com/everruns/yolop/pull/258)) by @chaliy
+* chore(deps): bump everruns to 0.17.7 ([#257](https://github.com/everruns/yolop/pull/257)) by @chaliy
+* fix(acp): avoid duplicated command hints ([#256](https://github.com/everruns/yolop/pull/256)) by @chaliy
+* chore(runtime): update default provider models to latest catalog ([#255](https://github.com/everruns/yolop/pull/255)) by @chaliy
+* feat(tools): add free web search ([#253](https://github.com/everruns/yolop/pull/253)) by @chaliy
+* feat(mcp): add authenticated server management ([#254](https://github.com/everruns/yolop/pull/254)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.6.0...v0.7.0
+
 ## [0.6.0] - 2026-07-11
 
 ### Highlights
