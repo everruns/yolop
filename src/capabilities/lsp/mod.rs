@@ -15,10 +15,13 @@
 mod client;
 mod manager;
 
+use crate::capabilities::narration::stable_labeled;
 use crate::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, basename, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use manager::{
     DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_REQUEST_TIMEOUT_MS, LspManager, MAX_DIAGNOSTICS_WAIT_MS,
@@ -368,6 +371,20 @@ impl Tool for LspTool {
         })
     }
 
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        _locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        Some(stable_labeled(
+            self.display_name().unwrap_or(self.name()),
+            lsp_narration_detail(self.action, &tool_call.arguments),
+            phase,
+        ))
+    }
+
     fn description(&self) -> &str {
         match self.action {
             LspAction::Diagnostics => {
@@ -493,6 +510,31 @@ impl Tool for LspTool {
 
 // ---------------------------------------------------------------------------
 // Argument helpers
+
+fn lsp_narration_detail(action: LspAction, arguments: &Value) -> Option<String> {
+    match action {
+        LspAction::Symbols => {
+            if let Some(query) = arg_str(arguments, &["query"]) {
+                return Some(truncate(query, 48));
+            }
+            arg_str(arguments, &["path", "hint_path"]).map(|path| basename(path).to_string())
+        }
+        LspAction::Rename => {
+            let path = arg_str(arguments, &["path"]).map(|path| basename(path).to_string())?;
+            match arg_str(arguments, &["new_name"]) {
+                Some(name) => Some(format!("{path} → {}", truncate(name, 32))),
+                None => Some(path),
+            }
+        }
+        _ => {
+            let path = arg_str(arguments, &["path"]).map(|path| basename(path).to_string())?;
+            match arguments.get("line").and_then(Value::as_u64) {
+                Some(line) => Some(format!("{path}:{line}")),
+                None => Some(path),
+            }
+        }
+    }
+}
 
 fn required_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str> {
     arguments

@@ -34,15 +34,14 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
-    BackgroundExecutionCapability, BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability,
-    INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID,
-    LoopDetectionCapability, MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID,
-    PromptCachingCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID,
-    SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID,
-    ScopedSkillsCapability, SessionStorageCapability, StatelessTodoListCapability,
-    TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID,
-    ToolOutputPersistenceCapability, ToolSearchCapability, USER_HOOKS_CAPABILITY_ID,
-    UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
+    BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, INFINITY_CONTEXT_CAPABILITY_ID,
+    InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability,
+    MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability,
+    SESSION_FILE_SYSTEM_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SESSION_TASKS_CAPABILITY_ID,
+    SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability,
+    SessionStorageCapability, StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID,
+    TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
+    USER_HOOKS_CAPABILITY_ID, UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::driver_registry::{DriverRegistry, ProviderMetadata};
@@ -2497,7 +2496,7 @@ pub async fn build_with_options(
     capabilities.register(
         crate::capabilities::session_tasks_override::TruthfulSessionTasksCapability::new(),
     );
-    capabilities.register(BackgroundExecutionCapability);
+    capabilities.register(crate::capabilities::NarratedBackgroundExecutionCapability::new());
     capabilities.register(SessionStorageCapability);
     capabilities.register(DaytonaCapability);
     capabilities.register(UserHooksCapability);

@@ -1,6 +1,9 @@
 use std::time::Duration;
 
+use crate::capabilities::narration::stable_labeled;
 use async_trait::async_trait;
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::{Tool, ToolExecutionResult, capabilities::Capability, tool_types::ToolHints};
 use html_escape::decode_html_entities;
 use regex::Regex;
@@ -284,6 +287,17 @@ impl Tool for FreeWebSearchTool {
 
     fn display_name(&self) -> Option<&str> {
         Some("Free Web Search")
+    }
+
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        _locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        let detail = arg_str(&tool_call.arguments, &["query"]).map(|query| truncate(query, 48));
+        Some(stable_labeled("Search web", detail, phase))
     }
 
     fn description(&self) -> &str {
