@@ -1,6 +1,16 @@
 # Extensions — capability servers over the yolop extension protocol
 
-Status: **proposal** (design record, nothing implemented).
+Status: **phase 1 implemented** in `src/extensions/` (protocol core,
+transport-generic client, persistent process manager, package discovery,
+`ExtensionCapability` adapter, `[[capabilities]]` enablement, manifest
+clamp, never-defer wiring). Later phases — install verbs and lockfile,
+contributed MCP servers, hooks, dynamic prompt, `ui/ask`, schema-gen +
+SDKs, `/extensions doctor`, providers — remain design-of-record below.
+Phase-1 deltas from the original sketch: tool *definitions* (description,
+schema, policy) live in the manifest, and the handshake's `tools` list
+carries only the served names it narrows to — keeping every contribution
+inspectable without executing the binary; `tool/update` progress surfaces
+through the tracing layer until the TUI grows a live seam.
 
 ## Why
 
@@ -282,9 +292,9 @@ yolop                                   capability server (ext:lsp)
   |           capabilities:["tools","streaming","prompt"],
   |           capability_params:{
   |             prompt:{static:"<directive text>"},
-  |             tools:[{name:"lsp_definition", schema:{...},
-  |                     never_defer:true, streaming:false}, ...x7]}}
-  |                                     # ^ clamped vs manifest (D4)
+  |             tools:[{name:"lsp_definition"}, ...x7]}}
+  |             # served names only — definitions (description/schema/
+  |             # policy) live in the manifest; clamped vs manifest (D4)
   |-- initialized
   |   ... agent turn ...
   |-- {id:1} tool/call {tool_call_id:"t1", name:"lsp_definition", args:{...}}
