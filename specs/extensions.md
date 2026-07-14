@@ -27,10 +27,16 @@ handler-based server SDK (`Server::new().tool().on_hook().dynamic_prompt()
 JSON-RPC loop. A reference `echo` example server built on it is driven by
 yolop's own client in an integration test — the SDK's interop proof and the
 foundation a future `yolop-extension-lsp` builds on.
+Schema artifact: `schema/yep/v1/meta.json` is generated from the `yolop-yep`
+`meta` module by `cargo run -p yolop-yep --bin schema-gen` (the mira pattern);
+a `cargo test` drift guard fails CI if the committed file is stale, so the
+method + capability-token vocabulary can't change without the artifact
+changing. A non-Rust author reads it to discover the wire surface. (Full
+JSON-Schema of the payloads — `schema.json` — is still a follow-up.)
 Later — the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in), `ui/ask` (needs the
 server→host reverse-request channel, still refused in phase 1),
-`workspace/changed`, `schema/yep/v1/` generation, `/extensions doctor`,
+`workspace/changed`, payload `schema.json`, `/extensions doctor`,
 providers — remain design-of-record below. Not yet wired within phase 2 (tracked as
 follow-ups): the toolchain-free crates.io source (native sparse-index +
 tarball fetch), full JSON-Schema config validation, and `config/changed`

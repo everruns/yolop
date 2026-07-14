@@ -25,8 +25,10 @@
 //!
 //! See `specs/extensions.md` in the yolop repo for the full protocol.
 
+pub mod meta;
 pub mod protocol;
 mod server;
 
+pub use meta::{Meta, meta, meta_json};
 pub use protocol::PROTOCOL_VERSION;
 pub use server::{HookResponse, Server, ToolResponse};
