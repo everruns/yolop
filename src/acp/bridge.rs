@@ -1,8 +1,9 @@
 //! Translation from everruns runtime events into ACP `session/update`s.
 //!
-//! The runtime emits a rich event stream (reasoning deltas, message deltas,
-//! tool lifecycle, todo writes). ACP wants a narrower vocabulary: assistant
-//! message chunks, thought chunks, tool calls, tool-call updates, and plans.
+//! The runtime emits a rich event stream (reasoning deltas and summaries,
+//! message deltas, tool lifecycle, todo writes). ACP wants a narrower
+//! vocabulary: assistant message chunks, thought chunks, tool calls,
+//! tool-call updates, and plans.
 //! [`Translator`] is the pure, per-turn state machine that performs that
 //! mapping. Keeping it free of I/O is what makes the wire behaviour fully
 //! unit-testable without a live model.
@@ -100,15 +101,19 @@ impl Translator {
                 if data.message.role != MessageRole::Agent {
                     return Vec::new();
                 }
+                let mut updates = data
+                    .message
+                    .text()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(text))])
+                    .unwrap_or_default();
                 if data.message.has_tool_calls() {
                     if !self.replay_history {
-                        return Vec::new();
+                        return updates;
                     }
-                    return data
-                        .message
-                        .content
-                        .iter()
-                        .filter_map(|part| match part {
+                    updates.extend(data.message.content.iter().filter_map(|part| {
+                        match part {
                             ContentPart::ToolCall(call) if call.name == WRITE_TODOS => {
                                 plan_from_value(&call.arguments)
                                     .map(|entries| SessionUpdate::Plan(Plan::new(entries)))
@@ -124,15 +129,10 @@ impl Translator {
                                 ))
                             }
                             _ => None,
-                        })
-                        .collect();
+                        }
+                    }));
                 }
-                match data.message.text().map(str::trim) {
-                    Some(text) if !text.is_empty() => {
-                        vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(text))]
-                    }
-                    _ => Vec::new(),
-                }
+                updates
             }
             EventData::ReasonThinkingDelta(data) => {
                 if data.delta.is_empty() {
@@ -142,15 +142,25 @@ impl Translator {
                     &data.delta,
                 ))]
             }
-            EventData::ReasonItem(data) => data
-                .summary
-                .iter()
-                .filter_map(|segment| {
-                    let trimmed = segment.trim();
-                    (!trimmed.is_empty())
-                        .then(|| SessionUpdate::AgentThoughtChunk(protocol::text_chunk(trimmed)))
-                })
-                .collect(),
+            EventData::ReasonItem(data) => {
+                // Provider-curated summaries are safe public narration, unlike
+                // plaintext extended thinking. ACP has no commentary update,
+                // so match the terminal projection and use an agent message.
+                let narration = data
+                    .summary
+                    .iter()
+                    .map(|segment| segment.trim())
+                    .filter(|segment| !segment.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                if narration.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                        narration,
+                    ))]
+                }
+            }
             EventData::ToolStarted(data) => {
                 let name = data.tool_call.name.as_str();
                 if name == WRITE_TODOS {
@@ -321,10 +331,10 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use everruns_core::events::{
-        Event, EventContext, OutputMessageCompletedData, OutputMessageDeltaData,
+        Event, EventContext, OutputMessageCompletedData, OutputMessageDeltaData, ReasonItemData,
         ReasonThinkingDeltaData, ToolCompletedData, ToolStartedData,
     };
-    use everruns_core::message::Message;
+    use everruns_core::message::{ExecutionPhase, Message};
     use everruns_core::tool_types::ToolCall;
     use everruns_core::typed_id::{EventId, SessionId, TurnId};
     use serde_json::json;
@@ -404,6 +414,61 @@ mod tests {
             updates,
             vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
                 "full answer"
+            ))]
+        );
+    }
+
+    #[test]
+    fn completed_tool_call_message_keeps_public_commentary() {
+        let mut t = Translator::new();
+        let mut message = Message::assistant_with_tools(
+            "I’ll inspect the event bridge next.",
+            vec![ToolCall {
+                id: "call_1".into(),
+                name: "read_file".into(),
+                arguments: json!({ "path": "src/acp/bridge.rs" }),
+            }],
+        );
+        message.phase = Some(ExecutionPhase::Commentary);
+        let updates = t.on_event(&event(EventData::OutputMessageCompleted(
+            OutputMessageCompletedData {
+                message,
+                metadata: None,
+                usage: None,
+                error_code: None,
+                error_fields: None,
+                error_disclosure: None,
+            },
+        )));
+
+        assert_eq!(
+            updates,
+            vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                "I’ll inspect the event bridge next."
+            ))]
+        );
+    }
+
+    #[test]
+    fn reasoning_summaries_render_as_public_narration() {
+        let mut t = Translator::new();
+        let updates = t.on_event(&event(EventData::ReasonItem(ReasonItemData {
+            turn_id: TurnId::new(),
+            provider: "openai".into(),
+            model: Some("gpt-5".into()),
+            item_id: "reason_1".into(),
+            encrypted_content: Some("opaque".into()),
+            summary: vec![
+                "**Investigating event semantics**".into(),
+                " **Comparing ACP projections** ".into(),
+            ],
+            token_count: None,
+        })));
+
+        assert_eq!(
+            updates,
+            vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                "**Investigating event semantics**\n\n**Comparing ACP projections**"
             ))]
         );
     }
