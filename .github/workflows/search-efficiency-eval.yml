@@ -1,0 +1,146 @@
+name: Search Efficiency Eval
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 6 * * *"
+
+concurrency:
+  group: search-efficiency-eval
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  regression:
+    name: Preserved-baseline regression
+    if: github.repository == 'everruns/yolop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+      HARNESS_BASIC_BASELINE_BIN: ${{ github.workspace }}/target/yolop-eval-bin/baseline/yolop
+      HARNESS_BASIC_CANDIDATE_BIN: ${{ github.workspace }}/target/yolop-eval-bin/candidate/yolop
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The monitor builds the immutable pre-fix revision recorded in the
+          # baseline manifest as well as the triggering candidate revision.
+          fetch-depth: 0
+
+      - name: Verify Doppler access
+        run: |
+          if [ -z "${DOPPLER_TOKEN}" ]; then
+            echo "::error::DOPPLER_TOKEN is required for the search-efficiency eval."
+            exit 1
+          fi
+
+      - name: Read regression baseline
+        run: |
+          manifest="evals/harness_basic/search_efficiency_baseline.json"
+          baseline_commit="$(jq -er '.baseline.git_commit | select(test("^[0-9a-f]{40}$"))' "${manifest}")"
+          focused_preset="$(jq -er '.monitor.focused_preset | select(test("^[a-z0-9-]+$"))' "${manifest}")"
+          focused_trials="$(jq -er '.monitor.focused_trials | select(type == "number" and . > 0)' "${manifest}")"
+          control_preset="$(jq -er '.monitor.control_preset | select(test("^[a-z0-9-]+$"))' "${manifest}")"
+          control_trials="$(jq -er '.monitor.control_trials | select(type == "number" and . > 0)' "${manifest}")"
+          analyzer="$(jq -er '.monitor.analyzer | select(test("^[a-z0-9_-]+\\.py$"))' "${manifest}")"
+          {
+            echo "BASELINE_COMMIT=${baseline_commit}"
+            echo "FOCUSED_PRESET=${focused_preset}"
+            echo "FOCUSED_TRIALS=${focused_trials}"
+            echo "CONTROL_PRESET=${control_preset}"
+            echo "CONTROL_TRIALS=${control_trials}"
+            echo "SEARCH_EFFICIENCY_ANALYZER=${analyzer}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "search-efficiency-eval"
+
+      - name: Install Doppler CLI
+        uses: dopplerhq/cli-action@v4
+
+      - name: Install pinned Mira CLI
+        run: cargo install mira-cli --version 0.3.0 --locked
+
+      - name: Build candidate and preserved baseline
+        run: |
+          mkdir -p "$(dirname "${HARNESS_BASIC_CANDIDATE_BIN}")" "$(dirname "${HARNESS_BASIC_BASELINE_BIN}")"
+
+          cargo build --release --locked --bin yolop
+          cp target/release/yolop "${HARNESS_BASIC_CANDIDATE_BIN}"
+
+          baseline_worktree="${RUNNER_TEMP}/yolop-search-baseline"
+          git worktree add --detach "${baseline_worktree}" "${BASELINE_COMMIT}"
+          cargo build \
+            --release \
+            --locked \
+            --bin yolop \
+            --manifest-path "${baseline_worktree}/Cargo.toml" \
+            --target-dir "${GITHUB_WORKSPACE}/target/search-efficiency-baseline"
+          cp "${GITHUB_WORKSPACE}/target/search-efficiency-baseline/release/yolop" "${HARNESS_BASIC_BASELINE_BIN}"
+
+      - name: Run focused search cases
+        working-directory: evals/harness_basic
+        run: |
+          mira_status=0
+          doppler run -- mira run \
+            --preset "${FOCUSED_PRESET}" \
+            --trials "${FOCUSED_TRIALS}" \
+            --group-by binary \
+            --max-concurrent 4 \
+            --provider-concurrency openai=4 \
+            --out "${RUNNER_TEMP}/search-efficiency-focused.json" \
+            --format json || mira_status=$?
+          if [ ! -s "${RUNNER_TEMP}/search-efficiency-focused.json" ]; then
+            echo "::error::Mira did not produce the focused report (exit ${mira_status})."
+            exit 1
+          fi
+          echo "Mira focused exit: ${mira_status}; the distribution analyzer decides the regression gate."
+
+      - name: Run ordinary controls
+        working-directory: evals/harness_basic
+        run: |
+          mira_status=0
+          doppler run -- mira run \
+            --preset "${CONTROL_PRESET}" \
+            --trials "${CONTROL_TRIALS}" \
+            --group-by binary \
+            --max-concurrent 4 \
+            --provider-concurrency openai=4 \
+            --out "${RUNNER_TEMP}/search-efficiency-controls.json" \
+            --format json || mira_status=$?
+          if [ ! -s "${RUNNER_TEMP}/search-efficiency-controls.json" ]; then
+            echo "::error::Mira did not produce the control report (exit ${mira_status})."
+            exit 1
+          fi
+          echo "Mira controls exit: ${mira_status}; the distribution analyzer decides the regression gate."
+
+      - name: Gate trial distributions
+        working-directory: evals/harness_basic
+        run: |
+          python3 "${SEARCH_EFFICIENCY_ANALYZER}" \
+            "${RUNNER_TEMP}/search-efficiency-focused.json" \
+            "${RUNNER_TEMP}/search-efficiency-controls.json"
+
+      - name: Upload eval reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: search-efficiency-${{ github.run_id }}
+          path: |
+            evals/harness_basic/results/
+            ${{ runner.temp }}/search-efficiency-focused.json
+            ${{ runner.temp }}/search-efficiency-controls.json
+          if-no-files-found: warn
+          retention-days: 30

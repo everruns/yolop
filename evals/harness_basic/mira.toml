@@ -48,12 +48,21 @@ axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "no
 # SEARCH-EFFICIENCY — regressions from a real failed session: prior-session
 # discovery, nested grep globs, bounded repo maps, missing-rg recovery, and
 # warnings after repeated zero-result searches.
-# Two ordinary controls catch prompt/tool-surface regressions. Three trials make
-# trajectory variance visible without turning the focused run into a full suite.
+# Three trials make trajectory variance visible without turning the focused run
+# into a full suite.
 # Requires HARNESS_BASIC_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
 #   doppler run -- mira run --preset search-efficiency --trials 3 --group-by binary
 [presets.search-efficiency]
-samples = ["prior-session-reference", "grep-files-nested-glob", "missing-rg-recovery", "zero-result-search-recovery", "repo-map-bounded", "add-fn", "find-constant"]
+samples = ["prior-session-reference", "grep-files-nested-glob", "missing-rg-recovery", "zero-result-search-recovery", "repo-map-bounded"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
+
+# SEARCH-CONTROLS — ordinary tasks that detect global prompt/tool-surface
+# regressions. Five trials reduce false alarms from ordinary model variance.
+# Requires HARNESS_BASIC_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
+#   doppler run -- mira run --preset search-controls --trials 5 --group-by binary
+[presets.search-controls]
+samples = ["add-fn", "find-constant"]
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 

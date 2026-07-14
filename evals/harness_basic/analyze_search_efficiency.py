@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare baseline/candidate trials from a harness_basic report.json."""
+"""Compare baseline/candidate trials from harness_basic report.json files."""
 
 from __future__ import annotations
 
@@ -11,6 +11,16 @@ from collections import defaultdict
 from pathlib import Path
 
 CONTROLS = {"add-fn", "find-constant"}
+FOCUSED = {
+    "prior-session-reference",
+    "grep-files-nested-glob",
+    "missing-rg-recovery",
+    "zero-result-search-recovery",
+    "repo-map-bounded",
+}
+EXPECTED_SAMPLES = FOCUSED | CONTROLS
+FOCUSED_TRIALS = 3
+CONTROL_TRIALS = 5
 METRICS = (
     "tool_calls",
     "llm_calls",
@@ -33,14 +43,17 @@ def value(case: dict, metric: str) -> float:
     return float(transcript.get("metrics", {}).get(metric, 0))
 
 
-def analyze(report: dict) -> tuple[list[str], list[str]]:
+def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str]]:
     grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
-    for case in report.get("cases", []):
-        binary = case.get("params", {}).get("binary")
-        if binary in {"baseline", "candidate"} and not case.get("skipped", False):
-            grouped[(case["sample"], binary)].append(case)
+    for report in reports:
+        for case in report.get("cases", []):
+            binary = case.get("params", {}).get("binary")
+            if binary in {"baseline", "candidate"} and not case.get(
+                "skipped", False
+            ):
+                grouped[(case["sample"], binary)].append(case)
 
-    samples = sorted({sample for sample, _ in grouped})
+    samples = sorted(EXPECTED_SAMPLES)
     failures: list[str] = []
     rows: list[str] = []
     improved = 0
@@ -50,9 +63,10 @@ def analyze(report: dict) -> tuple[list[str], list[str]]:
         if not baseline or not candidate:
             failures.append(f"{sample}: missing baseline or candidate trials")
             continue
-        if len(baseline) != 3 or len(candidate) != 3:
+        expected_trials = CONTROL_TRIALS if sample in CONTROLS else FOCUSED_TRIALS
+        if len(baseline) != expected_trials or len(candidate) != expected_trials:
             failures.append(
-                f"{sample}: expected 3 trials per binary, got "
+                f"{sample}: expected {expected_trials} trials per binary, got "
                 f"{len(baseline)} baseline / {len(candidate)} candidate"
             )
         base_pass = sum(bool(case.get("passed")) for case in baseline) / len(baseline)
@@ -61,9 +75,9 @@ def analyze(report: dict) -> tuple[list[str], list[str]]:
             failures.append(
                 f"{sample}: correctness regressed {base_pass:.0%} -> {cand_pass:.0%}"
             )
-        if sample not in CONTROLS and cand_pass < 2 / 3:
+        if sample in FOCUSED and cand_pass < 2 / 3:
             failures.append(f"{sample}: candidate focused pass rate {cand_pass:.0%} < 67%")
-        if sample not in CONTROLS and cand_pass > base_pass:
+        if sample in FOCUSED and cand_pass > base_pass:
             improved += 1
 
         medians = {}
@@ -99,18 +113,28 @@ def analyze(report: dict) -> tuple[list[str], list[str]]:
             f"bytes {medians[('baseline', 'total_tool_result_bytes')]:g}->"
             f"{medians[('candidate', 'total_tool_result_bytes')]:g}"
         )
-    if samples and improved == 0:
+    if improved == 0:
         failures.append("no focused case improved over baseline")
-    if not samples:
-        failures.append("report contains no comparable baseline/candidate cases")
     return rows, failures
+
+
+def analyze(report: dict) -> tuple[list[str], list[str]]:
+    """Analyze one report; retained for callers with a combined report."""
+    return analyze_reports([report])
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("report", type=Path)
+    parser.add_argument(
+        "reports",
+        type=Path,
+        nargs="+",
+        help="focused 3-trial and control 5-trial report.json files",
+    )
     args = parser.parse_args()
-    rows, failures = analyze(json.loads(args.report.read_text()))
+    rows, failures = analyze_reports(
+        [json.loads(report.read_text()) for report in args.reports]
+    )
     print("\n".join(rows))
     if failures:
         print("\nRegression gates:", file=sys.stderr)

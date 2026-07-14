@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "git_commit": "67e3d798240111614ca8051594caf8376753542f",
+    "everruns_runtime_version": "0.17.7",
+    "description": "Preserved pre-fix yolop revision that reproduced the session/search inefficiencies."
+  },
+  "monitor": {
+    "focused_preset": "search-efficiency",
+    "focused_trials": 3,
+    "control_preset": "search-controls",
+    "control_trials": 5,
+    "analyzer": "analyze_search_efficiency.py"
+  },
+  "reference_evidence": [
+    {
+      "run_id": "20260714T174054Z-14aa",
+      "scope": "focused-and-controls",
+      "trials": 3,
+      "baseline_passed": 11,
+      "candidate_passed": 20,
+      "cases_per_binary": 21
+    },
+    {
+      "run_id": "20260714T174418Z-6c54",
+      "scope": "add-fn-control-confirmation",
+      "trials": 5,
+      "baseline_passed": 5,
+      "candidate_passed": 5,
+      "cases_per_binary": 5
+    }
+  ]
+}
