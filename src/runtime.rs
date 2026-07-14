@@ -1763,6 +1763,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
         AgentCapabilityConfig::new(CONFIG_CAPABILITY_ID),
         AgentCapabilityConfig::new(CONNECTORS_CAPABILITY_ID),
+        AgentCapabilityConfig::new(crate::extensions::manage::EXTENSIONS_CAPABILITY_ID),
         AgentCapabilityConfig::new(MEMORY_CAPABILITY_ID),
         AgentCapabilityConfig::new(HOOKS_CAPABILITY_ID),
         AgentCapabilityConfig::new(YOLOP_CAPABILITY_ID),
@@ -2324,13 +2325,18 @@ pub async fn build_with_options(
     // `[[capabilities]] ref = "ext:<name>"` in settings.toml, exactly like
     // `lsp`. See specs/extensions.md.
     let mut extension_never_defer: Vec<String> = Vec::new();
-    if let Some(extensions_dir) = crate::extensions::extensions_dir() {
-        for package in crate::extensions::discover_extensions(&extensions_dir) {
+    if let Some(ext_dir) = crate::extensions::extensions_dir() {
+        for package in crate::extensions::discover_extensions(&ext_dir) {
             let capability =
                 crate::extensions::ExtensionCapability::new(package, effective_root.clone());
             extension_never_defer.extend(capability.never_defer_tools());
             capabilities.register(capability);
         }
+        // The always-on management surface (install/list/enable/remove).
+        capabilities.register(crate::extensions::ExtensionsCapability::new(
+            ext_dir,
+            settings.clone(),
+        ));
     }
     capabilities.register(InfinityContextCapability);
     capabilities.register(CompactionCapability);

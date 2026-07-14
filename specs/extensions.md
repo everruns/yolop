@@ -1,16 +1,24 @@
 # Extensions — capability servers over the yolop extension protocol
 
-Status: **phase 1 implemented** in `src/extensions/` (protocol core,
-transport-generic client, persistent process manager, package discovery,
-`ExtensionCapability` adapter, `[[capabilities]]` enablement, manifest
-clamp, never-defer wiring). Later phases — install verbs and lockfile,
-contributed MCP servers, hooks, dynamic prompt, `ui/ask`, schema-gen +
-SDKs, `/extensions doctor`, providers — remain design-of-record below.
-Phase-1 deltas from the original sketch: tool *definitions* (description,
-schema, policy) live in the manifest, and the handshake's `tools` list
-carries only the served names it narrows to — keeping every contribution
-inspectable without executing the binary; `tool/update` progress surfaces
-through the tracing layer until the TUI grows a live seam.
+Status: **phases 1–2 implemented** in `src/extensions/`.
+Phase 1: protocol core, transport-generic client, persistent process
+manager, package discovery, `ExtensionCapability` adapter,
+`[[capabilities]]` enablement, manifest clamp, never-defer wiring.
+Phase 2: the always-on `extensions` capability with
+`install`/`list`/`enable`/`disable`/`remove` tools, `extensions.lock`
+content-hash pinning, install from git URL and local path, and the
+`ext:<name>` enable/disable write path.
+Later phases — contributed MCP servers, hooks, dynamic prompt, `ui/ask`,
+schema-gen + SDKs, `/extensions doctor`, providers — remain
+design-of-record below. Not yet wired within phase 2 (tracked as
+follow-ups): the toolchain-free crates.io source (native sparse-index +
+tarball fetch), full JSON-Schema config validation, and `config/changed`
+restart. Phase-1 deltas from the original sketch: tool *definitions*
+(description, schema, policy) live in the manifest, and the handshake's
+`tools` list carries only the served names it narrows to — keeping every
+contribution inspectable without executing the binary; `tool/update`
+progress surfaces through the tracing layer until the TUI grows a live
+seam.
 
 ## Why
 

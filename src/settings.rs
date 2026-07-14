@@ -618,6 +618,45 @@ impl SettingsStore {
         guard.capabilities.clear();
         save_to(&self.path, &guard)
     }
+
+    /// Enable or disable a capability by `ref`, idempotently. Enabling
+    /// appends a plain `[[capabilities]] ref = "<id>"` unless one is already
+    /// present; disabling drops every override with that `ref` (both the
+    /// enabling entry and any config/remove entries). Returns whether the
+    /// stored set changed. This is the write side of `/extensions
+    /// enable|disable` — a targeted alternative to hand-editing the ordered
+    /// override list.
+    pub fn set_capability_enabled(&self, capability_ref: &str, enabled: bool) -> Result<bool> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let already: Vec<usize> = guard
+            .capabilities
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.capability_ref == capability_ref)
+            .map(|(index, _)| index)
+            .collect();
+        let changed = if enabled {
+            if already.iter().any(|&i| !guard.capabilities[i].is_remove()) {
+                false
+            } else {
+                guard
+                    .capabilities
+                    .push(CapabilityOverride::enable(capability_ref));
+                true
+            }
+        } else if already.is_empty() {
+            false
+        } else {
+            guard
+                .capabilities
+                .retain(|entry| entry.capability_ref != capability_ref);
+            true
+        };
+        if changed {
+            save_to(&self.path, &guard)?;
+        }
+        Ok(changed)
+    }
 }
 
 #[cfg(test)]
