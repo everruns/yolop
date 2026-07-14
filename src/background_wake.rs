@@ -92,6 +92,12 @@ pub fn frame_wake_prompt(message: &str) -> String {
 
 #[async_trait]
 impl LocalSessionRunner for WakeRunner {
+    async fn routable_session_ids(&self) -> Result<Option<Vec<SessionId>>> {
+        Ok(Some(
+            wake_routes().lock().unwrap().keys().copied().collect(),
+        ))
+    }
+
     async fn send_message(&self, session_id: SessionId, content: &str) -> Result<()> {
         let sender = wake_routes().lock().unwrap().get(&session_id).cloned();
         let Some(sender) = sender else {
@@ -190,5 +196,32 @@ mod tests {
             .expect_err("inactive session must reject delivery");
 
         assert!(error.to_string().contains("not active"));
+    }
+
+    #[tokio::test]
+    async fn reports_only_live_host_sessions_as_routable() {
+        let session_a = SessionId::from_seed(910_005);
+        let session_b = SessionId::from_seed(910_006);
+        let (tx_a, _rx_a) = mpsc::unbounded_channel();
+        let (tx_b, _rx_b) = mpsc::unbounded_channel();
+        let runner_a = WakeRunner::new(session_a, tx_a);
+        let runner_b = WakeRunner::new(session_b, tx_b);
+
+        let routable = runner_a
+            .routable_session_ids()
+            .await
+            .expect("read routable sessions")
+            .expect("wake runner must scope schedule claims");
+        assert!(routable.contains(&session_a));
+        assert!(routable.contains(&session_b));
+
+        drop(runner_b);
+        let routable = runner_a
+            .routable_session_ids()
+            .await
+            .expect("read routable sessions after route closes")
+            .expect("wake runner must scope schedule claims");
+        assert!(routable.contains(&session_a));
+        assert!(!routable.contains(&session_b));
     }
 }
