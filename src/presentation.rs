@@ -8,6 +8,7 @@
 
 use crate::session_tasks_view::BackgroundCounts;
 use crate::transcript::{Author, ChatLine, StreamKind, StreamPreview};
+use crate::version::VERSION_DETAILS;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PresentedTranscriptLine {
@@ -166,7 +167,10 @@ fn expanded_status_lines(state: &PresentationState) -> Vec<StatusLine> {
         },
         StatusLine { fields: counts },
         StatusLine {
-            fields: vec![status_field("session", state.session_id.clone())],
+            fields: vec![
+                status_field("session", state.session_id.clone()),
+                status_field("version", VERSION_DETAILS),
+            ],
         },
     ];
     if let Some((branch, path)) = &state.worktree_expanded {
@@ -438,5 +442,7 @@ mod tests {
         );
         assert_eq!(lines[3].fields[0].label, Some("session"));
         assert_eq!(lines[3].fields[0].value, "sess_123");
+        assert_eq!(lines[3].fields[1].label, Some("version"));
+        assert_eq!(lines[3].fields[1].value, VERSION_DETAILS);
     }
 }
