@@ -23,7 +23,9 @@ use std::time::Duration;
 use agent_client_protocol::{Agent, Client, ConnectionTo, Lines, Responder};
 use anyhow::Result;
 use async_trait::async_trait;
+use everruns_core::InputMessage;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
+use everruns_core::message::{ContentPart, ImageContentPart};
 use everruns_core::typed_id::SessionId as RuntimeSessionId;
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
 use serde_json::{Value, json};
@@ -331,7 +333,7 @@ fn handle_initialize(params: InitializeParams) -> InitializeResult {
             .load_session(true)
             .prompt_capabilities(
                 PromptCapabilities::new()
-                    .image(false)
+                    .image(true)
                     .audio(false)
                     .embedded_context(true),
             )
@@ -475,7 +477,9 @@ fn spawn_background_wake_drain(
                     "↻ background task finished — waking agent to review",
                 )),
             );
-            run_prompt(peer.clone(), session.clone(), frame_wake_prompt(&message)).await;
+            let prompt = frame_wake_prompt(&message);
+            let input = session.model.input_message(prompt.clone());
+            run_prompt(peer.clone(), session.clone(), prompt, input).await;
         }
     })
 }
@@ -512,6 +516,7 @@ async fn handle_prompt<F: RuntimeFactory>(
         .session(&session_id)
         .ok_or_else(|| invalid_params("unknown session id"))?;
     let prompt = protocol::prompt_text(&params.prompt);
+    let input = prompt_input(&session.model, &params.prompt);
 
     // Serialize with any proactive background wake turn (and any other in-flight
     // prompt) so two turns never run for one session at once. Held for the whole
@@ -520,7 +525,7 @@ async fn handle_prompt<F: RuntimeFactory>(
     let _turn = session.turn_lock.lock().await;
     let stop_reason = match parse_command_prompt(&prompt) {
         Some(command) => run_slash_command(peer, session.clone(), command).await,
-        None => run_prompt(peer, session.clone(), prompt).await,
+        None => run_prompt(peer, session.clone(), prompt, input).await,
     };
     Ok(PromptResult::new(stop_reason))
 }
@@ -761,7 +766,8 @@ async fn run_slash_command(
             } else {
                 format!("/{name} {args}")
             };
-            run_prompt(peer, session, text).await
+            let input = session.model.input_message(text.clone());
+            run_prompt(peer, session, text, input).await
         }
     }
 }
@@ -789,9 +795,30 @@ async fn refresh_available_commands(peer: &Arc<Peer>, session: &Arc<Session>) {
     }
 }
 
+fn prompt_input(model: &ModelState, blocks: &[protocol::ContentBlock]) -> InputMessage {
+    model.input_message_with_images(protocol::prompt_text(blocks), prompt_image_parts(blocks))
+}
+
+fn prompt_image_parts(blocks: &[protocol::ContentBlock]) -> Vec<ContentPart> {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            protocol::ContentBlock::Image(image) => Some(ContentPart::Image(
+                ImageContentPart::from_base64(image.data.clone(), image.mime_type.clone()),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Drive one prompt turn: stream the runtime's events to the client as
 /// `session/update`s and resolve a stop reason. Honours `session/cancel`.
-async fn run_prompt(peer: Arc<Peer>, session: Arc<Session>, prompt: String) -> StopReason {
+async fn run_prompt(
+    peer: Arc<Peer>,
+    session: Arc<Session>,
+    prompt: String,
+    input: InputMessage,
+) -> StopReason {
     let handles = session.handles.clone();
     let session_id = handles.session_id;
     let acp_id = session.acp_id.clone();
@@ -801,7 +828,6 @@ async fn run_prompt(peer: Arc<Peer>, session: Arc<Session>, prompt: String) -> S
     let mut live = handles.events.subscribe();
     let events_before = handles.runtime.events().await.map(|e| e.len()).unwrap_or(0);
 
-    let input = session.model.input_message(prompt.clone());
     if let Err(err) = session.worktree.ensure_before_turn(&prompt) {
         tracing::warn!(%err, "acp: worktree activation failed");
     }
@@ -899,5 +925,39 @@ async fn drain_events(
         for update in translator.on_event(event) {
             peer.session_update(acp_id, update);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_image_parts_preserve_acp_inline_images() {
+        let blocks = vec![
+            protocol::ContentBlock::Text(protocol::TextContent::new("look")),
+            protocol::ContentBlock::Image(protocol::ImageContent::new("ZmFrZQ==", "image/png")),
+        ];
+
+        let parts = prompt_image_parts(&blocks);
+
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            ContentPart::Image(image) => {
+                assert_eq!(image.media_type.as_deref(), Some("image/png"));
+                assert_eq!(image.base64.as_deref(), Some("ZmFrZQ=="));
+                assert!(image.url.is_none());
+            }
+            other => panic!("expected image content part, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_image_parts_ignores_text_only_prompts() {
+        let blocks = vec![protocol::ContentBlock::Text(protocol::TextContent::new(
+            "hello",
+        ))];
+
+        assert!(prompt_image_parts(&blocks).is_empty());
     }
 }

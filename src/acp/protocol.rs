@@ -4,6 +4,8 @@
 //! comes from `agent-client-protocol` so schema changes are not mirrored by hand.
 
 pub use agent_client_protocol::schema::ProtocolVersion;
+#[cfg(test)]
+pub(crate) use agent_client_protocol::schema::v1::ImageContent;
 pub use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthenticateRequest as AuthenticateParams,
     AuthenticateResponse as AuthenticateResult, AvailableCommand, AvailableCommandInput,

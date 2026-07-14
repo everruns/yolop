@@ -1614,11 +1614,13 @@ impl ProviderChoice {
         text: impl Into<String>,
         images: Vec<ContentPart>,
     ) -> InputMessage {
-        let mut parts = images;
+        let images = images.into_iter();
+        let mut parts = Vec::with_capacity(1 + images.size_hint().0);
         let text = text.into();
         if !text.trim().is_empty() {
             parts.push(ContentPart::text(text));
         }
+        parts.extend(images);
         self.input_message_with_parts(parts)
     }
 }
