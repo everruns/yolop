@@ -41,6 +41,26 @@ replay path as CLI `--session`: prior user and assistant messages are streamed
 back to the editor before the response, and the loaded runtime then continues
 appending to the same session folder.
 
+### Per-session model selection
+
+ACP clients may select the provider, model, and reasoning effort for a new Yolop session. Yolop advertises this extension in the `initialize` response under `_meta["yolop.dev/acp"].modelSelection`. Clients send the selection in `session/new` metadata:
+
+```json
+{
+  "_meta": {
+    "yolop.dev/acp": {
+      "selectedModel": {
+        "provider": "openai",
+        "model": "gpt-5.2",
+        "reasoningEffort": "high"
+      }
+    }
+  }
+}
+```
+
+`provider` is required when `selectedModel` is present. `model` and `reasoningEffort` are optional and use the selected provider's defaults when omitted. Yolop validates all supplied values before creating the runtime and returns ACP `InvalidParams` for unsupported selections. Requests without `selectedModel` keep Yolop's configured defaults.
+
 ### Streaming a turn
 
 While a turn runs, runtime events are translated into `session/update`

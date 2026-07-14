@@ -28,6 +28,7 @@ use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandReq
 use everruns_core::message::{ContentPart, ImageContentPart};
 use everruns_core::typed_id::SessionId as RuntimeSessionId;
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{oneshot, watch};
@@ -35,7 +36,7 @@ use tokio::task::JoinHandle;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::background_wake::{WakeReceiver, frame_wake_prompt};
-use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
+use crate::runtime::{BuiltRuntime, ModelState, ProviderChoice, RuntimeHandles};
 use crate::settings::SettingsStore;
 use crate::worktree::WorktreeManager;
 
@@ -62,7 +63,73 @@ pub trait RuntimeFactory: Send + Sync + 'static {
         &self,
         cwd: PathBuf,
         resume_session_id: Option<RuntimeSessionId>,
+        model_selection: Option<ProviderChoice>,
     ) -> Result<BuiltRuntime>;
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSelectedModel {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+}
+
+impl AcpSelectedModel {
+    fn is_empty(&self) -> bool {
+        self.provider.as_deref().is_none_or(str::is_empty)
+            && self.model.as_deref().is_none_or(str::is_empty)
+            && self.reasoning_effort.as_deref().is_none_or(str::is_empty)
+    }
+}
+
+fn selected_model_from_new_session(
+    params: &NewSessionParams,
+) -> Result<Option<ProviderChoice>, agent_client_protocol::Error> {
+    let meta = params.meta.as_ref().map(|meta| Value::Object(meta.clone()));
+    selected_model_from_meta(meta.as_ref())
+}
+
+fn selected_model_from_meta(
+    meta: Option<&Value>,
+) -> Result<Option<ProviderChoice>, agent_client_protocol::Error> {
+    let Some(yolop_meta) = meta.and_then(|meta| meta.get("yolop.dev/acp")) else {
+        return Ok(None);
+    };
+    let Some(model_meta) = yolop_meta
+        .get("model")
+        .or_else(|| yolop_meta.get("selectedModel"))
+    else {
+        return Ok(None);
+    };
+
+    let selected: AcpSelectedModel = serde_json::from_value(model_meta.clone())
+        .map_err(|err| invalid_params(format!("invalid yolop model selection metadata: {err}")))?;
+    if selected.is_empty() {
+        return Ok(None);
+    }
+    let provider = selected
+        .provider
+        .as_deref()
+        .ok_or_else(|| invalid_params("model selection requires `provider`"))
+        .and_then(|provider| {
+            ProviderChoice::default_for_provider_name(provider)
+                .map_err(|err| invalid_params(err.to_string()))
+        })?;
+    let model = selected
+        .model
+        .unwrap_or_else(|| provider.model_id().to_string());
+    let spec = match selected.reasoning_effort {
+        Some(effort) => format!("{model} {effort}"),
+        None => model,
+    };
+    provider
+        .resolve_model_spec(&spec)
+        .map(Some)
+        .map_err(|err| invalid_params(err.to_string()))
 }
 
 /// SDK connection wrapper plus yolop-local ids for synthetic command tool calls.
@@ -341,7 +408,11 @@ fn handle_initialize(params: InitializeParams) -> InitializeResult {
                 "yolop.dev/acp": {
                     "commandMetadata": true,
                     "commandArgSuggestions": true,
-                    "commandToolLifecycle": true
+                    "commandToolLifecycle": true,
+                    "modelSelection": {
+                        "requestMetaKey": "selectedModel",
+                        "supportsReasoningEffort": true
+                    }
                 }
             }))),
     )
@@ -352,11 +423,12 @@ async fn handle_new_session<F: RuntimeFactory>(
     peer: &Arc<Peer>,
     params: NewSessionParams,
 ) -> std::result::Result<NewSessionResult, agent_client_protocol::Error> {
+    let model_selection = selected_model_from_new_session(&params)?;
     let cwd = params.cwd;
 
     let built = server
         .factory
-        .build(cwd, None)
+        .build(cwd, None, model_selection)
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
@@ -385,7 +457,7 @@ async fn handle_load_session<F: RuntimeFactory>(
             }
             let built = server
                 .factory
-                .build(params.cwd, Some(resume_session_id))
+                .build(params.cwd, Some(resume_session_id), None)
                 .await
                 .map_err(|e| internal_error(format!("load runtime: {e}")))?;
             let acp_id = register_session(server, peer, built);
@@ -959,5 +1031,58 @@ mod tests {
         ))];
 
         assert!(prompt_image_parts(&blocks).is_empty());
+    }
+    #[test]
+    fn new_session_request_selects_model() {
+        let params: NewSessionParams = serde_json::from_value(json!({
+            "cwd": "/tmp",
+            "mcpServers": [],
+            "_meta": {
+                "yolop.dev/acp": {
+                    "selectedModel": {
+                        "provider": "openai",
+                        "model": "gpt-5.2",
+                        "reasoningEffort": "high"
+                    }
+                }
+            }
+        }))
+        .expect("valid ACP new-session request");
+
+        let selected = selected_model_from_new_session(&params)
+            .expect("valid selection")
+            .expect("selection present");
+
+        assert_eq!(selected.provider_name(), "openai");
+        assert_eq!(selected.model_id(), "gpt-5.2");
+        assert_eq!(selected.reasoning_effort(), Some("high"));
+    }
+
+    #[test]
+    fn rejects_selected_model_without_provider() {
+        let meta = json!({
+            "yolop.dev/acp": {
+                "selectedModel": { "model": "gpt-5.2" }
+            }
+        });
+
+        let error = selected_model_from_meta(Some(&meta))
+            .expect_err("provider-less selection must be rejected");
+
+        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn rejects_unknown_selected_model_provider() {
+        let meta = json!({
+            "yolop.dev/acp": {
+                "model": { "provider": "unknown-provider", "model": "x" }
+            }
+        });
+
+        let error =
+            selected_model_from_meta(Some(&meta)).expect_err("unknown provider must be rejected");
+
+        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
     }
 }
