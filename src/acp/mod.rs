@@ -53,6 +53,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         &self,
         cwd: PathBuf,
         resume_session_id: Option<RuntimeSessionId>,
+        model_selection: Option<ProviderChoice>,
     ) -> Result<BuiltRuntime> {
         build_with_options(
             cwd,
@@ -62,6 +63,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
             self.settings.clone(),
             BuildOptions {
                 client_ui: ClientUiContext::Acp,
+                provider_model: model_selection,
                 ..BuildOptions::default()
             },
         )
@@ -125,6 +127,7 @@ mod tests {
             &self,
             cwd: PathBuf,
             resume_session_id: Option<RuntimeSessionId>,
+            model_selection: Option<ProviderChoice>,
         ) -> Result<BuiltRuntime> {
             build_with_options(
                 cwd,
@@ -135,6 +138,7 @@ mod tests {
                 BuildOptions {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
                     client_ui: ClientUiContext::Acp,
+                    provider_model: model_selection,
                     ..BuildOptions::default()
                 },
             )

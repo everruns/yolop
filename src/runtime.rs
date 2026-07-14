@@ -2178,6 +2178,7 @@ impl ModelState {
 /// existing behavior.
 pub struct BuildOptions {
     pub llmsim_override: Option<LlmSimConfig>,
+    pub(crate) provider_model: Option<ProviderChoice>,
     pub session_kind: SessionKind,
     pub initial_prompt: Option<String>,
     /// Register [`ClientCommandsCapability`], which contributes the
@@ -2193,6 +2194,7 @@ impl Default for BuildOptions {
     fn default() -> Self {
         Self {
             llmsim_override: None,
+            provider_model: None,
             session_kind: SessionKind::Interactive,
             initial_prompt: None,
             client_commands: false,
@@ -2209,6 +2211,7 @@ pub async fn build_with_options(
     settings: Arc<SettingsStore>,
     options: BuildOptions,
 ) -> Result<BuiltRuntime> {
+    let provider = options.provider_model.clone().unwrap_or(provider);
     let canonical_root = std::fs::canonicalize(&workspace_root)
         .with_context(|| format!("canonicalize workspace: {}", workspace_root.display()))?;
 
