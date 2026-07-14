@@ -155,16 +155,77 @@ impl Capability for ExtensionCapability {
         _ctx: &SystemPromptContext,
         config: &Value,
     ) -> Option<String> {
-        if !self.package.manifest.prompt {
+        let manifest = &self.package.manifest;
+        if !manifest.prompt && !manifest.dynamic_prompt {
             return None;
         }
         // Prompt facet ⇒ eager spawn: the contribution is needed before the
-        // first turn, so first prompt assembly starts the server.
-        let text = self.process_for(config).prompt_contribution().await?;
+        // first turn, so first prompt assembly starts the server. A dynamic
+        // prompt is recomputed per turn (`prompt/contribution`); it falls
+        // back to the static handshake prompt on failure.
+        let process = self.process_for(config);
+        let text = if manifest.dynamic_prompt {
+            match process.dynamic_prompt().await {
+                Some(text) => Some(text),
+                None => process.prompt_contribution().await,
+            }
+        } else {
+            process.prompt_contribution().await
+        }?;
         Some(format!(
             "<capability id=\"{}\">\n{}\n</capability>",
             self.id, text
         ))
+    }
+
+    fn pre_tool_use_hooks_with_config(
+        &self,
+        config: &Value,
+    ) -> Vec<Arc<dyn everruns_core::atoms::PreToolUseHook>> {
+        use super::hooks::ExtensionPreHook;
+        use super::package::HookEvent;
+        let manifest = &self.package.manifest;
+        if manifest.hooks.is_empty() {
+            return Vec::new();
+        }
+        let process = self.process_for(config);
+        manifest
+            .hooks
+            .iter()
+            .filter(|sub| sub.event == HookEvent::PreToolUse)
+            .map(|sub| {
+                Arc::new(ExtensionPreHook {
+                    ext_name: manifest.name.clone(),
+                    process: process.clone(),
+                    sub: sub.clone(),
+                }) as Arc<dyn everruns_core::atoms::PreToolUseHook>
+            })
+            .collect()
+    }
+
+    fn post_tool_exec_hooks_with_config(
+        &self,
+        config: &Value,
+    ) -> Vec<Arc<dyn everruns_core::atoms::PostToolExecHook>> {
+        use super::hooks::ExtensionPostHook;
+        use super::package::HookEvent;
+        let manifest = &self.package.manifest;
+        if manifest.hooks.is_empty() {
+            return Vec::new();
+        }
+        let process = self.process_for(config);
+        manifest
+            .hooks
+            .iter()
+            .filter(|sub| sub.event == HookEvent::PostToolUse)
+            .map(|sub| {
+                Arc::new(ExtensionPostHook {
+                    ext_name: manifest.name.clone(),
+                    process: process.clone(),
+                    sub: sub.clone(),
+                }) as Arc<dyn everruns_core::atoms::PostToolExecHook>
+            })
+            .collect()
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {

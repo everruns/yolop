@@ -1,8 +1,10 @@
 //! Extensions: installable capability-level packages served over YEP, the
-//! yolop extension protocol. Phase 1 of `specs/extensions.md`: package
-//! discovery, the protocol core, the persistent process manager, and the
-//! generic `ExtensionCapability` adapter. Install verbs, contributed MCP
-//! servers, hooks, and the dynamic-prompt RPC are later phases.
+//! yolop extension protocol. See `specs/extensions.md`. Implemented:
+//! the protocol core + persistent process manager + generic
+//! `ExtensionCapability` adapter (phase 1); install/enable management
+//! surface + lockfile (phase 2); contributed MCP servers (phase 3);
+//! hook subscriptions + dynamic prompt over RPC (phase 4). Later: `ui/ask`,
+//! `workspace/changed`, schema-gen + SDKs, `/extensions doctor`, providers.
 //!
 //! Registration: discovered packages are registered in the capability
 //! registry (so they appear in the catalog and validate config) but are
@@ -12,6 +14,7 @@
 
 pub(crate) mod capability;
 pub(crate) mod client;
+pub(crate) mod hooks;
 pub(crate) mod manage;
 pub(crate) mod manager;
 pub(crate) mod package;
@@ -136,5 +139,104 @@ mod spawn_tests {
             .expect("prompt facet");
         assert!(contribution.contains("<capability id=\"ext:echo\">"));
         assert!(contribution.contains("echo fixture prompt"));
+    }
+
+    /// A hook + dynamic-prompt manifest whose server is the same fixture.
+    fn hooks_package(python: &str) -> ExtensionPackage {
+        let server = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/yep_echo_server.py");
+        let manifest = parse_manifest(
+            &json!({
+                "name": "echo",
+                "description": "Echo fixture.",
+                "yolop": {
+                    "protocol_version": "1.0",
+                    "capabilityServer": { "command": python,
+                        "args": [server.display().to_string()] },
+                    "dynamic_prompt": true,
+                    "hooks": [
+                        { "event": "pre_tool_use", "tool_name_glob": "*",
+                          "timeout_ms": 5000, "on_error": "warn" }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .expect("hooks manifest");
+        ExtensionPackage {
+            dir: std::env::temp_dir(),
+            manifest,
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_tool_use_hook_blocks_via_server_decision() {
+        use everruns_core::atoms::PreToolUseDecision;
+        use everruns_core::tool_types::{BuiltinTool, ToolCall, ToolDefinition};
+        let Some(python) = python3() else {
+            eprintln!("skipping: python3 not available");
+            return;
+        };
+        let capability = ExtensionCapability::new(hooks_package(&python), std::env::temp_dir());
+        let hooks = capability.pre_tool_use_hooks_with_config(&json!(null));
+        assert_eq!(hooks.len(), 1);
+        let hook = &hooks[0];
+        let tool_def = ToolDefinition::Builtin(BuiltinTool {
+            name: "bash".into(),
+            display_name: None,
+            description: "run".into(),
+            parameters: json!({ "type": "object" }),
+            policy: Default::default(),
+            category: None,
+            deferrable: Default::default(),
+            hints: Default::default(),
+            full_parameters: None,
+        });
+        let ctx =
+            everruns_core::traits::ToolContext::new(everruns_core::typed_id::SessionId::new());
+
+        // Allowed call passes through.
+        let allow = ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "ls"}),
+        };
+        assert!(matches!(
+            hook.before_exec(allow, &tool_def, &ctx).await,
+            PreToolUseDecision::Continue(_)
+        ));
+
+        // Server blocks a call whose args carry {"forbidden": true}.
+        let deny = ToolCall {
+            id: "2".into(),
+            name: "bash".into(),
+            arguments: json!({"forbidden": true}),
+        };
+        match hook.before_exec(deny, &tool_def, &ctx).await {
+            PreToolUseDecision::Block { reason, .. } => {
+                assert!(reason.contains("forbidden"), "{reason}");
+            }
+            other => panic!("expected block, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dynamic_prompt_is_served_per_turn() {
+        let Some(python) = python3() else {
+            eprintln!("skipping: python3 not available");
+            return;
+        };
+        let capability = ExtensionCapability::new(hooks_package(&python), std::env::temp_dir());
+        let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
+            everruns_core::typed_id::SessionId::new(),
+        );
+        let contribution = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("dynamic prompt");
+        assert!(
+            contribution.contains("dynamic echo prompt"),
+            "{contribution}"
+        );
     }
 }
