@@ -12,11 +12,14 @@
 
 pub(crate) mod capability;
 pub(crate) mod client;
+pub(crate) mod manage;
 pub(crate) mod manager;
 pub(crate) mod package;
 pub(crate) mod protocol;
+pub(crate) mod store;
 
 pub(crate) use capability::ExtensionCapability;
+pub(crate) use manage::ExtensionsCapability;
 pub(crate) use package::{discover_extensions, extensions_dir};
 
 #[cfg(test)]

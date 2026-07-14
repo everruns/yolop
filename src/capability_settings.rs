@@ -76,6 +76,16 @@ pub struct CapabilityOverride {
 }
 
 impl CapabilityOverride {
+    /// A plain enabling override (`[[capabilities]] ref = "<id>"`), no config.
+    pub fn enable(capability_ref: impl Into<String>) -> Self {
+        Self {
+            capability_ref: capability_ref.into(),
+            enabled: None,
+            append: false,
+            config: Value::Null,
+        }
+    }
+
     pub fn remove(capability_ref: impl Into<String>) -> Self {
         Self {
             capability_ref: capability_ref.into(),
