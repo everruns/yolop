@@ -49,9 +49,11 @@ monitor prompt through the same `WakeRunner` used by background completions.
 The resulting turn starts the wrapped tool, and that tool's eventual completion
 produces the ordinary second wake. The TUI and ACP session objects retain the
 runner handle for their lifetimes, preventing polling from outliving its host.
-Schedule claims are org-scoped, so `WakeRunner` routes every delivery by
-`SessionId`; an inactive target rejects delivery and leaves the occurrence
-retryable rather than waking whichever ACP session happened to claim it.
+Before each poll, `WakeRunner` reports the live session routes in this process;
+`everruns-local` scopes claims to that set. This prevents inactive sessions'
+overdue schedules from being claimed and rejected on every poll. Delivery is
+still routed by `SessionId`, and a route that closes after the claim rejects the
+wake so the occurrence remains durable and retryable.
 
 ### Steering (poll-proofing)
 
@@ -116,6 +118,9 @@ Yolop installs a platform store to close that gap (`crate::background_wake`):
   session from a detached task and bypass the host's streaming turn loop).
   Instead it hands the completion message to the host over an unbounded channel
   (`BuiltRuntime::background_wake`).
+- The runner's `routable_session_ids` exposes only currently registered wake
+  routes, which bounds local schedule claims to sessions this host process can
+  actually wake.
 - The **TUI** drains the channel from its idle event loop
   (`App::maybe_wake_from_background_channel`) and starts a streamed turn.
 - The **ACP** server, whose request/response loop only runs turns while a client
