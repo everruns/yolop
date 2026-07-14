@@ -1,0 +1,54 @@
+{
+  "version": "1.0",
+  "min_version": "1.0",
+  "methods": [
+    {
+      "name": "initialize",
+      "direction": "host",
+      "description": "Handshake: negotiate version, pass config; server replies with contributions."
+    },
+    {
+      "name": "initialized",
+      "direction": "host",
+      "description": "Notification: handshake complete."
+    },
+    {
+      "name": "tool/call",
+      "direction": "host",
+      "description": "Invoke a tool the server declared."
+    },
+    {
+      "name": "tool/update",
+      "direction": "server",
+      "description": "Notification: streamed progress for an in-flight tool/call (correlated by request_id)."
+    },
+    {
+      "name": "hook/fire",
+      "direction": "host",
+      "description": "Fire a subscribed lifecycle hook (pre_tool_use/post_tool_use)."
+    },
+    {
+      "name": "prompt/contribution",
+      "direction": "host",
+      "description": "Request a fresh dynamic system-prompt contribution."
+    },
+    {
+      "name": "config/changed",
+      "direction": "host",
+      "description": "Notify the server its config changed."
+    },
+    {
+      "name": "shutdown",
+      "direction": "host",
+      "description": "Request a graceful stop."
+    }
+  ],
+  "capabilities": [
+    "tools",
+    "streaming",
+    "prompt",
+    "dynamic_prompt",
+    "hooks",
+    "mcp_servers"
+  ]
+}
