@@ -482,7 +482,7 @@ fn bounded_repo_map_sample() -> Sample {
             "metric_at_most": {"repo_map_max_result_bytes": 20000.0},
         }, {
             "when_binary": "candidate",
-            "metric_at_least": {"repo_map_narrowed_after_truncation": 1.0},
+            "metric_at_least": {"repo_map_targeted_recovery_after_truncation": 1.0},
             "metric_at_most": {
                 "tool_calls": 3.0,
                 "llm_calls": 4.0,
@@ -1004,6 +1004,7 @@ struct Mined {
     total_tool_result_bytes: u64,
     repo_map_max_result_bytes: u64,
     repo_map_narrowed_after_truncation: u64,
+    repo_map_targeted_recovery_after_truncation: u64,
     search_sessions_tool_calls: u64,
     search_sessions_first_exploration: u64,
     duplicate_exploration_calls: u64,
@@ -1071,10 +1072,35 @@ fn result_is_truncated(data: &Value) -> bool {
 }
 
 fn result_has_query(data: &Value) -> bool {
+    result_has_nonempty_string(data, "query")
+}
+
+fn result_has_nonempty_string(data: &Value, key: &str) -> bool {
     tool_result_value(data)
-        .and_then(|result| result.get("query").cloned())
-        .and_then(|query| query.as_str().map(str::to_owned))
-        .is_some_and(|query| !query.trim().is_empty())
+        .and_then(|result| result.get(key).cloned())
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn result_has_positive_u64(data: &Value, key: &str) -> bool {
+    tool_result_value(data)
+        .and_then(|result| result.get(key).cloned())
+        .and_then(|value| value.as_u64())
+        .is_some_and(|value| value > 0)
+}
+
+fn is_targeted_repo_map_recovery(tool_name: &str, data: &Value) -> bool {
+    if data.get("success").and_then(Value::as_bool) != Some(true) {
+        return false;
+    }
+    match tool_name {
+        "repo_map" => result_has_query(data),
+        "grep_files" => {
+            result_has_nonempty_string(data, "pattern")
+                && result_has_positive_u64(data, "match_count")
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1180,6 +1206,7 @@ fn parse_events(jsonl: &str) -> Mined {
     let mut saw_exploration = false;
     let mut saw_progress_warning = false;
     let mut saw_truncated_repo_map = false;
+    let mut repo_map_recovery_pending = false;
     let mut exploration_fingerprints = BTreeSet::new();
     for line in jsonl.lines() {
         let line = line.trim();
@@ -1247,12 +1274,19 @@ fn parse_events(jsonl: &str) -> Mined {
                     .unwrap_or_default();
                 m.max_tool_result_bytes = m.max_tool_result_bytes.max(result_bytes);
                 m.total_tool_result_bytes += result_bytes;
+                if repo_map_recovery_pending && is_targeted_repo_map_recovery(name, &data) {
+                    m.repo_map_targeted_recovery_after_truncation += 1;
+                    repo_map_recovery_pending = false;
+                }
                 if name == "repo_map" {
                     m.repo_map_max_result_bytes = m.repo_map_max_result_bytes.max(result_bytes);
                     if saw_truncated_repo_map && result_has_query(&data) {
                         m.repo_map_narrowed_after_truncation += 1;
                     }
-                    saw_truncated_repo_map |= result_is_truncated(&data);
+                    if result_is_truncated(&data) {
+                        saw_truncated_repo_map = true;
+                        repo_map_recovery_pending = true;
+                    }
                 }
                 if name == "search_sessions" {
                     m.search_sessions_tool_calls += 1;
@@ -1632,6 +1666,10 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         mined.repo_map_narrowed_after_truncation as f64,
     );
     t.metrics.insert(
+        "repo_map_targeted_recovery_after_truncation".into(),
+        mined.repo_map_targeted_recovery_after_truncation as f64,
+    );
+    t.metrics.insert(
         "search_sessions_tool_calls".into(),
         mined.search_sessions_tool_calls as f64,
     );
@@ -1858,6 +1896,7 @@ mod tests {
         assert_eq!(m.search_sessions_first_exploration, 1);
         assert_eq!(m.duplicate_exploration_calls, 1);
         assert_eq!(m.repo_map_narrowed_after_truncation, 1);
+        assert_eq!(m.repo_map_targeted_recovery_after_truncation, 1);
         assert_eq!(m.progress_guard_warnings, 1);
         assert_eq!(m.calls_after_progress_warning, 3);
         assert_eq!(m.inner_tool_failures, 1);
@@ -1866,6 +1905,19 @@ mod tests {
         assert_eq!(m.read_file_tool_calls, 1);
         assert_eq!(m.leading_marker_in_bash_result, 1);
         assert!(m.total_tool_result_bytes >= m.max_tool_result_bytes);
+    }
+
+    #[test]
+    fn parse_events_counts_targeted_grep_as_repo_map_recovery() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"repo_map","success":true,"result":[{"type":"text","text":"{\"query\":null,\"truncated\":true}"}]}}
+{"type":"tool.completed","data":{"tool_name":"grep_files","success":false,"result":[{"type":"text","text":"{\"pattern\":\"bounded_map_answer\",\"match_count\":1}"}]}}
+{"type":"tool.completed","data":{"tool_name":"grep_files","success":true,"result":[{"type":"text","text":"{\"pattern\":\"wrong_name\",\"match_count\":0,\"matches\":[]}"}]}}
+{"type":"tool.completed","data":{"tool_name":"grep_files","success":true,"result":[{"type":"text","text":"{\"pattern\":\"bounded_map_answer\",\"match_count\":1,\"matches\":[{\"path\":\"src/lib.rs\",\"line_number\":76}]}"}]}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.repo_map_narrowed_after_truncation, 0);
+        assert_eq!(m.repo_map_targeted_recovery_after_truncation, 1);
     }
 
     #[tokio::test]
@@ -1975,7 +2027,7 @@ mod tests {
             .split("[presets.search-efficiency]")
             .nth(1)
             .expect("search-efficiency preset")
-            .split("[presets.output-persistence]")
+            .split("[presets.search-controls]")
             .next()
             .unwrap();
         assert!(section.contains("binary = [\"baseline\", \"candidate\"]"));
@@ -1983,8 +2035,20 @@ mod tests {
             !section.contains("trials ="),
             "Mira presets do not select trial count; invoke this preset with --trials 3"
         );
-        assert!(section.contains("\"add-fn\""));
+        assert!(!section.contains("\"add-fn\""));
         assert!(!section.contains("\"normal-output-preserves-head\""));
+
+        let controls_section = config
+            .split("[presets.search-controls]")
+            .nth(1)
+            .expect("search-controls preset")
+            .split("[presets.output-persistence]")
+            .next()
+            .unwrap();
+        assert!(controls_section.contains("binary = [\"baseline\", \"candidate\"]"));
+        assert!(controls_section.contains("\"add-fn\""));
+        assert!(controls_section.contains("\"find-constant\""));
+        assert!(!controls_section.contains("trials ="));
 
         let output_section = config
             .split("[presets.output-persistence]")

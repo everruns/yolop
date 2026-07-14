@@ -50,7 +50,7 @@ search/refactor, and read-only code navigation.
 | `grep-files-nested-glob` [`search-efficiency`] | Nested Rust source plus decoys | Search through `src/**/*.rs` | response finds the nested code through `grep_files` | path glob contract |
 | `missing-rg-recovery` [`search-efficiency`] | Restricted PATH without ripgrep | Recover after the required `rg` call fails | response finds the code via an available path | command-not-found guidance |
 | `zero-result-search-recovery` [`search-efficiency`] | Three absent terms plus a real target | Recover after repeated empty searches | response finds the target and records a progress warning | result-aware progress guard |
-| `repo-map-bounded` [`search-efficiency`] | Rust file with 260+ symbols | Use an unqueried repo map | answer is found and repo-map output stays bounded | output-size discipline |
+| `repo-map-bounded` [`search-efficiency`] | Rust file with 260+ symbols | Use an unqueried repo map | answer is found, output stays bounded, and truncation is followed by a targeted map or grep | output-size and recovery discipline |
 | `normal-output-preserves-head` [`search-efficiency`] | leading match followed by 600 `Error` lines | Run one bash search with explicit `output: normal` | leading match remains visible without reading persisted output | successful-output compaction |
 | `replace-console-log` [`ast-edit`] | TS: `api.ts`/`worker.ts` call `console.log`; `logger.ts` exports `logger.info` | Replace every `console.log(...)` with `logger.info(...)` | both TS files use `logger.info`, no `console.log` | multi-file shape rewrite (`console.log` → `logger.info`) |
 | `strip-print-debug` [`ast-edit`] | Python `app.py`/`helpers.py` with standalone `print(...)` debug lines | Remove every standalone `print(...)` statement | neither file contains `print(` | bulk statement removal across files |
@@ -117,7 +117,8 @@ cost, `llm_calls`, `turns`, `tool_calls_failed`, `agent_reported_ms`,
 `exploration_tools_before_first_mutation`, `max_exploration_tools_without_progress`,
 `progress_guard_warnings`, `calls_after_progress_warning`, structured inner
 `tool_calls_failed`, duplicate exploration, total/maximum tool-result bytes,
-repo-map narrowing, session-search ordering, `ast_edit_tool_calls`, and
+repo-map narrowing and targeted recovery (a narrower map or `grep_files` fallback),
+session-search ordering, `ast_edit_tool_calls`, and
 `ast_edit_tool_calls_failed`
 — plus metadata (`provider`, `model`, `effort`,
 `reasoning_effort_applied`, `harness`, `stop_reason`) for `--group-by`.
@@ -153,13 +154,21 @@ doppler run -- mira run --preset harness-compare --group-by harness
 # Focused guardrail proof: default vs no-progress-guard on the long-read trap.
 doppler run -- mira run --preset progress-guard --group-by harness
 
-# Focused baseline/candidate proof, three trials per case.
+# Focused baseline/candidate proof, three trials per search case.
 HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
   doppler run -- mira run --preset search-efficiency --trials 3 --group-by binary
 
-# Gate the saved trial distributions, not only aggregate pass count.
-python3 analyze_search_efficiency.py results/<run_id>/report.json
+# Use five trials for ordinary controls so one stochastic trajectory does not
+# dominate a small median.
+HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
+HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
+  doppler run -- mira run --preset search-controls --trials 5 --group-by binary
+
+# Gate both saved trial distributions, not only aggregate pass count.
+python3 analyze_search_efficiency.py \
+  results/<focused_run_id>/report.json \
+  results/<control_run_id>/report.json
 
 # Isolate output persistence from other yolop/runtime changes.
 HARNESS_BASIC_DEPENDENCY_BASELINE_BIN=/path/to/yolop-with-everruns-main \
@@ -184,7 +193,8 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `smoke` | cheap candidate sanity check | tag `smoke` | claude-sonnet-4-5 | candidate, effort=default, all harness |
 | `harness-compare` | **A/B yolop configurations** | all | claude-sonnet-4-5 | candidate, effort=default, all harness |
 | `progress-guard` | focused warning-behavior check | tag `progress-guard` | claude-sonnet-4-5 | candidate, effort=default, default vs no-progress-guard |
-| `search-efficiency` | baseline/candidate session/search proof, 3 trials | 5 focused cases + `add-fn`/`find-constant` controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
+| `search-efficiency` | baseline/candidate session/search proof, 3 trials | 5 focused cases | gpt-5.5 | baseline + candidate, harness=default, effort=default |
+| `search-controls` | ordinary regression controls, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `output-persistence` | dependency-isolated output proof, 3 trials | `normal-output-preserves-head` | gpt-5.5 | dependency baseline + candidate |
 | `ast-edit-compare` | **A/B ast_edit capability** | tag `ast-edit` | claude-sonnet-4-5 | candidate, effort=default, default vs with-ast-edit |
 | `effort-compare` | effort sweep | all | gpt-5.5 | candidate, harness=default, all efforts |
@@ -201,9 +211,17 @@ For search-efficiency, compare correctness first, then medians and the worst
 trial for tool/LLM calls, failures, bytes, tokens, cost, and duration. Focused
 checks reject the known inefficient trajectories: session search after source
 exploration, `git grep` in a non-repository, unchanged repo-map retries,
-continued exploration after a warning, and persisted-output rereads. The two
-ordinary controls expose global prompt/tool-surface regressions. A candidate is
-not an improvement merely because its aggregate pass count is higher.
+continued exploration after a warning, and persisted-output rereads. The
+separate five-trial controls expose global prompt/tool-surface regressions with
+a less noisy median. A candidate is not an improvement merely because its
+aggregate pass count is higher.
+
+The manual/nightly [Search Efficiency Eval](../../.github/workflows/search-efficiency-eval.yml)
+builds both the triggering revision and the immutable pre-fix commit recorded
+in [`search_efficiency_baseline.json`](search_efficiency_baseline.json), runs
+the focused and control presets, gates both reports, and uploads the complete
+Mira run archives. It is intentionally excluded from pull-request CI because
+it is a live-model regression monitor, not a deterministic unit test.
 
 Verified: with the `no-ast-grep` settings applied, the `ast_grep` tool is
 absent from yolop's registered toolset (and each case's input tokens drop by
@@ -216,6 +234,7 @@ evals/harness_basic/
   src/main.rs   # the whole study: matrix, samples + declarative checks,
                 #   yolop subject (spawn + events.jsonl mining), unit tests
   analyze_search_efficiency.py  # baseline/candidate distribution gates
+  search_efficiency_baseline.json  # immutable pre-fix revision + evidence
   tests/         # analyzer unit tests
   Cargo.toml    # standalone crate (outside the yolop package), mira-eval SDK
   mira.toml     # host config: launcher, ./results, presets
