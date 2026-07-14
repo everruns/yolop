@@ -20,7 +20,7 @@ pub(crate) mod store;
 
 pub(crate) use capability::ExtensionCapability;
 pub(crate) use manage::ExtensionsCapability;
-pub(crate) use package::{discover_extensions, extensions_dir};
+pub(crate) use package::{discover_extensions, extension_capability_id, extensions_dir};
 
 #[cfg(test)]
 mod spawn_tests {
