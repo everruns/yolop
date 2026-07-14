@@ -62,20 +62,47 @@ Config shape:
 
 `type` defaults to `http`; for HTTP, `url` is required.
 
+## Authentication
+
+Credentials for a server are resolved per request by the runtime's
+`McpAuthProvider`, in this order:
+
+1. **User-scoped OAuth token** minted by `/mcp login <name>` and stored in the
+   connection store (`mcp-oauth:<provider>`). Tokens are refreshed
+   automatically when they near expiry.
+2. **Environment bearer** — `<PROVIDER>_ACCESS_TOKEN`/`_API_KEY`/`_TOKEN` (by
+   `oauth_provider_id`) or `MCP_<SERVER>_TOKEN` — for headless/CI use.
+3. Literal `headers` in the config (with `${VAR}` expansion), applied by the
+   transport regardless of the provider.
+
+**OAuth login** (`/mcp login <name>`, remote HTTP servers) is discovery-based:
+protected-resource metadata (RFC 9728) → authorization-server metadata
+(RFC 8414 / OpenID discovery) → dynamic client registration (RFC 7591) when the
+server offers it → authorization code + PKCE (RFC 7636) through the browser with
+a loopback redirect. The token endpoint and client id are persisted alongside
+the tokens so refresh is self-contained. Because credentials are resolved per
+turn, a fresh login takes effect on the next message — no restart (composes with
+live reload above).
+
 ## Trust model
 
 - **HTTP** keeps the runtime's DNS-pinned SSRF protection — no relaxation.
 - **stdio** spawns local processes the user explicitly listed in their own
   `.mcp.json`. Authoring that file is the act of consent, mirroring how other
   MCP clients treat a project-scoped server list.
+- **OAuth** discovery/token calls go to the authorization server advertised by
+  the (user-configured) MCP server. Discovered endpoints must be `https`
+  (loopback may use `http`), bounding downgrade to plaintext. The user
+  configuring the server URL is the act of consent; yolop is a local CLI on the
+  user's own network.
 - **No per-call approval**: MCP tools run autonomously like the rest of yolop's
   tools; the standing guardrail is the write blocklist on filesystem writes.
 
 ## Non-goals (for now)
 
-- OAuth (browser/device-code) for remote servers. API-key/bearer via `headers`
-  (with `${VAR}` expansion) covers the common case; the runtime exposes an
-  `mcp_auth_provider()` seam for a future env/device-code provider.
+- OAuth **device-code** flow (browser + loopback covers the CLI case); a
+  configured `client_id` for servers without dynamic registration (DCR-only for
+  now).
 - MCP **resources** and **prompts** (tools are the 90% case).
 - ACP MCP pass-through: `mcpServers` supplied by an ACP client is still
   accepted-and-ignored (see `src/acp/protocol.rs`); only yolop's own
@@ -89,4 +116,7 @@ Config shape:
 | Wiring into the session | `src/runtime.rs` (`session_mcp_servers`, `StartupInfo.mcp_server_names`) |
 | `/mcp` command (list/reload/enable/disable/remove) | `src/capabilities/client_commands.rs`, `src/host_ui.rs`, `src/app/mod.rs` |
 | Live reload seam | `src/runtime.rs` (`RuntimeHandles::reload_mcp_servers`), `src/session.rs` |
+| OAuth login (discovery, DCR, PKCE) | `src/mcp_oauth_login.rs` |
+| OAuth token storage | `src/mcp_oauth.rs` (connection store) |
+| Auth provider (stored token + refresh, env fallback) | `src/runtime.rs` (`StoredMcpAuthProvider`) |
 | Client / transports / executor | upstream `everruns-mcp`, `everruns-runtime` (`mcp-stdio` feature) |

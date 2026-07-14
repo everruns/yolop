@@ -22,6 +22,7 @@ mod image_input;
 mod into;
 mod mcp_config;
 mod mcp_oauth;
+mod mcp_oauth_login;
 mod oauth_flow;
 mod paste_attachment;
 mod presentation;

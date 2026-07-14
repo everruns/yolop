@@ -1160,7 +1160,7 @@ impl App {
     }
 
     const MCP_USAGE: &'static str =
-        "usage: /mcp [reload | enable|disable|remove <name> [global|workspace]]";
+        "usage: /mcp [reload | login <name> | enable|disable|remove <name> [global|workspace]]";
 
     async fn manage_mcp_command(&mut self, raw: Option<&str>) {
         let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -1192,6 +1192,20 @@ impl App {
                 return;
             }
             self.reload_mcp_and_report(None).await;
+            return;
+        }
+
+        // `login <name>` runs the interactive OAuth flow for a remote server.
+        if action == "login" {
+            let name = parts.next();
+            if parts.next().is_some() {
+                self.push_system(Self::MCP_USAGE.into());
+                return;
+            }
+            match name {
+                Some(name) => self.mcp_login(name).await,
+                None => self.push_system(Self::MCP_USAGE.into()),
+            }
             return;
         }
 
@@ -1237,6 +1251,50 @@ impl App {
         match result {
             Ok(message) => self.reload_mcp_and_report(Some(message)).await,
             Err(error) => self.push_system(format!("failed to update MCP config: {error}")),
+        }
+    }
+
+    /// Run the interactive OAuth login flow for a remote MCP server and persist
+    /// the resulting tokens. Because the runtime resolves credentials per turn
+    /// through the shared auth provider, the token is used on the next turn with
+    /// no restart or reload needed.
+    async fn mcp_login(&mut self, name: &str) {
+        let servers = crate::mcp_config::load_mcp_servers(&self.startup.workspace_root);
+        let Some(server) = servers.get(name) else {
+            self.push_system(format!(
+                "MCP server `{name}` is not configured or is disabled; add it and run `/mcp reload` first"
+            ));
+            return;
+        };
+        if server.transport_type != everruns_core::McpServerTransportType::Http {
+            self.push_system(format!(
+                "`{name}` is a stdio server; OAuth login only applies to remote HTTP servers"
+            ));
+            return;
+        }
+        let url = server.url.clone();
+        let provider_key = server
+            .oauth_provider_id
+            .clone()
+            .unwrap_or_else(|| name.to_string());
+
+        self.push_system(format!("opening browser for `{name}` OAuth login…"));
+        match crate::mcp_oauth_login::login(&url, None, None).await {
+            Ok(tokens) => {
+                match crate::mcp_oauth::save_tokens(
+                    &self.session.connections(),
+                    &provider_key,
+                    tokens,
+                ) {
+                    Ok(()) => self.push_system(format!(
+                        "signed in to `{name}` — the token is active on your next message"
+                    )),
+                    Err(error) => self.push_system(format!(
+                        "saved login for `{name}` failed to persist: {error}"
+                    )),
+                }
+            }
+            Err(error) => self.push_system(format!("`{name}` OAuth login failed: {error}")),
         }
     }
 
@@ -4625,6 +4683,43 @@ mod tests {
                 .iter()
                 .any(|line| line.text.contains("active MCP servers")),
             "disable should report the active set: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mcp_login_rejects_unknown_and_stdio_servers() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+
+        // Unknown server: guidance to add it first, no browser attempt.
+        app.lines.clear();
+        app.dispatch_command_for_test("mcp login ghost").await;
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("`ghost` is not configured")),
+            "unknown server should be reported: {:?}",
+            app.lines
+        );
+
+        // A stdio server is not eligible for OAuth login.
+        std::fs::write(
+            app.startup.workspace_root.join(".mcp.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "mcpServers": { "fs": { "type": "stdio", "command": "true" } }
+            }))
+            .unwrap(),
+        )
+        .expect("write .mcp.json");
+        app.lines.clear();
+        app.dispatch_command_for_test("mcp login fs").await;
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("stdio server")
+                    && line.text.contains("OAuth login only applies")),
+            "stdio server should be rejected before any browser flow: {:?}",
             app.lines
         );
     }

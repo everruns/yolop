@@ -142,6 +142,73 @@ fn env_key_prefix(value: &str) -> String {
         .join("_")
 }
 
+/// MCP auth provider that prefers user-scoped OAuth tokens minted by
+/// `/mcp login` (refreshing them when they near expiry) and falls back to
+/// environment-provided bearer credentials. The stored connection is keyed by
+/// the server's `oauth_provider_id` when set, otherwise its name.
+pub(crate) struct StoredMcpAuthProvider {
+    connections: Arc<ConnectionStore>,
+    env: EnvMcpAuthProvider,
+}
+
+impl StoredMcpAuthProvider {
+    pub(crate) fn new(connections: Arc<ConnectionStore>) -> Self {
+        Self {
+            connections,
+            env: EnvMcpAuthProvider,
+        }
+    }
+
+    fn provider_key<'a>(request: &'a McpAuthRequest<'a>) -> &'a str {
+        request.oauth_provider_id.unwrap_or(request.server_name)
+    }
+}
+
+#[async_trait]
+impl McpAuthProvider for StoredMcpAuthProvider {
+    async fn authorization(
+        &self,
+        request: &McpAuthRequest<'_>,
+    ) -> anyhow::Result<Option<McpCredential>> {
+        let key = Self::provider_key(request);
+        let Some(tokens) = crate::mcp_oauth::load_tokens(&self.connections, key) else {
+            // No stored OAuth token for this server: fall back to env vars.
+            return self.env.authorization(request).await;
+        };
+
+        let tokens = if crate::mcp_oauth_login::needs_refresh(&tokens) {
+            match crate::mcp_oauth_login::refresh(&tokens).await {
+                Ok(refreshed) => {
+                    if let Err(err) =
+                        crate::mcp_oauth::save_tokens(&self.connections, key, refreshed.clone())
+                    {
+                        tracing::warn!(
+                            provider = key,
+                            %err,
+                            "failed to persist refreshed MCP OAuth token"
+                        );
+                    }
+                    refreshed
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        provider = key,
+                        %err,
+                        "MCP OAuth token refresh failed; using the existing token"
+                    );
+                    tokens
+                }
+            }
+        } else {
+            tokens
+        };
+
+        Ok(Some(McpCredential::authorization(
+            tokens.authorization_value(),
+        )))
+    }
+}
+
 const HARNESS_PROMPT: &str = "\
 You are an expert terminal coding agent. File tools write under the workspace
 root; `bash` runs on the host. There is no sandbox.
@@ -1923,6 +1990,11 @@ pub struct RuntimeHandles {
     /// verbatim on reload so `.mcp.json` resolution stays identical to
     /// startup.
     pub workspace_root: PathBuf,
+    /// Shared connection store backing MCP OAuth tokens. Saving through this
+    /// same instance is what lets the runtime's [`StoredMcpAuthProvider`] see a
+    /// freshly minted token (the store caches connections in memory per
+    /// handle), so `/mcp login` uses it rather than a separate handle.
+    pub connections: Arc<ConnectionStore>,
 }
 
 impl RuntimeHandles {
@@ -2479,7 +2551,7 @@ pub async fn build_with_options(
     // (see below).
     capabilities.register(ConnectorsCapability {
         catalog: connection_catalog,
-        store: connections,
+        store: connections.clone(),
     });
     // `memory` — global, durable, structured user memory. Its MEMORY.md lives
     // beside settings.toml in the yolop config dir, so a tempdir settings path
@@ -2637,7 +2709,7 @@ pub async fn build_with_options(
     let session_store = backends.session_store.clone();
 
     let mut builder = InProcessRuntimeBuilder::new()
-        .mcp_auth_provider(Arc::new(EnvMcpAuthProvider))
+        .mcp_auth_provider(Arc::new(StoredMcpAuthProvider::new(connections.clone())))
         .platform_definition(platform)
         .default_model(default_model)
         .backends(backends)
@@ -2672,6 +2744,7 @@ pub async fn build_with_options(
             events: event_bus_typed,
             session_store,
             workspace_root: canonical_root.clone(),
+            connections,
         },
         startup: StartupInfo {
             workspace_root: effective_root,
@@ -2766,6 +2839,101 @@ mod tests {
         unsafe {
             std::env::remove_var("LINEAR_ACCESS_TOKEN");
         }
+    }
+
+    fn oauth_request(server_name: &str) -> McpAuthRequest<'_> {
+        McpAuthRequest {
+            server_name,
+            auth_mode: McpServerAuthMode::OAuth,
+            oauth_provider_id: None,
+        }
+    }
+
+    fn stored_token(
+        token_endpoint: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> crate::mcp_oauth::McpOAuthTokenSet {
+        crate::mcp_oauth::McpOAuthTokenSet {
+            access_token: "access-1".to_string(),
+            refresh_token: Some("refresh-1".to_string()),
+            token_type: "Bearer".to_string(),
+            expires_at: Some(expires_at),
+            scope: Some("read".to_string()),
+            token_endpoint: Some(token_endpoint),
+            client_id: Some("dcr-client-1".to_string()),
+            client_secret: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn stored_provider_refreshes_an_expired_token_and_persists_it() {
+        let server = crate::mcp_oauth_login::test_support::MockOAuthServer::start().await;
+        let tmp = tempfile::tempdir().expect("tmp");
+        let store = Arc::new(ConnectionStore::open(tmp.path().join("connections.toml")));
+        crate::mcp_oauth::save_tokens(
+            &store,
+            "docs",
+            stored_token(
+                format!("{}/token", server.base),
+                chrono::Utc::now() - chrono::Duration::seconds(1),
+            ),
+        )
+        .expect("seed token");
+
+        let provider = StoredMcpAuthProvider::new(store.clone());
+        let credential = provider
+            .authorization(&oauth_request("docs"))
+            .await
+            .expect("provider result")
+            .expect("credential");
+        assert_eq!(credential.authorization.as_deref(), Some("Bearer access-2"));
+
+        // The refreshed token is written back through the shared store, so the
+        // next request skips the refresh round-trip.
+        let saved = crate::mcp_oauth::load_tokens(&store, "docs").expect("persisted token");
+        assert_eq!(saved.access_token, "access-2");
+    }
+
+    #[tokio::test]
+    async fn stored_provider_uses_a_fresh_token_without_a_network_call() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let store = Arc::new(ConnectionStore::open(tmp.path().join("connections.toml")));
+        // Token endpoint points at a closed port: any refresh attempt would
+        // error, so a successful bearer proves no refresh was made.
+        crate::mcp_oauth::save_tokens(
+            &store,
+            "docs",
+            stored_token(
+                "http://127.0.0.1:1/token".to_string(),
+                chrono::Utc::now() + chrono::Duration::seconds(3600),
+            ),
+        )
+        .expect("seed token");
+
+        let provider = StoredMcpAuthProvider::new(store);
+        let credential = provider
+            .authorization(&oauth_request("docs"))
+            .await
+            .expect("provider result")
+            .expect("credential");
+        assert_eq!(credential.authorization.as_deref(), Some("Bearer access-1"));
+    }
+
+    #[tokio::test]
+    async fn stored_provider_without_token_or_env_returns_none() {
+        // Uses a server name no env credential can match, so it needs no
+        // ENV_LOCK (and holding a std mutex across await would be a lint error).
+        let tmp = tempfile::tempdir().expect("tmp");
+        let store = Arc::new(ConnectionStore::open(tmp.path().join("connections.toml")));
+        let provider = StoredMcpAuthProvider::new(store);
+        let credential = provider
+            .authorization(&oauth_request("yolop-test-unconfigured-server"))
+            .await
+            .expect("provider result");
+        assert!(
+            credential.is_none(),
+            "no stored token and no env var yields no credential"
+        );
     }
 
     fn test_file_store(
