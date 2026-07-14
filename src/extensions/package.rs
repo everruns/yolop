@@ -42,11 +42,64 @@ struct RawFacet {
     /// Permits a handshake system-prompt contribution.
     #[serde(default)]
     prompt: bool,
+    /// When true, the server serves a fresh `prompt/contribution` each turn
+    /// (in addition to / instead of the static handshake prompt).
+    #[serde(default)]
+    dynamic_prompt: bool,
     /// MCP servers the extension contributes; consumed by yolop's own MCP
     /// client exactly as if listed in `.mcp.json` (D1: MCP is a
     /// contribution, not the base wire). Keyed by logical server name.
     #[serde(rename = "mcpServers", default)]
     mcp_servers: BTreeMap<String, ContributedMcpServer>,
+    /// Lifecycle hook subscriptions the extension serves over `hook/fire`.
+    #[serde(default)]
+    hooks: Vec<HookSubscription>,
+}
+
+/// A manifest-declared hook subscription. Static (the approved upper bound):
+/// which event, which tools it fires for, how long it may take, and what
+/// happens if the server errors. A match-all glob must be spelled `"*"` and
+/// is surfaced at approval time.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookSubscription {
+    /// `pre_tool_use` (may block/observe before a tool runs) or
+    /// `post_tool_use` (observe after).
+    pub event: HookEvent,
+    /// Glob over tool names this hook fires for (`"*"` = all). Matched with
+    /// simple `*` wildcards.
+    #[serde(default = "match_all_glob")]
+    pub tool_name_glob: String,
+    #[serde(default = "default_hook_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub on_error: HookOnError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookEvent {
+    PreToolUse,
+    PostToolUse,
+}
+
+/// What to do when the extension server errors or times out on a hook.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HookOnError {
+    /// Log and allow the tool call (availability over integrity).
+    #[default]
+    Warn,
+    /// Block the tool call (integrity over availability).
+    Block,
+}
+
+fn match_all_glob() -> String {
+    "*".to_string()
+}
+
+fn default_hook_timeout_ms() -> u64 {
+    5_000
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -115,7 +168,9 @@ pub struct ExtensionManifest {
     pub config_schema: Option<Value>,
     pub tools: Vec<ToolDefinition>,
     pub prompt: bool,
+    pub dynamic_prompt: bool,
     pub mcp_servers: BTreeMap<String, ContributedMcpServer>,
+    pub hooks: Vec<HookSubscription>,
 }
 
 #[derive(Debug, Clone)]
@@ -153,10 +208,13 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
     if raw.yolop.capability_server.command.trim().is_empty() {
         return Err("yolop.capabilityServer.command must not be empty".into());
     }
-    if raw.yolop.tools.is_empty() && !raw.yolop.prompt && raw.yolop.mcp_servers.is_empty() {
-        return Err(
-            "extension declares no tools, prompt, or MCP servers; nothing to contribute".into(),
-        );
+    if raw.yolop.tools.is_empty()
+        && !raw.yolop.prompt
+        && !raw.yolop.dynamic_prompt
+        && raw.yolop.mcp_servers.is_empty()
+        && raw.yolop.hooks.is_empty()
+    {
+        return Err("extension declares no contributions; nothing to contribute".into());
     }
     for (server_name, server) in &raw.yolop.mcp_servers {
         match server.transport {
@@ -181,7 +239,9 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         config_schema: raw.yolop.config_schema,
         tools: raw.yolop.tools,
         prompt: raw.yolop.prompt,
+        dynamic_prompt: raw.yolop.dynamic_prompt,
         mcp_servers: raw.yolop.mcp_servers,
+        hooks: raw.yolop.hooks,
     })
 }
 

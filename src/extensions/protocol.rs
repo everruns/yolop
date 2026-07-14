@@ -205,6 +205,46 @@ pub struct ToolUpdateParams {
     pub output: String,
 }
 
+// ---------------------------------------------------------------------------
+// hook/fire
+
+/// Host → server `hook/fire` params: a subscribed lifecycle event fired for
+/// one tool call (any tool, not just the extension's own).
+#[derive(Debug, Clone, Serialize)]
+pub struct HookFireParams<'a> {
+    /// `pre_tool_use` or `post_tool_use`.
+    pub event: &'a str,
+    pub tool_name: &'a str,
+    pub args: &'a Value,
+}
+
+/// Server → host `hook/fire` result. Lenient/defaulted: a bare `{}` means
+/// "allow, unchanged".
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct HookDecision {
+    /// `true` blocks the tool call (pre_tool_use only).
+    #[serde(default)]
+    pub block: bool,
+    /// Message shown to the model/audit log when blocking.
+    #[serde(default)]
+    pub reason: String,
+    /// Optional user-facing message when blocking.
+    #[serde(default)]
+    pub user_message: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// prompt/contribution
+
+/// Server → host `prompt/contribution` result: a dynamic system-prompt
+/// contribution recomputed per turn (only when the manifest declares
+/// `dynamic_prompt`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptContribution {
+    #[serde(default)]
+    pub text: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

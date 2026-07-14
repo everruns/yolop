@@ -53,6 +53,17 @@ def main():
             })
             args = params.get("args") or {}
             send({"id": msg_id, "result": {"echoed": args.get("text", "")}})
+        elif method == "hook/fire":
+            params = msg.get("params") or {}
+            # Block any tool whose args carry {"forbidden": true}; else allow.
+            args = params.get("args") or {}
+            if args.get("forbidden") is True:
+                send({"id": msg_id, "result": {"block": True,
+                                               "reason": "forbidden by echo fixture"}})
+            else:
+                send({"id": msg_id, "result": {}})
+        elif method == "prompt/contribution":
+            send({"id": msg_id, "result": {"text": "dynamic echo prompt"}})
         elif method == "shutdown":
             send({"id": msg_id, "result": {}})
             return
