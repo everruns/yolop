@@ -52,12 +52,14 @@ notifications. The mapping is a pure, per-turn state machine
 | assistant text delta | `agent_message_chunk` (incremental) |
 | completed assistant message, when no deltas streamed | `agent_message_chunk` (whole text) — covers providers that don't stream |
 | thinking delta / reasoning summary | `agent_thought_chunk` |
-| tool started | `tool_call` (`status: in_progress`, `rawInput`, no approval-oriented `kind`) |
+| tool started | `tool_call` (`status: in_progress`, `rawInput`, semantic `kind`) |
 | tool completed | `tool_call_update` (`status: completed`/`failed`, summary `content`) |
 | `write_todos` tool | `plan` (entries with status) instead of a raw tool call |
 
-Yolop omits ACP `kind` for runtime tools because tools run autonomously and some
-clients attach approval-looking affordances to execute/edit/delete categories.
+Yolop classifies runtime tools into ACP's semantic kinds (for example `read`,
+`search`, `fetch`, `edit`, or `execute`). This gives clients a stable tool label
+that is distinct from Yolop's narrated title.
+
 To avoid duplicating streamed text, a completed assistant message is only
 emitted as a chunk when no deltas streamed for it during the turn.
 

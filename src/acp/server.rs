@@ -708,7 +708,7 @@ async fn run_slash_command(
                 &session.acp_id,
                 SessionUpdate::ToolCall(
                     ToolCall::new(tool_call_id.clone(), title)
-                        .kind(ToolKind::Other)
+                        .kind(ToolKind::Execute)
                         .status(ToolCallStatus::InProgress)
                         .raw_input(json!({
                         "command": descriptor.name,

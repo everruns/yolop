@@ -747,11 +747,7 @@ mod tests {
             "expected a tool_call update, got: {:?}",
             run.updates
         );
-        assert!(
-            tool_calls[0].get("kind").is_none(),
-            "autonomous tools should not advertise approval-looking ACP kinds: {:?}",
-            tool_calls[0]
-        );
+        assert_eq!(tool_calls[0]["kind"], "execute");
         let updates = run.updates_of_kind("tool_call_update");
         assert!(
             updates.iter().any(|u| u["status"] == "completed"),

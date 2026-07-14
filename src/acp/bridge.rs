@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use super::protocol::{
     self, ContentBlock, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, SessionUpdate,
-    ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 
 /// The runtime's todo tool. write_todos updates are surfaced as ACP plans
@@ -118,6 +118,7 @@ impl Translator {
                             {
                                 Some(SessionUpdate::ToolCall(
                                     ToolCall::new(call.id.clone(), call.name.clone())
+                                        .kind(tool_kind(&call.name))
                                         .status(ToolCallStatus::InProgress)
                                         .raw_input(non_null(call.arguments.clone())),
                                 ))
@@ -168,6 +169,7 @@ impl Translator {
                     .to_string();
                 vec![SessionUpdate::ToolCall(
                     ToolCall::new(data.tool_call.id.clone(), title)
+                        .kind(tool_kind(name))
                         .status(ToolCallStatus::InProgress)
                         .raw_input(non_null(data.tool_call.arguments.clone())),
                 )]
@@ -202,6 +204,7 @@ impl Translator {
                 {
                     updates.push(SessionUpdate::ToolCall(
                         ToolCall::new(data.tool_call_id.clone(), title.clone())
+                            .kind(tool_kind(&data.tool_name))
                             .status(ToolCallStatus::InProgress),
                     ));
                 }
@@ -217,6 +220,46 @@ impl Translator {
             }
             _ => Vec::new(),
         }
+    }
+}
+
+/// Map built-in and dynamically prefixed MCP tool names to ACP's semantic
+/// categories. Unknown tools are executable actions, which is more useful to
+/// clients than ACP's omitted `other` default.
+fn tool_kind(name: &str) -> ToolKind {
+    let name = everruns_core::parse_mcp_tool_name(name)
+        .map(|(_, tool)| tool)
+        .unwrap_or_else(|| name.to_string());
+    let normalized = name.to_ascii_lowercase();
+    let tokens = normalized
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let has = |values: &[&str]| tokens.iter().any(|token| values.contains(token));
+
+    if has(&["delete", "remove", "unlink"]) {
+        ToolKind::Delete
+    } else if has(&["move", "rename"]) {
+        ToolKind::Move
+    } else if has(&[
+        "search", "find", "grep", "query", "lookup", "map", "symbols",
+    ]) {
+        ToolKind::Search
+    } else if has(&["fetch", "browse", "download", "http", "web"]) {
+        ToolKind::Fetch
+    } else if has(&["read", "list", "stat", "get", "show", "inspect", "view"]) {
+        ToolKind::Read
+    } else if has(&[
+        "edit", "write", "create", "update", "set", "upsert", "patch", "replace", "insert",
+        "enable", "disable",
+    ]) {
+        ToolKind::Edit
+    } else if has(&["think", "plan", "todo"]) {
+        ToolKind::Think
+    } else if has(&["switch"]) {
+        ToolKind::SwitchMode
+    } else {
+        ToolKind::Execute
     }
 }
 
@@ -384,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_started_uses_in_progress_status_without_kind() {
+    fn tool_started_uses_in_progress_status_with_semantic_kind() {
         let mut t = Translator::new();
         let updates = t.on_event(&event(EventData::ToolStarted(ToolStartedData {
             tool_call: ToolCall {
@@ -400,16 +443,53 @@ mod tests {
             updates,
             vec![SessionUpdate::ToolCall(
                 protocol::ToolCall::new("call_1", "Listing files")
+                    .kind(ToolKind::Execute)
                     .status(ToolCallStatus::InProgress)
                     .raw_input(json!({ "command": "ls" })),
             )]
         );
         let serialized = serde_json::to_value(&updates[0]).unwrap();
         assert_eq!(serialized["status"], "in_progress");
-        assert!(
-            serialized.get("kind").is_none(),
-            "autonomous tools must not advertise approval-looking categories: {serialized}"
+        assert_eq!(
+            match &updates[0] {
+                SessionUpdate::ToolCall(call) => call.kind,
+                other => panic!("expected tool call, got {other:?}"),
+            },
+            ToolKind::Execute
         );
+        assert_eq!(serialized["kind"], "execute");
+    }
+
+    #[test]
+    fn tool_kind_classifies_builtin_and_mcp_tools() {
+        assert_eq!(tool_kind("read_file"), ToolKind::Read);
+        assert_eq!(tool_kind("repo_map"), ToolKind::Search);
+        assert_eq!(tool_kind("web_fetch"), ToolKind::Fetch);
+        assert_eq!(tool_kind("edit_file"), ToolKind::Edit);
+        assert_eq!(tool_kind("bash"), ToolKind::Execute);
+        assert_eq!(tool_kind("mcp_paseo__list_files"), ToolKind::Read);
+        assert_eq!(tool_kind("mcp_paseo__search_files"), ToolKind::Search);
+        assert_eq!(tool_kind("mcp_paseo__build_repo_map"), ToolKind::Search);
+        assert_eq!(tool_kind("mcp_paseo__custom_action"), ToolKind::Execute);
+    }
+
+    #[test]
+    fn mcp_tool_started_emits_semantic_kind_on_the_acp_update() {
+        let mut translator = Translator::new();
+        let updates = translator.on_event(&event(EventData::ToolStarted(ToolStartedData {
+            tool_call: ToolCall {
+                id: "call_1".into(),
+                name: "mcp_paseo__build_repo_map".into(),
+                arguments: json!({ "path": "src" }),
+            },
+            tool_call_fingerprint: None,
+            display_name: Some("Build repo map".into()),
+            narration: Some("Build repo map: src".into()),
+        })));
+
+        let serialized = serde_json::to_value(&updates[0]).unwrap();
+        assert_eq!(serialized["title"], "Build repo map: src");
+        assert_eq!(serialized["kind"], "search");
     }
 
     #[test]
@@ -567,6 +647,7 @@ mod tests {
             updates,
             vec![SessionUpdate::ToolCall(
                 protocol::ToolCall::new("call_1", "bash")
+                    .kind(ToolKind::Execute)
                     .status(ToolCallStatus::InProgress)
                     .raw_input(json!({ "command": "ls" })),
             )]
