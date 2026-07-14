@@ -106,6 +106,12 @@ pub struct App {
     /// handling so provider, token, and model setup never echo through the
     /// normal chat composer.
     setup: Option<SetupStep>,
+    /// Codex login runs outside the terminal input handler. The task owns any
+    /// network wait; the event loop only polls its channel between frames.
+    codex_login: Option<PendingCodexLogin>,
+    codex_login_tx: mpsc::UnboundedSender<CodexLoginEvent>,
+    codex_login_rx: mpsc::UnboundedReceiver<CodexLoginEvent>,
+    next_codex_login_id: u64,
     status_layout: StatusLayout,
     session_tokens: Option<u64>,
     /// Terminal-side commands emitted by `ClientCommandsCapability` (via
@@ -192,6 +198,11 @@ pub(crate) enum SetupStep {
         selected: usize,
         error: Option<String>,
     },
+    CodexLogin {
+        selected: usize,
+        method: CodexLoginMethod,
+        device_code: Option<(String, String)>,
+    },
     TokenInput {
         provider: String,
         token: String,
@@ -206,6 +217,30 @@ pub(crate) enum SetupStep {
     PickEffort {
         selected: usize,
         error: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CodexLoginMethod {
+    Browser,
+    Device,
+}
+
+struct PendingCodexLogin {
+    id: u64,
+    task: tokio::task::JoinHandle<()>,
+}
+
+enum CodexLoginEvent {
+    DeviceCode {
+        id: u64,
+        verification_uri: String,
+        user_code: String,
+    },
+    Finished {
+        id: u64,
+        selected: usize,
+        result: Result<crate::settings::CodexAuth, String>,
     },
 }
 
@@ -315,6 +350,7 @@ impl App {
         let session_id = runtime.handles.session_id;
         let session = Session::new(runtime.handles, runtime.model.clone());
         let (models_tx, models_rx) = mpsc::unbounded_channel::<ModelDiscovery>();
+        let (codex_login_tx, codex_login_rx) = mpsc::unbounded_channel::<CodexLoginEvent>();
         let mut app = Self {
             session,
             startup: runtime.startup,
@@ -333,6 +369,10 @@ impl App {
             rx: None,
             turn_cancel: None,
             setup: None,
+            codex_login: None,
+            codex_login_tx,
+            codex_login_rx,
+            next_codex_login_id: 0,
             status_layout: StatusLayout::Compact,
             session_tokens: None,
             ui_rx: runtime.ui_rx,
@@ -695,6 +735,12 @@ impl App {
             return Ok(());
         }
 
+        // 3a) Codex login is intentionally a background operation so a browser
+        // close or an abandoned device flow cannot stop terminal input.
+        if self.apply_codex_login_events().await {
+            return Ok(());
+        }
+
         // 3b) proactive wake: when an everruns `spawn_background` task finishes
         // while the session is idle, auto-start a turn so the agent reacts
         // without a user prompt.
@@ -841,6 +887,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('d') => {
+                    self.abort_codex_login();
                     self.should_quit = true;
                     return;
                 }
@@ -1421,6 +1468,7 @@ impl App {
         }
 
         if self.ctrl_c_pending_exit() {
+            self.abort_codex_login();
             self.ctrl_c_exit = true;
             self.should_quit = true;
             return;
@@ -5128,6 +5176,32 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Use OPENAI_API_KEY from environment"))
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_device_login_wait_can_be_cancelled() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        let task = tokio::spawn(std::future::pending());
+        app.codex_login = Some(PendingCodexLogin { id: 7, task });
+        app.setup = Some(SetupStep::CodexLogin {
+            selected: 1,
+            method: CodexLoginMethod::Device,
+            device_code: Some(("https://example.test/device".into(), "ABCD-EFGH".into())),
+        });
+
+        app.handle_setup_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert!(app.codex_login.is_none());
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::Credential {
+                ref provider,
+                selected: 1,
+                error: Some(ref error),
+            }) if provider == "codex" && error == "Codex sign-in canceled"
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

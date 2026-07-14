@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use reqwest::Url;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -18,6 +19,8 @@ const DEVICE_USER_URL: &str = "https://auth.openai.com/codex/device";
 const SCOPE: &str = "openid profile email offline_access";
 const CALLBACK_PORT: u16 = 1455;
 const CALLBACK_PATH: &str = "/auth/callback";
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const USER_AUTH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone)]
 pub struct DeviceLogin {
@@ -78,13 +81,15 @@ pub async fn login_with_browser() -> Result<CodexAuth> {
         .append_pair("codex_cli_simplified_flow", "true")
         .append_pair("originator", CODEX_ORIGINATOR);
 
-    open_browser(url.as_str())?;
-    let code = wait_for_callback(listener, &state).await?;
+    open_browser(url.as_str()).await?;
+    let code = tokio::time::timeout(USER_AUTH_TIMEOUT, wait_for_callback(listener, &state))
+        .await
+        .map_err(|_| anyhow!("Codex browser login timed out"))??;
     exchange_code(&code, &verifier, &redirect_uri).await
 }
 
 pub async fn start_device_login() -> Result<DeviceLogin> {
-    let client = reqwest::Client::new();
+    let client = auth_http_client()?;
     let response = client
         .post(DEVICE_USER_CODE_URL)
         .json(&serde_json::json!({ "client_id": CODEX_CLIENT_ID }))
@@ -111,7 +116,13 @@ pub async fn start_device_login() -> Result<DeviceLogin> {
 }
 
 pub async fn complete_device_login(login: DeviceLogin) -> Result<CodexAuth> {
-    let client = reqwest::Client::new();
+    tokio::time::timeout(USER_AUTH_TIMEOUT, complete_device_login_inner(login))
+        .await
+        .map_err(|_| anyhow!("Codex device login timed out before authorization completed"))?
+}
+
+async fn complete_device_login_inner(login: DeviceLogin) -> Result<CodexAuth> {
+    let client = auth_http_client()?;
     for _ in 0..120 {
         tokio::time::sleep(std::time::Duration::from_secs(login.interval_secs)).await;
         let response = client
@@ -151,7 +162,7 @@ pub async fn refresh_with_token(refresh_token: &str) -> Result<CodexAuth> {
 
 /// Refresh against an arbitrary token endpoint (tests inject a local mock).
 pub async fn refresh_with_token_at(token_url: &str, refresh_token: &str) -> Result<CodexAuth> {
-    let client = reqwest::Client::new();
+    let client = auth_http_client()?;
     let response = client
         .post(token_url)
         .form(&[
@@ -250,7 +261,7 @@ fn auth_from_token_response(token: TokenResponse) -> Result<CodexAuth> {
 }
 
 async fn exchange_code(code: &str, verifier: &str, redirect_uri: &str) -> Result<CodexAuth> {
-    let client = reqwest::Client::new();
+    let client = auth_http_client()?;
     let response = client
         .post(TOKEN_URL)
         .form(&[
@@ -270,6 +281,13 @@ async fn exchange_code(code: &str, verifier: &str, redirect_uri: &str) -> Result
     }
     let token: TokenResponse = response.json().await.context("parse Codex OAuth token")?;
     auth_from_token_response(token)
+}
+
+fn auth_http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .context("build Codex auth HTTP client")
 }
 
 async fn wait_for_callback(
@@ -479,17 +497,25 @@ fn callback_page(status: &str, message: &str) -> String {
     )
 }
 
-fn open_browser(url: &str) -> Result<()> {
-    let status = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).status()
+async fn open_browser(url: &str) -> Result<()> {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = tokio::process::Command::new("open");
+        command.arg(url);
+        command
     } else if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .status()
+        let mut command = tokio::process::Command::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
     } else {
-        std::process::Command::new("xdg-open").arg(url).status()
-    }
-    .context("open browser for Codex login")?;
+        let mut command = tokio::process::Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+    command.kill_on_drop(true);
+    let status = command
+        .status()
+        .await
+        .context("open browser for Codex login")?;
     if status.success() {
         Ok(())
     } else {

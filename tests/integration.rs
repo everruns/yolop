@@ -22,6 +22,8 @@
 mod support;
 
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
@@ -858,6 +860,53 @@ fn tui_setup_overlay_renders_in_real_pty() {
         tui.wait_for_output("Esc cancel", Duration::from_secs(3)),
         "/setup footer should render without clipping: {}",
         tui.output_text()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_browser_login_can_be_cancelled_after_browser_closes() {
+    let opener_dir = tempfile::tempdir().expect("browser opener tempdir");
+    for name in ["open", "xdg-open"] {
+        let path = opener_dir.path().join(name);
+        std::fs::write(&path, "#!/bin/sh\nexec sleep 30\n").expect("write mock browser opener");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("mock opener metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("make mock opener executable");
+    }
+
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            path_prefix: Some(opener_dir.path().to_path_buf()),
+            ..TuiSpawnOptions::default()
+        },
+    );
+    assert!(tui.wait_for_output("type /help", Duration::from_secs(3)));
+
+    tui.write_input(b"/setup\r2");
+    assert!(tui.wait_for_output("Sign in with browser", Duration::from_secs(3)));
+    tui.write_input(b"1");
+    thread::sleep(Duration::from_millis(200));
+    tui.write_input(b"\x1b");
+
+    assert!(
+        tui.wait_for_output("Codex sign-in canceled", Duration::from_secs(3)),
+        "Esc should cancel browser login and restore the credential picker: {}",
+        tui.output_text()
+    );
+
+    // Starting again proves cancellation released the fixed localhost callback
+    // port. Exit keys must also work while the replacement attempt is waiting.
+    tui.clear_output();
+    tui.write_input(b"1");
+    assert!(tui.wait_for_output("Waiting for the browser", Duration::from_secs(3)));
+    tui.write_input(b"\x03\x03");
+    assert!(
+        tui.wait_or_kill(Duration::from_secs(3)).success(),
+        "TUI should remain responsive after cancel"
     );
 }
 

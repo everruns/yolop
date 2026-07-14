@@ -599,6 +599,11 @@ impl App {
             } => {
                 self.handle_credential_key(key, provider, selected).await;
             }
+            SetupStep::CodexLogin { selected, .. } => {
+                if key.code == KeyCode::Esc {
+                    self.cancel_codex_login(selected);
+                }
+            }
             SetupStep::TokenInput {
                 provider, token, ..
             } => {
@@ -885,85 +890,13 @@ impl App {
                 if provider != "codex" {
                     return;
                 }
-                self.push_system("opening browser for Codex login...".into());
-                match crate::codex_auth::login_with_browser().await {
-                    Ok(auth) => {
-                        if let Err(error) = self.settings.set_codex_auth(auth) {
-                            self.setup = Some(SetupStep::Credential {
-                                provider,
-                                selected,
-                                error: Some(error.to_string()),
-                            });
-                            return;
-                        }
-                        if let Err(error) = self.run_setup_command(Some("provider codex")).await {
-                            self.setup = Some(SetupStep::Credential {
-                                provider,
-                                selected,
-                                error: Some(error),
-                            });
-                            return;
-                        }
-                        self.open_model_step("codex");
-                    }
-                    Err(error) => {
-                        self.setup = Some(SetupStep::Credential {
-                            provider,
-                            selected,
-                            error: Some(error.to_string()),
-                        });
-                    }
-                }
+                self.start_codex_login(CodexLoginMethod::Browser, selected);
             }
             CredentialAction::DeviceLogin => {
                 if provider != "codex" {
                     return;
                 }
-                match crate::codex_auth::start_device_login().await {
-                    Ok(login) => {
-                        self.push_system(format!(
-                            "Codex device login: open {} and enter code {}",
-                            login.verification_uri, login.user_code
-                        ));
-                        match crate::codex_auth::complete_device_login(login).await {
-                            Ok(auth) => {
-                                if let Err(error) = self.settings.set_codex_auth(auth) {
-                                    self.setup = Some(SetupStep::Credential {
-                                        provider,
-                                        selected,
-                                        error: Some(error.to_string()),
-                                    });
-                                    return;
-                                }
-                                if let Err(error) =
-                                    self.run_setup_command(Some("provider codex")).await
-                                {
-                                    self.setup = Some(SetupStep::Credential {
-                                        provider,
-                                        selected,
-                                        error: Some(error),
-                                    });
-                                    return;
-                                }
-                                self.open_model_step("codex");
-                            }
-                            Err(error) => {
-                                self.setup = Some(SetupStep::Credential {
-                                    provider,
-                                    selected,
-                                    error: Some(error.to_string()),
-                                });
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        self.setup = Some(SetupStep::Credential {
-                            provider,
-                            selected,
-                            error: Some(error.to_string()),
-                        });
-                    }
-                }
+                self.start_codex_login(CodexLoginMethod::Device, selected);
             }
             CredentialAction::PasteKey => {
                 self.setup = Some(SetupStep::TokenInput {
@@ -1013,6 +946,118 @@ impl App {
                 }
             }
         }
+    }
+
+    fn start_codex_login(&mut self, method: CodexLoginMethod, selected: usize) {
+        if self.codex_login.is_some() {
+            return;
+        }
+        self.next_codex_login_id = self.next_codex_login_id.wrapping_add(1);
+        let id = self.next_codex_login_id;
+        let tx = self.codex_login_tx.clone();
+        let task = tokio::spawn(async move {
+            let result = match method {
+                CodexLoginMethod::Browser => crate::codex_auth::login_with_browser()
+                    .await
+                    .map_err(|error| error.to_string()),
+                CodexLoginMethod::Device => match crate::codex_auth::start_device_login().await {
+                    Ok(login) => {
+                        let _ = tx.send(CodexLoginEvent::DeviceCode {
+                            id,
+                            verification_uri: login.verification_uri.clone(),
+                            user_code: login.user_code.clone(),
+                        });
+                        crate::codex_auth::complete_device_login(login)
+                            .await
+                            .map_err(|error| error.to_string())
+                    }
+                    Err(error) => Err(error.to_string()),
+                },
+            };
+            let _ = tx.send(CodexLoginEvent::Finished {
+                id,
+                selected,
+                result,
+            });
+        });
+        self.codex_login = Some(PendingCodexLogin { id, task });
+        self.setup = Some(SetupStep::CodexLogin {
+            selected,
+            method,
+            device_code: None,
+        });
+    }
+
+    fn cancel_codex_login(&mut self, selected: usize) {
+        self.abort_codex_login();
+        self.setup = Some(SetupStep::Credential {
+            provider: "codex".to_string(),
+            selected,
+            error: Some("Codex sign-in canceled".to_string()),
+        });
+    }
+
+    pub(crate) fn abort_codex_login(&mut self) {
+        if let Some(login) = self.codex_login.take() {
+            login.task.abort();
+        }
+    }
+
+    pub(crate) async fn apply_codex_login_events(&mut self) -> bool {
+        let mut applied = false;
+        while let Ok(event) = self.codex_login_rx.try_recv() {
+            let current_id = self.codex_login.as_ref().map(|login| login.id);
+            match event {
+                CodexLoginEvent::DeviceCode {
+                    id,
+                    verification_uri,
+                    user_code,
+                } if current_id == Some(id) => {
+                    if let Some(SetupStep::CodexLogin { device_code, .. }) = self.setup.as_mut() {
+                        *device_code = Some((verification_uri, user_code));
+                    }
+                    applied = true;
+                }
+                CodexLoginEvent::Finished {
+                    id,
+                    selected,
+                    result,
+                } if current_id == Some(id) => {
+                    self.codex_login = None;
+                    applied = true;
+                    match result {
+                        Ok(auth) => {
+                            if let Err(error) = self.settings.set_codex_auth(auth) {
+                                self.setup = Some(SetupStep::Credential {
+                                    provider: "codex".to_string(),
+                                    selected,
+                                    error: Some(error.to_string()),
+                                });
+                            } else if let Err(error) =
+                                self.run_setup_command(Some("provider codex")).await
+                            {
+                                self.setup = Some(SetupStep::Credential {
+                                    provider: "codex".to_string(),
+                                    selected,
+                                    error: Some(error),
+                                });
+                            } else {
+                                self.open_model_step("codex");
+                            }
+                        }
+                        Err(error) => {
+                            self.setup = Some(SetupStep::Credential {
+                                provider: "codex".to_string(),
+                                selected,
+                                error: Some(error),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        applied
     }
 
     pub(crate) async fn handle_token_key(
