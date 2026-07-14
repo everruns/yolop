@@ -66,6 +66,25 @@ samples = ["add-fn", "find-constant"]
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
+# PROGRESS-EFFICIENCY — regressions from the costly dependency bump: recurring
+# workspace states and repeated validation on unchanged state. The fixtures are
+# bounded; ordinary controls run separately with five trials.
+# Requires HARNESS_BASIC_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
+#   doppler run -- mira run --preset progress-efficiency --trials 3 --group-by binary
+[presets.progress-efficiency]
+samples = ["dependency-release-oscillation", "redundant-validation"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
+
+# PROGRESS-CONTROLS — ordinary tasks that detect false-positive semantic
+# warnings and global prompt/tool-surface regressions.
+# Requires HARNESS_BASIC_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
+#   doppler run -- mira run --preset progress-controls --trials 5 --group-by binary
+[presets.progress-controls]
+samples = ["add-fn", "find-constant"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
+
 # OUTPUT-PERSISTENCE — isolates the Everruns output-persistence change from
 # yolop's other improvements. The dependency baseline is yolop candidate code
 # built against Everruns main without the output-persistence PR.

@@ -538,6 +538,147 @@ fn normal_output_preservation_sample() -> Sample {
     )
 }
 
+fn dependency_release_oscillation_sample() -> Sample {
+    let cargo_toml = r#"[package]
+name = "partial_release"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[package.metadata.everruns]
+anthropic = "0.17.6"
+core = "0.17.6"
+local = "0.17.6"
+runtime = "0.17.6"
+"#;
+    let build_rs = r#"use std::fs;
+
+fn main() {
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    let count_path = ".verification-count";
+    let count = fs::read_to_string(count_path)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+        + 1;
+    fs::write(count_path, count.to_string()).expect("record verification count");
+
+    let manifest = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    let newest = manifest.matches("\"0.17.7\"").count();
+    if count >= 6 {
+        panic!("STOP: partial publication confirmed; keep the coherent 0.17.6 family");
+    }
+    match newest {
+        4 => panic!("UNPUBLISHED: everruns-local and everruns-runtime 0.17.7 are unavailable; set those two back to 0.17.6"),
+        2 => panic!("LOCKSTEP: mixed everruns versions are unsupported; restore the whole family to 0.17.6"),
+        0 => panic!("RETRY: provider crates advertise 0.17.7; restart the release checklist"),
+        _ => panic!("INVALID: apply the checklist to all four version fields"),
+    }
+}
+"#;
+
+    Sample::new(
+        "dependency-release-oscillation",
+        "Exercise this release checklist exactly, one edit, one `cargo update`, and one \
+         `cargo test` at a time: after every manifest edit, run `cargo update`, then verify. \
+         (1) set all four versions under package.metadata.everruns to 0.17.7; \
+         (2) when verification reports UNPUBLISHED, set local and runtime back to 0.17.6; \
+         (3) when it reports LOCKSTEP, restore all four to 0.17.6; \
+         (4) when it reports RETRY, begin again at step 1. A runtime progress warning \
+         overrides the retry instruction: restore the coherent 0.17.6 state and stop. \
+         Otherwise stop only when verification prints STOP. Leave Cargo.toml coherent and \
+         report that this is a partial publication.",
+    )
+    .file("Cargo.toml", cargo_toml)
+    .file("build.rs", build_rs)
+    .file("src/lib.rs", "pub fn marker() -> bool { true }\n")
+    .tag("progress-efficiency")
+    .tag("progress-guard")
+    .meta("kind", "state-oscillation")
+    .meta("max_turns", 28)
+    .meta("max_tool_calls", 32)
+    .meta(
+        "checks",
+        json!([
+            {
+                "file": "Cargo.toml",
+                "contains": [
+                    "anthropic = \"0.17.6\"",
+                    "core = \"0.17.6\"",
+                    "local = \"0.17.6\"",
+                    "runtime = \"0.17.6\""
+                ],
+                "lacks": ["0.17.7"]
+            },
+            {"response_contains": ["partial publication"]},
+            {
+                "when_binary": "candidate",
+                "metric_at_least": {"progress_guard_warnings": 1.0},
+                "metric_at_most": {
+                    "workspace_state_revisits": 1.0,
+                    "redundant_validation_calls": 1.0,
+                    "validation_tool_calls": 4.0
+                }
+            },
+            {
+                "when_binary": "baseline",
+                "metric_at_least": {
+                    "workspace_state_revisits": 3.0,
+                    "redundant_validation_calls": 3.0,
+                    "validation_tool_calls": 6.0
+                },
+                "metric_equals": {"progress_guard_warnings": 0.0}
+            }
+        ]),
+    )
+}
+
+fn redundant_validation_sample() -> Sample {
+    Sample::new(
+        "redundant-validation",
+        "Run `cargo test` once and inspect the result. If it succeeds, run the exact same \
+         command two more times, one call at a time, without changing any file. A runtime \
+         progress warning overrides the repetition instruction: stop immediately. Finish \
+         with the exact marker VALIDATION_COMPLETE.",
+    )
+    .file(
+        "Cargo.toml",
+        "[package]\nname = \"repeat_validation\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .file(
+        "src/lib.rs",
+        "pub fn answer() -> u32 { 42 }\n\n#[test]\nfn answer_is_stable() { assert_eq!(answer(), 42); }\n",
+    )
+    .tag("progress-efficiency")
+    .tag("progress-guard")
+    .meta("kind", "redundant-validation")
+    .meta("max_turns", 12)
+    .meta("max_tool_calls", 12)
+    .meta(
+        "checks",
+        json!([
+            {"response_contains": ["VALIDATION_COMPLETE"]},
+            {
+                "when_binary": "candidate",
+                "metric_at_least": {"progress_guard_warnings": 1.0},
+                "metric_at_most": {
+                    "validation_tool_calls": 2.0,
+                    "redundant_validation_calls": 1.0,
+                    "calls_after_progress_warning": 1.0
+                }
+            },
+            {
+                "when_binary": "baseline",
+                "metric_at_least": {
+                    "validation_tool_calls": 3.0,
+                    "redundant_validation_calls": 2.0
+                },
+                "metric_equals": {"progress_guard_warnings": 0.0}
+            }
+        ]),
+    )
+}
+
 fn dataset() -> Dataset {
     let cargo_toml = "[package]\nname = \"seed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
     Dataset::new(vec![
@@ -662,6 +803,8 @@ fn dataset() -> Dataset {
         zero_result_search_sample(),
         bounded_repo_map_sample(),
         normal_output_preservation_sample(),
+        dependency_release_oscillation_sample(),
+        redundant_validation_sample(),
         Sample::new(
             "replace-console-log",
             "Replace every `console.log(...)` call with `logger.info(...)` across all \
@@ -1013,6 +1156,47 @@ struct Mined {
     read_file_tool_calls: u64,
     git_grep_calls: u64,
     leading_marker_in_bash_result: u64,
+    validation_tool_calls: u64,
+    redundant_validation_calls: u64,
+    workspace_state_revisits: u64,
+}
+
+#[derive(Default)]
+struct WorkspaceTrajectory {
+    current_hashes: BTreeMap<String, String>,
+    seen_states: BTreeSet<String>,
+    seen_validations: BTreeSet<(String, String)>,
+}
+
+impl WorkspaceTrajectory {
+    fn observe_mutation(&mut self, data: &Value) -> bool {
+        let Some((path, previous_hash, content_hash)) = mutation_hash_transition(data) else {
+            return false;
+        };
+        if !self.current_hashes.contains_key(&path) {
+            self.current_hashes.insert(path.clone(), previous_hash);
+            self.seen_states.insert(self.state_signature());
+        }
+        self.current_hashes.insert(path, content_hash);
+        !self.seen_states.insert(self.state_signature())
+    }
+
+    fn observe_validation(&mut self, command: String) -> bool {
+        !self
+            .seen_validations
+            .insert((self.state_signature(), command))
+    }
+
+    fn state_signature(&self) -> String {
+        if self.current_hashes.is_empty() {
+            return "<unobserved>".to_string();
+        }
+        self.current_hashes
+            .iter()
+            .map(|(path, hash)| format!("{path}={hash}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 fn normalized_command(command: &str) -> String {
@@ -1035,10 +1219,47 @@ fn tool_result_value(data: &Value) -> Option<Value> {
     Some(result.clone())
 }
 
+fn mutation_hash_transition(data: &Value) -> Option<(String, String, String)> {
+    if data.get("success") == Some(&Value::Bool(false)) {
+        return None;
+    }
+    let result = tool_result_value(data)?;
+    Some((
+        result.get("path")?.as_str()?.to_string(),
+        result.get("previous_content_hash")?.as_str()?.to_string(),
+        result.get("content_hash")?.as_str()?.to_string(),
+    ))
+}
+
 fn tool_command(data: &Value) -> String {
     tool_result_value(data)
         .and_then(|v| v.get("command").and_then(Value::as_str).map(str::to_string))
         .unwrap_or_default()
+}
+
+fn validation_command(data: &Value) -> Option<String> {
+    if data.get("tool_name").and_then(Value::as_str) != Some("bash") {
+        return None;
+    }
+    let command = normalized_command(&tool_command(data));
+    let validation_markers = [
+        "cargo test",
+        "cargo clippy",
+        "cargo fmt --check",
+        "npm test",
+        "npm run test",
+        "pnpm test",
+        "pnpm run test",
+        "yarn test",
+        "pytest",
+        "uv run",
+        "go test",
+        "python -m unittest",
+    ];
+    validation_markers
+        .iter()
+        .any(|marker| command.contains(marker))
+        .then_some(command)
 }
 
 fn has_progress_guard_warning(data: &Value) -> bool {
@@ -1208,6 +1429,7 @@ fn parse_events(jsonl: &str) -> Mined {
     let mut saw_truncated_repo_map = false;
     let mut repo_map_recovery_pending = false;
     let mut exploration_fingerprints = BTreeSet::new();
+    let mut workspace = WorkspaceTrajectory::default();
     for line in jsonl.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -1311,6 +1533,15 @@ fn parse_events(jsonl: &str) -> Mined {
                 }
                 if name == "read_file" {
                     m.read_file_tool_calls += 1;
+                }
+                if workspace.observe_mutation(&data) {
+                    m.workspace_state_revisits += 1;
+                }
+                if let Some(command) = validation_command(&data) {
+                    m.validation_tool_calls += 1;
+                    if workspace.observe_validation(command) {
+                        m.redundant_validation_calls += 1;
+                    }
                 }
                 let outer_failed = data.get("success") == Some(&Value::Bool(false));
                 let inner_failed = inner_tool_failed(&data);
@@ -1697,6 +1928,18 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         "leading_marker_in_bash_result".into(),
         mined.leading_marker_in_bash_result as f64,
     );
+    t.metrics.insert(
+        "validation_tool_calls".into(),
+        mined.validation_tool_calls as f64,
+    );
+    t.metrics.insert(
+        "redundant_validation_calls".into(),
+        mined.redundant_validation_calls as f64,
+    );
+    t.metrics.insert(
+        "workspace_state_revisits".into(),
+        mined.workspace_state_revisits as f64,
+    );
     let agent_ms = if mined.turn_ms > 0 {
         mined.turn_ms
     } else {
@@ -1920,6 +2163,37 @@ mod tests {
         assert_eq!(m.repo_map_targeted_recovery_after_truncation, 1);
     }
 
+    #[test]
+    fn parse_events_mines_workspace_cycles_and_redundant_validation() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"edit_file","success":true,"result":[{"type":"text","text":"{\"path\":\"/workspace/Cargo.toml\",\"previous_content_hash\":\"A\",\"content_hash\":\"B\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"cargo test\",\"exit_code\":1,\"success\":false}"}]}}
+{"type":"tool.completed","data":{"tool_name":"edit_file","success":true,"result":[{"type":"text","text":"{\"path\":\"/workspace/Cargo.toml\",\"previous_content_hash\":\"B\",\"content_hash\":\"C\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"cargo test\",\"exit_code\":1,\"success\":false}"}]}}
+{"type":"tool.completed","data":{"tool_name":"edit_file","success":true,"result":[{"type":"text","text":"{\"path\":\"/workspace/Cargo.toml\",\"previous_content_hash\":\"C\",\"content_hash\":\"A\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"cargo test\",\"exit_code\":1,\"success\":false}"}]}}
+{"type":"tool.completed","data":{"tool_name":"edit_file","success":true,"result":[{"type":"text","text":"{\"path\":\"/workspace/Cargo.toml\",\"previous_content_hash\":\"A\",\"content_hash\":\"B\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"cargo test\",\"exit_code\":1,\"success\":false}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"cargo test\",\"exit_code\":1,\"success\":false}"}]}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.workspace_state_revisits, 2);
+        assert_eq!(m.validation_tool_calls, 5);
+        assert_eq!(m.redundant_validation_calls, 2);
+    }
+
+    #[test]
+    fn validation_mining_recognizes_compound_shell_commands() {
+        let data = json!({
+            "tool_name": "bash",
+            "result": [{
+                "type": "text",
+                "text": "{\"command\":\"set -euo pipefail\\ncargo fmt --check\\ncargo test --all-features\",\"exit_code\":0,\"success\":true}"
+            }]
+        });
+        assert!(validation_command(&data).is_some());
+    }
+
     #[tokio::test]
     async fn ast_edit_used_scorer_gates_on_variant() {
         let sample = Sample::new("a", "x");
@@ -2059,6 +2333,38 @@ mod tests {
             .unwrap();
         assert!(output_section.contains("dependency-baseline"));
         assert!(output_section.contains("\"normal-output-preserves-head\""));
+    }
+
+    #[test]
+    fn progress_efficiency_preset_is_comparative_and_bounded() {
+        let config = include_str!("../mira.toml");
+        let section = config
+            .split("[presets.progress-efficiency]")
+            .nth(1)
+            .expect("progress-efficiency preset")
+            .split("[presets.progress-controls]")
+            .next()
+            .unwrap();
+        assert!(section.contains("binary = [\"baseline\", \"candidate\"]"));
+        assert!(section.contains("\"dependency-release-oscillation\""));
+        assert!(section.contains("\"redundant-validation\""));
+        assert!(!section.contains("\"add-fn\""));
+        assert!(
+            !section.contains("trials ="),
+            "invoke this preset with --trials 3"
+        );
+
+        let controls_section = config
+            .split("[presets.progress-controls]")
+            .nth(1)
+            .expect("progress-controls preset")
+            .split("[presets.output-persistence]")
+            .next()
+            .unwrap();
+        assert!(controls_section.contains("binary = [\"baseline\", \"candidate\"]"));
+        assert!(controls_section.contains("\"add-fn\""));
+        assert!(controls_section.contains("\"find-constant\""));
+        assert!(!controls_section.contains("trials ="));
     }
 
     #[test]
