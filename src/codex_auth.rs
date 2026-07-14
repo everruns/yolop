@@ -146,9 +146,14 @@ pub async fn complete_device_login(login: DeviceLogin) -> Result<CodexAuth> {
 }
 
 pub async fn refresh_with_token(refresh_token: &str) -> Result<CodexAuth> {
+    refresh_with_token_at(TOKEN_URL, refresh_token).await
+}
+
+/// Refresh against an arbitrary token endpoint (tests inject a local mock).
+pub async fn refresh_with_token_at(token_url: &str, refresh_token: &str) -> Result<CodexAuth> {
     let client = reqwest::Client::new();
     let response = client
-        .post(TOKEN_URL)
+        .post(token_url)
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
@@ -164,6 +169,14 @@ pub async fn refresh_with_token(refresh_token: &str) -> Result<CodexAuth> {
     }
     let token: TokenResponse = response.json().await.context("parse Codex refresh token")?;
     auth_from_token_response(token)
+}
+
+/// OpenAI rotates Codex refresh tokens; reuse of an already-spent token returns
+/// `refresh_token_reused` and requires either adopting a newer on-disk token or
+/// signing in again.
+pub fn is_refresh_token_reused(err: &anyhow::Error) -> bool {
+    let message = format!("{err:#}");
+    message.contains("refresh_token_reused")
 }
 
 pub fn auth_from_access_token(access_token: String) -> CodexAuth {
@@ -512,6 +525,15 @@ mod tests {
         assert!(!should_refresh(None));
         assert!(should_refresh(Some(now_epoch_millis() + 1_000)));
         assert!(!should_refresh(Some(now_epoch_millis() + 300_000)));
+    }
+
+    #[test]
+    fn detects_refresh_token_reused_error() {
+        let err = anyhow!(
+            "Codex token refresh failed (401 Unauthorized): {{\"error\":{{\"code\":\"refresh_token_reused\"}}}}"
+        );
+        assert!(is_refresh_token_reused(&err));
+        assert!(!is_refresh_token_reused(&anyhow!("network down")));
     }
 
     #[test]

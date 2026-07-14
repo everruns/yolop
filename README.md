@@ -415,7 +415,10 @@ that model profile, so they can vary by model.
 
 `/setup` can store an API token under `[tokens]` in the settings file. The
 Codex subscription provider stores OAuth data under `[codex_auth]` instead.
-file is written with `0o600` on Unix (owner-only) and stored token values are
+Refreshed Codex access/refresh tokens are written back to that section so the
+next process start does not reuse a spent refresh token. If login becomes
+invalid (`refresh_token_reused`), run `/setup` and sign in with Codex again.
+The file is written with `0o600` on Unix (owner-only) and stored token values are
 never echoed — but it is plain text on disk, so treat it the same way you
 would `~/.aws/credentials`.
 

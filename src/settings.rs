@@ -589,6 +589,18 @@ impl SettingsStore {
         save_to(&self.path, &guard)
     }
 
+    /// Re-read `[codex_auth]` from disk and adopt it into the in-memory cache.
+    ///
+    /// Used by the Codex driver before/after refresh so a concurrent yolop
+    /// process that already rotated the refresh token is not overwritten by
+    /// stale in-memory credentials (OpenAI returns `refresh_token_reused`).
+    pub fn refresh_codex_auth_from_disk(&self) -> Option<CodexAuth> {
+        let from_disk = load_from(&self.path).codex_auth;
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.codex_auth = from_disk.clone();
+        from_disk
+    }
+
     /// Returns whether a Codex login was actually present before removal.
     pub fn clear_codex_auth(&self) -> Result<bool> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
@@ -846,6 +858,45 @@ mod tests {
         assert_eq!(auth.access_token, "access-token");
         assert_eq!(auth.account_id.as_deref(), Some("acc_123"));
         assert!(snapshot.has_codex_auth());
+    }
+
+    #[test]
+    fn refresh_codex_auth_from_disk_picks_up_external_writes() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store
+            .set_codex_auth(CodexAuth {
+                access_token: "access-old".to_string(),
+                refresh_token: Some("refresh-old".to_string()),
+                expires_at: Some(1),
+                account_id: None,
+                email: None,
+            })
+            .expect("save");
+
+        // Simulate another process rotating tokens on the same file.
+        let other = SettingsStore::open(path);
+        other
+            .set_codex_auth(CodexAuth {
+                access_token: "access-new".to_string(),
+                refresh_token: Some("refresh-new".to_string()),
+                expires_at: Some(9),
+                account_id: Some("acc".to_string()),
+                email: Some("a@b.c".to_string()),
+            })
+            .expect("external write");
+
+        let adopted = store.refresh_codex_auth_from_disk().expect("disk auth");
+        assert_eq!(adopted.access_token, "access-new");
+        assert_eq!(adopted.refresh_token.as_deref(), Some("refresh-new"));
+        assert_eq!(
+            store
+                .snapshot()
+                .codex_auth()
+                .map(|a| a.access_token.as_str()),
+            Some("access-new")
+        );
     }
 
     #[test]
