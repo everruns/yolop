@@ -88,6 +88,13 @@ status-bar count) lists the session's tasks via
 tools from scheduled monitors so an armed schedule is not presented as a
 running command.
 
+Scheduled monitors remain owned obligations after creation. Before reporting
+that their parent work is complete, the agent cancels monitors whose purpose is
+satisfied, superseded, or no longer relevant. Yolop wraps `cancel_task` so a
+monitor is reported canceled only after its linked schedule is disabled; the
+result distinguishes terminal `disarmed` cancellation from cooperative
+`cancellation_pending` work that is still winding down.
+
 ### Proactive wake (the callback)
 
 On completion `spawn_background`'s sink calls

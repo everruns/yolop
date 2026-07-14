@@ -19,6 +19,7 @@ use everruns_core::command::{
     CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource, ExecuteCommandRequest,
 };
 use everruns_core::session_task::SessionTaskRegistry;
+use everruns_core::session_task::TASK_KIND_MONITOR;
 use everruns_core::typed_id::SessionId;
 use std::sync::Arc;
 
@@ -38,7 +39,12 @@ const BACKGROUND_SYSTEM_PROMPT: &str = "<capability id=\"background\">\n\
     steps while it runs. In one-shot (`-p`) runs there is no wake — block on the \
     spawned task with `wait_task` instead of ending the turn. To inspect background \
     state, call `list_tasks` once without kind or state filters; scheduled work is a \
-    `monitor`, not a `background_tool`.\n\
+    `monitor`, not a `background_tool`. Scheduled monitors are obligations you own: \
+    before finishing work, cancel any monitor whose purpose is satisfied, superseded, \
+    or no longer needed; keep it armed only when its future wake is still required. \
+    Treat `disarmed: true` or a terminal task state from `cancel_task` as completed \
+    cancellation; `cancellation_pending: true` means cooperative shutdown is still in \
+    progress.\n\
     </capability>";
 
 pub(crate) struct BackgroundCapability {
@@ -67,7 +73,27 @@ impl Capability for BackgroundCapability {
     }
 
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        Some(BACKGROUND_SYSTEM_PROMPT.to_string())
+        let active_monitors = self
+            .task_registry
+            .list(self.session_id, None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|task| task.kind == TASK_KIND_MONITOR && !task.state.is_terminal())
+            .map(|task| task.id)
+            .collect::<Vec<_>>();
+        let mut prompt = BACKGROUND_SYSTEM_PROMPT
+            .strip_suffix("</capability>")
+            .unwrap_or(BACKGROUND_SYSTEM_PROMPT)
+            .to_string();
+        if !active_monitors.is_empty() {
+            prompt.push_str(&format!(
+                "Active scheduled monitor obligations in this session: {}. Reconcile each before reporting its parent work complete.\n",
+                active_monitors.join(", ")
+            ));
+        }
+        prompt.push_str("</capability>");
+        Some(prompt)
     }
 
     fn system_prompt_preview(&self) -> Option<String> {
@@ -119,8 +145,10 @@ mod tests {
         TaskMessage,
     };
 
-    /// The prompt contribution never touches the registry.
-    struct StubRegistry;
+    /// The prompt contribution tolerates an empty registry.
+    struct StubRegistry {
+        tasks: Vec<SessionTask>,
+    }
 
     #[async_trait]
     impl SessionTaskRegistry for StubRegistry {
@@ -147,7 +175,7 @@ mod tests {
             _session_id: SessionId,
             _filter: Option<&SessionTaskFilter>,
         ) -> everruns_core::Result<Vec<SessionTask>> {
-            Ok(Vec::new())
+            Ok(self.tasks.clone())
         }
         async fn request_cancel(
             &self,
@@ -179,7 +207,7 @@ mod tests {
     async fn system_prompt_teaches_detached_waits_per_host() {
         let capability = BackgroundCapability {
             session_id: SessionId::new(),
-            task_registry: Arc::new(StubRegistry),
+            task_registry: Arc::new(StubRegistry { tasks: vec![] }),
         };
         let ctx = SystemPromptContext::without_file_store(SessionId::new());
 
@@ -192,5 +220,39 @@ mod tests {
         assert!(prompt.contains("spawn_background"));
         assert!(prompt.contains("end the turn"));
         assert!(prompt.contains("wait_task"));
+        assert!(prompt.contains("cancel any monitor whose purpose is satisfied"));
+        assert!(prompt.contains("disarmed: true"));
+    }
+
+    #[tokio::test]
+    async fn system_prompt_surfaces_active_monitor_obligations() {
+        let session_id = SessionId::from_seed(42);
+        let task = everruns_core::session_task::new_session_task(
+            CreateSessionTask {
+                session_id,
+                id: Some("task_scheduled_check".into()),
+                kind: TASK_KIND_MONITOR.into(),
+                display_name: "scheduled check".into(),
+                spec: serde_json::json!({}),
+                state: everruns_core::session_task::SessionTaskState::Running,
+                links: Default::default(),
+                wake_policy: everruns_core::session_task::TaskWakePolicy::Silent,
+            },
+            chrono::Utc::now(),
+        );
+        let capability = BackgroundCapability {
+            session_id,
+            task_registry: Arc::new(StubRegistry { tasks: vec![task] }),
+        };
+        let ctx = SystemPromptContext::without_file_store(session_id);
+
+        let prompt = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("background capability contributes a prompt");
+
+        assert!(prompt.contains("Active scheduled monitor obligations"));
+        assert!(prompt.contains("task_scheduled_check"));
+        assert!(prompt.contains("Reconcile each"));
     }
 }
