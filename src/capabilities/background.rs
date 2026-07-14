@@ -11,15 +11,26 @@
 // session's everruns tasks. The model inspects and controls them with the
 // everruns `list_tasks` / `get_task` / `cancel_task` tools (the `session_tasks`
 // capability). See specs/background.md.
+//
+// `NarratedBackgroundExecutionCapability` wraps upstream
+// `BackgroundExecutionCapability` so `spawn_background` gets human narration
+// instead of the generic "Running Spawn Background" fallback.
 
+use crate::capabilities::narration::narrate_spawn_background;
 use crate::session_tasks_view::render_task_list;
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::capabilities::{
+    BackgroundExecutionCapability, Capability, CapabilityLocalization, CapabilityStatus,
+    SystemPromptContext,
+};
 use everruns_core::command::{
     CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource, ExecuteCommandRequest,
 };
 use everruns_core::session_task::SessionTaskRegistry;
 use everruns_core::session_task::TASK_KIND_MONITOR;
+use everruns_core::tool_narration::ToolNarrationPhase;
+use everruns_core::tool_types::{ToolCall, ToolDefinition};
+use everruns_core::tools::Tool;
 use everruns_core::typed_id::SessionId;
 use std::sync::Arc;
 
@@ -137,6 +148,71 @@ impl Capability for BackgroundCapability {
     }
 }
 
+/// Upstream `spawn_background` without argument-aware narration. Yolop wraps it
+/// so transcript / ACP titles read "Spawn background: …" instead of
+/// "Running Spawn Background".
+pub(crate) struct NarratedBackgroundExecutionCapability {
+    inner: BackgroundExecutionCapability,
+}
+
+impl NarratedBackgroundExecutionCapability {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: BackgroundExecutionCapability,
+        }
+    }
+}
+
+#[async_trait]
+impl Capability for NarratedBackgroundExecutionCapability {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn localizations(&self) -> Vec<CapabilityLocalization> {
+        self.inner.localizations()
+    }
+
+    fn status(&self) -> CapabilityStatus {
+        self.inner.status()
+    }
+
+    fn icon(&self) -> Option<&str> {
+        self.inner.icon()
+    }
+
+    fn category(&self) -> Option<&str> {
+        self.inner.category()
+    }
+
+    fn tools(&self) -> Vec<Box<dyn Tool>> {
+        self.inner.tools()
+    }
+
+    fn narrate(
+        &self,
+        _tool_def: Option<&ToolDefinition>,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        _locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        if tool_call.name == "spawn_background" {
+            Some(narrate_spawn_background(tool_call, phase))
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +220,7 @@ mod tests {
         CreateSessionTask, NewTaskMessage, SessionTask, SessionTaskFilter, SessionTaskUpdate,
         TaskMessage,
     };
+    use serde_json::json;
 
     /// The prompt contribution tolerates an empty registry.
     struct StubRegistry {
@@ -254,5 +331,27 @@ mod tests {
         assert!(prompt.contains("Active scheduled monitor obligations"));
         assert!(prompt.contains("task_scheduled_check"));
         assert!(prompt.contains("Reconcile each"));
+    }
+
+    #[test]
+    fn spawn_background_capability_narrates_with_title() {
+        let capability = NarratedBackgroundExecutionCapability::new();
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "spawn_background".to_owned(),
+            arguments: json!({
+                "tool": "bash",
+                "title": "Wait for CI",
+                "args": { "command": "gh pr checks --watch" }
+            }),
+        };
+        let narration = capability.narrate(
+            None,
+            &call,
+            ToolNarrationPhase::Started,
+            None,
+            everruns_core::tool_narration::ToolNarrationContext::default(),
+        );
+        assert_eq!(narration.as_deref(), Some("Spawn background: Wait for CI"));
     }
 }

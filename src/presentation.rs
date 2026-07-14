@@ -335,6 +335,67 @@ mod tests {
     }
 
     #[test]
+    fn session_task_narration_is_visible_in_live_activity_and_transcript() {
+        use crate::capabilities::narration::{narrate_spawn_background, narrate_wait_task};
+        use crate::transcript::status_for_event;
+        use everruns_core::events::ToolStartedData;
+        use everruns_core::tool_narration::ToolNarrationPhase;
+        use everruns_core::tool_types::ToolCall;
+
+        let wait_call = ToolCall {
+            id: "call_wait".to_string(),
+            name: "wait_task".to_string(),
+            arguments: json!({ "task_id": "task_ci_watch" }),
+        };
+        let wait_narration = narrate_wait_task(&wait_call, ToolNarrationPhase::Started);
+        let started = RuntimeEvent::new(
+            SessionId::new(),
+            EventContext::empty(),
+            ToolStartedData {
+                tool_call: wait_call,
+                display_name: Some("Wait Task".to_string()),
+                narration: Some(wait_narration.clone()),
+                tool_call_fingerprint: None,
+            },
+        );
+        assert_eq!(
+            status_for_event(&started).map(|status| status.text),
+            Some("→ Wait for task: task_ci_watch".to_string()),
+            "live activity must prefer human narration over display_name"
+        );
+
+        let spawn_call = ToolCall {
+            id: "call_spawn".to_string(),
+            name: "spawn_background".to_string(),
+            arguments: json!({
+                "tool": "bash",
+                "title": "Wait for CI",
+                "args": { "command": "gh pr checks --watch" }
+            }),
+        };
+        let mut completed = ToolCompletedData::success(
+            "call_spawn".to_string(),
+            "spawn_background".to_string(),
+            vec![ContentPart::text(
+                json!({ "task_id": "task_ci_watch", "state": "running" }).to_string(),
+            )],
+            None,
+        );
+        completed.display_name = Some("Spawn Background".to_string());
+        completed.narration = Some(narrate_spawn_background(
+            &spawn_call,
+            ToolNarrationPhase::Completed,
+        ));
+        let event = RuntimeEvent::new(SessionId::new(), EventContext::empty(), completed);
+        let rendered = plain_transcript_line(&lines_for_event(&event)[0]);
+        assert_eq!(
+            rendered, "tool › ✓ Spawn background: Wait for CI",
+            "transcript must not fall back to 'Ran Spawn Background'"
+        );
+        assert_ne!(wait_narration, "Wait Task");
+    }
+
+    #[test]
     fn status_model_exposes_compact_status_values_without_terminal() {
         let lines = state().status_lines();
 

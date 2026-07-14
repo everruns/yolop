@@ -6,13 +6,14 @@
 //! task surface, replacing only `cancel_task` until the runtime result contract
 //! exposes the post-cancellation state.
 
+use crate::capabilities::narration::narrate_session_task_tool;
 use async_trait::async_trait;
 use everruns_core::capabilities::{
     Capability, CapabilityLocalization, CapabilityStatus, SessionTasksCapability,
     SystemPromptContext,
 };
 use everruns_core::tool_narration::ToolNarrationPhase;
-use everruns_core::tool_types::{ToolCall, ToolHints, ToolPolicy};
+use everruns_core::tool_types::{ToolCall, ToolDefinition, ToolHints, ToolPolicy};
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use everruns_core::traits::ToolContext;
 use everruns_core::{ScheduleId, SessionTaskState, SessionTaskUpdate};
@@ -87,6 +88,17 @@ impl Capability for TruthfulSessionTasksCapability {
             })
             .collect()
     }
+
+    fn narrate(
+        &self,
+        _tool_def: Option<&ToolDefinition>,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        _locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        narrate_session_task_tool(tool_call, phase)
+    }
 }
 
 struct TruthfulCancelTaskTool {
@@ -127,10 +139,10 @@ impl Tool for TruthfulCancelTaskTool {
         &self,
         tool_call: &ToolCall,
         phase: ToolNarrationPhase,
-        locale: Option<&str>,
-        ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+        _locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
-        self.inner.narrate(tool_call, phase, locale, ctx)
+        narrate_session_task_tool(tool_call, phase)
     }
 
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
@@ -369,6 +381,24 @@ mod tests {
             .await
             .expect("create monitor task");
         (session_id, schedule.id, registry, schedules)
+    }
+
+    #[test]
+    fn session_tasks_capability_narrates_wait_task() {
+        let capability = TruthfulSessionTasksCapability::new();
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "wait_task".to_owned(),
+            arguments: json!({ "task_id": "task_ci_watch" }),
+        };
+        let narration = capability.narrate(
+            None,
+            &call,
+            ToolNarrationPhase::Started,
+            None,
+            everruns_core::tool_narration::ToolNarrationContext::default(),
+        );
+        assert_eq!(narration.as_deref(), Some("Wait for task: task_ci_watch"));
     }
 
     #[tokio::test]
