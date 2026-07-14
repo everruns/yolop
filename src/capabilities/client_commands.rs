@@ -115,7 +115,7 @@ fn command_descriptors() -> Vec<CommandDescriptor> {
         cmd("tools", "list available tools", &[]),
         cmd(
             "mcp",
-            "list, reload, or enable/disable/remove MCP servers live",
+            "list/reload/login or enable/disable/remove MCP servers live",
             &[opt("action")],
         ),
         cmd("cwd", "show workspace root", &[]),

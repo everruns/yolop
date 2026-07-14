@@ -67,6 +67,13 @@ impl Session {
         self.handles.reload_mcp_servers().await
     }
 
+    /// The shared connection store backing MCP OAuth tokens. `/mcp login` saves
+    /// through this so the runtime's auth provider (which holds the same handle)
+    /// sees the new token immediately.
+    pub fn connections(&self) -> Arc<crate::connectors::ConnectionStore> {
+        self.handles.connections.clone()
+    }
+
     /// Translate the prefix of persisted events that were replayed from disk
     /// into transcript lines (used to seed the transcript on resume).
     pub async fn replayed_lines(&self, count: usize) -> Result<Vec<ChatLine>> {

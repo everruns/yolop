@@ -1,6 +1,27 @@
+use anyhow::{Context, Result, anyhow};
 use base64::Engine as _;
 use rand::RngExt;
 use sha2::{Digest, Sha256};
+
+/// Open `url` in the user's default browser. Shared by the interactive OAuth
+/// login flows (Codex provider auth, MCP server auth).
+pub fn open_browser(url: &str) -> Result<()> {
+    let status = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).status()
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .status()
+    } else {
+        std::process::Command::new("xdg-open").arg(url).status()
+    }
+    .context("open browser for login")?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("browser opener exited with {status}"))
+    }
+}
 
 pub fn random_pkce_verifier() -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
