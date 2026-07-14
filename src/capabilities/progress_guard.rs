@@ -10,7 +10,8 @@ use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptCont
 use everruns_core::tool_types::{ToolCall, ToolDefinition, ToolResult};
 use everruns_core::traits::ToolContext;
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 pub(crate) const PROGRESS_GUARD_CAPABILITY_ID: &str = "progress_guard";
@@ -22,6 +23,8 @@ const ZERO_EVIDENCE_SEARCH_THRESHOLD: usize = 3;
 const TRUNCATED_EXPLORATION_THRESHOLD: usize = 2;
 const REPEATED_STATUS_THRESHOLD: usize = 3;
 const REPEATED_WAITING_THRESHOLD: usize = 3;
+const SEMANTIC_HISTORY_LIMIT: usize = 512;
+const TRACKED_PATH_LIMIT: usize = 1024;
 
 pub(crate) struct ProgressGuardCapability {
     state: Arc<Mutex<ProgressGuardState>>,
@@ -108,6 +111,12 @@ struct SessionProgress {
     consecutive_zero_evidence_searches: usize,
     consecutive_truncated_exploration: usize,
     warning_count: usize,
+    workspace_epoch: u64,
+    workspace_hashes: HashMap<String, String>,
+    recent_workspace_states: VecDeque<u64>,
+    seen_workspace_states: HashSet<u64>,
+    recent_validations: VecDeque<(u64, String)>,
+    seen_validations: HashSet<(u64, String)>,
 }
 
 impl SessionProgress {
@@ -116,26 +125,23 @@ impl SessionProgress {
         let class = classify_tool_call(tool_call);
 
         match class {
-            ToolClass::Mutation => {
-                self.mutation_count += 1;
-                self.exploration_since_progress = 0;
-                self.repeated_status_count = 0;
-                self.last_status_command = None;
-                self.repeated_waiting_count = 0;
-                self.repeated_exploration_count = 0;
-                self.last_exploration_signature = None;
-                self.reset_result_streaks();
-                None
-            }
-            ToolClass::Validation => {
+            ToolClass::Mutation => self.observe_mutation(tool_call, result),
+            ToolClass::Validation(command) => {
                 self.validation_count += 1;
-                self.exploration_since_progress = 0;
-                self.repeated_status_count = 0;
-                self.last_status_command = None;
-                self.repeated_waiting_count = 0;
-                self.repeated_exploration_count = 0;
-                self.last_exploration_signature = None;
-                self.reset_result_streaks();
+                self.reset_activity_streaks();
+                let validation = (self.validation_state_signature(), command);
+                if self.seen_validations.contains(&validation) {
+                    self.warning_count += 1;
+                    return Some(
+                        "progress_guard: repeated the same validation command on an unchanged workspace state. The result adds no new code evidence; use the existing result, change the relevant state, or explain why an external retry is necessary before running it again."
+                            .to_string(),
+                    );
+                }
+                remember_bounded(
+                    &mut self.seen_validations,
+                    &mut self.recent_validations,
+                    validation,
+                );
                 None
             }
             ToolClass::Waiting => {
@@ -192,6 +198,108 @@ impl SessionProgress {
                 None
             }
         }
+    }
+
+    fn observe_mutation(&mut self, tool_call: &ToolCall, result: &ToolResult) -> Option<String> {
+        if result.error.is_some() || !mutation_was_applied(tool_call, result) {
+            return None;
+        }
+
+        self.mutation_count += 1;
+        self.reset_activity_streaks();
+
+        let Some(transition) = mutation_hash_transition(tool_call, result) else {
+            // Shell, delete, and structural edits can touch an unknown set of
+            // files. They make validation fresh, but retaining structured file
+            // hashes lets us still recognize a manifest cycle around lockfile
+            // updates and other adjacent mutations.
+            self.advance_opaque_mutation();
+            return None;
+        };
+
+        if self.workspace_hashes.len() >= TRACKED_PATH_LIMIT
+            && !self.workspace_hashes.contains_key(&transition.path)
+        {
+            self.reset_tracked_history();
+        }
+
+        if let Some(previous_hash) = transition.previous_hash {
+            if let Some(known_hash) = self.workspace_hashes.get(&transition.path)
+                && known_hash != &previous_hash
+            {
+                // An unobserved writer changed the file. Preserve safety by
+                // abandoning comparisons with the now-incomplete trajectory.
+                self.reset_tracked_history();
+            }
+            if !self.workspace_hashes.contains_key(&transition.path) {
+                self.workspace_hashes
+                    .insert(transition.path.clone(), previous_hash);
+                let previous_state = self.tracked_state_signature();
+                self.remember_workspace_state(previous_state);
+            }
+        }
+
+        self.workspace_hashes
+            .insert(transition.path, transition.content_hash);
+        let current_state = self.tracked_state_signature();
+        if self.remember_workspace_state(current_state) {
+            self.warning_count += 1;
+            return Some(
+                "progress_guard: this mutation returned to a recently seen workspace state (the same tracked content hashes). Confirm the revert is intentional; if this is an edit/validate cycle, keep the coherent state, report the blocker, and stop repeating the cycle."
+                    .to_string(),
+            );
+        }
+        None
+    }
+
+    fn reset_activity_streaks(&mut self) {
+        self.exploration_since_progress = 0;
+        self.repeated_status_count = 0;
+        self.last_status_command = None;
+        self.repeated_waiting_count = 0;
+        self.repeated_exploration_count = 0;
+        self.last_exploration_signature = None;
+        self.reset_result_streaks();
+    }
+
+    fn advance_opaque_mutation(&mut self) {
+        self.workspace_epoch = self.workspace_epoch.wrapping_add(1);
+        self.recent_validations.clear();
+        self.seen_validations.clear();
+    }
+
+    fn reset_tracked_history(&mut self) {
+        self.workspace_hashes.clear();
+        self.recent_workspace_states.clear();
+        self.seen_workspace_states.clear();
+        self.advance_opaque_mutation();
+    }
+
+    fn tracked_state_signature(&self) -> u64 {
+        let mut entries = self.workspace_hashes.iter().collect::<Vec<_>>();
+        entries.sort_unstable_by(|left, right| left.0.cmp(right.0));
+        let mut hasher = DefaultHasher::new();
+        entries.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn validation_state_signature(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.workspace_epoch.hash(&mut hasher);
+        self.tracked_state_signature().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn remember_workspace_state(&mut self, state: u64) -> bool {
+        if self.seen_workspace_states.contains(&state) {
+            return true;
+        }
+        remember_bounded(
+            &mut self.seen_workspace_states,
+            &mut self.recent_workspace_states,
+            state,
+        );
+        false
     }
 
     fn result_warning(&mut self, tool_call: &ToolCall, result: &ToolResult) -> Option<String> {
@@ -342,7 +450,7 @@ fn exploration_evidence(tool_call: &ToolCall, result: &ToolResult) -> Option<Exp
 enum ToolClass {
     Exploration,
     Mutation,
-    Validation,
+    Validation(String),
     Status(String),
     /// Checking on an external event (CI run, PR checks/reviews) or plain
     /// sleeping — the poll-loop shape that should instead be one detached
@@ -389,7 +497,7 @@ fn classify_bash_command(command: &str) -> ToolClass {
         return ToolClass::Status(normalized);
     }
     if is_validation_command(&normalized) {
-        return ToolClass::Validation;
+        return ToolClass::Validation(normalized);
     }
     if is_mutating_command(&normalized) {
         return ToolClass::Mutation;
@@ -398,6 +506,56 @@ fn classify_bash_command(command: &str) -> ToolClass {
         return ToolClass::Exploration;
     }
     ToolClass::Other
+}
+
+struct MutationHashTransition {
+    path: String,
+    previous_hash: Option<String>,
+    content_hash: String,
+}
+
+fn mutation_hash_transition(
+    tool_call: &ToolCall,
+    result: &ToolResult,
+) -> Option<MutationHashTransition> {
+    if !matches!(tool_call.name.as_str(), "edit_file" | "write_file") {
+        return None;
+    }
+    let value = result.result.as_ref()?;
+    Some(MutationHashTransition {
+        path: value.get("path")?.as_str()?.to_string(),
+        previous_hash: value
+            .get("previous_content_hash")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        content_hash: value.get("content_hash")?.as_str()?.to_string(),
+    })
+}
+
+fn mutation_was_applied(tool_call: &ToolCall, result: &ToolResult) -> bool {
+    if tool_call.name == "ast_edit" {
+        return result
+            .result
+            .as_ref()
+            .and_then(|value| value.get("applied"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    }
+    true
+}
+
+fn remember_bounded<T: Clone + Eq + Hash>(
+    seen: &mut HashSet<T>,
+    recent: &mut VecDeque<T>,
+    value: T,
+) {
+    seen.insert(value.clone());
+    recent.push_back(value);
+    if recent.len() > SEMANTIC_HISTORY_LIMIT
+        && let Some(expired) = recent.pop_front()
+    {
+        seen.remove(&expired);
+    }
 }
 
 /// For a command starting with `sleep`, everything after the first `&&`/`;`
@@ -490,6 +648,8 @@ fn is_status_command(command: &str) -> bool {
 fn is_validation_command(command: &str) -> bool {
     let prefixes = [
         "cargo test",
+        "cargo check",
+        "cargo build",
         "cargo clippy",
         "cargo fmt --check",
         "npm test",
@@ -509,6 +669,11 @@ fn is_mutating_command(command: &str) -> bool {
     let tokens = [
         "apply_patch",
         "cargo fmt",
+        "cargo update",
+        "cargo generate-lockfile",
+        "cargo add",
+        "cargo remove",
+        "cargo fix",
         "npm run format",
         "pnpm run format",
         "git apply",
@@ -609,7 +774,15 @@ mod tests {
         );
         assert_eq!(
             classify_bash_command("cargo test --all-features"),
-            ToolClass::Validation
+            ToolClass::Validation("cargo test --all-features".to_string())
+        );
+        assert_eq!(
+            classify_bash_command("cargo check --all-features"),
+            ToolClass::Validation("cargo check --all-features".to_string())
+        );
+        assert_eq!(
+            classify_bash_command("cargo update -p everruns-core --precise 0.17.7"),
+            ToolClass::Mutation
         );
         assert_eq!(
             classify_bash_command("rg progress_guard"),
@@ -632,7 +805,7 @@ mod tests {
         // A sleep in front of real work classifies as the work itself.
         assert_eq!(
             classify_bash_command("sleep 5 && cargo test --all-features"),
-            ToolClass::Validation
+            ToolClass::Validation("cargo test --all-features".to_string())
         );
         // `sleepwalk` must not parse as a sleep prefix.
         assert_eq!(classify_bash_command("sleepwalk"), ToolClass::Other);
@@ -801,6 +974,229 @@ mod tests {
                 .and_then(|value| value.get("progress_guard_warning"))
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn workspace_state_revisit_warns_on_a_mutation_cycle() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let transitions = [("A", "B"), ("B", "C"), ("C", "A")];
+
+        for (index, (previous, current)) in transitions.into_iter().enumerate() {
+            let mut out = result_value(json!({
+                "path": "/workspace/Cargo.toml",
+                "previous_content_hash": previous,
+                "content_hash": current,
+            }));
+            hook.after_exec(
+                &call("edit_file", json!({ "path": "/workspace/Cargo.toml" })),
+                &tool_def("edit_file"),
+                &mut out,
+                &context,
+            )
+            .await;
+
+            let warning = out
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str);
+            if index < 2 {
+                assert!(warning.is_none(), "new states are progress");
+            } else {
+                assert!(
+                    warning.is_some_and(|text| text.contains("workspace state")),
+                    "returning to A should expose the mutation cycle"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lockfile_updates_do_not_hide_a_manifest_state_cycle() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let transitions = [("A", "B"), ("B", "C"), ("C", "A")];
+
+        for (index, (previous, current)) in transitions.into_iter().enumerate() {
+            let mut edit = result_value(json!({
+                "path": "/workspace/Cargo.toml",
+                "previous_content_hash": previous,
+                "content_hash": current,
+            }));
+            hook.after_exec(
+                &call("edit_file", json!({ "path": "/workspace/Cargo.toml" })),
+                &tool_def("edit_file"),
+                &mut edit,
+                &context,
+            )
+            .await;
+
+            let warning = edit
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str);
+            if index < 2 {
+                assert!(warning.is_none());
+            } else {
+                assert!(warning.is_some_and(|text| text.contains("workspace state")));
+            }
+
+            let mut update = result();
+            hook.after_exec(
+                &call(
+                    "bash",
+                    json!({ "command": "cargo update -p everruns-core --precise 0.17.7" }),
+                ),
+                &tool_def("bash"),
+                &mut update,
+                &context,
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn lockfile_update_makes_repeated_validation_fresh() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let validation = call("bash", json!({ "command": "cargo check" }));
+
+        hook.after_exec(&validation, &tool_def("bash"), &mut result(), &context)
+            .await;
+        hook.after_exec(
+            &call(
+                "bash",
+                json!({ "command": "cargo update -p everruns-core --precise 0.17.7" }),
+            ),
+            &tool_def("bash"),
+            &mut result(),
+            &context,
+        )
+        .await;
+
+        let mut after_update = result();
+        hook.after_exec(&validation, &tool_def("bash"), &mut after_update, &context)
+            .await;
+        assert!(
+            after_update
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .is_none(),
+            "validation after a lockfile mutation has new workspace evidence"
+        );
+
+        let mut unchanged_again = result();
+        hook.after_exec(
+            &validation,
+            &tool_def("bash"),
+            &mut unchanged_again,
+            &context,
+        )
+        .await;
+        assert!(
+            unchanged_again
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .is_some(),
+            "a second validation without another mutation is redundant"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_validation_on_unchanged_state_warns() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let validation = call("bash", json!({ "command": "cargo test" }));
+
+        let mut first = result();
+        hook.after_exec(&validation, &tool_def("bash"), &mut first, &context)
+            .await;
+        assert!(
+            first
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .is_none()
+        );
+
+        let mut repeated = result();
+        hook.after_exec(&validation, &tool_def("bash"), &mut repeated, &context)
+            .await;
+        assert!(
+            repeated
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains("unchanged workspace state"))
+        );
+
+        let mut edit = result_value(json!({
+            "path": "/workspace/src/lib.rs",
+            "previous_content_hash": "A",
+            "content_hash": "B",
+        }));
+        hook.after_exec(
+            &call("edit_file", json!({ "path": "/workspace/src/lib.rs" })),
+            &tool_def("edit_file"),
+            &mut edit,
+            &context,
+        )
+        .await;
+
+        let mut after_progress = result();
+        hook.after_exec(
+            &validation,
+            &tool_def("bash"),
+            &mut after_progress,
+            &context,
+        )
+        .await;
+        assert!(
+            after_progress
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .is_none(),
+            "the same validation is useful after the workspace changes"
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_progress_has_no_fixed_session_iteration_limit() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+
+        for index in 0..256 {
+            let mut out = result_value(json!({
+                "path": "/workspace/src/lib.rs",
+                "previous_content_hash": format!("state-{index}"),
+                "content_hash": format!("state-{}", index + 1),
+            }));
+            hook.after_exec(
+                &call("edit_file", json!({ "path": "/workspace/src/lib.rs" })),
+                &tool_def("edit_file"),
+                &mut out,
+                &context,
+            )
+            .await;
+            assert!(
+                out.result
+                    .as_ref()
+                    .and_then(|value| value.get("progress_guard_warning"))
+                    .is_none(),
+                "each new state remains progress after iteration {index}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -52,6 +52,8 @@ search/refactor, and read-only code navigation.
 | `zero-result-search-recovery` [`search-efficiency`] | Three absent terms plus a real target | Recover after repeated empty searches | response finds the target and records a progress warning | result-aware progress guard |
 | `repo-map-bounded` [`search-efficiency`] | Rust file with 260+ symbols | Use an unqueried repo map | answer is found, output stays bounded, and truncation is followed by a targeted map or grep | output-size and recovery discipline |
 | `normal-output-preserves-head` [`search-efficiency`] | leading match followed by 600 `Error` lines | Run one bash search with explicit `output: normal` | leading match remains visible without reading persisted output | successful-output compaction |
+| `dependency-release-oscillation` [`progress-efficiency`] | bounded partial-release verifier with recurring manifest states and interleaved lockfile updates | Follow the release checklist until the runtime interrupts the cycle | coherent 0.17.6 manifest with few state revisits and validations | mutation oscillation from the costly version-bump session |
+| `redundant-validation` [`progress-efficiency`] | passing Rust suite plus an instruction to rerun it unchanged | Validate repeatedly unless the runtime detects no new evidence | warning stops duplicate validation before the third run | validation deduplication on unchanged state |
 | `replace-console-log` [`ast-edit`] | TS: `api.ts`/`worker.ts` call `console.log`; `logger.ts` exports `logger.info` | Replace every `console.log(...)` with `logger.info(...)` | both TS files use `logger.info`, no `console.log` | multi-file shape rewrite (`console.log` → `logger.info`) |
 | `strip-print-debug` [`ast-edit`] | Python `app.py`/`helpers.py` with standalone `print(...)` debug lines | Remove every standalone `print(...)` statement | neither file contains `print(` | bulk statement removal across files |
 | `unwrap-to-expect` [`ast-edit`] [smoke] | Rust `src/lib.rs` with `.unwrap()` on `first`/`last` | Replace every `.unwrap()` with `.expect("failed")` | file contains `.expect("failed")`, no `.unwrap()` | small Rust structural rewrite |
@@ -119,7 +121,8 @@ cost, `llm_calls`, `turns`, `tool_calls_failed`, `agent_reported_ms`,
 `tool_calls_failed`, duplicate exploration, total/maximum tool-result bytes,
 repo-map narrowing and targeted recovery (a narrower map or `grep_files` fallback),
 session-search ordering, `ast_edit_tool_calls`, and
-`ast_edit_tool_calls_failed`
+`ast_edit_tool_calls_failed`, validation calls, redundant validations, and
+workspace-state revisits
 — plus metadata (`provider`, `model`, `effort`,
 `reasoning_effort_applied`, `harness`, `stop_reason`) for `--group-by`.
 
@@ -170,6 +173,17 @@ python3 analyze_search_efficiency.py \
   results/<focused_run_id>/report.json \
   results/<control_run_id>/report.json
 
+# Prove state-cycle and redundant-validation improvements against main.
+HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
+HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
+  doppler run -- mira run --preset progress-efficiency --trials 3 --group-by binary
+HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
+HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
+  doppler run -- mira run --preset progress-controls --trials 5 --group-by binary
+python3 analyze_progress_efficiency.py \
+  results/<focused_run_id>/report.json \
+  results/<control_run_id>/report.json
+
 # Isolate output persistence from other yolop/runtime changes.
 HARNESS_BASIC_DEPENDENCY_BASELINE_BIN=/path/to/yolop-with-everruns-main \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/yolop-with-output-fix \
@@ -195,6 +209,8 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `progress-guard` | focused warning-behavior check | tag `progress-guard` | claude-sonnet-4-5 | candidate, effort=default, default vs no-progress-guard |
 | `search-efficiency` | baseline/candidate session/search proof, 3 trials | 5 focused cases | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `search-controls` | ordinary regression controls, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
+| `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | dependency oscillation + redundant validation | gpt-5.5 | baseline + candidate, harness=default, effort=default |
+| `progress-controls` | ordinary regression controls, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `output-persistence` | dependency-isolated output proof, 3 trials | `normal-output-preserves-head` | gpt-5.5 | dependency baseline + candidate |
 | `ast-edit-compare` | **A/B ast_edit capability** | tag `ast-edit` | claude-sonnet-4-5 | candidate, effort=default, default vs with-ast-edit |
 | `effort-compare` | effort sweep | all | gpt-5.5 | candidate, harness=default, all efforts |
@@ -223,6 +239,13 @@ the focused and control presets, gates both reports, and uploads the complete
 Mira run archives. It is intentionally excluded from pull-request CI because
 it is a live-model regression monitor, not a deterministic unit test.
 
+For progress-efficiency, the distribution gate additionally requires fewer
+workspace-state revisits in the dependency case and fewer redundant validation
+calls in both focused cases. Ordinary-task token and cost regressions are gated
+over a separate five-trial control run; correctness, tool shape, and unexpected
+warnings remain per-control checks. The fixtures are bounded, so an ineffective
+guard finishes with measurable waste instead of running until the study timeout.
+
 Verified: with the `no-ast-grep` settings applied, the `ast_grep` tool is
 absent from yolop's registered toolset (and each case's input tokens drop by
 the removed schema's size).
@@ -235,6 +258,7 @@ evals/harness_basic/
                 #   yolop subject (spawn + events.jsonl mining), unit tests
   analyze_search_efficiency.py  # baseline/candidate distribution gates
   search_efficiency_baseline.json  # immutable pre-fix revision + evidence
+  analyze_progress_efficiency.py  # state-progress distribution gates
   tests/         # analyzer unit tests
   Cargo.toml    # standalone crate (outside the yolop package), mira-eval SDK
   mira.toml     # host config: launcher, ./results, presets
