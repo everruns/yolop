@@ -2172,9 +2172,7 @@ pub async fn build_with_options(
     // MCP servers from global settings and workspace `.mcp.json`, merged. Loading is
     // best-effort per scope: a malformed file is warned about and skipped, so
     // it never sinks the session or masks the other scope.
-    let mcp_servers: ScopedMcpServers = crate::mcp_config::load_mcp_servers(&canonical_root);
-    let mut mcp_server_names: Vec<String> = mcp_servers.keys().cloned().collect();
-    mcp_server_names.sort();
+    let mut mcp_servers: ScopedMcpServers = crate::mcp_config::load_mcp_servers(&canonical_root);
     let hooks_store = Arc::new(crate::hooks_config::HooksStore::beside_settings(
         &settings,
         canonical_root.clone(),
@@ -2326,9 +2324,29 @@ pub async fn build_with_options(
     // `lsp`. See specs/extensions.md.
     let mut extension_never_defer: Vec<String> = Vec::new();
     if let Some(ext_dir) = crate::extensions::extensions_dir() {
+        let settings_snapshot = settings.snapshot();
         for package in crate::extensions::discover_extensions(&ext_dir) {
+            // An extension's contributed MCP servers (D1) apply only when the
+            // extension is enabled in the harness — merged into scoped MCP
+            // config so the runtime's own client discovers them, exactly like
+            // `.mcp.json`. Workspace `.mcp.json` still overrides by name.
+            let enabled = settings_snapshot
+                .capability_overrides_for(&crate::extensions::extension_capability_id(
+                    &package.manifest.name,
+                ))
+                .iter()
+                .any(|(_, entry)| !entry.is_remove());
             let capability =
                 crate::extensions::ExtensionCapability::new(package, effective_root.clone());
+            if enabled {
+                let contributed = capability.contributed_mcp_servers();
+                if !contributed.is_empty() {
+                    mcp_servers = everruns_core::mcp_server::merge_scoped_mcp_servers(
+                        &contributed,
+                        &mcp_servers,
+                    );
+                }
+            }
             extension_never_defer.extend(capability.never_defer_tools());
             capabilities.register(capability);
         }
@@ -2338,6 +2356,10 @@ pub async fn build_with_options(
             settings.clone(),
         ));
     }
+    // Server name list for `/mcp` and StartupInfo, computed after extension
+    // contributions are merged so provider-provenance entries show up too.
+    let mut mcp_server_names: Vec<String> = mcp_servers.keys().cloned().collect();
+    mcp_server_names.sort();
     capabilities.register(InfinityContextCapability);
     capabilities.register(CompactionCapability);
     capabilities.register(StatelessTodoListCapability);

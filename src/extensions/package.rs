@@ -12,6 +12,7 @@
 
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "plugin.json";
@@ -41,6 +42,11 @@ struct RawFacet {
     /// Permits a handshake system-prompt contribution.
     #[serde(default)]
     prompt: bool,
+    /// MCP servers the extension contributes; consumed by yolop's own MCP
+    /// client exactly as if listed in `.mcp.json` (D1: MCP is a
+    /// contribution, not the base wire). Keyed by logical server name.
+    #[serde(rename = "mcpServers", default)]
+    mcp_servers: BTreeMap<String, ContributedMcpServer>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -48,6 +54,39 @@ pub struct ServerSpec {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+}
+
+/// A manifest-declared MCP server contribution. Manifest-declared (not
+/// handshake-negotiated) so it is inspectable at install without executing
+/// the binary, and clamped by construction — the approved transport shape
+/// (stdio command vs http url) is exactly what runs. `${VAR}` expansion in
+/// string fields is handled downstream by the runtime, as for `.mcp.json`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContributedMcpServer {
+    /// `stdio` (default) or `http`.
+    #[serde(rename = "type", default)]
+    pub transport: McpTransport,
+    // stdio
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    // http
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransport {
+    #[default]
+    Stdio,
+    Http,
 }
 
 /// A manifest-declared tool: the full definition the LLM sees, plus policy.
@@ -76,6 +115,7 @@ pub struct ExtensionManifest {
     pub config_schema: Option<Value>,
     pub tools: Vec<ToolDefinition>,
     pub prompt: bool,
+    pub mcp_servers: BTreeMap<String, ContributedMcpServer>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,8 +153,25 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
     if raw.yolop.capability_server.command.trim().is_empty() {
         return Err("yolop.capabilityServer.command must not be empty".into());
     }
-    if raw.yolop.tools.is_empty() && !raw.yolop.prompt {
-        return Err("extension declares no tools and no prompt; nothing to contribute".into());
+    if raw.yolop.tools.is_empty() && !raw.yolop.prompt && raw.yolop.mcp_servers.is_empty() {
+        return Err(
+            "extension declares no tools, prompt, or MCP servers; nothing to contribute".into(),
+        );
+    }
+    for (server_name, server) in &raw.yolop.mcp_servers {
+        match server.transport {
+            McpTransport::Stdio if server.command.as_deref().unwrap_or("").trim().is_empty() => {
+                return Err(format!(
+                    "mcpServers.{server_name}: stdio transport requires a non-empty `command`"
+                ));
+            }
+            McpTransport::Http if server.url.as_deref().unwrap_or("").trim().is_empty() => {
+                return Err(format!(
+                    "mcpServers.{server_name}: http transport requires a non-empty `url`"
+                ));
+            }
+            _ => {}
+        }
     }
     Ok(ExtensionManifest {
         name,
@@ -124,6 +181,7 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         config_schema: raw.yolop.config_schema,
         tools: raw.yolop.tools,
         prompt: raw.yolop.prompt,
+        mcp_servers: raw.yolop.mcp_servers,
     })
 }
 
@@ -241,6 +299,56 @@ mod tests {
             parse_manifest(&empty.to_string())
                 .unwrap_err()
                 .contains("nothing to contribute")
+        );
+    }
+
+    #[test]
+    fn parses_contributed_mcp_servers() {
+        let mut m = manifest_json();
+        m["yolop"]["mcpServers"] = json!({
+            "docs": { "type": "http", "url": "https://example.com/mcp",
+                      "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } },
+            "fs": { "command": "mcp-fs", "args": ["/w"], "env": { "RUST_LOG": "info" } }
+        });
+        let manifest = parse_manifest(&m.to_string()).expect("parse");
+        assert_eq!(manifest.mcp_servers.len(), 2);
+        assert_eq!(manifest.mcp_servers["fs"].transport, McpTransport::Stdio);
+        assert_eq!(manifest.mcp_servers["docs"].transport, McpTransport::Http);
+        assert_eq!(
+            manifest.mcp_servers["docs"].url.as_deref(),
+            Some("https://example.com/mcp")
+        );
+    }
+
+    #[test]
+    fn mcp_only_extension_is_valid_and_transports_are_checked() {
+        // No tools, no prompt, but an MCP server — a valid contribution.
+        let mcp_only = json!({
+            "name": "wrap", "description": "Wrap an MCP server.",
+            "yolop": {
+                "protocol_version": "1.0",
+                "capabilityServer": { "command": "x" },
+                "mcpServers": { "svc": { "command": "svc-bin" } }
+            }
+        });
+        assert!(parse_manifest(&mcp_only.to_string()).is_ok());
+
+        // stdio without a command is rejected.
+        let mut bad = mcp_only.clone();
+        bad["yolop"]["mcpServers"]["svc"] = json!({ "type": "stdio" });
+        assert!(
+            parse_manifest(&bad.to_string())
+                .unwrap_err()
+                .contains("requires a non-empty `command`")
+        );
+
+        // http without a url is rejected.
+        let mut bad_http = mcp_only;
+        bad_http["yolop"]["mcpServers"]["svc"] = json!({ "type": "http" });
+        assert!(
+            parse_manifest(&bad_http.to_string())
+                .unwrap_err()
+                .contains("requires a non-empty `url`")
         );
     }
 

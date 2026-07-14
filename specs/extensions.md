@@ -1,6 +1,6 @@
 # Extensions — capability servers over the yolop extension protocol
 
-Status: **phases 1–2 implemented** in `src/extensions/`.
+Status: **phases 1–3 implemented** in `src/extensions/`.
 Phase 1: protocol core, transport-generic client, persistent process
 manager, package discovery, `ExtensionCapability` adapter,
 `[[capabilities]]` enablement, manifest clamp, never-defer wiring.
@@ -8,7 +8,12 @@ Phase 2: the always-on `extensions` capability with
 `install`/`list`/`enable`/`disable`/`remove` tools, `extensions.lock`
 content-hash pinning, install from git URL and local path, and the
 `ext:<name>` enable/disable write path.
-Later phases — contributed MCP servers, hooks, dynamic prompt, `ui/ask`,
+Phase 3: contributed MCP servers — a `yolop.mcpServers` manifest facet
+(stdio/http), surfaced through `Capability::mcp_servers()` and merged into
+scoped MCP config for enabled extensions, name-prefixed `<ext>__<server>`
+and consumed by yolop's own MCP client (workspace `.mcp.json` still
+overrides by name).
+Later phases — hooks, dynamic prompt, `ui/ask`,
 schema-gen + SDKs, `/extensions doctor`, providers — remain
 design-of-record below. Not yet wired within phase 2 (tracked as
 follow-ups): the toolchain-free crates.io source (native sparse-index +

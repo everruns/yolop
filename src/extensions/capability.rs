@@ -74,6 +74,36 @@ impl ExtensionCapability {
             .map(|tool| tool.name.clone())
             .collect()
     }
+
+    /// Manifest-declared MCP servers this extension contributes (D1: an
+    /// extension *provides* MCP servers, which yolop consumes through its own
+    /// client). Keyed `<extension>__<server>` so two extensions can't collide
+    /// on a logical server name and `/mcp` shows provenance. Manifest-declared
+    /// means the approved transport shape is exactly what runs.
+    pub fn contributed_mcp_servers(&self) -> everruns_core::ScopedMcpServers {
+        use super::package::McpTransport;
+        use everruns_core::mcp_server::{McpServerTransportType, ScopedMcpServer};
+        let mut servers = everruns_core::ScopedMcpServers::new();
+        for (name, spec) in &self.package.manifest.mcp_servers {
+            let scoped = match spec.transport {
+                McpTransport::Stdio => ScopedMcpServer {
+                    transport_type: McpServerTransportType::Stdio,
+                    command: spec.command.clone(),
+                    args: spec.args.clone(),
+                    env: spec.env.clone(),
+                    ..Default::default()
+                },
+                McpTransport::Http => ScopedMcpServer {
+                    transport_type: McpServerTransportType::Http,
+                    url: spec.url.clone().unwrap_or_default(),
+                    headers: spec.headers.clone(),
+                    ..Default::default()
+                },
+            };
+            servers.insert(format!("{}__{name}", self.package.manifest.name), scoped);
+        }
+        servers
+    }
 }
 
 #[async_trait]
@@ -109,6 +139,10 @@ impl Capability for ExtensionCapability {
                 self.id
             ))
         }
+    }
+
+    fn mcp_servers(&self) -> everruns_core::ScopedMcpServers {
+        self.contributed_mcp_servers()
     }
 
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
@@ -187,5 +221,49 @@ impl Tool for ExtensionTool {
             // no secrets: surface them as tool errors, not internal ones.
             Err(err) => ToolExecutionResult::ToolError(err.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extensions::package::ExtensionPackage;
+    use crate::extensions::package::parse_manifest;
+    use everruns_core::mcp_server::McpServerTransportType;
+    use serde_json::json;
+
+    #[test]
+    fn contributed_mcp_servers_are_prefixed_and_shaped() {
+        let manifest = parse_manifest(
+            &json!({
+                "name": "docs", "description": "Docs.",
+                "yolop": {
+                    "protocol_version": "1.0",
+                    "capabilityServer": { "command": "x" },
+                    "mcpServers": {
+                        "search": { "type": "http", "url": "https://d/mcp",
+                                    "headers": { "A": "b" } },
+                        "local": { "command": "svc", "args": ["--stdio"] }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("parse");
+        let cap = ExtensionCapability::new(
+            ExtensionPackage {
+                dir: std::env::temp_dir(),
+                manifest,
+            },
+            std::env::temp_dir(),
+        );
+        let servers = cap.contributed_mcp_servers();
+        // Prefixed with the extension name for provenance + collision safety.
+        let http = servers.get("docs__search").expect("http server");
+        assert_eq!(http.transport_type, McpServerTransportType::Http);
+        assert_eq!(http.url, "https://d/mcp");
+        let stdio = servers.get("docs__local").expect("stdio server");
+        assert_eq!(stdio.transport_type, McpServerTransportType::Stdio);
+        assert_eq!(stdio.command.as_deref(), Some("svc"));
     }
 }
