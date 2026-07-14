@@ -13,9 +13,16 @@ Phase 3: contributed MCP servers — a `yolop.mcpServers` manifest facet
 scoped MCP config for enabled extensions, name-prefixed `<ext>__<server>`
 and consumed by yolop's own MCP client (workspace `.mcp.json` still
 overrides by name).
-Later phases — hooks, dynamic prompt, `ui/ask`,
-schema-gen + SDKs, `/extensions doctor`, providers — remain
-design-of-record below. Not yet wired within phase 2 (tracked as
+Phase 4: hook subscriptions (`yolop.hooks` — `pre_tool_use`/`post_tool_use`
+with a tool-name glob, `timeout_ms`, and `on_error`) fired on the warm
+server via `hook/fire`, and a `dynamic_prompt` facet recomputing the
+system-prompt contribution per turn via `prompt/contribution` (falling back
+to the static handshake prompt). Pre-hooks can block; per-hook timeout +
+`on_error` (warn/block) bound the cost; the whole-bash-per-event
+`user_hooks` precedent makes a warm-process RPC strictly cheaper.
+Later phases — `ui/ask` (needs the server→host reverse-request channel,
+still refused in phase 1), `workspace/changed`, schema-gen + SDKs,
+`/extensions doctor`, providers — remain design-of-record below. Not yet wired within phase 2 (tracked as
 follow-ups): the toolchain-free crates.io source (native sparse-index +
 tarball fetch), full JSON-Schema config validation, and `config/changed`
 restart. Phase-1 deltas from the original sketch: tool *definitions*

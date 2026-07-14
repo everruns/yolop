@@ -101,6 +101,58 @@ impl ExtensionProcess {
         state.as_ref().and_then(|live| live.prompt.clone())
     }
 
+    /// A fresh dynamic system-prompt contribution (`prompt/contribution`),
+    /// recomputed per turn. Failure degrades to `None` (the caller falls back
+    /// to the static prompt / last-known-good).
+    pub async fn dynamic_prompt(&self) -> Option<String> {
+        let connection = {
+            let mut state = self.state.lock().await;
+            self.ensure_live(&mut state).await.ok()?;
+            state.as_ref().expect("ensured live").connection.clone()
+        };
+        match connection
+            .request("prompt/contribution", serde_json::Value::Null)
+            .await
+        {
+            Ok(value) => {
+                let contribution: super::protocol::PromptContribution =
+                    serde_json::from_value(value).unwrap_or_default();
+                let text = contribution.text.trim();
+                (!text.is_empty()).then(|| text.to_string())
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "yolop::ext", ext = %self.name(),
+                    "dynamic prompt/contribution failed: {err}"
+                );
+                None
+            }
+        }
+    }
+
+    /// Fire one subscribed lifecycle hook (`hook/fire`) and return the
+    /// server's decision. `Err` is a transport/server failure the caller
+    /// resolves per the subscription's `on_error` policy.
+    pub async fn fire_hook(
+        &self,
+        event: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Result<super::protocol::HookDecision> {
+        let connection = {
+            let mut state = self.state.lock().await;
+            self.ensure_live(&mut state).await?;
+            state.as_ref().expect("ensured live").connection.clone()
+        };
+        let params = serde_json::to_value(super::protocol::HookFireParams {
+            event,
+            tool_name,
+            args,
+        })?;
+        let value = connection.request("hook/fire", params).await?;
+        Ok(serde_json::from_value(value).unwrap_or_default())
+    }
+
     async fn ensure_live(&self, state: &mut Option<Live>) -> Result<()> {
         if let Some(live) = state.as_ref()
             && !live.connection.is_closed()
