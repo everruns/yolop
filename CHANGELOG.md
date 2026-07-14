@@ -10,6 +10,43 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.8.0] - 2026-07-14
+
+### Highlights
+
+- Added a complete extension platform with install/enable management, contributed MCP servers, hook subscriptions, dynamic prompts, and the `yolop-yep` protocol SDK.
+- Added live MCP server lifecycle management and interactive OAuth login for remote MCP servers.
+- Added per-session ACP model selection and clearer TUI narration and version status.
+- Improved Codex authentication, background scheduling, progress-cycle detection, and ACP rendering behavior.
+
+### What's Changed
+
+* fix(progress): detect semantic work cycles ([#299](https://github.com/everruns/yolop/pull/299)) by @chaliy
+* test(evals): stabilize search efficiency regression gate ([#298](https://github.com/everruns/yolop/pull/298)) by @chaliy
+* docs: consolidate contributing guide ([#297](https://github.com/everruns/yolop/pull/297)) by @chaliy
+* feat(acp): support per-session model selection ([#296](https://github.com/everruns/yolop/pull/296)) by @chaliy
+* fix(background): scope schedule claims to live sessions ([#293](https://github.com/everruns/yolop/pull/293)) by @chaliy
+* feat(tui): show version in status ([#295](https://github.com/everruns/yolop/pull/295)) by @chaliy
+* fix(evals): restore standalone Cargo workspaces ([#294](https://github.com/everruns/yolop/pull/294)) by @chaliy
+* docs(extensions): user guide for setting up and creating extensions ([#292](https://github.com/everruns/yolop/pull/292)) by @chaliy
+* fix(auth): keep TUI responsive during Codex login ([#291](https://github.com/everruns/yolop/pull/291)) by @chaliy
+* feat(tui): add human narration for task and related tools ([#288](https://github.com/everruns/yolop/pull/288)) by @chaliy
+* fix(runtime): open setup when provider credentials missing ([#290](https://github.com/everruns/yolop/pull/290)) by @chaliy
+* feat(mcp): interactive OAuth login for remote MCP servers ([#289](https://github.com/everruns/yolop/pull/289)) by @chaliy
+* feat(extensions): generate schema/yep/v1/meta.json with drift guard ([#287](https://github.com/everruns/yolop/pull/287)) by @chaliy
+* fix(acp): render commentary as agent messages ([#285](https://github.com/everruns/yolop/pull/285)) by @chaliy
+* fix(codex): persist refreshed OAuth tokens to settings ([#286](https://github.com/everruns/yolop/pull/286)) by @chaliy
+* chore(deps): bump everruns crates to 0.17.9 ([#284](https://github.com/everruns/yolop/pull/284)) by @chaliy
+* feat(extensions): yolop-yep protocol crate + server SDK ([#282](https://github.com/everruns/yolop/pull/282)) by @chaliy
+* feat(mcp): load/unload MCP servers live without restart ([#283](https://github.com/everruns/yolop/pull/283)) by @chaliy
+* fix(acp): classify tool calls by semantic kind ([#281](https://github.com/everruns/yolop/pull/281)) by @chaliy
+* feat(extensions): hook subscriptions and dynamic prompt ([#280](https://github.com/everruns/yolop/pull/280)) by @chaliy
+* feat(extensions): contributed MCP servers ([#279](https://github.com/everruns/yolop/pull/279)) by @chaliy
+* feat(extensions): install/enable management surface ([#278](https://github.com/everruns/yolop/pull/278)) by @chaliy
+* fix(acp): preserve prompt images ([#276](https://github.com/everruns/yolop/pull/276)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.7.0...v0.8.0
+
 ## [0.7.0] - 2026-07-14
 
 ### Highlights

@@ -3,7 +3,7 @@ members = ["crates/yolop-yep"]
 
 [package]
 name = "yolop"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 authors = ["Everruns <support@everruns.com>"]
 license = "MIT"
