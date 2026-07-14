@@ -48,10 +48,36 @@ jobs:
           fi
           echo "Version verified: $TAG_VERSION"
 
-      - name: Publish to crates.io
-        run: cargo publish --locked -p yolop
+      - name: Publish workspace crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          publish_if_missing() {
+            local crate="$1"
+            local version
+            version=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r --arg crate "$crate" '.packages[] | select(.name == $crate) | .version')
+
+            if curl --fail --silent "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
+              echo "$crate $version is already published"
+              return
+            fi
+
+            cargo publish --locked -p "$crate"
+            for _ in {1..30}; do
+              if curl --fail --silent "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
+                return
+              fi
+              sleep 10
+            done
+            echo "$crate $version did not become available on crates.io" >&2
+            return 1
+          }
+
+          publish_if_missing yolop-yep
+          publish_if_missing yolop
 
   verify-publish:
     name: Verify published version
