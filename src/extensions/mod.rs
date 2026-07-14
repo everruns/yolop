@@ -42,6 +42,103 @@ mod spawn_tests {
         which_python(&["python3", "python"])
     }
 
+    fn have_cargo() -> bool {
+        std::process::Command::new("cargo")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+    }
+
+    /// A package whose capability server is the `yolop-yep` `echo` example,
+    /// run via `cargo run --example` so the Rust SDK server is exercised by
+    /// yolop's real client over the wire (the SDK's interop proof).
+    fn sdk_example_package() -> ExtensionPackage {
+        let manifest_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/yolop-yep/Cargo.toml");
+        let manifest = parse_manifest(
+            &json!({
+                "name": "echo",
+                "description": "yolop-yep SDK example.",
+                "yolop": {
+                    "protocol_version": "1.0",
+                    "capabilityServer": {
+                        "command": "cargo",
+                        "args": ["run", "-q", "--example", "echo",
+                                 "--manifest-path", manifest_path.display().to_string()]
+                    },
+                    "tools": [
+                        { "name": "echo", "description": "Echo text.", "never_defer": true }
+                    ],
+                    "prompt": true,
+                    "dynamic_prompt": true,
+                    "hooks": [
+                        { "event": "pre_tool_use", "tool_name_glob": "*" }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .expect("sdk example manifest");
+        ExtensionPackage {
+            dir: std::env::temp_dir(),
+            manifest,
+        }
+    }
+
+    #[tokio::test]
+    async fn yolop_yep_sdk_example_server_interops_with_the_host() {
+        if !have_cargo() {
+            eprintln!("skipping: cargo not available");
+            return;
+        }
+        let capability = ExtensionCapability::new(sdk_example_package(), std::env::temp_dir());
+
+        // Tool call round-trips through the SDK-built server.
+        let tools = capability.tools();
+        let echo = tools.iter().find(|t| t.name() == "echo").expect("echo");
+        match echo.execute(json!({ "text": "via-sdk" })).await {
+            ToolExecutionResult::Success(v) => assert_eq!(v["echoed"], "via-sdk"),
+            other => panic!("expected success, got {other:?}"),
+        }
+
+        // Dynamic prompt comes from the SDK server's handler.
+        let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
+            everruns_core::typed_id::SessionId::new(),
+        );
+        let prompt = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("prompt");
+        assert!(prompt.contains("dynamic echo prompt"), "{prompt}");
+
+        // Pre-hook served by the SDK blocks a forbidden call.
+        use everruns_core::atoms::PreToolUseDecision;
+        use everruns_core::tool_types::{BuiltinTool, ToolCall, ToolDefinition};
+        let hooks = capability.pre_tool_use_hooks_with_config(&json!(null));
+        let tool_def = ToolDefinition::Builtin(BuiltinTool {
+            name: "bash".into(),
+            display_name: None,
+            description: "run".into(),
+            parameters: json!({ "type": "object" }),
+            policy: Default::default(),
+            category: None,
+            deferrable: Default::default(),
+            hints: Default::default(),
+            full_parameters: None,
+        });
+        let ctx2 =
+            everruns_core::traits::ToolContext::new(everruns_core::typed_id::SessionId::new());
+        let deny = ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({ "forbidden": true }),
+        };
+        assert!(matches!(
+            hooks[0].before_exec(deny, &tool_def, &ctx2).await,
+            PreToolUseDecision::Block { .. }
+        ));
+    }
+
     fn which_python(candidates: &[&str]) -> Option<String> {
         for candidate in candidates {
             if std::process::Command::new(candidate)

@@ -6628,6 +6628,15 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-zig",
  "urlencoding",
+ "yolop-yep",
+]
+
+[[package]]
+name = "yolop-yep"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

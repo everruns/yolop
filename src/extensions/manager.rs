@@ -145,9 +145,9 @@ impl ExtensionProcess {
             state.as_ref().expect("ensured live").connection.clone()
         };
         let params = serde_json::to_value(super::protocol::HookFireParams {
-            event,
-            tool_name,
-            args,
+            event: event.to_string(),
+            tool_name: tool_name.to_string(),
+            args: args.clone(),
         })?;
         let value = connection.request("hook/fire", params).await?;
         Ok(serde_json::from_value(value).unwrap_or_default())
