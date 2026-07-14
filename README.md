@@ -163,6 +163,11 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 
 ### Extensibility
 
+- **Extensions** — installable capability packages that add tools, prompt
+  guidance, MCP servers, and hooks without rebuilding yolop, served over the
+  yolop extension protocol (YEP). Author one in a few lines of Rust with the
+  [`yolop-yep`](./crates/yolop-yep) SDK (or any language over stdio JSON-RPC).
+  See [**docs/extensions.md**](./docs/extensions.md) to set up or create one.
 - **MCP servers** — extra tools from local (stdio) or remote (HTTP)
   [Model Context Protocol](https://modelcontextprotocol.io) servers via
   `.mcp.json` (see [MCP servers](#mcp-servers)).
