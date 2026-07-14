@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/yolop-yep"]
+
 [package]
 name = "yolop"
 version = "0.7.0"
@@ -50,6 +53,10 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 ratatui-textarea = "0.9.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# The extension protocol wire types + server SDK live in their own crate so
+# extension authors can depend on them from crates.io; the host shares the
+# same source of truth (see specs/extensions.md).
+yolop-yep = { version = "0.1.0", path = "crates/yolop-yep" }
 sha2 = "0.11"
 toml = "1"
 textwrap = "0.16"

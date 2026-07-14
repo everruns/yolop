@@ -46,7 +46,10 @@ doppler run -- bash -lc 'GH_TOKEN="$GITHUB_TOKEN" <command>'
 
 ## Local dev and tests
 
-Yolop is a small Cargo project. For touched code:
+Yolop is a small Cargo **workspace**: the root package is the `yolop` binary,
+and `crates/yolop-yep/` is the extension-protocol library + server SDK
+(published separately for extension authors; the host depends on it for the
+wire types). `cargo test`/`clippy` at the root cover both. For touched code:
 
 ```bash
 cargo fmt --check

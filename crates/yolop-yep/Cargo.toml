@@ -1,0 +1,16 @@
+[package]
+name = "yolop-yep"
+version = "0.1.0"
+edition = "2024"
+authors = ["Everruns <support@everruns.com>"]
+license = "MIT"
+description = "The yolop extension protocol (YEP): wire types and a server SDK for authoring yolop extension capability servers."
+homepage = "https://github.com/everruns/yolop"
+repository = "https://github.com/everruns/yolop"
+readme = "README.md"
+keywords = ["yolop", "yolop-extension", "agent", "protocol", "plugin"]
+categories = ["development-tools", "api-bindings"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
