@@ -21,7 +21,7 @@ pub struct TuiHarness {
     _home: tempfile::TempDir,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct TuiSpawnOptions {
     pub rows: u16,
     pub cols: u16,
@@ -30,6 +30,8 @@ pub struct TuiSpawnOptions {
     /// going silent, emulating an emulator that stops replying mid-session.
     /// `usize::MAX` (the default) answers every query like a real terminal.
     pub cursor_reply_budget: usize,
+    /// Directory prepended to `PATH` for subprocess lookup in the spawned TUI.
+    pub path_prefix: Option<PathBuf>,
 }
 
 impl Default for TuiSpawnOptions {
@@ -39,6 +41,7 @@ impl Default for TuiSpawnOptions {
             cols: 80,
             cursor_row: 1,
             cursor_reply_budget: usize::MAX,
+            path_prefix: None,
         }
     }
 }
@@ -170,6 +173,13 @@ pub fn spawn_tui_llmsim_with_settings(
     cmd.env("XDG_CONFIG_HOME", home.path().join(".config"));
     cmd.env("XDG_DATA_HOME", home.path().join(".local/share"));
     cmd.env("TERM", "xterm-256color");
+    if let Some(prefix) = options.path_prefix {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let path =
+            std::env::join_paths(std::iter::once(prefix).chain(std::env::split_paths(&inherited)))
+                .expect("join PATH for TUI");
+        cmd.env("PATH", path);
+    }
     cmd.env_remove("OPENAI_API_KEY");
     cmd.env_remove("ANTHROPIC_API_KEY");
     cmd.env_remove("OPENROUTER_API_KEY");

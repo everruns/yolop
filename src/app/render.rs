@@ -532,6 +532,35 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
             push_setup_error(&mut lines, error.as_deref());
             lines.push(setup_footer("Enter confirm · ↑/↓ move · Esc back"));
         }
+        Some(SetupStep::CodexLogin {
+            method,
+            device_code,
+            ..
+        }) => {
+            lines.push(setup_title("Sign in to Codex subscription"));
+            match method {
+                CodexLoginMethod::Browser => {
+                    lines.push(setup_hint(
+                        "Waiting for the browser to finish authentication.",
+                    ));
+                    lines.push(Line::from(""));
+                    lines.push(setup_hint(
+                        "If the browser was closed, cancel here and try again.",
+                    ));
+                }
+                CodexLoginMethod::Device => {
+                    if let Some((verification_uri, user_code)) = device_code {
+                        lines.push(setup_hint(&format!("Open {verification_uri}")));
+                        lines.push(Line::from(""));
+                        lines.push(setup_hint(&format!("Enter code: {user_code}")));
+                    } else {
+                        lines.push(setup_hint("Requesting a device code…"));
+                    }
+                }
+            }
+            lines.push(Line::from(""));
+            lines.push(setup_footer("Esc cancel · Ctrl+C twice exit"));
+        }
         Some(SetupStep::TokenInput {
             provider,
             token,
