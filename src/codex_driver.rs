@@ -1,4 +1,5 @@
 use crate::codex_auth::{self, CODEX_ORIGINATOR};
+use crate::settings::{CodexAuth, SettingsStore};
 use async_trait::async_trait;
 use eventsource_stream::Eventsource;
 use everruns_core::driver_registry::{
@@ -14,11 +15,35 @@ use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 pub const CODEX_DRIVER_ID: &str = "openai-codex";
 const CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const CODEX_BETA_HEADER: &str = "responses=experimental";
+const REAUTH_MESSAGE: &str = "Codex login is no longer valid (refresh token already used). Run `/setup` and sign in with Codex again.";
+
+/// Host-side Codex OAuth storage. Reload must hit disk so another process that
+/// already rotated the refresh token is visible before we call `/oauth/token`.
+pub(crate) trait CodexAuthStore: Send + Sync {
+    fn load_from_disk(&self) -> Option<CodexAuth>;
+    fn save(&self, auth: CodexAuth) -> anyhow::Result<()>;
+    fn clear(&self) -> anyhow::Result<()>;
+}
+
+impl CodexAuthStore for SettingsStore {
+    fn load_from_disk(&self) -> Option<CodexAuth> {
+        self.refresh_codex_auth_from_disk()
+    }
+
+    fn save(&self, auth: CodexAuth) -> anyhow::Result<()> {
+        self.set_codex_auth(auth)
+    }
+
+    fn clear(&self) -> anyhow::Result<()> {
+        self.clear_codex_auth().map(|_| ())
+    }
+}
 
 #[derive(Debug, Clone)]
 struct CodexTokens {
@@ -26,17 +51,24 @@ struct CodexTokens {
     refresh_token: Option<String>,
     expires_at: Option<i64>,
     account_id: Option<String>,
+    /// Preserved across refresh for settings.toml; not sent on API calls.
+    email: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct CodexChatDriver {
     client: reqwest::Client,
     tokens: Arc<tokio::sync::Mutex<CodexTokens>>,
+    auth_store: Option<Arc<dyn CodexAuthStore>>,
 }
 
-pub fn register_driver(registry: &mut DriverRegistry) {
-    registry.register_external(CODEX_DRIVER_ID, |config| {
-        Box::new(CodexChatDriver::from_config(config))
+pub fn register_driver(registry: &mut DriverRegistry, settings: Arc<SettingsStore>) {
+    let auth_store: Arc<dyn CodexAuthStore> = settings;
+    registry.register_external(CODEX_DRIVER_ID, move |config| {
+        Box::new(CodexChatDriver::from_config(
+            config,
+            Some(auth_store.clone()),
+        ))
     });
 }
 
@@ -45,7 +77,7 @@ pub(crate) fn model_profile(model_id: &str) -> Option<ModelProfile> {
 }
 
 impl CodexChatDriver {
-    fn from_config(config: &DriverConfig) -> Self {
+    fn from_config(config: &DriverConfig, auth_store: Option<Arc<dyn CodexAuthStore>>) -> Self {
         let access_token = config
             .api_key
             .clone()
@@ -59,6 +91,10 @@ impl CodexChatDriver {
             .account_id
             .clone()
             .or_else(|| codex_auth::extract_account_id(&access_token));
+        let email = auth_store
+            .as_ref()
+            .and_then(|store| store.load_from_disk())
+            .and_then(|auth| auth.email);
         Self {
             client: reqwest::Client::new(),
             tokens: Arc::new(tokio::sync::Mutex::new(CodexTokens {
@@ -66,34 +102,168 @@ impl CodexChatDriver {
                 refresh_token,
                 expires_at,
                 account_id,
+                email,
             })),
+            auth_store,
         }
     }
 
     async fn token_snapshot(&self) -> EverrunsResult<CodexTokens> {
         let mut guard = self.tokens.lock().await;
-        if guard.access_token.is_empty() {
-            return Err(AgentLoopError::llm(
-                "Codex provider requires a saved OAuth access token",
-            ));
-        }
-        if codex_auth::should_refresh(guard.expires_at)
-            && let Some(refresh_token) = guard.refresh_token.clone()
-        {
-            let refreshed = codex_auth::refresh_with_token(&refresh_token)
-                .await
-                .map_err(|err| {
-                    AgentLoopError::llm(format!("Codex token refresh failed: {err:#}"))
-                })?;
-            guard.access_token = refreshed.access_token;
-            guard.refresh_token = refreshed.refresh_token.or(Some(refresh_token));
-            guard.expires_at = refreshed.expires_at;
-            guard.account_id = refreshed
-                .account_id
-                .or_else(|| codex_auth::extract_account_id(&guard.access_token));
-        }
+        ensure_fresh_tokens(
+            &mut guard,
+            self.auth_store.as_deref(),
+            |refresh_token| async move { codex_auth::refresh_with_token(&refresh_token).await },
+        )
+        .await?;
         Ok(guard.clone())
     }
+}
+
+/// Refresh Codex OAuth tokens when near expiry, persisting the rotated pair.
+///
+/// OpenAI refresh tokens are single-use. Without persisting, the next process
+/// start reuses the spent token and fails with `refresh_token_reused`. Before
+/// refreshing we adopt fresher on-disk credentials (another process may have
+/// rotated already). On `refresh_token_reused` we reload once; if still stuck,
+/// clear broken login and ask the user to run `/setup` — do not auto-open a
+/// browser mid-turn.
+async fn ensure_fresh_tokens<F, Fut>(
+    tokens: &mut CodexTokens,
+    store: Option<&dyn CodexAuthStore>,
+    refresh: F,
+) -> EverrunsResult<()>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = anyhow::Result<CodexAuth>>,
+{
+    if tokens.access_token.is_empty() {
+        return Err(AgentLoopError::llm(
+            "Codex provider requires a saved OAuth access token",
+        ));
+    }
+
+    if let Some(store) = store {
+        adopt_disk_auth(tokens, store);
+    }
+
+    if !codex_auth::should_refresh(tokens.expires_at) {
+        return Ok(());
+    }
+
+    let Some(refresh_token) = tokens.refresh_token.clone() else {
+        return Ok(());
+    };
+
+    match refresh(refresh_token.clone()).await {
+        Ok(refreshed) => {
+            apply_refreshed(tokens, refreshed, &refresh_token);
+            persist_tokens(tokens, store)?;
+            Ok(())
+        }
+        Err(err) if codex_auth::is_refresh_token_reused(&err) => {
+            recover_from_refresh_token_reused(tokens, store, refresh, &refresh_token).await
+        }
+        Err(err) => Err(AgentLoopError::llm(format!(
+            "Codex token refresh failed: {err:#}"
+        ))),
+    }
+}
+
+async fn recover_from_refresh_token_reused<F, Fut>(
+    tokens: &mut CodexTokens,
+    store: Option<&dyn CodexAuthStore>,
+    refresh: F,
+    spent_refresh_token: &str,
+) -> EverrunsResult<()>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = anyhow::Result<CodexAuth>>,
+{
+    if let Some(store) = store {
+        adopt_disk_auth(tokens, store);
+        if !codex_auth::should_refresh(tokens.expires_at) {
+            return Ok(());
+        }
+        if let Some(retry_token) = tokens.refresh_token.clone()
+            && retry_token != spent_refresh_token
+        {
+            match refresh(retry_token.clone()).await {
+                Ok(refreshed) => {
+                    apply_refreshed(tokens, refreshed, &retry_token);
+                    persist_tokens(tokens, Some(store))?;
+                    return Ok(());
+                }
+                Err(err) if codex_auth::is_refresh_token_reused(&err) => {
+                    // Fall through to clear + re-auth message.
+                }
+                Err(err) => {
+                    return Err(AgentLoopError::llm(format!(
+                        "Codex token refresh failed: {err:#}"
+                    )));
+                }
+            }
+        }
+        if let Err(clear_err) = store.clear() {
+            tracing::warn!(error = %clear_err, "failed to clear invalid Codex auth");
+        }
+    }
+    Err(AgentLoopError::llm(REAUTH_MESSAGE))
+}
+
+fn adopt_disk_auth(tokens: &mut CodexTokens, store: &dyn CodexAuthStore) {
+    let Some(disk) = store.load_from_disk() else {
+        return;
+    };
+    if disk.access_token == tokens.access_token
+        && disk.refresh_token == tokens.refresh_token
+        && disk.expires_at == tokens.expires_at
+    {
+        return;
+    }
+    tokens.access_token = disk.access_token;
+    tokens.refresh_token = disk.refresh_token;
+    tokens.expires_at = disk.expires_at;
+    if disk.account_id.is_some() {
+        tokens.account_id = disk.account_id;
+    }
+    if disk.email.is_some() {
+        tokens.email = disk.email;
+    }
+}
+
+fn apply_refreshed(tokens: &mut CodexTokens, refreshed: CodexAuth, used_refresh_token: &str) {
+    tokens.access_token = refreshed.access_token;
+    tokens.refresh_token = refreshed
+        .refresh_token
+        .or_else(|| Some(used_refresh_token.to_string()));
+    tokens.expires_at = refreshed.expires_at;
+    tokens.account_id = refreshed
+        .account_id
+        .or_else(|| tokens.account_id.clone())
+        .or_else(|| codex_auth::extract_account_id(&tokens.access_token));
+    if refreshed.email.is_some() {
+        tokens.email = refreshed.email;
+    }
+}
+
+fn persist_tokens(tokens: &CodexTokens, store: Option<&dyn CodexAuthStore>) -> EverrunsResult<()> {
+    let Some(store) = store else {
+        return Ok(());
+    };
+    store
+        .save(CodexAuth {
+            access_token: tokens.access_token.clone(),
+            refresh_token: tokens.refresh_token.clone(),
+            expires_at: tokens.expires_at,
+            account_id: tokens.account_id.clone(),
+            email: tokens.email.clone(),
+        })
+        .map_err(|err| {
+            AgentLoopError::llm(format!(
+                "Codex token refresh succeeded but saving credentials failed: {err:#}"
+            ))
+        })
 }
 
 #[async_trait]
@@ -722,6 +892,198 @@ fn metadata_extra_i64(metadata: &ProviderMetadata, key: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use everruns_core::driver_registry::{LlmMessage, LlmMessageRole};
+    use std::sync::Mutex as StdMutex;
+
+    #[derive(Default)]
+    struct MemoryAuthStore {
+        auth: StdMutex<Option<CodexAuth>>,
+        saves: StdMutex<usize>,
+        clears: StdMutex<usize>,
+    }
+
+    impl CodexAuthStore for MemoryAuthStore {
+        fn load_from_disk(&self) -> Option<CodexAuth> {
+            self.auth.lock().expect("auth lock").clone()
+        }
+
+        fn save(&self, auth: CodexAuth) -> anyhow::Result<()> {
+            *self.auth.lock().expect("auth lock") = Some(auth);
+            *self.saves.lock().expect("saves lock") += 1;
+            Ok(())
+        }
+
+        fn clear(&self) -> anyhow::Result<()> {
+            *self.auth.lock().expect("auth lock") = None;
+            *self.clears.lock().expect("clears lock") += 1;
+            Ok(())
+        }
+    }
+
+    fn expired_tokens(refresh: &str) -> CodexTokens {
+        CodexTokens {
+            access_token: "access-old".to_string(),
+            refresh_token: Some(refresh.to_string()),
+            expires_at: Some(codex_auth::now_epoch_millis() - 1_000),
+            account_id: Some("acc".to_string()),
+            email: Some("user@example.com".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_persists_rotated_tokens_to_store() {
+        let store = MemoryAuthStore::default();
+        store
+            .save(CodexAuth {
+                access_token: "access-old".to_string(),
+                refresh_token: Some("refresh-old".to_string()),
+                expires_at: Some(codex_auth::now_epoch_millis() - 1_000),
+                account_id: Some("acc".to_string()),
+                email: Some("user@example.com".to_string()),
+            })
+            .unwrap();
+        let mut tokens = expired_tokens("refresh-old");
+        let refresh_calls = Arc::new(StdMutex::new(0usize));
+        let refresh_calls_clone = refresh_calls.clone();
+
+        ensure_fresh_tokens(&mut tokens, Some(&store), move |_rt| {
+            let refresh_calls_clone = refresh_calls_clone.clone();
+            async move {
+                *refresh_calls_clone.lock().expect("calls") += 1;
+                Ok(CodexAuth {
+                    access_token: "access-new".to_string(),
+                    refresh_token: Some("refresh-new".to_string()),
+                    expires_at: Some(codex_auth::now_epoch_millis() + 3_600_000),
+                    account_id: Some("acc".to_string()),
+                    email: None,
+                })
+            }
+        })
+        .await
+        .expect("refresh");
+
+        assert_eq!(*refresh_calls.lock().unwrap(), 1);
+        assert_eq!(tokens.access_token, "access-new");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-new"));
+        assert_eq!(tokens.email.as_deref(), Some("user@example.com"));
+        assert_eq!(*store.saves.lock().unwrap(), 2); // initial seed + persist
+        let saved = store.load_from_disk().expect("saved");
+        assert_eq!(saved.access_token, "access-new");
+        assert_eq!(saved.refresh_token.as_deref(), Some("refresh-new"));
+        assert_eq!(saved.email.as_deref(), Some("user@example.com"));
+    }
+
+    #[tokio::test]
+    async fn adopts_fresher_disk_auth_instead_of_refreshing() {
+        let store = MemoryAuthStore::default();
+        store
+            .save(CodexAuth {
+                access_token: "access-from-disk".to_string(),
+                refresh_token: Some("refresh-from-disk".to_string()),
+                expires_at: Some(codex_auth::now_epoch_millis() + 3_600_000),
+                account_id: Some("acc".to_string()),
+                email: Some("user@example.com".to_string()),
+            })
+            .unwrap();
+        let mut tokens = expired_tokens("refresh-old");
+        let refresh_calls = Arc::new(StdMutex::new(0usize));
+        let refresh_calls_clone = refresh_calls.clone();
+
+        ensure_fresh_tokens(&mut tokens, Some(&store), move |_rt| {
+            let refresh_calls_clone = refresh_calls_clone.clone();
+            async move {
+                *refresh_calls_clone.lock().expect("calls") += 1;
+                Err(anyhow::anyhow!("should not refresh"))
+            }
+        })
+        .await
+        .expect("adopt disk");
+
+        assert_eq!(*refresh_calls.lock().unwrap(), 0);
+        assert_eq!(tokens.access_token, "access-from-disk");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-from-disk"));
+    }
+
+    #[tokio::test]
+    async fn refresh_token_reused_recovers_from_disk_winner() {
+        // First load looks like memory (stale); after reuse failure the disk
+        // has another process's winner that no longer needs refresh.
+        #[derive(Default)]
+        struct FlipStore {
+            loads: StdMutex<usize>,
+            clears: StdMutex<usize>,
+        }
+        impl CodexAuthStore for FlipStore {
+            fn load_from_disk(&self) -> Option<CodexAuth> {
+                let mut loads = self.loads.lock().expect("loads");
+                *loads += 1;
+                if *loads == 1 {
+                    return Some(CodexAuth {
+                        access_token: "access-old".to_string(),
+                        refresh_token: Some("refresh-spent".to_string()),
+                        expires_at: Some(codex_auth::now_epoch_millis() - 1_000),
+                        account_id: Some("acc".to_string()),
+                        email: Some("user@example.com".to_string()),
+                    });
+                }
+                Some(CodexAuth {
+                    access_token: "access-winner".to_string(),
+                    refresh_token: Some("refresh-winner".to_string()),
+                    expires_at: Some(codex_auth::now_epoch_millis() + 3_600_000),
+                    account_id: Some("acc".to_string()),
+                    email: Some("user@example.com".to_string()),
+                })
+            }
+            fn save(&self, _auth: CodexAuth) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn clear(&self) -> anyhow::Result<()> {
+                *self.clears.lock().expect("clears") += 1;
+                Ok(())
+            }
+        }
+
+        let flip = FlipStore::default();
+        let mut tokens = expired_tokens("refresh-spent");
+        ensure_fresh_tokens(&mut tokens, Some(&flip), |_rt| async {
+            Err(anyhow::anyhow!(
+                "Codex token refresh failed (401 Unauthorized): {{\"error\":{{\"code\":\"refresh_token_reused\"}}}}"
+            ))
+        })
+        .await
+        .expect("recover from disk");
+
+        assert_eq!(tokens.access_token, "access-winner");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-winner"));
+        assert_eq!(*flip.clears.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn refresh_token_reused_clears_auth_and_asks_for_setup() {
+        let store = MemoryAuthStore::default();
+        store
+            .save(CodexAuth {
+                access_token: "access-old".to_string(),
+                refresh_token: Some("refresh-spent".to_string()),
+                expires_at: Some(codex_auth::now_epoch_millis() - 1_000),
+                account_id: Some("acc".to_string()),
+                email: Some("user@example.com".to_string()),
+            })
+            .unwrap();
+        let mut tokens = expired_tokens("refresh-spent");
+
+        let err = ensure_fresh_tokens(&mut tokens, Some(&store), |_rt| async {
+            Err(anyhow::anyhow!(
+                "Codex token refresh failed (401 Unauthorized): {{\"error\":{{\"code\":\"refresh_token_reused\"}}}}"
+            ))
+        })
+        .await
+        .expect_err("must fail");
+
+        assert!(err.to_string().contains("/setup"));
+        assert!(err.to_string().contains("refresh token already used"));
+        assert!(store.load_from_disk().is_none());
+        assert_eq!(*store.clears.lock().unwrap(), 1);
+    }
 
     #[test]
     fn converts_tool_result_to_function_call_output() {
