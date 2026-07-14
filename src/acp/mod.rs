@@ -376,9 +376,17 @@ mod tests {
         let sessions = tempfile::tempdir().expect("sessions tempdir");
         let sessions_dir = sessions.path().to_path_buf();
         let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        let first_config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".to_string(),
+                arguments: json!({ "command": "printf replayed-tool" }),
+                id: Some("call_replayed".to_string()),
+            }]),
+            SimTurn::Assistant("first answer".to_string()),
+        ]);
 
         let (mut first_w, mut first_reader, first_server) =
-            start_raw_server(fixed("first answer"), sessions_dir.clone());
+            start_raw_server(first_config, sessions_dir.clone());
         send_json(
             &mut first_w,
             json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
@@ -459,6 +467,29 @@ mod tests {
                 .iter()
                 .any(|text| text.contains("first answer")),
             "expected replayed agent message, got: {replay_updates:?}"
+        );
+        let replayed_tool_updates = |kind: &str| {
+            replay_updates
+                .iter()
+                .filter_map(|message| message.get("params")?.get("update")?.as_object())
+                .filter(|update| update.get("sessionUpdate").and_then(Value::as_str) == Some(kind))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            replayed_tool_updates("tool_call").iter().any(|update| {
+                update.get("toolCallId").and_then(Value::as_str) == Some("call_replayed")
+                    && update["rawInput"]["command"] == "printf replayed-tool"
+            }),
+            "expected reconstructed tool call before completion: {replay_updates:?}"
+        );
+        assert!(
+            replayed_tool_updates("tool_call_update")
+                .iter()
+                .any(|update| {
+                    update.get("toolCallId").and_then(Value::as_str) == Some("call_replayed")
+                        && update["status"] == "completed"
+                }),
+            "expected replayed tool completion: {replay_updates:?}"
         );
 
         send_json(
