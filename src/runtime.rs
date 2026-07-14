@@ -1971,8 +1971,9 @@ pub struct StartupInfo {
     /// Zero for fresh sessions; used by the startup banner.
     pub replayed_events: usize,
     /// True when neither env vars nor saved settings provide a credential
-    /// for any real provider. The TUI auto-opens its setup wizard in this
-    /// case; `--print` mode ignores it.
+    /// for any real provider, or when the preferred provider cannot
+    /// authenticate. The TUI auto-opens its setup wizard in this case;
+    /// `--print` mode ignores the flag and surfaces a clear error instead.
     pub setup_recommended: bool,
     /// Names of MCP servers configured for this session from `.mcp.json`
     /// (global + workspace, merged). Source for the `/mcp` command and the
@@ -2548,7 +2549,7 @@ pub async fn build_with_options(
     everruns_openrouter::register_driver(&mut driver_registry);
     crate::codex_driver::register_driver(&mut driver_registry, settings.clone());
     let settings_snapshot = settings.snapshot();
-    let setup_recommended = SetupCapability::needs_onboarding(&settings_snapshot);
+    let mut setup_recommended = SetupCapability::needs_onboarding(&settings_snapshot);
     let default_model = match &provider {
         ProviderChoice::Anthropic { .. }
         | ProviderChoice::OpenAi { .. }
@@ -2558,8 +2559,24 @@ pub async fn build_with_options(
         | ProviderChoice::Ollama { .. }
         | ProviderChoice::Custom { .. } => match provider.model_with_provider(&settings_snapshot) {
             Ok(model) => model,
+            Err(err) if matches!(options.client_ui, ClientUiContext::Tui) => {
+                // Preferred provider is set but credentials are missing
+                // (e.g. Codex login cleared after refresh_token_reused).
+                // Interactive sessions open `/setup` instead of exiting.
+                tracing::warn!(
+                    error = %err,
+                    provider = provider.provider_name(),
+                    "provider credentials missing; opening setup"
+                );
+                setup_recommended = true;
+                provider.model_without_stored_key()
+            }
             Err(_) if setup_recommended => provider.model_without_stored_key(),
-            Err(err) => return Err(err),
+            Err(err) => {
+                return Err(err.context(
+                    "provider credentials missing; run `yolop` interactively and complete /setup",
+                ));
+            }
         },
         ProviderChoice::Sim => ResolvedModel {
             model: "llmsim-yolop".into(),
@@ -2822,6 +2839,102 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("offline llmsim only supports llmsim-yolop")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)]
+    async fn tui_build_opens_setup_when_codex_login_missing() {
+        // Reproduces: default_provider=codex with no CODEX_ACCESS_TOKEN and no
+        // [codex_auth] (e.g. after refresh_token_reused cleared login). Interactive
+        // startup must open /setup, not exit with "CODEX_ACCESS_TOKEN not set".
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("CODEX_ACCESS_TOKEN");
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+        }
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        settings
+            .set_default_provider(Some("codex".to_string()))
+            .expect("save provider");
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Codex {
+                model: "gpt-5.5".to_string(),
+                reasoning_effort: None,
+            },
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions {
+                client_ui: ClientUiContext::Tui,
+                client_commands: true,
+                ..BuildOptions::default()
+            },
+        )
+        .await
+        .expect("TUI build must not crash when Codex login is missing");
+
+        assert!(
+            built.startup.setup_recommended,
+            "missing Codex login should recommend setup"
+        );
+        assert_eq!(built.model.provider_name(), "codex");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)]
+    async fn print_build_errors_clearly_when_codex_login_missing() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            std::env::remove_var("CODEX_ACCESS_TOKEN");
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+        }
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        // Saved preferred provider suppresses first-run onboarding, same as the
+        // TUI crash case — print mode must still fail clearly rather than hang
+        // with a keyless Codex driver.
+        settings
+            .set_default_provider(Some("codex".to_string()))
+            .expect("save provider");
+
+        let result = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Codex {
+                model: "gpt-5.5".to_string(),
+                reasoning_effort: None,
+            },
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions {
+                client_ui: ClientUiContext::Print,
+                ..BuildOptions::default()
+            },
+        )
+        .await;
+        let err = match result {
+            Ok(_) => panic!("print mode still needs credentials"),
+            Err(err) => err,
+        };
+
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("CODEX_ACCESS_TOKEN") || message.contains("Codex login"),
+            "got: {message}"
+        );
+        assert!(
+            message.contains("/setup") || message.contains("interactively"),
+            "got: {message}"
         );
     }
 
