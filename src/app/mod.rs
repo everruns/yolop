@@ -678,7 +678,7 @@ impl App {
         // flush/draw per command, matching the test dispatch helper.
         let mut applied_ui_command = false;
         while let Ok(command) = self.ui_rx.try_recv() {
-            self.apply_ui_command(command);
+            self.apply_ui_command(command).await;
             applied_ui_command = true;
         }
         if applied_ui_command {
@@ -1126,13 +1126,13 @@ impl App {
     /// Apply a terminal-side command emitted by a capability. This is the only
     /// place the host interprets the `UiCommand` vocabulary; capabilities
     /// declare commands and request effects, the host performs them.
-    fn apply_ui_command(&mut self, command: UiCommand) {
+    async fn apply_ui_command(&mut self, command: UiCommand) {
         match command {
             UiCommand::ShowHelp => self.show_help(),
             UiCommand::ShowTools => {
                 self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
             }
-            UiCommand::ManageMcp { arg } => self.manage_mcp_command(arg.as_deref()),
+            UiCommand::ManageMcp { arg } => self.manage_mcp_command(arg.as_deref()).await,
             UiCommand::ShowCwd => {
                 self.push_system(format!(
                     "workspace root: {}",
@@ -1159,7 +1159,10 @@ impl App {
         }
     }
 
-    fn manage_mcp_command(&mut self, raw: Option<&str>) {
+    const MCP_USAGE: &'static str =
+        "usage: /mcp [reload | enable|disable|remove <name> [global|workspace]]";
+
+    async fn manage_mcp_command(&mut self, raw: Option<&str>) {
         let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
             if self.startup.mcp_server_names.is_empty() {
                 let global = crate::mcp_config::global_mcp_config_path()
@@ -1170,39 +1173,43 @@ impl App {
                 ));
             } else {
                 self.push_system(format!(
-                    "MCP servers: {}",
+                    "active MCP servers: {}",
                     self.startup.mcp_server_names.join(", ")
                 ));
             }
-            self.push_system(
-                "usage: /mcp [enable|disable|remove <name> [global|workspace]]".into(),
-            );
+            self.push_system(Self::MCP_USAGE.into());
             return;
         };
 
         let mut parts = raw.split_whitespace();
         let action = parts.next().unwrap_or_default();
+
+        // `reload` re-reads config from disk (picking up `yolop mcp add`,
+        // hand edits, or the agent's own config tools) and applies it live.
+        if action == "reload" {
+            if parts.next().is_some() {
+                self.push_system(Self::MCP_USAGE.into());
+                return;
+            }
+            self.reload_mcp_and_report(None).await;
+            return;
+        }
+
         let name = parts.next();
         let scope = match parts.next() {
             None | Some("global") => crate::mcp_config::McpConfigScope::Global,
             Some("workspace") => crate::mcp_config::McpConfigScope::Workspace,
             Some(other) => {
-                self.push_system(format!(
-                    "usage: /mcp [enable|disable|remove <name> [global|workspace]] (unknown scope: {other})"
-                ));
+                self.push_system(format!("{} (unknown scope: {other})", Self::MCP_USAGE));
                 return;
             }
         };
         if parts.next().is_some() {
-            self.push_system(
-                "usage: /mcp [enable|disable|remove <name> [global|workspace]]".into(),
-            );
+            self.push_system(Self::MCP_USAGE.into());
             return;
         }
         let Some(name) = name else {
-            self.push_system(
-                "usage: /mcp [enable|disable|remove <name> [global|workspace]]".into(),
-            );
+            self.push_system(Self::MCP_USAGE.into());
             return;
         };
 
@@ -1223,21 +1230,35 @@ impl App {
                 }
             }),
             other => {
-                self.push_system(format!(
-                    "usage: /mcp [enable|disable|remove <name> [global|workspace]] (unknown action: {other})"
-                ));
+                self.push_system(format!("{} (unknown action: {other})", Self::MCP_USAGE));
                 return;
             }
         };
         match result {
-            Ok(message) => {
-                self.push_system(message);
-                self.push_system(
-                    "restart or start a new yolop session for MCP connection changes to take effect"
-                        .into(),
-                );
-            }
+            Ok(message) => self.reload_mcp_and_report(Some(message)).await,
             Err(error) => self.push_system(format!("failed to update MCP config: {error}")),
+        }
+    }
+
+    /// Apply the on-disk MCP config to the live session and report the active
+    /// set. `prelude`, when set, is printed first (e.g. the mutation summary).
+    async fn reload_mcp_and_report(&mut self, prelude: Option<String>) {
+        if let Some(message) = prelude {
+            self.push_system(message);
+        }
+        match self.session.reload_mcp_servers().await {
+            Ok(names) => {
+                self.startup.mcp_server_names = names;
+                if self.startup.mcp_server_names.is_empty() {
+                    self.push_system("active MCP servers: none".into());
+                } else {
+                    self.push_system(format!(
+                        "active MCP servers: {}",
+                        self.startup.mcp_server_names.join(", ")
+                    ));
+                }
+            }
+            Err(error) => self.push_system(format!("failed to reload MCP servers: {error}")),
         }
     }
 
@@ -3499,12 +3520,12 @@ mod tests {
         /// `handle_command`.
         async fn dispatch_command_for_test(&mut self, cmd: &str) {
             self.handle_command(cmd).await;
-            self.pump_ui_commands_for_test();
+            self.pump_ui_commands_for_test().await;
         }
 
-        fn pump_ui_commands_for_test(&mut self) {
+        async fn pump_ui_commands_for_test(&mut self) {
             while let Ok(command) = self.ui_rx.try_recv() {
-                self.apply_ui_command(command);
+                self.apply_ui_command(command).await;
             }
         }
 
@@ -3615,7 +3636,7 @@ mod tests {
         );
 
         app.submit_input().await;
-        app.pump_ui_commands_for_test();
+        app.pump_ui_commands_for_test().await;
 
         assert!(
             app.busy,
@@ -3664,7 +3685,7 @@ mod tests {
         app.set_input_text("!printf bare-output".into());
 
         app.submit_input().await;
-        app.pump_ui_commands_for_test();
+        app.pump_ui_commands_for_test().await;
 
         assert!(app.busy, "! should run as a bounded background command");
         app.pump_turn_until_idle_for_test().await;
@@ -4550,6 +4571,60 @@ mod tests {
                 .iter()
                 .any(|line| line.text.contains("workspace root:") && line.text.contains(&root)),
             "cwd should print the workspace root: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mcp_reload_applies_config_live_without_restart() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+
+        // The workspace declares no servers at startup.
+        assert!(!app.startup.mcp_server_names.iter().any(|n| n == "docs"));
+
+        // Write a workspace `.mcp.json` after startup, then `/mcp reload`.
+        std::fs::write(
+            app.startup.workspace_root.join(".mcp.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "mcpServers": { "docs": { "type": "http", "url": "https://example.com/mcp" } }
+            }))
+            .unwrap(),
+        )
+        .expect("write .mcp.json");
+        app.lines.clear();
+        app.dispatch_command_for_test("mcp reload").await;
+
+        // The server is now live on the session and reported as active — and
+        // the old "restart required" guidance is gone.
+        assert!(app.startup.mcp_server_names.iter().any(|n| n == "docs"));
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("active MCP servers: docs")),
+            "reload should report the active set: {:?}",
+            app.lines
+        );
+        assert!(
+            !app.lines.iter().any(|line| line.text.contains("restart")),
+            "reload must not tell the user to restart: {:?}",
+            app.lines
+        );
+
+        // Disabling via `/mcp` also applies live: the server drops out.
+        app.lines.clear();
+        app.dispatch_command_for_test("mcp disable docs workspace")
+            .await;
+        assert!(
+            !app.startup.mcp_server_names.iter().any(|n| n == "docs"),
+            "disabling a server removes it from the live set: {:?}",
+            app.startup.mcp_server_names
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("active MCP servers")),
+            "disable should report the active set: {:?}",
             app.lines
         );
     }

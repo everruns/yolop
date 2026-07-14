@@ -1520,9 +1520,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-anthropic"
-version = "0.17.8"
+version = "0.17.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d40de0d921d088d72df731008043975d238bc7a4a9df4f786de214432f610195"
+checksum = "e8f2c9bebe9a5f348d22bef55b2f3f928daab4c82946c3372808e0aa88d2a9e6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1538,9 +1538,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-core"
-version = "0.17.8"
+version = "0.17.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58cecfd2d8bea37ef8879d328dca4a76456498ecf11cb6fba65ca21dcac17eba"
+checksum = "d44925ad9776abd6d2dfc68c9bee268342ff55ed03c959f5bca387967b1c9c7e"
 dependencies = [
  "a2a-client-lf",
  "a2a-lf",
@@ -1555,6 +1555,7 @@ dependencies = [
  "eventsource-stream",
  "fetchkit",
  "futures",
+ "globset",
  "hex",
  "inventory",
  "llmsim",
@@ -1582,9 +1583,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-daytona"
-version = "0.17.8"
+version = "0.17.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "175c5d0273ad9e356978796cff872691dca8a52bf48aeab799978213601bc783"
+checksum = "9667c0e3a2e1ae303aeb74e9fc8e82677a6b324f0a8aab6ebd1902ba2e11452b"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1599,9 +1600,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-duckduckgo"
-version = "0.17.8"
+version = "0.17.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86fea4828b2a8697ab31b6bacef184f749b62388da46d2a6331606a45da33b6e"
+checksum = "f5306ef3ebc0f5092738f6cea54ce653e9a8aacd2026e1c86c3537180b35c007"
 dependencies = [
  "async-trait",
  "everruns-core",
@@ -1615,9 +1616,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-parallel"
-version = "0.17.8"
+version = "0.17.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba1e39ac8770b2ce2319d37937336a2feea24a37beae4859bd1dcf2539b62f8b"
+checksum = "1e78f2042f36b1329b228162da6aa674fd5fd344795dc8a812baafc6cf028c64"
 dependencies = [
  "async-trait",
  "everruns-core",
@@ -1629,9 +1630,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-local"
-version = "0.17.8"
+version = "0.17.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c803eaaf9bcc778bc485ab29cbfec857851a156e0cb9ba4f5656a2f60c9f09e4"
+checksum = "d4fa3be35279cfc6842dc91735aaf71d1a4c1d9b347616617cd83ceeb4bffe1b"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1653,9 +1654,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-mcp"
-version = "0.17.8"
+version = "0.17.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea719527ec420ac82c195de3f694c3047e6000f78baaf5eacf13a3263a5ff9e1"
+checksum = "1ee0b6317188038761b40d803077fb270f6ec84f349f82fc528d2fc9bf1a0e4a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1668,9 +1669,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-openai"
-version = "0.17.8"
+version = "0.17.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c4b2939204d6b6de614ca23faff059b317174a7f06af6b2259f660577a63c9d"
+checksum = "0db9a185b3aab3471f32317f80477e99cf73fd12bc4384967c6c453c6c9ac598"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1689,9 +1690,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-openrouter"
-version = "0.17.8"
+version = "0.17.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30a1aa47aa9944d6e99f682508de4c796d654cb5945d8b71183b508087bcc6e4"
+checksum = "ec6aff06ff8d4e84e84f77fec4e99bffa2359cbfde92104910fb0853bec375bf"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1703,9 +1704,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-runtime"
-version = "0.17.8"
+version = "0.17.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfda8cdd17cbbcf90f27a325727925fe9df37a0c25effb35f204a20bb6d95414"
+checksum = "cba4abf61590ea7078df50739ab6a081addf6e739b62010535afa0cf9be42fcc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6628,6 +6629,15 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-zig",
  "urlencoding",
+ "yolop-yep",
+]
+
+[[package]]
+name = "yolop-yep"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

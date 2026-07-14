@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/yolop-yep"]
+
 [package]
 name = "yolop"
 version = "0.7.0"
@@ -50,6 +53,10 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 ratatui-textarea = "0.9.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# The extension protocol wire types + server SDK live in their own crate so
+# extension authors can depend on them from crates.io; the host shares the
+# same source of truth (see specs/extensions.md).
+yolop-yep = { version = "0.1.0", path = "crates/yolop-yep" }
 sha2 = "0.11"
 toml = "1"
 textwrap = "0.16"
@@ -77,20 +84,20 @@ tree-sitter-zig = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-everruns-anthropic = "0.17.8"
-everruns-core = "0.17.8"
-everruns-openai = "0.17.8"
+everruns-anthropic = "0.17.9"
+everruns-core = "0.17.9"
+everruns-openai = "0.17.9"
 # OpenRouter's first-class driver was split out of everruns-openai into its own
 # crate in 0.13.0; register it alongside openai to keep DriverId::OpenRouter.
-everruns-openrouter = "0.17.8"
-everruns-local = "0.17.8"
-everruns-mcp = "0.17.8"
+everruns-openrouter = "0.17.9"
+everruns-local = "0.17.9"
+everruns-mcp = "0.17.9"
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
 # everruns server/worker never enable it (specs/mcp.md, upstream runtime-mcp.md D2).
-everruns-runtime = { version = "0.17.8", features = ["mcp-stdio"] }
-everruns-integrations-duckduckgo = "0.17.8"
-everruns-integrations-parallel = "0.17.8"
-everruns-integrations-daytona = "0.17.8"
+everruns-runtime = { version = "0.17.9", features = ["mcp-stdio"] }
+everruns-integrations-duckduckgo = "0.17.9"
+everruns-integrations-parallel = "0.17.9"
+everruns-integrations-daytona = "0.17.9"
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
 html-escape = "0.2"

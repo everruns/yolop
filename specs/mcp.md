@@ -33,6 +33,17 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
   are prefixed (`mcp_<server>__<tool>`) by the runtime to avoid collisions.
 - **Visibility**: `/mcp` lists the configured servers; configured server names
   also appear in `StartupInfo`.
+- **Live reload**: server changes apply to the running session without a
+  restart. `/mcp enable|disable|remove` mutate config and immediately re-apply;
+  `/mcp reload` re-reads config from disk (picking up `yolop mcp add`, hand
+  edits, or the agent's own config tools). The runtime resolves a session's
+  scoped MCP servers per turn from `session.mcp_servers` and never negatively
+  caches a failed or empty discovery, so swapping that field
+  (`RuntimeHandles::reload_mcp_servers`) is enough: added servers are discovered
+  cold on the next turn and removed ones drop out of the tool set. A server
+  whose config changes but keeps the same name is served from the ≤1h discovery
+  cache until it revalidates (stale-while-revalidate) — enable/disable/add/
+  remove are unaffected.
 - **Execution model**: MCP tool calls run autonomously, like every other yolop
   tool — there is no per-call approval gate.
 
@@ -76,5 +87,6 @@ Config shape:
 |---------|----------|
 | Config loading (scopes, merge, `${VAR}`) | `src/mcp_config.rs` |
 | Wiring into the session | `src/runtime.rs` (`session_mcp_servers`, `StartupInfo.mcp_server_names`) |
-| `/mcp` command | `src/capabilities/client_commands.rs`, `src/host_ui.rs`, `src/app.rs` |
+| `/mcp` command (list/reload/enable/disable/remove) | `src/capabilities/client_commands.rs`, `src/host_ui.rs`, `src/app/mod.rs` |
+| Live reload seam | `src/runtime.rs` (`RuntimeHandles::reload_mcp_servers`), `src/session.rs` |
 | Client / transports / executor | upstream `everruns-mcp`, `everruns-runtime` (`mcp-stdio` feature) |

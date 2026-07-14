@@ -59,14 +59,16 @@ use everruns_core::{
     ReasoningConfig, ResolvedModel, ScopedMcpServers, SessionFileSystem, SessionFileSystemFactory,
     SessionFileSystemFactoryContext,
 };
-use everruns_core::{DriverId, ModelProfile, ReasoningEffortConfig, ReasoningEffortValue};
+use everruns_core::{
+    DriverId, ModelProfile, ReasoningEffortConfig, ReasoningEffortValue, SessionStore,
+};
 use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
 use everruns_mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
 use everruns_runtime::{
     AgentBuilder, HarnessBuilder, InProcessRuntime, InProcessRuntimeBuilder, RealDiskFileStore,
-    RuntimeBackends, SessionBuilder, WriteBlocklistFileStore,
+    RuntimeBackends, RuntimeSessionStore, SessionBuilder, WriteBlocklistFileStore,
 };
 
 use crate::session_log::{
@@ -1913,6 +1915,39 @@ pub struct RuntimeHandles {
     /// through the `EventBus` trait object; we keep a direct reference
     /// so the TUI can subscribe to the live broadcast for streaming.
     pub events: Arc<JsonlEventEmitter>,
+    /// The runtime's session store, retained so the host can mutate the
+    /// live session's scoped MCP servers without rebuilding the runtime.
+    /// See [`RuntimeHandles::reload_mcp_servers`].
+    pub session_store: Arc<dyn RuntimeSessionStore>,
+    /// Workspace root the session's MCP servers were loaded from. Reused
+    /// verbatim on reload so `.mcp.json` resolution stays identical to
+    /// startup.
+    pub workspace_root: PathBuf,
+}
+
+impl RuntimeHandles {
+    /// Re-read the merged MCP server config (global settings + workspace
+    /// `.mcp.json`) and swap it into the live session, so add / remove /
+    /// enable / disable take effect on the next turn without a restart.
+    ///
+    /// The runtime resolves a session's scoped MCP servers per turn from
+    /// `session.mcp_servers` and never negatively caches a failed or empty
+    /// discovery, so upserting the session here is enough: newly enabled
+    /// servers are discovered cold on the next turn and removed ones simply
+    /// drop out of the tool set. Returns the sorted names now active.
+    pub async fn reload_mcp_servers(&self) -> anyhow::Result<Vec<String>> {
+        let servers = crate::mcp_config::load_mcp_servers(&self.workspace_root);
+        let mut session = self
+            .session_store
+            .get_session(self.session_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("session {} not found", self.session_id))?;
+        let mut names: Vec<String> = servers.keys().cloned().collect();
+        names.sort();
+        session.mcp_servers = servers;
+        self.session_store.add_session(session).await?;
+        Ok(names)
+    }
 }
 
 pub struct StartupInfo {
@@ -2595,6 +2630,12 @@ pub async fn build_with_options(
         .tag("example")
         .tag("coding");
 
+    // Retain the session store so the host can hot-swap the live session's
+    // scoped MCP servers (`RuntimeHandles::reload_mcp_servers`) without
+    // rebuilding the runtime. Cloned before `backends` is moved into the
+    // builder below.
+    let session_store = backends.session_store.clone();
+
     let mut builder = InProcessRuntimeBuilder::new()
         .mcp_auth_provider(Arc::new(EnvMcpAuthProvider))
         .platform_definition(platform)
@@ -2629,6 +2670,8 @@ pub async fn build_with_options(
             runtime: Arc::new(runtime),
             session_id,
             events: event_bus_typed,
+            session_store,
+            workspace_root: canonical_root.clone(),
         },
         startup: StartupInfo {
             workspace_root: effective_root,

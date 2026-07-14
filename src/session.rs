@@ -59,6 +59,14 @@ impl Session {
         self.handles.session_id
     }
 
+    /// Re-read the merged MCP server config and swap it into the live session
+    /// so add / remove / enable / disable apply on the next turn without a
+    /// restart. Returns the sorted names now active. See
+    /// [`RuntimeHandles::reload_mcp_servers`](crate::runtime::RuntimeHandles::reload_mcp_servers).
+    pub async fn reload_mcp_servers(&self) -> Result<Vec<String>> {
+        self.handles.reload_mcp_servers().await
+    }
+
     /// Translate the prefix of persisted events that were replayed from disk
     /// into transcript lines (used to seed the transcript on resume).
     pub async fn replayed_lines(&self, count: usize) -> Result<Vec<ChatLine>> {

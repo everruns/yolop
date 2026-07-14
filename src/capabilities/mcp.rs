@@ -38,8 +38,9 @@ impl Capability for McpCapability {
               Manage global and workspace MCP servers with `list_mcp_servers`, \
               `upsert_mcp_server`, `remove_mcp_server`, and `set_mcp_server_enabled`. \
               Global servers live in settings.toml under `[mcp.servers.<name>]`; workspace \
-              servers live in `.mcp.json` and override global servers by name. Server changes \
-              are picked up by new sessions; use `enabled=false` to deactivate without deleting.\n\
+              servers live in `.mcp.json` and override global servers by name. Config changes \
+              take effect on the next `/mcp reload` (or a new session); use `enabled=false` to \
+              deactivate without deleting.\n\
               </capability>"
                 .to_string(),
         )
@@ -129,7 +130,7 @@ impl Tool for UpsertMcpServerTool {
         Some("Upsert MCP server")
     }
     fn description(&self) -> &str {
-        "Create or replace one global or workspace MCP server. Changes apply to new sessions."
+        "Create or replace one global or workspace MCP server. Changes take effect on the next `/mcp reload` or a new session."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -252,7 +253,7 @@ impl Tool for SetMcpServerEnabledTool {
         Some("Set MCP server enabled")
     }
     fn description(&self) -> &str {
-        "Enable or disable one MCP server without deleting it. Changes apply to new sessions."
+        "Enable or disable one MCP server without deleting it. Changes take effect on the next `/mcp reload` or a new session."
     }
     fn parameters_schema(&self) -> Value {
         json!({

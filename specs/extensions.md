@@ -20,9 +20,18 @@ system-prompt contribution per turn via `prompt/contribution` (falling back
 to the static handshake prompt). Pre-hooks can block; per-hook timeout +
 `on_error` (warn/block) bound the cost; the whole-bash-per-event
 `user_hooks` precedent makes a warm-process RPC strictly cheaper.
-Later phases — `ui/ask` (needs the server→host reverse-request channel,
-still refused in phase 1), `workspace/changed`, schema-gen + SDKs,
-`/extensions doctor`, providers — remain design-of-record below. Not yet wired within phase 2 (tracked as
+Phase 5 (foundation): the **`yolop-yep`** crate (`crates/yolop-yep/`) — the
+wire types (now the single source of truth, re-exported by the host) plus a
+handler-based server SDK (`Server::new().tool().on_hook().dynamic_prompt()
+.serve()`) so extension servers are authored in Rust without a hand-rolled
+JSON-RPC loop. A reference `echo` example server built on it is driven by
+yolop's own client in an integration test — the SDK's interop proof and the
+foundation a future `yolop-extension-lsp` builds on.
+Later — the full `yolop-extension-lsp` control-plane extraction (gated on
+`evals/lsp_integration` parity to retire the built-in), `ui/ask` (needs the
+server→host reverse-request channel, still refused in phase 1),
+`workspace/changed`, `schema/yep/v1/` generation, `/extensions doctor`,
+providers — remain design-of-record below. Not yet wired within phase 2 (tracked as
 follow-ups): the toolchain-free crates.io source (native sparse-index +
 tarball fetch), full JSON-Schema config validation, and `config/changed`
 restart. Phase-1 deltas from the original sketch: tool *definitions*
