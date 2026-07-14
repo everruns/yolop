@@ -477,7 +477,7 @@ after the run.
 ## Contributing
 
 Development setup, validation commands, and local smoke tests live in
-[`CONTRIBUTION.md`](./CONTRIBUTION.md).
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 Please report vulnerabilities through [`SECURITY.md`](./SECURITY.md), and follow
 the project [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) when participating.
