@@ -83,7 +83,10 @@ When asked to release, the agent:
    `### Breaking Changes` block with before/after migration snippets.
 
 3. **Bump the version** in `Cargo.toml` and regenerate `Cargo.lock`
-   (`cargo update -p yolop`).
+   (`cargo update -p yolop`). The `yolop-yep` SDK crate under `crates/` is
+   **versioned separately** — bump it only when its API or the wire protocol
+   changes, and when you do, update both `crates/yolop-yep/Cargo.toml` and the
+   `yolop-yep = { version = … }` requirement in the root `Cargo.toml`.
 
 4. **Run local verification:**
    - `cargo fmt --check`
@@ -92,12 +95,21 @@ When asked to release, the agent:
 
 5. **Verify publish-readiness** (catches what local tests don't — the
    `cargo publish` packaging step, missing files, version drift):
-   - `cargo publish --dry-run -p yolop` must succeed.
+   - `cargo publish --dry-run -p yolop-yep` must succeed.
    - Confirm `Cargo.toml` and `Cargo.lock` agree on `X.Y.Z`.
    - Confirm `X.Y.Z` is greater than the latest published version on
      crates.io (`cargo search yolop --limit 1`).
    - If any check fails, fix the root cause and re-run before opening the
      PR. **Do not** merge a release PR with a known-broken publish path.
+
+   **Two crates, ordered publish.** crates.io requires `yolop-yep` to be
+   published before `yolop` (which depends on it by version), so
+   `publish.yml` publishes `yolop-yep` first, then `yolop` (each skipped when
+   already live). Because of that ordering, `cargo publish --dry-run -p yolop`
+   **fails locally** — *"no matching package named `yolop-yep` found"* —
+   until the in-tree `yolop-yep` version is on crates.io. That is expected,
+   not a broken release; dry-run `yolop-yep` and rely on CI to validate
+   `yolop` after `yolop-yep` goes live.
 
 6. **Commit and push** the changes on a feature branch with message
    `chore(release): prepare vX.Y.Z`.

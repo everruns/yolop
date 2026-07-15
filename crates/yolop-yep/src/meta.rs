@@ -129,11 +129,18 @@ mod tests {
     /// generator produces. This makes `cargo test` (i.e. CI) the enforcement —
     /// a vocabulary change can't merge without regenerating the artifact.
     /// Run `cargo run -p yolop-yep --bin schema-gen` to fix a failure here.
+    ///
+    /// The schema file lives at the repo root, outside the crate, so it is
+    /// absent when the published crate is built/tested standalone (e.g. a
+    /// downstream `cargo test`). In that case the guard is a no-op — it only
+    /// enforces in-repo, which is where drift can be introduced.
     #[test]
     fn committed_meta_json_is_up_to_date() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schema/yep/v1/meta.json");
-        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        let Ok(committed) = std::fs::read_to_string(&path) else {
+            return; // not in the repo tree; nothing to guard
+        };
         assert_eq!(
             committed,
             meta_json(),
