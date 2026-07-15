@@ -148,14 +148,28 @@ This is the step that catches what local tests don't — the `cargo publish`
 packaging boundary, missing files referenced by `Cargo.toml`, version drift:
 
 ```bash
-cargo publish --dry-run -p yolop
+cargo publish --dry-run -p yolop-yep   # the SDK crate; publishes first
 cargo search yolop --limit 1     # confirm CURRENT crates.io version < X.Y.Z
 grep '^version' Cargo.toml       # confirm reads X.Y.Z
 grep '"yolop"' Cargo.lock | head -1  # confirm reads X.Y.Z
 ```
 
-If `cargo publish --dry-run` fails, fix the root cause and re-run. Do **not**
-open a release PR with a known-broken publish path.
+**Two-crate workspace.** The repo publishes two crates: the `yolop-yep` SDK
+(separately versioned — bump it only when its API or the wire protocol
+changes) and the `yolop` binary, which depends on `yolop-yep` by version.
+crates.io requires `yolop-yep` to be published **before** `yolop`, so CI
+(`publish.yml`) publishes `yolop-yep` first, then `yolop` (each skipped if its
+version is already live). A consequence for this step: **`cargo publish
+--dry-run -p yolop` fails locally** with *"no matching package named
+`yolop-yep` found"* whenever the in-tree `yolop-yep` version isn't yet on
+crates.io — that is expected, not a broken release. Dry-run `yolop-yep`
+instead (above); `yolop`'s own publish is validated in CI after `yolop-yep`
+goes live. When bumping `yolop-yep`, update its version in
+`crates/yolop-yep/Cargo.toml` **and** the `yolop-yep = { version = … }`
+requirement in the root `Cargo.toml`.
+
+If `cargo publish --dry-run -p yolop-yep` fails, fix the root cause and re-run.
+Do **not** open a release PR with a known-broken publish path.
 
 ### 6. Commit and push
 

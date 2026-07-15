@@ -10,6 +10,10 @@ repository = "https://github.com/everruns/yolop"
 readme = "README.md"
 keywords = ["yolop", "yolop-extension", "agent", "protocol", "plugin"]
 categories = ["development-tools", "api-bindings"]
+# `schema-gen` is a repo-only tool (regenerates schema/yep/v1/meta.json at the
+# repo root); it has no use for a downstream consumer, so keep it out of the
+# published package. The library + `echo` example are what authors need.
+exclude = ["src/bin"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
