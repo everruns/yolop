@@ -158,9 +158,6 @@ pub struct App {
     workspace_host: Arc<crate::workspace_host::WorkspaceHost>,
     /// Images from `--image` / `-i` on the CLI, consumed on the first turn.
     pending_images: Vec<ContentPart>,
-    /// Skip bottom re-anchoring for a few frames after a terminal resize so
-    /// crossterm observes the new PTY dimensions before we jump the cursor.
-    reanchor_cooldown: u8,
     /// Large paste placeholders mapped to their full clipboard/terminal payloads.
     pending_pastes: Vec<(String, String)>,
 }
@@ -396,7 +393,6 @@ impl App {
             workspace_host: runtime.workspace_host,
             pending_images,
             pending_pastes: Vec::new(),
-            reanchor_cooldown: 0,
         };
         app.emit_system_banner();
         if should_setup {
@@ -649,27 +645,11 @@ impl App {
     {
         self.flush_transcript(terminal)?;
         self.refresh_session_tasks_if_due().await;
-        // Ratatui keeps the inline viewport row fixed across vertical grows and
-        // resets it to the top on horizontal shrinks. Re-anchor before each draw
-        // so the composer stays pinned to the terminal bottom after resize.
-        let before = terminal.size()?;
+        // Ratatui keeps an inline viewport's cursor offset across resizes and
+        // resets its origin on horizontal shrinks. Normalize the viewport to
+        // the terminal bottom before every draw.
         terminal.autoresize()?;
-        let after = terminal.size()?;
-        if before != after {
-            // Horizontal shrinks reset the inline viewport to the top and need
-            // an immediate bottom re-anchor. Vertical resizes need a short
-            // cooldown so crossterm observes the new PTY height first.
-            if before.width != after.width && before.height == after.height {
-                self.reanchor_cooldown = 0;
-            } else {
-                self.reanchor_cooldown = 2;
-            }
-        }
-        if self.reanchor_cooldown > 0 {
-            self.reanchor_cooldown -= 1;
-        } else {
-            maybe_reanchor_inline_viewport(terminal)?;
-        }
+        maybe_reanchor_inline_viewport(terminal)?;
         terminal.draw(|f| draw(f, self))?;
 
         // 1) drain background turn events
@@ -5132,6 +5112,14 @@ mod tests {
         assert!(
             rows.iter().any(|line| line.contains("Esc cancel")),
             "footer should not be clipped: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|line| line.contains("Enter to send")),
+            "the composer must not render through the setup sheet: {rows:?}"
+        );
+        assert!(
+            rows.first().is_some_and(String::is_empty) && rows.last().is_some_and(String::is_empty),
+            "the centered panel should have clean margins without underlying chrome: {rows:?}"
         );
     }
 

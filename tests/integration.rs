@@ -679,6 +679,39 @@ fn tui_resize_shrink_width_reanchors_composer_to_bottom() {
     );
 }
 
+#[test]
+fn tui_combined_resize_reconstructs_composer_at_screen_bottom() {
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(tui.wait_for_output("type /help", Duration::from_secs(3)));
+
+    tui.clear_output();
+    tui.resize(60, 40);
+    tui.write_input(b" ");
+    assert!(
+        tui.wait_for_output("[expand", Duration::from_secs(3)),
+        "TUI did not redraw after combined resize: {}",
+        tui.output_text()
+    );
+
+    let screen = tui.screen_lines();
+    assert_eq!(
+        screen.len(),
+        40,
+        "expected a complete 60x40 screen: {screen:?}"
+    );
+    assert!(
+        screen.last().is_some_and(|row| row.contains("llmsim")),
+        "status row should be the final visible row after resize: {screen:?}"
+    );
+    assert!(
+        screen.iter().any(|row| row.contains("Enter to send")),
+        "composer separator should remain visible after resize: {screen:?}"
+    );
+
+    tui.write_input(b"\x03\x03");
+    assert!(tui.wait_or_kill(Duration::from_secs(5)).success());
+}
+
 // ratatui 0.30.1 `Terminal::clear` snapshots the cursor with a blocking
 // `CSI 6n` query, and the inline viewport calls `clear` inside
 // `insert_before` — so viewport anchoring, every transcript flush, and exit
@@ -850,6 +883,7 @@ fn tui_setup_overlay_renders_in_real_pty() {
         tui.output_text()
     );
 
+    tui.clear_output();
     tui.write_input(b"/setup\r");
     assert!(
         tui.wait_for_output("Set Up Yolop", Duration::from_secs(3)),
@@ -860,6 +894,31 @@ fn tui_setup_overlay_renders_in_real_pty() {
         tui.wait_for_output("Esc cancel", Duration::from_secs(3)),
         "/setup footer should render without clipping: {}",
         tui.output_text()
+    );
+
+    let screen = tui.screen_lines();
+    let sheet: Vec<_> = screen
+        .iter()
+        .filter(|row| row.contains('│') || row.contains('┌') || row.contains('└'))
+        .collect();
+    assert_eq!(
+        sheet.len(),
+        16,
+        "setup panel should retain its centered height: {screen:?}"
+    );
+    assert!(
+        sheet
+            .first()
+            .is_some_and(|row| row.trim_start().starts_with('┌'))
+    );
+    assert!(
+        sheet
+            .last()
+            .is_some_and(|row| row.trim_start().starts_with('└'))
+    );
+    assert!(
+        !screen.iter().any(|row| row.contains("Enter to send")),
+        "composer chrome must not bleed through the setup sheet: {screen:?}"
     );
 }
 
