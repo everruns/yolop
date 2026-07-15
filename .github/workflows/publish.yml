@@ -60,14 +60,16 @@ jobs:
             version=$(cargo metadata --no-deps --format-version 1 \
               | jq -r --arg crate "$crate" '.packages[] | select(.name == $crate) | .version')
 
-            if curl --fail --silent "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
+            if curl --fail --silent --user-agent "yolop-release-workflow (https://github.com/everruns/yolop)" \
+              "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
               echo "$crate $version is already published"
               return
             fi
 
             cargo publish --locked -p "$crate"
             for _ in {1..30}; do
-              if curl --fail --silent "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
+              if curl --fail --silent --user-agent "yolop-release-workflow (https://github.com/everruns/yolop)" \
+              "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
                 return
               fi
               sleep 10
