@@ -68,10 +68,7 @@ owns the wire protocol:
 
 ```bash
 cargo new --bin yolop-extension-hello && cd yolop-extension-hello
-cargo add serde_json
-# yolop-yep is not yet published; depend on it from git until it is:
-#   cargo add yolop-yep --git https://github.com/everruns/yolop
-# (once published: cargo add yolop-yep)
+cargo add yolop-yep serde_json
 ```
 
 ```rust
@@ -153,7 +150,6 @@ servers in other languages — YEP is just newline-delimited JSON-RPC over stdio
 so any language works (see [`specs/extensions.md`](../specs/extensions.md)).
 
 > **Status.** The mechanism is implemented through hooks and the `yolop-yep`
-> SDK. Not yet shipped: publishing `yolop-yep` to crates.io (depend on it via
-> git for now), a one-command `crates.io` extension install, a payload JSON
-> Schema, and an `/extensions doctor` conformance check — see the spec's
-> follow-ups.
+> SDK, [published on crates.io](https://crates.io/crates/yolop-yep). Not yet
+> shipped: a one-command `crates.io` extension install, a payload JSON Schema,
+> and an `/extensions doctor` conformance check — see the spec's follow-ups.
