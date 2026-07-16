@@ -18,3 +18,11 @@ exclude = ["src/bin"]
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Optional: derive JSON Schema for the wire payloads so `schema-gen` can emit
+# schema/yep/v1/schema.json. Off by default — the SDK stays serde-only for
+# extension authors; only the in-repo generator turns it on.
+schemars = { version = "1", optional = true }
+
+[features]
+# Enables `schemars` derives + the `schema` module (repo tooling only).
+schema = ["dep:schemars"]

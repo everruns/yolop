@@ -27,12 +27,17 @@ handler-based server SDK (`Server::new().tool().on_hook().dynamic_prompt()
 JSON-RPC loop. A reference `echo` example server built on it is driven by
 yolop's own client in an integration test — the SDK's interop proof and the
 foundation a future `yolop-extension-lsp` builds on.
-Schema artifact: `schema/yep/v1/meta.json` is generated from the `yolop-yep`
-`meta` module by `cargo run -p yolop-yep --bin schema-gen` (the mira pattern);
-a `cargo test` drift guard fails CI if the committed file is stale, so the
-method + capability-token vocabulary can't change without the artifact
-changing. A non-Rust author reads it to discover the wire surface. (Full
-JSON-Schema of the payloads — `schema.json` — is still a follow-up.)
+Schema artifacts: `schema/yep/v1/meta.json` (method + capability-token
+vocabulary) and `schema/yep/v1/schema.json` (Draft 2020-12 JSON Schema of every
+request/result payload — keyed by method under `messages`, full types under
+`$defs`) are both generated from the `yolop-yep` types by `cargo run -p
+yolop-yep --features schema --bin schema-gen` (the mira pattern). `schema.json`
+comes from `#[derive(schemars::JsonSchema)]` on the payload structs behind an
+optional `schema` feature, so the published SDK stays serde-only for authors.
+A `cargo test` drift guard (run under CI's `--all-features` coverage job) fails
+if either committed file is stale, so the wire surface can't change without the
+artifacts changing. A non-Rust author reads them to discover and validate the
+wire format.
 Conformance: `doctor_extension` (surfaced as `/extensions doctor`) spawns an
 installed extension's server, runs the `initialize` handshake, and grades it
 against the manifest — protocol-version compatibility, the D4 tool clamp
@@ -43,7 +48,7 @@ shipping without booting a whole session.
 Later — the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in), `ui/ask` (needs the
 server→host reverse-request channel, still refused in phase 1),
-`workspace/changed`, payload `schema.json`,
+`workspace/changed`,
 providers — remain design-of-record below.
 Toolchain-free crates.io install is now wired: `install_extension
 source="crates.io:yolop-extension-<name>[@ver]"` (or the bare-`<name>`
@@ -366,15 +371,20 @@ from mira, which has already proven each piece for a protocol of this exact
 shape:
 
 - **Rust types are the source of truth; the schema is generated.** Wire
-  types live in one `yolop::yep` module; a schema-gen binary emits
-  `schema/yep/v1/schema.json` (JSON Schema 2020-12, root `anyOf` over the
-  three envelopes, every payload under `$defs`) and `meta.json` (protocol
-  version, method list, capability tokens, event vocabularies). The
-  directory is versioned by protocol **major**. CI runs the generator with
-  `--check` so a wire change cannot merge without a matching schema update;
-  a test suite validates real serialized messages against the committed
-  schema, and a conformance corpus lives beside it (`schema/yep/v1/
-  conformance/`).
+  types live in the `yolop-yep` crate; a schema-gen binary emits
+  `schema/yep/v1/schema.json` (JSON Schema 2020-12, every payload under
+  `$defs`) and `meta.json` (protocol version, method list, capability
+  tokens, event vocabularies). The directory is versioned by protocol
+  **major**. CI runs the generator with `--check` (and the drift tests under
+  `--all-features`) so a wire change cannot merge without a matching schema
+  update.
+  *Implemented shape:* rather than a root `anyOf` over the three envelopes
+  (the envelope is field-classified — see `classify_line` — and its
+  direction vocabulary already lives in `meta.json`), `schema.json` keys
+  payloads by **method** under a `messages` map (`{ params, result }` refs),
+  with the shared `error` and `capability_params` shapes at the top level and
+  all types under `$defs`. A conformance corpus (`schema/yep/v1/
+  conformance/`) remains a follow-up.
 - **SDKs are native, zero-dependency libraries, never FFI bindings.** The
   protocol is the seam by design; bindings would re-couple what the wire
   decouples. Each SDK ships a small codegen with its own `--check` drift
