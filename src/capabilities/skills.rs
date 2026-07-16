@@ -50,6 +50,10 @@ pub const GLOBAL_SKILLS_VFS: &str = "/.yolop/global-skills";
 /// Synthetic VFS root for the system scope, routed by the file store to the
 /// materialized system skills directory.
 pub const SYSTEM_SKILLS_VFS: &str = "/.yolop/system-skills";
+/// Read-only, session-local skills contributed by the active host environment.
+/// Unlike global/system skills this root has no disk backing; a capability
+/// mount (currently Herdr) serves it through `MountFs`.
+pub const ENVIRONMENT_SKILLS_VFS: &str = "/.yolop/environment-skills";
 
 /// System skills shipped inside the binary. Keep the source tree away from
 /// well-known skill discovery paths so it cannot be mistaken for a writable
@@ -90,13 +94,20 @@ pub fn relative_under(path: &str, root: &str) -> Option<String> {
 }
 
 /// Build the `ScopedSkillsCapability` configuration for these directories.
-/// Only scopes whose directory resolved are included; the system scope is
-/// read-only, the others writable. `${SKILL_DIR}` and display paths resolve to
-/// real host paths via [`HostSkillDirResolver`].
-pub fn skills_config(dirs: &SkillDirs) -> SkillsConfig {
+/// Only disk-backed scopes whose directory resolved are included. System and
+/// environment scopes are read-only; workspace/global are writable.
+/// `${SKILL_DIR}` and display paths resolve through [`HostSkillDirResolver`].
+pub fn skills_config(dirs: &SkillDirs, environment_active: bool) -> SkillsConfig {
     let mut scopes = vec![SkillScope::new("workspace", WORKSPACE_SKILLS_VFS, true)];
     if dirs.global.is_some() {
         scopes.push(SkillScope::new("global", GLOBAL_SKILLS_VFS, true));
+    }
+    if environment_active {
+        scopes.push(SkillScope::new(
+            "environment",
+            ENVIRONMENT_SKILLS_VFS,
+            false,
+        ));
     }
     if dirs.system.is_some() {
         scopes.push(SkillScope::new("system", SYSTEM_SKILLS_VFS, false));
@@ -120,6 +131,10 @@ impl HostSkillDirResolver {
     fn base_for(&self, label: &str) -> PathBuf {
         match label {
             "global" => self.dirs.global.clone(),
+            // Environment skills are VFS-only and contain no shell-side assets.
+            // Keep their display/substitution path honest instead of pretending
+            // they exist in a writable workspace or global directory.
+            "environment" => Some(PathBuf::from(ENVIRONMENT_SKILLS_VFS)),
             "system" => self.dirs.system.clone(),
             _ => Some(self.dirs.workspace.clone()),
         }
@@ -471,7 +486,7 @@ mod tests {
             global: None,
             system: Some(PathBuf::from("/data/sys")),
         };
-        let cfg = skills_config(&dirs);
+        let cfg = skills_config(&dirs, false);
         let labels: Vec<&str> = cfg.scopes.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(labels, vec!["workspace", "system"]);
         assert!(cfg.manage_tools);
