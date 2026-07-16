@@ -8,7 +8,7 @@ use crate::host_ui::UiCommand;
 use crate::runtime::{BuiltRuntime, ModelState, StartupInfo};
 use crate::session::Session;
 use crate::user_ask::{
-    USER_ASK_EVALUATE_ARG, UserAskStore, evaluation_status_message,
+    AskOutcome, USER_ASK_EVALUATE_ARG, UserAskStore, evaluation_status_message,
     parse_evaluation_response as parse_user_ask_evaluation,
 };
 use crate::worktree::WorktreeManager;
@@ -1580,6 +1580,10 @@ impl App {
                 return;
             }
         };
+        if evaluation.outcome == AskOutcome::Blocked {
+            self.session
+                .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
+        }
         self.push_system(evaluation_status_message(&evaluation));
     }
 

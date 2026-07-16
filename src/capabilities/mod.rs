@@ -12,6 +12,7 @@ pub(crate) mod config;
 pub(crate) mod edit_file_override;
 pub(crate) mod free_search;
 pub(crate) mod goal;
+pub(crate) mod herdr;
 pub(crate) mod hooks;
 mod host;
 pub(crate) mod lsp;
@@ -41,6 +42,7 @@ pub(crate) use client_commands::{CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCa
 pub(crate) use config::{CONFIG_CAPABILITY_ID, ConfigCapability};
 pub(crate) use free_search::FreeSearchCapability;
 pub(crate) use goal::GoalCapability;
+pub(crate) use herdr::{HERDR_CAPABILITY_ID, HerdrCapability};
 pub(crate) use hooks::{HOOKS_CAPABILITY_ID, HooksCapability};
 pub(crate) use host::{
     CODING_BASH_CAPABILITY_ID, ClientUiContext, CodingBashCapability,

@@ -950,6 +950,7 @@ async fn run_prompt(
         // report cancelled. The runtime may finish in the background but its
         // remaining events are ignored.
         turn.abort();
+        handles.report_herdr_state(crate::capabilities::herdr::HerdrState::Idle);
         return StopReason::Cancelled;
     }
 

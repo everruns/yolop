@@ -59,6 +59,10 @@ impl Session {
         self.handles.session_id
     }
 
+    pub(crate) fn report_herdr_state(&self, state: crate::capabilities::herdr::HerdrState) {
+        self.handles.report_herdr_state(state);
+    }
+
     /// Re-read the merged MCP server config and swap it into the live session
     /// so add / remove / enable / disable apply on the next turn without a
     /// restart. Returns the sorted names now active. See
@@ -199,6 +203,7 @@ impl Session {
             }
 
             if cancelled {
+                handles.report_herdr_state(crate::capabilities::herdr::HerdrState::Idle);
                 let _ = tx.send(TurnEvent::Stream(None));
                 let _ = tx.send(TurnEvent::Lines(vec![ChatLine {
                     author: Author::System,

@@ -13,9 +13,9 @@ use crate::capabilities::{
     BackgroundCapability, CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID,
     CONFIG_CAPABILITY_ID, ClientCommandsCapability, ClientUiContext, CodingBashCapability,
     CodingCliEnvironmentCapability, ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
-    GOAL_CAPABILITY_ID, GoalCapability, HOOKS_CAPABILITY_ID, HooksCapability, LspCapability,
-    PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
-    RepoMapCapability, SESSION_HISTORY_CAPABILITY_ID, SETUP_CAPABILITY_ID,
+    GOAL_CAPABILITY_ID, GoalCapability, HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability,
+    HooksCapability, LspCapability, PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability,
+    REPO_MAP_CAPABILITY_ID, RepoMapCapability, SESSION_HISTORY_CAPABILITY_ID, SETUP_CAPABILITY_ID,
     SessionHistoryCapability, SetupCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
     WorktreeCapability,
 };
@@ -66,8 +66,9 @@ use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
 use everruns_mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
 use everruns_runtime::{
-    AgentBuilder, HarnessBuilder, InProcessRuntime, InProcessRuntimeBuilder, RealDiskFileStore,
-    RuntimeBackends, RuntimeSessionStore, SessionBuilder, WriteBlocklistFileStore,
+    AgentBuilder, HarnessBuilder, InMemorySessionFileStore, InProcessRuntime,
+    InProcessRuntimeBuilder, RealDiskFileStore, RuntimeBackends, RuntimeSessionStore,
+    SessionBuilder, WriteBlocklistFileStore,
 };
 
 use crate::session_log::{
@@ -266,8 +267,10 @@ const AGENT_PROMPT: &str = "Investigate before editing. Cite paths and line numb
 struct CodingCliSessionFileSystemFactory {
     workspace: Arc<WorkspaceHost>,
     session_dir: PathBuf,
+    session_id: SessionId,
     skill_global: Option<PathBuf>,
     skill_system: Option<PathBuf>,
+    environment_skill: Option<&'static str>,
 }
 
 #[async_trait]
@@ -303,7 +306,27 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
             self.skill_global.clone(),
             self.skill_system.clone(),
         )?);
-        let mounted = MountFs::wrap(composite);
+        let mut mounted = MountFs::new(composite);
+        if let Some(skill) = self.environment_skill {
+            let environment = Arc::new(InMemorySessionFileStore::new());
+            environment
+                .seed_initial_file(
+                    self.session_id,
+                    &InitialFile {
+                        path: "/herdr/SKILL.md".to_string(),
+                        content: skill.to_string(),
+                        encoding: "text".to_string(),
+                        is_readonly: true,
+                    },
+                )
+                .await?;
+            mounted = mounted.with_mount(
+                crate::capabilities::skills::ENVIRONMENT_SKILLS_VFS,
+                environment,
+                "/",
+            );
+        }
+        let mounted: Arc<dyn SessionFileSystem> = Arc::new(mounted);
         Ok(Arc::new(WriteBlocklistFileStore::new(mounted)))
     }
 }
@@ -1793,6 +1816,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
     caps.extend([
         AgentCapabilityConfig::new(SESSION_FILE_SYSTEM_CAPABILITY_ID),
         AgentCapabilityConfig::new(SKILLS_CAPABILITY_ID),
+        AgentCapabilityConfig::new(HERDR_CAPABILITY_ID),
         AgentCapabilityConfig::new(REPO_MAP_CAPABILITY_ID),
         AgentCapabilityConfig::new(SESSION_HISTORY_CAPABILITY_ID),
         AgentCapabilityConfig::new(AST_GREP_CAPABILITY_ID),
@@ -1994,9 +2018,15 @@ pub struct RuntimeHandles {
     /// freshly minted token (the store caches connections in memory per
     /// handle), so `/mcp login` uses it rather than a separate handle.
     pub connections: Arc<ConnectionStore>,
+    /// Best-effort local lifecycle bridge when this process runs in Herdr.
+    pub(crate) herdr: crate::capabilities::herdr::HerdrReporter,
 }
 
 impl RuntimeHandles {
+    pub(crate) fn report_herdr_state(&self, state: crate::capabilities::herdr::HerdrState) {
+        self.herdr.report_background(state);
+    }
+
     /// Re-read the merged MCP server config (global settings + workspace
     /// `.mcp.json`) and swap it into the live session, so add / remove /
     /// enable / disable take effect on the next turn without a restart.
@@ -2274,7 +2304,10 @@ pub async fn build_with_options(
     let workspace = Workspace::new(workspace_host.clone());
     let effective_root = worktree.active_root();
 
-    // Resolve the workspace/global/system skill directories once (this also
+    let herdr = crate::capabilities::herdr::HerdrReporter::from_env(session_id.to_string());
+
+    // Resolve the disk-backed workspace/global/system skill directories once
+    // (this also
     // materializes the embedded system skills). Shared by the skills capability
     // config and the file-store factory's scope routing.
     let skill_dirs = crate::capabilities::skills::SkillDirs::resolve(&effective_root);
@@ -2371,7 +2404,7 @@ pub async fn build_with_options(
     //
     // Skills (upstream `ScopedSkillsCapability`, wired in `crate::capabilities::skills`):
     //   * skills               — discovers SKILL.md across workspace / global /
-    //                            system scopes via the session file store;
+    //                            environment / system scopes via the session file store;
     //                            list_skills + activate_skill + read/write_skill
     //
     // Non-filesystem, but useful for a coding agent:
@@ -2399,12 +2432,15 @@ pub async fn build_with_options(
     capabilities
         .register(crate::capabilities::edit_file_override::EditsOnlyFileSystemCapability::new());
     // Upstream multi-scope skills capability (everruns-core 0.12.0+),
-    // configured with yolop's workspace/global/system scopes and a host-path
+    // configured with yolop's workspace/global/environment/system scopes and a host-path
     // resolver so `${SKILL_DIR}` reaches real files. The file store maps the
     // scope VFS roots onto disk (see `capabilities::skills`).
     capabilities.register(ScopedSkillsCapability::new(
-        crate::capabilities::skills::skills_config(&skill_dirs),
+        crate::capabilities::skills::skills_config(&skill_dirs, herdr.is_active()),
     ));
+    // Herdr contributes a conditional, read-only skill mount. Outside a Herdr
+    // pane it has no mounts and the reporter is inert.
+    capabilities.register(HerdrCapability::new(herdr.is_active()));
     // yolop-owned skill uninstall (`delete_skill`); the upstream capability has
     // no removal. Shares the same resolved scope directories.
     capabilities.register(crate::capabilities::skills::SkillManagementCapability::new(
@@ -2668,8 +2704,10 @@ pub async fn build_with_options(
         .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
             workspace: workspace_host.clone(),
             session_dir: session_dir.clone(),
+            session_id,
             skill_global: skill_dirs.global.clone(),
             skill_system: skill_dirs.system.clone(),
+            environment_skill: HerdrCapability::skill_content(herdr.is_active()),
         }))
         .build();
 
@@ -2756,6 +2794,8 @@ pub async fn build_with_options(
         .collect();
     let capability_commands = runtime.list_commands(session_id).await?;
 
+    herdr.start_monitor(session_id, event_bus_typed.subscribe());
+
     Ok(BuiltRuntime {
         handles: RuntimeHandles {
             runtime: Arc::new(runtime),
@@ -2764,6 +2804,7 @@ pub async fn build_with_options(
             session_store,
             workspace_root: canonical_root.clone(),
             connections,
+            herdr,
         },
         startup: StartupInfo {
             workspace_root: effective_root,
@@ -5007,7 +5048,7 @@ mod tests {
             )
             .expect("store"),
         );
-        let cap = ScopedSkillsCapability::new(skills_config(&dirs));
+        let cap = ScopedSkillsCapability::new(skills_config(&dirs, false));
         let tools = cap.tools();
         let list = tools
             .iter()
@@ -5035,6 +5076,66 @@ mod tests {
             }
             other => panic!("expected success, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn herdr_skill_is_visible_from_the_ephemeral_environment_scope() {
+        use crate::capabilities::herdr::HerdrCapability;
+        use crate::capabilities::skills::ENVIRONMENT_SKILLS_VFS;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let session_id = SessionId::from_seed(81);
+        let host = Arc::new(
+            WorkspaceHost::new(
+                Arc::new(RwLock::new(workspace.path().to_path_buf())),
+                workspace.path().to_path_buf(),
+            )
+            .expect("host"),
+        );
+        let factory = CodingCliSessionFileSystemFactory {
+            workspace: host,
+            session_dir: session.path().to_path_buf(),
+            session_id,
+            skill_global: None,
+            skill_system: None,
+            environment_skill: HerdrCapability::skill_content(true),
+        };
+
+        let store = factory
+            .create_session_file_system(SessionFileSystemFactoryContext::default())
+            .await
+            .expect("session file system");
+        let entries = store
+            .list_directory(session_id, ENVIRONMENT_SKILLS_VFS)
+            .await
+            .expect("list environment skills");
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.is_directory && entry.name == "herdr")
+        );
+        let skill = store
+            .read_file(
+                session_id,
+                &format!("{ENVIRONMENT_SKILLS_VFS}/herdr/SKILL.md"),
+            )
+            .await
+            .expect("read environment skill")
+            .expect("Herdr skill exists");
+        assert!(skill.content.as_deref().unwrap().contains("name: herdr"));
+        assert!(
+            store
+                .write_file(
+                    session_id,
+                    &format!("{ENVIRONMENT_SKILLS_VFS}/herdr/SKILL.md"),
+                    "changed",
+                    "text",
+                )
+                .await
+                .is_err(),
+            "environment skill must remain read-only"
+        );
     }
 
     #[cfg(unix)]

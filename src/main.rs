@@ -1162,7 +1162,11 @@ async fn run_print_mode(
             )
             .await?;
         if evaluation.success {
-            let _ = user_ask::parse_evaluation_response(&evaluation.message);
+            if let Ok(parsed) = user_ask::parse_evaluation_response(&evaluation.message)
+                && parsed.outcome == user_ask::AskOutcome::Blocked
+            {
+                handles.report_herdr_state(capabilities::herdr::HerdrState::Blocked);
+            }
         } else {
             eprintln!("user ask evaluation failed: {}", evaluation.message);
         }

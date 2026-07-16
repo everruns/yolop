@@ -12,16 +12,18 @@ That capability owns discovery, precedence, the skills tools (`list_skills`,
 substitution — all driven strictly through the session `SessionFileSystem`. yolop
 supplies only the embedder-specific glue (`crate::capabilities::skills`):
 
-1. **The scope set and writability** — workspace, global, system (below), passed
-   as `SkillScope`s with labeled **VFS roots** (never host paths).
+1. **The scope set and writability** — workspace, global, environment, and
+   system (below), passed as `SkillScope`s with labeled **VFS roots** (never
+   host paths).
 2. **A host-path `SkillDirResolver`** — so `${SKILL_DIR}` and the displayed paths
    expand to real on-disk paths the host `bash` tool can read. (The core default
    keeps them in the VFS, which is correct only when the shell shares that
    namespace; yolop's `bash` runs on the host.)
 3. **Bundled system skills** — pre-packed in the binary and materialized once.
 4. **File-store routing** — `CodingCliSessionFileStore` maps each scope's VFS root
-   onto the real directory below, so the capability reaches global/system skills
-   through the VFS without ever being handed a host path.
+   onto the real directory or ephemeral store below, so the capability reaches
+   global/environment/system skills through the VFS without ever being handed a
+   host path.
 
 This spec owns the scope set and the yolop wiring; the capability contract and
 `SKILL.md` format are owned upstream (see `everruns` `specs/skills-registry.md`).
@@ -44,7 +46,11 @@ a labeled VFS root that yolop's file store maps to a **real on-disk directory**:
    `~/.config/yolop/skills/` on Linux; VFS `/.yolop/global-skills`), installed
    once per user and shared across every workspace. Writable. Overridable with
    `YOLOP_GLOBAL_SKILLS_DIR`.
-3. **System** — pre-packed inside the yolop binary and materialized once to
+3. **Environment** — optional, integration-owned skills mounted into the
+   session-only VFS (VFS `/.yolop/environment-skills`). Always read-only and
+   never materialized on disk. Herdr currently contributes this scope when its
+   inherited environment contract is valid.
+4. **System** — pre-packed inside the yolop binary and materialized once to
    `<data_dir>/yolop/system-skills/<name>/` (VFS `/.yolop/system-skills`). Always
    available, **read-only**. Overridable with `YOLOP_SYSTEM_SKILLS_DIR` (used
    verbatim, no materialization).
@@ -52,14 +58,15 @@ a labeled VFS root that yolop's file store maps to a **real on-disk directory**:
 ## Required Behavior
 
 1. **Merge.** `list_skills` and the system-prompt listing see skills from all
-   three scopes as one set; each entry is tagged with its scope.
+   active scopes as one set; each entry is tagged with its scope.
 2. **Precedence.** When the same skill directory name exists in more than one
-   scope, the most specific wins: workspace shadows global shadows system.
+   scope, the most specific wins: workspace shadows global, which shadows
+   environment, which shadows system.
    Discovery de-duplicates by directory name in that order; `activate_skill`
    resolves the same way.
-3. **Real paths.** Because every scope is a real directory, `${SKILL_DIR}` in an
-   activated skill expands to a path the host `bash` tool can read, so bundled
-   files work for all scopes.
+3. **Usable paths.** Disk-backed scopes expand `${SKILL_DIR}` to paths the host
+   `bash` tool can read, so bundled files work. Environment skills remain
+   VFS-only and must not advertise shell-side assets.
 4. **No command execution on activation.** The `!`cmd`` substitution is never
    expanded — activating a skill must not spawn a shell on the host (mirrors the
    upstream trust gate; see `everruns-core` skills / EVE-388).
@@ -97,6 +104,11 @@ a labeled VFS root that yolop's file store maps to a **real on-disk directory**:
     keyboard shortcuts, CLI flags, and session controls. `/help` in the TUI
     summarizes the live command registry and shortcuts; the skill carries the
     full guide for conversational help.
+13. **Environment skills are ephemeral.** An environment integration may mount
+    a read-only, VFS-only skill scope for the current session. Herdr does this
+    only when its inherited pane/socket contract is present. Precedence is
+    workspace, global, environment, then system; the mount never writes any
+    skill directory.
 
 ## Ownership Boundary
 

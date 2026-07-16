@@ -148,11 +148,16 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   system (`disclosed_titles`, `recall_limit`, `soft_cap`). See
   [`specs/memory.md`](./specs/memory.md).
 - **Skills** — `SKILL.md` files discovered from workspace
-  (`.agents/skills/`), global (`<config_dir>/yolop/skills/`), and system
-  (bundled) scopes, exposed via `list_skills`, `read_skill`, `write_skill`,
-  and `activate_skill`. Workspace/global skills installed after startup are
+  (`.agents/skills/`), global (`<config_dir>/yolop/skills/`), ephemeral
+  environment integrations, and system (bundled) scopes, exposed via
+  `list_skills`, `read_skill`, `write_skill`, and `activate_skill`.
+  Workspace/global skills installed after startup are
   available immediately; the bundled `skill-management` skill covers search,
   npx-style imports, and upgrades. See [`specs/skills.md`](./specs/skills.md).
+- **Herdr-aware sessions** — when launched in a Herdr pane, Yolop reports
+  `working`, `idle`, and explicit `blocked` lifecycle states and exposes
+  read-only Herdr operating guidance without installing a global skill. See
+  [`specs/herdr.md`](./specs/herdr.md).
 - **Infinity context** — older history is trimmed out of the live prompt but
   stays queryable via `query_history`, so long sessions don't hit the wall.
 - **Tool search** — provider-agnostic deferred tool loading: core file/shell
