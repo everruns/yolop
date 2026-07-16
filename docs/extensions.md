@@ -34,9 +34,9 @@ config dir — so a repository never carries agent-specific machinery:
 - Override for testing: `YOLOP_EXTENSIONS_DIR`
 
 **1. Install** — put the package in that directory. You can also ask yolop to
-do it: it has `install_extension` / `list_extensions` / `enable_extension`
-tools, so "install and enable the extension at `<path>`" works
-conversationally.
+do it: it has `install_extension` / `list_extensions` / `enable_extension` /
+`doctor_extension` tools, so "install and enable the extension at `<path>`"
+works conversationally.
 
 **2. Enable** — installing does not activate. Turn an extension on by adding it
 to your harness in `~/.config/yolop/settings.toml`:
@@ -149,7 +149,9 @@ at [`schema/yep/v1/meta.json`](../schema/yep/v1/meta.json) for authors writing
 servers in other languages — YEP is just newline-delimited JSON-RPC over stdio,
 so any language works (see [`specs/extensions.md`](../specs/extensions.md)).
 
-> **Status.** The mechanism is implemented through hooks and the `yolop-yep`
-> SDK, [published on crates.io](https://crates.io/crates/yolop-yep). Not yet
-> shipped: a one-command `crates.io` extension install, a payload JSON Schema,
-> and an `/extensions doctor` conformance check — see the spec's follow-ups.
+> **Status.** The mechanism is implemented through hooks, the `yolop-yep`
+> SDK ([published on crates.io](https://crates.io/crates/yolop-yep)), and a
+> `doctor_extension` conformance check — spawn an installed extension's
+> server, handshake it, and grade its tools/prompt against the manifest
+> (`"doctor the echo extension"`). Not yet shipped: a one-command `crates.io`
+> extension install and a payload JSON Schema — see the spec's follow-ups.

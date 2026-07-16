@@ -18,14 +18,20 @@ pub const EXTENSIONS_CAPABILITY_ID: &str = "extensions";
 
 pub struct ExtensionsCapability {
     extensions_dir: PathBuf,
+    workspace_root: PathBuf,
     settings: Arc<SettingsStore>,
     git: Arc<dyn GitRunner>,
 }
 
 impl ExtensionsCapability {
-    pub fn new(extensions_dir: PathBuf, settings: Arc<SettingsStore>) -> Self {
+    pub fn new(
+        extensions_dir: PathBuf,
+        workspace_root: PathBuf,
+        settings: Arc<SettingsStore>,
+    ) -> Self {
         Self {
             extensions_dir,
+            workspace_root,
             settings,
             git: Arc::new(SystemGit),
         }
@@ -64,6 +70,7 @@ impl Capability for ExtensionsCapability {
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         let ctx = Arc::new(ManageCtx {
             extensions_dir: self.extensions_dir.clone(),
+            workspace_root: self.workspace_root.clone(),
             settings: self.settings.clone(),
             git: self.git.clone(),
         });
@@ -72,13 +79,15 @@ impl Capability for ExtensionsCapability {
             Box::new(ManageTool::new(ctx.clone(), Verb::Install)),
             Box::new(ManageTool::new(ctx.clone(), Verb::Remove)),
             Box::new(ManageTool::new(ctx.clone(), Verb::Enable)),
-            Box::new(ManageTool::new(ctx, Verb::Disable)),
+            Box::new(ManageTool::new(ctx.clone(), Verb::Disable)),
+            Box::new(ManageTool::new(ctx, Verb::Doctor)),
         ]
     }
 }
 
 struct ManageCtx {
     extensions_dir: PathBuf,
+    workspace_root: PathBuf,
     settings: Arc<SettingsStore>,
     git: Arc<dyn GitRunner>,
 }
@@ -90,6 +99,7 @@ enum Verb {
     Remove,
     Enable,
     Disable,
+    Doctor,
 }
 
 struct ManageTool {
@@ -198,6 +208,31 @@ impl ManageTool {
             Err(err) => ToolExecutionResult::ToolError(format!("config write failed: {err}")),
         }
     }
+
+    async fn doctor(&self, args: &Value) -> ToolExecutionResult {
+        let Some(name) = args.get("name").and_then(Value::as_str) else {
+            return ToolExecutionResult::ToolError("`name` is required".into());
+        };
+        let Some(pkg) = discover_extensions(&self.ctx.extensions_dir)
+            .into_iter()
+            .find(|pkg| pkg.manifest.name == name)
+        else {
+            return ToolExecutionResult::ToolError(format!(
+                "no extension named `{name}` is installed"
+            ));
+        };
+        // Bounded probe: spawn the server, handshake, check, shut down.
+        let report = super::doctor::doctor(
+            &pkg.manifest,
+            &pkg.dir,
+            &self.ctx.workspace_root,
+            std::time::Duration::from_secs(20),
+        )
+        .await;
+        ToolExecutionResult::Success(
+            json!({ "name": name, "ok": report.ok, "checks": report.checks }),
+        )
+    }
 }
 
 #[async_trait]
@@ -209,6 +244,7 @@ impl Tool for ManageTool {
             Verb::Remove => "remove_extension",
             Verb::Enable => "enable_extension",
             Verb::Disable => "disable_extension",
+            Verb::Doctor => "doctor_extension",
         }
     }
 
@@ -225,6 +261,12 @@ impl Tool for ManageTool {
             }
             Verb::Disable => {
                 "Disable an extension without uninstalling it. Effective next session."
+            }
+            Verb::Doctor => {
+                "Conformance-check an installed extension: spawn its server, run the \
+                 protocol handshake, and verify its tools/prompt against the manifest. \
+                 Returns per-check pass/warn/fail. Use to diagnose why an extension \
+                 isn't working."
             }
         }
     }
@@ -257,6 +299,7 @@ impl Tool for ManageTool {
             Verb::Remove => self.remove(&arguments),
             Verb::Enable => self.toggle(&arguments, true),
             Verb::Disable => self.toggle(&arguments, false),
+            Verb::Doctor => self.doctor(&arguments).await,
         }
     }
 }
@@ -286,6 +329,7 @@ mod tests {
         let settings = Arc::new(SettingsStore::open(tmp.join("settings.toml")));
         let cap = ExtensionsCapability {
             extensions_dir: ext_dir.clone(),
+            workspace_root: tmp.to_path_buf(),
             settings: settings.clone(),
             git: Arc::new(crate::extensions::store::SystemGit),
         };
