@@ -60,10 +60,31 @@ fn schema_document() -> Value {
 }
 
 /// The canonical pretty-printed `schema/yep/v1/schema.json`, trailing newline.
+///
+/// Object keys are sorted recursively so the output is byte-identical whether
+/// `serde_json` is built with `preserve_order` (insertion order, as it is under
+/// the full workspace) or without it (sorted) — otherwise the committed file
+/// and the drift-test regeneration would disagree across build configurations.
 pub fn schema_json() -> String {
-    let mut json = serde_json::to_string_pretty(&schema_document()).expect("schema serializes");
+    let mut json =
+        serde_json::to_string_pretty(&sort_keys(schema_document())).expect("schema serializes");
     json.push('\n');
     json
+}
+
+/// Recursively sort every object's keys, so serialization order does not depend
+/// on `serde_json`'s map backend.
+fn sort_keys(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(String, Value)> =
+                map.into_iter().map(|(k, v)| (k, sort_keys(v))).collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sort_keys).collect()),
+        other => other,
+    }
 }
 
 #[cfg(test)]
