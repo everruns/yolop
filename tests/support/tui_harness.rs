@@ -16,6 +16,8 @@ pub struct TuiHarness {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     output_rx: Receiver<Vec<u8>>,
     output: Vec<u8>,
+    rows: u16,
+    cols: u16,
     answer_cursor_queries: Arc<AtomicBool>,
     _session_dir: tempfile::TempDir,
     _home: tempfile::TempDir,
@@ -82,6 +84,8 @@ impl TuiHarness {
                 pixel_height: 0,
             })
             .expect("resize pty");
+        self.cols = cols;
+        self.rows = rows;
     }
 
     pub fn wait_for_output(&mut self, needle: &str, timeout: Duration) -> bool {
@@ -112,6 +116,21 @@ impl TuiHarness {
     pub fn output_text(&mut self) -> String {
         self.drain_output();
         String::from_utf8_lossy(&self.output).into_owned()
+    }
+
+    /// Reconstruct the visible terminal grid after applying all captured ANSI
+    /// control sequences. Use `clear_output` immediately before the action
+    /// under test when that action follows a PTY resize.
+    pub fn screen_lines(&mut self) -> Vec<String> {
+        self.drain_output();
+        let mut parser = vt100::Parser::new(self.rows, self.cols, 0);
+        parser.process(&self.output);
+        parser
+            .screen()
+            .contents()
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect()
     }
 
     pub fn clear_output(&mut self) {
@@ -147,6 +166,8 @@ pub fn spawn_tui_llmsim_with_settings(
     options: TuiSpawnOptions,
     settings_toml: &str,
 ) -> TuiHarness {
+    let rows = options.rows;
+    let cols = options.cols;
     let session_dir = tempfile::tempdir().expect("session tempdir");
     let home = tempfile::tempdir().expect("home tempdir");
     for settings_dir in [
@@ -264,6 +285,8 @@ pub fn spawn_tui_llmsim_with_settings(
         writer,
         output_rx,
         output: Vec::new(),
+        rows,
+        cols,
         answer_cursor_queries,
         _session_dir: session_dir,
         _home: home,

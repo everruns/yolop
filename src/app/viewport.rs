@@ -41,8 +41,16 @@ where
         return Ok(());
     }
 
-    // Recompute the inline origin from a bottom-row cursor. Blank scrollback
-    // lines would leave a visible gap above the composer.
+    // Ratatui preserves `last_known_cursor_pos`'s offset within the old
+    // viewport when resizing. Normalize that offset to the viewport's last
+    // row, then move only the backend cursor to the terminal bottom. This
+    // makes the new viewport end exactly at the bottom regardless of whether
+    // the input or an overlay placed the visible cursor near the top.
+    let viewport_last_row = viewport_area.bottom().saturating_sub(1);
+    terminal.set_cursor_position(Position {
+        x: 0,
+        y: viewport_last_row,
+    })?;
     let bottom_row = terminal_size.height.saturating_sub(1);
     terminal.backend_mut().set_cursor_position(Position {
         x: 0,
@@ -228,5 +236,65 @@ mod tests {
 
         maybe_reanchor_inline_viewport(&mut terminal).expect("re-anchor after shrink");
         assert_eq!(viewport_bottom(&mut terminal), 24);
+    }
+
+    #[test]
+    fn reanchor_after_combined_resize_moves_viewport_to_new_bottom() {
+        let mut backend = TestBackend::new(100, 24);
+        backend
+            .set_cursor_position(Position { x: 0, y: 1 })
+            .unwrap();
+        let mut terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(18),
+            },
+        )
+        .unwrap();
+
+        maybe_reanchor_inline_viewport(&mut terminal).expect("initial anchor");
+        terminal.backend_mut().resize(60, 40);
+        terminal.autoresize().expect("autoresize width and height");
+        maybe_reanchor_inline_viewport(&mut terminal).expect("re-anchor combined resize");
+
+        let viewport = terminal.get_frame().area();
+        assert_eq!(viewport.width, 60);
+        assert_eq!(viewport_bottom(&mut terminal), 40);
+    }
+
+    #[test]
+    fn reanchor_after_grow_ignores_overlay_cursor_row() {
+        let mut backend = TestBackend::new(80, 24);
+        backend
+            .set_cursor_position(Position { x: 0, y: 1 })
+            .unwrap();
+        let mut terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(18),
+            },
+        )
+        .unwrap();
+
+        maybe_reanchor_inline_viewport(&mut terminal).expect("initial anchor");
+        let viewport_top = terminal.get_frame().area().y;
+        terminal
+            .draw(|frame| {
+                frame.set_cursor_position(Position {
+                    x: 4,
+                    y: viewport_top.saturating_add(3),
+                });
+            })
+            .expect("draw overlay-style cursor");
+
+        terminal.backend_mut().resize(100, 40);
+        terminal.autoresize().expect("autoresize grow");
+        maybe_reanchor_inline_viewport(&mut terminal).expect("re-anchor after grow");
+
+        assert_eq!(
+            viewport_bottom(&mut terminal),
+            40,
+            "an overlay cursor near the top must not push the inline viewport past the screen"
+        );
     }
 }

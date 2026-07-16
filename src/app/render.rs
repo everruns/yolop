@@ -33,6 +33,18 @@ impl StreamKind {
 
 pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
+    // Inline viewports cannot place a true full-screen modal above terminal
+    // scrollback. Treat overlays as sheets that own this complete viewport so
+    // the composer and status chrome never bleed through around their edges.
+    if app.setup.is_some() {
+        draw_setup_overlay(f, area, app);
+        return;
+    }
+    if app.background_panel.is_some() {
+        draw_background_panel(f, area, app);
+        return;
+    }
+
     // Match `draw_input`: the `> ` prompt consumes two columns.
     let input_width = area.width.saturating_sub(2);
     let desired_input_height = app.input_height(input_width);
@@ -50,8 +62,6 @@ pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
     draw_recent_transcript(f, layout.transcript, app);
     draw_chrome_layout(f, layout.chrome, &state);
     draw_input(f, layout.chrome.input, app);
-    draw_setup_overlay(f, area, app);
-    draw_background_panel(f, area, app);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -358,6 +368,7 @@ pub(crate) fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
     if panel.width == 0 || panel.height == 0 {
         return;
     }
+    f.render_widget(Clear, area);
     f.render_widget(Clear, panel);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -403,6 +414,7 @@ pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &Ap
     if panel.width == 0 || panel.height == 0 {
         return;
     }
+    f.render_widget(Clear, area);
     f.render_widget(Clear, panel);
     let block = Block::default()
         .borders(Borders::ALL)
