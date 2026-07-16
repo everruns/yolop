@@ -173,14 +173,23 @@ Because a published crate ships source, the manifest's
 `capabilityServer.command` should name a binary the user already has on `PATH`
 (or one shipped in the package's `bin/`); yolop does **not** compile the crate.
 
-The protocol vocabulary is published as a language-neutral index at
-[`schema/yep/v1/meta.json`](../schema/yep/v1/meta.json) for authors writing
-servers in other languages — YEP is just newline-delimited JSON-RPC over stdio,
-so any language works (see [`specs/extensions.md`](../specs/extensions.md)).
+**Writing a server in another language.** YEP is just newline-delimited
+JSON-RPC over stdio, so any language works. Two language-neutral artifacts
+describe the wire surface:
+
+- [`schema/yep/v1/meta.json`](../schema/yep/v1/meta.json) — the *vocabulary*:
+  every method name (with direction) and capability token.
+- [`schema/yep/v1/schema.json`](../schema/yep/v1/schema.json) — the *payloads*:
+  a Draft 2020-12 JSON Schema for each request/result, keyed by method under
+  `messages`, with full type definitions in `$defs`. Validate what you send and
+  receive against it.
+
+Both are generated from the `yolop-yep` types (`cargo run -p yolop-yep
+--features schema --bin schema-gen`) and CI fails if they drift.
 
 > **Status.** The mechanism is implemented through hooks, the `yolop-yep`
 > SDK ([published on crates.io](https://crates.io/crates/yolop-yep)), a
-> `doctor_extension` conformance check, and toolchain-free **crates.io
-> installs** (`install_extension source="crates.io:yolop-extension-<name>"`).
-> Not yet shipped: a payload JSON Schema for the RPC types — see the spec's
-> follow-ups.
+> `doctor_extension` conformance check, toolchain-free **crates.io installs**
+> (`install_extension source="crates.io:yolop-extension-<name>"`), and
+> language-neutral **`meta.json` + `schema.json`** wire artifacts. Remaining
+> follow-ups are listed in [`specs/extensions.md`](../specs/extensions.md).

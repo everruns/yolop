@@ -1,0 +1,249 @@
+{
+  "$defs": {
+    "CapabilityParams": {
+      "properties": {
+        "prompt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromptParams"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tools": {
+          "description": "Tool names the server actually serves this run. The definitions\n(description/schema/policy) live in the package manifest; the\nhandshake may only narrow that set (see D4 manifest clamp).",
+          "items": {
+            "$ref": "#/$defs/ServedTool"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ErrorObject": {
+      "description": "JSON-RPC-shaped error object. Everything beyond `message` is optional and\ndefaulted, so a peer that sends bare `{ \"message\": … }` still parses.",
+      "properties": {
+        "code": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
+        "data": true,
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "HookDecision": {
+      "description": "Server → host `hook/fire` result. Lenient/defaulted: a bare `{}` means\n\"allow, unchanged\".",
+      "properties": {
+        "block": {
+          "default": false,
+          "description": "`true` blocks the tool call (pre_tool_use only).",
+          "type": "boolean"
+        },
+        "reason": {
+          "default": "",
+          "description": "Message shown to the model/audit log when blocking.",
+          "type": "string"
+        },
+        "user_message": {
+          "default": null,
+          "description": "Optional user-facing message when blocking.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "HookFireParams": {
+      "description": "Host → server `hook/fire` params: a subscribed lifecycle event fired for\none tool call (any tool, not just the extension's own). Owned + bidirectional\nso the server SDK parses what the host serializes.",
+      "properties": {
+        "args": {
+          "default": null
+        },
+        "event": {
+          "default": "",
+          "description": "`pre_tool_use` or `post_tool_use`.",
+          "type": "string"
+        },
+        "tool_name": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "InitializeParams": {
+      "description": "Host → server `initialize` params. Bidirectional so the server SDK can\nparse what the host serializes.",
+      "properties": {
+        "capabilities": {
+          "default": [],
+          "description": "Host feature tokens the server may rely on (`streaming`, `cancel`, …).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "config": {
+          "default": null
+        },
+        "protocol_version": {
+          "default": "",
+          "type": "string"
+        },
+        "session_id": {
+          "default": "",
+          "type": "string"
+        },
+        "workspace_root": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "InitializeResult": {
+      "description": "Server → host `initialize` result. Lenient: unknown fields ignored,\nmissing fields defaulted, per the forward-compat rules.",
+      "properties": {
+        "capabilities": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "capability_params": {
+          "$ref": "#/$defs/CapabilityParams"
+        },
+        "name": {
+          "default": "",
+          "type": "string"
+        },
+        "protocol_version": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "PromptContribution": {
+      "description": "Server → host `prompt/contribution` result: a dynamic system-prompt\ncontribution recomputed per turn (only when the manifest declares\n`dynamic_prompt`).",
+      "properties": {
+        "text": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "PromptParams": {
+      "properties": {
+        "static": {
+          "default": "",
+          "description": "Static system-prompt contribution.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ServedTool": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "ToolCallParams": {
+      "properties": {
+        "args": {
+          "default": null
+        },
+        "name": {
+          "default": "",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ToolUpdateParams": {
+      "description": "Payload of a `tool/update` notification, correlated to its in-flight\n`tool/call` by `request_id` (a notification cannot carry the envelope\n`id` — that field would classify the line as a response).",
+      "properties": {
+        "output": {
+          "default": "",
+          "type": "string"
+        },
+        "request_id": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "capability_params": {
+    "$ref": "#/$defs/CapabilityParams"
+  },
+  "description": "JSON Schema for yolop extension protocol (YEP) request and result payloads. Companion to meta.json.",
+  "error": {
+    "$ref": "#/$defs/ErrorObject"
+  },
+  "messages": {
+    "hook/fire": {
+      "params": {
+        "$ref": "#/$defs/HookFireParams"
+      },
+      "result": {
+        "$ref": "#/$defs/HookDecision"
+      }
+    },
+    "initialize": {
+      "params": {
+        "$ref": "#/$defs/InitializeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InitializeResult"
+      }
+    },
+    "prompt/contribution": {
+      "result": {
+        "$ref": "#/$defs/PromptContribution"
+      }
+    },
+    "tool/call": {
+      "params": {
+        "$ref": "#/$defs/ToolCallParams"
+      }
+    },
+    "tool/update": {
+      "params": {
+        "$ref": "#/$defs/ToolUpdateParams"
+      }
+    }
+  },
+  "protocol_version": "1.0",
+  "title": "YEP payload schemas"
+}

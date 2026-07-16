@@ -27,8 +27,12 @@
 
 pub mod meta;
 pub mod protocol;
+#[cfg(feature = "schema")]
+pub mod schema;
 mod server;
 
 pub use meta::{Meta, meta, meta_json};
 pub use protocol::PROTOCOL_VERSION;
+#[cfg(feature = "schema")]
+pub use schema::schema_json;
 pub use server::{HookResponse, Server, ToolResponse};

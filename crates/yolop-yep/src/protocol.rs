@@ -104,6 +104,7 @@ pub fn response_error_line(id: u64, error: &ErrorObject) -> String {
 /// JSON-RPC-shaped error object. Everything beyond `message` is optional and
 /// defaulted, so a peer that sends bare `{ "message": … }` still parses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ErrorObject {
     #[serde(default)]
     pub code: i64,
@@ -140,6 +141,7 @@ impl ErrorObject {
 /// Host → server `initialize` params. Bidirectional so the server SDK can
 /// parse what the host serializes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct InitializeParams {
     #[serde(default)]
     pub protocol_version: String,
@@ -157,6 +159,7 @@ pub struct InitializeParams {
 /// Server → host `initialize` result. Lenient: unknown fields ignored,
 /// missing fields defaulted, per the forward-compat rules.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct InitializeResult {
     #[serde(default)]
     pub protocol_version: String,
@@ -169,6 +172,7 @@ pub struct InitializeResult {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CapabilityParams {
     #[serde(default)]
     pub prompt: Option<PromptParams>,
@@ -180,6 +184,7 @@ pub struct CapabilityParams {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PromptParams {
     /// Static system-prompt contribution.
     #[serde(default, rename = "static")]
@@ -187,6 +192,7 @@ pub struct PromptParams {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ServedTool {
     pub name: String,
 }
@@ -195,6 +201,7 @@ pub struct ServedTool {
 // tool/call
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ToolCallParams {
     #[serde(default)]
     pub tool_call_id: String,
@@ -208,6 +215,7 @@ pub struct ToolCallParams {
 /// `tool/call` by `request_id` (a notification cannot carry the envelope
 /// `id` — that field would classify the line as a response).
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ToolUpdateParams {
     #[serde(default)]
     pub request_id: u64,
@@ -222,6 +230,7 @@ pub struct ToolUpdateParams {
 /// one tool call (any tool, not just the extension's own). Owned + bidirectional
 /// so the server SDK parses what the host serializes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HookFireParams {
     /// `pre_tool_use` or `post_tool_use`.
     #[serde(default)]
@@ -235,6 +244,7 @@ pub struct HookFireParams {
 /// Server → host `hook/fire` result. Lenient/defaulted: a bare `{}` means
 /// "allow, unchanged".
 #[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HookDecision {
     /// `true` blocks the tool call (pre_tool_use only).
     #[serde(default)]
@@ -254,6 +264,7 @@ pub struct HookDecision {
 /// contribution recomputed per turn (only when the manifest declares
 /// `dynamic_prompt`).
 #[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PromptContribution {
     #[serde(default)]
     pub text: String,
