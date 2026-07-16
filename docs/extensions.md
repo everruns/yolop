@@ -33,10 +33,20 @@ config dir — so a repository never carries agent-specific machinery:
 - macOS: `~/Library/Application Support/yolop/extensions/<name>/`
 - Override for testing: `YOLOP_EXTENSIONS_DIR`
 
-**1. Install** — put the package in that directory. You can also ask yolop to
-do it: it has `install_extension` / `list_extensions` / `enable_extension` /
-`doctor_extension` tools, so "install and enable the extension at `<path>`"
-works conversationally.
+**1. Install** — the fastest way is from **crates.io**, toolchain-free (no
+cargo or rustc needed — yolop fetches and unpacks the `.crate` itself):
+
+```
+install_extension source="crates.io:yolop-extension-lsp"     # or a bare "lsp"
+install_extension source="crates.io:yolop-extension-lsp@0.2.0"  # pin a version
+```
+
+You can also install from a **git URL** (`https://…[@rev]`) or a **local
+path**, or just drop the package directory in place by hand. yolop has
+`install_extension` / `list_extensions` / `enable_extension` /
+`doctor_extension` tools, so "install and enable `yolop-extension-lsp`" works
+conversationally. Installs are pinned in `extensions.lock` (source + resolved
+version + content hash) so a later reinstall can flag a changed grant.
 
 **2. Enable** — installing does not activate. Turn an extension on by adding it
 to your harness in `~/.config/yolop/settings.toml`:
@@ -144,14 +154,33 @@ extension can do.
 ### Naming & distribution
 
 Name a crate `yolop-extension-<name>` so it's discoverable on crates.io under a
-common prefix. The protocol vocabulary is published as a language-neutral index
-at [`schema/yep/v1/meta.json`](../schema/yep/v1/meta.json) for authors writing
+common prefix — and so the bare-name install shorthand (`install_extension
+source="lsp"` → `yolop-extension-lsp`) resolves it.
+
+**Publishing to crates.io.** Include `plugin.json` in the published package so
+yolop can read it straight from the `.crate` tarball — no build step:
+
+```toml
+# Cargo.toml
+include = ["src/**", "plugin.json", "README.md"]
+```
+
+`cargo publish`, and users install with `install_extension
+source="crates.io:yolop-extension-<name>"`. yolop resolves the version through
+the crates.io **sparse index**, downloads the tarball from the CDN, verifies
+its SHA-256 against the index, and unpacks it — all without cargo or rustc.
+Because a published crate ships source, the manifest's
+`capabilityServer.command` should name a binary the user already has on `PATH`
+(or one shipped in the package's `bin/`); yolop does **not** compile the crate.
+
+The protocol vocabulary is published as a language-neutral index at
+[`schema/yep/v1/meta.json`](../schema/yep/v1/meta.json) for authors writing
 servers in other languages — YEP is just newline-delimited JSON-RPC over stdio,
 so any language works (see [`specs/extensions.md`](../specs/extensions.md)).
 
 > **Status.** The mechanism is implemented through hooks, the `yolop-yep`
-> SDK ([published on crates.io](https://crates.io/crates/yolop-yep)), and a
-> `doctor_extension` conformance check — spawn an installed extension's
-> server, handshake it, and grade its tools/prompt against the manifest
-> (`"doctor the echo extension"`). Not yet shipped: a one-command `crates.io`
-> extension install and a payload JSON Schema — see the spec's follow-ups.
+> SDK ([published on crates.io](https://crates.io/crates/yolop-yep)), a
+> `doctor_extension` conformance check, and toolchain-free **crates.io
+> installs** (`install_extension source="crates.io:yolop-extension-<name>"`).
+> Not yet shipped: a payload JSON Schema for the RPC types — see the spec's
+> follow-ups.

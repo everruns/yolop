@@ -44,10 +44,17 @@ Later — the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in), `ui/ask` (needs the
 server→host reverse-request channel, still refused in phase 1),
 `workspace/changed`, payload `schema.json`,
-providers — remain design-of-record below. Not yet wired within phase 2 (tracked as
-follow-ups): the toolchain-free crates.io source (native sparse-index +
-tarball fetch), full JSON-Schema config validation, and `config/changed`
-restart. Phase-1 deltas from the original sketch: tool *definitions*
+providers — remain design-of-record below.
+Toolchain-free crates.io install is now wired: `install_extension
+source="crates.io:yolop-extension-<name>[@ver]"` (or the bare-`<name>`
+shorthand) resolves the version through the crates.io **sparse index**
+(`index.crates.io`), downloads the `.crate` from the static CDN, verifies its
+SHA-256 against the index `cksum`, and unpacks the gzip'd tar — no cargo/rustc.
+A published crate ships *source*, so the manifest's `capabilityServer.command`
+names a binary the user has on `PATH` (or in the package `bin/`); yolop does
+not compile it (`cargo install` remains an optional author-side path, not a
+yolop dependency). Still follow-ups: full JSON-Schema config validation and
+`config/changed` restart. Phase-1 deltas from the original sketch: tool *definitions*
 (description, schema, policy) live in the manifest, and the handshake's
 `tools` list carries only the served names it narrows to — keeping every
 contribution inspectable without executing the binary; `tool/update`
@@ -484,6 +491,11 @@ upstream; yolop adds one facet:
        a call-time tool error with guidance — same policy as git installs.
     Lock records crate, version, registry checksum, and the artifact
     digest actually installed.
+    *Implemented today:* the toolchain-free fetch (sparse-index resolve →
+    CDN download → SHA-256 verify → unpack) and **step 3** (package-only;
+    the server binary must be on `PATH` or in the package `bin/`). The
+    prebuilt-artifact and `cargo install` provisioning steps (1–2) remain
+    design-of-record.
   - `<path>` — referenced in place, not copied (dev loop).
 - **Trust**: install is consent by action (same stance as authoring
   `.mcp.json`), preceded by a printed contribution summary (server command,

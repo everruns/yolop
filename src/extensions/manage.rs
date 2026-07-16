@@ -5,7 +5,7 @@
 //! and the model can drive setup; a thin `/extensions` command mirrors them.
 
 use super::package::{discover_extensions, extension_capability_id};
-use super::store::{self, GitRunner, Source, SystemGit};
+use super::store::{self, CrateFetcher, GitRunner, Source, SystemCrateFetcher, SystemGit};
 use crate::settings::SettingsStore;
 use async_trait::async_trait;
 use everruns_core::capabilities::Capability;
@@ -21,6 +21,7 @@ pub struct ExtensionsCapability {
     workspace_root: PathBuf,
     settings: Arc<SettingsStore>,
     git: Arc<dyn GitRunner>,
+    crates: Arc<dyn CrateFetcher>,
 }
 
 impl ExtensionsCapability {
@@ -34,6 +35,7 @@ impl ExtensionsCapability {
             workspace_root,
             settings,
             git: Arc::new(SystemGit),
+            crates: Arc::new(SystemCrateFetcher::default()),
         }
     }
 }
@@ -60,7 +62,8 @@ impl Capability for ExtensionsCapability {
     fn system_prompt_addition(&self) -> Option<&str> {
         Some(
             "Extensions are installable capability packages. Use `list_extensions` to see what is \
-             installed and enabled, `install_extension` for a git URL or local path, \
+             installed and enabled, `install_extension` for a crates.io crate \
+             (`crates.io:yolop-extension-<name>`), git URL, or local path, \
              `enable_extension`/`disable_extension` to toggle one in the harness (takes effect \
              next session), and `remove_extension` to uninstall. Installing runs third-party \
              code on the user's machine — confirm the source with the user first.",
@@ -73,6 +76,7 @@ impl Capability for ExtensionsCapability {
             workspace_root: self.workspace_root.clone(),
             settings: self.settings.clone(),
             git: self.git.clone(),
+            crates: self.crates.clone(),
         });
         vec![
             Box::new(ManageTool::new(ctx.clone(), Verb::List)),
@@ -90,6 +94,7 @@ struct ManageCtx {
     workspace_root: PathBuf,
     settings: Arc<SettingsStore>,
     git: Arc<dyn GitRunner>,
+    crates: Arc<dyn CrateFetcher>,
 }
 
 #[derive(Clone, Copy)]
@@ -136,7 +141,7 @@ impl ManageTool {
         ToolExecutionResult::Success(json!({ "extensions": items }))
     }
 
-    fn install(&self, args: &Value) -> ToolExecutionResult {
+    async fn install(&self, args: &Value) -> ToolExecutionResult {
         let Some(spec) = args.get("source").and_then(Value::as_str) else {
             return ToolExecutionResult::ToolError("`source` is required".into());
         };
@@ -144,7 +149,14 @@ impl ManageTool {
             Ok(source) => source,
             Err(err) => return ToolExecutionResult::ToolError(err.to_string()),
         };
-        match store::install(&self.ctx.extensions_dir, &source, self.ctx.git.as_ref()) {
+        match store::install(
+            &self.ctx.extensions_dir,
+            &source,
+            self.ctx.git.as_ref(),
+            self.ctx.crates.as_ref(),
+        )
+        .await
+        {
             Ok(installed) => {
                 let m = &installed.manifest;
                 ToolExecutionResult::Success(json!({
@@ -252,8 +264,10 @@ impl Tool for ManageTool {
         match self.verb {
             Verb::List => "List installed extensions and whether each is enabled.",
             Verb::Install => {
-                "Install an extension from a git URL (`https://…[@rev]`) or a local path. \
-                 Runs third-party code; confirm the source with the user. Does not enable it."
+                "Install an extension from crates.io (`crates.io:yolop-extension-<name>[@ver]`, \
+                 or the bare `<name>` shorthand), a git URL (`https://…[@rev]`), or a local \
+                 path. crates.io installs are toolchain-free (no cargo/rustc). Runs third-party \
+                 code; confirm the source with the user. Does not enable it."
             }
             Verb::Remove => "Uninstall an extension by name and drop its enable override.",
             Verb::Enable => {
@@ -278,7 +292,9 @@ impl Tool for ManageTool {
                 "type": "object",
                 "properties": {
                     "source": { "type": "string",
-                        "description": "Git URL (optionally `@rev`) or a local directory path." }
+                        "description": "`crates.io:<crate>[@ver]` (or bare `<name>` → \
+                            `yolop-extension-<name>`), a git URL (optionally `@rev`), or a \
+                            local directory path." }
                 },
                 "required": ["source"]
             }),
@@ -295,7 +311,7 @@ impl Tool for ManageTool {
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
         match self.verb {
             Verb::List => self.list(),
-            Verb::Install => self.install(&arguments),
+            Verb::Install => self.install(&arguments).await,
             Verb::Remove => self.remove(&arguments),
             Verb::Enable => self.toggle(&arguments, true),
             Verb::Disable => self.toggle(&arguments, false),
@@ -332,6 +348,7 @@ mod tests {
             workspace_root: tmp.to_path_buf(),
             settings: settings.clone(),
             git: Arc::new(crate::extensions::store::SystemGit),
+            crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
         };
         (cap, settings, ext_dir)
     }
