@@ -42,6 +42,11 @@ clap = { version = "4.6", features = ["derive"] }
 crossterm = "0.29"
 dirs = "6"
 eventsource-stream = "0.2"
+# Toolchain-free crates.io extension install: fetch + unpack a `.crate`
+# (gzip'd tar) natively, no cargo/rustc. Pure-Rust backends (miniz_oxide),
+# so yolop stays a self-contained binary.
+flate2 = "1"
+tar = "0.4"
 # `.worktreeinclude` matching for copying ignored local files into worktrees.
 ignore = "0.4"
 include_dir = "0.7"
