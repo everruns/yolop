@@ -35,6 +35,7 @@ mod settings;
 mod test_env;
 mod tools;
 mod transcript;
+mod tuika;
 mod user_ask;
 mod version;
 mod workspace_host;
@@ -146,6 +147,13 @@ struct Cli {
     /// `specs/trajectory.md`.
     #[arg(long, value_name = "PATH")]
     trajectory_out: Option<PathBuf>,
+
+    /// EXPERIMENTAL: render the interactive TUI full-screen on the alternate
+    /// screen (via the `tuika` toolkit) instead of the default inline
+    /// scrollback composer. Overlays and scrolling are owned in-app; native
+    /// terminal scrollback is unavailable in this mode.
+    #[arg(long)]
+    fullscreen: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -558,7 +566,7 @@ async fn main() -> Result<()> {
         return run_print_mode(runtime, prompt, image_parts, cli.trajectory_out).await;
     }
     let pending_images = image_input::load_image_parts(&cli.images)?;
-    run_tui(runtime, pending_images, cli.trajectory_out).await
+    run_tui(runtime, pending_images, cli.trajectory_out, cli.fullscreen).await
 }
 
 fn resolve_workspace_root(
@@ -896,6 +904,7 @@ async fn run_tui(
     runtime: BuiltRuntime,
     pending_images: Vec<ContentPart>,
     trajectory_out: Option<PathBuf>,
+    fullscreen: bool,
 ) -> Result<()> {
     // Cheap Arc clones taken before `App` consumes the runtime, so the
     // trajectory can be exported after the TUI loop ends.
@@ -904,23 +913,35 @@ async fn run_tui(
     let mut raw_mode = RawModeGuard::new()?;
     let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
     let mut bracketed_paste = BracketedPasteGuard::new();
+    // In full-screen mode `tuika` owns the alternate screen + mouse capture via
+    // an RAII guard that restores them on drop. The viewport becomes the whole
+    // terminal instead of a short inline strip.
+    let alt_screen = if fullscreen {
+        Some(tuika::AltScreen::enter()?)
+    } else {
+        None
+    };
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::with_options(
-        backend,
-        TerminalOptions {
-            viewport: Viewport::Inline(COMPOSER_VIEWPORT_HEIGHT),
-        },
-    )?;
-    // Anchoring is cosmetic. Since ratatui 0.30.1 `insert_before` snapshots
-    // the cursor (via `Terminal::clear`) with a blocking `CSI 6n` query that
-    // slow emulators (ttyd / xterm.js) may not answer before crossterm's ~2s
-    // timeout. Start unanchored rather than dying.
-    if let Err(err) = maybe_reanchor_inline_viewport(&mut terminal) {
+    let viewport = if fullscreen {
+        Viewport::Fullscreen
+    } else {
+        Viewport::Inline(COMPOSER_VIEWPORT_HEIGHT)
+    };
+    let mut terminal = Terminal::with_options(backend, TerminalOptions { viewport })?;
+    // Anchoring is cosmetic and inline-only. Since ratatui 0.30.1
+    // `insert_before` snapshots the cursor (via `Terminal::clear`) with a
+    // blocking `CSI 6n` query that slow emulators (ttyd / xterm.js) may not
+    // answer before crossterm's ~2s timeout. Start unanchored rather than
+    // dying.
+    if !fullscreen && let Err(err) = maybe_reanchor_inline_viewport(&mut terminal) {
         tracing::warn!("inline viewport anchoring failed, starting unanchored: {err:#}");
     }
 
     let mut app = App::new(runtime, pending_images);
+    if fullscreen {
+        app.set_render_mode(app::RenderMode::Fullscreen);
+    }
     let result = app.run(&mut terminal).await;
     let show_resume_hint = app.should_show_resume_hint();
     let session_id = app.session_id();
@@ -938,6 +959,11 @@ async fn run_tui(
         tracing::warn!("cursor restore failed: {err:#}");
     }
     drop(terminal);
+    // Leave the alternate screen before any post-loop stdout (resume hint) so
+    // it lands on the user's normal screen, not the one about to be torn down.
+    if let Some(mut alt) = alt_screen {
+        alt.leave();
+    }
     bracketed_paste.disable();
     keyboard_enhancements.disable();
     raw_mode.disable()?;
@@ -1333,6 +1359,7 @@ mod tests {
             session: None,
             session_dir: None,
             trajectory_out: None,
+            fullscreen: false,
         }
     }
 
@@ -1389,6 +1416,7 @@ mod tests {
             session: None,
             session_dir: None,
             trajectory_out: None,
+            fullscreen: false,
         };
 
         let (provider, _notes) = pick_provider(&cli, &settings);

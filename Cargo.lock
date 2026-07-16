@@ -6706,6 +6706,7 @@ dependencies = [
  "tree-sitter-sequel",
  "tree-sitter-typescript",
  "tree-sitter-zig",
+ "unicode-width 0.2.2",
  "urlencoding",
  "vt100",
  "yolop-yep",
