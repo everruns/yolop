@@ -2463,6 +2463,7 @@ pub async fn build_with_options(
         // The always-on management surface (install/list/enable/remove).
         capabilities.register(crate::extensions::ExtensionsCapability::new(
             ext_dir,
+            effective_root.clone(),
             settings.clone(),
         ));
     }

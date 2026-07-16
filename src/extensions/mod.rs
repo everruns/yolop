@@ -3,8 +3,9 @@
 //! the protocol core + persistent process manager + generic
 //! `ExtensionCapability` adapter (phase 1); install/enable management
 //! surface + lockfile (phase 2); contributed MCP servers (phase 3);
-//! hook subscriptions + dynamic prompt over RPC (phase 4). Later: `ui/ask`,
-//! `workspace/changed`, schema-gen + SDKs, `/extensions doctor`, providers.
+//! hook subscriptions + dynamic prompt over RPC (phase 4); the
+//! `doctor_extension` conformance probe (`doctor` module). Later: `ui/ask`,
+//! `workspace/changed`, `crates.io` install, providers.
 //!
 //! Registration: discovered packages are registered in the capability
 //! registry (so they appear in the catalog and validate config) but are
@@ -14,6 +15,7 @@
 
 pub(crate) mod capability;
 pub(crate) mod client;
+pub(crate) mod doctor;
 pub(crate) mod hooks;
 pub(crate) mod manage;
 pub(crate) mod manager;

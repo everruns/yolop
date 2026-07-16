@@ -33,10 +33,17 @@ a `cargo test` drift guard fails CI if the committed file is stale, so the
 method + capability-token vocabulary can't change without the artifact
 changing. A non-Rust author reads it to discover the wire surface. (Full
 JSON-Schema of the payloads — `schema.json` — is still a follow-up.)
+Conformance: `doctor_extension` (surfaced as `/extensions doctor`) spawns an
+installed extension's server, runs the `initialize` handshake, and grades it
+against the manifest — protocol-version compatibility, the D4 tool clamp
+(a widened tool is a hard fail; an unserved manifest tool a warning), and
+prompt-facet consistency — returning per-check pass/warn/fail. It is the
+runtime dual of the CI schema/drift guards: authors validate a server before
+shipping without booting a whole session.
 Later — the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in), `ui/ask` (needs the
 server→host reverse-request channel, still refused in phase 1),
-`workspace/changed`, payload `schema.json`, `/extensions doctor`,
+`workspace/changed`, payload `schema.json`,
 providers — remain design-of-record below. Not yet wired within phase 2 (tracked as
 follow-ups): the toolchain-free crates.io source (native sparse-index +
 tarball fetch), full JSON-Schema config validation, and `config/changed`
