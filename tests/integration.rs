@@ -1519,7 +1519,7 @@ fn acp_openai_handshake_smoke() {
         return;
     };
     let result = run_acp_handshake("openai", "Reply with exactly the single word: pong");
-    if looks_openai_quota_exhausted(&format!("{}{}", result.prompt, result.assistant_text)) {
+    if looks_provider_quota_exhausted(&format!("{}{}", result.prompt, result.assistant_text)) {
         eprintln!("skipping live test: OpenAI quota exhausted");
         return;
     }
@@ -1590,7 +1590,7 @@ fn openai_print_smoke() {
         .expect("spawn yolop --provider openai");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() && looks_openai_quota_exhausted(&format!("{stdout}{stderr}")) {
+    if !output.status.success() && looks_provider_quota_exhausted(&format!("{stdout}{stderr}")) {
         eprintln!("skipping live test: OpenAI quota exhausted");
         return;
     }
@@ -1614,12 +1614,26 @@ fn live_openrouter_model() -> String {
         .unwrap_or_else(|_| "nvidia/nemotron-3-ultra-550b-a55b".to_string())
 }
 
-/// True when OpenAI rejects a live smoke only because the shared credential has
-/// exhausted quota. The presence check above still fails CI when the key is
+/// True when a provider rejects a live smoke only because the shared credential
+/// has exhausted quota. The presence check above still fails CI when the key is
 /// missing; this only prevents account billing state from masking code health.
-fn looks_openai_quota_exhausted(combined: &str) -> bool {
+fn looks_provider_quota_exhausted(combined: &str) -> bool {
     let lower = combined.to_lowercase();
-    lower.contains("insufficient_quota") || lower.contains("exceeded your current quota")
+    lower.contains("insufficient_quota")
+        || lower.contains("exceeded your current quota")
+        || (combined.contains("402")
+            && (lower.contains("more credits") || lower.contains("monthly limit")))
+}
+
+#[test]
+fn provider_quota_detection_covers_openai_and_openrouter_billing_errors() {
+    assert!(looks_provider_quota_exhausted("insufficient_quota"));
+    assert!(looks_provider_quota_exhausted(
+        "402 Payment Required: this request requires more credits"
+    ));
+    assert!(!looks_provider_quota_exhausted(
+        "400 No tool output found for function call"
+    ));
 }
 
 /// True when a live run failed only because the upstream provider rate-limited
@@ -1656,7 +1670,12 @@ fn openrouter_print_smoke() {
         .expect("spawn yolop --provider openrouter");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() && looks_rate_limited(&format!("{stdout}{stderr}")) {
+    let combined = format!("{stdout}{stderr}");
+    if !output.status.success() && looks_provider_quota_exhausted(&combined) {
+        eprintln!("skipping live test: upstream provider quota exhausted");
+        return;
+    }
+    if !output.status.success() && looks_rate_limited(&combined) {
         eprintln!("skipping live test: upstream provider rate-limited (429)");
         return;
     }
@@ -1725,7 +1744,12 @@ fn openrouter_tool_call_executes_end_to_end() {
         .expect("spawn yolop --provider openrouter");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() && looks_rate_limited(&format!("{stdout}{stderr}")) {
+    let combined = format!("{stdout}{stderr}");
+    if !output.status.success() && looks_provider_quota_exhausted(&combined) {
+        eprintln!("skipping live test: upstream provider quota exhausted");
+        return;
+    }
+    if !output.status.success() && looks_rate_limited(&combined) {
         eprintln!("skipping live test: upstream provider rate-limited (429)");
         return;
     }
