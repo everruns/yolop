@@ -22,7 +22,11 @@ jobs:
     name: Preserved-baseline regression
     if: github.repository == 'everruns/yolop'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Live-provider latency is variable: focused cases alone have taken
+    # 43+ minutes in observed runs. 60 minutes left no room for the control
+    # trials and cut the 2026-07-16 nightly off mid-step (cancelled, not
+    # a real regression). 120 minutes gives headroom for slow provider days.
+    timeout-minutes: 120
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
       HARNESS_BASIC_BASELINE_BIN: ${{ github.workspace }}/target/yolop-eval-bin/baseline/yolop
