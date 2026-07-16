@@ -507,7 +507,7 @@ fn build_input(messages: &[LlmMessage]) -> (Option<String>, Vec<CodexInputItem>)
         input.push(convert_message(message));
     }
     let instructions = (!instructions.is_empty()).then(|| instructions.join("\n\n"));
-    (instructions, drop_orphaned_function_outputs(input))
+    (instructions, repair_unpaired_function_items(input))
 }
 
 fn convert_message(message: &LlmMessage) -> CodexInputItem {
@@ -558,7 +558,7 @@ fn convert_message(message: &LlmMessage) -> CodexInputItem {
     }
 }
 
-fn drop_orphaned_function_outputs(input: Vec<CodexInputItem>) -> Vec<CodexInputItem> {
+fn repair_unpaired_function_items(input: Vec<CodexInputItem>) -> Vec<CodexInputItem> {
     let call_ids: std::collections::HashSet<String> = input
         .iter()
         .filter_map(|item| match item {
@@ -566,16 +566,34 @@ fn drop_orphaned_function_outputs(input: Vec<CodexInputItem>) -> Vec<CodexInputI
             _ => None,
         })
         .collect();
-    if call_ids.is_empty() {
-        return input
-            .into_iter()
-            .filter(|item| !matches!(item, CodexInputItem::FunctionCallOutput { .. }))
-            .collect();
+    let output_ids: std::collections::HashSet<String> = input
+        .iter()
+        .filter_map(|item| match item {
+            CodexInputItem::FunctionCallOutput { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let unpaired: std::collections::HashSet<String> = call_ids
+        .symmetric_difference(&output_ids)
+        .cloned()
+        .collect();
+
+    if unpaired.is_empty() {
+        return input;
     }
+
+    tracing::warn!(
+        unpaired_call_ids = ?unpaired,
+        "dropping unpaired function calls and outputs before Codex request"
+    );
+
     input
         .into_iter()
         .filter(|item| match item {
-            CodexInputItem::FunctionCallOutput { call_id, .. } => call_ids.contains(call_id),
+            CodexInputItem::FunctionCall { call_id, .. }
+            | CodexInputItem::FunctionCallOutput { call_id, .. } => {
+                !unpaired.contains(call_id.as_str())
+            }
             _ => true,
         })
         .collect()
@@ -1109,6 +1127,55 @@ mod tests {
             input.last(),
             Some(CodexInputItem::FunctionCallOutput { call_id, .. }) if call_id == "call_1"
         ));
+    }
+
+    #[test]
+    fn build_input_drops_only_unpaired_items_from_parallel_tool_batch() {
+        let mut paired_result = LlmMessage::text(LlmMessageRole::Tool, "skill instructions");
+        paired_result.tool_call_id = Some("call_paired".to_string());
+        let mut orphaned_result = LlmMessage::text(LlmMessageRole::Tool, "stale output");
+        orphaned_result.tool_call_id = Some("call_missing_call".to_string());
+        let (_, input) = build_input(&[
+            LlmMessage {
+                role: LlmMessageRole::Assistant,
+                content: LlmMessageContent::Text(String::new()),
+                tool_calls: Some(vec![
+                    ToolCall {
+                        id: "call_missing_output".to_string(),
+                        name: "bash".to_string(),
+                        arguments: json!({}),
+                    },
+                    ToolCall {
+                        id: "call_paired".to_string(),
+                        name: "activate_skill".to_string(),
+                        arguments: json!({}),
+                    },
+                ]),
+                tool_call_id: None,
+                phase: None,
+                thinking: None,
+                thinking_signature: None,
+            },
+            paired_result,
+            orphaned_result,
+        ]);
+
+        assert!(!input.iter().any(|item| matches!(
+            item,
+            CodexInputItem::FunctionCall { call_id, .. } if call_id == "call_missing_output"
+        )));
+        assert!(input.iter().any(|item| matches!(
+            item,
+            CodexInputItem::FunctionCall { call_id, .. } if call_id == "call_paired"
+        )));
+        assert!(input.iter().any(|item| matches!(
+            item,
+            CodexInputItem::FunctionCallOutput { call_id, .. } if call_id == "call_paired"
+        )));
+        assert!(!input.iter().any(|item| matches!(
+            item,
+            CodexInputItem::FunctionCallOutput { call_id, .. } if call_id == "call_missing_call"
+        )));
     }
 
     #[test]
