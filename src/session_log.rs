@@ -1154,6 +1154,7 @@ mod tests {
                 turn_id,
                 delta: "hello".to_string(),
                 accumulated: "hello".to_string(),
+                phase: None,
             },
         );
         let _ = emitter.emit(delta_req).await.expect("emit delta");

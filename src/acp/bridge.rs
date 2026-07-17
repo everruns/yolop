@@ -361,6 +361,7 @@ mod tests {
                 turn_id: TurnId::new(),
                 delta: "Hel".into(),
                 accumulated: "Hel".into(),
+                phase: None,
             },
         )));
         assert_eq!(
@@ -379,6 +380,7 @@ mod tests {
                 turn_id: TurnId::new(),
                 delta: "Hi".into(),
                 accumulated: "Hi".into(),
+                phase: None,
             },
         )));
         let completed = t.on_event(&event(EventData::OutputMessageCompleted(
@@ -666,6 +668,7 @@ mod tests {
             turn_id: TurnId::new(),
             delta: "x".into(),
             accumulated: "x".into(),
+            phase: None,
         }));
         assert_eq!(t.on_event(&ev).len(), 1);
         assert_eq!(t.on_event(&ev).len(), 0, "second delivery must be ignored");
