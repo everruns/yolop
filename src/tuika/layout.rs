@@ -231,9 +231,15 @@ pub fn solve(area: Rect, style: &LayoutStyle, items: &[Item]) -> Vec<Rect> {
             Align::Center => cross_avail.saturating_sub(cross_len) / 2,
             Align::End => cross_avail.saturating_sub(cross_len),
         };
-        rects.push(axis.place(inner, cursor, cross_off, main_len, cross_len));
+        // Clamp placement to the inner box. Normally children fit exactly, so
+        // this is a no-op; it only matters in degenerate cases (e.g. a gap
+        // wider than the container) where the running cursor would otherwise
+        // push a child past the edge and return an out-of-bounds rect.
+        let main_start = cursor.min(main_avail);
+        let main_len = main_len.min(main_avail.saturating_sub(main_start));
+        rects.push(axis.place(inner, main_start, cross_off, main_len, cross_len));
         cursor = cursor
-            .saturating_add(main_len)
+            .saturating_add(main_sizes[i])
             .saturating_add(style.gap)
             .saturating_add(between_extra);
     }

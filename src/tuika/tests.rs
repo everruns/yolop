@@ -477,6 +477,193 @@ fn osc_progress_encoding() {
     );
 }
 
+// ---- resize / degenerate sizes -------------------------------------------
+//
+// Two properties: (1) rendering at any size — including 0×0, 1×1, and sizes
+// smaller than a component's chrome — must never panic; (2) a component may
+// never write a cell outside the clip it was given. The `Surface` clip is
+// supposed to guarantee (2) by construction; these tests assert it.
+
+/// A representative tree: a scrollable bordered body, a progress bar, and a
+/// status bar — the shapes the full-screen renderer actually composes.
+fn demo_tree(frame: u64) -> super::view::Element {
+    use super::components::{Boxed, Flex, ProgressBar, Scroll, ScrollState, StatusBar};
+    use ratatui::text::{Line, Span};
+    let lines: Vec<Line<'static>> = (0..40).map(|i| Line::from(format!("row {i}"))).collect();
+    let mut st = ScrollState::new();
+    st.clamp(40, 8);
+    element(
+        Flex::column()
+            .grow(
+                1,
+                element(Boxed::new(element(Scroll::new(lines, &st))).title(" body ")),
+            )
+            .fixed(1, element(ProgressBar::indeterminate(frame)))
+            .fixed(1, element(StatusBar::new().left(vec![Span::raw("status")]))),
+    )
+}
+
+#[test]
+fn paint_survives_degenerate_and_swept_sizes() {
+    let theme = Theme::default();
+    // The test passing (no panic, no out-of-bounds index) is the assertion.
+    for &w in &[0u16, 1, 2, 3, 5, 10, 17, 40, 200] {
+        for &h in &[0u16, 1, 2, 3, 5, 8, 40] {
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+            let area = buf.area;
+            host::paint(&mut buf, area, &theme, demo_tree(w as u64).as_ref(), &[]);
+            assert_eq!(buf.area, Rect::new(0, 0, w, h));
+        }
+    }
+}
+
+#[test]
+fn surface_never_writes_outside_its_clip() {
+    use super::components::{Boxed, Text};
+    let theme = Theme::default();
+    let ctx = RenderCtx::new(&theme);
+
+    let mut buf = buffer(16, 8);
+    for y in 0..8u16 {
+        for x in 0..16u16 {
+            buf[(x, y)].set_char('#');
+        }
+    }
+    // Clip is a small window, but we hand the component a much larger area so
+    // it *tries* to draw past the clip.
+    let clip = Rect::new(3, 1, 6, 3);
+    {
+        let mut surface = Surface::new(&mut buf, clip);
+        Boxed::new(element(Text::raw(
+            "content far wider and taller than the clip window",
+        )))
+        .render(Rect::new(3, 1, 40, 20), &mut surface, &ctx);
+    }
+    for y in 0..8u16 {
+        for x in 0..16u16 {
+            let inside = x >= clip.x && x < clip.right() && y >= clip.y && y < clip.bottom();
+            if !inside {
+                assert_eq!(buf[(x, y)].symbol(), "#", "clip leaked at ({x},{y})");
+            }
+        }
+    }
+}
+
+#[test]
+fn boxed_border_closed_across_sizes() {
+    use super::components::{Boxed, Text};
+    let theme = Theme::default();
+    let ctx = RenderCtx::new(&theme);
+    for w in 2..=12u16 {
+        for h in 2..=8u16 {
+            let mut buf = buffer(w, h);
+            let area = buf.area;
+            let mut surface = Surface::new(&mut buf, area);
+            Boxed::new(element(Text::raw("x"))).render(area, &mut surface, &ctx);
+            assert_eq!(buf[(0, 0)].symbol(), "╭", "top-left at {w}x{h}");
+            assert_eq!(buf[(w - 1, 0)].symbol(), "╮", "top-right at {w}x{h}");
+            assert_eq!(buf[(0, h - 1)].symbol(), "╰", "bottom-left at {w}x{h}");
+            assert_eq!(buf[(w - 1, h - 1)].symbol(), "╯", "bottom-right at {w}x{h}");
+        }
+    }
+}
+
+#[test]
+fn progress_bar_is_responsive_to_width() {
+    let theme = Theme::default();
+    let ctx = RenderCtx::new(&theme);
+    let filled = |w: u16| {
+        let mut buf = buffer(w, 1);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        ProgressBar::determinate(0.5).render(area, &mut surface, &ctx);
+        (0..w).filter(|&x| buf[(x, 0)].symbol() == "█").count()
+    };
+    assert_eq!(filled(4), 2, "half of 4");
+    assert_eq!(filled(40), 20, "half of 40");
+    assert!(filled(4) < filled(40), "wider bar fills more cells");
+    // Degenerate widths must not panic.
+    let _ = filled(0);
+    let _ = filled(1);
+}
+
+#[test]
+fn flex_solver_survives_degenerate_areas() {
+    let items = [
+        item(Dimension::Flex(1), 0, 0),
+        item(Dimension::Fixed(5), 5, 1),
+        item(Dimension::Percent(50), 0, 0),
+    ];
+    for (w, h) in [(0u16, 0u16), (1, 1), (2, 2), (3, 10), (4, 1), (60, 3)] {
+        let area = Rect::new(0, 0, w, h);
+        // A gap larger than the width exercises the saturating arithmetic.
+        let style = LayoutStyle::row().gap(10);
+        let rects = solve(area, &style, &items);
+        assert_eq!(rects.len(), items.len());
+        for r in &rects {
+            assert!(r.right() <= area.right(), "{r:?} exceeds width of {area:?}");
+            assert!(
+                r.bottom() <= area.bottom(),
+                "{r:?} exceeds height of {area:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn scroll_and_overlay_survive_tiny_screens() {
+    use super::components::{Scroll, ScrollState};
+    use ratatui::text::Line;
+
+    // A tall scroll region rendered into a 1×1 viewport.
+    let lines: Vec<Line<'static>> = (0..50).map(|i| Line::from(format!("l{i}"))).collect();
+    let mut st = ScrollState::new();
+    st.clamp(50, 1);
+    let theme = Theme::default();
+    let ctx = RenderCtx::new(&theme);
+    let mut buf = buffer(1, 1);
+    let area = buf.area;
+    let mut surface = Surface::new(&mut buf, area);
+    Scroll::new(lines, &st).render(area, &mut surface, &ctx);
+
+    // Overlay resolution on tiny/zero screens stays within bounds.
+    for (w, h) in [(0u16, 0u16), (1, 1), (2, 3), (5, 5)] {
+        let screen = Rect::new(0, 0, w, h);
+        let rect = OverlaySpec::centered(80, 80).min_size(4, 4).resolve(screen);
+        assert!(rect.right() <= screen.right(), "overlay exceeds {screen:?}");
+        assert!(
+            rect.bottom() <= screen.bottom(),
+            "overlay exceeds {screen:?}"
+        );
+    }
+}
+
+#[test]
+fn resize_reflows_body_and_status() {
+    let theme = Theme::default();
+
+    // Wide + tall: the body box title is visible on the top border.
+    let mut big = buffer(80, 24);
+    let a = big.area;
+    host::paint(&mut big, a, &theme, demo_tree(0).as_ref(), &[]);
+    assert!(
+        row(&big, 0).contains("body"),
+        "title at 80x24: {:?}",
+        row(&big, 0)
+    );
+
+    // Then a small resize: must still render the status row at the bottom and
+    // must not panic or leave the previous size's content behind (fresh buffer).
+    let mut small = buffer(20, 6);
+    let a2 = small.area;
+    host::paint(&mut small, a2, &theme, demo_tree(0).as_ref(), &[]);
+    assert!(
+        row(&small, 5).contains("status"),
+        "status row at 20x6: {:?}",
+        row(&small, 5)
+    );
+}
+
 // ---- palette / theme -----------------------------------------------------
 //
 // Every slot gets a unique indexed color so a rendered cell's fg/bg pins down
