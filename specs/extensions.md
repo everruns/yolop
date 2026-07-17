@@ -45,6 +45,22 @@ against the manifest — protocol-version compatibility, the D4 tool clamp
 prompt-facet consistency — returning per-check pass/warn/fail. It is the
 runtime dual of the CI schema/drift guards: authors validate a server before
 shipping without booting a whole session.
+Self-writing: `scaffold_extension` generates a ready-to-edit package — a
+`plugin.json` declaring the requested facets (`tools`, `hooks`, `prompt`) plus
+a self-contained capability server whose only author-editable seams are the
+`handle_*` bodies. The skeleton is correct by construction: it installs via
+`install_extension source=<dir>` and passes `doctor_extension` before any logic
+is written, so authoring collapses to filling in handlers. The server is a
+single executable under the package `bin/` (resolved via the `bin/`-on-PATH
+rule the runtime already uses; the exec bit survives the install copy), so no
+absolute paths leak into the manifest. Python is the first template because it
+is toolchain-free — the fastest, most reliable path for yolop to author an
+extension for itself (Rust via `yolop-yep` and TypeScript follow). The
+[`author-extension`](../.agents/skills/author-extension/SKILL.md) skill drives
+the loop (scaffold → implement → install → doctor → ask-to-enable); the
+end-to-end acceptance — a self-authored `pre_tool_use` hook that blocks `git`,
+spawned exactly as the runtime spawns it — is covered by
+`scaffolded_extension_blocks_git_end_to_end`.
 Later — the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in), `ui/ask` (needs the
 server→host reverse-request channel, still refused in phase 1),
