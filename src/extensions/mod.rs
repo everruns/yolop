@@ -351,7 +351,7 @@ mod spawn_tests {
         .unwrap();
 
         // Author step: fill in the hook body the scaffold left as a no-op.
-        let server = std::fs::read_to_string(&out.server).unwrap();
+        let server = std::fs::read_to_string(&out.edit).unwrap();
         let filled = match language {
             super::scaffold::Language::Python => server.replace(
                 "\n    return {}\n\n\ndef handle_prompt",
@@ -367,9 +367,37 @@ mod spawn_tests {
                  return { block: true, reason: \"git is disabled by git-guard\" };\n  }\n  \
                  return {};\n}\n\nfunction handlePrompt",
             ),
+            super::scaffold::Language::Rust => server.replace(
+                "    let _ = (event, tool_name, args);\n    json!({})",
+                "    if event == \"pre_tool_use\" {\n        \
+                 let command = args.get(\"command\").and_then(Value::as_str).unwrap_or(\"\");\n        \
+                 if command.split_whitespace().any(|w| w == \"git\") {\n            \
+                 return json!({\"block\": true, \"reason\": \"git is disabled by git-guard\"});\n        }\n    }\n    \
+                 let _ = tool_name;\n    json!({})",
+            ),
         };
         assert_ne!(filled, server, "hook body anchor must match");
-        std::fs::write(&out.server, filled).unwrap();
+        std::fs::write(&out.edit, filled).unwrap();
+
+        // Rust is compiled: run the build step, then drop the binary in bin/.
+        // Build (debug, isolated in the package's own target/) — the same shape
+        // as `out.build`, which the author/skill runs before install.
+        if out.build.is_some() {
+            let status = std::process::Command::new("cargo")
+                .args(["build", "--manifest-path"])
+                .arg(out.dir.join("Cargo.toml"))
+                .status()
+                .expect("cargo build");
+            assert!(status.success(), "scaffolded Rust crate must build");
+            std::fs::copy(
+                out.dir
+                    .join("target")
+                    .join("debug")
+                    .join("git-guard-server"),
+                out.dir.join("bin").join("git-guard-server"),
+            )
+            .expect("copy built binary into bin/");
+        }
 
         let manifest =
             parse_manifest(&std::fs::read_to_string(out.dir.join("plugin.json")).unwrap()).unwrap();
@@ -427,6 +455,11 @@ mod spawn_tests {
     #[tokio::test]
     async fn scaffolded_node_extension_blocks_git_end_to_end() {
         assert_scaffolded_git_block(super::scaffold::Language::Node).await;
+    }
+
+    #[tokio::test]
+    async fn scaffolded_rust_extension_blocks_git_end_to_end() {
+        assert_scaffolded_git_block(super::scaffold::Language::Rust).await;
     }
 
     #[tokio::test]

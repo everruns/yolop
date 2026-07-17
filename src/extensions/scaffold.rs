@@ -2,16 +2,19 @@
 //! the agent (or a human) can author an extension end-to-end without
 //! remembering the wire protocol or the package layout.
 //!
-//! The generated package is **correct by construction** — it installs via
-//! `install_extension source=<dir>` and passes `doctor_extension` out of the
-//! box — so authoring collapses to "fill in the handler bodies." The server is
-//! a single self-contained executable under `bin/`, which the runtime resolves
-//! by prepending `<package>/bin` to `PATH` (see `manager.rs`); the exec bit
-//! survives install because `store::copy_dir` uses `std::fs::copy`.
+//! The generated package is **correct by construction** — authoring collapses
+//! to "fill in the handler bodies." The server is resolved by prepending
+//! `<package>/bin` to `PATH` (see `manager.rs`); the exec bit survives install
+//! because `store::copy_dir` uses `std::fs::copy`.
 //!
-//! Language templates are pluggable. Python lands first because it is
-//! toolchain-free (no build step), the fastest and most reliable path for a
-//! self-writing loop; Rust (`yolop-yep`) and TypeScript follow.
+//! Three language templates, all emitting the same raw newline-delimited
+//! JSON-RPC server:
+//! - **Python** / **Node.js** (`typescript`): single-file, dependency-free,
+//!   zero-build — the executable server lives directly in `bin/`, so the
+//!   package installs and passes `doctor_extension` immediately.
+//! - **Rust**: a `serde_json`-only crate. Compiled, so it carries a `build`
+//!   step ([`Scaffolded::build`]) that produces the binary into `bin/` before
+//!   install — the one difference from the zero-build path.
 
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -41,6 +44,9 @@ pub enum Language {
     /// A dependency-free Node.js (`#!/usr/bin/env node`) server — the
     /// toolchain-free path for the TypeScript/JavaScript ecosystem.
     Node,
+    /// A `serde_json`-only Rust crate. Compiled: the binary must be built into
+    /// `bin/` before install (see [`Scaffolded::build`]).
+    Rust,
 }
 
 impl Language {
@@ -48,23 +54,21 @@ impl Language {
         match s.trim().to_ascii_lowercase().as_str() {
             "python" | "py" => Ok(Self::Python),
             "typescript" | "ts" | "javascript" | "js" | "node" => Ok(Self::Node),
-            "rust" | "rs" => Err(format!(
-                "`{s}` needs a compiled template (build before run); use `python` or \
-                 `typescript` for the toolchain-free path for now"
-            )),
+            "rust" | "rs" => Ok(Self::Rust),
             other => Err(format!(
-                "unknown language `{other}`; use `python` or `typescript`"
+                "unknown language `{other}`; use `python`, `typescript`, or `rust`"
             )),
         }
     }
 
-    /// The interpreter the generated launcher shebang invokes — used to skip
-    /// tests when the runtime isn't installed.
+    /// The runtime/toolchain the template needs — used to skip tests when it
+    /// isn't installed (`python3`/`node` to run, `cargo` to build).
     #[cfg(test)]
     pub fn interpreter(self) -> &'static str {
         match self {
             Self::Python => "python3",
             Self::Node => "node",
+            Self::Rust => "cargo",
         }
     }
 }
@@ -85,8 +89,13 @@ pub struct ScaffoldRequest {
 #[derive(Debug)]
 pub struct Scaffolded {
     pub dir: PathBuf,
-    pub server: PathBuf,
+    /// The file the author edits to add logic — the server script for the
+    /// zero-build templates, or `src/main.rs` for Rust.
+    pub edit: PathBuf,
     pub files: Vec<String>,
+    /// A shell command that must run before install to produce the server
+    /// binary (Rust). `None` for the zero-build templates.
+    pub build: Option<String>,
 }
 
 /// Validate the request the way `parse_manifest` will, so a scaffold never
@@ -143,24 +152,55 @@ pub fn scaffold(req: &ScaffoldRequest) -> Result<Scaffolded, String> {
     write(&manifest_path, &format!("{manifest:#}\n"))?;
 
     let server_name = format!("{}-server", req.name);
-    let server_path = bin_dir.join(&server_name);
-    match req.language {
-        Language::Python => write(&server_path, &python_server(req))?,
-        Language::Node => write(&server_path, &node_server(req))?,
-    }
-    make_executable(&server_path)?;
+    let mut files = vec!["plugin.json".to_string(), "README.md".to_string()];
 
-    let readme_path = req.dir.join("README.md");
-    write(&readme_path, &readme(req, &server_name))?;
+    let (edit, build) = match req.language {
+        Language::Python | Language::Node => {
+            // Zero-build: the executable server itself lives in bin/.
+            let server_path = bin_dir.join(&server_name);
+            let source = match req.language {
+                Language::Python => python_server(req),
+                Language::Node => node_server(req),
+                Language::Rust => unreachable!(),
+            };
+            write(&server_path, &source)?;
+            make_executable(&server_path)?;
+            files.push(format!("bin/{server_name}"));
+            (server_path, None)
+        }
+        Language::Rust => {
+            // Compiled: emit a Cargo project. The binary is produced by a build
+            // step and dropped into bin/ before install (see `build`).
+            let src_dir = req.dir.join("src");
+            std::fs::create_dir_all(&src_dir)
+                .map_err(|e| format!("creating {}: {e}", src_dir.display()))?;
+            let main_rs = src_dir.join("main.rs");
+            write(&req.dir.join("Cargo.toml"), &rust_cargo_toml(req))?;
+            write(&main_rs, &rust_main(req))?;
+            write(&req.dir.join(".gitignore"), "/target\n")?;
+            files.push("Cargo.toml".into());
+            files.push("src/main.rs".into());
+            files.push(".gitignore".into());
+            let build = format!(
+                "cargo build --release --manifest-path {cargo} && cp \
+                 {dir}/target/release/{server_name} {dir}/bin/{server_name}",
+                cargo = req.dir.join("Cargo.toml").display(),
+                dir = req.dir.display(),
+            );
+            (main_rs, Some(build))
+        }
+    };
+
+    write(
+        &req.dir.join("README.md"),
+        &readme(req, &server_name, &build),
+    )?;
 
     Ok(Scaffolded {
         dir: req.dir.clone(),
-        server: server_path,
-        files: vec![
-            "plugin.json".into(),
-            format!("bin/{server_name}"),
-            "README.md".into(),
-        ],
+        edit,
+        files,
+        build,
     })
 }
 
@@ -491,17 +531,36 @@ rl.on("line", (raw) => {{
     )
 }
 
-fn readme(req: &ScaffoldRequest, server_name: &str) -> String {
+fn readme(req: &ScaffoldRequest, server_name: &str, build: &Option<String>) -> String {
+    let (layout, edit, build_block) = match build {
+        // Zero-build templates: the executable server is bin/<name>-server.
+        None => (
+            format!(
+                "- `bin/{server_name}` — the capability server (stdio JSON-RPC). yolop puts \
+                 `bin/` on `PATH`, so `capabilityServer.command` resolves here."
+            ),
+            format!("Edit the handler bodies in `bin/{server_name}`"),
+            String::new(),
+        ),
+        // Rust: build the binary into bin/ before install.
+        Some(cmd) => (
+            "- `Cargo.toml` / `src/main.rs` — the capability server source.\n\
+             - `bin/<name>-server` — the built binary (produced by the build step below)."
+                .to_string(),
+            "Edit the `handle_*` bodies in `src/main.rs`".to_string(),
+            format!("Build the server binary into `bin/` first:\n\n```\n{cmd}\n```\n\n"),
+        ),
+    };
     format!(
         "# {name}\n\n\
          {desc}\n\n\
          A [yolop](https://crates.io/crates/yolop) extension (YEP capability server).\n\n\
          ## Layout\n\n\
          - `plugin.json` — the manifest: the contributions yolop approves at install.\n\
-         - `bin/{server}` — the capability server (stdio JSON-RPC). yolop puts `bin/` on\n  \
-         `PATH`, so `capabilityServer.command` resolves here.\n\n\
+         {layout}\n\n\
          ## Author\n\n\
-         Edit the `handle_*` bodies in `bin/{server}`, then from yolop:\n\n\
+         {edit}, then from yolop:\n\n\
+         {build_block}\
          ```\n\
          install_extension source=<this directory>\n\
          doctor_extension  name={name}\n\
@@ -510,7 +569,171 @@ fn readme(req: &ScaffoldRequest, server_name: &str) -> String {
          Enabling takes effect on the next session.\n",
         name = req.name,
         desc = req.description,
-        server = server_name,
+    )
+}
+
+/// The generated Cargo manifest: a standalone crate whose only dependency is
+/// `serde_json`, with the binary named `<name>-server` so it lands in `bin/`.
+fn rust_cargo_toml(req: &ScaffoldRequest) -> String {
+    format!(
+        "[package]\n\
+         name = {pkg:?}\n\
+         version = \"0.1.0\"\n\
+         edition = \"2021\"\n\n\
+         [[bin]]\n\
+         name = \"{name}-server\"\n\
+         path = \"src/main.rs\"\n\n\
+         [dependencies]\n\
+         serde_json = \"1\"\n",
+        pkg = req.name,
+        name = req.name,
+    )
+}
+
+/// The generated Rust server: a raw newline-delimited JSON-RPC server over
+/// stdio with only `serde_json` as a dependency — the compiled twin of the
+/// Python/Node templates. Author-editable seams are the three `handle_*`
+/// functions.
+fn rust_main(req: &ScaffoldRequest) -> String {
+    let names: Vec<&String> = req.tools.iter().map(|t| &t.name).collect();
+    let tools_list = names
+        .iter()
+        .map(|n| format!("{n:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let name_literal = format!("{:?}", req.name);
+    let prompt_literal = match &req.prompt {
+        Some(text) => format!("Some({text:?})"),
+        None => "None".into(),
+    };
+    let hooks_cap = if req.hooks.is_empty() {
+        ""
+    } else {
+        "\n            caps.push(json!(\"hooks\"));"
+    };
+    format!(
+        r##"//! {name} — a yolop extension (YEP capability server).
+//!
+//! Speaks the yolop extension protocol: newline-delimited JSON-RPC over stdio.
+//! stdout carries ONLY protocol JSON — write any logs to stderr. Depends only
+//! on `serde_json`.
+//!
+//! To author: edit the handle_* bodies below, then from yolop:
+//!   cargo build --release   # then copy target/release/{name}-server to bin/
+//!   install_extension source=<this package directory>
+//!   doctor_extension  name={name}
+//!   enable_extension  name={name}    // takes effect on the next session
+
+use serde_json::{{Value, json}};
+use std::io::{{BufRead, Write}};
+
+const NAME: &str = {name_literal};
+// Tool names this server serves. MUST match plugin.json's yolop.tools.
+const TOOLS: &[&str] = &[{tools_list}];
+// Static system-prompt contribution, or None.
+const PROMPT: Option<&str> = {prompt_literal};
+
+fn send(obj: &Value) {{
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{{obj}}");
+    let _ = out.flush();
+}}
+
+// --- author-editable handlers -----------------------------------------------
+
+fn handle_tool(name: &str, args: &Value) -> Value {{
+    // TODO: implement each tool in TOOLS. `args` is the model-supplied object.
+    json!({{ "ok": true, "tool": name, "args": args }})
+}}
+
+fn handle_hook(event: &str, tool_name: &str, args: &Value) -> Value {{
+    // Return {{}} to allow (unchanged), or {{"block": true, "reason": "..."}} to
+    // deny (pre_tool_use only). The server sees every subscribed tool call.
+    //
+    // Example — block the shell tool when the command runs git:
+    //   if event == "pre_tool_use" && (tool_name == "bash" || tool_name == "shell") {{
+    //       let command = args.get("command").and_then(Value::as_str).unwrap_or("");
+    //       if command.split_whitespace().any(|w| w == "git") {{
+    //           return json!({{"block": true, "reason": "git is disabled by {name}"}});
+    //       }}
+    //   }}
+    let _ = (event, tool_name, args);
+    json!({{}})
+}}
+
+fn handle_prompt() -> Value {{
+    json!({{ "text": PROMPT.unwrap_or("") }})
+}}
+
+// --- protocol plumbing (do not edit) ----------------------------------------
+
+fn main() {{
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {{
+        let Ok(line) = line else {{ break }};
+        let line = line.trim();
+        if line.is_empty() {{
+            continue;
+        }}
+        let Ok(msg) = serde_json::from_str::<Value>(line) else {{
+            continue;
+        }};
+        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+        let id = msg.get("id").cloned().unwrap_or(Value::Null);
+        match method {{
+            "initialize" => {{
+                let mut caps = vec![json!("tools"), json!("streaming")];
+                let tools: Vec<Value> = TOOLS.iter().map(|t| json!({{ "name": t }})).collect();
+                let mut params = json!({{ "tools": tools }});
+                if let Some(p) = PROMPT {{
+                    caps.push(json!("prompt"));
+                    params["prompt"] = json!({{ "static": p }});
+                }}{hooks_cap}
+                send(&json!({{ "id": id, "result": {{
+                    "protocol_version": "1.0",
+                    "name": NAME,
+                    "capabilities": caps,
+                    "capability_params": params,
+                }} }}));
+            }}
+            "initialized" => {{}}
+            "tool/call" => {{
+                let p = msg.get("params").cloned().unwrap_or_else(|| json!({{}}));
+                let tool = p.get("name").and_then(Value::as_str).unwrap_or("");
+                if !TOOLS.contains(&tool) {{
+                    send(&json!({{ "id": id, "error": {{ "message": format!("no such tool: {{tool}}") }} }}));
+                    continue;
+                }}
+                let args = p.get("args").cloned().unwrap_or_else(|| json!({{}}));
+                send(&json!({{ "id": id, "result": handle_tool(tool, &args) }}));
+            }}
+            "hook/fire" => {{
+                let p = msg.get("params").cloned().unwrap_or_else(|| json!({{}}));
+                let event = p.get("event").and_then(Value::as_str).unwrap_or("");
+                let tool_name = p.get("tool_name").and_then(Value::as_str).unwrap_or("");
+                let args = p.get("args").cloned().unwrap_or_else(|| json!({{}}));
+                send(&json!({{ "id": id, "result": handle_hook(event, tool_name, &args) }}));
+            }}
+            "prompt/contribution" => send(&json!({{ "id": id, "result": handle_prompt() }})),
+            "shutdown" => {{
+                send(&json!({{ "id": id, "result": {{}} }}));
+                return;
+            }}
+            _ => {{
+                if !id.is_null() {{
+                    send(&json!({{ "id": id, "error": {{
+                        "code": -32601, "message": format!("method not found: {{method}}") }} }}));
+                }}
+            }}
+        }}
+    }}
+}}
+"##,
+        name = req.name,
+        name_literal = name_literal,
+        tools_list = tools_list,
+        prompt_literal = prompt_literal,
+        hooks_cap = hooks_cap,
     )
 }
 
@@ -572,9 +795,10 @@ mod tests {
         assert!(manifest.prompt);
 
         // Server exists, carries the shebang, and serves exactly the tool.
-        let server = std::fs::read_to_string(&out.server).unwrap();
+        let server = std::fs::read_to_string(&out.edit).unwrap();
         assert!(server.starts_with("#!/usr/bin/env python3"));
         assert!(server.contains(r#"TOOLS = ["note"]"#));
+        assert!(out.build.is_none());
         assert_eq!(out.files.len(), 3);
     }
 
@@ -584,8 +808,37 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let out = scaffold(&req(tmp.path().join("git-guard"))).unwrap();
-        let mode = std::fs::metadata(&out.server).unwrap().permissions().mode();
+        let mode = std::fs::metadata(&out.edit).unwrap().permissions().mode();
         assert_eq!(mode & 0o111, 0o111, "server must be executable");
+    }
+
+    #[test]
+    fn generates_a_rust_crate_the_installer_accepts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut r = req(tmp.path().join("git-guard"));
+        r.language = Language::Rust;
+        let out = scaffold(&r).unwrap();
+
+        // Manifest still parses; the command names the built binary.
+        let manifest_src = std::fs::read_to_string(out.dir.join("plugin.json")).unwrap();
+        let manifest = parse_manifest(&manifest_src).expect("manifest parses");
+        assert_eq!(manifest.capability_server.command, "git-guard-server");
+
+        // A Cargo project is emitted with a build step; the edit target is the
+        // source, not a bin/ script.
+        assert!(out.edit.ends_with("src/main.rs"));
+        assert!(
+            out.build
+                .as_ref()
+                .unwrap()
+                .contains("cargo build --release")
+        );
+        let cargo = std::fs::read_to_string(out.dir.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains(r#"name = "git-guard-server""#));
+        assert!(cargo.contains("serde_json"));
+        let main = std::fs::read_to_string(&out.edit).unwrap();
+        assert!(main.contains("fn handle_hook"));
+        assert!(main.contains(r#"const TOOLS: &[&str] = &["note"];"#));
     }
 
     #[test]
@@ -622,11 +875,8 @@ mod tests {
         assert_eq!(Language::parse("typescript").unwrap(), Language::Node);
         assert_eq!(Language::parse("ts").unwrap(), Language::Node);
         assert_eq!(Language::parse("node").unwrap(), Language::Node);
-        assert!(
-            Language::parse("rust")
-                .unwrap_err()
-                .contains("compiled template")
-        );
+        assert_eq!(Language::parse("rust").unwrap(), Language::Rust);
+        assert_eq!(Language::parse("rs").unwrap(), Language::Rust);
         assert!(
             Language::parse("cobol")
                 .unwrap_err()
@@ -644,7 +894,7 @@ mod tests {
         let manifest_src = std::fs::read_to_string(out.dir.join("plugin.json")).unwrap();
         parse_manifest(&manifest_src).expect("manifest parses");
 
-        let server = std::fs::read_to_string(&out.server).unwrap();
+        let server = std::fs::read_to_string(&out.edit).unwrap();
         assert!(server.starts_with("#!/usr/bin/env node"));
         assert!(server.contains(r#"const TOOLS = ["note"];"#));
         assert!(server.contains("function handleHook"));

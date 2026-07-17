@@ -40,13 +40,16 @@ Not yet available: statusline/UI, providers, slash commands.
 
 ## The loop
 
-1. **Scaffold.** `scaffold_extension name=<name> [description=…] [language=python|typescript]`
+1. **Scaffold.** `scaffold_extension name=<name> [description=…] [language=python|typescript|rust]`
    with the facets you need — `tools=[…]`, `hooks=[…]`, and/or `prompt=…`.
-   This writes a correct-by-construction package (manifest + a self-contained
-   server) that installs and passes `doctor` before you write a line of logic.
-   Both `python` and `typescript` (a dependency-free Node.js server) need no
-   build step; pick the one whose runtime the environment has. Python is the
-   default.
+   This writes a package (manifest + server source) with the handler bodies
+   stubbed. `python` and `typescript` (a dependency-free Node.js server) are
+   single-file and need no build step; `rust` emits a `serde_json`-only crate.
+   Pick the one whose toolchain the environment has; Python is the default.
+
+   For `rust`, the scaffold result includes a `build` command — run it after
+   editing to compile the binary into `bin/` before installing. The zero-build
+   templates skip that.
 
 2. **Implement.** Open the generated server (the tool result prints its path)
    and fill in the `handle_*` bodies:
