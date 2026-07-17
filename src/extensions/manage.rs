@@ -205,18 +205,28 @@ impl ManageTool {
             dir,
         };
         match scaffold::scaffold(&req) {
-            Ok(out) => ToolExecutionResult::Success(json!({
-                "scaffolded": name,
-                "dir": out.dir.display().to_string(),
-                "server": out.server.display().to_string(),
-                "files": out.files,
-                "next": format!(
-                    "Edit the handle_* bodies in {}, then: install_extension source={} → \
-                     doctor_extension name={name} → enable_extension name={name} (next session).",
-                    out.server.display(),
-                    out.dir.display(),
-                ),
-            })),
+            Ok(out) => {
+                // Rust needs a build step before the binary exists; the
+                // zero-build templates go straight to install.
+                let build_step = match &out.build {
+                    Some(cmd) => format!("build it (`{cmd}`), then "),
+                    None => String::new(),
+                };
+                ToolExecutionResult::Success(json!({
+                    "scaffolded": name,
+                    "dir": out.dir.display().to_string(),
+                    "edit": out.edit.display().to_string(),
+                    "files": out.files,
+                    "build": out.build,
+                    "next": format!(
+                        "Edit the handler bodies in {}, then {build_step}install_extension \
+                         source={} → doctor_extension name={name} → enable_extension name={name} \
+                         (next session).",
+                        out.edit.display(),
+                        out.dir.display(),
+                    ),
+                }))
+            }
             Err(err) => ToolExecutionResult::ToolError(format!("scaffold failed: {err}")),
         }
     }
@@ -408,11 +418,12 @@ impl Tool for ManageTool {
                         "description": "Extension name (ascii letters, digits, `-`, `_`)." },
                     "description": { "type": "string",
                         "description": "One-line summary of what the extension does." },
-                    "language": { "type": "string", "enum": ["python", "typescript"],
+                    "language": { "type": "string", "enum": ["python", "typescript", "rust"],
                         "default": "python",
-                        "description": "Server language template. Both are single-file and \
-                            toolchain-free (no build step); `typescript` emits a dependency-free \
-                            Node.js server." },
+                        "description": "Server language template. `python` and `typescript` \
+                            (a dependency-free Node.js server) are single-file and need no build \
+                            step; `rust` emits a serde_json-only crate whose binary you build \
+                            into bin/ before install (the result includes the build command)." },
                     "tools": { "type": "array", "description": "Tool contributions.",
                         "items": { "type": "object", "properties": {
                             "name": { "type": "string" },

@@ -54,9 +54,12 @@ is written, so authoring collapses to filling in handlers. The server is a
 single executable under the package `bin/` (resolved via the `bin/`-on-PATH
 rule the runtime already uses; the exec bit survives the install copy), so no
 absolute paths leak into the manifest. The `python` and `typescript`
-(dependency-free Node.js) templates are both single-file and toolchain-free —
-the fastest, most reliable path for yolop to author an extension for itself; a
-compiled Rust/`yolop-yep` template (binary built before it runs) follows. The
+(dependency-free Node.js) templates are single-file and toolchain-free — the
+fastest, most reliable path for yolop to author an extension for itself. The
+`rust` template emits a `serde_json`-only crate (the compiled twin of the same
+raw-protocol server); it carries a `build` step in the scaffold result because
+the binary must be compiled into `bin/` before install, unlike the zero-build
+templates. The
 [`author-extension`](../.agents/skills/author-extension/SKILL.md) skill drives
 the loop (scaffold → implement → install → doctor → ask-to-enable); the
 end-to-end acceptance — a self-authored `pre_tool_use` hook that blocks `git`,
