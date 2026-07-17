@@ -34,6 +34,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
+mod fullscreen;
 mod markdown_table;
 mod render;
 mod setup;
@@ -160,6 +161,31 @@ pub struct App {
     pending_images: Vec<ContentPart>,
     /// Large paste placeholders mapped to their full clipboard/terminal payloads.
     pending_pastes: Vec<(String, String)>,
+    /// Which renderer this session drives. `Inline` is the default
+    /// scrollback-native composer; `Fullscreen` is the experimental
+    /// alternate-screen `tuika` renderer (`--fullscreen`).
+    render_mode: RenderMode,
+    /// Full-screen transcript scroll position (unused in inline mode).
+    scroll: crate::tuika::ScrollState,
+    /// Last (content_height, viewport_height) the full-screen transcript drew,
+    /// so mouse/paging handlers can clamp scrolling without re-laying out.
+    scroll_metrics: (u16, u16),
+}
+
+/// The renderer backing a TUI session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RenderMode {
+    /// Scrollback-native inline composer (default).
+    #[default]
+    Inline,
+    /// Experimental full-screen alternate-screen renderer (`tuika`).
+    Fullscreen,
+}
+
+impl RenderMode {
+    pub(crate) fn is_fullscreen(self) -> bool {
+        matches!(self, RenderMode::Fullscreen)
+    }
 }
 
 /// Result of one background models API fetch. `Ok(None)` means the provider
@@ -393,6 +419,9 @@ impl App {
             workspace_host: runtime.workspace_host,
             pending_images,
             pending_pastes: Vec::new(),
+            render_mode: RenderMode::default(),
+            scroll: crate::tuika::ScrollState::new(),
+            scroll_metrics: (0, 0),
         };
         app.emit_system_banner();
         if should_setup {
@@ -411,6 +440,12 @@ impl App {
             app.start_turn(condition);
         }
         app
+    }
+
+    /// Switch this session to the experimental full-screen renderer. Called by
+    /// `run_tui` before the loop when `--fullscreen` is set.
+    pub(crate) fn set_render_mode(&mut self, mode: RenderMode) {
+        self.render_mode = mode;
     }
 
     pub fn should_show_resume_hint(&self) -> bool {
@@ -643,13 +678,21 @@ impl App {
         B: Backend,
         B::Error: std::error::Error + Send + Sync + 'static,
     {
-        self.flush_transcript(terminal)?;
+        // Inline mode streams finalized lines into native scrollback via
+        // `insert_before`; full-screen keeps the whole transcript in `lines`
+        // and redraws it into the alternate screen each frame, so it skips both
+        // the flush and the inline-viewport re-anchoring.
+        if !self.render_mode.is_fullscreen() {
+            self.flush_transcript(terminal)?;
+        }
         self.refresh_session_tasks_if_due().await;
-        // Ratatui keeps an inline viewport's cursor offset across resizes and
-        // resets its origin on horizontal shrinks. Normalize the viewport to
-        // the terminal bottom before every draw.
         terminal.autoresize()?;
-        maybe_reanchor_inline_viewport(terminal)?;
+        if !self.render_mode.is_fullscreen() {
+            // Ratatui keeps an inline viewport's cursor offset across resizes
+            // and resets its origin on horizontal shrinks. Normalize the
+            // viewport to the terminal bottom before every draw.
+            maybe_reanchor_inline_viewport(terminal)?;
+        }
         terminal.draw(|f| draw(f, self))?;
 
         // 1) drain background turn events
@@ -756,6 +799,10 @@ impl App {
                     self.handle_key(key).await;
                 }
                 CrosstermEvent::Mouse(mouse) => {
+                    if self.render_mode.is_fullscreen() && self.handle_fullscreen_scroll(mouse.kind)
+                    {
+                        continue;
+                    }
                     let area = terminal.get_frame().area();
                     if self.handle_mouse(mouse, area) {
                         return Ok(());
@@ -1392,6 +1439,24 @@ impl App {
             StatusLayout::Compact => StatusLayout::Expanded,
             StatusLayout::Expanded => StatusLayout::Compact,
         };
+    }
+
+    /// Route a mouse-wheel event to the full-screen transcript scroll. Returns
+    /// true when consumed. Uses the metrics recorded by the last full-screen
+    /// draw so it need not re-run layout.
+    fn handle_fullscreen_scroll(&mut self, kind: MouseEventKind) -> bool {
+        let tuika_kind = match kind {
+            MouseEventKind::ScrollUp => crate::tuika::MouseKind::ScrollUp,
+            MouseEventKind::ScrollDown => crate::tuika::MouseKind::ScrollDown,
+            _ => return false,
+        };
+        let (content_h, viewport_h) = self.scroll_metrics;
+        let event = crate::tuika::Event::Mouse(crate::tuika::Mouse {
+            kind: tuika_kind,
+            column: 0,
+            row: 0,
+        });
+        self.scroll.handle(&event, content_h, viewport_h).consumed()
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent, terminal_area: Rect) -> bool {
@@ -3378,6 +3443,54 @@ mod tests {
                 row.trim_end().to_string()
             })
             .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_renders_transcript_composer_and_status() {
+        let mut test = app_with_llmsim().await;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        // Dismiss the first-run setup overlay so the base transcript is visible;
+        // overlay compositing is covered by the tuika suite.
+        test.app.setup = None;
+        test.app.push_user("hello from user".to_string());
+        test.app.input.insert_str("draft reply");
+
+        // `Terminal::new` (used by `render_app_lines`) defaults to a full
+        // viewport, matching the `--fullscreen` runtime path.
+        let rows = render_app_lines(&mut test.app, 60, 20);
+        let joined = rows.join("\n");
+
+        assert!(
+            joined.contains("hello from user"),
+            "transcript should render in the full-screen body: {joined}"
+        );
+        assert!(
+            joined.contains("draft reply"),
+            "composer text should render in the full-screen composer: {joined}"
+        );
+        assert!(
+            joined.contains("llmsim"),
+            "status bar should surface the provider: {joined}"
+        );
+        assert!(
+            joined.contains('╭'),
+            "full-screen chrome should draw rounded tuika borders: {joined}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_scroll_wheel_unsticks_from_bottom() {
+        let mut test = app_with_llmsim().await;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        for i in 0..80 {
+            test.app.push_user(format!("line {i}"));
+        }
+        // Draw once so scroll metrics reflect the tall transcript.
+        let _ = render_app_lines(&mut test.app, 40, 12);
+        assert!(test.app.scroll.is_stuck_to_bottom());
+        // A wheel-up should be consumed and detach from the bottom.
+        assert!(test.app.handle_fullscreen_scroll(MouseEventKind::ScrollUp));
+        assert!(!test.app.scroll.is_stuck_to_bottom());
     }
 
     fn setup_overlay_text(app: &App) -> Vec<String> {

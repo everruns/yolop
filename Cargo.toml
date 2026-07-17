@@ -65,6 +65,7 @@ yolop-yep = { version = "0.1.1", path = "crates/yolop-yep" }
 sha2 = "0.11"
 toml = "1"
 textwrap = "0.16"
+unicode-width = "0.2"
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tree-sitter = "0.26"
