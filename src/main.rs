@@ -955,54 +955,61 @@ fn run_tuika_gallery() -> Result<()> {
 /// `tuika` components.
 fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
     use ratatui::text::{Line, Span};
-    use tuika::{Boxed, Flex, Loader, ProgressBar, Spinner, SpinnerStyle, Text, element};
+    use tuika::{Loader, ProgressBar, Spinner, SpinnerStyle, Text};
 
+    // The whole demo is expressed with the declarative `view!` DSL. Leaf and
+    // third-party components (Spinner, ProgressBar, Loader, Text) enter through
+    // `node(expr)`; layout is the `col`/`row`/`boxed`/`fixed`/`grow` sugar.
     let labeled_spinner = |style: SpinnerStyle, label: &str| -> tuika::Element {
-        element(
-            Flex::row()
-                .gap(1)
-                .fixed(1, element(Spinner::new(frame).style(style)))
-                .auto(element(Text::raw(label.to_string()))),
-        )
+        crate::view! {
+            row(gap = 1) {
+                fixed(1) { node(Spinner::new(frame).style(style)) }
+                text(label.to_string())
+            }
+        }
     };
 
-    let spinners = Boxed::new(element(
-        Flex::column()
-            .fixed(1, labeled_spinner(SpinnerStyle::Braille, "Braille"))
-            .fixed(1, labeled_spinner(SpinnerStyle::Line, "Line"))
-            .fixed(1, labeled_spinner(SpinnerStyle::Dots, "Dots")),
-    ))
-    .title(Line::from(Span::styled(" spinners ", theme.accent_style())));
-
     let animated = tuika::anim::ping_pong(frame, 120);
-    let bars = Boxed::new(element(
-        Flex::column()
-            .fixed(1, element(ProgressBar::determinate(0.25).percent(true)))
-            .fixed(1, element(ProgressBar::determinate(0.60).percent(true)))
-            .fixed(1, element(ProgressBar::determinate(animated).percent(true)))
-            .fixed(1, element(ProgressBar::indeterminate(frame))),
-    ))
-    .title(Line::from(Span::styled(" progress ", theme.accent_style())));
 
-    let loader = Boxed::new(element(Loader::new(frame, "working…").hint("esc to quit")))
-        .title(Line::from(Span::styled(" loader ", theme.accent_style())));
-
-    let footer = Text::new(vec![Line::from(Span::styled(
-        "tuika gallery — native progress is live in the taskbar/top bar · press q to quit",
-        theme.muted_style(),
-    ))]);
-
-    element(
-        Flex::column()
-            .background(ratatui::style::Style::default().bg(theme.background))
-            .padding(tuika::Padding::all(1))
-            .gap(1)
-            .fixed(5, element(spinners))
-            .fixed(6, element(bars))
-            .fixed(3, element(loader))
-            .grow(1, element(tuika::Spacer))
-            .fixed(1, element(footer)),
-    )
+    crate::view! {
+        col(
+            background = ratatui::style::Style::default().bg(theme.background),
+            padding = tuika::Padding::all(1),
+            gap = 1
+        ) {
+            fixed(5) {
+                boxed(title = Line::from(Span::styled(" spinners ", theme.accent_style()))) {
+                    col {
+                        fixed(1) { node(labeled_spinner(SpinnerStyle::Braille, "Braille")) }
+                        fixed(1) { node(labeled_spinner(SpinnerStyle::Line, "Line")) }
+                        fixed(1) { node(labeled_spinner(SpinnerStyle::Dots, "Dots")) }
+                    }
+                }
+            }
+            fixed(6) {
+                boxed(title = Line::from(Span::styled(" progress ", theme.accent_style()))) {
+                    col {
+                        fixed(1) { node(ProgressBar::determinate(0.25).percent(true)) }
+                        fixed(1) { node(ProgressBar::determinate(0.60).percent(true)) }
+                        fixed(1) { node(ProgressBar::determinate(animated).percent(true)) }
+                        fixed(1) { node(ProgressBar::indeterminate(frame)) }
+                    }
+                }
+            }
+            fixed(3) {
+                boxed(title = Line::from(Span::styled(" loader ", theme.accent_style()))) {
+                    node(Loader::new(frame, "working…").hint("esc to quit"))
+                }
+            }
+            grow(1) { spacer() }
+            fixed(1) {
+                node(Text::new(vec![Line::from(Span::styled(
+                    "tuika gallery — native progress is live in the taskbar/top bar · press q to quit",
+                    theme.muted_style(),
+                ))]))
+            }
+        }
+    }
 }
 
 async fn run_tui(

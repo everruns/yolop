@@ -43,6 +43,8 @@
 pub mod anim;
 pub mod components;
 pub mod event;
+#[macro_use]
+mod macros;
 pub mod focus;
 pub mod geometry;
 pub mod host;
