@@ -113,3 +113,12 @@ axes = { binary = ["candidate"], harness = ["default"] }
 #   doppler run -- mira run --preset models --group-by target
 [presets.models]
 axes = { binary = ["candidate"], harness = ["default"], effort = ["default"] }
+
+# SELF-WRITING — the acceptance proof for self-authored extensions: yolop drives
+# its own extension tools to scaffold, implement, install, and doctor a git-block
+# extension end to end. Pass means it called all three verbs and reported DONE.
+#   doppler run -- mira run --preset self-writing
+[presets.self-writing]
+tag = "self-writing"
+targets = ["anthropic/claude-sonnet-4-5"]
+axes = { binary = ["candidate"], effort = ["default"], harness = ["default"] }

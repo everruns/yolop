@@ -679,6 +679,37 @@ fn redundant_validation_sample() -> Sample {
     )
 }
 
+/// Self-writing: yolop authors a whole extension for itself, end to end, using
+/// its own extension tools. The pass signal is that it drove the full loop
+/// (scaffold → install → verify) and reported success — the deny path itself is
+/// proven deterministically by the `scaffold` unit tests. Grades autonomy, not
+/// generated correctness.
+fn self_write_git_block_extension_sample() -> Sample {
+    Sample::new(
+        "self-write-git-block-extension",
+        "Build a yolop extension that blocks git, using your extension tools. \
+         (1) Call `scaffold_extension` with name \"git-guard\", language \
+         \"python\", a single `pre_tool_use` hook, and dir \".\" so the package \
+         is created in the current directory. (2) Edit the generated server's \
+         hook handler so a `pre_tool_use` event for a shell command that runs \
+         `git` returns a block decision (`{\"block\": true, ...}`). (3) Install \
+         it with `install_extension` using the git-guard directory as the \
+         source. (4) Verify it with `doctor_extension name=git-guard`. Make the \
+         edits directly; do not ask questions. When doctor reports ok, reply \
+         with exactly DONE.",
+    )
+    .tag("self-writing")
+    .meta("kind", "extension-authoring")
+    .meta("max_turns", 24)
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["DONE"],
+            "tool_called": ["scaffold_extension", "install_extension", "doctor_extension"]
+        }]),
+    )
+}
+
 fn dataset() -> Dataset {
     let cargo_toml = "[package]\nname = \"seed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
     Dataset::new(vec![
@@ -805,6 +836,7 @@ fn dataset() -> Dataset {
         normal_output_preservation_sample(),
         dependency_release_oscillation_sample(),
         redundant_validation_sample(),
+        self_write_git_block_extension_sample(),
         Sample::new(
             "replace-console-log",
             "Replace every `console.log(...)` call with `logger.info(...)` across all \
