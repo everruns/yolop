@@ -477,6 +477,218 @@ fn osc_progress_encoding() {
     );
 }
 
+// ---- palette / theme -----------------------------------------------------
+//
+// Every slot gets a unique indexed color so a rendered cell's fg/bg pins down
+// exactly which theme slot the component read — not just "some non-default
+// color". Swapping the theme must restyle the same view tree.
+
+use ratatui::style::{Color, Modifier};
+
+/// A theme whose slots are all distinct, identifiable colors.
+fn rainbow_theme() -> Theme {
+    Theme {
+        background: Color::Indexed(1),
+        surface: Color::Indexed(2),
+        text: Color::Indexed(3),
+        muted: Color::Indexed(4),
+        dim: Color::Indexed(5),
+        accent: Color::Indexed(6),
+        accent_alt: Color::Indexed(7),
+        border: Color::Indexed(8),
+        border_focused: Color::Indexed(9),
+        selection_bg: Color::Indexed(10),
+        selection_fg: Color::Indexed(11),
+    }
+}
+
+#[test]
+fn theme_helper_styles_map_to_slots() {
+    let t = rainbow_theme();
+    assert_eq!(t.text_style().fg, Some(t.text));
+    assert_eq!(t.muted_style().fg, Some(t.muted));
+    assert_eq!(t.accent_style().fg, Some(t.accent));
+    assert!(t.accent_style().add_modifier.contains(Modifier::BOLD));
+    assert_eq!(t.border_color(false), t.border);
+    assert_eq!(t.border_color(true), t.border_focused);
+    let sel = t.selection_style();
+    assert_eq!(sel.bg, Some(t.selection_bg));
+    assert_eq!(sel.fg, Some(t.selection_fg));
+    assert!(sel.add_modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn boxed_border_follows_theme_focus_color() {
+    use super::components::{Boxed, Text};
+    let t = rainbow_theme();
+
+    let make = |focused: bool| {
+        let mut buf = buffer(8, 3);
+        let area = buf.area;
+        let ctx = RenderCtx::new(&t).with_focus(focused);
+        let boxed = Boxed::new(element(Text::raw("x")));
+        let mut surface = Surface::new(&mut buf, area);
+        boxed.render(area, &mut surface, &ctx);
+        buf[(0, 0)].fg // the '╭' corner
+    };
+
+    assert_eq!(make(false), t.border, "unfocused border uses theme.border");
+    assert_eq!(
+        make(true),
+        t.border_focused,
+        "focused border uses theme.border_focused"
+    );
+}
+
+#[test]
+fn status_bar_background_is_theme_surface() {
+    use super::components::StatusBar;
+    use ratatui::text::Span;
+    let t = rainbow_theme();
+    let bar = StatusBar::new().left(vec![Span::raw("hi")]);
+    let mut buf = buffer(10, 1);
+    let area = buf.area;
+    let ctx = RenderCtx::new(&t);
+    let mut surface = Surface::new(&mut buf, area);
+    bar.render(area, &mut surface, &ctx);
+    // The whole row is filled with the surface background.
+    assert_eq!(buf[(9, 0)].bg, t.surface);
+}
+
+#[test]
+fn select_list_selection_uses_theme_slots() {
+    use super::components::{SelectList, SelectState};
+    use ratatui::text::Line;
+    let t = rainbow_theme();
+    let mut state = SelectState::new();
+    state.handle(&Event::Key(Key::new(KeyCode::Down)), 2); // select row 1
+    let list = SelectList::new(vec![Line::from("a"), Line::from("b")], &state);
+    let mut buf = buffer(10, 2);
+    let area = buf.area;
+    let ctx = RenderCtx::new(&t);
+    let mut surface = Surface::new(&mut buf, area);
+    list.render(area, &mut surface, &ctx);
+    assert_eq!(buf[(0, 1)].bg, t.selection_bg, "selected row bg");
+    assert_eq!(buf[(0, 1)].fg, t.selection_fg, "selected caret fg");
+    assert_ne!(
+        buf[(0, 0)].bg,
+        t.selection_bg,
+        "unselected row not highlighted"
+    );
+}
+
+#[test]
+fn scrollbar_thumb_and_track_use_theme() {
+    use super::components::{Scroll, ScrollState};
+    use ratatui::text::Line;
+    let t = rainbow_theme();
+    let lines: Vec<Line<'static>> = (0..30).map(|i| Line::from(format!("l{i}"))).collect();
+    let mut state = ScrollState::new();
+    state.clamp(30, 5);
+    let scroll = Scroll::new(lines, &state);
+    let mut buf = buffer(10, 5);
+    let area = buf.area;
+    let ctx = RenderCtx::new(&t);
+    let mut surface = Surface::new(&mut buf, area);
+    scroll.render(area, &mut surface, &ctx);
+    let col = 9; // scrollbar column
+    let fgs: Vec<Color> = (0..5).map(|y| buf[(col, y)].fg).collect();
+    assert!(fgs.contains(&t.muted), "thumb uses theme.muted: {fgs:?}");
+    assert!(fgs.contains(&t.dim), "track uses theme.dim: {fgs:?}");
+}
+
+#[test]
+fn progress_bar_default_colors_come_from_theme() {
+    let t = rainbow_theme();
+    let ctx = RenderCtx::new(&t);
+
+    // Determinate: filled fg = accent, empty bg = dim.
+    let bar = ProgressBar::determinate(0.5);
+    let mut buf = buffer(10, 1);
+    let area = buf.area;
+    let mut surface = Surface::new(&mut buf, area);
+    bar.render(area, &mut surface, &ctx);
+    assert_eq!(buf[(0, 0)].fg, t.accent, "filled cell fg");
+    assert_eq!(buf[(9, 0)].bg, t.dim, "empty cell bg");
+
+    // Indeterminate: bright segment fg = accent, track fg = dim.
+    let bar = ProgressBar::indeterminate(0);
+    let mut buf = buffer(12, 1);
+    let area = buf.area;
+    let mut surface = Surface::new(&mut buf, area);
+    bar.render(area, &mut surface, &ctx);
+    let fgs: Vec<Color> = (0..12).map(|x| buf[(x, 0)].fg).collect();
+    assert!(fgs.contains(&t.accent), "segment fg accent: {fgs:?}");
+    assert!(fgs.contains(&t.dim), "track fg dim: {fgs:?}");
+}
+
+#[test]
+fn spinner_default_color_is_theme_accent() {
+    let t = rainbow_theme();
+    let ctx = RenderCtx::new(&t);
+    let mut buf = buffer(3, 1);
+    let area = buf.area;
+    let mut surface = Surface::new(&mut buf, area);
+    Spinner::new(0).render(area, &mut surface, &ctx);
+    assert_eq!(buf[(0, 0)].fg, t.accent);
+}
+
+#[test]
+fn compositor_uses_theme_background_and_overlay_surface() {
+    let t = rainbow_theme();
+    let mut buf = buffer(12, 4);
+    let area = buf.area;
+    let root = Text::raw("base");
+    let dialog = Text::raw("hi");
+    let overlays = [Overlay {
+        area: Rect::new(4, 1, 4, 1),
+        view: &dialog,
+        clear: true,
+    }];
+    host::paint(&mut buf, area, &t, &root, &overlays);
+    assert_eq!(
+        buf[(0, 3)].bg,
+        t.background,
+        "base fill uses theme.background"
+    );
+    assert_eq!(
+        buf[(4, 1)].bg,
+        t.surface,
+        "overlay clear uses theme.surface"
+    );
+}
+
+#[test]
+fn swapping_theme_restyles_the_same_tree() {
+    use super::components::{Boxed, Text};
+
+    let tree = || Boxed::new(element(Text::raw("x")));
+    let render_border = |theme: &Theme| {
+        let mut buf = buffer(8, 3);
+        let area = buf.area;
+        let ctx = RenderCtx::new(theme);
+        let mut surface = Surface::new(&mut buf, area);
+        tree().render(area, &mut surface, &ctx);
+        buf[(0, 0)].fg
+    };
+
+    let a = Theme {
+        border: Color::Indexed(21),
+        ..rainbow_theme()
+    };
+    let b = Theme {
+        border: Color::Indexed(99),
+        ..rainbow_theme()
+    };
+    assert_eq!(render_border(&a), Color::Indexed(21));
+    assert_eq!(render_border(&b), Color::Indexed(99));
+    assert_ne!(
+        render_border(&a),
+        render_border(&b),
+        "theme swap must restyle"
+    );
+}
+
 // ---- view! macro ---------------------------------------------------------
 
 fn render_el(el: &super::view::Element, w: u16, h: u16) -> Vec<String> {
