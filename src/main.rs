@@ -166,6 +166,10 @@ enum Commands {
     Worktree(WorktreeArgs),
     /// Manage MCP servers in global settings or workspace `.mcp.json`.
     Mcp(McpArgs),
+    /// Live demo of the experimental `tuika` TUI toolkit (spinners, progress
+    /// bars, loader). Press `q` or `Esc` to quit. Hidden dev helper.
+    #[command(hide = true)]
+    TuikaGallery,
 }
 
 #[derive(Args, Debug)]
@@ -826,6 +830,7 @@ fn run_command(command: Commands) -> Result<()> {
         }
         Commands::Worktree(args) => run_worktree_command(args.command),
         Commands::Mcp(args) => run_mcp_command(args.command),
+        Commands::TuikaGallery => run_tuika_gallery(),
         Commands::Into(into) => match into.target {
             IntoTarget::Paseo(args) => {
                 let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));
@@ -900,6 +905,106 @@ fn run_command(command: Commands) -> Result<()> {
     }
 }
 
+/// Live demo of the `tuika` motion components. Renders spinners, progress bars,
+/// and a loader on the alternate screen, and drives the terminal's native
+/// OSC 9;4 progress indicator while running. Quits on `q`/`Esc`/`Ctrl-C`.
+fn run_tuika_gallery() -> Result<()> {
+    use crossterm::event::{self, Event as CtEvent, KeyCode as CtKeyCode, KeyEventKind};
+    use std::time::Duration;
+
+    let mut raw = RawModeGuard::new()?;
+    let mut alt = tuika::AltScreen::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Fullscreen,
+        },
+    )?;
+    let theme = tuika::Theme::default();
+    let mut progress = tuika::TerminalProgress::new();
+    progress.indeterminate();
+
+    let mut frame: u64 = 0;
+    loop {
+        terminal.draw(|f| {
+            let area = f.area();
+            let root = build_gallery(frame, &theme);
+            tuika::paint(f.buffer_mut(), area, &theme, root.as_ref(), &[]);
+        })?;
+
+        if event::poll(Duration::from_millis(80))?
+            && let CtEvent::Key(key) = event::read()?
+            && key.kind != KeyEventKind::Release
+            && matches!(key.code, CtKeyCode::Char('q') | CtKeyCode::Esc)
+        {
+            break;
+        }
+        frame = frame.wrapping_add(1);
+    }
+
+    progress.clear();
+    let _ = terminal.clear();
+    drop(terminal);
+    alt.leave();
+    raw.disable()?;
+    Ok(())
+}
+
+/// Build the gallery view tree for `frame`, using [`ratatui::text`] helpers via
+/// `tuika` components.
+fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
+    use ratatui::text::{Line, Span};
+    use tuika::{Boxed, Flex, Loader, ProgressBar, Spinner, SpinnerStyle, Text, element};
+
+    let labeled_spinner = |style: SpinnerStyle, label: &str| -> tuika::Element {
+        element(
+            Flex::row()
+                .gap(1)
+                .fixed(1, element(Spinner::new(frame).style(style)))
+                .auto(element(Text::raw(label.to_string()))),
+        )
+    };
+
+    let spinners = Boxed::new(element(
+        Flex::column()
+            .fixed(1, labeled_spinner(SpinnerStyle::Braille, "Braille"))
+            .fixed(1, labeled_spinner(SpinnerStyle::Line, "Line"))
+            .fixed(1, labeled_spinner(SpinnerStyle::Dots, "Dots")),
+    ))
+    .title(Line::from(Span::styled(" spinners ", theme.accent_style())));
+
+    let animated = tuika::anim::ping_pong(frame, 120);
+    let bars = Boxed::new(element(
+        Flex::column()
+            .fixed(1, element(ProgressBar::determinate(0.25).percent(true)))
+            .fixed(1, element(ProgressBar::determinate(0.60).percent(true)))
+            .fixed(1, element(ProgressBar::determinate(animated).percent(true)))
+            .fixed(1, element(ProgressBar::indeterminate(frame))),
+    ))
+    .title(Line::from(Span::styled(" progress ", theme.accent_style())));
+
+    let loader = Boxed::new(element(Loader::new(frame, "working…").hint("esc to quit")))
+        .title(Line::from(Span::styled(" loader ", theme.accent_style())));
+
+    let footer = Text::new(vec![Line::from(Span::styled(
+        "tuika gallery — native progress is live in the taskbar/top bar · press q to quit",
+        theme.muted_style(),
+    ))]);
+
+    element(
+        Flex::column()
+            .background(ratatui::style::Style::default().bg(theme.background))
+            .padding(tuika::Padding::all(1))
+            .gap(1)
+            .fixed(5, element(spinners))
+            .fixed(6, element(bars))
+            .fixed(3, element(loader))
+            .grow(1, element(tuika::Spacer))
+            .fixed(1, element(footer)),
+    )
+}
+
 async fn run_tui(
     runtime: BuiltRuntime,
     pending_images: Vec<ContentPart>,
@@ -939,6 +1044,7 @@ async fn run_tui(
     }
 
     let mut app = App::new(runtime, pending_images);
+    app.enable_native_progress();
     if fullscreen {
         app.set_render_mode(app::RenderMode::Fullscreen);
     }

@@ -7,14 +7,17 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+use super::anim;
 use super::components::{
-    Paragraph, Scroll, ScrollState, SelectList, SelectOutcome, SelectState, Text,
+    Loader, Paragraph, ProgressBar, Scroll, ScrollState, SelectList, SelectOutcome, SelectState,
+    Spinner, Text,
 };
 use super::event::{Event, EventFlow, Key, KeyCode, Mouse, MouseKind};
 use super::focus::FocusRegistry;
 use super::geometry::{Padding, Size};
 use super::host::{self, Overlay};
 use super::layout::{Align, Dimension, Direction, Item, Justify, LayoutStyle, solve};
+use super::native::{self, ProgressState};
 use super::overlay::{Anchor, Extent, OverlaySpec};
 use super::style::Theme;
 use super::surface::Surface;
@@ -350,6 +353,128 @@ fn paint_composites_background_root_and_overlay() {
     // Overlay painted last on its row with a surface background.
     assert!(row(&buf, 2).contains("MODAL"));
     assert_eq!(buf[(5, 2)].bg, theme.surface);
+}
+
+// ---- animation / progress ------------------------------------------------
+
+#[test]
+fn easing_endpoints_and_midpoints() {
+    for f in [
+        anim::linear,
+        anim::ease_in,
+        anim::ease_out,
+        anim::ease_in_out,
+    ] {
+        assert!((f(0.0) - 0.0).abs() < 1e-6);
+        assert!((f(1.0) - 1.0).abs() < 1e-6);
+    }
+    // Cubic ease-in-out is symmetric about 0.5.
+    assert!((anim::ease_in_out(0.5) - 0.5).abs() < 1e-6);
+    // Clamps out-of-range input.
+    assert_eq!(anim::linear(2.0), 1.0);
+    assert_eq!(anim::ease_out(-1.0), 0.0);
+}
+
+#[test]
+fn ping_pong_and_sawtooth_shapes() {
+    assert!((anim::ping_pong(0, 60) - 0.0).abs() < 1e-6);
+    assert!((anim::ping_pong(30, 60) - 1.0).abs() < 1e-6); // peak at half period
+    assert!((anim::ping_pong(60, 60) - 0.0).abs() < 1e-6); // back to start
+    assert!((anim::sawtooth(0, 10) - 0.0).abs() < 1e-6);
+    assert!((anim::sawtooth(5, 10) - 0.5).abs() < 1e-6);
+    assert!((anim::sawtooth(10, 10) - 0.0).abs() < 1e-6); // wraps
+}
+
+#[test]
+fn spinner_cycles_frames() {
+    let frames = super::components::SpinnerStyle::Braille.frames();
+    assert_eq!(Spinner::new(0).glyph(), frames[0]);
+    assert_eq!(Spinner::new(1).glyph(), frames[1]);
+    // Wraps at the end of the frame set.
+    assert_eq!(Spinner::new(frames.len() as u64).glyph(), frames[0]);
+}
+
+#[test]
+fn progress_bar_determinate_fills_by_fraction() {
+    let bar = ProgressBar::determinate(0.5);
+    assert_eq!(bar.percent_value(), Some(50));
+    let mut buf = buffer(10, 1);
+    let theme = Theme::default();
+    let ctx = RenderCtx::new(&theme);
+    let area = buf.area;
+    let mut surface = Surface::new(&mut buf, area);
+    bar.render(area, &mut surface, &ctx);
+    // Half of 10 cells fully filled.
+    let full = (0..10).filter(|&x| buf[(x, 0)].symbol() == "█").count();
+    assert_eq!(full, 5);
+}
+
+#[test]
+fn progress_bar_full_and_percent_label() {
+    let bar = ProgressBar::determinate(1.0).percent(true);
+    let mut buf = buffer(20, 1);
+    let theme = Theme::default();
+    let ctx = RenderCtx::new(&theme);
+    let area = buf.area;
+    let mut surface = Surface::new(&mut buf, area);
+    bar.render(area, &mut surface, &ctx);
+    assert!(row(&buf, 0).contains("100%"));
+    // Bar area (minus the " 100%" suffix = 5 cols) is fully filled.
+    let full = (0..15).filter(|&x| buf[(x, 0)].symbol() == "█").count();
+    assert_eq!(full, 15);
+}
+
+#[test]
+fn progress_bar_indeterminate_has_segment_and_track() {
+    let bar = ProgressBar::indeterminate(0);
+    let mut buf = buffer(12, 1);
+    let theme = Theme::default();
+    let ctx = RenderCtx::new(&theme);
+    let area = buf.area;
+    let mut surface = Surface::new(&mut buf, area);
+    bar.render(area, &mut surface, &ctx);
+    let seg = (0..12).filter(|&x| buf[(x, 0)].symbol() == "█").count();
+    let track = (0..12).filter(|&x| buf[(x, 0)].symbol() == "░").count();
+    assert!(seg > 0, "expected a bright segment");
+    assert!(track > 0, "expected a dim track");
+    assert_eq!(seg + track, 12);
+}
+
+#[test]
+fn loader_renders_spinner_and_message() {
+    let loader = Loader::new(0, "thinking").hint("esc to cancel");
+    let mut buf = buffer(30, 1);
+    let theme = Theme::default();
+    let ctx = RenderCtx::new(&theme);
+    let area = buf.area;
+    let mut surface = Surface::new(&mut buf, area);
+    loader.render(area, &mut surface, &ctx);
+    let line = row(&buf, 0);
+    assert!(line.contains("thinking"), "{line}");
+    assert!(line.contains("esc to cancel"), "{line}");
+}
+
+#[test]
+fn osc_progress_encoding() {
+    // ESC ] 9 ; 4 ; state ; percent BEL
+    assert_eq!(
+        native::encode(ProgressState::Indeterminate, 0),
+        "\x1b]9;4;3;0\x07"
+    );
+    assert_eq!(
+        native::encode(ProgressState::Normal, 50),
+        "\x1b]9;4;1;50\x07"
+    );
+    assert_eq!(native::encode(ProgressState::Clear, 0), "\x1b]9;4;0;0\x07");
+    assert_eq!(
+        native::encode(ProgressState::Error, 12),
+        "\x1b]9;4;2;12\x07"
+    );
+    // Percent is clamped to 100.
+    assert_eq!(
+        native::encode(ProgressState::Normal, 200),
+        "\x1b]9;4;1;100\x07"
+    );
 }
 
 // ---- a small end-to-end tree ---------------------------------------------

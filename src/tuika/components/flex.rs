@@ -49,6 +49,30 @@ impl Flex {
         self
     }
 
+    /// Set the gap between children (passthrough to the layout style).
+    pub fn gap(mut self, gap: u16) -> Self {
+        self.style.gap = gap;
+        self
+    }
+
+    /// Set padding inside the container (passthrough to the layout style).
+    pub fn padding(mut self, padding: crate::tuika::geometry::Padding) -> Self {
+        self.style.padding = padding;
+        self
+    }
+
+    /// Set cross-axis alignment (passthrough to the layout style).
+    pub fn align(mut self, align: crate::tuika::layout::Align) -> Self {
+        self.style.align_items = align;
+        self
+    }
+
+    /// Set main-axis distribution (passthrough to the layout style).
+    pub fn justify(mut self, justify: crate::tuika::layout::Justify) -> Self {
+        self.style.justify = justify;
+        self
+    }
+
     /// Add a child with an explicit main-axis dimension.
     pub fn child(mut self, dimension: Dimension, view: Element) -> Self {
         self.children.push(Child { view, dimension });

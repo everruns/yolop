@@ -40,12 +40,14 @@
 // trimming the API down to today's single call site.
 #![allow(dead_code, unused_imports)]
 
+pub mod anim;
 pub mod components;
 pub mod event;
 pub mod focus;
 pub mod geometry;
 pub mod host;
 pub mod layout;
+pub mod native;
 pub mod overlay;
 pub mod style;
 pub mod surface;
@@ -57,14 +59,15 @@ pub mod view;
 // part of the surface a future standalone crate exposes, so we keep them
 // exported rather than trimming to today's call sites.
 pub use components::{
-    Boxed, Flex, Paragraph, Scroll, ScrollState, SelectList, SelectOutcome, SelectState, Spacer,
-    StatusBar, Text,
+    Boxed, Flex, Loader, Paragraph, ProgressBar, Scroll, ScrollState, SelectList, SelectOutcome,
+    SelectState, Spacer, Spinner, SpinnerStyle, StatusBar, Text,
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseKind};
 pub use focus::FocusRegistry;
 pub use geometry::{Padding, Size};
 pub use host::{AltScreen, Overlay, paint, translate_event};
 pub use layout::{Align, Dimension, Direction, Justify, LayoutStyle};
+pub use native::{ProgressState, TerminalProgress};
 pub use overlay::{Anchor, Extent, OverlaySpec};
 pub use style::{BorderStyle, Theme};
 pub use view::{Element, RenderCtx, View, element};
