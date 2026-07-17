@@ -62,6 +62,44 @@ tuika::paint(f.buffer_mut(), f.area(), &theme, root.as_ref(), &[]);
 
 Run the live demo: `cargo run -- tuika-gallery` (press `q` to quit).
 
+## Declarative DSL (`view!`)
+
+`view!` is optional sugar over the builders — it expands to the exact same
+`Flex`/`Boxed`/`element(...)` calls, so there is no runtime cost and nothing new
+in the model. It just makes nested layout read top-down:
+
+```rust
+let root = crate::view! {
+    col(gap = 1, padding = tuika::Padding::all(1)) {
+        boxed(title = " body ") { text("hello") }
+        grow(1) { spacer() }
+        node(status_bar)          // any expression that is `impl View`
+    }
+};
+```
+
+Grammar (each keyword consumes exactly one node):
+
+- `col(attrs) { … }` / `row(attrs) { … }` — flex containers. Attrs (all
+  optional): `gap`, `padding`, `align`, `justify`, `background`.
+- `boxed(attrs) { child }` — bordered container. Attrs: `title`, `border`,
+  `padding`, `background`.
+- `text(expr)`, `spacer()` — leaves.
+- `grow(n) { node }` / `fixed(n) { node }` — set a child's main-axis size
+  (default auto).
+- **`node(expr)`** — splice any `impl View`. This is the escape hatch, and how
+  a component **from another crate** participates in the DSL:
+
+  ```rust
+  use other_crate::Sparkline;
+  crate::view! { col { node(Sparkline::new(&data)) } };
+  ```
+
+First-class `Sparkline { … }` syntax for external components (with their own
+constructors and named attrs) needs a proc-macro; that lands when `tuika`
+becomes its own crate. Until then, `node(...)` covers every third-party
+component. The `tuika-gallery` demo is built entirely with `view!`.
+
 ## Native terminal progress
 
 `native::TerminalProgress` emits the OSC 9;4 sequence, which drives the

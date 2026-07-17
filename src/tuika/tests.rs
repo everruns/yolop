@@ -477,6 +477,68 @@ fn osc_progress_encoding() {
     );
 }
 
+// ---- view! macro ---------------------------------------------------------
+
+fn render_el(el: &super::view::Element, w: u16, h: u16) -> Vec<String> {
+    let theme = Theme::default();
+    let mut buf = buffer(w, h);
+    let area = buf.area;
+    let ctx = RenderCtx::new(&theme);
+    let mut surface = Surface::new(&mut buf, area);
+    el.render(area, &mut surface, &ctx);
+    (0..h).map(|y| row(&buf, y)).collect()
+}
+
+#[test]
+fn view_macro_matches_builder() {
+    use super::components::{Boxed, Flex, Spacer, Text};
+
+    // Hand-written builder tree.
+    let built: super::view::Element = element(
+        Flex::column()
+            .gap(1)
+            .auto(element(Boxed::new(element(Text::raw("hi"))).title(" t ")))
+            .grow(1, element(Spacer)),
+    );
+
+    // The same tree via the declarative macro.
+    let macroed: super::view::Element = crate::view! {
+        col(gap = 1) {
+            boxed(title = " t ") { text("hi") }
+            grow(1) { spacer() }
+        }
+    };
+
+    let a = render_el(&built, 20, 5);
+    let b = render_el(&macroed, 20, 5);
+    assert_eq!(a, b, "view! must render identically to the builder form");
+    assert!(b.iter().any(|l| l.contains('t')), "{b:?}");
+}
+
+/// A `View` standing in for a component defined in some other crate.
+struct Star;
+impl super::view::View for Star {
+    fn measure(&self, _available: Size) -> Size {
+        Size::new(1, 1)
+    }
+    fn render(&self, area: Rect, surface: &mut Surface, _ctx: &RenderCtx) {
+        surface.set(area.x, area.y, '★', Style::default());
+    }
+}
+
+#[test]
+fn view_macro_accepts_foreign_view_via_node() {
+    // `node(expr)` splices any `impl View` — this is how a component from
+    // another crate participates in the DSL.
+    let tree: super::view::Element = crate::view! {
+        col {
+            node(Star)
+        }
+    };
+    let out = render_el(&tree, 5, 2);
+    assert!(out[0].contains('★'), "foreign view should render: {out:?}");
+}
+
 // ---- a small end-to-end tree ---------------------------------------------
 
 #[test]
