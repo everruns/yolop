@@ -170,6 +170,12 @@ pub struct App {
     /// Last (content_height, viewport_height) the full-screen transcript drew,
     /// so mouse/paging handlers can clamp scrolling without re-laying out.
     scroll_metrics: (u16, u16),
+    /// Drives the terminal's native OSC 9;4 progress indicator (Ghostty top
+    /// bar / taskbar) while a turn runs. Works in both renderers. Enabled only
+    /// for real TUI sessions via [`App::enable_native_progress`] so tests and
+    /// non-terminal hosts emit no escape sequences.
+    term_progress: crate::tuika::TerminalProgress,
+    native_progress: bool,
 }
 
 /// The renderer backing a TUI session.
@@ -422,6 +428,8 @@ impl App {
             render_mode: RenderMode::default(),
             scroll: crate::tuika::ScrollState::new(),
             scroll_metrics: (0, 0),
+            term_progress: crate::tuika::TerminalProgress::new(),
+            native_progress: false,
         };
         app.emit_system_banner();
         if should_setup {
@@ -446,6 +454,12 @@ impl App {
     /// `run_tui` before the loop when `--fullscreen` is set.
     pub(crate) fn set_render_mode(&mut self, mode: RenderMode) {
         self.render_mode = mode;
+    }
+
+    /// Enable the terminal's native OSC 9;4 progress indicator for this session.
+    /// Called by `run_tui`; left off for tests and non-terminal hosts.
+    pub(crate) fn enable_native_progress(&mut self) {
+        self.native_progress = true;
     }
 
     pub fn should_show_resume_hint(&self) -> bool {
@@ -1558,6 +1572,9 @@ impl App {
         self.stream_preview = None;
         self.rx = None;
         self.turn_cancel = None;
+        if self.native_progress {
+            self.term_progress.clear();
+        }
         self.esc_pending_cancel = false;
     }
 
@@ -1736,6 +1753,11 @@ impl App {
         self.busy = true;
         self.turn_activity = activity;
         self.stream_preview = None;
+        if self.native_progress {
+            // Turn length is unknown, so show the terminal's busy/indeterminate
+            // indicator until the turn completes.
+            self.term_progress.indeterminate();
+        }
     }
 
     fn start_turn(&mut self, prompt: String) {
