@@ -306,7 +306,12 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
             self.skill_global.clone(),
             self.skill_system.clone(),
         )?);
-        let mut mounted = MountFs::new(composite);
+        // Present the real host checkout path to the model, not the `/workspace`
+        // alias (#258): yolop runs on the user's own machine, so the shell, file
+        // tools, and narration must all name the repo the same way. everruns
+        // 0.17.12's `scoped_prompt_file_store` preserves this backend-native
+        // policy into the system prompt too (via `wrap_if_needed`).
+        let mut mounted = MountFs::new(composite).with_backend_display();
         if let Some(skill) = self.environment_skill {
             let environment = Arc::new(InMemorySessionFileStore::new());
             environment
@@ -3011,7 +3016,9 @@ mod tests {
         let composite: Arc<dyn SessionFileSystem> = Arc::new(
             CodingCliSessionFileStore::new(host, session.to_path_buf(), None, None).expect("store"),
         );
-        MountFs::wrap(composite)
+        // Match production (`build`): backend-native display so tests exercise the
+        // real host-path presentation (#258), not the `/workspace` alias.
+        Arc::new(MountFs::new(composite).with_backend_display())
     }
 
     #[test]
@@ -4771,10 +4778,13 @@ mod tests {
         let host = Arc::new(
             WorkspaceHost::new(active_root.clone(), first.path().to_path_buf()).expect("host"),
         );
-        let store = MountFs::wrap(Arc::new(
-            CodingCliSessionFileStore::new(host, session.path().to_path_buf(), None, None)
-                .expect("store"),
-        ));
+        let store: Arc<dyn SessionFileSystem> = Arc::new(
+            MountFs::new(Arc::new(
+                CodingCliSessionFileStore::new(host, session.path().to_path_buf(), None, None)
+                    .expect("store"),
+            ))
+            .with_backend_display(),
+        );
         let session_id = SessionId::from_seed(7);
         let first_root = std::fs::canonicalize(first.path()).expect("canonical first");
         let second_root = std::fs::canonicalize(second.path()).expect("canonical second");

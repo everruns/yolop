@@ -2471,6 +2471,7 @@ mod tests {
                 turn_id: TurnId::new(),
                 model: None,
                 iteration: Some(3),
+                phase: None,
             },
         );
 
@@ -2768,6 +2769,7 @@ mod tests {
                 turn_id,
                 delta: "Hel".to_string(),
                 accumulated: "Hel".to_string(),
+                phase: None,
             },
         );
         handle_live_event(&delta_event, &mut emitted, &mut router, &tx);
@@ -2779,6 +2781,7 @@ mod tests {
                 turn_id,
                 delta: "lo, world".to_string(),
                 accumulated: "Hello, world".to_string(),
+                phase: None,
             },
         );
         handle_live_event(&more, &mut emitted, &mut router, &tx);
