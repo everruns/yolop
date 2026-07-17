@@ -22,6 +22,7 @@ pub(crate) mod manage;
 pub(crate) mod manager;
 pub(crate) mod package;
 pub(crate) mod protocol;
+pub(crate) mod scaffold;
 pub(crate) mod store;
 
 pub(crate) use capability::ExtensionCapability;
@@ -318,6 +319,94 @@ mod spawn_tests {
             }
             other => panic!("expected block, got {other:?}"),
         }
+    }
+
+    /// The self-writing acceptance case: `scaffold_extension` produces a
+    /// package whose generated server, once the author fills in the hook body,
+    /// blocks a real tool call when spawned exactly as the runtime spawns it
+    /// (command resolved via the package's `bin/` on PATH — no absolute paths).
+    #[tokio::test]
+    async fn scaffolded_extension_blocks_git_end_to_end() {
+        use super::scaffold::{HookSpec, Language, ScaffoldRequest, scaffold};
+        use everruns_core::atoms::PreToolUseDecision;
+        use everruns_core::tool_types::{BuiltinTool, ToolCall, ToolDefinition};
+        if python3().is_none() {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let out = scaffold(&ScaffoldRequest {
+            name: "git-guard".into(),
+            description: "Blocks git.".into(),
+            language: Language::Python,
+            tools: vec![],
+            hooks: vec![HookSpec {
+                event: "pre_tool_use".into(),
+                tool_name_glob: "*".into(),
+            }],
+            prompt: None,
+            dir: tmp.path().join("git-guard"),
+        })
+        .unwrap();
+
+        // Author step: fill in the hook body the scaffold left as a no-op.
+        let server = std::fs::read_to_string(&out.server).unwrap();
+        let filled = server.replace(
+            "\n    return {}\n\n\ndef handle_prompt",
+            "\n    command = (args or {}).get(\"command\", \"\")\n    \
+             if event == \"pre_tool_use\" and \"git\" in command.split():\n        \
+             return {\"block\": True, \"reason\": \"git is disabled by git-guard\"}\n    \
+             return {}\n\n\ndef handle_prompt",
+        );
+        assert_ne!(filled, server, "hook body anchor must match");
+        std::fs::write(&out.server, filled).unwrap();
+
+        let manifest =
+            parse_manifest(&std::fs::read_to_string(out.dir.join("plugin.json")).unwrap()).unwrap();
+        let capability = ExtensionCapability::new(
+            ExtensionPackage {
+                dir: out.dir.clone(),
+                manifest,
+            },
+            tmp.path().to_path_buf(),
+        );
+        let hooks = capability.pre_tool_use_hooks_with_config(&json!(null));
+        let hook = &hooks[0];
+        let tool_def = ToolDefinition::Builtin(BuiltinTool {
+            name: "bash".into(),
+            display_name: None,
+            description: "run".into(),
+            parameters: json!({ "type": "object" }),
+            policy: Default::default(),
+            category: None,
+            deferrable: Default::default(),
+            hints: Default::default(),
+            full_parameters: None,
+        });
+        let ctx =
+            everruns_core::traits::ToolContext::new(everruns_core::typed_id::SessionId::new());
+
+        // A git command is denied by the self-authored server.
+        let deny = ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({ "command": "git status" }),
+        };
+        match hook.before_exec(deny, &tool_def, &ctx).await {
+            PreToolUseDecision::Block { reason, .. } => assert!(reason.contains("git"), "{reason}"),
+            other => panic!("expected block, got {other:?}"),
+        }
+
+        // A non-git command passes through.
+        let allow = ToolCall {
+            id: "2".into(),
+            name: "bash".into(),
+            arguments: json!({ "command": "ls -la" }),
+        };
+        assert!(matches!(
+            hook.before_exec(allow, &tool_def, &ctx).await,
+            PreToolUseDecision::Continue(_)
+        ));
     }
 
     #[tokio::test]

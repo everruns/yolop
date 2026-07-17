@@ -5,6 +5,7 @@
 //! and the model can drive setup; a thin `/extensions` command mirrors them.
 
 use super::package::{discover_extensions, extension_capability_id};
+use super::scaffold::{self, HookSpec, Language, ScaffoldRequest, ToolSpec};
 use super::store::{self, CrateFetcher, GitRunner, Source, SystemCrateFetcher, SystemGit};
 use crate::settings::SettingsStore;
 use async_trait::async_trait;
@@ -65,8 +66,13 @@ impl Capability for ExtensionsCapability {
              installed and enabled, `install_extension` for a crates.io crate \
              (`crates.io:yolop-extension-<name>`), git URL, or local path, \
              `enable_extension`/`disable_extension` to toggle one in the harness (takes effect \
-             next session), and `remove_extension` to uninstall. Installing runs third-party \
-             code on the user's machine — confirm the source with the user first.",
+             next session), and `remove_extension` to uninstall. To build a NEW extension \
+             yourself, `scaffold_extension` generates a ready-to-edit package (manifest + \
+             capability server) — declare what it contributes via `tools`, `hooks`, and/or \
+             `prompt` — then edit the generated `handle_*` bodies, `install_extension \
+             source=<dir>`, `doctor_extension` to verify, and `enable_extension`. Installing \
+             runs third-party code on the user's machine — confirm the source with the user \
+             first.",
         )
     }
 
@@ -79,6 +85,7 @@ impl Capability for ExtensionsCapability {
             crates: self.crates.clone(),
         });
         vec![
+            Box::new(ManageTool::new(ctx.clone(), Verb::Scaffold)),
             Box::new(ManageTool::new(ctx.clone(), Verb::List)),
             Box::new(ManageTool::new(ctx.clone(), Verb::Install)),
             Box::new(ManageTool::new(ctx.clone(), Verb::Remove)),
@@ -99,6 +106,7 @@ struct ManageCtx {
 
 #[derive(Clone, Copy)]
 enum Verb {
+    Scaffold,
     List,
     Install,
     Remove,
@@ -115,6 +123,102 @@ struct ManageTool {
 impl ManageTool {
     fn new(ctx: Arc<ManageCtx>, verb: Verb) -> Self {
         Self { ctx, verb }
+    }
+
+    fn scaffold(&self, args: &Value) -> ToolExecutionResult {
+        let Some(name) = args.get("name").and_then(Value::as_str) else {
+            return ToolExecutionResult::ToolError("`name` is required".into());
+        };
+        let language = match Language::parse(
+            args.get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("python"),
+        ) {
+            Ok(lang) => lang,
+            Err(err) => return ToolExecutionResult::ToolError(err),
+        };
+        let tools = args
+            .get("tools")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        let name = t.get("name").and_then(Value::as_str)?.to_string();
+                        let description = t
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        Some(ToolSpec { name, description })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let hooks = args
+            .get("hooks")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|h| {
+                        let event = h.get("event").and_then(Value::as_str)?.to_string();
+                        let tool_name_glob = h
+                            .get("tool_name_glob")
+                            .and_then(Value::as_str)
+                            .unwrap_or("*")
+                            .to_string();
+                        Some(HookSpec {
+                            event,
+                            tool_name_glob,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let prompt = args
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        // Default target: a sibling `scaffold/<name>` of the extensions dir, so
+        // authored packages sit next to where they install without cluttering
+        // the workspace. An explicit `dir` (a parent) overrides.
+        let dir = match args.get("dir").and_then(Value::as_str) {
+            Some(parent) => PathBuf::from(parent).join(name),
+            None => self
+                .ctx
+                .extensions_dir
+                .parent()
+                .unwrap_or(&self.ctx.extensions_dir)
+                .join("scaffold")
+                .join(name),
+        };
+        let req = ScaffoldRequest {
+            name: name.to_string(),
+            description: args
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            language,
+            tools,
+            hooks,
+            prompt,
+            dir,
+        };
+        match scaffold::scaffold(&req) {
+            Ok(out) => ToolExecutionResult::Success(json!({
+                "scaffolded": name,
+                "dir": out.dir.display().to_string(),
+                "server": out.server.display().to_string(),
+                "files": out.files,
+                "next": format!(
+                    "Edit the handle_* bodies in {}, then: install_extension source={} → \
+                     doctor_extension name={name} → enable_extension name={name} (next session).",
+                    out.server.display(),
+                    out.dir.display(),
+                ),
+            })),
+            Err(err) => ToolExecutionResult::ToolError(format!("scaffold failed: {err}")),
+        }
     }
 
     fn list(&self) -> ToolExecutionResult {
@@ -251,6 +355,7 @@ impl ManageTool {
 impl Tool for ManageTool {
     fn name(&self) -> &str {
         match self.verb {
+            Verb::Scaffold => "scaffold_extension",
             Verb::List => "list_extensions",
             Verb::Install => "install_extension",
             Verb::Remove => "remove_extension",
@@ -262,6 +367,15 @@ impl Tool for ManageTool {
 
     fn description(&self) -> &str {
         match self.verb {
+            Verb::Scaffold => {
+                "Scaffold a new, ready-to-edit extension package (manifest + a self-contained \
+                 capability server) so you can author an extension end-to-end. Generates a \
+                 correct-by-construction skeleton that installs and passes doctor out of the \
+                 box; you then fill in the `handle_*` bodies. Declare what it contributes via \
+                 `tools`, `hooks`, and/or `prompt`. After editing, install it with \
+                 `install_extension source=<dir>`, verify with `doctor_extension`, and turn it \
+                 on with `enable_extension` (effective next session)."
+            }
             Verb::List => "List installed extensions and whether each is enabled.",
             Verb::Install => {
                 "Install an extension from crates.io (`crates.io:yolop-extension-<name>[@ver]`, \
@@ -287,6 +401,37 @@ impl Tool for ManageTool {
 
     fn parameters_schema(&self) -> Value {
         match self.verb {
+            Verb::Scaffold => json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string",
+                        "description": "Extension name (ascii letters, digits, `-`, `_`)." },
+                    "description": { "type": "string",
+                        "description": "One-line summary of what the extension does." },
+                    "language": { "type": "string", "enum": ["python"], "default": "python",
+                        "description": "Server language template. Python is toolchain-free." },
+                    "tools": { "type": "array", "description": "Tool contributions.",
+                        "items": { "type": "object", "properties": {
+                            "name": { "type": "string" },
+                            "description": { "type": "string" }
+                        }, "required": ["name"] } },
+                    "hooks": { "type": "array",
+                        "description": "Lifecycle hook subscriptions. A pre_tool_use hook can \
+                            block a tool call (e.g. deny git).",
+                        "items": { "type": "object", "properties": {
+                            "event": { "type": "string",
+                                "enum": ["pre_tool_use", "post_tool_use"] },
+                            "tool_name_glob": { "type": "string", "default": "*",
+                                "description": "Glob over tool names to fire for." }
+                        }, "required": ["event"] } },
+                    "prompt": { "type": "string",
+                        "description": "Static system-prompt contribution text, if any." },
+                    "dir": { "type": "string",
+                        "description": "Parent directory to create `<name>/` under. Defaults to \
+                            a `scaffold/` dir beside the extensions store." }
+                },
+                "required": ["name"]
+            }),
             Verb::List => json!({ "type": "object", "properties": {} }),
             Verb::Install => json!({
                 "type": "object",
@@ -310,6 +455,7 @@ impl Tool for ManageTool {
 
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
         match self.verb {
+            Verb::Scaffold => self.scaffold(&arguments),
             Verb::List => self.list(),
             Verb::Install => self.install(&arguments).await,
             Verb::Remove => self.remove(&arguments),
@@ -351,6 +497,61 @@ mod tests {
             crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
         };
         (cap, settings, ext_dir)
+    }
+
+    #[tokio::test]
+    async fn scaffold_then_install_flow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cap, _settings, _ext_dir) = capability(tmp.path());
+        let tools = cap.tools();
+        let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
+
+        // Scaffold a hook extension into an explicit parent dir.
+        let parent = tmp.path().join("authored");
+        let dir = match get("scaffold_extension")
+            .execute(json!({
+                "name": "git-guard",
+                "description": "Blocks git.",
+                "hooks": [{ "event": "pre_tool_use" }],
+                "dir": parent.to_str().unwrap(),
+            }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => {
+                assert_eq!(v["scaffolded"], "git-guard");
+                assert!(parent.join("git-guard").join("plugin.json").exists());
+                v["dir"].as_str().unwrap().to_string()
+            }
+            other => panic!("{other:?}"),
+        };
+
+        // The scaffolded package installs (manifest parses, tree copied).
+        match get("install_extension")
+            .execute(json!({ "source": dir }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => assert_eq!(v["installed"], "git-guard"),
+            other => panic!("{other:?}"),
+        }
+        match get("list_extensions").execute(json!({})).await {
+            ToolExecutionResult::Success(v) => assert_eq!(v["extensions"][0]["name"], "git-guard"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn scaffold_rejects_no_contributions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cap, _s, _e) = capability(tmp.path());
+        let tools = cap.tools();
+        let scaffold = tools
+            .iter()
+            .find(|t| t.name() == "scaffold_extension")
+            .unwrap();
+        match scaffold.execute(json!({ "name": "empty" })).await {
+            ToolExecutionResult::ToolError(m) => assert!(m.contains("contribute"), "{m}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[tokio::test]
