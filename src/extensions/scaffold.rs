@@ -185,14 +185,14 @@ fn manifest_json(req: &ScaffoldRequest) -> Value {
 /// author-editable seams are the three `handle_*` bodies. Everything else is
 /// protocol plumbing that must not change.
 fn python_server(req: &ScaffoldRequest) -> String {
-    let tools_list = req
-        .tools
-        .iter()
-        .map(|t| format!("{:?}", t.name))
-        .collect::<Vec<_>>()
-        .join(", ");
+    // A JSON array/string literal is also a valid Python literal, so serialize
+    // through serde_json rather than Rust's `{:?}` (whose `\u{..}` escapes are
+    // not valid Python) — this stays correct for arbitrary tool names / prompt.
+    let names: Vec<&String> = req.tools.iter().map(|t| &t.name).collect();
+    let tools_list = serde_json::to_string(&names).unwrap_or_else(|_| "[]".into());
+    let name_literal = serde_json::to_string(&req.name).unwrap_or_else(|_| "\"\"".into());
     let prompt_literal = match &req.prompt {
-        Some(text) => format!("{text:?}"),
+        Some(text) => serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into()),
         None => "None".into(),
     };
     let has_hooks = !req.hooks.is_empty();
@@ -218,9 +218,9 @@ To author: edit the handle_* bodies below, then from yolop:
 import json
 import sys
 
-NAME = {name:?}
+NAME = {name_literal}
 # Tool names this server serves. MUST match plugin.json's yolop.tools.
-TOOLS = [{tools_list}]
+TOOLS = {tools_list}
 # Static system-prompt contribution, or None.
 PROMPT = {prompt_literal}
 
@@ -323,6 +323,7 @@ if __name__ == "__main__":
     main()
 "##,
         name = req.name,
+        name_literal = name_literal,
         tools_list = tools_list,
         prompt_literal = prompt_literal,
         hooks_cap = hooks_cap,
