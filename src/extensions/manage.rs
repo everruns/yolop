@@ -408,8 +408,11 @@ impl Tool for ManageTool {
                         "description": "Extension name (ascii letters, digits, `-`, `_`)." },
                     "description": { "type": "string",
                         "description": "One-line summary of what the extension does." },
-                    "language": { "type": "string", "enum": ["python"], "default": "python",
-                        "description": "Server language template. Python is toolchain-free." },
+                    "language": { "type": "string", "enum": ["python", "typescript"],
+                        "default": "python",
+                        "description": "Server language template. Both are single-file and \
+                            toolchain-free (no build step); `typescript` emits a dependency-free \
+                            Node.js server." },
                     "tools": { "type": "array", "description": "Tool contributions.",
                         "items": { "type": "object", "properties": {
                             "name": { "type": "string" },
