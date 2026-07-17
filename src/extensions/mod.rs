@@ -321,24 +321,25 @@ mod spawn_tests {
         }
     }
 
-    /// The self-writing acceptance case: `scaffold_extension` produces a
-    /// package whose generated server, once the author fills in the hook body,
-    /// blocks a real tool call when spawned exactly as the runtime spawns it
-    /// (command resolved via the package's `bin/` on PATH — no absolute paths).
-    #[tokio::test]
-    async fn scaffolded_extension_blocks_git_end_to_end() {
-        use super::scaffold::{HookSpec, Language, ScaffoldRequest, scaffold};
+    /// The self-writing acceptance case, run for one language template:
+    /// `scaffold_extension` produces a package whose generated server, once the
+    /// author fills in the hook body, blocks a real tool call when spawned
+    /// exactly as the runtime spawns it (command resolved via the package's
+    /// `bin/` on PATH — no absolute paths, no build step).
+    async fn assert_scaffolded_git_block(language: super::scaffold::Language) {
+        use super::scaffold::{HookSpec, ScaffoldRequest, scaffold};
         use everruns_core::atoms::PreToolUseDecision;
         use everruns_core::tool_types::{BuiltinTool, ToolCall, ToolDefinition};
-        if python3().is_none() {
-            eprintln!("skipping: python3 not available");
+
+        if which_python(&[language.interpreter()]).is_none() {
+            eprintln!("skipping: {} not available", language.interpreter());
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
         let out = scaffold(&ScaffoldRequest {
             name: "git-guard".into(),
             description: "Blocks git.".into(),
-            language: Language::Python,
+            language,
             tools: vec![],
             hooks: vec![HookSpec {
                 event: "pre_tool_use".into(),
@@ -351,13 +352,22 @@ mod spawn_tests {
 
         // Author step: fill in the hook body the scaffold left as a no-op.
         let server = std::fs::read_to_string(&out.server).unwrap();
-        let filled = server.replace(
-            "\n    return {}\n\n\ndef handle_prompt",
-            "\n    command = (args or {}).get(\"command\", \"\")\n    \
-             if event == \"pre_tool_use\" and \"git\" in command.split():\n        \
-             return {\"block\": True, \"reason\": \"git is disabled by git-guard\"}\n    \
-             return {}\n\n\ndef handle_prompt",
-        );
+        let filled = match language {
+            super::scaffold::Language::Python => server.replace(
+                "\n    return {}\n\n\ndef handle_prompt",
+                "\n    command = (args or {}).get(\"command\", \"\")\n    \
+                 if event == \"pre_tool_use\" and \"git\" in command.split():\n        \
+                 return {\"block\": True, \"reason\": \"git is disabled by git-guard\"}\n    \
+                 return {}\n\n\ndef handle_prompt",
+            ),
+            super::scaffold::Language::Node => server.replace(
+                "\n  return {};\n}\n\nfunction handlePrompt",
+                "\n  const command = (args || {}).command || \"\";\n  \
+                 if (event === \"pre_tool_use\" && command.split(/\\s+/).includes(\"git\")) {\n    \
+                 return { block: true, reason: \"git is disabled by git-guard\" };\n  }\n  \
+                 return {};\n}\n\nfunction handlePrompt",
+            ),
+        };
         assert_ne!(filled, server, "hook body anchor must match");
         std::fs::write(&out.server, filled).unwrap();
 
@@ -407,6 +417,16 @@ mod spawn_tests {
             hook.before_exec(allow, &tool_def, &ctx).await,
             PreToolUseDecision::Continue(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn scaffolded_python_extension_blocks_git_end_to_end() {
+        assert_scaffolded_git_block(super::scaffold::Language::Python).await;
+    }
+
+    #[tokio::test]
+    async fn scaffolded_node_extension_blocks_git_end_to_end() {
+        assert_scaffolded_git_block(super::scaffold::Language::Node).await;
     }
 
     #[tokio::test]

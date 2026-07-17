@@ -53,9 +53,10 @@ a self-contained capability server whose only author-editable seams are the
 is written, so authoring collapses to filling in handlers. The server is a
 single executable under the package `bin/` (resolved via the `bin/`-on-PATH
 rule the runtime already uses; the exec bit survives the install copy), so no
-absolute paths leak into the manifest. Python is the first template because it
-is toolchain-free — the fastest, most reliable path for yolop to author an
-extension for itself (Rust via `yolop-yep` and TypeScript follow). The
+absolute paths leak into the manifest. The `python` and `typescript`
+(dependency-free Node.js) templates are both single-file and toolchain-free —
+the fastest, most reliable path for yolop to author an extension for itself; a
+compiled Rust/`yolop-yep` template (binary built before it runs) follows. The
 [`author-extension`](../.agents/skills/author-extension/SKILL.md) skill drives
 the loop (scaffold → implement → install → doctor → ask-to-enable); the
 end-to-end acceptance — a self-authored `pre_tool_use` hook that blocks `git`,

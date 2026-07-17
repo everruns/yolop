@@ -40,11 +40,13 @@ Not yet available: statusline/UI, providers, slash commands.
 
 ## The loop
 
-1. **Scaffold.** `scaffold_extension name=<name> [description=…] [language=python]`
+1. **Scaffold.** `scaffold_extension name=<name> [description=…] [language=python|typescript]`
    with the facets you need — `tools=[…]`, `hooks=[…]`, and/or `prompt=…`.
    This writes a correct-by-construction package (manifest + a self-contained
    server) that installs and passes `doctor` before you write a line of logic.
-   Python is the default and needs no build step.
+   Both `python` and `typescript` (a dependency-free Node.js server) need no
+   build step; pick the one whose runtime the environment has. Python is the
+   default.
 
 2. **Implement.** Open the generated server (the tool result prints its path)
    and fill in the `handle_*` bodies:

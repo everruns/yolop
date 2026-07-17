@@ -30,20 +30,41 @@ pub struct HookSpec {
     pub tool_name_glob: String,
 }
 
-/// Which language template to emit.
+/// Which language template to emit. Both current templates are single-file,
+/// dependency-free, and need no build step — the fastest path for a
+/// self-writing loop. (A compiled Rust/`yolop-yep` template is a follow-up; it
+/// has a distinct flow because the binary must be built before it can run.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
+    /// A `#!/usr/bin/env python3` server.
     Python,
+    /// A dependency-free Node.js (`#!/usr/bin/env node`) server — the
+    /// toolchain-free path for the TypeScript/JavaScript ecosystem.
+    Node,
 }
 
 impl Language {
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.trim().to_ascii_lowercase().as_str() {
             "python" | "py" => Ok(Self::Python),
-            "rust" | "rs" | "typescript" | "ts" | "javascript" | "js" | "node" => Err(format!(
-                "`{s}` templates are not available yet; use `python` (toolchain-free) for now"
+            "typescript" | "ts" | "javascript" | "js" | "node" => Ok(Self::Node),
+            "rust" | "rs" => Err(format!(
+                "`{s}` needs a compiled template (build before run); use `python` or \
+                 `typescript` for the toolchain-free path for now"
             )),
-            other => Err(format!("unknown language `{other}`; use `python`")),
+            other => Err(format!(
+                "unknown language `{other}`; use `python` or `typescript`"
+            )),
+        }
+    }
+
+    /// The interpreter the generated launcher shebang invokes — used to skip
+    /// tests when the runtime isn't installed.
+    #[cfg(test)]
+    pub fn interpreter(self) -> &'static str {
+        match self {
+            Self::Python => "python3",
+            Self::Node => "node",
         }
     }
 }
@@ -125,6 +146,7 @@ pub fn scaffold(req: &ScaffoldRequest) -> Result<Scaffolded, String> {
     let server_path = bin_dir.join(&server_name);
     match req.language {
         Language::Python => write(&server_path, &python_server(req))?,
+        Language::Node => write(&server_path, &node_server(req))?,
     }
     make_executable(&server_path)?;
 
@@ -330,6 +352,145 @@ if __name__ == "__main__":
     )
 }
 
+/// The generated Node.js server: the JavaScript twin of `python_server`.
+/// Dependency-free (only the `readline` builtin) and runs on any Node with no
+/// build step. Author-editable seams are the three `handle*` bodies.
+fn node_server(req: &ScaffoldRequest) -> String {
+    // JSON literals are valid JavaScript literals, so serde_json output drops
+    // straight into the source.
+    let names: Vec<&String> = req.tools.iter().map(|t| &t.name).collect();
+    let tools_list = serde_json::to_string(&names).unwrap_or_else(|_| "[]".into());
+    let name_literal = serde_json::to_string(&req.name).unwrap_or_else(|_| "\"\"".into());
+    let prompt_literal = match &req.prompt {
+        Some(text) => serde_json::to_string(text).unwrap_or_else(|_| "null".into()),
+        None => "null".into(),
+    };
+    let hooks_cap = if req.hooks.is_empty() {
+        ""
+    } else {
+        "\n    caps.push(\"hooks\");"
+    };
+    format!(
+        r##"#!/usr/bin/env node
+// {name} — a yolop extension (YEP capability server).
+//
+// Speaks the yolop extension protocol: newline-delimited JSON-RPC over stdio.
+// stdout carries ONLY protocol JSON — write any logs to stderr via log(). No
+// third-party dependencies.
+//
+// To author: edit the handle* bodies below, then from yolop:
+//   install_extension source=<this package directory>
+//   doctor_extension  name={name}
+//   enable_extension  name={name}    // takes effect on the next session
+
+const readline = require("readline");
+
+const NAME = {name_literal};
+// Tool names this server serves. MUST match plugin.json's yolop.tools.
+const TOOLS = {tools_list};
+// Static system-prompt contribution, or null.
+const PROMPT = {prompt_literal};
+
+function send(obj) {{
+  process.stdout.write(JSON.stringify(obj) + "\n");
+}}
+
+function log(msg) {{
+  process.stderr.write(String(msg) + "\n");
+}}
+
+// --- author-editable handlers ------------------------------------------------
+
+function handleTool(name, args) {{
+  // TODO: implement each tool in TOOLS. `args` is the model-supplied object.
+  return {{ ok: true, tool: name, args: args }};
+}}
+
+function handleHook(event, toolName, args) {{
+  // Return {{}} to allow (unchanged), or {{ block: true, reason: "..." }} to deny
+  // (pre_tool_use only). The server sees every subscribed tool call.
+  //
+  // Example — block the shell tool when the command runs git:
+  //   if (event === "pre_tool_use" && (toolName === "bash" || toolName === "shell")) {{
+  //     const command = (args || {{}}).command || "";
+  //     if (command.split(/\s+/).includes("git")) {{
+  //       return {{ block: true, reason: "git is disabled by {name}" }};
+  //     }}
+  //   }}
+  return {{}};
+}}
+
+function handlePrompt() {{
+  return {{ text: PROMPT || "" }};
+}}
+
+// --- protocol plumbing (do not edit) -----------------------------------------
+
+const rl = readline.createInterface({{ input: process.stdin }});
+rl.on("line", (raw) => {{
+  const line = raw.trim();
+  if (!line) return;
+  let msg;
+  try {{
+    msg = JSON.parse(line);
+  }} catch (_e) {{
+    return;
+  }}
+  const method = msg.method;
+  const id = msg.id;
+  if (method === "initialize") {{
+    const caps = ["tools", "streaming"];
+    const params = {{ tools: TOOLS.map((t) => ({{ name: t }})) }};
+    if (PROMPT !== null) {{
+      caps.push("prompt");
+      params.prompt = {{ static: PROMPT }};
+    }}{hooks_cap}
+    send({{ id: id, result: {{
+      protocol_version: "1.0",
+      name: NAME,
+      capabilities: caps,
+      capability_params: params,
+    }} }});
+  }} else if (method === "initialized") {{
+    // no-op
+  }} else if (method === "tool/call") {{
+    const p = msg.params || {{}};
+    if (!TOOLS.includes(p.name)) {{
+      send({{ id: id, error: {{ message: "no such tool: " + p.name }} }});
+      return;
+    }}
+    try {{
+      send({{ id: id, result: handleTool(p.name, p.args || {{}}) }});
+    }} catch (e) {{
+      send({{ id: id, error: {{ message: String(e) }} }});
+    }}
+  }} else if (method === "hook/fire") {{
+    const p = msg.params || {{}};
+    try {{
+      send({{ id: id, result: handleHook(p.event || "", p.tool_name || "", p.args || {{}}) }});
+    }} catch (e) {{
+      log("hook error: " + e);
+      send({{ id: id, result: {{}} }});  // fail open
+    }}
+  }} else if (method === "prompt/contribution") {{
+    send({{ id: id, result: handlePrompt() }});
+  }} else if (method === "shutdown") {{
+    send({{ id: id, result: {{}} }});
+    rl.close();
+    process.exit(0);
+  }} else if (id !== undefined && id !== null) {{
+    send({{ id: id, error: {{ code: -32601, message: "method not found: " + method }} }});
+  }}
+}});
+"##,
+        name = req.name,
+        name_literal = name_literal,
+        tools_list = tools_list,
+        prompt_literal = prompt_literal,
+        hooks_cap = hooks_cap,
+    )
+}
+
 fn readme(req: &ScaffoldRequest, server_name: &str) -> String {
     format!(
         "# {name}\n\n\
@@ -455,21 +616,37 @@ mod tests {
     }
 
     #[test]
-    fn unbuilt_languages_report_clearly() {
+    fn language_parsing() {
+        assert_eq!(Language::parse("python").unwrap(), Language::Python);
+        assert_eq!(Language::parse("py").unwrap(), Language::Python);
+        assert_eq!(Language::parse("typescript").unwrap(), Language::Node);
+        assert_eq!(Language::parse("ts").unwrap(), Language::Node);
+        assert_eq!(Language::parse("node").unwrap(), Language::Node);
         assert!(
             Language::parse("rust")
                 .unwrap_err()
-                .contains("not available yet")
-        );
-        assert!(
-            Language::parse("typescript")
-                .unwrap_err()
-                .contains("not available yet")
+                .contains("compiled template")
         );
         assert!(
             Language::parse("cobol")
                 .unwrap_err()
                 .contains("unknown language")
         );
+    }
+
+    #[test]
+    fn generates_a_node_package_the_installer_accepts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut r = req(tmp.path().join("git-guard"));
+        r.language = Language::Node;
+        let out = scaffold(&r).unwrap();
+
+        let manifest_src = std::fs::read_to_string(out.dir.join("plugin.json")).unwrap();
+        parse_manifest(&manifest_src).expect("manifest parses");
+
+        let server = std::fs::read_to_string(&out.server).unwrap();
+        assert!(server.starts_with("#!/usr/bin/env node"));
+        assert!(server.contains(r#"const TOOLS = ["note"];"#));
+        assert!(server.contains("function handleHook"));
     }
 }
