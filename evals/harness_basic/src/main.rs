@@ -1400,7 +1400,34 @@ fn has_progress_guard_warning(data: &Value) -> bool {
     }
 }
 
+/// `grep`/`rg`/`git grep` exit with code 1 when they find no matches. That is a
+/// normal outcome of exploratory search — the model is probing for the right
+/// name and a miss is information, not a broken tool call — so it must not count
+/// toward `tool_calls_failed`. Only exit codes >= 2 (a real usage/IO error)
+/// remain failures. See issue #324: this benign miss was inflating the
+/// `candidate introduced command/tool failures` gate with sampling noise.
+fn is_benign_search_miss(data: &Value) -> bool {
+    if data.get("tool_name").and_then(Value::as_str) != Some("bash") {
+        return false;
+    }
+    let Some(result) = tool_result_value(data) else {
+        return false;
+    };
+    // A no-match search reports exit_code 1 (and, downstream, success=false);
+    // exit_code 2+ is a genuine error and stays a failure.
+    if result.get("exit_code").and_then(Value::as_i64) != Some(1) {
+        return false;
+    }
+    let command = normalized_command(&tool_command(data));
+    ["rg ", "grep ", "egrep ", "fgrep ", "git grep "]
+        .iter()
+        .any(|prefix| command.starts_with(prefix))
+}
+
 fn inner_tool_failed(data: &Value) -> bool {
+    if is_benign_search_miss(data) {
+        return false;
+    }
     tool_result_value(data).is_some_and(|result| {
         result.get("success") == Some(&Value::Bool(false))
             || result
@@ -2299,6 +2326,27 @@ mod tests {
         assert_eq!(m.read_file_tool_calls, 1);
         assert_eq!(m.leading_marker_in_bash_result, 1);
         assert!(m.total_tool_result_bytes >= m.max_tool_result_bytes);
+    }
+
+    #[test]
+    fn parse_events_ignores_benign_search_miss() {
+        // A `grep`/`rg`/`git grep` that finds nothing exits with code 1. That is a
+        // normal exploratory-search outcome (issue #324), not a broken tool call,
+        // so it must not count toward tool_calls_failed / inner_tool_failures.
+        // Exit code 2+ (real error) and a non-search command's exit 1 still count.
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"grep -rn MISSING_NAME src\",\"exit_code\":1,\"success\":false,\"stdout\":\"\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"rg MISSING_NAME\",\"exit_code\":1,\"success\":false,\"stdout\":\"\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"git grep MISSING_NAME\",\"exit_code\":1,\"success\":false,\"stdout\":\"\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"grep --bogus-flag foo\",\"exit_code\":2,\"success\":false,\"stderr\":\"grep: unknown option\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"cargo test\",\"exit_code\":1,\"success\":false,\"stdout\":\"FAILED\"}"}]}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.bash_tool_calls, 5);
+        // Three benign misses are excluded; the grep usage error (exit 2) and the
+        // failing `cargo test` (non-search exit 1) are the only real failures.
+        assert_eq!(m.inner_tool_failures, 2);
+        assert_eq!(m.tool_calls_failed, 2);
     }
 
     #[test]
