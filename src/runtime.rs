@@ -271,6 +271,9 @@ struct CodingCliSessionFileSystemFactory {
     skill_global: Option<PathBuf>,
     skill_system: Option<PathBuf>,
     environment_skill: Option<&'static str>,
+    /// `(name, skills_dir)` for enabled extensions contributing skills; each is
+    /// mounted read-only at its `extension_skills_vfs(name)` root.
+    extension_skills: Vec<(String, PathBuf)>,
 }
 
 #[async_trait]
@@ -331,9 +334,65 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
                 "/",
             );
         }
+        // Mount each contributing extension's `skills/` dir read-only. Seeded
+        // into an in-memory store (which honors `is_readonly`) rather than a
+        // live-disk mount, so an installed extension's skills can't be mutated
+        // through the VFS — the same read-only guarantee as environment skills.
+        for (name, dir) in &self.extension_skills {
+            let store = InMemorySessionFileStore::new();
+            if let Err(err) = seed_readonly_dir(&store, self.session_id, dir).await {
+                tracing::warn!(
+                    target: "yolop::ext",
+                    "skipping skills for extension `{name}`: {err}"
+                );
+                continue;
+            }
+            mounted = mounted.with_mount(
+                crate::capabilities::skills::extension_skills_vfs(name),
+                Arc::new(store),
+                "/",
+            );
+        }
         let mounted: Arc<dyn SessionFileSystem> = Arc::new(mounted);
         Ok(Arc::new(WriteBlocklistFileStore::new(mounted)))
     }
+}
+
+/// Seed every UTF-8 file under `root` into `store` read-only, keyed by its path
+/// relative to `root`. Used to mount an extension's on-disk `skills/` dir as a
+/// read-only VFS source. Non-UTF-8 files (rare in skills) are skipped.
+async fn seed_readonly_dir(
+    store: &InMemorySessionFileStore,
+    session_id: SessionId,
+    root: &std::path::Path,
+) -> everruns_core::Result<()> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| AgentLoopError::config(format!("read {}: {e}", dir.display())))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(text) = std::fs::read_to_string(&path)
+                && let Ok(rel) = path.strip_prefix(root)
+            {
+                let vfs = format!("/{}", rel.to_string_lossy().replace('\\', "/"));
+                store
+                    .seed_initial_file(
+                        session_id,
+                        &InitialFile {
+                            path: vfs,
+                            content: text,
+                            encoding: "text".to_string(),
+                            is_readonly: true,
+                        },
+                    )
+                    .await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 struct CodingCliSessionFileStore {
@@ -2317,6 +2376,22 @@ pub async fn build_with_options(
     // config and the file-store factory's scope routing.
     let skill_dirs = crate::capabilities::skills::SkillDirs::resolve(&effective_root);
 
+    // Read-only skills contributed by enabled extensions (D4: only a declaring,
+    // enabled extension's `skills/` loads). Computed here so it feeds both the
+    // skills capability config and the file-store mounts below.
+    let extension_skill_scopes = crate::extensions::extensions_dir()
+        .map(|ext_dir| {
+            let snapshot = settings.snapshot();
+            let packages = crate::extensions::discover_extensions(&ext_dir);
+            crate::extensions::extension_skill_scopes(&packages, |name| {
+                snapshot
+                    .capability_overrides_for(&crate::extensions::extension_capability_id(name))
+                    .iter()
+                    .any(|(_, entry)| !entry.is_remove())
+            })
+        })
+        .unwrap_or_default();
+
     // MCP servers from global settings and workspace `.mcp.json`, merged. Loading is
     // best-effort per scope: a malformed file is warned about and skipped, so
     // it never sinks the session or masks the other scope.
@@ -2441,7 +2516,11 @@ pub async fn build_with_options(
     // resolver so `${SKILL_DIR}` reaches real files. The file store maps the
     // scope VFS roots onto disk (see `capabilities::skills`).
     capabilities.register(ScopedSkillsCapability::new(
-        crate::capabilities::skills::skills_config(&skill_dirs, herdr.is_active()),
+        crate::capabilities::skills::skills_config(
+            &skill_dirs,
+            herdr.is_active(),
+            &extension_skill_scopes,
+        ),
     ));
     // Herdr contributes a conditional, read-only skill mount. Outside a Herdr
     // pane it has no mounts and the reporter is inert.
@@ -2735,6 +2814,7 @@ pub async fn build_with_options(
             skill_global: skill_dirs.global.clone(),
             skill_system: skill_dirs.system.clone(),
             environment_skill: HerdrCapability::skill_content(herdr.is_active()),
+            extension_skills: extension_skill_scopes.clone(),
         }))
         .build();
 
@@ -5080,7 +5160,7 @@ mod tests {
             )
             .expect("store"),
         );
-        let cap = ScopedSkillsCapability::new(skills_config(&dirs, false));
+        let cap = ScopedSkillsCapability::new(skills_config(&dirs, false, &[]));
         let tools = cap.tools();
         let list = tools
             .iter()
@@ -5132,6 +5212,7 @@ mod tests {
             skill_global: None,
             skill_system: None,
             environment_skill: HerdrCapability::skill_content(true),
+            extension_skills: Vec::new(),
         };
 
         let store = factory
@@ -5167,6 +5248,70 @@ mod tests {
                 .await
                 .is_err(),
             "environment skill must remain read-only"
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_contributed_skill_is_visible_and_read_only() {
+        use crate::capabilities::skills::extension_skills_vfs;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let ext = tempfile::tempdir().expect("extension");
+        let session_id = SessionId::from_seed(82);
+
+        // An installed extension ships skills/greet/SKILL.md.
+        let skills_dir = ext.path().join("skills");
+        std::fs::create_dir_all(skills_dir.join("greet")).unwrap();
+        std::fs::write(
+            skills_dir.join("greet/SKILL.md"),
+            "---\nname: greet\ndescription: Say hi\n---\nBe warm.",
+        )
+        .unwrap();
+
+        let host = Arc::new(
+            WorkspaceHost::new(
+                Arc::new(RwLock::new(workspace.path().to_path_buf())),
+                workspace.path().to_path_buf(),
+            )
+            .expect("host"),
+        );
+        let factory = CodingCliSessionFileSystemFactory {
+            workspace: host,
+            session_dir: session.path().to_path_buf(),
+            session_id,
+            skill_global: None,
+            skill_system: None,
+            environment_skill: None,
+            extension_skills: vec![("demo".to_string(), skills_dir.clone())],
+        };
+        let store = factory
+            .create_session_file_system(SessionFileSystemFactoryContext::default())
+            .await
+            .expect("session file system");
+
+        let vfs = extension_skills_vfs("demo");
+        let entries = store
+            .list_directory(session_id, &vfs)
+            .await
+            .expect("list extension skills");
+        assert!(
+            entries.iter().any(|e| e.is_directory && e.name == "greet"),
+            "extension skill dir should be listed: {entries:?}"
+        );
+        let skill = store
+            .read_file(session_id, &format!("{vfs}/greet/SKILL.md"))
+            .await
+            .expect("read")
+            .expect("skill exists");
+        assert!(skill.content.as_deref().unwrap().contains("name: greet"));
+        // Contributed skills are read-only.
+        assert!(
+            store
+                .write_file(session_id, &format!("{vfs}/greet/SKILL.md"), "x", "text")
+                .await
+                .is_err(),
+            "extension skills must be read-only"
         );
     }
 

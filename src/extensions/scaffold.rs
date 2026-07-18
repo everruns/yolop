@@ -83,6 +83,8 @@ pub struct ScaffoldRequest {
     pub prompt: Option<String>,
     /// Contribute a status-bar field (the server may push `status/changed`).
     pub status: bool,
+    /// Contribute a `skills/` directory (a starter `SKILL.md` is generated).
+    pub skills: bool,
     /// Absolute path of the package directory to create.
     pub dir: PathBuf,
 }
@@ -113,10 +115,15 @@ fn validate(req: &ScaffoldRequest) -> Result<(), String> {
             "invalid extension name `{name}`: use ascii letters, digits, `-`, `_`"
         ));
     }
-    if req.tools.is_empty() && req.hooks.is_empty() && req.prompt.is_none() && !req.status {
+    if req.tools.is_empty()
+        && req.hooks.is_empty()
+        && req.prompt.is_none()
+        && !req.status
+        && !req.skills
+    {
         return Err(
             "an extension must contribute something: pass at least one of `tools`, `hooks`, \
-             `prompt`, or `status`"
+             `prompt`, `status`, or `skills`"
                 .into(),
         );
     }
@@ -198,12 +205,37 @@ pub fn scaffold(req: &ScaffoldRequest) -> Result<Scaffolded, String> {
         &readme(req, &server_name, &build),
     )?;
 
+    if req.skills {
+        // A starter skill under skills/<name>/SKILL.md. The host mounts the
+        // whole skills/ dir read-only for an enabled, declaring extension.
+        let skill_dir = req.dir.join("skills").join(&req.name);
+        std::fs::create_dir_all(&skill_dir)
+            .map_err(|e| format!("creating {}: {e}", skill_dir.display()))?;
+        write(&skill_dir.join("SKILL.md"), &starter_skill(req))?;
+        files.push(format!("skills/{}/SKILL.md", req.name));
+    }
+
     Ok(Scaffolded {
         dir: req.dir.clone(),
         edit,
         files,
         build,
     })
+}
+
+fn starter_skill(req: &ScaffoldRequest) -> String {
+    let desc = if req.description.is_empty() {
+        "What this skill helps with (one line, used for matching)."
+    } else {
+        &req.description
+    };
+    format!(
+        "---\nname: {name}\ndescription: {desc}\n---\n\n# {name}\n\n\
+         TODO: write the instructions the agent should follow when this skill is \
+         active.\n",
+        name = req.name,
+        desc = desc,
+    )
 }
 
 fn manifest_json(req: &ScaffoldRequest) -> Value {
@@ -239,6 +271,9 @@ fn manifest_json(req: &ScaffoldRequest) -> Value {
     }
     if req.status {
         obj.insert("status".into(), Value::Bool(true));
+    }
+    if req.skills {
+        obj.insert("skills".into(), Value::Bool(true));
     }
     json!({
         "name": req.name,
@@ -804,6 +839,7 @@ mod tests {
             }],
             prompt: Some("Guarding git.".into()),
             status: false,
+            skills: false,
             dir,
         }
     }
@@ -907,6 +943,33 @@ mod tests {
         r.hooks.clear();
         r.prompt = None;
         r.status = true;
+        assert!(scaffold(&r).is_ok());
+    }
+
+    #[test]
+    fn skills_facet_scaffolds_manifest_flag_and_starter_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut r = req(tmp.path().join("git-guard"));
+        r.skills = true;
+        let out = scaffold(&r).unwrap();
+
+        let manifest =
+            parse_manifest(&std::fs::read_to_string(out.dir.join("plugin.json")).unwrap()).unwrap();
+        assert!(manifest.skills, "manifest declares the skills facet");
+
+        let skill = std::fs::read_to_string(out.dir.join("skills/git-guard/SKILL.md")).unwrap();
+        assert!(skill.contains("name: git-guard"));
+        assert!(out.files.iter().any(|f| f.contains("SKILL.md")));
+    }
+
+    #[test]
+    fn skills_alone_is_a_valid_contribution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut r = req(tmp.path().join("packof"));
+        r.tools.clear();
+        r.hooks.clear();
+        r.prompt = None;
+        r.skills = true;
         assert!(scaffold(&r).is_ok());
     }
 

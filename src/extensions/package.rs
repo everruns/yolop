@@ -59,6 +59,11 @@ struct RawFacet {
     /// never write the status bar).
     #[serde(default)]
     status: bool,
+    /// Contributes the package's `skills/` directory as read-only skills (D4:
+    /// only a declaring, enabled extension's skills load). Static markdown, so
+    /// no server is involved.
+    #[serde(default)]
+    skills: bool,
 }
 
 /// A manifest-declared hook subscription. Static (the approved upper bound):
@@ -177,6 +182,7 @@ pub struct ExtensionManifest {
     pub mcp_servers: BTreeMap<String, ContributedMcpServer>,
     pub hooks: Vec<HookSubscription>,
     pub status: bool,
+    pub skills: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -188,6 +194,26 @@ pub struct ExtensionPackage {
 /// Capability ref for an extension: `ext:<name>`.
 pub fn extension_capability_id(name: &str) -> String {
     format!("ext:{name}")
+}
+
+/// `(name, skills_dir)` for every enabled extension that declares `skills` and
+/// actually ships a `skills/` directory. Read-only skill scopes are built from
+/// this (see `capabilities::skills`). Skills load only for enabled extensions,
+/// matching the MCP-contribution rule.
+pub fn extension_skill_scopes(
+    packages: &[ExtensionPackage],
+    is_enabled: impl Fn(&str) -> bool,
+) -> Vec<(String, PathBuf)> {
+    packages
+        .iter()
+        .filter_map(|pkg| {
+            if !pkg.manifest.skills || !is_enabled(&pkg.manifest.name) {
+                return None;
+            }
+            let dir = pkg.dir.join("skills");
+            dir.is_dir().then(|| (pkg.manifest.name.clone(), dir))
+        })
+        .collect()
 }
 
 pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
@@ -220,6 +246,7 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         && raw.yolop.mcp_servers.is_empty()
         && raw.yolop.hooks.is_empty()
         && !raw.yolop.status
+        && !raw.yolop.skills
     {
         return Err("extension declares no contributions; nothing to contribute".into());
     }
@@ -250,6 +277,7 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         mcp_servers: raw.yolop.mcp_servers,
         hooks: raw.yolop.hooks,
         status: raw.yolop.status,
+        skills: raw.yolop.skills,
     })
 }
 
@@ -439,5 +467,38 @@ mod tests {
         let found = discover_extensions(tmp.path());
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].manifest.name, "echo");
+    }
+
+    #[test]
+    fn extension_skill_scopes_needs_flag_enabled_and_a_skills_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mk = |name: &str, declares: bool, has_dir: bool| -> ExtensionPackage {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            if has_dir {
+                std::fs::create_dir_all(dir.join("skills")).unwrap();
+            }
+            let manifest = parse_manifest(
+                &json!({
+                    "name": name, "description": "t",
+                    "yolop": { "protocol_version": "1.0",
+                        "capabilityServer": { "command": "x" },
+                        "tools": [{ "name": "t" }], "skills": declares }
+                })
+                .to_string(),
+            )
+            .unwrap();
+            ExtensionPackage { dir, manifest }
+        };
+        let packages = vec![
+            mk("has-skills", true, true), // declares + dir + enabled → included
+            mk("no-flag", false, true),   // no `skills` flag → excluded
+            mk("no-dir", true, false),    // flag but no skills/ dir → excluded
+            mk("disabled", true, true),   // flag + dir but disabled → excluded
+        ];
+        let scopes = extension_skill_scopes(&packages, |name| name != "disabled");
+        assert_eq!(scopes.len(), 1, "{scopes:?}");
+        assert_eq!(scopes[0].0, "has-skills");
+        assert!(scopes[0].1.ends_with("skills"));
     }
 }

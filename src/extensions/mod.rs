@@ -28,7 +28,9 @@ pub(crate) mod store;
 pub(crate) use capability::ExtensionCapability;
 pub(crate) use client::StatusSink;
 pub(crate) use manage::ExtensionsCapability;
-pub(crate) use package::{discover_extensions, extension_capability_id, extensions_dir};
+pub(crate) use package::{
+    discover_extensions, extension_capability_id, extension_skill_scopes, extensions_dir,
+};
 
 #[cfg(test)]
 mod spawn_tests {
@@ -348,6 +350,7 @@ mod spawn_tests {
             }],
             prompt: None,
             status: false,
+            skills: false,
             dir: tmp.path().join("git-guard"),
         })
         .unwrap();
@@ -492,6 +495,7 @@ mod spawn_tests {
             }],
             prompt: None,
             status: true,
+            skills: false,
             dir: tmp.path().join("char-counter"),
         })
         .unwrap();
