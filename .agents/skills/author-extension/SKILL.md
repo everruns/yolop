@@ -90,6 +90,15 @@ Not yet available: providers.
    runs its server every session. **Enabling takes effect on the next
    session**, so tell the user to restart yolop to load it.
 
+6. **Iterate live (already-enabled extensions).** Once an extension is enabled
+   and its server has run this session, `reload_extension name=<name>` restarts
+   that server in place so edits to its *implementation* take effect
+   immediately — no yolop restart. This is the fast inner loop for fixing a
+   handler you authored: edit the server, `reload_extension`, call the tool
+   again. The manifest is the session's approval boundary, so a *surface*
+   change (adding a tool, changing a schema) still needs a restart, and reload
+   can never widen the grant.
+
 ## Acceptance check
 
 The loop is proven when yolop, unaided, produces an extension that actually
