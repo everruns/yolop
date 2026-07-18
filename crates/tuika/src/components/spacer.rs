@@ -3,9 +3,9 @@
 
 use ratatui::layout::Rect;
 
-use crate::tuika::geometry::Size;
-use crate::tuika::surface::Surface;
-use crate::tuika::view::{RenderCtx, View};
+use crate::geometry::Size;
+use crate::surface::Surface;
+use crate::view::{RenderCtx, View};
 
 pub struct Spacer;
 

@@ -16,7 +16,7 @@ use super::event::{Event, EventFlow, Key, KeyCode, Mouse, MouseKind};
 use super::focus::FocusRegistry;
 use super::geometry::{Padding, Size};
 use super::host::{self, Overlay};
-use super::layout::{Align, Dimension, Direction, Item, Justify, LayoutStyle, solve};
+use super::layout::{Align, Dimension, Item, Justify, LayoutStyle, solve};
 use super::native::{self, ProgressState};
 use super::overlay::{Anchor, Extent, OverlaySpec};
 use super::style::Theme;

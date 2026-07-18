@@ -170,7 +170,7 @@ pub struct App {
     /// alternate-screen `tuika` renderer (`--fullscreen`).
     render_mode: RenderMode,
     /// Full-screen transcript scroll position (unused in inline mode).
-    scroll: crate::tuika::ScrollState,
+    scroll: tuika::ScrollState,
     /// Last (content_height, viewport_height) the full-screen transcript drew,
     /// so mouse/paging handlers can clamp scrolling without re-laying out.
     scroll_metrics: (u16, u16),
@@ -178,7 +178,7 @@ pub struct App {
     /// bar / taskbar) while a turn runs. Works in both renderers. Enabled only
     /// for real TUI sessions via [`App::enable_native_progress`] so tests and
     /// non-terminal hosts emit no escape sequences.
-    term_progress: crate::tuika::TerminalProgress,
+    term_progress: tuika::TerminalProgress,
     native_progress: bool,
 }
 
@@ -431,9 +431,9 @@ impl App {
             pending_images,
             pending_pastes: Vec::new(),
             render_mode: RenderMode::default(),
-            scroll: crate::tuika::ScrollState::new(),
+            scroll: tuika::ScrollState::new(),
             scroll_metrics: (0, 0),
-            term_progress: crate::tuika::TerminalProgress::new(),
+            term_progress: tuika::TerminalProgress::new(),
             native_progress: false,
         };
         app.emit_system_banner();
@@ -1482,12 +1482,12 @@ impl App {
     /// draw so it need not re-run layout.
     fn handle_fullscreen_scroll(&mut self, kind: MouseEventKind) -> bool {
         let tuika_kind = match kind {
-            MouseEventKind::ScrollUp => crate::tuika::MouseKind::ScrollUp,
-            MouseEventKind::ScrollDown => crate::tuika::MouseKind::ScrollDown,
+            MouseEventKind::ScrollUp => tuika::MouseKind::ScrollUp,
+            MouseEventKind::ScrollDown => tuika::MouseKind::ScrollDown,
             _ => return false,
         };
         let (content_h, viewport_h) = self.scroll_metrics;
-        let event = crate::tuika::Event::Mouse(crate::tuika::Mouse {
+        let event = tuika::Event::Mouse(tuika::Mouse {
             kind: tuika_kind,
             column: 0,
             row: 0,

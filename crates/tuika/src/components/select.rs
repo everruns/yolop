@@ -8,10 +8,10 @@
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 
-use crate::tuika::event::{Event, EventFlow, KeyCode};
-use crate::tuika::geometry::Size;
-use crate::tuika::surface::Surface;
-use crate::tuika::view::{RenderCtx, View};
+use crate::event::{Event, EventFlow, KeyCode};
+use crate::geometry::Size;
+use crate::surface::Surface;
+use crate::view::{RenderCtx, View};
 
 /// Result of feeding an event to a [`SelectState`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

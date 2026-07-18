@@ -35,7 +35,6 @@ mod settings;
 mod test_env;
 mod tools;
 mod transcript;
-mod tuika;
 mod user_ask;
 mod version;
 mod workspace_host;
@@ -961,7 +960,7 @@ fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
     // third-party components (Spinner, ProgressBar, Loader, Text) enter through
     // `node(expr)`; layout is the `col`/`row`/`boxed`/`fixed`/`grow` sugar.
     let labeled_spinner = |style: SpinnerStyle, label: &str| -> tuika::Element {
-        crate::view! {
+        tuika::view! {
             row(gap = 1) {
                 fixed(1) { node(Spinner::new(frame).style(style)) }
                 text(label.to_string())
@@ -971,7 +970,7 @@ fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
 
     let animated = tuika::anim::ping_pong(frame, 120);
 
-    crate::view! {
+    tuika::view! {
         col(
             background = ratatui::style::Style::default().bg(theme.background),
             padding = tuika::Padding::all(1),

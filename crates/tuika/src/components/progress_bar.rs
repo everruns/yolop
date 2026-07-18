@@ -2,15 +2,15 @@
 //!
 //! Determinate bars fill by eighths using partial block glyphs, so a 20-cell
 //! bar shows 160 distinct levels. Indeterminate bars slide a bright segment
-//! across a dim track, driven by the host frame counter (see [`crate::tuika::anim`]).
+//! across a dim track, driven by the host frame counter (see [`crate::anim`]).
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use crate::tuika::anim;
-use crate::tuika::geometry::Size;
-use crate::tuika::surface::Surface;
-use crate::tuika::view::{RenderCtx, View};
+use crate::anim;
+use crate::geometry::Size;
+use crate::surface::Surface;
+use crate::view::{RenderCtx, View};
 
 /// Left-to-right eighth-block fill glyphs, index 0 = empty .. 8 = full.
 const EIGHTHS: [char; 9] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
