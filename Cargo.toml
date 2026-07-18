@@ -115,6 +115,7 @@ comfy-table = { version = "7.2.2", default-features = false }
 [dev-dependencies]
 inventory = "0.3"
 portable-pty = "0.9.0"
+proptest = "1"
 tempfile = "3"
 tiny_http = "0.12"
 vt100 = "0.15"
