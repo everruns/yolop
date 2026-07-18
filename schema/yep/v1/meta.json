@@ -38,6 +38,11 @@
       "description": "Request a fresh dynamic system-prompt contribution."
     },
     {
+      "name": "command/execute",
+      "direction": "host",
+      "description": "Run a manifest-declared slash command; the result message is shown to the user."
+    },
+    {
       "name": "config/changed",
       "direction": "host",
       "description": "Notify the server its config changed."
@@ -55,6 +60,7 @@
     "dynamic_prompt",
     "hooks",
     "mcp_servers",
-    "status"
+    "status",
+    "commands"
   ]
 }

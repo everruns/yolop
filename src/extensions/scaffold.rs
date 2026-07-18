@@ -80,6 +80,8 @@ pub struct ScaffoldRequest {
     pub language: Language,
     pub tools: Vec<ToolSpec>,
     pub hooks: Vec<HookSpec>,
+    /// Slash-command names the extension contributes (dispatched to the server).
+    pub commands: Vec<String>,
     pub prompt: Option<String>,
     /// Contribute a status-bar field (the server may push `status/changed`).
     pub status: bool,
@@ -117,13 +119,14 @@ fn validate(req: &ScaffoldRequest) -> Result<(), String> {
     }
     if req.tools.is_empty()
         && req.hooks.is_empty()
+        && req.commands.is_empty()
         && req.prompt.is_none()
         && !req.status
         && !req.skills
     {
         return Err(
             "an extension must contribute something: pass at least one of `tools`, `hooks`, \
-             `prompt`, `status`, or `skills`"
+             `commands`, `prompt`, `status`, or `skills`"
                 .into(),
         );
     }
@@ -266,6 +269,14 @@ fn manifest_json(req: &ScaffoldRequest) -> Value {
     if !hooks.is_empty() {
         obj.insert("hooks".into(), Value::Array(hooks));
     }
+    if !req.commands.is_empty() {
+        let commands: Vec<Value> = req
+            .commands
+            .iter()
+            .map(|name| json!({ "name": name, "description": format!("The {name} command.") }))
+            .collect();
+        obj.insert("commands".into(), Value::Array(commands));
+    }
     if req.prompt.is_some() {
         obj.insert("prompt".into(), Value::Bool(true));
     }
@@ -292,6 +303,7 @@ fn python_server(req: &ScaffoldRequest) -> String {
     // not valid Python) — this stays correct for arbitrary tool names / prompt.
     let names: Vec<&String> = req.tools.iter().map(|t| &t.name).collect();
     let tools_list = serde_json::to_string(&names).unwrap_or_else(|_| "[]".into());
+    let commands_list = serde_json::to_string(&req.commands).unwrap_or_else(|_| "[]".into());
     let name_literal = serde_json::to_string(&req.name).unwrap_or_else(|_| "\"\"".into());
     let prompt_literal = match &req.prompt {
         Some(text) => serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into()),
@@ -306,6 +318,11 @@ fn python_server(req: &ScaffoldRequest) -> String {
         "\n            caps.append(\"status\")"
     } else {
         ""
+    };
+    let commands_cap = if req.commands.is_empty() {
+        ""
+    } else {
+        "\n            caps.append(\"commands\")"
     };
     format!(
         r##"#!/usr/bin/env python3
@@ -327,6 +344,8 @@ import sys
 NAME = {name_literal}
 # Tool names this server serves. MUST match plugin.json's yolop.tools.
 TOOLS = {tools_list}
+# Slash-command names this server serves. MUST match plugin.json's yolop.commands.
+COMMANDS = {commands_list}
 # Static system-prompt contribution, or None.
 PROMPT = {prompt_literal}
 
@@ -375,6 +394,15 @@ def handle_prompt():
     return {{"text": PROMPT or ""}}
 
 
+def handle_command(name, arguments):
+    """Run a slash command. Return {{"message": "..."}} to show the user (and
+    optionally "success": false). `arguments` is the raw text after the command.
+
+    TODO: implement each command in COMMANDS.
+    """
+    return {{"message": f"{{NAME}}:{{name}} ran with args: {{arguments!r}}"}}
+
+
 # --- protocol plumbing (do not edit) -----------------------------------------
 
 def main():
@@ -393,7 +421,7 @@ def main():
             params = {{"tools": [{{"name": t}} for t in TOOLS]}}
             if PROMPT is not None:
                 caps.append("prompt")
-                params["prompt"] = {{"static": PROMPT}}{hooks_cap}{status_cap}
+                params["prompt"] = {{"static": PROMPT}}{hooks_cap}{status_cap}{commands_cap}
             send({{"id": msg_id, "result": {{
                 "protocol_version": "1.0",
                 "name": NAME,
@@ -423,6 +451,13 @@ def main():
                 send({{"id": msg_id, "result": {{}}}})  # fail open
         elif method == "prompt/contribution":
             send({{"id": msg_id, "result": handle_prompt()}})
+        elif method == "command/execute":
+            p = msg.get("params") or {{}}
+            try:
+                result = handle_command(p.get("name", ""), p.get("arguments", ""))
+                send({{"id": msg_id, "result": result}})
+            except Exception as exc:
+                send({{"id": msg_id, "result": {{"success": False, "message": str(exc)}}}})
         elif method == "shutdown":
             send({{"id": msg_id, "result": {{}}}})
             return
@@ -451,6 +486,7 @@ fn node_server(req: &ScaffoldRequest) -> String {
     // straight into the source.
     let names: Vec<&String> = req.tools.iter().map(|t| &t.name).collect();
     let tools_list = serde_json::to_string(&names).unwrap_or_else(|_| "[]".into());
+    let commands_list = serde_json::to_string(&req.commands).unwrap_or_else(|_| "[]".into());
     let name_literal = serde_json::to_string(&req.name).unwrap_or_else(|_| "\"\"".into());
     let prompt_literal = match &req.prompt {
         Some(text) => serde_json::to_string(text).unwrap_or_else(|_| "null".into()),
@@ -465,6 +501,11 @@ fn node_server(req: &ScaffoldRequest) -> String {
         "\n    caps.push(\"status\");"
     } else {
         ""
+    };
+    let commands_cap = if req.commands.is_empty() {
+        ""
+    } else {
+        "\n    caps.push(\"commands\");"
     };
     format!(
         r##"#!/usr/bin/env node
@@ -484,6 +525,8 @@ const readline = require("readline");
 const NAME = {name_literal};
 // Tool names this server serves. MUST match plugin.json's yolop.tools.
 const TOOLS = {tools_list};
+// Slash-command names this server serves. MUST match plugin.json's yolop.commands.
+const COMMANDS = {commands_list};
 // Static system-prompt contribution, or null.
 const PROMPT = {prompt_literal};
 
@@ -526,6 +569,12 @@ function handlePrompt() {{
   return {{ text: PROMPT || "" }};
 }}
 
+function handleCommand(name, args) {{
+  // Run a slash command. Return {{ message: "..." }} to show the user (and
+  // optionally success: false). `args` is the raw text after the command.
+  return {{ message: NAME + ":" + name + " ran with args: " + JSON.stringify(args) }};
+}}
+
 // --- protocol plumbing (do not edit) -----------------------------------------
 
 const rl = readline.createInterface({{ input: process.stdin }});
@@ -546,7 +595,7 @@ rl.on("line", (raw) => {{
     if (PROMPT !== null) {{
       caps.push("prompt");
       params.prompt = {{ static: PROMPT }};
-    }}{hooks_cap}{status_cap}
+    }}{hooks_cap}{status_cap}{commands_cap}
     send({{ id: id, result: {{
       protocol_version: "1.0",
       name: NAME,
@@ -576,6 +625,13 @@ rl.on("line", (raw) => {{
     }}
   }} else if (method === "prompt/contribution") {{
     send({{ id: id, result: handlePrompt() }});
+  }} else if (method === "command/execute") {{
+    const p = msg.params || {{}};
+    try {{
+      send({{ id: id, result: handleCommand(p.name || "", p.arguments || "") }});
+    }} catch (e) {{
+      send({{ id: id, result: {{ success: false, message: String(e) }} }});
+    }}
   }} else if (method === "shutdown") {{
     send({{ id: id, result: {{}} }});
     rl.close();
@@ -588,9 +644,11 @@ rl.on("line", (raw) => {{
         name = req.name,
         name_literal = name_literal,
         tools_list = tools_list,
+        commands_list = commands_list,
         prompt_literal = prompt_literal,
         hooks_cap = hooks_cap,
         status_cap = status_cap,
+        commands_cap = commands_cap,
     )
 }
 
@@ -664,6 +722,12 @@ fn rust_main(req: &ScaffoldRequest) -> String {
         .map(|n| format!("{n:?}"))
         .collect::<Vec<_>>()
         .join(", ");
+    let commands_list = req
+        .commands
+        .iter()
+        .map(|n| format!("{n:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let name_literal = format!("{:?}", req.name);
     let prompt_literal = match &req.prompt {
         Some(text) => format!("Some({text:?})"),
@@ -673,6 +737,11 @@ fn rust_main(req: &ScaffoldRequest) -> String {
         ""
     } else {
         "\n            caps.push(json!(\"hooks\"));"
+    };
+    let commands_cap = if req.commands.is_empty() {
+        ""
+    } else {
+        "\n            caps.push(json!(\"commands\"));"
     };
     format!(
         r##"//! {name} — a yolop extension (YEP capability server).
@@ -693,6 +762,8 @@ use std::io::{{BufRead, Write}};
 const NAME: &str = {name_literal};
 // Tool names this server serves. MUST match plugin.json's yolop.tools.
 const TOOLS: &[&str] = &[{tools_list}];
+// Slash-command names this server serves. MUST match plugin.json's yolop.commands.
+const COMMANDS: &[&str] = &[{commands_list}];
 // Static system-prompt contribution, or None.
 const PROMPT: Option<&str> = {prompt_literal};
 
@@ -728,6 +799,13 @@ fn handle_prompt() -> Value {{
     json!({{ "text": PROMPT.unwrap_or("") }})
 }}
 
+fn handle_command(name: &str, arguments: &str) -> Value {{
+    // Run a slash command. Return {{"message": "..."}} to show the user (and
+    // optionally "success": false). `arguments` is the raw text after the command.
+    let _ = COMMANDS;
+    json!({{ "message": format!("{{NAME}}:{{name}} ran with args: {{arguments:?}}") }})
+}}
+
 // --- protocol plumbing (do not edit) ----------------------------------------
 
 fn main() {{
@@ -751,7 +829,7 @@ fn main() {{
                 if let Some(p) = PROMPT {{
                     caps.push(json!("prompt"));
                     params["prompt"] = json!({{ "static": p }});
-                }}{hooks_cap}
+                }}{hooks_cap}{commands_cap}
                 send(&json!({{ "id": id, "result": {{
                     "protocol_version": "1.0",
                     "name": NAME,
@@ -778,6 +856,12 @@ fn main() {{
                 send(&json!({{ "id": id, "result": handle_hook(event, tool_name, &args) }}));
             }}
             "prompt/contribution" => send(&json!({{ "id": id, "result": handle_prompt() }})),
+            "command/execute" => {{
+                let p = msg.get("params").cloned().unwrap_or_else(|| json!({{}}));
+                let name = p.get("name").and_then(Value::as_str).unwrap_or("");
+                let arguments = p.get("arguments").and_then(Value::as_str).unwrap_or("");
+                send(&json!({{ "id": id, "result": handle_command(name, arguments) }}));
+            }}
             "shutdown" => {{
                 send(&json!({{ "id": id, "result": {{}} }}));
                 return;
@@ -795,8 +879,10 @@ fn main() {{
         name = req.name,
         name_literal = name_literal,
         tools_list = tools_list,
+        commands_list = commands_list,
         prompt_literal = prompt_literal,
         hooks_cap = hooks_cap,
+        commands_cap = commands_cap,
     )
 }
 
@@ -837,6 +923,7 @@ mod tests {
                 event: "pre_tool_use".into(),
                 tool_name_glob: "*".into(),
             }],
+            commands: Vec::new(),
             prompt: Some("Guarding git.".into()),
             status: false,
             skills: false,
@@ -971,6 +1058,37 @@ mod tests {
         r.prompt = None;
         r.skills = true;
         assert!(scaffold(&r).is_ok());
+    }
+
+    #[test]
+    fn commands_facet_scaffolds_manifest_and_dispatch() {
+        for (lang, needle) in [
+            (Language::Python, "def handle_command"),
+            (Language::Node, "function handleCommand"),
+            (Language::Rust, "fn handle_command"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut r = req(tmp.path().join("git-guard"));
+            r.language = lang;
+            r.commands = vec!["review".into()];
+            let out = scaffold(&r).unwrap();
+
+            let manifest =
+                parse_manifest(&std::fs::read_to_string(out.dir.join("plugin.json")).unwrap())
+                    .unwrap();
+            assert_eq!(manifest.commands.len(), 1, "{lang:?}");
+            assert_eq!(manifest.commands[0].name, "review");
+
+            let server = std::fs::read_to_string(&out.edit).unwrap();
+            assert!(
+                server.contains(needle),
+                "{lang:?} missing handler: {needle}"
+            );
+            assert!(
+                server.contains("command/execute"),
+                "{lang:?} missing dispatch"
+            );
+        }
     }
 
     #[test]

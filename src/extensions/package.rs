@@ -54,6 +54,10 @@ struct RawFacet {
     /// Lifecycle hook subscriptions the extension serves over `hook/fire`.
     #[serde(default)]
     hooks: Vec<HookSubscription>,
+    /// Slash commands the extension contributes (dispatched to the server over
+    /// `command/execute`).
+    #[serde(default)]
+    commands: Vec<CommandDef>,
     /// Permits the server to push `status/changed` notifications into the host
     /// status bar (D4: the approval boundary — a non-declaring extension can
     /// never write the status bar).
@@ -169,6 +173,28 @@ fn default_schema() -> Value {
     serde_json::json!({ "type": "object" })
 }
 
+/// A manifest-declared slash command. Registered (namespaced `<ext>:<name>`) in
+/// the host command palette; invoking it sends `command/execute` to the server.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandDef {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub args: Vec<CommandArgDef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandArgDef {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExtensionManifest {
     pub name: String,
@@ -181,6 +207,7 @@ pub struct ExtensionManifest {
     pub dynamic_prompt: bool,
     pub mcp_servers: BTreeMap<String, ContributedMcpServer>,
     pub hooks: Vec<HookSubscription>,
+    pub commands: Vec<CommandDef>,
     pub status: bool,
     pub skills: bool,
 }
@@ -245,10 +272,24 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         && !raw.yolop.dynamic_prompt
         && raw.yolop.mcp_servers.is_empty()
         && raw.yolop.hooks.is_empty()
+        && raw.yolop.commands.is_empty()
         && !raw.yolop.status
         && !raw.yolop.skills
     {
         return Err("extension declares no contributions; nothing to contribute".into());
+    }
+    for command in &raw.yolop.commands {
+        if command.name.trim().is_empty()
+            || !command
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(format!(
+                "invalid command name `{}`: use ascii letters, digits, `-`, `_`",
+                command.name
+            ));
+        }
     }
     for (server_name, server) in &raw.yolop.mcp_servers {
         match server.transport {
@@ -276,6 +317,7 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         dynamic_prompt: raw.yolop.dynamic_prompt,
         mcp_servers: raw.yolop.mcp_servers,
         hooks: raw.yolop.hooks,
+        commands: raw.yolop.commands,
         status: raw.yolop.status,
         skills: raw.yolop.skills,
     })
@@ -467,6 +509,31 @@ mod tests {
         let found = discover_extensions(tmp.path());
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].manifest.name, "echo");
+    }
+
+    #[test]
+    fn parses_commands_and_rejects_bad_names() {
+        let ok = json!({
+            "name": "greeter", "description": "t",
+            "yolop": { "protocol_version": "1.0",
+                "capabilityServer": { "command": "x" },
+                "commands": [{ "name": "hello", "description": "Say hi",
+                    "args": [{ "name": "who", "required": true }] }] }
+        });
+        let manifest = parse_manifest(&ok.to_string()).expect("commands parse");
+        assert_eq!(manifest.commands.len(), 1);
+        assert_eq!(manifest.commands[0].name, "hello");
+        assert_eq!(manifest.commands[0].args[0].name, "who");
+        assert!(manifest.commands[0].args[0].required);
+
+        // A command name with a space/slash is rejected.
+        let mut bad = ok;
+        bad["yolop"]["commands"][0]["name"] = json!("bad name");
+        assert!(
+            parse_manifest(&bad.to_string())
+                .unwrap_err()
+                .contains("invalid command name")
+        );
     }
 
     #[test]

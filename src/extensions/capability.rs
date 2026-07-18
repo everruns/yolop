@@ -9,6 +9,10 @@ use super::manager::{DEFAULT_REQUEST_TIMEOUT_MS, ExtensionProcess, ExtensionProc
 use super::package::{ExtensionPackage, ToolDefinition, extension_capability_id};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, SystemPromptContext};
+use everruns_core::command::{
+    CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
+    ExecuteCommandRequest,
+};
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -245,6 +249,73 @@ impl Capability for ExtensionCapability {
                 }) as Arc<dyn everruns_core::atoms::PostToolExecHook>
             })
             .collect()
+    }
+
+    fn commands(&self) -> Vec<CommandDescriptor> {
+        let ext = &self.package.manifest.name;
+        self.package
+            .manifest
+            .commands
+            .iter()
+            .map(|c| CommandDescriptor {
+                // Namespaced `<ext>:<name>` so extension commands can never
+                // collide with or shadow built-in slash commands.
+                name: format!("{ext}:{}", c.name),
+                description: c.description.clone(),
+                source: CommandSource::System,
+                args: c
+                    .args
+                    .iter()
+                    .map(|a| CommandArg {
+                        name: a.name.clone(),
+                        description: if a.description.is_empty() {
+                            a.name.clone()
+                        } else {
+                            a.description.clone()
+                        },
+                        required: a.required,
+                        suggestions: Vec::new(),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    async fn execute_command(
+        &self,
+        request: &ExecuteCommandRequest,
+        _ctx: &CommandExecutionContext,
+    ) -> everruns_core::Result<CommandResult> {
+        let prefix = format!("{}:", self.package.manifest.name);
+        let name = request.name.strip_prefix(&prefix).unwrap_or(&request.name);
+        if !self
+            .package
+            .manifest
+            .commands
+            .iter()
+            .any(|c| c.name == name)
+        {
+            return Err(everruns_core::AgentLoopError::config(format!(
+                "extension `{}` does not provide command `{name}`",
+                self.package.manifest.name
+            )));
+        }
+        let arguments = request.arguments.as_deref().unwrap_or("");
+        let process = self.process_for(&Value::Null);
+        Ok(match process.execute_command(name, arguments).await {
+            Ok(result) => CommandResult {
+                success: result.success,
+                message: result.message,
+                error_code: None,
+                error_fields: None,
+            },
+            Err(err) => CommandResult {
+                success: false,
+                message: format!("command failed: {err}"),
+                error_code: None,
+                error_fields: None,
+            },
+        })
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {

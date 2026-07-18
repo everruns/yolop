@@ -34,6 +34,10 @@ pub const METHODS: &[Method] = &[
         "prompt/contribution",
         "Request a fresh dynamic system-prompt contribution.",
     ),
+    Method::host(
+        "command/execute",
+        "Run a manifest-declared slash command; the result message is shown to the user.",
+    ),
     Method::host("config/changed", "Notify the server its config changed."),
     Method::host("shutdown", "Request a graceful stop."),
 ];
@@ -47,6 +51,7 @@ pub const CAPABILITY_TOKENS: &[&str] = &[
     "hooks",
     "mcp_servers",
     "status",
+    "commands",
 ];
 
 /// Direction a method flows.
