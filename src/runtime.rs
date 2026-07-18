@@ -5243,6 +5243,7 @@ mod tests {
             skill_global: None,
             skill_system: None,
             environment_skill: None,
+            extension_skills: Vec::new(),
         };
         let store = factory
             .create_session_file_system(SessionFileSystemFactoryContext::default())
