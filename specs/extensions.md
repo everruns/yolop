@@ -87,6 +87,15 @@ mutated through the VFS) and added as a read-only `SkillScope` (label
 (enabled extensions only) and is host-side — no server or wire involvement.
 `scaffold_extension skills=true` writes a starter `skills/<name>/SKILL.md`;
 `extension_contributed_skill_is_visible_and_read_only` covers the mount.
+Slash commands: an extension declares `commands` in its manifest; `ExtensionCapability`
+implements the `Capability` `commands()`/`execute_command()` seams, so the
+commands flow into `runtime.list_commands` → the palette automatically. Each is
+registered namespaced (`<ext>:<name>`) so it can never shadow a built-in, and
+invoking it sends `command/execute` (host→server) with `{name, arguments}`; the
+server's `CommandExecuteResult { success, message }` becomes the `CommandResult`
+shown to the user. `scaffold_extension commands=[…]` generates a
+`handle_command` seam in all three templates. Covered by
+`scaffolded_extension_serves_a_slash_command`.
 Later — the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in), `ui/ask` (needs the
 server→host reverse-request channel, still refused in phase 1),

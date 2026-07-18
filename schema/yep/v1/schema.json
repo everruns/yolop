@@ -22,6 +22,34 @@
       },
       "type": "object"
     },
+    "CommandExecuteParams": {
+      "description": "Host → server `command/execute` params: run a manifest-declared slash\ncommand. `name` is the command's own name (the host strips any `<ext>:`\nnamespace prefix before sending); `arguments` is the raw text after the\ncommand token.",
+      "properties": {
+        "arguments": {
+          "default": "",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "CommandExecuteResult": {
+      "description": "Server → host `command/execute` result: a message the host shows to the\nuser. Lenient/defaulted — a bare `{}` means \"succeeded, no message\".",
+      "properties": {
+        "message": {
+          "default": "",
+          "type": "string"
+        },
+        "success": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ErrorObject": {
       "description": "JSON-RPC-shaped error object. Everything beyond `message` is optional and\ndefaulted, so a peer that sends bare `{ \"message\": … }` still parses.",
       "properties": {
@@ -243,6 +271,14 @@
     "$ref": "#/$defs/ErrorObject"
   },
   "messages": {
+    "command/execute": {
+      "params": {
+        "$ref": "#/$defs/CommandExecuteParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CommandExecuteResult"
+      }
+    },
     "hook/fire": {
       "params": {
         "$ref": "#/$defs/HookFireParams"

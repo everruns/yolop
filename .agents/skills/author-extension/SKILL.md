@@ -42,8 +42,12 @@ Declare only what you need; a manifest must contribute at least one of:
 - **skills** — a `skills/` directory of `SKILL.md` files, mounted read-only for
   the enabled extension (same discovery as workspace/global skills). Scaffold
   with `skills: true` to get a starter `skills/<name>/SKILL.md`.
+- **commands** — slash commands, registered namespaced as `/<ext>:<cmd>` in the
+  palette and dispatched to the server over `command/execute` (the result
+  message is shown to the user). Scaffold with `commands: ["name", …]`; the
+  generated server gets a `handle_command(name, arguments)` seam.
 
-Not yet available: providers, slash commands, `ui/ask`.
+Not yet available: providers, `ui/ask`.
 
 ## The loop
 

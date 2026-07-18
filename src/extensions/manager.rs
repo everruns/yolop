@@ -90,6 +90,30 @@ impl ExtensionProcess {
         result
     }
 
+    /// Run a manifest-declared slash command on the server (`command/execute`).
+    /// Spawns the server if needed. `name` is the command's own name (no
+    /// namespace prefix).
+    pub async fn execute_command(
+        &self,
+        name: &str,
+        arguments: &str,
+    ) -> Result<super::protocol::CommandExecuteResult> {
+        let connection = {
+            let mut state = self.state.lock().await;
+            self.ensure_live(&mut state).await?;
+            state.as_ref().expect("ensured live").connection.clone()
+        };
+        let params = serde_json::to_value(super::protocol::CommandExecuteParams {
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        })?;
+        let result = connection.request("command/execute", params).await;
+        if connection.is_closed() {
+            *self.state.lock().await = None;
+        }
+        Ok(serde_json::from_value(result?).unwrap_or_default())
+    }
+
     /// The server's static system-prompt contribution, from the handshake.
     /// Spawns the server if needed; a failure is a warning, never a session
     /// sink — the prompt facet degrades to absent.

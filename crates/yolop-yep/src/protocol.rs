@@ -271,6 +271,37 @@ pub struct PromptContribution {
 }
 
 // ---------------------------------------------------------------------------
+// command/execute
+
+/// Host → server `command/execute` params: run a manifest-declared slash
+/// command. `name` is the command's own name (the host strips any `<ext>:`
+/// namespace prefix before sending); `arguments` is the raw text after the
+/// command token.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CommandExecuteParams {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub arguments: String,
+}
+
+/// Server → host `command/execute` result: a message the host shows to the
+/// user. Lenient/defaulted — a bare `{}` means "succeeded, no message".
+#[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CommandExecuteResult {
+    #[serde(default = "default_true")]
+    pub success: bool,
+    #[serde(default)]
+    pub message: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+// ---------------------------------------------------------------------------
 // status/changed
 
 /// Severity of a `status/changed` update. Purely presentational; the host may

@@ -348,6 +348,7 @@ mod spawn_tests {
                 event: "pre_tool_use".into(),
                 tool_name_glob: "*".into(),
             }],
+            commands: Vec::new(),
             prompt: None,
             status: false,
             skills: false,
@@ -467,6 +468,71 @@ mod spawn_tests {
         assert_scaffolded_git_block(super::scaffold::Language::Rust).await;
     }
 
+    /// Slash-command acceptance: a scaffolded extension declaring a command
+    /// exposes it namespaced (`<ext>:<cmd>`) via `commands()`, and invoking it
+    /// routes `command/execute` to the server, whose message comes back.
+    #[tokio::test]
+    async fn scaffolded_extension_serves_a_slash_command() {
+        use super::scaffold::{Language, ScaffoldRequest, scaffold};
+        use everruns_core::capabilities::Capability;
+        use everruns_core::command::{CommandExecutionContext, ExecuteCommandRequest};
+
+        if python3().is_none() {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let out = scaffold(&ScaffoldRequest {
+            name: "greeter".into(),
+            description: "Greets.".into(),
+            language: Language::Python,
+            tools: vec![],
+            hooks: vec![],
+            commands: vec!["hello".into()],
+            prompt: None,
+            status: false,
+            skills: false,
+            dir: tmp.path().join("greeter"),
+        })
+        .unwrap();
+
+        let manifest =
+            parse_manifest(&std::fs::read_to_string(out.dir.join("plugin.json")).unwrap()).unwrap();
+        assert_eq!(manifest.commands.len(), 1);
+        let capability = ExtensionCapability::new(
+            ExtensionPackage {
+                dir: out.dir.clone(),
+                manifest,
+            },
+            tmp.path().to_path_buf(),
+        );
+
+        // The command is exposed namespaced so it can't shadow a built-in.
+        let commands = capability.commands();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "greeter:hello");
+
+        // Invoking it round-trips to the server (default handler echoes args).
+        let request = ExecuteCommandRequest {
+            name: "greeter:hello".into(),
+            arguments: Some("world".into()),
+            controls: None,
+        };
+        let result = capability
+            .execute_command(
+                &request,
+                &CommandExecutionContext::without_host(everruns_core::typed_id::SessionId::new()),
+            )
+            .await
+            .expect("command executes");
+        assert!(result.success, "{result:?}");
+        assert!(
+            result.message.contains("greeter:hello") && result.message.contains("world"),
+            "server message should echo the command + args: {:?}",
+            result.message
+        );
+    }
+
     /// The status-bar acceptance case: `scaffold_extension` with `status` yields
     /// a package whose server, after the author fills the hook to count and
     /// `emit_status`, pushes `status/changed` — and the host routes it to the
@@ -493,6 +559,7 @@ mod spawn_tests {
                 event: "pre_tool_use".into(),
                 tool_name_glob: "*".into(),
             }],
+            commands: Vec::new(),
             prompt: None,
             status: true,
             skills: false,

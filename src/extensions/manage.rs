@@ -180,6 +180,15 @@ impl ManageTool {
             .map(str::to_string);
         let status = args.get("status").and_then(Value::as_bool).unwrap_or(false);
         let skills = args.get("skills").and_then(Value::as_bool).unwrap_or(false);
+        let commands = args
+            .get("commands")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|c| c.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
         // Default target: a sibling `scaffold/<name>` of the extensions dir, so
         // authored packages sit next to where they install without cluttering
         // the workspace. An explicit `dir` (a parent) overrides.
@@ -203,6 +212,7 @@ impl ManageTool {
             language,
             tools,
             hooks,
+            commands,
             prompt,
             status,
             skills,
@@ -442,6 +452,10 @@ impl Tool for ManageTool {
                             "tool_name_glob": { "type": "string", "default": "*",
                                 "description": "Glob over tool names to fire for." }
                         }, "required": ["event"] } },
+                    "commands": { "type": "array",
+                        "description": "Slash-command names the extension contributes; each is \
+                            registered as /<name>:<command> and dispatched to the server.",
+                        "items": { "type": "string" } },
                     "prompt": { "type": "string",
                         "description": "Static system-prompt contribution text, if any." },
                     "status": { "type": "boolean",
