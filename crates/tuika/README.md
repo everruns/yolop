@@ -47,9 +47,9 @@ extraction into its own crate. Today yolop drives it from
 ## Example
 
 ```rust
-use crate::tuika::{self, Boxed, Flex, ProgressBar, Spinner, Text, element};
+use tuika::{Flex, ProgressBar, Spinner, Text, Theme, element, paint};
 
-let theme = tuika::Theme::default();
+let theme = Theme::default();
 let root = Flex::column()
     .gap(1)
     .fixed(1, element(Spinner::new(frame)))
@@ -57,10 +57,20 @@ let root = Flex::column()
     .grow(1, element(Text::raw("body")));
 
 // In a `terminal.draw(|f| ...)` closure:
-tuika::paint(f.buffer_mut(), f.area(), &theme, root.as_ref(), &[]);
+paint(f.buffer_mut(), f.area(), &theme, root.as_ref(), &[]);
 ```
 
-Run the live demo: `cargo run -- tuika-gallery` (press `q` to quit).
+### Runnable examples
+
+Each enters the alternate screen; press `q` (or `esc`) to quit.
+
+| Example    | Command                                   | Shows                                              |
+| ---------- | ----------------------------------------- | -------------------------------------------------- |
+| `gallery`  | `cargo run -p tuika --example gallery`    | motion components + native OSC 9;4 progress        |
+| `select`   | `cargo run -p tuika --example select`     | `SelectState` + `SelectList` (stateful-widget idiom) |
+| `overlay`  | `cargo run -p tuika --example overlay`    | `OverlaySpec` centered dialog + input routing      |
+
+(Embedded in yolop, the gallery is also reachable as `yolop tuika-gallery`.)
 
 ## Declarative DSL (`view!`)
 
