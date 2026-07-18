@@ -77,4 +77,6 @@ pub use view::{Element, RenderCtx, View, element};
 #[cfg(test)]
 mod proptests;
 #[cfg(test)]
+mod snapshots;
+#[cfg(test)]
 mod tests;
