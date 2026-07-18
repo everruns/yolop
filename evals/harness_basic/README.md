@@ -15,7 +15,7 @@ exercises the opt-in `ast_edit` capability; see [`specs/ast_edit.md`](../../spec
 
 ## The matrix
 
-Four axes, crossed with 18 samples (small edit / refactor / search / guardrail / structural-rewrite tasks):
+Four axes, crossed with 23 samples (small edit / refactor / search / guardrail / structural-rewrite tasks):
 
 | Axis | Values | Where |
 |------|--------|-------|
@@ -52,6 +52,8 @@ search/refactor, and read-only code navigation.
 | `zero-result-search-recovery` [`search-efficiency`] | Three absent terms plus a real target | Recover after repeated empty searches | response finds the target and records a progress warning | result-aware progress guard |
 | `repo-map-bounded` [`search-efficiency`] | Rust file with 260+ symbols | Use an unqueried repo map | answer is found, output stays bounded, and truncation is followed by a targeted map or grep | output-size and recovery discipline |
 | `normal-output-preserves-head` [`search-efficiency`] | leading match followed by 600 `Error` lines | Run one bash search with explicit `output: normal` | leading match remains visible without reading persisted output | successful-output compaction |
+| `persisted-output-small-read` [`persisted-output-reading`] | 81-line, roughly 11 KiB CI log with a failure in the middle | Diagnose a persisted successful command result | one recovery read at most, correct root cause | small-output single-read policy |
+| `persisted-output-context-search` [`persisted-output-reading`] | 1,200-line CI log with the root cause outside the default log tail | Diagnose a persisted successful command result | one contextual grep, no follow-up read, correct root cause | large-output contextual-search policy |
 | `dependency-release-oscillation` [`progress-efficiency`] | bounded partial-release verifier with recurring manifest states and interleaved lockfile updates | Follow the release checklist until the runtime interrupts the cycle | coherent 0.17.6 manifest with few state revisits and validations | mutation oscillation from the costly version-bump session |
 | `redundant-validation` [`progress-efficiency`] | passing Rust suite plus an instruction to rerun it unchanged | Validate repeatedly unless the runtime detects no new evidence | warning stops duplicate validation before the third run | validation deduplication on unchanged state |
 | `self-write-git-block-extension` [`self-writing`] | empty workdir | Scaffold, implement, install, and doctor an extension that blocks git — using yolop's own extension tools | drives the full loop (`scaffold_extension` → `install_extension` → `doctor_extension`) and replies `DONE` | self-writing: can yolop author a working extension for itself, unaided |
@@ -190,6 +192,12 @@ HARNESS_BASIC_DEPENDENCY_BASELINE_BIN=/path/to/yolop-with-everruns-main \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/yolop-with-output-fix \
   doppler run -- mira run --preset output-persistence --trials 3 --group-by binary
 
+# Compare persisted-output recovery: one complete read when small, one
+# contextual grep when large.
+HARNESS_BASIC_DEPENDENCY_BASELINE_BIN=/path/to/yolop-before-context-grep-fix \
+HARNESS_BASIC_CANDIDATE_BIN=/path/to/yolop-with-context-grep-fix \
+  doppler run -- mira run --preset persisted-output-reading --trials 3 --group-by binary
+
 # Structural-rewrite A/B: default vs with-ast-edit on ast-edit-tagged cases.
 doppler run -- mira run --preset ast-edit-compare --group-by harness
 
@@ -213,6 +221,7 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | dependency oscillation + redundant validation | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `progress-controls` | ordinary regression controls, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `output-persistence` | dependency-isolated output proof, 3 trials | `normal-output-preserves-head` | gpt-5.5 | dependency baseline + candidate |
+| `persisted-output-reading` | small-read and large-context-search proof, 3 trials | two persisted-output recovery cases | gpt-5.5 | dependency baseline + candidate |
 | `ast-edit-compare` | **A/B ast_edit capability** | tag `ast-edit` | claude-sonnet-4-5 | candidate, effort=default, default vs with-ast-edit |
 | `effort-compare` | effort sweep | all | gpt-5.5 | candidate, harness=default, all efforts |
 | `models` | model sweep, out-of-the-box yolop | all | all | candidate, harness=default, effort=default |
