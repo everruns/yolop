@@ -78,7 +78,10 @@ jobs:
             return 1
           }
 
+          # yolop depends on both library crates by version, so crates.io
+          # requires them live before yolop. Order: leaf deps first, binary last.
           publish_if_missing yolop-yep
+          publish_if_missing tuika
           publish_if_missing yolop
 
   verify-publish:
