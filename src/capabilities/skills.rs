@@ -54,6 +54,20 @@ pub const SYSTEM_SKILLS_VFS: &str = "/.yolop/system-skills";
 /// Unlike global/system skills this root has no disk backing; a capability
 /// mount (currently Herdr) serves it through `MountFs`.
 pub const ENVIRONMENT_SKILLS_VFS: &str = "/.yolop/environment-skills";
+/// VFS prefix for read-only skills contributed by installed extensions. Each
+/// enabled extension declaring `skills` mounts its `skills/` dir at
+/// `<prefix>/<name>`, served from real disk (like global/system).
+pub const EXTENSION_SKILLS_VFS_PREFIX: &str = "/.yolop/extension-skills";
+
+/// VFS root for one extension's contributed skills.
+pub fn extension_skills_vfs(name: &str) -> String {
+    format!("{EXTENSION_SKILLS_VFS_PREFIX}/{name}")
+}
+
+/// Scope label for one extension's contributed skills.
+pub fn extension_skills_label(name: &str) -> String {
+    format!("ext:{name}")
+}
 
 /// System skills shipped inside the binary. Keep the source tree away from
 /// well-known skill discovery paths so it cannot be mistaken for a writable
@@ -97,7 +111,11 @@ pub fn relative_under(path: &str, root: &str) -> Option<String> {
 /// Only disk-backed scopes whose directory resolved are included. System and
 /// environment scopes are read-only; workspace/global are writable.
 /// `${SKILL_DIR}` and display paths resolve through [`HostSkillDirResolver`].
-pub fn skills_config(dirs: &SkillDirs, environment_active: bool) -> SkillsConfig {
+pub fn skills_config(
+    dirs: &SkillDirs,
+    environment_active: bool,
+    extensions: &[(String, PathBuf)],
+) -> SkillsConfig {
     let mut scopes = vec![SkillScope::new("workspace", WORKSPACE_SKILLS_VFS, true)];
     if dirs.global.is_some() {
         scopes.push(SkillScope::new("global", GLOBAL_SKILLS_VFS, true));
@@ -112,9 +130,23 @@ pub fn skills_config(dirs: &SkillDirs, environment_active: bool) -> SkillsConfig
     if dirs.system.is_some() {
         scopes.push(SkillScope::new("system", SYSTEM_SKILLS_VFS, false));
     }
+    // Read-only skills contributed by enabled extensions.
+    for (name, _dir) in extensions {
+        scopes.push(SkillScope::new(
+            extension_skills_label(name),
+            extension_skills_vfs(name),
+            false,
+        ));
+    }
     SkillsConfig {
         scopes,
-        resolver: Arc::new(HostSkillDirResolver { dirs: dirs.clone() }),
+        resolver: Arc::new(HostSkillDirResolver {
+            dirs: dirs.clone(),
+            extensions: extensions
+                .iter()
+                .map(|(name, dir)| (extension_skills_label(name), dir.clone()))
+                .collect(),
+        }),
         manage_tools: true,
     }
 }
@@ -125,10 +157,15 @@ pub fn skills_config(dirs: &SkillDirs, environment_active: bool) -> SkillsConfig
 /// paths.
 struct HostSkillDirResolver {
     dirs: SkillDirs,
+    /// Extension scope label (`ext:<name>`) → its on-disk `skills/` directory.
+    extensions: std::collections::BTreeMap<String, PathBuf>,
 }
 
 impl HostSkillDirResolver {
     fn base_for(&self, label: &str) -> PathBuf {
+        if let Some(dir) = self.extensions.get(label) {
+            return dir.clone();
+        }
         match label {
             "global" => self.dirs.global.clone(),
             // Environment skills are VFS-only and contain no shell-side assets.
@@ -486,7 +523,7 @@ mod tests {
             global: None,
             system: Some(PathBuf::from("/data/sys")),
         };
-        let cfg = skills_config(&dirs, false);
+        let cfg = skills_config(&dirs, false, &[]);
         let labels: Vec<&str> = cfg.scopes.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(labels, vec!["workspace", "system"]);
         assert!(cfg.manage_tools);
@@ -508,13 +545,42 @@ mod tests {
     }
 
     #[test]
+    fn extension_scopes_are_read_only_and_routed() {
+        let dirs = SkillDirs {
+            workspace: PathBuf::from("/ws/.agents/skills"),
+            global: None,
+            system: None,
+        };
+        let ext = vec![(
+            "git-guard".to_string(),
+            PathBuf::from("/ext/git-guard/skills"),
+        )];
+        let cfg = skills_config(&dirs, false, &ext);
+        let scope = cfg
+            .scopes
+            .iter()
+            .find(|s| s.label == "ext:git-guard")
+            .expect("extension scope present");
+        assert!(!scope.writable, "extension skills are read-only");
+        assert_eq!(scope.vfs_root, extension_skills_vfs("git-guard"));
+        // The resolver maps the scope back to the real on-disk dir.
+        assert_eq!(
+            cfg.resolver.skill_dir(scope, "my-skill"),
+            "/ext/git-guard/skills/my-skill"
+        );
+    }
+
+    #[test]
     fn resolver_returns_real_host_paths() {
         let dirs = SkillDirs {
             workspace: PathBuf::from("/ws/.agents/skills"),
             global: Some(PathBuf::from("/cfg/yolop/skills")),
             system: Some(PathBuf::from("/data/sys")),
         };
-        let r = HostSkillDirResolver { dirs };
+        let r = HostSkillDirResolver {
+            dirs,
+            extensions: Default::default(),
+        };
         // Compare as paths so separators are platform-correct.
         assert_eq!(
             PathBuf::from(r.skill_dir(&SkillScope::new("global", GLOBAL_SKILLS_VFS, true), "foo")),

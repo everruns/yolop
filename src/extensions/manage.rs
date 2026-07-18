@@ -179,6 +179,7 @@ impl ManageTool {
             .and_then(Value::as_str)
             .map(str::to_string);
         let status = args.get("status").and_then(Value::as_bool).unwrap_or(false);
+        let skills = args.get("skills").and_then(Value::as_bool).unwrap_or(false);
         // Default target: a sibling `scaffold/<name>` of the extensions dir, so
         // authored packages sit next to where they install without cluttering
         // the workspace. An explicit `dir` (a parent) overrides.
@@ -204,6 +205,7 @@ impl ManageTool {
             hooks,
             prompt,
             status,
+            skills,
             dir,
         };
         match scaffold::scaffold(&req) {
@@ -445,6 +447,9 @@ impl Tool for ManageTool {
                     "status": { "type": "boolean",
                         "description": "Contribute a status-bar field the server updates by \
                             pushing status/changed (e.g. a live counter)." },
+                    "skills": { "type": "boolean",
+                        "description": "Contribute a skills/ directory (a starter SKILL.md is \
+                            generated); loaded read-only for the enabled extension." },
                     "dir": { "type": "string",
                         "description": "Parent directory to create `<name>/` under. Defaults to \
                             a `scaffold/` dir beside the extensions store." }

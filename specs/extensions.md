@@ -77,6 +77,16 @@ is a no-op in `--print`/ACP, where the sink is `None` and the push only logs.
 acceptance — a self-authored char-counter that pushes to the sink — is covered
 by `scaffolded_status_extension_pushes_to_the_sink`. ACP has no status surface
 today, so extension status is intentionally TUI-only for now.
+Skills: an extension that declares `skills` and ships a `skills/` directory
+contributes its `SKILL.md` files read-only, discovered by the same
+`ScopedSkillsCapability` scan as workspace/global/system skills. Each enabled,
+declaring extension's `skills/` is seeded into a read-only in-memory mount at
+`extension_skills_vfs(<name>)` (so an installed extension's skills can't be
+mutated through the VFS) and added as a read-only `SkillScope` (label
+`ext:<name>`) in `skills_config`. Loading follows the MCP-contribution rule
+(enabled extensions only) and is host-side — no server or wire involvement.
+`scaffold_extension skills=true` writes a starter `skills/<name>/SKILL.md`;
+`extension_contributed_skill_is_visible_and_read_only` covers the mount.
 Later — the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in), `ui/ask` (needs the
 server→host reverse-request channel, still refused in phase 1),

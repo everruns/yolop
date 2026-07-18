@@ -39,8 +39,11 @@ Declare only what you need; a manifest must contribute at least one of:
   `status/changed` (e.g. a counter). Scaffold with `status: true`; the generated
   server gets an `emit_status(text)` helper (empty text clears the field). Shows
   in the inline and full-screen TUIs; a no-op in `--print`/ACP.
+- **skills** — a `skills/` directory of `SKILL.md` files, mounted read-only for
+  the enabled extension (same discovery as workspace/global skills). Scaffold
+  with `skills: true` to get a starter `skills/<name>/SKILL.md`.
 
-Not yet available: providers, slash commands.
+Not yet available: providers, slash commands, `ui/ask`.
 
 ## The loop
 
