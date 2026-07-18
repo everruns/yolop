@@ -46,8 +46,13 @@ Declare only what you need; a manifest must contribute at least one of:
   palette and dispatched to the server over `command/execute` (the result
   message is shown to the user). Scaffold with `commands: ["name", …]`; the
   generated server gets a `handle_command(name, arguments)` seam.
+- **ui_ask** — declare `ui_ask: true`, then the server may send a `ui/ask`
+  request (`{prompt, placeholder?}`) to prompt the user for a typed answer
+  mid-turn; the TUI shows an overlay and returns `{answer, cancelled}`. Refused
+  in `--print`/ACP. (No scaffold-template helper yet — send the request by hand
+  from your server.)
 
-Not yet available: providers, `ui/ask`.
+Not yet available: providers.
 
 ## The loop
 

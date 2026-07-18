@@ -96,9 +96,20 @@ server's `CommandExecuteResult { success, message }` becomes the `CommandResult`
 shown to the user. `scaffold_extension commands=[…]` generates a
 `handle_command` seam in all three templates. Covered by
 `scaffolded_extension_serves_a_slash_command`.
+ui/ask: an extension that declares `ui_ask` (the D4 opt-in) may send a `ui/ask`
+*request* (server→host, the reverse-request direction) carrying
+`UiAskParams { prompt, placeholder? }`; the host prompts the user and answers
+with `UiAskResult { answer, cancelled }`. The client routes the request to an
+`AskSink` (built in `runtime.rs`, gated on the TUI client) that pushes an
+`AskRequest` onto a dedicated channel; `App` shows a single-line overlay
+(`draw_ask_overlay`) that captures keys *before* the busy check so it works
+mid-turn, then resolves the request's oneshot with the typed answer (or
+`cancelled` on Esc). Only one prompt is live at a time; a request arriving while
+another is pending is answered `cancelled`. Refused (`cancelled`) with no sink,
+so `--print`/ACP never blocks on it. Covered by
+`ui_ask_reverse_request_is_answered_by_the_sink`.
 Later — the full `yolop-extension-lsp` control-plane extraction (gated on
-`evals/lsp_integration` parity to retire the built-in), `ui/ask` (needs the
-server→host reverse-request channel, still refused in phase 1),
+`evals/lsp_integration` parity to retire the built-in),
 `workspace/changed`,
 providers — remain design-of-record below.
 Toolchain-free crates.io install is now wired: `install_extension

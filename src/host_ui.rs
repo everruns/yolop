@@ -10,7 +10,23 @@
 //! forwards a typed [`UiCommand`] to the terminal event loop over a channel.
 //! The loop is the only thing that can perform the effect, so it applies it.
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+
+/// A server→host `ui/ask`: prompt the user and deliver their answer via
+/// `reply`. Carried on its own channel rather than as a [`UiCommand`] variant
+/// because the oneshot sender can't derive `Clone`/`Eq`.
+pub struct AskRequest {
+    pub prompt: String,
+    pub placeholder: Option<String>,
+    pub reply: oneshot::Sender<AskAnswer>,
+}
+
+/// The user's answer to a [`AskRequest`] (empty + `cancelled` on dismiss).
+#[derive(Clone, Debug, Default)]
+pub struct AskAnswer {
+    pub answer: String,
+    pub cancelled: bool,
+}
 
 /// A request from a client-executed capability command to the terminal host.
 /// Variants name *what* should happen; the host decides *how* to render it.

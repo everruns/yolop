@@ -123,6 +123,12 @@ pub struct App {
     /// extension servers over `status/changed`. Rendered in the status bar via
     /// [`App::presentation_state`].
     extension_status: std::collections::BTreeMap<String, String>,
+    /// Incoming extension `ui/ask` requests; each is prompted one at a time via
+    /// [`App::pending_ask`].
+    ask_rx: mpsc::UnboundedReceiver<crate::host_ui::AskRequest>,
+    /// The `ui/ask` prompt currently shown, if any. Owns the keyboard (even
+    /// mid-turn) until the user answers or dismisses it.
+    pending_ask: Option<PendingAsk>,
     /// Settings store shared with the runtime (same instance
     /// `SetupCapability` writes). Used to resolve credentials when querying
     /// provider models APIs and to show per-provider connection status in
@@ -262,6 +268,15 @@ pub(crate) enum CodexLoginMethod {
 struct PendingCodexLogin {
     id: u64,
     task: tokio::task::JoinHandle<()>,
+}
+
+/// An in-flight extension `ui/ask`: the prompt shown, the answer being typed,
+/// and the oneshot that delivers it back to the extension server.
+struct PendingAsk {
+    prompt: String,
+    placeholder: Option<String>,
+    value: String,
+    reply: Option<oneshot::Sender<crate::host_ui::AskAnswer>>,
 }
 
 enum CodexLoginEvent {
@@ -410,6 +425,8 @@ impl App {
             session_tokens: None,
             ui_rx: runtime.ui_rx,
             extension_status: std::collections::BTreeMap::new(),
+            ask_rx: runtime.ask_rx,
+            pending_ask: None,
             settings: runtime.settings,
             model_catalog: HashMap::new(),
             model_fetches_in_flight: HashSet::new(),
@@ -772,6 +789,25 @@ impl App {
             self.apply_ui_command(command).await;
             applied_ui_command = true;
         }
+        // Extension `ui/ask` prompts. One at a time; a request arriving while a
+        // prompt is open is answered "cancelled" rather than stacking overlays.
+        while let Ok(request) = self.ask_rx.try_recv() {
+            if self.pending_ask.is_some() {
+                let _ = request.reply.send(crate::host_ui::AskAnswer {
+                    answer: String::new(),
+                    cancelled: true,
+                });
+                continue;
+            }
+            self.push_system(format!("extension asks: {}", request.prompt));
+            self.pending_ask = Some(PendingAsk {
+                prompt: request.prompt,
+                placeholder: request.placeholder,
+                value: String::new(),
+                reply: Some(request.reply),
+            });
+            applied_ui_command = true;
+        }
         if applied_ui_command {
             return Ok(());
         }
@@ -970,6 +1006,13 @@ impl App {
             return;
         }
 
+        // An extension `ui/ask` prompt owns the keyboard even mid-turn, since
+        // the server typically asks while a tool is running.
+        if self.pending_ask.is_some() {
+            self.handle_ask_key(key);
+            return;
+        }
+
         if self.busy {
             // Block only input editing while a turn is running.
             self.handle_busy_key(key);
@@ -1083,6 +1126,51 @@ impl App {
                 tracing::debug!("clipboard image paste failed: {err}");
                 self.push_system(format!("clipboard image paste failed: {err}"));
             }
+        }
+    }
+
+    /// Keyboard handling while an extension `ui/ask` prompt is open: edit the
+    /// answer, Enter to submit, Esc to cancel.
+    fn handle_ask_key(&mut self, key: KeyEvent) {
+        let Some(ask) = self.pending_ask.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Enter => {
+                let answer = ask.value.clone();
+                self.resolve_ask(crate::host_ui::AskAnswer {
+                    answer,
+                    cancelled: false,
+                });
+            }
+            KeyCode::Esc => {
+                self.resolve_ask(crate::host_ui::AskAnswer {
+                    answer: String::new(),
+                    cancelled: true,
+                });
+            }
+            KeyCode::Backspace => {
+                ask.value.pop();
+            }
+            KeyCode::Char(c) => {
+                ask.value.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    /// Deliver an answer to the extension and close the prompt.
+    fn resolve_ask(&mut self, answer: crate::host_ui::AskAnswer) {
+        if let Some(mut ask) = self.pending_ask.take() {
+            let shown = if answer.cancelled {
+                "(cancelled)".to_string()
+            } else {
+                answer.answer.clone()
+            };
+            if let Some(reply) = ask.reply.take() {
+                let _ = reply.send(answer);
+            }
+            self.push_system(format!("answered: {shown}"));
         }
     }
 
