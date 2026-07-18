@@ -143,21 +143,20 @@ impl Translator {
                 ))]
             }
             EventData::ReasonItem(data) => {
-                // Provider-curated summaries are safe public narration, unlike
-                // plaintext extended thinking. ACP has no commentary update,
-                // so match the terminal projection and use an agent message.
-                let narration = data
+                // Provider-curated summaries are displayable reasoning, while
+                // opaque continuation content remains private.
+                let summary = data
                     .summary
                     .iter()
                     .map(|segment| segment.trim())
                     .filter(|segment| !segment.is_empty())
                     .collect::<Vec<_>>()
                     .join("\n\n");
-                if narration.is_empty() {
+                if summary.is_empty() {
                     Vec::new()
                 } else {
-                    vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
-                        narration,
+                    vec![SessionUpdate::AgentThoughtChunk(protocol::text_chunk(
+                        summary,
                     ))]
                 }
             }
@@ -452,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_summaries_render_as_public_narration() {
+    fn reasoning_summaries_render_as_thought_chunks() {
         let mut t = Translator::new();
         let updates = t.on_event(&event(EventData::ReasonItem(ReasonItemData {
             turn_id: TurnId::new(),
@@ -469,7 +468,7 @@ mod tests {
 
         assert_eq!(
             updates,
-            vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+            vec![SessionUpdate::AgentThoughtChunk(protocol::text_chunk(
                 "**Investigating event semantics**\n\n**Comparing ACP projections**"
             ))]
         );

@@ -72,7 +72,7 @@ notifications. The mapping is a pure, per-turn state machine
 | assistant text delta | `agent_message_chunk` (incremental) |
 | completed assistant message, when no deltas streamed | `agent_message_chunk` (whole text) — covers providers that don't stream |
 | extended-thinking delta | `agent_thought_chunk` |
-| provider-curated reasoning summary | `agent_message_chunk` (public narration; segments separated by blank lines) |
+| provider-curated reasoning summary | `agent_thought_chunk` (displayable reasoning; segments separated by blank lines) |
 | completed assistant commentary with tool calls, when no deltas streamed | `agent_message_chunk` before the tool activity |
 | tool started | `tool_call` (`status: in_progress`, `rawInput`, semantic `kind`) |
 | tool completed | `tool_call_update` (`status: completed`/`failed`, summary `content`) |
