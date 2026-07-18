@@ -2,7 +2,7 @@
 //!
 //! This is the piece ratatui does not give you: a CSS-flexbox-shaped solver
 //! (borrowing OpenTUI's Yoga model and quench's declarative structure, but
-//! implemented as plain Rust — no reconciler). A [`Flex`](crate::tuika::components::Flex)
+//! implemented as plain Rust — no reconciler). A [`Flex`](crate::components::Flex)
 //! container owns a [`LayoutStyle`] and children; [`solve`] resolves child
 //! rects for one axis. It is written once against a direction-agnostic
 //! [`Axis`] so rows and columns share the same code path.

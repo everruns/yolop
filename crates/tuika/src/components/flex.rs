@@ -2,17 +2,17 @@
 //!
 //! Holds a [`LayoutStyle`] and a list of children, each tagged with a
 //! [`Dimension`] for its main-axis sizing. Delegates rect assignment to the
-//! [`solve`](crate::tuika::layout::solve) flexbox solver, then renders each
+//! [`solve`](crate::layout::solve) flexbox solver, then renders each
 //! child into its rect through a clipped child surface. Nesting `Flex`es is how
 //! every screen is built.
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use crate::tuika::geometry::Size;
-use crate::tuika::layout::{Dimension, Item, LayoutStyle, solve};
-use crate::tuika::surface::Surface;
-use crate::tuika::view::{Element, RenderCtx, View};
+use crate::geometry::Size;
+use crate::layout::{Dimension, Item, LayoutStyle, solve};
+use crate::surface::Surface;
+use crate::view::{Element, RenderCtx, View};
 
 struct Child {
     view: Element,
@@ -56,19 +56,19 @@ impl Flex {
     }
 
     /// Set padding inside the container (passthrough to the layout style).
-    pub fn padding(mut self, padding: crate::tuika::geometry::Padding) -> Self {
+    pub fn padding(mut self, padding: crate::geometry::Padding) -> Self {
         self.style.padding = padding;
         self
     }
 
     /// Set cross-axis alignment (passthrough to the layout style).
-    pub fn align(mut self, align: crate::tuika::layout::Align) -> Self {
+    pub fn align(mut self, align: crate::layout::Align) -> Self {
         self.style.align_items = align;
         self
     }
 
     /// Set main-axis distribution (passthrough to the layout style).
-    pub fn justify(mut self, justify: crate::tuika::layout::Justify) -> Self {
+    pub fn justify(mut self, justify: crate::layout::Justify) -> Self {
         self.style.justify = justify;
         self
     }

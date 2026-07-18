@@ -7,10 +7,10 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
 
-use crate::tuika::geometry::{Padding, Size};
-use crate::tuika::style::BorderStyle;
-use crate::tuika::surface::Surface;
-use crate::tuika::view::{Element, RenderCtx, View};
+use crate::geometry::{Padding, Size};
+use crate::style::BorderStyle;
+use crate::surface::Surface;
+use crate::view::{Element, RenderCtx, View};
 
 use super::text::line_width;
 

@@ -10,10 +10,10 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
 
-use crate::tuika::event::{Event, EventFlow, KeyCode, MouseKind};
-use crate::tuika::geometry::Size;
-use crate::tuika::surface::Surface;
-use crate::tuika::view::{RenderCtx, View};
+use crate::event::{Event, EventFlow, KeyCode, MouseKind};
+use crate::geometry::Size;
+use crate::surface::Surface;
+use crate::view::{RenderCtx, View};
 
 /// Persisted scroll position for one scroll region.
 #[derive(Clone, Copy, Debug, Default)]

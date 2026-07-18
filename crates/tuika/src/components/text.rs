@@ -10,9 +10,9 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use unicode_width::UnicodeWidthStr;
 
-use crate::tuika::geometry::Size;
-use crate::tuika::surface::Surface;
-use crate::tuika::view::{RenderCtx, View};
+use crate::geometry::Size;
+use crate::surface::Surface;
+use crate::view::{RenderCtx, View};
 
 /// Display width of a styled line (sum of span widths).
 pub fn line_width(line: &Line) -> u16 {
