@@ -81,6 +81,8 @@ pub struct ScaffoldRequest {
     pub tools: Vec<ToolSpec>,
     pub hooks: Vec<HookSpec>,
     pub prompt: Option<String>,
+    /// Contribute a status-bar field (the server may push `status/changed`).
+    pub status: bool,
     /// Absolute path of the package directory to create.
     pub dir: PathBuf,
 }
@@ -111,10 +113,10 @@ fn validate(req: &ScaffoldRequest) -> Result<(), String> {
             "invalid extension name `{name}`: use ascii letters, digits, `-`, `_`"
         ));
     }
-    if req.tools.is_empty() && req.hooks.is_empty() && req.prompt.is_none() {
+    if req.tools.is_empty() && req.hooks.is_empty() && req.prompt.is_none() && !req.status {
         return Err(
             "an extension must contribute something: pass at least one of `tools`, `hooks`, \
-             or `prompt`"
+             `prompt`, or `status`"
                 .into(),
         );
     }
@@ -235,6 +237,9 @@ fn manifest_json(req: &ScaffoldRequest) -> Value {
     if req.prompt.is_some() {
         obj.insert("prompt".into(), Value::Bool(true));
     }
+    if req.status {
+        obj.insert("status".into(), Value::Bool(true));
+    }
     json!({
         "name": req.name,
         "description": req.description,
@@ -257,9 +262,13 @@ fn python_server(req: &ScaffoldRequest) -> String {
         Some(text) => serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into()),
         None => "None".into(),
     };
-    let has_hooks = !req.hooks.is_empty();
-    let hooks_cap = if has_hooks {
+    let hooks_cap = if req.hooks.is_empty() {
+        ""
+    } else {
         "\n            caps.append(\"hooks\")"
+    };
+    let status_cap = if req.status {
+        "\n            caps.append(\"status\")"
     } else {
         ""
     };
@@ -295,6 +304,12 @@ def send(obj):
 def log(msg):
     sys.stderr.write(str(msg) + "\n")
     sys.stderr.flush()
+
+
+def emit_status(text):
+    # Push a status-bar update to the host (requires "status" in plugin.json).
+    # An empty string clears this extension's field.
+    send({{"method": "status/changed", "params": {{"status": text}}}})
 
 
 # --- author-editable handlers -------------------------------------------------
@@ -343,7 +358,7 @@ def main():
             params = {{"tools": [{{"name": t}} for t in TOOLS]}}
             if PROMPT is not None:
                 caps.append("prompt")
-                params["prompt"] = {{"static": PROMPT}}{hooks_cap}
+                params["prompt"] = {{"static": PROMPT}}{hooks_cap}{status_cap}
             send({{"id": msg_id, "result": {{
                 "protocol_version": "1.0",
                 "name": NAME,
@@ -389,6 +404,7 @@ if __name__ == "__main__":
         tools_list = tools_list,
         prompt_literal = prompt_literal,
         hooks_cap = hooks_cap,
+        status_cap = status_cap,
     )
 }
 
@@ -409,6 +425,11 @@ fn node_server(req: &ScaffoldRequest) -> String {
         ""
     } else {
         "\n    caps.push(\"hooks\");"
+    };
+    let status_cap = if req.status {
+        "\n    caps.push(\"status\");"
+    } else {
+        ""
     };
     format!(
         r##"#!/usr/bin/env node
@@ -437,6 +458,12 @@ function send(obj) {{
 
 function log(msg) {{
   process.stderr.write(String(msg) + "\n");
+}}
+
+function emitStatus(text) {{
+  // Push a status-bar update to the host (requires "status" in plugin.json).
+  // An empty string clears this extension's field.
+  send({{ method: "status/changed", params: {{ status: text }} }});
 }}
 
 // --- author-editable handlers ------------------------------------------------
@@ -484,7 +511,7 @@ rl.on("line", (raw) => {{
     if (PROMPT !== null) {{
       caps.push("prompt");
       params.prompt = {{ static: PROMPT }};
-    }}{hooks_cap}
+    }}{hooks_cap}{status_cap}
     send({{ id: id, result: {{
       protocol_version: "1.0",
       name: NAME,
@@ -528,6 +555,7 @@ rl.on("line", (raw) => {{
         tools_list = tools_list,
         prompt_literal = prompt_literal,
         hooks_cap = hooks_cap,
+        status_cap = status_cap,
     )
 }
 
@@ -775,6 +803,7 @@ mod tests {
                 tool_name_glob: "*".into(),
             }],
             prompt: Some("Guarding git.".into()),
+            status: false,
             dir,
         }
     }
@@ -849,6 +878,36 @@ mod tests {
         r.hooks.clear();
         r.prompt = None;
         assert!(scaffold(&r).unwrap_err().contains("contribute"));
+    }
+
+    #[test]
+    fn status_facet_scaffolds_manifest_flag_and_helper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut r = req(tmp.path().join("counter"));
+        r.status = true;
+        let out = scaffold(&r).unwrap();
+
+        let manifest =
+            parse_manifest(&std::fs::read_to_string(out.dir.join("plugin.json")).unwrap()).unwrap();
+        assert!(manifest.status, "manifest declares the status facet");
+
+        let server = std::fs::read_to_string(&out.edit).unwrap();
+        assert!(
+            server.contains("def emit_status"),
+            "emit_status helper present"
+        );
+        assert!(server.contains(r#"caps.append("status")"#));
+    }
+
+    #[test]
+    fn status_alone_is_a_valid_contribution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut r = req(tmp.path().join("s"));
+        r.tools.clear();
+        r.hooks.clear();
+        r.prompt = None;
+        r.status = true;
+        assert!(scaffold(&r).is_ok());
     }
 
     #[test]

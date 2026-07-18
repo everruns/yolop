@@ -5,7 +5,7 @@
 //! to language servers. Only this module knows about processes; everything
 //! else drives the transport-generic `YepConnection`.
 
-use super::client::YepConnection;
+use super::client::{StatusSink, YepConnection};
 use super::package::ExtensionManifest;
 use super::protocol::{InitializeParams, InitializeResult, PROTOCOL_VERSION};
 use anyhow::{Context, Result, anyhow};
@@ -28,6 +28,10 @@ pub struct ExtensionProcessSpec {
     pub workspace_root: PathBuf,
     pub config: Value,
     pub request_timeout: Duration,
+    /// Where the server's `status/changed` notifications go (status bar).
+    /// Only wired when the extension declares `status` and the host has a
+    /// status bar; `None` otherwise.
+    pub status_sink: Option<StatusSink>,
 }
 
 /// A live (or lazily spawned) capability server.
@@ -209,9 +213,15 @@ impl ExtensionProcess {
             config: self.spec.config.clone(),
             capabilities: vec!["cancel".into(), "streaming".into()],
         };
-        let (connection, handshake) =
-            YepConnection::connect(stdout, stdin, self.name(), init, self.spec.request_timeout)
-                .await?;
+        let (connection, handshake) = YepConnection::connect(
+            stdout,
+            stdin,
+            self.name(),
+            init,
+            self.spec.request_timeout,
+            self.spec.status_sink.clone(),
+        )
+        .await?;
 
         if !handshake.name.is_empty() && handshake.name != self.spec.manifest.name {
             tracing::warn!(

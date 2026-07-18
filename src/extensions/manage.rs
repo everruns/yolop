@@ -178,6 +178,7 @@ impl ManageTool {
             .get("prompt")
             .and_then(Value::as_str)
             .map(str::to_string);
+        let status = args.get("status").and_then(Value::as_bool).unwrap_or(false);
         // Default target: a sibling `scaffold/<name>` of the extensions dir, so
         // authored packages sit next to where they install without cluttering
         // the workspace. An explicit `dir` (a parent) overrides.
@@ -202,6 +203,7 @@ impl ManageTool {
             tools,
             hooks,
             prompt,
+            status,
             dir,
         };
         match scaffold::scaffold(&req) {
@@ -440,6 +442,9 @@ impl Tool for ManageTool {
                         }, "required": ["event"] } },
                     "prompt": { "type": "string",
                         "description": "Static system-prompt contribution text, if any." },
+                    "status": { "type": "boolean",
+                        "description": "Contribute a status-bar field the server updates by \
+                            pushing status/changed (e.g. a live counter)." },
                     "dir": { "type": "string",
                         "description": "Parent directory to create `<name>/` under. Defaults to \
                             a `scaffold/` dir beside the extensions store." }

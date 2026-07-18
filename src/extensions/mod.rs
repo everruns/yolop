@@ -26,6 +26,7 @@ pub(crate) mod scaffold;
 pub(crate) mod store;
 
 pub(crate) use capability::ExtensionCapability;
+pub(crate) use client::StatusSink;
 pub(crate) use manage::ExtensionsCapability;
 pub(crate) use package::{discover_extensions, extension_capability_id, extensions_dir};
 
@@ -346,6 +347,7 @@ mod spawn_tests {
                 tool_name_glob: "*".into(),
             }],
             prompt: None,
+            status: false,
             dir: tmp.path().join("git-guard"),
         })
         .unwrap();
@@ -460,6 +462,103 @@ mod spawn_tests {
     #[tokio::test]
     async fn scaffolded_rust_extension_blocks_git_end_to_end() {
         assert_scaffolded_git_block(super::scaffold::Language::Rust).await;
+    }
+
+    /// The status-bar acceptance case: `scaffold_extension` with `status` yields
+    /// a package whose server, after the author fills the hook to count and
+    /// `emit_status`, pushes `status/changed` — and the host routes it to the
+    /// status-bar sink, attributed to the extension.
+    #[tokio::test]
+    async fn scaffolded_status_extension_pushes_to_the_sink() {
+        use super::client::StatusSink;
+        use super::scaffold::{HookSpec, Language, ScaffoldRequest, scaffold};
+        use everruns_core::atoms::PreToolUseDecision;
+        use everruns_core::tool_types::{BuiltinTool, ToolCall, ToolDefinition};
+        use std::sync::{Arc, Mutex};
+
+        if python3().is_none() {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let out = scaffold(&ScaffoldRequest {
+            name: "char-counter".into(),
+            description: "Counts characters seen in tool calls.".into(),
+            language: Language::Python,
+            tools: vec![],
+            hooks: vec![HookSpec {
+                event: "pre_tool_use".into(),
+                tool_name_glob: "*".into(),
+            }],
+            prompt: None,
+            status: true,
+            dir: tmp.path().join("char-counter"),
+        })
+        .unwrap();
+
+        // Author step: count characters across observed tool-call args and push
+        // the running total to the status bar via the generated emit_status().
+        let server = std::fs::read_to_string(&out.edit).unwrap();
+        let filled = server.replace(
+            "\n    return {}\n\n\ndef handle_prompt",
+            "\n    handle_hook.total = getattr(handle_hook, \"total\", 0) + len(json.dumps(args))\n    \
+             emit_status(str(handle_hook.total) + \" chars\")\n    return {}\n\n\ndef handle_prompt",
+        );
+        assert_ne!(filled, server, "hook body anchor must match");
+        std::fs::write(&out.edit, filled).unwrap();
+
+        let recorded: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink: StatusSink = {
+            let recorded = recorded.clone();
+            Arc::new(move |ext: &str, p: super::protocol::StatusChangedParams| {
+                recorded.lock().unwrap().push((ext.to_string(), p.status));
+            })
+        };
+        let manifest =
+            parse_manifest(&std::fs::read_to_string(out.dir.join("plugin.json")).unwrap()).unwrap();
+        assert!(manifest.status, "manifest must declare the status facet");
+        let capability = ExtensionCapability::new(
+            ExtensionPackage {
+                dir: out.dir.clone(),
+                manifest,
+            },
+            tmp.path().to_path_buf(),
+        )
+        .with_status_sink(Some(sink));
+
+        let hooks = capability.pre_tool_use_hooks_with_config(&json!(null));
+        let tool_def = ToolDefinition::Builtin(BuiltinTool {
+            name: "bash".into(),
+            display_name: None,
+            description: "run".into(),
+            parameters: json!({ "type": "object" }),
+            policy: Default::default(),
+            category: None,
+            deferrable: Default::default(),
+            hints: Default::default(),
+            full_parameters: None,
+        });
+        let ctx =
+            everruns_core::traits::ToolContext::new(everruns_core::typed_id::SessionId::new());
+        let call = ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({ "command": "git status" }),
+        };
+        // The hook allows the call (it only counts) and pushes a status first.
+        assert!(matches!(
+            hooks[0].before_exec(call, &tool_def, &ctx).await,
+            PreToolUseDecision::Continue(_)
+        ));
+
+        let recorded = recorded.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "one status push expected: {recorded:?}");
+        assert_eq!(recorded[0].0, "char-counter");
+        assert!(
+            recorded[0].1.ends_with("chars"),
+            "status should be the char counter: {:?}",
+            recorded[0].1
+        );
     }
 
     #[tokio::test]

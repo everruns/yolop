@@ -36,6 +36,9 @@ pub(crate) struct PresentationState {
     pub ask_indicator: Option<String>,
     pub worktree_compact: Option<String>,
     pub worktree_expanded: Option<(String, String)>,
+    /// Live status pushed by extensions over `status/changed`, as
+    /// `(extension_name, status_text)` pairs. Rendered as its own status field.
+    pub extension_status: Vec<(String, String)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +150,9 @@ fn expanded_status_lines(state: &PresentationState) -> Vec<StatusLine> {
     if let Some(bg) = background_label(state.background, false) {
         counts.push(status_field("bg", bg));
     }
+    // Extension-pushed status shares the counts row so the expanded layout's
+    // fixed row budget is unchanged.
+    counts.extend(extension_status_fields(state));
 
     let mut lines = vec![
         StatusLine {
@@ -196,7 +202,7 @@ fn status_contributions(state: &PresentationState) -> Vec<Vec<StatusField>> {
     if let Some(wt) = &state.worktree_compact {
         counts.push(status_field("wt", wt.clone()));
     }
-    vec![
+    let mut groups = vec![
         vec![
             status_value(toggle_label),
             status_value(state.provider_name.clone()),
@@ -211,7 +217,22 @@ fn status_contributions(state: &PresentationState) -> Vec<Vec<StatusField>> {
             status_field("ask", ask_label(state)),
         ],
         counts,
-    ]
+    ];
+    let ext = extension_status_fields(state);
+    if !ext.is_empty() {
+        groups.push(ext);
+    }
+    groups
+}
+
+/// One status field per extension that pushed a `status/changed`, labelled with
+/// the extension name (e.g. `git-guard › 1423 chars`).
+fn extension_status_fields(state: &PresentationState) -> Vec<StatusField> {
+    state
+        .extension_status
+        .iter()
+        .map(|(name, status)| status_value(format!("{name}: {status}")))
+        .collect()
 }
 
 fn goal_label(state: &PresentationState) -> String {
@@ -299,7 +320,38 @@ mod tests {
             ask_indicator: None,
             worktree_compact: None,
             worktree_expanded: None,
+            extension_status: Vec::new(),
         }
+    }
+
+    #[test]
+    fn extension_status_renders_in_both_layouts() {
+        let flatten = |lines: Vec<StatusLine>| -> String {
+            lines
+                .iter()
+                .flat_map(|l| l.fields.iter())
+                .map(|f| f.value.clone())
+                .collect::<Vec<_>>()
+                .join(" · ")
+        };
+        let mut s = state();
+        s.extension_status = vec![("git-guard".to_string(), "1423 chars".to_string())];
+
+        s.status_layout = StatusLayout::Compact;
+        assert!(
+            flatten(s.status_lines()).contains("git-guard: 1423 chars"),
+            "compact layout must show the extension status"
+        );
+
+        s.status_layout = StatusLayout::Expanded;
+        assert!(
+            flatten(s.status_lines()).contains("git-guard: 1423 chars"),
+            "expanded layout must show the extension status"
+        );
+
+        // No extensions → no stray field.
+        s.extension_status.clear();
+        assert!(!flatten(s.status_lines()).contains("git-guard"));
     }
 
     #[test]

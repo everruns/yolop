@@ -21,6 +21,11 @@ pub const METHODS: &[Method] = &[
         "tool/update",
         "Notification: streamed progress for an in-flight tool/call (correlated by request_id).",
     ),
+    Method::server(
+        "status/changed",
+        "Notification: a short capability status the host surfaces in its status bar \
+         (empty status clears it).",
+    ),
     Method::host(
         "hook/fire",
         "Fire a subscribed lifecycle hook (pre_tool_use/post_tool_use).",
@@ -41,6 +46,7 @@ pub const CAPABILITY_TOKENS: &[&str] = &[
     "dynamic_prompt",
     "hooks",
     "mcp_servers",
+    "status",
 ];
 
 /// Direction a method flows.

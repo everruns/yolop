@@ -270,6 +270,39 @@ pub struct PromptContribution {
     pub text: String,
 }
 
+// ---------------------------------------------------------------------------
+// status/changed
+
+/// Severity of a `status/changed` update. Purely presentational; the host may
+/// tint the field. Open/defaulted so an unknown level parses as `ok`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum StatusLevel {
+    #[default]
+    Ok,
+    Warn,
+    Error,
+}
+
+/// Server → host `status/changed` params: a short capability status the host
+/// surfaces in its status bar (and, longer-form, in `/extensions list`). Sent
+/// at will as a notification — e.g. an LSP extension reporting `rust-analyzer
+/// ready`, or a counter ticking. An empty `status` clears the field. Owned +
+/// bidirectional so the server SDK serializes what the host parses.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct StatusChangedParams {
+    /// Short text for the status bar. Empty clears the extension's field.
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub level: StatusLevel,
+    /// Optional long form for `/extensions list`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

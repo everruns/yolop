@@ -36,6 +36,9 @@ pub enum UiCommand {
     OpenModelOverlay { arg: Option<String> },
     /// Open the interactive reasoning-effort picker. `arg` pre-seeds it.
     OpenEffortOverlay { arg: Option<String> },
+    /// Set (or, when `status` is empty, clear) an extension's status-bar field.
+    /// Pushed by an extension server's `status/changed` notification.
+    SetExtensionStatus { ext: String, status: String },
 }
 
 /// What a client-executed command can ask the host UI to do. Implemented per

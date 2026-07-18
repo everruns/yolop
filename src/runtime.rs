@@ -2473,6 +2473,26 @@ pub async fn build_with_options(
     // but never on the default harness: enable with
     // `[[capabilities]] ref = "ext:<name>"` in settings.toml, exactly like
     // `lsp`. See specs/extensions.md.
+    // Terminal-side command channel. Created here (before extensions register)
+    // so extension `status/changed` pushes and `ClientCommandsCapability` share
+    // one `UiCommand` stream that the `App` event loop drains.
+    let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiCommand>();
+    // Status-bar sink for extensions, only when the host has a status bar (the
+    // TUI). Maps a server's `status/changed` into a `SetExtensionStatus`
+    // command; `None` in `--print`/ACP, where it logs instead.
+    let status_sink: Option<crate::extensions::StatusSink> =
+        matches!(options.client_ui, ClientUiContext::Tui).then(|| {
+            let tx = ui_tx.clone();
+            Arc::new(
+                move |ext: &str, params: crate::extensions::protocol::StatusChangedParams| {
+                    let _ = tx.send(UiCommand::SetExtensionStatus {
+                        ext: ext.to_string(),
+                        status: params.status,
+                    });
+                },
+            ) as crate::extensions::StatusSink
+        });
+
     let mut extension_never_defer: Vec<String> = Vec::new();
     if let Some(ext_dir) = crate::extensions::extensions_dir() {
         let settings_snapshot = settings.snapshot();
@@ -2488,7 +2508,8 @@ pub async fn build_with_options(
                 .iter()
                 .any(|(_, entry)| !entry.is_remove());
             let capability =
-                crate::extensions::ExtensionCapability::new(package, effective_root.clone());
+                crate::extensions::ExtensionCapability::new(package, effective_root.clone())
+                    .with_status_sink(status_sink.clone());
             if enabled {
                 let contributed = capability.contributed_mcp_servers();
                 if !contributed.is_empty() {
@@ -2637,11 +2658,11 @@ pub async fn build_with_options(
         session_id,
         task_registry: task_registry.clone(),
     });
-    // Terminal-side commands. Registered only when the host can apply
-    // their effects (the TUI). The capability declares help/tools/mcp/cwd/model/
+    // Terminal-side commands. Registered only when the host can apply their
+    // effects (the TUI). The capability declares help/tools/mcp/cwd/model/
     // effort/clear/shell/quit and forwards each invocation as a `UiCommand` down
-    // `ui_tx`; the `App` event loop drains `ui_rx` and performs the effect.
-    let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiCommand>();
+    // `ui_tx` (created above, shared with extension status); the `App` event
+    // loop drains `ui_rx` and performs the effect.
     if options.client_commands {
         let ui: Arc<dyn HostUi> = Arc::new(TuiHandle::new(ui_tx));
         capabilities.register(ClientCommandsCapability::new(ui));

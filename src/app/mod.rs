@@ -119,6 +119,10 @@ pub struct App {
     /// `runtime.execute_command`). Drained in the event loop; see
     /// [`App::apply_ui_command`].
     ui_rx: mpsc::UnboundedReceiver<UiCommand>,
+    /// Live status-bar text per extension (`ext:<name>` → status), pushed by
+    /// extension servers over `status/changed`. Rendered in the status bar via
+    /// [`App::presentation_state`].
+    extension_status: std::collections::BTreeMap<String, String>,
     /// Settings store shared with the runtime (same instance
     /// `SetupCapability` writes). Used to resolve credentials when querying
     /// provider models APIs and to show per-provider connection status in
@@ -405,6 +409,7 @@ impl App {
             status_layout: StatusLayout::Compact,
             session_tokens: None,
             ui_rx: runtime.ui_rx,
+            extension_status: std::collections::BTreeMap::new(),
             settings: runtime.settings,
             model_catalog: HashMap::new(),
             model_fetches_in_flight: HashSet::new(),
@@ -509,6 +514,15 @@ impl App {
             ask_indicator: self.ask_indicator(),
             worktree_compact: self.worktree.status_bar_compact(),
             worktree_expanded: self.worktree.status_bar_expanded(),
+            extension_status: self
+                .extension_status
+                .iter()
+                .map(|(ext, status)| {
+                    // `ext:<name>` → `<name>` for a compact status-bar label.
+                    let label = ext.strip_prefix("ext:").unwrap_or(ext).to_string();
+                    (label, status.clone())
+                })
+                .collect(),
         }
     }
 
@@ -1243,6 +1257,14 @@ impl App {
             },
             UiCommand::OpenEffortOverlay { arg } => {
                 self.start_effort_setup(arg.as_deref().unwrap_or(""))
+            }
+            UiCommand::SetExtensionStatus { ext, status } => {
+                // Empty status clears the field; a live value replaces it.
+                if status.trim().is_empty() {
+                    self.extension_status.remove(&ext);
+                } else {
+                    self.extension_status.insert(ext, status);
+                }
             }
         }
     }
@@ -3366,6 +3388,7 @@ mod tests {
             ask_indicator: None,
             worktree_compact: None,
             worktree_expanded: None,
+            extension_status: Vec::new(),
         }
     }
 

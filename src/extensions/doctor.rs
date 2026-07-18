@@ -124,16 +124,16 @@ pub async fn doctor(
         config: serde_json::Value::Null,
         capabilities: vec!["cancel".into(), "streaming".into()],
     };
-    let handshake = match YepConnection::connect(stdout, stdin, &manifest.name, init, timeout).await
-    {
-        Ok((connection, handshake)) => {
-            connection.notify("shutdown", serde_json::Value::Null);
-            handshake
-        }
-        Err(err) => {
-            return Report::fatal("handshake", format!("initialize failed: {err}"));
-        }
-    };
+    let handshake =
+        match YepConnection::connect(stdout, stdin, &manifest.name, init, timeout, None).await {
+            Ok((connection, handshake)) => {
+                connection.notify("shutdown", serde_json::Value::Null);
+                handshake
+            }
+            Err(err) => {
+                return Report::fatal("handshake", format!("initialize failed: {err}"));
+            }
+        };
 
     Report::from(evaluate(manifest, &handshake))
 }

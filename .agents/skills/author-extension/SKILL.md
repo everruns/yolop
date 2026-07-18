@@ -35,8 +35,12 @@ Declare only what you need; a manifest must contribute at least one of:
   `post_tool_use` (observe-only).
 - **prompt** — a static system-prompt contribution.
 - **mcpServers** — contributed MCP servers (declare in the manifest directly).
+- **status** — a status-bar field the server updates live by pushing
+  `status/changed` (e.g. a counter). Scaffold with `status: true`; the generated
+  server gets an `emit_status(text)` helper (empty text clears the field). Shows
+  in the inline and full-screen TUIs; a no-op in `--print`/ACP.
 
-Not yet available: statusline/UI, providers, slash commands.
+Not yet available: providers, slash commands.
 
 ## The loop
 
