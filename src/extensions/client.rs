@@ -4,8 +4,9 @@
 //! (the same seam split as `capabilities/lsp/client.rs`).
 
 use super::protocol::{
-    ErrorObject, Incoming, InitializeParams, InitializeResult, ToolUpdateParams, classify_line,
-    notification_line, request_line, response_error_line, version_compatible,
+    ErrorObject, Incoming, InitializeParams, InitializeResult, StatusChangedParams,
+    ToolUpdateParams, classify_line, notification_line, request_line, response_error_line,
+    version_compatible,
 };
 use anyhow::{Result, anyhow};
 use serde_json::Value;
@@ -16,6 +17,13 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
+/// Sink for `status/changed` notifications: called with the extension name and
+/// the parsed status each time a server pushes one. The host wires this to its
+/// status bar (see `runtime.rs`); `None` in headless/ACP modes, where it just
+/// logs. Kept as an opaque callback so `src/extensions/` stays decoupled from
+/// the app/UI layer.
+pub type StatusSink = Arc<dyn Fn(&str, StatusChangedParams) + Send + Sync>;
+
 /// Pending host-originated requests, keyed by id. Host and server id spaces
 /// are independent per direction; only `method`-less lines land here.
 type PendingMap = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<Result<Value, ErrorObject>>>>>>;
@@ -25,8 +33,10 @@ pub struct YepConnection {
     pending: PendingMap,
     next_id: AtomicU64,
     request_timeout: Duration,
-    /// Extension name, for log targets only.
+    /// Extension name, for log targets and status attribution.
     name: String,
+    /// Where `status/changed` notifications go; `None` logs only.
+    status_sink: Option<StatusSink>,
 }
 
 impl YepConnection {
@@ -38,6 +48,7 @@ impl YepConnection {
         name: &str,
         init: InitializeParams,
         request_timeout: Duration,
+        status_sink: Option<StatusSink>,
     ) -> Result<(Arc<Self>, InitializeResult)>
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -63,6 +74,7 @@ impl YepConnection {
             next_id: AtomicU64::new(1),
             request_timeout,
             name: name.to_string(),
+            status_sink,
         });
 
         let read_conn = connection.clone();
@@ -168,7 +180,15 @@ impl YepConnection {
                 tracing::info!(target: "yolop::ext", ext = %self.name, "{message}");
             }
             "status/changed" => {
-                tracing::warn!(target: "yolop::ext", ext = %self.name, status = %params, "status changed");
+                let status: StatusChangedParams =
+                    serde_json::from_value(params).unwrap_or_default();
+                match &self.status_sink {
+                    Some(sink) => sink(&self.name, status),
+                    None => tracing::info!(
+                        target: "yolop::ext", ext = %self.name,
+                        "status: {}", status.status
+                    ),
+                }
             }
             // Unknown notification kinds are carried through the log, never a
             // failure — open vocabulary per the forward-compat rules.
@@ -310,6 +330,7 @@ mod tests {
             "fake",
             init_params(),
             Duration::from_secs(5),
+            None,
         )
         .await
         .expect("handshake");
@@ -327,6 +348,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn status_changed_reaches_the_sink() {
+        use crate::extensions::protocol::StatusChangedParams;
+        let recorded: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink: super::StatusSink = {
+            let recorded = recorded.clone();
+            Arc::new(move |ext: &str, params: StatusChangedParams| {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((ext.to_string(), params.status));
+            })
+        };
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        // On the tool/call, the server first pushes a status update, then the
+        // result — so once the call resolves the notification is already routed.
+        tokio::spawn(fake_server(server_io, handshake_json(), |id, _, _| {
+            vec![
+                json!({"method": "status/changed", "params": {"status": "42 chars"}}).to_string(),
+                json!({"id": id, "result": {}}).to_string(),
+            ]
+        }));
+        let (read_half, write_half) = tokio::io::split(client_io);
+        let (conn, _) = YepConnection::connect(
+            read_half,
+            write_half,
+            "counter",
+            init_params(),
+            Duration::from_secs(5),
+            Some(sink),
+        )
+        .await
+        .expect("handshake");
+        conn.request("tool/call", json!({"name": "echo"}))
+            .await
+            .expect("tool call");
+        let recorded = recorded.lock().unwrap();
+        assert_eq!(
+            recorded.as_slice(),
+            &[("counter".to_string(), "42 chars".to_string())]
+        );
+    }
+
+    #[tokio::test]
     async fn error_response_maps_to_message() {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         tokio::spawn(fake_server(server_io, handshake_json(), |id, _, _| {
@@ -339,6 +403,7 @@ mod tests {
             "fake",
             init_params(),
             Duration::from_secs(5),
+            None,
         )
         .await
         .expect("handshake");
@@ -363,6 +428,7 @@ mod tests {
             "fake",
             init_params(),
             Duration::from_millis(200),
+            None,
         )
         .await
         .expect("handshake");
@@ -389,6 +455,7 @@ mod tests {
             "future",
             init_params(),
             Duration::from_secs(5),
+            None,
         )
         .await
         {
@@ -446,6 +513,7 @@ mod tests {
             "fake",
             init_params(),
             Duration::from_secs(5),
+            None,
         )
         .await
         .expect("handshake");

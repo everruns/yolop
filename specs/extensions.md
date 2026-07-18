@@ -65,6 +65,18 @@ the loop (scaffold → implement → install → doctor → ask-to-enable); the
 end-to-end acceptance — a self-authored `pre_tool_use` hook that blocks `git`,
 spawned exactly as the runtime spawns it — is covered by
 `scaffolded_extension_blocks_git_end_to_end`.
+Status bar: an extension that declares `status` in its manifest (the D4 opt-in)
+may push `status/changed` notifications carrying a short string the host shows
+in its status bar (empty clears it). The wire type is `StatusChangedParams`; the
+notification routes through an optional `StatusSink` created in `runtime.rs`
+into a `SetExtensionStatus` `UiCommand`, then `App.extension_status`, then
+`PresentationState`. It renders in the inline TUI (`status_contributions` /
+`expanded_status_lines`) and the full-screen renderer (`app/fullscreen.rs`); it
+is a no-op in `--print`/ACP, where the sink is `None` and the push only logs.
+`scaffold_extension status=true` emits an `emit_status(text)` helper; the
+acceptance — a self-authored char-counter that pushes to the sink — is covered
+by `scaffolded_status_extension_pushes_to_the_sink`. ACP has no status surface
+today, so extension status is intentionally TUI-only for now.
 Later — the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in), `ui/ask` (needs the
 server→host reverse-request channel, still refused in phase 1),

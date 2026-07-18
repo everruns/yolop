@@ -170,6 +170,37 @@
       ],
       "type": "object"
     },
+    "StatusChangedParams": {
+      "description": "Server → host `status/changed` params: a short capability status the host\nsurfaces in its status bar (and, longer-form, in `/extensions list`). Sent\nat will as a notification — e.g. an LSP extension reporting `rust-analyzer\nready`, or a counter ticking. An empty `status` clears the field. Owned +\nbidirectional so the server SDK serializes what the host parses.",
+      "properties": {
+        "detail": {
+          "description": "Optional long form for `/extensions list`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "level": {
+          "$ref": "#/$defs/StatusLevel",
+          "default": "ok"
+        },
+        "status": {
+          "default": "",
+          "description": "Short text for the status bar. Empty clears the extension's field.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "StatusLevel": {
+      "description": "Severity of a `status/changed` update. Purely presentational; the host may\ntint the field. Open/defaulted so an unknown level parses as `ok`.",
+      "enum": [
+        "ok",
+        "warn",
+        "error"
+      ],
+      "type": "string"
+    },
     "ToolCallParams": {
       "properties": {
         "args": {
@@ -231,6 +262,11 @@
     "prompt/contribution": {
       "result": {
         "$ref": "#/$defs/PromptContribution"
+      }
+    },
+    "status/changed": {
+      "params": {
+        "$ref": "#/$defs/StatusChangedParams"
       }
     },
     "tool/call": {

@@ -80,6 +80,14 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     if app.busy {
         left.push(Span::styled("· working…", theme.muted_style()));
     }
+    // Extension-pushed status (status/changed) — the same data the inline TUI
+    // renders, shown left after the model/provider segment.
+    for (name, status) in &ps.extension_status {
+        left.push(Span::styled(
+            format!("· {name}: {status} "),
+            theme.muted_style(),
+        ));
+    }
     let mut right = Vec::new();
     if let Some(tokens) = ps.session_tokens {
         right.push(Span::styled(format!("{tokens} tok  "), theme.muted_style()));

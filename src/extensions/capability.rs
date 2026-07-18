@@ -4,6 +4,7 @@
 //! manifest; execution and the prompt contribution are proxied to the
 //! package's capability server over YEP (see `manager.rs`).
 
+use super::client::StatusSink;
 use super::manager::{DEFAULT_REQUEST_TIMEOUT_MS, ExtensionProcess, ExtensionProcessSpec};
 use super::package::{ExtensionPackage, ToolDefinition, extension_capability_id};
 use async_trait::async_trait;
@@ -22,6 +23,9 @@ pub struct ExtensionCapability {
     id: String,
     package: ExtensionPackage,
     workspace_root: PathBuf,
+    /// Where the server's `status/changed` pushes go. Forwarded to the process
+    /// only when the manifest declares `status` (the D4 opt-in).
+    status_sink: Option<StatusSink>,
     /// Process shared by all tool instances so the server persists across
     /// turns; rebuilt (killing the old server) when the config changes —
     /// the same cache-by-config pattern as `LspCapability::manager_for`.
@@ -34,8 +38,17 @@ impl ExtensionCapability {
             id: extension_capability_id(&package.manifest.name),
             package,
             workspace_root,
+            status_sink: None,
             process: Mutex::new(None),
         }
+    }
+
+    /// Wire a status-bar sink. The sink is used only if the manifest declares
+    /// `status`; a non-declaring extension can never write the status bar even
+    /// if given a sink.
+    pub fn with_status_sink(mut self, sink: Option<StatusSink>) -> Self {
+        self.status_sink = sink;
+        self
     }
 
     fn process_for(&self, config: &Value) -> Arc<ExtensionProcess> {
@@ -56,6 +69,12 @@ impl ExtensionCapability {
             workspace_root: self.workspace_root.clone(),
             config: config.clone(),
             request_timeout: Duration::from_millis(timeout_ms),
+            status_sink: self
+                .package
+                .manifest
+                .status
+                .then(|| self.status_sink.clone())
+                .flatten(),
         }));
         *slot = Some((config.clone(), process.clone()));
         process

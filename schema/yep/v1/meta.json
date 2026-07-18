@@ -23,6 +23,11 @@
       "description": "Notification: streamed progress for an in-flight tool/call (correlated by request_id)."
     },
     {
+      "name": "status/changed",
+      "direction": "server",
+      "description": "Notification: a short capability status the host surfaces in its status bar (empty status clears it)."
+    },
+    {
       "name": "hook/fire",
       "direction": "host",
       "description": "Fire a subscribed lifecycle hook (pre_tool_use/post_tool_use)."
@@ -49,6 +54,7 @@
     "prompt",
     "dynamic_prompt",
     "hooks",
-    "mcp_servers"
+    "mcp_servers",
+    "status"
   ]
 }

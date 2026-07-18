@@ -10,7 +10,7 @@
 
 use crate::protocol::{
     CapabilityParams, ErrorObject, HookDecision, HookFireParams, InitializeParams,
-    InitializeResult, PromptContribution, ToolCallParams, ToolUpdateParams,
+    InitializeResult, PromptContribution, StatusChangedParams, ToolCallParams, ToolUpdateParams,
 };
 use schemars::generate::SchemaSettings;
 use serde_json::{Value, json};
@@ -30,6 +30,7 @@ fn schema_document() -> Value {
     let hook_fire = ref_for(generator.subschema_for::<HookFireParams>());
     let hook_decision = ref_for(generator.subschema_for::<HookDecision>());
     let prompt_contribution = ref_for(generator.subschema_for::<PromptContribution>());
+    let status_changed = ref_for(generator.subschema_for::<StatusChangedParams>());
     let capability_params = ref_for(generator.subschema_for::<CapabilityParams>());
     let error = ref_for(generator.subschema_for::<ErrorObject>());
 
@@ -40,6 +41,7 @@ fn schema_document() -> Value {
         "initialize": { "params": init_params, "result": init_result },
         "tool/call": { "params": tool_call },
         "tool/update": { "params": tool_update },
+        "status/changed": { "params": status_changed },
         "hook/fire": { "params": hook_fire, "result": hook_decision },
         "prompt/contribution": { "result": prompt_contribution },
     });

@@ -54,6 +54,11 @@ struct RawFacet {
     /// Lifecycle hook subscriptions the extension serves over `hook/fire`.
     #[serde(default)]
     hooks: Vec<HookSubscription>,
+    /// Permits the server to push `status/changed` notifications into the host
+    /// status bar (D4: the approval boundary — a non-declaring extension can
+    /// never write the status bar).
+    #[serde(default)]
+    status: bool,
 }
 
 /// A manifest-declared hook subscription. Static (the approved upper bound):
@@ -171,6 +176,7 @@ pub struct ExtensionManifest {
     pub dynamic_prompt: bool,
     pub mcp_servers: BTreeMap<String, ContributedMcpServer>,
     pub hooks: Vec<HookSubscription>,
+    pub status: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +219,7 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         && !raw.yolop.dynamic_prompt
         && raw.yolop.mcp_servers.is_empty()
         && raw.yolop.hooks.is_empty()
+        && !raw.yolop.status
     {
         return Err("extension declares no contributions; nothing to contribute".into());
     }
@@ -242,6 +249,7 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         dynamic_prompt: raw.yolop.dynamic_prompt,
         mcp_servers: raw.yolop.mcp_servers,
         hooks: raw.yolop.hooks,
+        status: raw.yolop.status,
     })
 }
 
