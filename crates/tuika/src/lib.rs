@@ -1,21 +1,16 @@
-//! `tuika` — a small retained-tree terminal UI toolkit.
+//! `tuika` — a small retained-tree terminal UI toolkit over
+//! [`ratatui`](https://docs.rs/ratatui).
 //!
-//! `tuika` is yolop's experimental full-screen renderer foundation. It is
-//! designed to graduate into a standalone crate, so it depends only on
-//! `ratatui`, `crossterm`, `textwrap`, and `unicode-width`, and knows nothing
-//! about yolop's `App`, runtime, or presentation model. Yolop drives it from
-//! `crate::app::fullscreen`; nothing here reaches back into the binary.
+//! `tuika` adds the pieces ratatui leaves to you — a flexbox-style layout
+//! solver, anchored overlays, focus/input-ownership, an alternate-screen host,
+//! and a set of components (text, boxes, scroll, select, spinner, progress) —
+//! while letting ratatui keep ownership of the cell buffer and its diff against
+//! the terminal. It depends only on `ratatui`, `crossterm`, `textwrap`, and
+//! `unicode-width`.
 //!
-//! # Why it exists
-//!
-//! yolop's default TUI is *inline*: the transcript lives in native terminal
-//! scrollback and ratatui owns only a bottom composer. That keeps scrollback
-//! and copy/paste native, but centered overlays and resize anchoring fight the
-//! inline viewport (see the inline path's re-anchoring logic). `tuika` is the
-//! opt-in *full-screen* alternative (`--fullscreen`): it owns the alternate
-//! screen, so overlays, focus, and scrolling compose cleanly at the cost of
-//! rebuilding scrollback in-app. This mirrors where Codex and Claude Code's
-//! full-screen renderer landed.
+//! It was extracted from the [yolop](https://github.com/everruns/yolop) coding
+//! agent, whose full-screen renderer is built on it, but it knows nothing about
+//! any host application.
 //!
 //! # Model
 //!
@@ -33,13 +28,6 @@
 //! Add a component by implementing [`view::View`] in a new module under
 //! [`components`]. No registration step; containers accept any boxed `View`.
 
-// `tuika` is a self-contained toolkit staged for extraction into its own crate.
-// Its public API is deliberately broader than yolop's current full-screen host
-// consumes (Select, focus, overlays, alt themes, the full event enum), so the
-// binary build sees parts of the surface as dead. Allow it here rather than
-// trimming the API down to today's single call site.
-#![allow(dead_code, unused_imports)]
-
 pub mod anim;
 pub mod components;
 pub mod event;
@@ -56,10 +44,7 @@ pub mod surface;
 pub mod view;
 
 // Curated top-level re-exports so callers write `tuika::Flex`, `tuika::Theme`,
-// etc. for the common surface without deep paths. This is the toolkit's public
-// API; not every item is used by yolop's current full-screen host, but they are
-// part of the surface a future standalone crate exposes, so we keep them
-// exported rather than trimming to today's call sites.
+// etc. for the common surface without deep paths.
 pub use components::{
     Boxed, Flex, Loader, Paragraph, ProgressBar, Scroll, ScrollState, SelectList, SelectOutcome,
     SelectState, Spacer, Spinner, SpinnerStyle, StatusBar, Text,

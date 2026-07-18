@@ -53,7 +53,7 @@ fn view_grid(w: u16, h: u16, view: Element) -> String {
 /// `UPDATE_SNAPSHOTS` is set.
 fn assert_snapshot(name: &str, actual: &str) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/tuika/snapshots")
+        .join("src/snapshots")
         .join(format!("{name}.txt"));
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

@@ -3,7 +3,7 @@
 //! Where the inline renderer (`super::render::draw`) pushes the transcript into
 //! native terminal scrollback and owns only a bottom composer, this path owns
 //! the whole alternate screen and rebuilds the frame from `App` state every
-//! draw through the [`crate::tuika`] toolkit: a scrollable transcript, a
+//! draw through the [`tuika`] toolkit: a scrollable transcript, a
 //! bordered composer, and a status bar, with setup rendered as a centered
 //! overlay. The transcript lives in `App::lines` and is windowed by
 //! `App::scroll` rather than handed to the terminal — the deliberate trade for
@@ -17,7 +17,7 @@ use ratatui::layout::Position;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::tuika::{
+use tuika::{
     self, Boxed, Flex, Overlay, OverlaySpec, Paragraph, Scroll, StatusBar, Text, Theme, element,
 };
 

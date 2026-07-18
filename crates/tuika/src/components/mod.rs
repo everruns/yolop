@@ -1,6 +1,6 @@
 //! Component library.
 //!
-//! Every component implements [`View`](crate::tuika::view::View). Layout
+//! Every component implements [`View`](crate::view::View). Layout
 //! containers ([`Flex`], [`Boxed`]) nest children; leaves ([`Text`],
 //! [`Paragraph`], [`SelectList`], [`Scroll`], [`StatusBar`], [`Spacer`]) paint
 //! content. Interactive leaves pair with a persisted `*State` (see

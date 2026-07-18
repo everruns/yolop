@@ -28,7 +28,7 @@
 //!   component defined in another crate. This is how third-party components
 //!   plug into the DSL today.
 //!
-//! Cross-crate note: the macro emits `$crate::tuika::…` paths, so it works
+//! Cross-crate note: the macro emits `$crate::…` paths, so it works
 //! anywhere in this binary without imports. When `tuika` graduates to its own
 //! crate, this becomes a `#[macro_export]` in that crate and a proc-macro can
 //! add first-class `MyWidget { … }` syntax for external components.
@@ -45,27 +45,27 @@ macro_rules! view {
 
     // ---- @one: parse one node into an Element -------------------------------
     (@one col $(( $($attr:tt)* ))? { $($kids:tt)* }) => {{
-        let __flex = $crate::tuika::Flex::column();
+        let __flex = $crate::Flex::column();
         let __flex = $crate::view!(@attrs __flex; $($($attr)*)?);
         let __flex = $crate::view!(@kids __flex; $($kids)*);
-        $crate::tuika::element(__flex)
+        $crate::element(__flex)
     }};
     (@one row $(( $($attr:tt)* ))? { $($kids:tt)* }) => {{
-        let __flex = $crate::tuika::Flex::row();
+        let __flex = $crate::Flex::row();
         let __flex = $crate::view!(@attrs __flex; $($($attr)*)?);
         let __flex = $crate::view!(@kids __flex; $($kids)*);
-        $crate::tuika::element(__flex)
+        $crate::element(__flex)
     }};
     (@one boxed $(( $($attr:tt)* ))? { $($kids:tt)* }) => {{
-        let __boxed = $crate::tuika::Boxed::new($crate::view!(@one $($kids)*));
+        let __boxed = $crate::Boxed::new($crate::view!(@one $($kids)*));
         let __boxed = $crate::view!(@boxattrs __boxed; $($($attr)*)?);
-        $crate::tuika::element(__boxed)
+        $crate::element(__boxed)
     }};
     (@one text ( $e:expr )) => {
-        $crate::tuika::element($crate::tuika::Text::raw($e))
+        $crate::element($crate::Text::raw($e))
     };
-    (@one spacer ()) => { $crate::tuika::element($crate::tuika::Spacer) };
-    (@one node ( $e:expr )) => { $crate::tuika::element($e) };
+    (@one spacer ()) => { $crate::element($crate::Spacer) };
+    (@one node ( $e:expr )) => { $crate::element($e) };
 
     // ---- @kids: fold children onto a Flex builder ---------------------------
     (@kids $b:expr; ) => { $b };
@@ -85,13 +85,13 @@ macro_rules! view {
         $crate::view!(@kids $b.auto($crate::view!(@one boxed $(($($a)*))? { $($k)* })); $($rest)*)
     };
     (@kids $b:expr; text ( $e:expr ) $($rest:tt)*) => {
-        $crate::view!(@kids $b.auto($crate::tuika::element($crate::tuika::Text::raw($e))); $($rest)*)
+        $crate::view!(@kids $b.auto($crate::element($crate::Text::raw($e))); $($rest)*)
     };
     (@kids $b:expr; spacer () $($rest:tt)*) => {
-        $crate::view!(@kids $b.auto($crate::tuika::element($crate::tuika::Spacer)); $($rest)*)
+        $crate::view!(@kids $b.auto($crate::element($crate::Spacer)); $($rest)*)
     };
     (@kids $b:expr; node ( $e:expr ) $($rest:tt)*) => {
-        $crate::view!(@kids $b.auto($crate::tuika::element($e)); $($rest)*)
+        $crate::view!(@kids $b.auto($crate::element($e)); $($rest)*)
     };
 
     // ---- @attrs: fold flex layout attributes --------------------------------

@@ -5,11 +5,10 @@
 //! a status row or overlay.
 
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 
-use crate::tuika::geometry::Size;
-use crate::tuika::surface::Surface;
-use crate::tuika::view::{RenderCtx, View};
+use crate::geometry::Size;
+use crate::surface::Surface;
+use crate::view::{RenderCtx, View};
 
 use super::spinner::{Spinner, SpinnerStyle};
 

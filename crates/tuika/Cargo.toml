@@ -1,0 +1,21 @@
+[package]
+name = "tuika"
+version = "0.1.0"
+edition = "2024"
+authors = ["Everruns <support@everruns.com>"]
+license = "MIT"
+description = "A small retained-tree terminal UI toolkit — flexbox layout, overlays, focus, and components over ratatui."
+homepage = "https://github.com/everruns/yolop"
+repository = "https://github.com/everruns/yolop"
+readme = "README.md"
+keywords = ["tui", "terminal", "ratatui", "widgets", "layout"]
+categories = ["command-line-interface"]
+
+[dependencies]
+ratatui = "0.30.2"
+crossterm = "0.29"
+textwrap = "0.16"
+unicode-width = "0.2"
+
+[dev-dependencies]
+proptest = "1"
