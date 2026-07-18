@@ -10,10 +10,10 @@ use super::package::ExtensionManifest;
 use super::protocol::{InitializeParams, InitializeResult, PROTOCOL_VERSION};
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -184,6 +184,17 @@ impl ExtensionProcess {
         Ok(serde_json::from_value(value).unwrap_or_default())
     }
 
+    /// Drop the running server (if any) so the next call respawns it from
+    /// disk with a fresh handshake — the live-reload seam. Picks up edits to
+    /// the server *implementation*; the approved surface (manifest tools,
+    /// prompt) is the session snapshot, so reload can never widen the grant
+    /// (D4). Returns whether a live server was actually torn down.
+    pub async fn reload(&self) -> bool {
+        // Taking the `Live` drops its `_child` (`kill_on_drop`), ending the old
+        // process; `ensure_live` respawns on the next call.
+        self.state.lock().await.take().is_some()
+    }
+
     async fn ensure_live(&self, state: &mut Option<Live>) -> Result<()> {
         if let Some(live) = state.as_ref()
             && !live.connection.is_closed()
@@ -302,5 +313,41 @@ impl ExtensionProcess {
             None => None,
         };
         (served, prompt)
+    }
+}
+
+/// Shared handle to the live server processes, keyed by extension name. Each
+/// `ExtensionCapability` registers its process here on spawn; the management
+/// capability (`reload_extension`) looks one up to restart it mid-session
+/// without a yolop restart. Weak references so the registry never keeps a
+/// process alive past its owning capability's own cache.
+#[derive(Clone, Default)]
+pub struct LiveProcessRegistry {
+    processes: Arc<std::sync::Mutex<HashMap<String, Weak<ExtensionProcess>>>>,
+}
+
+impl LiveProcessRegistry {
+    /// Record the current process for `name`, replacing any prior entry (the
+    /// capability rebuilds its process when config changes).
+    pub fn register(&self, name: &str, process: &Arc<ExtensionProcess>) {
+        self.processes
+            .lock()
+            .expect("live-process registry lock")
+            .insert(name.to_string(), Arc::downgrade(process));
+    }
+
+    /// Reload the named extension's server. Returns `Some(true)` if a running
+    /// server was torn down (next call respawns), `Some(false)` if the
+    /// extension is registered but hasn't spawned a server yet (nothing to do
+    /// — the next call spawns current code anyway), and `None` if no such
+    /// extension is live in this session (not enabled, or unknown).
+    pub async fn reload(&self, name: &str) -> Option<bool> {
+        let process = self
+            .processes
+            .lock()
+            .expect("live-process registry lock")
+            .get(name)
+            .and_then(Weak::upgrade)?;
+        Some(process.reload().await)
     }
 }

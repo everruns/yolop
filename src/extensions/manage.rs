@@ -4,6 +4,7 @@
 //! harness (like `connectors`) and owns the verbs. Tools so both the user
 //! and the model can drive setup; a thin `/extensions` command mirrors them.
 
+use super::manager::LiveProcessRegistry;
 use super::package::{discover_extensions, extension_capability_id};
 use super::scaffold::{self, HookSpec, Language, ScaffoldRequest, ToolSpec};
 use super::store::{self, CrateFetcher, GitRunner, Source, SystemCrateFetcher, SystemGit};
@@ -23,6 +24,8 @@ pub struct ExtensionsCapability {
     settings: Arc<SettingsStore>,
     git: Arc<dyn GitRunner>,
     crates: Arc<dyn CrateFetcher>,
+    /// Live server processes, so `reload_extension` can restart one in place.
+    live_processes: LiveProcessRegistry,
 }
 
 impl ExtensionsCapability {
@@ -30,6 +33,7 @@ impl ExtensionsCapability {
         extensions_dir: PathBuf,
         workspace_root: PathBuf,
         settings: Arc<SettingsStore>,
+        live_processes: LiveProcessRegistry,
     ) -> Self {
         Self {
             extensions_dir,
@@ -37,6 +41,7 @@ impl ExtensionsCapability {
             settings,
             git: Arc::new(SystemGit),
             crates: Arc::new(SystemCrateFetcher::default()),
+            live_processes,
         }
     }
 }
@@ -66,7 +71,9 @@ impl Capability for ExtensionsCapability {
              installed and enabled, `install_extension` for a crates.io crate \
              (`crates.io:yolop-extension-<name>`), git URL, or local path, \
              `enable_extension`/`disable_extension` to toggle one in the harness (takes effect \
-             next session), and `remove_extension` to uninstall. To build a NEW extension \
+             next session), `reload_extension` to restart an enabled extension's server in \
+             place after editing its code (effective immediately, this session), and \
+             `remove_extension` to uninstall. To build a NEW extension \
              yourself, `scaffold_extension` generates a ready-to-edit package (manifest + \
              capability server) — declare what it contributes via `tools`, `hooks`, and/or \
              `prompt` — then edit the generated `handle_*` bodies, `install_extension \
@@ -83,6 +90,7 @@ impl Capability for ExtensionsCapability {
             settings: self.settings.clone(),
             git: self.git.clone(),
             crates: self.crates.clone(),
+            live_processes: self.live_processes.clone(),
         });
         vec![
             Box::new(ManageTool::new(ctx.clone(), Verb::Scaffold)),
@@ -91,6 +99,7 @@ impl Capability for ExtensionsCapability {
             Box::new(ManageTool::new(ctx.clone(), Verb::Remove)),
             Box::new(ManageTool::new(ctx.clone(), Verb::Enable)),
             Box::new(ManageTool::new(ctx.clone(), Verb::Disable)),
+            Box::new(ManageTool::new(ctx.clone(), Verb::Reload)),
             Box::new(ManageTool::new(ctx, Verb::Doctor)),
         ]
     }
@@ -102,6 +111,7 @@ struct ManageCtx {
     settings: Arc<SettingsStore>,
     git: Arc<dyn GitRunner>,
     crates: Arc<dyn CrateFetcher>,
+    live_processes: LiveProcessRegistry,
 }
 
 #[derive(Clone, Copy)]
@@ -112,6 +122,7 @@ enum Verb {
     Remove,
     Enable,
     Disable,
+    Reload,
     Doctor,
 }
 
@@ -349,6 +360,41 @@ impl ManageTool {
         }
     }
 
+    async fn reload(&self, args: &Value) -> ToolExecutionResult {
+        let Some(name) = args.get("name").and_then(Value::as_str) else {
+            return ToolExecutionResult::ToolError("`name` is required".into());
+        };
+        if !discover_extensions(&self.ctx.extensions_dir)
+            .iter()
+            .any(|pkg| pkg.manifest.name == name)
+        {
+            return ToolExecutionResult::ToolError(format!(
+                "no extension named `{name}` is installed"
+            ));
+        }
+        // Reload restarts the *running* server so implementation edits take
+        // effect. The approved surface (manifest tools/prompt) is fixed for the
+        // session, so a manifest change (a new tool) still needs a restart —
+        // and reload can never widen the grant.
+        match self.ctx.live_processes.reload(name).await {
+            Some(true) => ToolExecutionResult::Success(json!({
+                "name": name,
+                "reloaded": true,
+                "note": "Server restarted; the next call runs the current on-disk code. \
+                         Manifest changes (new tools) still need a session restart.",
+            })),
+            Some(false) => ToolExecutionResult::Success(json!({
+                "name": name,
+                "reloaded": false,
+                "note": "No server was running yet; the next call spawns the current code.",
+            })),
+            None => ToolExecutionResult::ToolError(format!(
+                "extension `{name}` is not enabled this session, so it has no running server to \
+                 reload; enable_extension name={name} and restart yolop to load it"
+            )),
+        }
+    }
+
     async fn doctor(&self, args: &Value) -> ToolExecutionResult {
         let Some(name) = args.get("name").and_then(Value::as_str) else {
             return ToolExecutionResult::ToolError("`name` is required".into());
@@ -385,6 +431,7 @@ impl Tool for ManageTool {
             Verb::Remove => "remove_extension",
             Verb::Enable => "enable_extension",
             Verb::Disable => "disable_extension",
+            Verb::Reload => "reload_extension",
             Verb::Doctor => "doctor_extension",
         }
     }
@@ -413,6 +460,13 @@ impl Tool for ManageTool {
             }
             Verb::Disable => {
                 "Disable an extension without uninstalling it. Effective next session."
+            }
+            Verb::Reload => {
+                "Reload an enabled extension's server in place so edits to its implementation \
+                 take effect this session (no yolop restart). Use after editing a running \
+                 extension's server code — e.g. while iterating on one you authored. Manifest \
+                 changes (adding a tool, changing a schema) still need a restart; reload never \
+                 changes the approved surface."
             }
             Verb::Doctor => {
                 "Conformance-check an installed extension: spawn its server, run the \
@@ -499,6 +553,7 @@ impl Tool for ManageTool {
             Verb::Remove => self.remove(&arguments),
             Verb::Enable => self.toggle(&arguments, true),
             Verb::Disable => self.toggle(&arguments, false),
+            Verb::Reload => self.reload(&arguments).await,
             Verb::Doctor => self.doctor(&arguments).await,
         }
     }
@@ -533,6 +588,7 @@ mod tests {
             settings: settings.clone(),
             git: Arc::new(crate::extensions::store::SystemGit),
             crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
+            live_processes: LiveProcessRegistry::default(),
         };
         (cap, settings, ext_dir)
     }
@@ -659,6 +715,39 @@ mod tests {
             .await
         {
             ToolExecutionResult::Success(v) => assert_eq!(v["removed"], "echo"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reload_reports_when_nothing_is_live() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        seed_package(&src, "echo");
+        let (cap, _settings, _ext_dir) = capability(tmp.path());
+        let tools = cap.tools();
+        let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
+        get("install_extension")
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await;
+
+        // Unknown extension is rejected outright.
+        match get("reload_extension")
+            .execute(json!({"name": "ghost"}))
+            .await
+        {
+            ToolExecutionResult::ToolError(m) => assert!(m.contains("no extension"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+
+        // Installed but with no running server this session (the management
+        // capability's registry is empty in this unit test): reload explains
+        // it isn't live rather than silently succeeding.
+        match get("reload_extension")
+            .execute(json!({"name": "echo"}))
+            .await
+        {
+            ToolExecutionResult::ToolError(m) => assert!(m.contains("not enabled"), "{m}"),
             other => panic!("{other:?}"),
         }
     }

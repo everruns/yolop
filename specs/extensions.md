@@ -108,6 +108,21 @@ mid-turn, then resolves the request's oneshot with the typed answer (or
 another is pending is answered `cancelled`. Refused (`cancelled`) with no sink,
 so `--print`/ACP never blocks on it. Covered by
 `ui_ask_reverse_request_is_answered_by_the_sink`.
+Live reload: `reload_extension name=<name>` restarts an already-enabled
+extension's *server process* in place, so implementation edits take effect
+mid-session without a yolop restart — the self-writing inner loop. Each
+`ExtensionCapability` publishes its live `ExtensionProcess` into a shared
+`LiveProcessRegistry` (a `Weak` map, so the registry never keeps a server alive
+past its owning capability's cache); the management capability holds the same
+registry and `reload()` upgrades the handle and drops the running child
+(`kill_on_drop`), so the next tool/hook/command call respawns with a fresh
+handshake. Crucially the *approved surface* is the session snapshot: the
+manifest (tool names, schemas, prompt opt-in) was read at build and the harness
+tool set is frozen there, so reload re-runs the binary within the same D4 grant
+and can never widen it. A manifest change (a new tool, a changed schema) still
+requires a restart — the enabled-capability set is fixed for the session
+because `everruns-core` builds the harness once with no live-reconfigure seam.
+Covered by `reload_respawns_the_server_with_edited_code`.
 Later — the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in),
 `workspace/changed`,

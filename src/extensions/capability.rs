@@ -5,7 +5,9 @@
 //! package's capability server over YEP (see `manager.rs`).
 
 use super::client::{AskSink, StatusSink};
-use super::manager::{DEFAULT_REQUEST_TIMEOUT_MS, ExtensionProcess, ExtensionProcessSpec};
+use super::manager::{
+    DEFAULT_REQUEST_TIMEOUT_MS, ExtensionProcess, ExtensionProcessSpec, LiveProcessRegistry,
+};
 use super::package::{ExtensionPackage, ToolDefinition, extension_capability_id};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, SystemPromptContext};
@@ -33,6 +35,9 @@ pub struct ExtensionCapability {
     /// Handles the server's `ui/ask` requests. Forwarded to the process only
     /// when the manifest declares `ui_ask` (the D4 opt-in).
     ask_sink: Option<AskSink>,
+    /// Shared live-process registry so `reload_extension` can restart this
+    /// extension's server mid-session; `None` outside the runtime (tests).
+    live_processes: Option<LiveProcessRegistry>,
     /// Process shared by all tool instances so the server persists across
     /// turns; rebuilt (killing the old server) when the config changes —
     /// the same cache-by-config pattern as `LspCapability::manager_for`.
@@ -47,8 +52,16 @@ impl ExtensionCapability {
             workspace_root,
             status_sink: None,
             ask_sink: None,
+            live_processes: None,
             process: Mutex::new(None),
         }
+    }
+
+    /// Wire the shared live-process registry so this extension's server can be
+    /// reloaded mid-session via `reload_extension`.
+    pub fn with_process_registry(mut self, registry: LiveProcessRegistry) -> Self {
+        self.live_processes = Some(registry);
+        self
     }
 
     /// Wire a status-bar sink. The sink is used only if the manifest declares
@@ -96,6 +109,10 @@ impl ExtensionCapability {
                 .then(|| self.ask_sink.clone())
                 .flatten(),
         }));
+        // Publish the live handle so `reload_extension` can reach this server.
+        if let Some(registry) = &self.live_processes {
+            registry.register(&self.package.manifest.name, &process);
+        }
         *slot = Some((config.clone(), process.clone()));
         process
     }

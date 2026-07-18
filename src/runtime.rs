@@ -2781,6 +2781,10 @@ pub async fn build_with_options(
             }) as crate::extensions::AskSink
         });
 
+    // Shared handle to enabled extensions' live server processes, so
+    // `reload_extension` can restart one in place mid-session (self-writing
+    // iteration) without a yolop restart.
+    let live_processes = crate::extensions::LiveProcessRegistry::default();
     let mut extension_never_defer: Vec<String> = Vec::new();
     if let Some(ext_dir) = crate::extensions::extensions_dir() {
         let settings_snapshot = settings.snapshot();
@@ -2798,7 +2802,8 @@ pub async fn build_with_options(
             let capability =
                 crate::extensions::ExtensionCapability::new(package, effective_root.clone())
                     .with_status_sink(status_sink.clone())
-                    .with_ask_sink(ask_sink.clone());
+                    .with_ask_sink(ask_sink.clone())
+                    .with_process_registry(live_processes.clone());
             if enabled {
                 let contributed = capability.contributed_mcp_servers();
                 if !contributed.is_empty() {
@@ -2811,11 +2816,12 @@ pub async fn build_with_options(
             extension_never_defer.extend(capability.never_defer_tools());
             capabilities.register(capability);
         }
-        // The always-on management surface (install/list/enable/remove).
+        // The always-on management surface (install/list/enable/remove/reload).
         capabilities.register(crate::extensions::ExtensionsCapability::new(
             ext_dir,
             effective_root.clone(),
             settings.clone(),
+            live_processes.clone(),
         ));
     }
     // Server name list for `/mcp` and StartupInfo, computed after extension

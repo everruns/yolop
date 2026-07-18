@@ -28,6 +28,7 @@ pub(crate) mod store;
 pub(crate) use capability::ExtensionCapability;
 pub(crate) use client::{AskSink, StatusSink};
 pub(crate) use manage::ExtensionsCapability;
+pub(crate) use manager::LiveProcessRegistry;
 pub(crate) use package::{
     discover_extensions, extension_capability_id, extension_skill_scopes, extensions_dir,
 };
@@ -650,5 +651,105 @@ mod spawn_tests {
             contribution.contains("dynamic echo prompt"),
             "{contribution}"
         );
+    }
+
+    /// A minimal Python YEP server whose one tool returns `value` — baked into
+    /// the source and captured at process start, so the returned value only
+    /// changes when the *process* is respawned (not per call). Lets the reload
+    /// test distinguish "same process" from "fresh process".
+    fn write_versioned_echo_server(path: &std::path::Path, value: &str) {
+        let src = format!(
+            r#"import json, sys
+VALUE = {value:?}
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method, msg_id = msg.get("method"), msg.get("id")
+    if method == "initialize":
+        send({{"id": msg_id, "result": {{"protocol_version": "1.0", "name": "reloadable",
+             "capabilities": ["tools"], "capability_params": {{"tools": [{{"name": "version"}}]}}}}}})
+    elif method == "tool/call":
+        send({{"id": msg_id, "result": {{"version": VALUE}}}})
+    elif msg_id is not None:
+        send({{"id": msg_id, "error": {{"code": -32601, "message": "nope"}}}})
+"#
+        );
+        std::fs::write(path, src).unwrap();
+    }
+
+    /// Live reload: after editing a running extension's server, `reload`
+    /// respawns it so the next call runs the new code — without rebuilding the
+    /// harness. The approved surface (the manifest) is untouched, so this is
+    /// the self-writing iteration seam, not a grant change.
+    #[tokio::test]
+    async fn reload_respawns_the_server_with_edited_code() {
+        let Some(python) = python3() else {
+            eprintln!("skipping: python3 not available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let server = tmp.path().join("server.py");
+        write_versioned_echo_server(&server, "v1");
+
+        let manifest = parse_manifest(
+            &json!({
+                "name": "reloadable",
+                "description": "Reload fixture.",
+                "yolop": {
+                    "protocol_version": "1.0",
+                    "capabilityServer": {
+                        "command": python,
+                        "args": [server.display().to_string()]
+                    },
+                    "tools": [{ "name": "version", "description": "Report baked version." }]
+                }
+            })
+            .to_string(),
+        )
+        .expect("reload manifest");
+        let registry = super::LiveProcessRegistry::default();
+        let capability = ExtensionCapability::new(
+            ExtensionPackage {
+                dir: tmp.path().to_path_buf(),
+                manifest,
+            },
+            tmp.path().to_path_buf(),
+        )
+        .with_process_registry(registry.clone());
+
+        let call = || async {
+            let tools = capability.tools();
+            let tool = tools.iter().find(|t| t.name() == "version").unwrap();
+            match tool.execute(json!({})).await {
+                ToolExecutionResult::Success(v) => v["version"].as_str().unwrap().to_string(),
+                other => panic!("expected success, got {other:?}"),
+            }
+        };
+
+        // First call spawns the server; it reports the v1 code.
+        assert_eq!(call().await, "v1");
+
+        // Edit the server on disk. The running process still holds v1.
+        write_versioned_echo_server(&server, "v2");
+        assert_eq!(call().await, "v1", "running server should not see the edit");
+
+        // Reload tears the old server down; the next call respawns and runs v2.
+        assert_eq!(
+            registry.reload("reloadable").await,
+            Some(true),
+            "a live server should be reloaded"
+        );
+        assert_eq!(
+            call().await,
+            "v2",
+            "reloaded server should run the edited code"
+        );
+
+        // An extension with no live process in this session can't be reloaded.
+        assert_eq!(registry.reload("ghost").await, None);
     }
 }
