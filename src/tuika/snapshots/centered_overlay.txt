@@ -1,0 +1,11 @@
+base line one
+base line two
+base ╭─ menu ─────────────╮
+     │ Choose one:        │
+     │ 1) first           │
+     │ 2) second          │
+     │                    │
+     │                    │
+     ╰────────────────────╯
+
+
