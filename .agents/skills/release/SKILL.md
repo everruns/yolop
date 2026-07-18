@@ -33,8 +33,11 @@ change), use [`/ship`](../ship/SKILL.md) instead.
    `X.Y.Z`. `X.Y.Z` is strictly greater than the latest version on crates.io.
 2. **The changelog is honest.** `CHANGELOG.md` lists every commit landed
    since the previous tag, in descending order, with PR numbers and authors.
-3. **Publish-readiness is proven before merge.** `cargo publish --dry-run -p
-   yolop` succeeds. The PR body includes a publish-readiness report.
+3. **Publish-readiness is proven before merge.** The library dry-runs
+   (`cargo publish --dry-run -p yolop-yep` and `-p tuika`) succeed; `yolop`'s
+   own publish is validated in CI once the libraries are live (dry-running it
+   locally fails until then — see step 5). The PR body includes a
+   publish-readiness report.
 4. **Post-merge verification is a hard gate.** After the release PR merges,
    the agent must monitor CI and independently confirm that crates.io serves
    `X.Y.Z` and the Homebrew tap formula points at `vX.Y.Z`. A "release" is
@@ -148,28 +151,29 @@ This is the step that catches what local tests don't — the `cargo publish`
 packaging boundary, missing files referenced by `Cargo.toml`, version drift:
 
 ```bash
-cargo publish --dry-run -p yolop-yep   # the SDK crate; publishes first
+cargo publish --dry-run -p yolop-yep   # SDK library; publishes first
+cargo publish --dry-run -p tuika       # TUI toolkit library; publishes first
 cargo search yolop --limit 1     # confirm CURRENT crates.io version < X.Y.Z
 grep '^version' Cargo.toml       # confirm reads X.Y.Z
 grep '"yolop"' Cargo.lock | head -1  # confirm reads X.Y.Z
 ```
 
-**Two-crate workspace.** The repo publishes two crates: the `yolop-yep` SDK
-(separately versioned — bump it only when its API or the wire protocol
-changes) and the `yolop` binary, which depends on `yolop-yep` by version.
-crates.io requires `yolop-yep` to be published **before** `yolop`, so CI
-(`publish.yml`) publishes `yolop-yep` first, then `yolop` (each skipped if its
-version is already live). A consequence for this step: **`cargo publish
---dry-run -p yolop` fails locally** with *"no matching package named
-`yolop-yep` found"* whenever the in-tree `yolop-yep` version isn't yet on
-crates.io — that is expected, not a broken release. Dry-run `yolop-yep`
-instead (above); `yolop`'s own publish is validated in CI after `yolop-yep`
-goes live. When bumping `yolop-yep`, update its version in
-`crates/yolop-yep/Cargo.toml` **and** the `yolop-yep = { version = … }`
-requirement in the root `Cargo.toml`.
+**Three-crate workspace.** The repo publishes three crates: two libraries —
+the `yolop-yep` SDK and the `tuika` TUI toolkit (each separately versioned;
+bump one only when its own API changes, and for `yolop-yep` the wire protocol)
+— and the `yolop` binary, which depends on **both** by version. crates.io
+requires the libraries live **before** `yolop`, so CI (`publish.yml`) publishes
+`yolop-yep`, then `tuika`, then `yolop` (each skipped if its version is already
+live). A consequence for this step: **`cargo publish --dry-run -p yolop` fails
+locally** with *"no matching package named `tuika` found"* (or `yolop-yep`)
+whenever an in-tree library version isn't yet on crates.io — that is expected,
+not a broken release. Dry-run the two libraries instead (above); `yolop`'s own
+publish is validated in CI after they go live. When bumping a library, update
+its version in `crates/<crate>/Cargo.toml` **and** the
+`<crate> = { version = … }` requirement in the root `Cargo.toml`.
 
-If `cargo publish --dry-run -p yolop-yep` fails, fix the root cause and re-run.
-Do **not** open a release PR with a known-broken publish path.
+If either library dry-run fails, fix the root cause and re-run. Do **not** open
+a release PR with a known-broken publish path.
 
 ### 6. Commit and push
 
@@ -196,7 +200,8 @@ Body must include:
   - [x] `cargo fmt --check`
   - [x] `cargo clippy --all-targets --all-features -- -D warnings`
   - [x] `cargo test --all-features`
-  - [x] `cargo publish --dry-run -p yolop`
+  - [x] `cargo publish --dry-run -p yolop-yep` and `-p tuika` (the libraries;
+        `-p yolop` is validated in CI after they publish)
   - [x] crates.io currently serves `A.B.C` → publishing `X.Y.Z`
   - [x] `Cargo.toml` + `Cargo.lock` agree on `X.Y.Z`
   ```

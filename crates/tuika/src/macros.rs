@@ -28,10 +28,11 @@
 //!   component defined in another crate. This is how third-party components
 //!   plug into the DSL today.
 //!
-//! Cross-crate note: the macro emits `$crate::…` paths, so it works
-//! anywhere in this binary without imports. When `tuika` graduates to its own
-//! crate, this becomes a `#[macro_export]` in that crate and a proc-macro can
-//! add first-class `MyWidget { … }` syntax for external components.
+//! Cross-crate note: the macro emits `$crate::…` paths and is
+//! `#[macro_export]`ed, so downstream crates use it as `tuika::view!` without
+//! importing the referenced types. A future proc-macro could add first-class
+//! `MyWidget { … }` syntax for external components; the `node(expr)` escape
+//! hatch covers that case today.
 
 #[macro_export]
 macro_rules! view {
