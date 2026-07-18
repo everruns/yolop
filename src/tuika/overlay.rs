@@ -115,6 +115,10 @@ impl OverlaySpec {
             height: avail.height,
         };
         let (x, y) = self.position(inner, w, h);
+        // Clamp into the screen: a margin wider than the screen would otherwise
+        // place `inner` (and the overlay) past the edge.
+        let x = x.min(screen.right().saturating_sub(w)).max(screen.x);
+        let y = y.min(screen.bottom().saturating_sub(h)).max(screen.y);
         Rect {
             x,
             y,

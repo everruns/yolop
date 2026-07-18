@@ -140,13 +140,16 @@ impl Padding {
         self.top.saturating_add(self.bottom)
     }
 
-    /// Shrink `area` by this padding, saturating so it never inverts.
+    /// Shrink `area` by this padding, saturating so it never inverts. The
+    /// origin offset is clamped to the area's extent so an area smaller than
+    /// its padding stays inside `area` (a zero-size box at the edge) instead of
+    /// pushing the inner rect past the right/bottom edge.
     pub fn inner(self, area: Rect) -> Rect {
         let width = area.width.saturating_sub(self.horizontal());
         let height = area.height.saturating_sub(self.vertical());
         Rect {
-            x: area.x.saturating_add(self.left),
-            y: area.y.saturating_add(self.top),
+            x: area.x.saturating_add(self.left.min(area.width)),
+            y: area.y.saturating_add(self.top.min(area.height)),
             width,
             height,
         }
