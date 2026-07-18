@@ -110,6 +110,49 @@ so it works in both the inline and full-screen renderers; terminals that don't
 understand it ignore the sequence. yolop shows it (indeterminate) while a turn
 runs and clears it when idle.
 
+## Testing
+
+Layout and rendering are tested hermetically by rendering into an in-memory
+ratatui `Buffer` and reading cells back — no real terminal:
+
+- **Unit tests** (`src/tuika/tests.rs`) — layout math, component rendering,
+  interactive state (scroll/select/focus), compositor, easing, OSC encoder,
+  and palette (every themed cell pinned to its `Theme` slot).
+- **Property tests** (`src/tuika/proptests.rs`, `proptest`) — solver and overlay
+  invariants for *any* input (children stay in bounds, flex fills exactly).
+- **Golden snapshots** (`src/tuika/snapshots.rs`) — whole screens diffed against
+  checked-in glyph grids; refresh with `UPDATE_SNAPSHOTS=1`.
+- **Resize / degenerate sizes** — a size sweep from `0×0` up asserts no panic
+  and no out-of-clip writes.
+- **PTY smoke** (`tests/tuika_pty.rs`) — drives the real binary under a
+  pseudo-terminal and asserts the terminal-facing protocol: alternate-screen
+  enter/leave, OSC 9;4 progress, resize survival, clean exit.
+
+### Manual terminal matrix
+
+The automated tests cover the *protocol* a terminal receives; they cannot
+verify how a specific emulator actually paints it. This is a **checklist to run
+before a release**, not a record of verified results — tick a box only after
+confirming it yourself. Run `cargo run -- tuika-gallery` in each terminal and
+check alt-screen enter/exit, Braille/wide glyphs, truecolor, and mouse-wheel
+scroll:
+
+- [ ] Ghostty
+- [ ] iTerm2
+- [ ] WezTerm
+- [ ] Kitty
+- [ ] Windows Terminal
+- [ ] Konsole
+- [ ] tmux (truecolor needs `Tc`/`RGB` in `terminal-overrides`)
+
+**Native OSC 9;4 progress** support is a fixed property of each terminal (not
+something to re-verify per release). Terminals that render it: **Ghostty**
+(bar at top of window), **Windows Terminal** and **ConEmu** (taskbar),
+**WezTerm**, **Konsole**, **mintty**. Others (e.g. **iTerm2**, **Kitty**)
+silently ignore the unknown OSC, so emitting it is safe everywhere — the
+in-terminal UI is unaffected. See the OSC 9;4 references linked from the
+motion-module PR.
+
 ## Extending
 
 Add a component by implementing `view::View` in a new module under
