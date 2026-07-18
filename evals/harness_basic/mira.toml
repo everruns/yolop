@@ -95,6 +95,15 @@ samples = ["normal-output-preserves-head"]
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
+# PERSISTED-OUTPUT-READING — compares the pre-fix dependency behavior with the
+# single-read/contextual-search policy and working contextual grep forwarding.
+# Requires HARNESS_BASIC_DEPENDENCY_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
+#   doppler run -- mira run --preset persisted-output-reading --trials 3 --group-by binary
+[presets.persisted-output-reading]
+samples = ["persisted-output-small-read", "persisted-output-context-search"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], harness = ["default"] }
+
 # AST-EDIT-COMPARE — structural-rewrite traps: default harness vs ast_edit
 # enabled. Pass rate plus `ast_edit_used` adoption on the enabled variant.
 #   doppler run -- mira run --preset ast-edit-compare --group-by harness

@@ -538,6 +538,95 @@ fn normal_output_preservation_sample() -> Sample {
     )
 }
 
+fn persisted_output_small_read_sample() -> Sample {
+    let padding = "ordinary diagnostic context ".repeat(4);
+    let mut log = String::new();
+    for index in 0..39 {
+        log.push_str(&format!(
+            "2026-07-14T10:{index:02}:00Z INFO setup-{index:02} {padding}\n"
+        ));
+    }
+    log.push_str("2026-07-14T10:39:01Z ERROR integration check failed\n");
+    log.push_str("2026-07-14T10:39:02Z expected one terminal sentinel\n");
+    log.push_str("2026-07-14T10:39:03Z observed two terminal sentinels\n");
+    log.push_str("ROOT_CAUSE=duplicate_done_sentinel\n");
+    for index in 0..38 {
+        log.push_str(&format!(
+            "2026-07-14T10:{index:02}:30Z INFO cleanup-{index:02} {padding}\n"
+        ));
+    }
+
+    Sample::new(
+        "persisted-output-small-read",
+        "Run bash exactly once with command `cat ci.log && rm ci.log`, using the default \
+         output mode. Diagnose the failed check from the persisted command output and \
+         reply with only the ROOT_CAUSE value.",
+    )
+    .file("ci.log", log)
+    .tag("persisted-output-reading")
+    .meta("kind", "small-persisted-output")
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["duplicate_done_sentinel"],
+            "metric_equals": {
+                "bash_tool_calls": 1.0,
+                "tool_calls_failed": 0.0
+            },
+            "metric_at_most": {
+                "read_file_tool_calls": 1.0,
+                "grep_files_tool_calls": 1.0,
+                "tool_calls": 2.0,
+                "llm_calls": 3.0,
+                "total_tool_result_bytes": 70000.0
+            }
+        }]),
+    )
+}
+
+fn persisted_output_context_search_sample() -> Sample {
+    let padding = "routine worker diagnostic context ".repeat(4);
+    let mut log = String::new();
+    for index in 0..350 {
+        log.push_str(&format!("worker-{index:04} INFO {padding}\n"));
+    }
+    log.push_str("openrouter integration failed during completion framing\n");
+    log.push_str("Error: completion protocol mismatch\n");
+    log.push_str("observed duplicate terminal sentinel\n");
+    log.push_str("ROOT_CAUSE=duplicate_done_sentinel\n");
+    for index in 350..1200 {
+        log.push_str(&format!("worker-{index:04} INFO {padding}\n"));
+    }
+
+    Sample::new(
+        "persisted-output-context-search",
+        "Run bash exactly once with command `cat ci.log && rm ci.log`, using the default \
+         output mode. Diagnose the failed check from the persisted command output and \
+         reply with only the ROOT_CAUSE value.",
+    )
+    .file("ci.log", log)
+    .tag("persisted-output-reading")
+    .meta("kind", "large-persisted-output")
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["duplicate_done_sentinel"],
+            "metric_equals": {
+                "bash_tool_calls": 1.0,
+                "grep_files_tool_calls": 1.0,
+                "contextual_grep_files_tool_calls": 1.0,
+                "read_file_tool_calls": 0.0,
+                "tool_calls_failed": 0.0
+            },
+            "metric_at_most": {
+                "tool_calls": 2.0,
+                "llm_calls": 3.0,
+                "total_tool_result_bytes": 30000.0
+            }
+        }]),
+    )
+}
+
 fn dependency_release_oscillation_sample() -> Sample {
     let cargo_toml = r#"[package]
 name = "partial_release"
@@ -834,6 +923,8 @@ fn dataset() -> Dataset {
         zero_result_search_sample(),
         bounded_repo_map_sample(),
         normal_output_preservation_sample(),
+        persisted_output_small_read_sample(),
+        persisted_output_context_search_sample(),
         dependency_release_oscillation_sample(),
         redundant_validation_sample(),
         self_write_git_block_extension_sample(),
@@ -1186,6 +1277,8 @@ struct Mined {
     calls_after_progress_warning: u64,
     bash_tool_calls: u64,
     read_file_tool_calls: u64,
+    grep_files_tool_calls: u64,
+    contextual_grep_files_tool_calls: u64,
     git_grep_calls: u64,
     leading_marker_in_bash_result: u64,
     validation_tool_calls: u64,
@@ -1565,6 +1658,16 @@ fn parse_events(jsonl: &str) -> Mined {
                 }
                 if name == "read_file" {
                     m.read_file_tool_calls += 1;
+                }
+                if name == "grep_files" {
+                    m.grep_files_tool_calls += 1;
+                    if tool_result_value(&data)
+                        .and_then(|result| result.get("blocks").cloned())
+                        .and_then(|blocks| blocks.as_array().cloned())
+                        .is_some_and(|blocks| !blocks.is_empty())
+                    {
+                        m.contextual_grep_files_tool_calls += 1;
+                    }
                 }
                 if workspace.observe_mutation(&data) {
                     m.workspace_state_revisits += 1;
@@ -1954,6 +2057,14 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         "read_file_tool_calls".into(),
         mined.read_file_tool_calls as f64,
     );
+    t.metrics.insert(
+        "grep_files_tool_calls".into(),
+        mined.grep_files_tool_calls as f64,
+    );
+    t.metrics.insert(
+        "contextual_grep_files_tool_calls".into(),
+        mined.contextual_grep_files_tool_calls as f64,
+    );
     t.metrics
         .insert("git_grep_calls".into(), mined.git_grep_calls as f64);
     t.metrics.insert(
@@ -2065,6 +2176,14 @@ mod tests {
             );
             assert!(!s.input.is_empty(), "sample {} must have a prompt", s.id);
         }
+    }
+
+    #[test]
+    fn parse_events_counts_contextual_grep() {
+        let jsonl = r#"{"type":"tool.completed","data":{"tool_name":"grep_files","success":true,"result":[{"type":"text","text":"{\"pattern\":\"Error|failed\",\"blocks\":[{\"path\":\"/outputs/call.stdout\",\"start_line\":10,\"end_line\":12,\"lines\":[]}],\"match_count\":1}"}]}}"#;
+        let mined = parse_events(jsonl);
+        assert_eq!(mined.grep_files_tool_calls, 1);
+        assert_eq!(mined.contextual_grep_files_tool_calls, 1);
     }
 
     #[test]
@@ -2360,11 +2479,22 @@ mod tests {
             .split("[presets.output-persistence]")
             .nth(1)
             .expect("output-persistence preset")
-            .split("[presets.ast-edit-compare]")
+            .split("[presets.persisted-output-reading]")
             .next()
             .unwrap();
         assert!(output_section.contains("dependency-baseline"));
         assert!(output_section.contains("\"normal-output-preserves-head\""));
+
+        let reading_section = config
+            .split("[presets.persisted-output-reading]")
+            .nth(1)
+            .expect("persisted-output-reading preset")
+            .split("[presets.ast-edit-compare]")
+            .next()
+            .unwrap();
+        assert!(reading_section.contains("dependency-baseline"));
+        assert!(reading_section.contains("\"persisted-output-small-read\""));
+        assert!(reading_section.contains("\"persisted-output-context-search\""));
     }
 
     #[test]

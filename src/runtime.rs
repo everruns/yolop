@@ -50,7 +50,9 @@ use everruns_core::get_model_profile;
 use everruns_core::in_memory::InMemoryMessageRetriever;
 use everruns_core::llmsim_driver::LlmSimConfig;
 use everruns_core::message::{ContentPart, MessageRole};
-use everruns_core::session_file::{FileInfo, FileStat, GrepMatch, InitialFile, SessionFile};
+use everruns_core::session_file::{
+    FileInfo, FileStat, GrepMatch, GrepOptions, GrepSearchResult, InitialFile, SessionFile,
+};
 use everruns_core::session_task::SessionTaskRegistry;
 use everruns_core::typed_id::SessionId;
 use everruns_core::{
@@ -332,7 +334,154 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
             );
         }
         let mounted: Arc<dyn SessionFileSystem> = Arc::new(mounted);
-        Ok(Arc::new(WriteBlocklistFileStore::new(mounted)))
+        let write_blocklist: Arc<dyn SessionFileSystem> =
+            Arc::new(WriteBlocklistFileStore::new(mounted.clone()));
+        Ok(Arc::new(GrepOptionsForwardingFileStore::new(
+            write_blocklist,
+            mounted,
+        )))
+    }
+}
+
+// TODO(everruns#2830): Remove this adapter after upgrading to the first
+// everruns-runtime release containing https://github.com/everruns/everruns/pull/2830.
+// Version 0.17.12's write-blocklist decorator drops `grep_files_with_options`;
+// all mutations must still pass through that decorator while contextual grep
+// can safely use the same mounted read backend directly.
+struct GrepOptionsForwardingFileStore {
+    policy: Arc<dyn SessionFileSystem>,
+    grep_backend: Arc<dyn SessionFileSystem>,
+}
+
+impl GrepOptionsForwardingFileStore {
+    fn new(policy: Arc<dyn SessionFileSystem>, grep_backend: Arc<dyn SessionFileSystem>) -> Self {
+        Self {
+            policy,
+            grep_backend,
+        }
+    }
+}
+
+#[async_trait]
+impl SessionFileSystem for GrepOptionsForwardingFileStore {
+    fn display_root(&self) -> String {
+        self.policy.display_root()
+    }
+
+    fn display_path(&self, path: &str) -> String {
+        self.policy.display_path(path)
+    }
+
+    fn resolve_path(&self, input: &str) -> String {
+        self.policy.resolve_path(input)
+    }
+
+    fn is_mount_resolver(&self) -> bool {
+        self.policy.is_mount_resolver()
+    }
+
+    async fn read_file(
+        &self,
+        session_id: SessionId,
+        path: &str,
+    ) -> everruns_core::Result<Option<SessionFile>> {
+        self.policy.read_file(session_id, path).await
+    }
+
+    async fn write_file(
+        &self,
+        session_id: SessionId,
+        path: &str,
+        content: &str,
+        encoding: &str,
+    ) -> everruns_core::Result<SessionFile> {
+        self.policy
+            .write_file(session_id, path, content, encoding)
+            .await
+    }
+
+    async fn write_file_if_content_matches(
+        &self,
+        session_id: SessionId,
+        path: &str,
+        expected_content: &str,
+        expected_encoding: &str,
+        content: &str,
+        encoding: &str,
+    ) -> everruns_core::Result<Option<SessionFile>> {
+        self.policy
+            .write_file_if_content_matches(
+                session_id,
+                path,
+                expected_content,
+                expected_encoding,
+                content,
+                encoding,
+            )
+            .await
+    }
+
+    async fn delete_file(
+        &self,
+        session_id: SessionId,
+        path: &str,
+        recursive: bool,
+    ) -> everruns_core::Result<bool> {
+        self.policy.delete_file(session_id, path, recursive).await
+    }
+
+    async fn list_directory(
+        &self,
+        session_id: SessionId,
+        path: &str,
+    ) -> everruns_core::Result<Vec<FileInfo>> {
+        self.policy.list_directory(session_id, path).await
+    }
+
+    async fn stat_file(
+        &self,
+        session_id: SessionId,
+        path: &str,
+    ) -> everruns_core::Result<Option<FileStat>> {
+        self.policy.stat_file(session_id, path).await
+    }
+
+    async fn grep_files(
+        &self,
+        session_id: SessionId,
+        pattern: &str,
+        path_pattern: Option<&str>,
+    ) -> everruns_core::Result<Vec<GrepMatch>> {
+        self.policy
+            .grep_files(session_id, pattern, path_pattern)
+            .await
+    }
+
+    async fn grep_files_with_options(
+        &self,
+        session_id: SessionId,
+        pattern: &str,
+        options: &GrepOptions,
+    ) -> everruns_core::Result<GrepSearchResult> {
+        self.grep_backend
+            .grep_files_with_options(session_id, pattern, options)
+            .await
+    }
+
+    async fn create_directory(
+        &self,
+        session_id: SessionId,
+        path: &str,
+    ) -> everruns_core::Result<FileInfo> {
+        self.policy.create_directory(session_id, path).await
+    }
+
+    async fn seed_initial_file(
+        &self,
+        session_id: SessionId,
+        file: &InitialFile,
+    ) -> everruns_core::Result<()> {
+        self.policy.seed_initial_file(session_id, file).await
     }
 }
 
@@ -592,6 +741,27 @@ impl SessionFileSystem for CodingCliSessionFileStore {
                 store.grep_files(session_id, pattern, path_pattern).await
             }
         }
+    }
+
+    async fn grep_files_with_options(
+        &self,
+        session_id: SessionId,
+        pattern: &str,
+        options: &GrepOptions,
+    ) -> everruns_core::Result<GrepSearchResult> {
+        if let Some(path) = options.path_pattern.as_deref()
+            && let Some((store, path)) = self.skill_or_session_route(path)
+        {
+            let mut routed = options.clone();
+            routed.path_pattern = Some(path);
+            return store
+                .grep_files_with_options(session_id, pattern, &routed)
+                .await;
+        }
+        let store = self.workspace_store()?;
+        store
+            .grep_files_with_options(session_id, pattern, options)
+            .await
     }
 
     async fn create_directory(
@@ -4923,6 +5093,38 @@ mod tests {
         assert_eq!(direct_grep[0].path, "/outputs/call.stdout");
 
         store
+            .write_file(
+                session_id,
+                "/outputs/context.stdout",
+                "before\nError: protocol mismatch\nROOT_CAUSE=duplicate_done_sentinel\nafter\n",
+                "text",
+            )
+            .await
+            .expect("write contextual output");
+        let contextual = store
+            .grep_files_with_options(
+                session_id,
+                "Error|failed",
+                &GrepOptions {
+                    path_pattern: Some("/outputs/context.stdout".to_string()),
+                    before_context: 1,
+                    after_context: 1,
+                    ..GrepOptions::default()
+                },
+            )
+            .await
+            .expect("grep output with context");
+        assert_eq!(contextual.returned_matches, 1);
+        assert_eq!(contextual.blocks.len(), 1);
+        assert_eq!(contextual.blocks[0].path, "/outputs/context.stdout");
+        assert_eq!(contextual.blocks[0].start_line, 1);
+        assert_eq!(contextual.blocks[0].end_line, 3);
+        assert_eq!(
+            contextual.blocks[0].lines[2].line,
+            "ROOT_CAUSE=duplicate_done_sentinel"
+        );
+
+        store
             .write_file(session_id, "/src/lib.rs", "workspace grep target", "text")
             .await
             .expect("write workspace file");
@@ -4940,6 +5142,77 @@ mod tests {
             .expect("grep workspace via host display path");
         assert_eq!(host_path_grep.len(), 1);
         assert_eq!(host_path_grep[0].path, "/src/lib.rs");
+    }
+
+    #[tokio::test]
+    async fn production_file_store_forwards_contextual_grep_through_write_blocklist() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let session_id = SessionId::from_seed(12);
+        let host = Arc::new(
+            WorkspaceHost::new(
+                Arc::new(RwLock::new(workspace.path().to_path_buf())),
+                workspace.path().to_path_buf(),
+            )
+            .expect("workspace host"),
+        );
+        let factory = CodingCliSessionFileSystemFactory {
+            workspace: host,
+            session_dir: session.path().to_path_buf(),
+            session_id,
+            skill_global: None,
+            skill_system: None,
+            environment_skill: None,
+        };
+        let store = factory
+            .create_session_file_system(SessionFileSystemFactoryContext::default())
+            .await
+            .expect("session file system");
+
+        store
+            .write_file(
+                session_id,
+                "/outputs/context.stdout",
+                "before\nError: protocol mismatch\nROOT_CAUSE=duplicate_done_sentinel\nafter\n",
+                "text",
+            )
+            .await
+            .expect("write contextual output");
+        let contextual = store
+            .grep_files_with_options(
+                session_id,
+                "Error|failed",
+                &GrepOptions {
+                    path_pattern: Some("/outputs/context.stdout".to_string()),
+                    before_context: 1,
+                    after_context: 1,
+                    ..GrepOptions::default()
+                },
+            )
+            .await
+            .expect("grep output with context");
+
+        assert_eq!(contextual.returned_matches, 1);
+        assert_eq!(contextual.blocks.len(), 1);
+        assert_eq!(contextual.blocks[0].path, "/outputs/context.stdout");
+        assert_eq!(contextual.blocks[0].start_line, 1);
+        assert_eq!(contextual.blocks[0].end_line, 3);
+
+        for blocked_dir in everruns_runtime::DEFAULT_WRITE_BLOCKLIST {
+            let path = format!("/nested/{blocked_dir}/blocked.txt");
+            let result = store.write_file(session_id, &path, "blocked", "text").await;
+            assert!(
+                result.is_err(),
+                "compatibility adapter must retain the {blocked_dir} write block"
+            );
+            assert!(
+                !workspace
+                    .path()
+                    .join(format!("nested/{blocked_dir}/blocked.txt"))
+                    .exists(),
+                "compatibility adapter must retain the {blocked_dir} write block"
+            );
+        }
     }
 
     #[test]
