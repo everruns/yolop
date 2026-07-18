@@ -4,7 +4,7 @@
 //! manifest; execution and the prompt contribution are proxied to the
 //! package's capability server over YEP (see `manager.rs`).
 
-use super::client::StatusSink;
+use super::client::{AskSink, StatusSink};
 use super::manager::{DEFAULT_REQUEST_TIMEOUT_MS, ExtensionProcess, ExtensionProcessSpec};
 use super::package::{ExtensionPackage, ToolDefinition, extension_capability_id};
 use async_trait::async_trait;
@@ -30,6 +30,9 @@ pub struct ExtensionCapability {
     /// Where the server's `status/changed` pushes go. Forwarded to the process
     /// only when the manifest declares `status` (the D4 opt-in).
     status_sink: Option<StatusSink>,
+    /// Handles the server's `ui/ask` requests. Forwarded to the process only
+    /// when the manifest declares `ui_ask` (the D4 opt-in).
+    ask_sink: Option<AskSink>,
     /// Process shared by all tool instances so the server persists across
     /// turns; rebuilt (killing the old server) when the config changes —
     /// the same cache-by-config pattern as `LspCapability::manager_for`.
@@ -43,6 +46,7 @@ impl ExtensionCapability {
             package,
             workspace_root,
             status_sink: None,
+            ask_sink: None,
             process: Mutex::new(None),
         }
     }
@@ -52,6 +56,12 @@ impl ExtensionCapability {
     /// if given a sink.
     pub fn with_status_sink(mut self, sink: Option<StatusSink>) -> Self {
         self.status_sink = sink;
+        self
+    }
+
+    /// Wire a `ui/ask` handler. Used only if the manifest declares `ui_ask`.
+    pub fn with_ask_sink(mut self, sink: Option<AskSink>) -> Self {
+        self.ask_sink = sink;
         self
     }
 
@@ -78,6 +88,12 @@ impl ExtensionCapability {
                 .manifest
                 .status
                 .then(|| self.status_sink.clone())
+                .flatten(),
+            ask_sink: self
+                .package
+                .manifest
+                .ui_ask
+                .then(|| self.ask_sink.clone())
                 .flatten(),
         }));
         *slot = Some((config.clone(), process.clone()));

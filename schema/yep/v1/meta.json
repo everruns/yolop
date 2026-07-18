@@ -43,6 +43,11 @@
       "description": "Run a manifest-declared slash command; the result message is shown to the user."
     },
     {
+      "name": "ui/ask",
+      "direction": "server",
+      "description": "Ask the user a question and wait for a typed answer (TUI hosts only)."
+    },
+    {
       "name": "config/changed",
       "direction": "host",
       "description": "Notify the server its config changed."
@@ -61,6 +66,7 @@
     "hooks",
     "mcp_servers",
     "status",
-    "commands"
+    "commands",
+    "ui_ask"
   ]
 }

@@ -26,7 +26,7 @@ pub(crate) mod scaffold;
 pub(crate) mod store;
 
 pub(crate) use capability::ExtensionCapability;
-pub(crate) use client::StatusSink;
+pub(crate) use client::{AskSink, StatusSink};
 pub(crate) use manage::ExtensionsCapability;
 pub(crate) use package::{
     discover_extensions, extension_capability_id, extension_skill_scopes, extensions_dir,

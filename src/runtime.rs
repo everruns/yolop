@@ -2215,6 +2215,9 @@ pub struct BuiltRuntime {
     /// other hosts ignore it. Empty/never-written when
     /// [`BuildOptions::client_commands`] is `false`.
     pub ui_rx: mpsc::UnboundedReceiver<UiCommand>,
+    /// Receiver for extension `ui/ask` requests; the TUI prompts the user and
+    /// answers each via its oneshot. Empty/never-written outside the TUI.
+    pub ask_rx: mpsc::UnboundedReceiver<crate::host_ui::AskRequest>,
     /// Receiver for everruns background-task completion signals, delivered via
     /// the wake seam (`background_wake`). The host (TUI/ACP) drains it and runs
     /// a streamed turn so the agent reacts to finished `spawn_background` work.
@@ -2741,6 +2744,42 @@ pub async fn build_with_options(
                 },
             ) as crate::extensions::StatusSink
         });
+    // `ui/ask` handler channel: an extension's request rides `ask_tx` to the
+    // App, which prompts the user and answers via a per-request oneshot. Only
+    // wired for the TUI; `None` elsewhere refuses `ui/ask`.
+    let (ask_tx, ask_rx) = mpsc::unbounded_channel::<crate::host_ui::AskRequest>();
+    let ask_sink: Option<crate::extensions::AskSink> =
+        matches!(options.client_ui, ClientUiContext::Tui).then(|| {
+            let ask_tx = ask_tx.clone();
+            Arc::new(move |params: crate::extensions::protocol::UiAskParams| {
+                let ask_tx = ask_tx.clone();
+                Box::pin(async move {
+                    let (reply, answer) = tokio::sync::oneshot::channel();
+                    let _ = ask_tx.send(crate::host_ui::AskRequest {
+                        prompt: params.prompt,
+                        placeholder: params.placeholder,
+                        reply,
+                    });
+                    match answer.await {
+                        Ok(a) => crate::extensions::protocol::UiAskResult {
+                            answer: a.answer,
+                            cancelled: a.cancelled,
+                        },
+                        Err(_) => crate::extensions::protocol::UiAskResult {
+                            answer: String::new(),
+                            cancelled: true,
+                        },
+                    }
+                })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = crate::extensions::protocol::UiAskResult,
+                                > + Send,
+                        >,
+                    >
+            }) as crate::extensions::AskSink
+        });
 
     let mut extension_never_defer: Vec<String> = Vec::new();
     if let Some(ext_dir) = crate::extensions::extensions_dir() {
@@ -2758,7 +2797,8 @@ pub async fn build_with_options(
                 .any(|(_, entry)| !entry.is_remove());
             let capability =
                 crate::extensions::ExtensionCapability::new(package, effective_root.clone())
-                    .with_status_sink(status_sink.clone());
+                    .with_status_sink(status_sink.clone())
+                    .with_ask_sink(ask_sink.clone());
             if enabled {
                 let contributed = capability.contributed_mcp_servers();
                 if !contributed.is_empty() {
@@ -3100,6 +3140,7 @@ pub async fn build_with_options(
         model: ModelState::new(provider_state),
         settings,
         ui_rx,
+        ask_rx,
         background_wake: background_wake_rx,
         schedule_runner,
         workspace_host,

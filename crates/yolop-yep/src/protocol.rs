@@ -101,6 +101,15 @@ pub fn response_error_line(id: u64, error: &ErrorObject) -> String {
     json!({ "id": id, "error": error }).to_string()
 }
 
+/// Response to a server→host request (e.g. `ui/ask`), keyed by the server's own
+/// request id.
+pub fn response_result_line(id: u64, result: &Value) -> String {
+    let mut obj = Map::new();
+    obj.insert("id".into(), json!(id));
+    obj.insert("result".into(), result.clone());
+    Value::Object(obj).to_string()
+}
+
 /// JSON-RPC-shaped error object. Everything beyond `message` is optional and
 /// defaulted, so a peer that sends bare `{ "message": … }` still parses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +277,34 @@ pub struct HookDecision {
 pub struct PromptContribution {
     #[serde(default)]
     pub text: String,
+}
+
+// ---------------------------------------------------------------------------
+// ui/ask (server → host request)
+
+/// Server → host `ui/ask` params: ask the user a question and wait for a typed
+/// answer. The host prompts interactively (TUI); in headless/ACP hosts with no
+/// prompt surface the request is refused.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UiAskParams {
+    /// The question shown to the user.
+    #[serde(default)]
+    pub prompt: String,
+    /// Optional placeholder / hint for the input field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+}
+
+/// Host → server `ui/ask` result: the user's answer (empty + `cancelled` when
+/// they dismiss the prompt).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UiAskResult {
+    #[serde(default)]
+    pub answer: String,
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 // ---------------------------------------------------------------------------

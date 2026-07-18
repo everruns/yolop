@@ -5,12 +5,14 @@
 
 use super::protocol::{
     ErrorObject, Incoming, InitializeParams, InitializeResult, StatusChangedParams,
-    ToolUpdateParams, classify_line, notification_line, request_line, response_error_line,
-    version_compatible,
+    ToolUpdateParams, UiAskParams, UiAskResult, classify_line, notification_line, request_line,
+    response_error_line, response_result_line, version_compatible,
 };
 use anyhow::{Result, anyhow};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,6 +25,13 @@ use tokio::sync::{mpsc, oneshot};
 /// logs. Kept as an opaque callback so `src/extensions/` stays decoupled from
 /// the app/UI layer.
 pub type StatusSink = Arc<dyn Fn(&str, StatusChangedParams) + Send + Sync>;
+
+/// Async handler for a server→host `ui/ask` request: prompts the user and
+/// resolves to their answer. `None` in hosts with no prompt surface
+/// (headless/ACP), where `ui/ask` is refused. Opaque so `src/extensions/` stays
+/// decoupled from the app/UI layer.
+pub type AskSink =
+    Arc<dyn Fn(UiAskParams) -> Pin<Box<dyn Future<Output = UiAskResult> + Send>> + Send + Sync>;
 
 /// Pending host-originated requests, keyed by id. Host and server id spaces
 /// are independent per direction; only `method`-less lines land here.
@@ -37,6 +46,8 @@ pub struct YepConnection {
     name: String,
     /// Where `status/changed` notifications go; `None` logs only.
     status_sink: Option<StatusSink>,
+    /// Handles `ui/ask` requests; `None` refuses them.
+    ask_sink: Option<AskSink>,
 }
 
 impl YepConnection {
@@ -49,6 +60,7 @@ impl YepConnection {
         init: InitializeParams,
         request_timeout: Duration,
         status_sink: Option<StatusSink>,
+        ask_sink: Option<AskSink>,
     ) -> Result<(Arc<Self>, InitializeResult)>
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -75,6 +87,7 @@ impl YepConnection {
             request_timeout,
             name: name.to_string(),
             status_sink,
+            ask_sink,
         });
 
         let read_conn = connection.clone();
@@ -142,8 +155,22 @@ impl YepConnection {
             }
             Incoming::Notification { method, params } => self.handle_notification(&method, params),
             Incoming::Request { id, method, params } => {
-                // Server→host requests (ui/ask, …) arrive in a later phase.
-                // Refuse them cleanly instead of corrupting our own routing.
+                if method == "ui/ask"
+                    && let Some(sink) = self.ask_sink.clone()
+                {
+                    // Prompt the user off the read loop, then answer on the
+                    // server's own id space when they respond.
+                    let ask: UiAskParams = serde_json::from_value(params).unwrap_or_default();
+                    let writer_tx = self.writer_tx.clone();
+                    tokio::spawn(async move {
+                        let result = sink(ask).await;
+                        let value = serde_json::to_value(&result).unwrap_or(Value::Null);
+                        let _ = writer_tx.send(response_result_line(id, &value));
+                    });
+                    return;
+                }
+                // Any other server→host request (or `ui/ask` with no prompt
+                // surface) is refused cleanly instead of corrupting our routing.
                 tracing::debug!(
                     target: "yolop::ext", ext = %self.name,
                     has_params = !params.is_null(),
@@ -331,6 +358,7 @@ mod tests {
             init_params(),
             Duration::from_secs(5),
             None,
+            None,
         )
         .await
         .expect("handshake");
@@ -377,6 +405,7 @@ mod tests {
             init_params(),
             Duration::from_secs(5),
             Some(sink),
+            None,
         )
         .await
         .expect("handshake");
@@ -404,6 +433,7 @@ mod tests {
             init_params(),
             Duration::from_secs(5),
             None,
+            None,
         )
         .await
         .expect("handshake");
@@ -428,6 +458,7 @@ mod tests {
             "fake",
             init_params(),
             Duration::from_millis(200),
+            None,
             None,
         )
         .await
@@ -455,6 +486,7 @@ mod tests {
             "future",
             init_params(),
             Duration::from_secs(5),
+            None,
             None,
         )
         .await
@@ -514,6 +546,7 @@ mod tests {
             init_params(),
             Duration::from_secs(5),
             None,
+            None,
         )
         .await
         .expect("handshake");
@@ -522,5 +555,74 @@ mod tests {
             .await
             .expect("tool call resolves after reverse-request refusal");
         assert_eq!(result["refused_code"], -32601);
+    }
+
+    #[tokio::test]
+    async fn ui_ask_reverse_request_is_answered_by_the_sink() {
+        use crate::extensions::protocol::{UiAskParams, UiAskResult};
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        // Server sends a `ui/ask` after initialize, then resolves the pending
+        // tool call with whatever answer the host sends back.
+        tokio::spawn(async move {
+            let (read_half, mut write_half) = tokio::io::split(server_io);
+            let mut lines = BufReader::new(read_half).lines();
+            let mut tool_call_id = None;
+            while let Ok(Some(line)) = lines.next_line().await {
+                let value: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                match value["method"].as_str() {
+                    Some("initialize") => {
+                        let reply =
+                            json!({"id": value["id"], "result": handshake_json()}).to_string();
+                        let _ = write_half.write_all(reply.as_bytes()).await;
+                        let _ = write_half.write_all(b"\n").await;
+                    }
+                    Some("initialized") => {
+                        let ask = json!({"id": 7, "method": "ui/ask",
+                            "params": {"prompt": "proceed?"}})
+                        .to_string();
+                        let _ = write_half.write_all(ask.as_bytes()).await;
+                        let _ = write_half.write_all(b"\n").await;
+                    }
+                    Some("tool/call") => tool_call_id = value["id"].as_u64(),
+                    None if value["id"] == json!(7) && value.get("result").is_some() => {
+                        if let Some(id) = tool_call_id {
+                            let reply = json!({"id": id, "result": {
+                                "got": value["result"]["answer"].clone()
+                            }})
+                            .to_string();
+                            let _ = write_half.write_all(reply.as_bytes()).await;
+                            let _ = write_half.write_all(b"\n").await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let ask_sink: super::AskSink = Arc::new(|params: UiAskParams| {
+            Box::pin(async move {
+                UiAskResult {
+                    answer: format!("answered:{}", params.prompt),
+                    cancelled: false,
+                }
+            }) as Pin<Box<dyn Future<Output = UiAskResult> + Send>>
+        });
+        let (read_half, write_half) = tokio::io::split(client_io);
+        let (conn, _) = YepConnection::connect(
+            read_half,
+            write_half,
+            "fake",
+            init_params(),
+            Duration::from_secs(5),
+            None,
+            Some(ask_sink),
+        )
+        .await
+        .expect("handshake");
+        let result = conn
+            .request("tool/call", json!({"name": "echo"}))
+            .await
+            .expect("tool call resolves after ui/ask answer");
+        assert_eq!(result["got"], "answered:proceed?");
     }
 }

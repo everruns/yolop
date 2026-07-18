@@ -40,6 +40,10 @@ pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // Inline viewports cannot place a true full-screen modal above terminal
     // scrollback. Treat overlays as sheets that own this complete viewport so
     // the composer and status chrome never bleed through around their edges.
+    if app.pending_ask.is_some() {
+        draw_ask_overlay(f, area, app);
+        return;
+    }
     if app.setup.is_some() {
         draw_setup_overlay(f, area, app);
         return;
@@ -400,6 +404,72 @@ pub(crate) fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
             inner
                 .y
                 .saturating_add((row as u16).min(inner.height.saturating_sub(1))),
+        ));
+    }
+}
+
+/// Overlay for an extension `ui/ask` prompt: the question plus a live echo of
+/// the answer being typed. Owns the viewport like the setup overlay.
+pub(crate) fn draw_ask_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let Some(ask) = app.pending_ask.as_ref() else {
+        return;
+    };
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let panel = setup_panel_rect(area);
+    if panel.width == 0 || panel.height == 0 {
+        return;
+    }
+    f.render_widget(Clear, area);
+    f.render_widget(Clear, panel);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
+    f.render_widget(block, panel);
+    let inner = Rect {
+        x: panel.x.saturating_add(2),
+        y: panel.y.saturating_add(1),
+        width: panel.width.saturating_sub(4),
+        height: panel.height.saturating_sub(2),
+    };
+    let field = if ask.value.is_empty() {
+        ask.placeholder
+            .as_ref()
+            .map(|p| format!("({p})"))
+            .unwrap_or_default()
+    } else {
+        ask.value.clone()
+    };
+    let lines = vec![
+        Line::from(Span::styled(
+            "An extension is asking:",
+            Style::default()
+                .fg(TEXT_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(ask.prompt.clone()),
+        Line::from(""),
+        Line::from(format!("> {field}")),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter to answer · Esc to cancel",
+            Style::default().add_modifier(Modifier::DIM),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(PANEL_BG)),
+        inner,
+    );
+    // Park the cursor after the typed value.
+    let col = "> ".len() + ask.value.chars().count();
+    if inner.width > 0 && inner.height > 4 {
+        f.set_cursor_position((
+            inner
+                .x
+                .saturating_add((col as u16).min(inner.width.saturating_sub(1))),
+            inner.y.saturating_add(4),
         ));
     }
 }

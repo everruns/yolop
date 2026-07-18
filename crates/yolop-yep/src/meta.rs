@@ -38,6 +38,10 @@ pub const METHODS: &[Method] = &[
         "command/execute",
         "Run a manifest-declared slash command; the result message is shown to the user.",
     ),
+    Method::server(
+        "ui/ask",
+        "Ask the user a question and wait for a typed answer (TUI hosts only).",
+    ),
     Method::host("config/changed", "Notify the server its config changed."),
     Method::host("shutdown", "Request a graceful stop."),
 ];
@@ -52,6 +56,7 @@ pub const CAPABILITY_TOKENS: &[&str] = &[
     "mcp_servers",
     "status",
     "commands",
+    "ui_ask",
 ];
 
 /// Direction a method flows.

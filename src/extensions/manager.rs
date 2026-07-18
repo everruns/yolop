@@ -5,7 +5,7 @@
 //! to language servers. Only this module knows about processes; everything
 //! else drives the transport-generic `YepConnection`.
 
-use super::client::{StatusSink, YepConnection};
+use super::client::{AskSink, StatusSink, YepConnection};
 use super::package::ExtensionManifest;
 use super::protocol::{InitializeParams, InitializeResult, PROTOCOL_VERSION};
 use anyhow::{Context, Result, anyhow};
@@ -32,6 +32,9 @@ pub struct ExtensionProcessSpec {
     /// Only wired when the extension declares `status` and the host has a
     /// status bar; `None` otherwise.
     pub status_sink: Option<StatusSink>,
+    /// Handles the server's `ui/ask` requests. Only wired when the extension
+    /// declares `ui_ask` and the host has a prompt surface; `None` otherwise.
+    pub ask_sink: Option<AskSink>,
 }
 
 /// A live (or lazily spawned) capability server.
@@ -244,6 +247,7 @@ impl ExtensionProcess {
             init,
             self.spec.request_timeout,
             self.spec.status_sink.clone(),
+            self.spec.ask_sink.clone(),
         )
         .await?;
 

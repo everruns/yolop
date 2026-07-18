@@ -68,6 +68,10 @@ struct RawFacet {
     /// no server is involved.
     #[serde(default)]
     skills: bool,
+    /// Permits the server to send `ui/ask` requests (prompt the user for a typed
+    /// answer). D4 opt-in — a non-declaring extension's `ui/ask` is refused.
+    #[serde(default)]
+    ui_ask: bool,
 }
 
 /// A manifest-declared hook subscription. Static (the approved upper bound):
@@ -210,6 +214,7 @@ pub struct ExtensionManifest {
     pub commands: Vec<CommandDef>,
     pub status: bool,
     pub skills: bool,
+    pub ui_ask: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -320,6 +325,7 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         commands: raw.yolop.commands,
         status: raw.yolop.status,
         skills: raw.yolop.skills,
+        ui_ask: raw.yolop.ui_ask,
     })
 }
 
@@ -509,6 +515,30 @@ mod tests {
         let found = discover_extensions(tmp.path());
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].manifest.name, "echo");
+    }
+
+    #[test]
+    fn ui_ask_parses_but_is_not_a_standalone_contribution() {
+        // ui_ask alongside a tool: opt-in is recorded.
+        let with_tool = json!({
+            "name": "asker", "description": "t",
+            "yolop": { "protocol_version": "1.0",
+                "capabilityServer": { "command": "x" },
+                "tools": [{ "name": "t" }], "ui_ask": true }
+        });
+        assert!(parse_manifest(&with_tool.to_string()).unwrap().ui_ask);
+
+        // ui_ask alone can't be triggered, so it's not a contribution by itself.
+        let alone = json!({
+            "name": "asker", "description": "t",
+            "yolop": { "protocol_version": "1.0",
+                "capabilityServer": { "command": "x" }, "ui_ask": true }
+        });
+        assert!(
+            parse_manifest(&alone.to_string())
+                .unwrap_err()
+                .contains("nothing to contribute")
+        );
     }
 
     #[test]

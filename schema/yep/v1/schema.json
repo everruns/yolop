@@ -260,6 +260,38 @@
         }
       },
       "type": "object"
+    },
+    "UiAskParams": {
+      "description": "Server → host `ui/ask` params: ask the user a question and wait for a typed\nanswer. The host prompts interactively (TUI); in headless/ACP hosts with no\nprompt surface the request is refused.",
+      "properties": {
+        "placeholder": {
+          "description": "Optional placeholder / hint for the input field.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt": {
+          "default": "",
+          "description": "The question shown to the user.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "UiAskResult": {
+      "description": "Host → server `ui/ask` result: the user's answer (empty + `cancelled` when\nthey dismiss the prompt).",
+      "properties": {
+        "answer": {
+          "default": "",
+          "type": "string"
+        },
+        "cancelled": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -313,6 +345,14 @@
     "tool/update": {
       "params": {
         "$ref": "#/$defs/ToolUpdateParams"
+      }
+    },
+    "ui/ask": {
+      "params": {
+        "$ref": "#/$defs/UiAskParams"
+      },
+      "result": {
+        "$ref": "#/$defs/UiAskResult"
       }
     }
   },
