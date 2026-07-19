@@ -1655,6 +1655,37 @@ impl App {
                     self.extension_status.insert(ext, status);
                 }
             }
+            UiCommand::SetExtensionActive {
+                capability_id,
+                name,
+                activate,
+            } => {
+                // enable_extension/disable_extension already persisted the
+                // setting; here we apply it to the running session so it takes
+                // effect on the next turn (EVE-795) rather than only next start.
+                let result = if activate {
+                    self.session.activate_capability(&capability_id).await
+                } else {
+                    self.session.deactivate_capability(&capability_id).await
+                };
+                match result {
+                    Ok(delta) if delta.changed => self.push_system(format!(
+                        "extension `{name}` {} for this session; effective on the next turn.",
+                        if activate { "enabled" } else { "disabled" }
+                    )),
+                    // No overlay change: already in the desired state, or (on
+                    // disable) it rides the harness layer from startup and only
+                    // settings can drop it — which happens next session.
+                    Ok(_) if !activate => self.push_system(format!(
+                        "extension `{name}` will be disabled on the next session."
+                    )),
+                    Ok(_) => {}
+                    Err(err) => self.push_system(format!(
+                        "extension `{name}` saved, but applying it to this session failed: {err}. \
+                         It will load on the next session."
+                    )),
+                }
+            }
         }
     }
 

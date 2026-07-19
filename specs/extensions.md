@@ -123,6 +123,22 @@ and can never widen it. A manifest change (a new tool, a changed schema) still
 requires a restart — the enabled-capability set is fixed for the session
 because `everruns-core` builds the harness once with no live-reconfigure seam.
 Covered by `reload_respawns_the_server_with_edited_code`.
+Hot-enable: `everruns-runtime` grew a live-reconfigure seam
+(`InProcessRuntime::activate_capability`/`deactivate_capability` →
+`CapabilityDelta`, EVE-795), so enabling a *new* extension no longer waits for
+the next session. `enable_extension`/`disable_extension` still persist the
+`ext:<name>` override to settings, and in the TUI they also push a
+`SetExtensionActive` `UiCommand`; the `App` answers it by calling
+`Session::activate_capability`/`deactivate_capability`, which mutate the
+session-scoped capability overlay. The runtime reassembles prompt, tools, hooks,
+commands, and contributed MCP servers from that overlay on the next reason/act
+boundary, so the extension is live on the **next turn** — no restart. The
+capability lands on the session overlay (distinct from the harness layer a
+startup-enabled extension rides), so it can be live-deactivated too; disabling
+one that was active from session start rides the harness layer and only settings
+can drop it (next session). Refused with no live session (`--print`/ACP), where
+enable/disable persist for the next run. Covered by
+`enable_disable_emit_live_activation_when_wired`.
 Later — the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in),
 `workspace/changed`,

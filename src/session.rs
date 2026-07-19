@@ -78,6 +78,25 @@ impl Session {
         self.handles.connections.clone()
     }
 
+    /// Activate a registered `ext:<name>` capability on the live session so its
+    /// tools/prompt/hooks/commands/MCP appear on the next turn (hot-enable). See
+    /// [`RuntimeHandles::activate_capability`](crate::runtime::RuntimeHandles::activate_capability).
+    pub async fn activate_capability(
+        &self,
+        capability_id: &str,
+    ) -> Result<everruns_runtime::CapabilityDelta> {
+        self.handles.activate_capability(capability_id).await
+    }
+
+    /// Deactivate a session-activated capability. See
+    /// [`RuntimeHandles::deactivate_capability`](crate::runtime::RuntimeHandles::deactivate_capability).
+    pub async fn deactivate_capability(
+        &self,
+        capability_id: &str,
+    ) -> Result<everruns_runtime::CapabilityDelta> {
+        self.handles.deactivate_capability(capability_id).await
+    }
+
     /// Translate the prefix of persisted events that were replayed from disk
     /// into transcript lines (used to seed the transcript on resume).
     pub async fn replayed_lines(&self, count: usize) -> Result<Vec<ChatLine>> {
