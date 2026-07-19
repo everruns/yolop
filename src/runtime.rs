@@ -89,7 +89,7 @@ use tokio::sync::mpsc;
 
 // The harness prompt is the durable instruction surface — borrowed in shape
 // from `crates/server/src/harnesses/coding_container.rs` and trimmed for
-// yolop's single-level (no-sandbox) execution model and our specific tool
+// yolop's single-level execution model and our specific tool
 // names. The agent prompt below stays small on purpose; harness covers it.
 
 #[derive(Debug, Default)]
@@ -216,7 +216,9 @@ impl McpAuthProvider for StoredMcpAuthProvider {
 
 const HARNESS_PROMPT: &str = "\
 You are an expert terminal coding agent. File tools write under the workspace
-root; `bash` runs on the host. There is no sandbox.
+root. Shell commands run in the configured containment provider, which defaults
+to a native workspace-write/network-deny sandbox. Do not assume they can write
+outside the active workspace or reach the network.
 
 ## Workflow
 
@@ -2532,7 +2534,13 @@ pub async fn build_with_options(
     let provider = options.provider_model.clone().unwrap_or(provider);
     let canonical_root = std::fs::canonicalize(&workspace_root)
         .with_context(|| format!("canonicalize workspace: {}", workspace_root.display()))?;
-    let sandbox = crate::sandbox::provider(settings.snapshot().sandbox_mode());
+    // Unit-test binaries are libtest harnesses and cannot service the Linux
+    // worker subcommand. Real-binary coverage lives in tests/integration.rs.
+    #[cfg(all(test, target_os = "linux"))]
+    let sandbox_mode = crate::settings::SandboxMode::Off;
+    #[cfg(not(all(test, target_os = "linux")))]
+    let sandbox_mode = settings.snapshot().sandbox_mode();
+    let sandbox = crate::sandbox::provider(sandbox_mode);
 
     // Pin the SessionId so resume can re-attach to the same session folder
     // (directory name is the session id).
