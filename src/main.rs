@@ -1040,7 +1040,13 @@ async fn run_tui(
         None
     };
     let stdout = io::stdout();
-    let backend = CrosstermBackend::new(stdout);
+    // Opt-in OSC 8 hyperlinks: wrap the crossterm backend so http(s) URLs in
+    // rendered output become clickable. Default off (pure pass-through) until the
+    // rendering is verified across terminals; enable with YOLOP_HYPERLINKS=1.
+    let hyperlinks = std::env::var("YOLOP_HYPERLINKS")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
+        .unwrap_or(false);
+    let backend = tuika::HyperlinkBackend::new(stdout, hyperlinks);
     let viewport = if fullscreen {
         Viewport::Fullscreen
     } else {
