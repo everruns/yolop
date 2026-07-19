@@ -686,7 +686,7 @@ fn ast_grep(workspace_root: &Path, options: AstGrepOptions) -> Result<AstGrepRep
     let mut files = Vec::new();
     let mut skipped_unsupported_files = 0;
     collect_supported_files(
-        &scope,
+        scope.as_path(),
         language_filter,
         &mut files,
         &mut skipped_unsupported_files,
@@ -802,7 +802,7 @@ fn ast_edit(workspace_root: &Path, options: AstEditOptions) -> Result<AstEditRep
     let mut files = Vec::new();
     let mut skipped_unsupported_files = 0;
     collect_supported_files(
-        &scope,
+        scope.as_path(),
         language_filter,
         &mut files,
         &mut skipped_unsupported_files,
@@ -1285,6 +1285,36 @@ mod tests {
         assert_eq!(value["matches"][0]["path"], json!("src/lib.rs"));
         assert_eq!(value["matches"][0]["captures"][0]["name"], json!("NAME"));
         assert_eq!(value["matches"][0]["captures"][0]["text"], json!("target"));
+    }
+
+    #[tokio::test]
+    async fn ast_grep_tool_accepts_workspace_alias_scope() {
+        // Like repo_map, ast_grep resolves its `path` through resolve_host_scope,
+        // so the `/workspace` display alias must scope correctly here too.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(&dir.path().join("src/lib.rs"), "fn target() {}\n");
+        write(&dir.path().join("other/lib.rs"), "fn other() {}\n");
+
+        let capability = AstGrepCapability::new(host(dir.path()));
+        let tools = capability.tools();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name() == "ast_grep")
+            .expect("ast_grep tool");
+        let result = tool
+            .execute(json!({
+                "pattern": "fn $NAME() {}",
+                "language": "rust",
+                "path": "/workspace/src",
+                "limit": 10
+            }))
+            .await;
+        let ToolExecutionResult::Success(value) = result else {
+            panic!("expected success, got {result:?}");
+        };
+
+        assert_eq!(value["count"], json!(1));
+        assert_eq!(value["matches"][0]["path"], json!("src/lib.rs"));
     }
 
     #[test]
