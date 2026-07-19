@@ -71,7 +71,6 @@ use everruns_core::command::ExecuteCommandRequest;
 use everruns_core::message::{ContentPart, MessageRole};
 use everruns_core::typed_id::SessionId;
 use mcp_config::{McpConfigScope, McpConfigStore};
-use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use runtime::{BuiltRuntime, ProviderChoice, ResolvedProviderChoice, resolve_for_settings};
 use settings::SettingsStore;
@@ -911,6 +910,15 @@ fn run_command(command: Commands) -> Result<()> {
     }
 }
 
+/// Whether opt-in OSC 8 hyperlinks are enabled via `YOLOP_HYPERLINKS`
+/// (`1`/`true`/`on`). Default off until the rendering is verified across
+/// terminals; see `tuika::HyperlinkBackend` and the tuika README matrix.
+fn hyperlinks_enabled() -> bool {
+    std::env::var("YOLOP_HYPERLINKS")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
+        .unwrap_or(false)
+}
+
 /// Live demo of the `tuika` motion components. Renders spinners, progress bars,
 /// and a loader on the alternate screen, and drives the terminal's native
 /// OSC 9;4 progress indicator while running. Quits on `q`/`Esc`/`Ctrl-C`.
@@ -920,7 +928,9 @@ fn run_tuika_gallery() -> Result<()> {
 
     let mut raw = RawModeGuard::new()?;
     let mut alt = tuika::AltScreen::enter()?;
-    let backend = CrosstermBackend::new(io::stdout());
+    // Route through the same hyperlink-aware backend as the main TUI so the
+    // demo's URL becomes a clickable OSC 8 link when YOLOP_HYPERLINKS is set.
+    let backend = tuika::HyperlinkBackend::new(io::stdout(), hyperlinks_enabled());
     let mut terminal = Terminal::with_options(
         backend,
         TerminalOptions {
@@ -960,6 +970,7 @@ fn run_tuika_gallery() -> Result<()> {
 /// Build the gallery view tree for `frame`, using [`ratatui::text`] helpers via
 /// `tuika` components.
 fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
+    use ratatui::style::Modifier;
     use ratatui::text::{Line, Span};
     use tuika::{Loader, ProgressBar, Spinner, SpinnerStyle, Text};
 
@@ -1009,10 +1020,17 @@ fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
             }
             grow(1) { spacer() }
             fixed(1) {
-                node(Text::new(vec![Line::from(Span::styled(
-                    "tuika gallery — native progress is live in the taskbar/top bar · press q to quit",
-                    theme.muted_style(),
-                ))]))
+                node(Text::new(vec![Line::from(vec![
+                    Span::styled("docs ", theme.muted_style()),
+                    Span::styled(
+                        "https://github.com/everruns/yolop",
+                        theme.accent_style().add_modifier(Modifier::UNDERLINED),
+                    ),
+                    Span::styled(
+                        "  ·  native progress is live · press q to quit",
+                        theme.muted_style(),
+                    ),
+                ])]))
             }
         }
     }
@@ -1043,10 +1061,7 @@ async fn run_tui(
     // Opt-in OSC 8 hyperlinks: wrap the crossterm backend so http(s) URLs in
     // rendered output become clickable. Default off (pure pass-through) until the
     // rendering is verified across terminals; enable with YOLOP_HYPERLINKS=1.
-    let hyperlinks = std::env::var("YOLOP_HYPERLINKS")
-        .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
-        .unwrap_or(false);
-    let backend = tuika::HyperlinkBackend::new(stdout, hyperlinks);
+    let backend = tuika::HyperlinkBackend::new(stdout, hyperlinks_enabled());
     let viewport = if fullscreen {
         Viewport::Fullscreen
     } else {

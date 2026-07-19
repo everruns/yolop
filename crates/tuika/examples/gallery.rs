@@ -1,8 +1,9 @@
 //! Live component gallery. Run with `cargo run -p tuika --example gallery`
 //! (press `q` or `Esc` to quit).
 //!
-//! Demonstrates the declarative `view!` DSL, the motion components, and the
-//! native OSC 9;4 progress indicator — the same building blocks yolop's
+//! Demonstrates the declarative `view!` DSL, the motion components, the native
+//! OSC 9;4 progress indicator, and OSC 8 hyperlinks (the footer URL is
+//! clickable in a supporting terminal) — the same building blocks yolop's
 //! full-screen renderer uses, with no host application involved.
 
 use std::io;
@@ -10,11 +11,11 @@ use std::time::Duration;
 
 use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use ratatui::backend::CrosstermBackend;
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
-use tuika::{Loader, ProgressBar, Spinner, SpinnerStyle, Text, Theme, view};
+use tuika::{HyperlinkBackend, Loader, ProgressBar, Spinner, SpinnerStyle, Text, Theme, view};
 
 fn build(frame: u64, theme: &Theme) -> tuika::Element {
     let labeled = |style: SpinnerStyle, label: &str| -> tuika::Element {
@@ -56,10 +57,14 @@ fn build(frame: u64, theme: &Theme) -> tuika::Element {
             }
             grow(1) { spacer() }
             fixed(1) {
-                node(Text::new(vec![Line::from(Span::styled(
-                    "tuika gallery — native progress is live in the taskbar/top bar · press q to quit",
-                    theme.muted_style(),
-                ))]))
+                node(Text::new(vec![Line::from(vec![
+                    Span::styled("docs ", theme.muted_style()),
+                    Span::styled(
+                        "https://github.com/everruns/yolop",
+                        theme.accent_style().add_modifier(Modifier::UNDERLINED),
+                    ),
+                    Span::styled("  ·  press q to quit", theme.muted_style()),
+                ])]))
             }
         }
     }
@@ -68,8 +73,9 @@ fn build(frame: u64, theme: &Theme) -> tuika::Element {
 fn main() -> io::Result<()> {
     enable_raw_mode()?;
     let mut alt = tuika::AltScreen::enter()?;
+    // Hyperlinks enabled so the footer URL demos as a real OSC 8 link.
     let mut terminal = Terminal::with_options(
-        CrosstermBackend::new(io::stdout()),
+        HyperlinkBackend::new(io::stdout(), true),
         TerminalOptions {
             viewport: Viewport::Fullscreen,
         },

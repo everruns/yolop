@@ -143,8 +143,9 @@ The automated tests cover the *protocol* a terminal receives; they cannot
 verify how a specific emulator actually paints it. This is a **checklist to run
 before a release**, not a record of verified results — tick a box only after
 confirming it yourself. Run `cargo run -- tuika-gallery` in each terminal and
-check alt-screen enter/exit, Braille/wide glyphs, truecolor, and mouse-wheel
-scroll:
+check alt-screen enter/exit, Braille/wide glyphs, truecolor, mouse-wheel
+scroll, and — with `YOLOP_HYPERLINKS=1` — that the footer URL is a clickable
+OSC 8 link:
 
 - [ ] Ghostty
 - [ ] iTerm2
@@ -161,6 +162,16 @@ something to re-verify per release). Terminals that render it: **Ghostty**
 silently ignore the unknown OSC, so emitting it is safe everywhere — the
 in-terminal UI is unaffected. See the OSC 9;4 references linked from the
 motion-module PR.
+
+**OSC 8 hyperlinks** ([`HyperlinkBackend`](src/hyperlink.rs)) wrap `http(s)`
+URL runs so a supporting terminal makes them clickable: **Ghostty**, **iTerm2**,
+**WezTerm**, **Kitty**, **Konsole**, recent **GNOME Terminal / VTE**. Others
+ignore the escape and render the URL as plain (usually still auto-linkified)
+text, so emitting it is safe everywhere. Unlike OSC 9;4, this one *is* worth
+re-checking, because it writes styled spans straight to the terminal: confirm
+the link is clickable **and** that surrounding text, colors, and wrapping are
+undamaged. In yolop it is opt-in (`YOLOP_HYPERLINKS=1`), default-off until this
+matrix is walked — that is what the checkbox above verifies.
 
 ## Extending
 
