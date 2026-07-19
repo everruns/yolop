@@ -2612,6 +2612,48 @@ mod tests {
     }
 
     #[test]
+    fn linkify_styles_urls_and_trims_trailing_punctuation() {
+        let spans = linkify("see https://example.com/docs, then stop");
+        let url = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "https://example.com/docs")
+            .expect("url span present");
+        assert_eq!(url.style.fg, Some(ACCENT_BLUE));
+        assert!(url.style.add_modifier.contains(Modifier::UNDERLINED));
+        // The trailing comma stays as plain text, not part of the link.
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "see https://example.com/docs, then stop");
+    }
+
+    #[test]
+    fn linkify_leaves_plain_text_untouched() {
+        let spans = linkify("no links here");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].style.fg, None);
+        assert_eq!(spans[0].content.as_ref(), "no links here");
+    }
+
+    #[test]
+    fn transcript_paragraph_links_urls() {
+        let mut lines: Vec<Line> = Vec::new();
+        append_markdown_lines(
+            &mut lines,
+            "",
+            Style::default(),
+            "Visit https://rust-lang.org for docs",
+            120,
+        );
+        let has_link = lines.iter().flat_map(|line| line.spans.iter()).any(|span| {
+            span.content.as_ref() == "https://rust-lang.org"
+                && span.style.add_modifier.contains(Modifier::UNDERLINED)
+        });
+        assert!(
+            has_link,
+            "paragraph URL should be styled as a link: {lines:?}"
+        );
+    }
+
+    #[test]
     fn history_search_preview_line_shows_query_and_no_match_flag() {
         let matched = HistorySearchView {
             query: "deploy".to_string(),

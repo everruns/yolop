@@ -1444,16 +1444,14 @@ pub(crate) fn markdown_text_spans(text: &str) -> Vec<Span<'static>> {
         .strip_prefix("- ")
         .or_else(|| trimmed.strip_prefix("* "))
     {
-        return vec![
-            Span::styled("- ", Style::default().fg(ACCENT_GOLD)),
-            Span::raw(rest.to_string()),
-        ];
+        let mut spans = vec![Span::styled("- ", Style::default().fg(ACCENT_GOLD))];
+        spans.extend(linkify(rest));
+        return spans;
     }
     if let Some((marker, rest)) = numbered_marker(trimmed) {
-        return vec![
-            Span::styled(marker, Style::default().fg(ACCENT_GOLD)),
-            Span::raw(rest.to_string()),
-        ];
+        let mut spans = vec![Span::styled(marker, Style::default().fg(ACCENT_GOLD))];
+        spans.extend(linkify(rest));
+        return spans;
     }
     inline_code_spans(text)
 }
@@ -1467,10 +1465,9 @@ pub(crate) fn markdown_code_spans(text: &str) -> Vec<Span<'static>> {
 pub(crate) fn inline_code_spans(text: &str) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut rest = text;
-    let mut code = false;
     while let Some((before, after_tick)) = rest.split_once('`') {
         if !before.is_empty() {
-            spans.push(Span::raw(before.to_string()));
+            spans.extend(linkify(before));
         }
         if let Some((inside, after)) = after_tick.split_once('`') {
             spans.push(Span::styled(
@@ -1478,7 +1475,6 @@ pub(crate) fn inline_code_spans(text: &str) -> Vec<Span<'static>> {
                 Style::default().fg(TEXT_PRIMARY).bg(CODE_BG),
             ));
             rest = after;
-            code = true;
         } else {
             spans.push(Span::raw("`".to_string()));
             rest = after_tick;
@@ -1486,13 +1482,72 @@ pub(crate) fn inline_code_spans(text: &str) -> Vec<Span<'static>> {
         }
     }
     if !rest.is_empty() {
-        spans.push(Span::raw(rest.to_string()));
+        spans.extend(linkify(rest));
     }
-    if spans.is_empty() || !code {
+    if spans.is_empty() {
         vec![Span::raw(text.to_string())]
     } else {
         spans
     }
+}
+
+/// Split plain text into spans, styling any `http(s)://` URL as a link
+/// (accent + underline). ratatui 0.30 can't emit OSC 8 hyperlink escapes
+/// through its cell buffer, but styling the raw URL keeps it visually distinct
+/// and — because the literal URL stays in the terminal scrollback — modern
+/// emulators still auto-linkify it for click/⌘-click.
+pub(crate) fn linkify(text: &str) -> Vec<Span<'static>> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut spans = Vec::new();
+    let mut rest = text;
+    while let Some(start) = next_url_start(rest) {
+        let (before, from) = rest.split_at(start);
+        if !before.is_empty() {
+            spans.push(Span::raw(before.to_string()));
+        }
+        let end = url_end(from);
+        let (url, after) = from.split_at(end);
+        spans.push(Span::styled(
+            url.to_string(),
+            Style::default()
+                .fg(ACCENT_BLUE)
+                .add_modifier(Modifier::UNDERLINED),
+        ));
+        rest = after;
+    }
+    if !rest.is_empty() {
+        spans.push(Span::raw(rest.to_string()));
+    }
+    if spans.is_empty() {
+        spans.push(Span::raw(text.to_string()));
+    }
+    spans
+}
+
+/// Byte offset of the next `http://` or `https://` in `s`, if any.
+fn next_url_start(s: &str) -> Option<usize> {
+    match (s.find("https://"), s.find("http://")) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, b) => b,
+    }
+}
+
+/// Byte length of the URL at the start of `from`: up to the next whitespace,
+/// with trailing sentence punctuation trimmed so `(see https://x.dev).` links
+/// just the URL.
+fn url_end(from: &str) -> usize {
+    let raw_end = from.find(char::is_whitespace).unwrap_or(from.len());
+    from[..raw_end]
+        .trim_end_matches(|c| {
+            matches!(
+                c,
+                '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'' | '"'
+            )
+        })
+        .len()
 }
 
 pub(crate) fn simple_code_highlight(text: &str) -> Vec<Span<'static>> {
