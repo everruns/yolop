@@ -34,8 +34,12 @@ impl StreamKind {
 pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if app.render_mode.is_fullscreen() {
         super::fullscreen::draw(f, app);
-        return;
+    } else {
+        draw_shared(f, app);
     }
+}
+
+pub(super) fn draw_shared(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
     // Inline viewports cannot place a true full-screen modal above terminal
     // scrollback. Treat overlays as sheets that own this complete viewport so
