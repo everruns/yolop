@@ -31,6 +31,10 @@ pub(crate) struct PresentationState {
     /// Wall-clock seconds since the active turn began, or `None` when idle.
     /// Drives the live elapsed timer on the busy indicator.
     pub turn_elapsed_secs: Option<u64>,
+    /// Prompt tokens the most recent generation consumed (context-window fill).
+    pub context_used_tokens: Option<u32>,
+    /// The active model's context-window size, when known.
+    pub context_window_tokens: Option<u32>,
     pub status_layout: StatusLayout,
     pub hooks_summary: String,
     pub approval_mode: String,
@@ -150,6 +154,9 @@ fn expanded_status_lines(state: &PresentationState) -> Vec<StatusLine> {
         status_value(message_count_label(state.lines_count)),
         status_field("tokens", token_label(state.session_tokens)),
     ];
+    if let Some(ctx) = context_label(state.context_used_tokens, state.context_window_tokens) {
+        counts.push(status_field("ctx", ctx));
+    }
     if let Some(bg) = background_label(state.background, false) {
         counts.push(status_field("bg", bg));
     }
@@ -199,6 +206,9 @@ fn status_contributions(state: &PresentationState) -> Vec<Vec<StatusField>> {
         StatusLayout::Expanded => "[collapse ↑]",
     };
     let mut counts = vec![status_value(message_count_label(state.lines_count))];
+    if let Some(ctx) = context_label(state.context_used_tokens, state.context_window_tokens) {
+        counts.push(status_field("ctx", ctx));
+    }
     if let Some(bg) = background_label(state.background, true) {
         counts.push(status_field("bg", bg));
     }
@@ -295,6 +305,30 @@ fn message_count_label(count: usize) -> String {
     format!("{count} msgs")
 }
 
+/// Context-window fill as `pct% (used/total)`, e.g. `45% (90k/200k)`. `None`
+/// until we have both a usage sample and a known window size.
+pub(crate) fn context_label(used: Option<u32>, window: Option<u32>) -> Option<String> {
+    let (used, window) = (used?, window?);
+    if window == 0 {
+        return None;
+    }
+    let pct = ((u64::from(used) * 100) / u64::from(window)).min(100);
+    Some(format!(
+        "{pct}% ({}/{})",
+        compact_token_count(used),
+        compact_token_count(window)
+    ))
+}
+
+/// Render a token count compactly: `900`, `90k`, `1.2M`.
+fn compact_token_count(tokens: u32) -> String {
+    match tokens {
+        n if n < 1_000 => n.to_string(),
+        n if n < 1_000_000 => format!("{}k", n / 1_000),
+        n => format!("{:.1}M", n as f64 / 1_000_000.0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +350,8 @@ mod tests {
             lines_count: 3,
             session_tokens: Some(42),
             turn_elapsed_secs: None,
+            context_used_tokens: None,
+            context_window_tokens: None,
             status_layout: StatusLayout::Compact,
             hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),
@@ -472,6 +508,47 @@ mod tests {
         assert!(values.contains(&(Some("approval"), "normal")));
         assert!(values.contains(&(Some("goal"), "—")));
         assert!(values.contains(&(None, "3 msgs")));
+    }
+
+    #[test]
+    fn context_label_formats_percentage_and_compact_counts() {
+        assert_eq!(
+            context_label(Some(90_000), Some(200_000)).as_deref(),
+            Some("45% (90k/200k)")
+        );
+        assert_eq!(
+            context_label(Some(1_500_000), Some(2_000_000)).as_deref(),
+            Some("75% (1.5M/2.0M)")
+        );
+        // Clamped to 100% and safe against a zero/absent window.
+        assert_eq!(
+            context_label(Some(300), Some(200)).as_deref(),
+            Some("100% (300/200)")
+        );
+        assert_eq!(context_label(Some(10), None), None);
+        assert_eq!(context_label(None, Some(200_000)), None);
+        assert_eq!(context_label(Some(10), Some(0)), None);
+    }
+
+    #[test]
+    fn status_shows_context_gauge_when_known() {
+        let model = PresentationState {
+            context_used_tokens: Some(50_000),
+            context_window_tokens: Some(200_000),
+            ..state()
+        };
+        let values = model
+            .status_lines()
+            .into_iter()
+            .flat_map(|line| line.fields)
+            .map(|field| (field.label, field.value))
+            .collect::<Vec<_>>();
+        assert!(
+            values
+                .iter()
+                .any(|(label, value)| *label == Some("ctx") && value == "25% (50k/200k)"),
+            "expected a ctx gauge in {values:?}"
+        );
     }
 
     #[test]

@@ -71,7 +71,8 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   highlighting of fenced code blocks (tree-sitter) and styled `http(s)` links,
   multiline composer, a busy
   indicator with a live elapsed timer while a turn runs, status
-  bar (with a `bg` count whenever the session has background tasks), slash commands
+  bar (with a `bg` count whenever the session has background tasks and a `ctx`
+  context-window gauge once the model reports usage), slash commands
   (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`, `/effort`, `/goal`,
   `/shell`, `/background`, `/clear`, `/quit`), a read-only background-tasks panel
   toggled with `Ctrl+B`, `!<command>` as a direct shell shortcut, `@`-triggered

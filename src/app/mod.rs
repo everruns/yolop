@@ -197,6 +197,9 @@ pub struct App {
     /// When the active turn began, for the live elapsed timer on the busy
     /// indicator. `None` while idle.
     turn_started_at: Option<Instant>,
+    /// Prompt tokens the most recent LLM generation consumed — the current fill
+    /// of the model's context window. `None` until the first generation.
+    context_used_tokens: Option<u32>,
 }
 
 /// In-progress Ctrl+R reverse search over [`App::history`].
@@ -493,6 +496,7 @@ impl App {
             },
             history_search: None,
             turn_started_at: None,
+            context_used_tokens: None,
         };
         app.emit_system_banner();
         if should_setup {
@@ -555,6 +559,16 @@ impl App {
         }
     }
 
+    /// The active model's context-window size in tokens, from its static
+    /// profile. `None` for models without a profile (e.g. the `llmsim` sim), in
+    /// which case no context gauge is shown.
+    fn context_window_tokens(&self) -> Option<u32> {
+        let driver =
+            crate::runtime::Provider::from_name(&self.model.provider_name())?.driver_id()?;
+        let profile = everruns_core::get_model_profile(&driver, &self.model.model_id())?;
+        u32::try_from(profile.limits?.context).ok()
+    }
+
     pub(crate) fn presentation_state(&self) -> PresentationState {
         PresentationState {
             stream_preview: self.stream_preview.clone(),
@@ -567,6 +581,8 @@ impl App {
             lines_count: self.lines.len(),
             session_tokens: self.session_tokens,
             turn_elapsed_secs: self.turn_started_at.map(|start| start.elapsed().as_secs()),
+            context_used_tokens: self.context_used_tokens,
+            context_window_tokens: self.context_window_tokens(),
             status_layout: self.status_layout,
             hooks_summary: self.startup.hook_summary(),
             approval_mode: self
@@ -809,6 +825,10 @@ impl App {
                 Ok(TurnEvent::Tokens(tokens)) => {
                     self.session_tokens =
                         Some(self.session_tokens.unwrap_or(0).saturating_add(tokens));
+                    return Ok(());
+                }
+                Ok(TurnEvent::ContextUsed(used)) => {
+                    self.context_used_tokens = Some(used);
                     return Ok(());
                 }
                 Ok(TurnEvent::Done) => {
@@ -3981,6 +4001,8 @@ mod tests {
             lines_count: 3,
             session_tokens: None,
             turn_elapsed_secs: None,
+            context_used_tokens: None,
+            context_window_tokens: None,
             status_layout: StatusLayout::Compact,
             hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),
@@ -4395,6 +4417,9 @@ mod tests {
                         Ok(TurnEvent::Tokens(tokens)) => {
                             self.session_tokens =
                                 Some(self.session_tokens.unwrap_or(0).saturating_add(tokens));
+                        }
+                        Ok(TurnEvent::ContextUsed(used)) => {
+                            self.context_used_tokens = Some(used);
                         }
                         Ok(TurnEvent::Done) => {
                             self.finish_busy();

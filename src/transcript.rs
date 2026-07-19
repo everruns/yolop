@@ -64,6 +64,9 @@ pub(crate) enum TurnEvent {
     /// `None` clears the preview.
     Stream(Option<StreamPreview>),
     Tokens(u64),
+    /// Prompt tokens the latest LLM generation consumed — the current fill of
+    /// the model's context window. Replaces (not accumulates) the prior value.
+    ContextUsed(u32),
     Done,
     Failed(String),
 }
@@ -131,6 +134,9 @@ pub(crate) fn handle_live_event(
     if let Some(tokens) = tokens_for_event(event) {
         let _ = tx.send(TurnEvent::Tokens(tokens));
     }
+    if let Some(context) = context_tokens_for_event(event) {
+        let _ = tx.send(TurnEvent::ContextUsed(context));
+    }
     remember_write_todos_args(event, router);
     if let Some(activity) = status_for_event(event) {
         let _ = tx.send(TurnEvent::Activity(activity));
@@ -156,6 +162,23 @@ pub(crate) fn tokens_for_event(event: &RuntimeEvent) -> Option<u64> {
         EventData::ReasonItem(data) => data.token_count.map(u64::from),
         _ => None,
     }
+}
+
+/// Prompt-side token count for an LLM generation — the full context sent to the
+/// model (non-cached input plus both cache buckets, which are disjoint from
+/// `input_tokens`). This is the current context-window fill, taken from the most
+/// recent generation rather than accumulated across the turn.
+pub(crate) fn context_tokens_for_event(event: &RuntimeEvent) -> Option<u32> {
+    let EventData::LlmGeneration(data) = &event.data else {
+        return None;
+    };
+    let usage = data.metadata.usage.as_ref()?;
+    Some(
+        usage
+            .input_tokens
+            .saturating_add(usage.cache_read_tokens.unwrap_or(0))
+            .saturating_add(usage.cache_creation_tokens.unwrap_or(0)),
+    )
 }
 
 pub(crate) fn lines_for_event_with_router(
