@@ -38,6 +38,7 @@ mod fullscreen;
 mod markdown_table;
 mod render;
 mod setup;
+mod syntax;
 mod viewport;
 
 // Re-export the moved free items so the rest of the crate (and the test module)
@@ -2483,6 +2484,37 @@ mod tests {
 
         assert!(rendered.starts_with("Tab /help"));
         assert!(rendered.ends_with('…'));
+    }
+
+    #[test]
+    fn code_fence_gets_language_aware_highlighting() {
+        let mut lines: Vec<Line> = Vec::new();
+        append_markdown_lines(
+            &mut lines,
+            "",
+            Style::default(),
+            "```rust\nfn demo() {}\n```",
+            80,
+        );
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(
+            text.contains("fn demo() {}"),
+            "code content should render: {text:?}"
+        );
+        // Tree-sitter highlighting must color at least one token gold (keyword),
+        // proving the language-aware path ran rather than the flat fallback.
+        let has_keyword_color = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .any(|span| span.style.fg == Some(ACCENT_GOLD));
+        assert!(
+            has_keyword_color,
+            "rust fence should be syntax-highlighted: {lines:?}"
+        );
     }
 
     #[test]

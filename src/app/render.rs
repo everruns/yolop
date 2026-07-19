@@ -4,6 +4,7 @@
 //! mutation lives elsewhere.
 
 use super::*;
+use std::collections::HashMap;
 
 // Color presentation for the transcript view-model types defined in
 // `crate::transcript`. Labels and status semantics live in `crate::presentation`
@@ -1252,6 +1253,48 @@ pub(crate) fn diff_line_style(line: &str) -> Style {
     Style::default().fg(color)
 }
 
+/// Parse each fenced code block as a whole and return per-source-line highlight
+/// spans, keyed by line index. Only lines inside a block whose language we
+/// support get an entry; everything else is absent and rendered by the
+/// lightweight fallback highlighter. The stored spans are over each line's
+/// `trim_end`ed text so they line up with the render loop's `trimmed`.
+fn precompute_code_highlights(source_lines: &[&str]) -> HashMap<usize, Vec<Span<'static>>> {
+    let mut map = HashMap::new();
+    let mut index = 0;
+    while index < source_lines.len() {
+        let trimmed = source_lines[index].trim_end();
+        let Some(info) = trimmed.trim_start().strip_prefix("```") else {
+            index += 1;
+            continue;
+        };
+        // Opening fence: collect the block body up to the closing fence (or EOF).
+        let lang = info.trim();
+        let body_start = index + 1;
+        let mut body_end = body_start;
+        while body_end < source_lines.len()
+            && !source_lines[body_end].trim_start().starts_with("```")
+        {
+            body_end += 1;
+        }
+        let body: Vec<&str> = source_lines[body_start..body_end]
+            .iter()
+            .map(|line| line.trim_end())
+            .collect();
+        if let Some(highlighted) = super::syntax::highlight_lines(lang, &body) {
+            for (offset, spans) in highlighted.into_iter().enumerate() {
+                map.insert(body_start + offset, spans);
+            }
+        }
+        // Resume after the closing fence (or at EOF when unterminated).
+        index = if body_end < source_lines.len() {
+            body_end + 1
+        } else {
+            body_end
+        };
+    }
+    map
+}
+
 pub(crate) fn append_markdown_lines<'a>(
     lines: &mut Vec<Line<'a>>,
     first_prefix: &str,
@@ -1266,6 +1309,10 @@ pub(crate) fn append_markdown_lines<'a>(
     let mut first = true;
     let mut in_code = false;
     let source_lines = text.lines().collect::<Vec<_>>();
+    // Language-aware highlights for fenced blocks, keyed by source-line index.
+    // Whole blocks are parsed at once (tree-sitter needs full context); lines
+    // without an entry fall back to the lightweight keyword highlighter.
+    let code_highlights = precompute_code_highlights(&source_lines);
     let mut index = 0;
 
     while index < source_lines.len() {
@@ -1316,7 +1363,10 @@ pub(crate) fn append_markdown_lines<'a>(
         }
 
         let content_spans = if in_code {
-            markdown_code_spans(trimmed)
+            code_highlights
+                .get(&index)
+                .cloned()
+                .unwrap_or_else(|| markdown_code_spans(trimmed))
         } else {
             markdown_text_spans(trimmed)
         };

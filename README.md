@@ -67,13 +67,15 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   paranoia level (`protective` / `normal` / `off`) is shown in the status bar
   and set with `/setup approval <level>` (or just by telling yolop to be more
   or less careful). See [Soft approval](#soft-approval) below.
-- **TUI chat** (ratatui): scrolling transcript, multiline composer, status
+- **TUI chat** (ratatui): scrolling transcript with language-aware syntax
+  highlighting of fenced code blocks (tree-sitter), multiline composer, status
   bar (with a `bg` count whenever the session has background tasks), slash commands
   (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`, `/effort`, `/goal`,
   `/shell`, `/background`, `/clear`, `/quit`), a read-only background-tasks panel
   toggled with `Ctrl+B`, `!<command>` as a direct shell shortcut, shell-style
-  `↑`/`↓` recall of previously submitted prompts (persisted across sessions), and
-  natural-language requests for terminal actions such as "exit" or "clear the screen".
+  `↑`/`↓` recall and `Ctrl+R` reverse search of previously submitted prompts
+  (persisted across sessions), and natural-language requests for terminal
+  actions such as "exit" or "clear the screen".
 - **Side questions** — `/btw <question>` answers a question about the current
   session out-of-band: same context as the main task, no tools, and nothing
   added to the conversation history.
