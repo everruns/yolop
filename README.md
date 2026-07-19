@@ -195,6 +195,10 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **Sessions** — every run writes a durable per-session event log; resume any
   conversation with `--session <id>` (see
   [Session persistence](#session-persistence)).
+- **Checkpoint rewind** — every turn gets a durable conversation checkpoint and,
+  in Yolop-owned Git worktrees, an exact workspace snapshot. `/undo`, `/redo`,
+  and `/rewind` preview and restore either axis without changing `HEAD` or the
+  real Git index. See [`specs/checkpointing.md`](specs/checkpointing.md).
 - **Session search** — `search_sessions` finds recent local sessions by a
   distinctive user/assistant phrase, or lists recent sessions when no query is
   supplied. This keeps investigations of prior or crashed runs grounded in the
@@ -478,6 +482,16 @@ workspace.
 
 `--session-dir <PATH>` overrides the parent storage location (useful for
 keeping per-workspace session histories in `<workspace>/.yolop/sessions/`).
+
+Interactive sessions create a checkpoint before every turn. `/undo` previews a
+restore to before the latest turn; `/rewind` lists earlier checkpoints and
+`/rewind <id> [conversation|workspace|both]` previews one explicitly. `/redo`
+previews the last abandoned branch. Every restore returns a confirmation token;
+confirm with the same command followed by `confirm <token>`. Conversation
+restore removes abandoned turns from model-visible history and returns the
+original prompt to the composer. Workspace restore is available only in a
+Yolop-owned worktree and never changes the branch, `HEAD`, commits, or real
+index.
 
 **Treat session logs as you would shell history.** They contain every prompt
 you typed, every string passed to `bash` / `write_file` / `web_fetch`, tool

@@ -903,8 +903,9 @@ async fn run_prompt(
     if let Err(err) = session.worktree.ensure_before_turn(&prompt) {
         tracing::warn!(%err, "acp: worktree activation failed");
     }
-    let runtime = handles.runtime.clone();
-    let turn = tokio::spawn(async move { runtime.run_turn(session_id, input).await });
+    let turn_handles = handles.clone();
+    let turn =
+        tokio::spawn(async move { turn_handles.run_checkpointed_turn(&prompt, input).await });
 
     let mut translator = Translator::new();
     let mut cancel_rx = session.arm_cancel();
@@ -954,7 +955,14 @@ async fn run_prompt(
         return StopReason::Cancelled;
     }
 
-    match turn.await {
+    let outcome = turn.await;
+    if let Some(notice) = handles.checkpoints.take_notice() {
+        peer.session_update(
+            &acp_id,
+            SessionUpdate::AgentMessageChunk(protocol::text_chunk(notice)),
+        );
+    }
+    match outcome {
         Ok(Ok(result)) if result.success => StopReason::EndTurn,
         Ok(Ok(result)) => {
             if let Some(error) = result.error {

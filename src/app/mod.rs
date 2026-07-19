@@ -833,6 +833,10 @@ impl App {
                 }
                 Ok(TurnEvent::Done) => {
                     self.finish_busy();
+                    if let Some(notice) = self.session.take_checkpoint_notice() {
+                        self.refresh_after_checkpoint_restore(notice).await;
+                        return Ok(());
+                    }
                     self.after_turn_goal_check().await;
                     self.after_turn_user_ask_check().await;
                     return Ok(());
@@ -1001,6 +1005,20 @@ impl App {
         {
             Ok(replayed_lines) => self.lines.extend(replayed_lines),
             Err(err) => self.push_system(format!("load replayed transcript: {err}")),
+        }
+    }
+
+    async fn refresh_after_checkpoint_restore(&mut self, notice: String) {
+        match self.session.active_lines().await {
+            Ok(lines) => {
+                self.lines = lines;
+                self.printed_lines = 0;
+            }
+            Err(error) => self.push_system(format!("refresh restored transcript: {error}")),
+        }
+        self.push_system(notice);
+        if let Some(prompt) = self.session.take_restored_prompt() {
+            self.set_input_text(prompt);
         }
     }
 
@@ -2157,7 +2175,12 @@ impl App {
                         // Client-executed commands (help/clear/model/…) apply
                         // their effect via a `UiCommand` and return an empty
                         // message; don't render a blank line for those.
-                        if !result.message.is_empty() {
+                        if result.success
+                            && matches!(descriptor.name.as_str(), "rewind" | "undo" | "redo")
+                            && result.message.starts_with("restored ")
+                        {
+                            self.refresh_after_checkpoint_restore(result.message).await;
+                        } else if !result.message.is_empty() {
                             let prefix = if result.success { "" } else { "error: " };
                             self.push_system(format!("{prefix}{}", result.message));
                         }
@@ -4520,6 +4543,79 @@ mod tests {
         );
         assert!(!app.busy);
         assert!(app.stream_preview.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn undo_command_refreshes_visible_branch_and_restores_prompt() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+
+        for prompt in ["first turn", "second turn"] {
+            app.set_input_text(prompt.to_string());
+            app.submit_input().await;
+            app.pump_turn_until_idle_for_test().await;
+        }
+
+        let preview = app
+            .session
+            .execute_command("undo", None)
+            .await
+            .expect("preview undo");
+        let token = preview
+            .message
+            .lines()
+            .last()
+            .and_then(|line| line.split('`').nth(1))
+            .expect("confirmation token");
+        let restored = app
+            .session
+            .execute_command("undo", Some(format!("confirm {token}")))
+            .await
+            .expect("confirm undo");
+        app.refresh_after_checkpoint_restore(restored.message).await;
+
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| { matches!(line.author, Author::User) && line.text == "first turn" })
+        );
+        assert!(
+            !app.lines
+                .iter()
+                .any(|line| { matches!(line.author, Author::User) && line.text == "second turn" })
+        );
+        assert_eq!(app.input_text(), "second turn");
+
+        let session_id = fixture.app.session.session_id();
+        let workspace_root = fixture._workspace.path().to_path_buf();
+        let sessions_root = fixture._sessions.path().to_path_buf();
+        drop(fixture.app);
+        let settings = std::sync::Arc::new(crate::settings::SettingsStore::open(
+            sessions_root.join("settings.toml"),
+        ));
+        let resumed = crate::runtime::build_with_options(
+            workspace_root,
+            crate::runtime::ProviderChoice::Sim,
+            Some(session_id),
+            sessions_root,
+            settings,
+            crate::runtime::BuildOptions::default(),
+        )
+        .await
+        .expect("resume rewound session");
+        let resumed_text = resumed
+            .handles
+            .runtime
+            .messages(session_id)
+            .await
+            .expect("resumed messages")
+            .into_iter()
+            .filter_map(|message| message.text().map(str::to_string))
+            .collect::<Vec<_>>();
+        assert!(resumed_text.iter().any(|text| text == "first turn"));
+        assert!(!resumed_text.iter().any(|text| text == "second turn"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

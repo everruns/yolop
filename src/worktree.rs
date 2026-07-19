@@ -117,6 +117,18 @@ impl WorktreeManager {
         self.worktree.read().ok().and_then(|g| g.clone())
     }
 
+    /// Return the isolated worktree only when it is distinct from the main
+    /// checkout. Checkpoint restore uses this stricter ownership boundary so
+    /// corrupt or hand-edited metadata cannot turn the primary checkout into a
+    /// whole-workspace restore target.
+    pub fn owned_worktree_info(&self) -> Option<WorktreeInfo> {
+        let info = self.worktree_info()?;
+        let repo_root = self.repo_root.as_ref()?;
+        let worktree_path = std::fs::canonicalize(&info.path).unwrap_or_else(|_| info.path.clone());
+        let main_path = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.clone());
+        (worktree_path != main_path).then_some(info)
+    }
+
     pub fn disable_auto(&self) {
         self.auto_disabled.store(true, Ordering::SeqCst);
     }
@@ -688,6 +700,7 @@ pub fn restore_worktree_from_metadata(metadata: &SessionWorkspaceMetadata) -> Op
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PruneReport {
     pub removed: Vec<PathBuf>,
+    pub checkpoint_refs: Vec<String>,
     pub kept: usize,
     pub errors: Vec<String>,
 }
@@ -800,10 +813,51 @@ pub fn remove_worktree_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn checkpoint_refs_for_worktree(path: &Path) -> Result<Vec<(PathBuf, String)>> {
+    let Some(repo_root) = main_repo_for_worktree(path) else {
+        return Ok(Vec::new());
+    };
+    let Some(session_id) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(Vec::new());
+    };
+    let prefix = format!("refs/yolop/checkpoints/{session_id}/");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&repo_root)
+        .args(["for-each-ref", "--format=%(refname)", &prefix])
+        .output()
+        .context("list checkpoint refs")?;
+    if !output.status.success() {
+        bail!(
+            "list checkpoint refs: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8(output.stdout)?
+        .lines()
+        .filter(|reference| !reference.is_empty())
+        .map(|reference| (repo_root.clone(), reference.to_string()))
+        .collect())
+}
+
+fn delete_checkpoint_ref(repo_root: &Path, reference: &str) -> Result<()> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["update-ref", "-d", reference])
+        .status()
+        .with_context(|| format!("delete checkpoint ref {reference}"))?;
+    if !status.success() {
+        bail!("delete checkpoint ref {reference}");
+    }
+    Ok(())
+}
+
 pub fn prune_orphan_worktrees(sessions_dir: &Path, dry_run: bool) -> Result<PruneReport> {
     let referenced = referenced_worktree_paths(sessions_dir)?;
     let mut report = PruneReport {
         removed: Vec::new(),
+        checkpoint_refs: Vec::new(),
         kept: 0,
         errors: Vec::new(),
     };
@@ -814,7 +868,33 @@ pub fn prune_orphan_worktrees(sessions_dir: &Path, dry_run: bool) -> Result<Prun
             continue;
         }
         if dry_run {
+            match checkpoint_refs_for_worktree(&path) {
+                Ok(refs) => report
+                    .checkpoint_refs
+                    .extend(refs.into_iter().map(|(_, reference)| reference)),
+                Err(err) => report.errors.push(format!("{}: {err}", path.display())),
+            }
             report.removed.push(path);
+            continue;
+        }
+        let refs = match checkpoint_refs_for_worktree(&path) {
+            Ok(refs) => refs,
+            Err(err) => {
+                report.errors.push(format!("{}: {err}", path.display()));
+                continue;
+            }
+        };
+        let mut ref_error = false;
+        for (repo_root, reference) in refs {
+            match delete_checkpoint_ref(&repo_root, &reference) {
+                Ok(()) => report.checkpoint_refs.push(reference),
+                Err(err) => {
+                    report.errors.push(err.to_string());
+                    ref_error = true;
+                }
+            }
+        }
+        if ref_error {
             continue;
         }
         match remove_worktree_path(&path) {
@@ -836,6 +916,27 @@ mod tests {
             slug_from_prompt("Please fix the auth bug in login"),
             "fix-auth-bug-login"
         );
+    }
+
+    #[test]
+    fn primary_checkout_is_not_treated_as_an_owned_worktree() {
+        let root = tempfile::tempdir().expect("root");
+        let session = tempfile::tempdir().expect("session");
+        let info = WorktreeInfo {
+            path: root.path().to_path_buf(),
+            branch: "main".to_string(),
+            base_ref: "HEAD".to_string(),
+            slug: "main".to_string(),
+        };
+        let manager = WorktreeManager::new(
+            WorktreesMode::Always,
+            Some(root.path().to_path_buf()),
+            root.path().to_path_buf(),
+            everruns_core::typed_id::SessionId::new(),
+            session.path().to_path_buf(),
+            Some(info),
+        );
+        assert!(manager.owned_worktree_info().is_none());
     }
 
     #[test]
@@ -1029,12 +1130,53 @@ mod tests {
             .join("worktrees")
             .join("abc12345")
             .join("orphan-session");
-        std::fs::create_dir_all(&orphan).expect("orphan");
+        let repo = tempfile::tempdir().expect("repo");
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(args)
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .expect("git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run(&["init", "-q"]);
+        std::fs::write(repo.path().join("tracked.txt"), "base").expect("tracked");
+        run(&["add", "tracked.txt"]);
+        run(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "base",
+            "--author",
+            "test <test@example.com>",
+        ]);
+        std::fs::create_dir_all(orphan.parent().expect("orphan parent")).expect("worktree parent");
+        run(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "orphan-session",
+            orphan.to_str().expect("utf8 path"),
+            "HEAD",
+        ]);
+        let checkpoint_ref = "refs/yolop/checkpoints/orphan-session/cp_1";
+        run(&["update-ref", checkpoint_ref, "HEAD"]);
 
         let report = prune_orphan_worktrees(sessions.path(), false).expect("prune");
         assert_eq!(report.kept, 0);
         assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.checkpoint_refs, vec![checkpoint_ref]);
         assert!(!orphan.exists());
+        assert!(git_output(repo.path(), &["show-ref", checkpoint_ref]).is_none());
 
         // SAFETY: restore prior TMPDIR so later tests see a valid temp root.
         unsafe {
