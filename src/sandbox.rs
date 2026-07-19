@@ -87,7 +87,20 @@ fn native_command(cwd: &Path, script: &str) -> Result<Command> {
     let home = sandbox_home_dir(&temp)?;
     let mut command = Command::new(bwrap);
     command
-        .args(["--die-with-parent", "--new-session", "--unshare-net"])
+        // An explicit user namespace supplies the namespaced CAP_NET_ADMIN
+        // bubblewrap needs to initialize loopback after --unshare-net. Without
+        // it, setuid bwrap builds fail closed on hardened hosts such as GitHub
+        // runners before the payload starts.
+        .args([
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-user",
+            "--uid",
+            "0",
+            "--gid",
+            "0",
+            "--unshare-net",
+        ])
         .args(["--ro-bind", "/", "/"])
         .arg("--bind")
         .arg(cwd)
