@@ -70,6 +70,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use tokio::sync::{Mutex, RwLock, broadcast};
 
 /// Capacity of the live event broadcast. Sized to absorb a few hundred
@@ -431,7 +432,8 @@ fn is_replay_relevant(event_type: &str) -> bool {
 /// and producing non-monotonic per-session sequences).
 pub struct JsonlEventEmitter {
     events: Arc<RwLock<Vec<Event>>>,
-    sequence: Arc<RwLock<i32>>,
+    sequence: Arc<AtomicI32>,
+    persisted_sequence: Arc<AtomicI32>,
     file: Arc<Mutex<File>>,
     /// Live fan-out of every emitted event (including deltas) for in-process
     /// subscribers like the TUI's streaming renderer. Filesystem persistence
@@ -554,7 +556,8 @@ impl JsonlEventEmitter {
         let (live, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
         Ok(Self {
             events: Arc::new(RwLock::new(Vec::new())),
-            sequence: Arc::new(RwLock::new(start_sequence.saturating_sub(1))),
+            sequence: Arc::new(AtomicI32::new(start_sequence.saturating_sub(1))),
+            persisted_sequence: Arc::new(AtomicI32::new(start_sequence.saturating_sub(1))),
             file: Arc::new(Mutex::new(file)),
             live,
         })
@@ -578,6 +581,20 @@ impl JsonlEventEmitter {
         }
         self.events.write().await.extend(events);
     }
+
+    /// Replace the model-visible branch after a conversation rewind. The
+    /// discarded suffix remains durable in `events.jsonl`; only the live view
+    /// queried by the runtime and transcript changes.
+    pub async fn replace_collected_events(&self, events: Vec<Event>) {
+        *self.events.write().await = events;
+    }
+
+    /// Highest sequence allocated in this session, including abandoned
+    /// branches. New branches continue from this value so event ordering stays
+    /// globally monotonic.
+    pub fn last_sequence(&self) -> i32 {
+        self.persisted_sequence.load(Ordering::Acquire)
+    }
 }
 
 #[async_trait]
@@ -585,10 +602,13 @@ impl EventEmitter for JsonlEventEmitter {
     async fn emit(&self, request: EventRequest) -> Result<Event> {
         // Assign id + sequence ourselves so we own the monotonic
         // sequence even across resumes.
-        let mut seq = self.sequence.write().await;
-        *seq = seq.saturating_add(1);
-        let seq_val = *seq;
-        drop(seq);
+        let previous = self
+            .sequence
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |sequence| {
+                Some(sequence.saturating_add(1))
+            })
+            .expect("sequence update closure always succeeds");
+        let seq_val = previous.saturating_add(1);
 
         let mut event = request.into_event(EventId::new(), seq_val);
         // `into_event` may have set its own timestamp; ensure we always
@@ -614,6 +634,7 @@ impl EventEmitter for JsonlEventEmitter {
                 .map_err(|e| AgentLoopError::config(format!("write session log line: {e}")))?;
             file.flush()
                 .map_err(|e| AgentLoopError::config(format!("flush session log: {e}")))?;
+            self.persisted_sequence.fetch_max(seq_val, Ordering::AcqRel);
         }
 
         // Fan out to live subscribers. `send` errors only when there are
@@ -648,6 +669,13 @@ fn message_from_event(data: &EventData) -> Option<Message> {
         EventData::ToolCompleted(d) => Some(tool_completed_to_message(d.clone())),
         _ => None,
     }
+}
+
+pub(crate) fn messages_from_events(events: &[Event]) -> Vec<Message> {
+    events
+        .iter()
+        .filter_map(|event| message_from_event(&event.data))
+        .collect()
 }
 
 fn tool_completed_to_message(data: everruns_core::events::ToolCompletedData) -> Message {

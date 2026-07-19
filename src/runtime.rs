@@ -10,8 +10,9 @@ use crate::capabilities::yolop::{YOLOP_CAPABILITY_ID, YolopCapability};
 use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability,
     AstEditCapability, AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID,
-    BackgroundCapability, CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID,
-    CONFIG_CAPABILITY_ID, ClientCommandsCapability, ClientUiContext, CodingBashCapability,
+    BackgroundCapability, CHECKPOINT_CAPABILITY_ID, CLIENT_COMMANDS_CAPABILITY_ID,
+    CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID, CheckpointCapability,
+    ClientCommandsCapability, ClientUiContext, CodingBashCapability,
     CodingCliEnvironmentCapability, ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
     GOAL_CAPABILITY_ID, GoalCapability, HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability,
     HooksCapability, LspCapability, PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability,
@@ -20,6 +21,7 @@ use crate::capabilities::{
     WorktreeCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
+use crate::checkpoint::CheckpointManager;
 use crate::connectors::{
     CONNECTORS_CAPABILITY_ID, ConnectionCatalog, ConnectionStore, ConnectorsCapability,
     YolopConnectionResolver, default_connections_path,
@@ -2053,6 +2055,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new(HERDR_CAPABILITY_ID),
         AgentCapabilityConfig::new(REPO_MAP_CAPABILITY_ID),
         AgentCapabilityConfig::new(SESSION_HISTORY_CAPABILITY_ID),
+        AgentCapabilityConfig::new(CHECKPOINT_CAPABILITY_ID),
         AgentCapabilityConfig::new(AST_GREP_CAPABILITY_ID),
         AgentCapabilityConfig::new(INFINITY_CONTEXT_CAPABILITY_ID),
         AgentCapabilityConfig::with_config(
@@ -2242,6 +2245,9 @@ pub struct RuntimeHandles {
     /// through the `EventBus` trait object; we keep a direct reference
     /// so the TUI can subscribe to the live broadcast for streaming.
     pub events: Arc<JsonlEventEmitter>,
+    /// Durable conversation/workspace checkpoint controller shared by every
+    /// host path that can start a turn or restore a branch.
+    pub checkpoints: Arc<CheckpointManager>,
     /// The runtime's session store, retained so the host can mutate the
     /// live session's scoped MCP servers without rebuilding the runtime.
     /// See [`RuntimeHandles::reload_mcp_servers`].
@@ -2262,6 +2268,19 @@ pub struct RuntimeHandles {
 impl RuntimeHandles {
     pub(crate) fn report_herdr_state(&self, state: crate::capabilities::herdr::HerdrState) {
         self.herdr.report_background(state);
+    }
+
+    pub async fn run_checkpointed_turn(
+        &self,
+        prompt: &str,
+        input: InputMessage,
+    ) -> anyhow::Result<everruns_runtime::TurnResult> {
+        let checkpoint = self.checkpoints.start_turn(prompt)?;
+        let result = self.runtime.run_turn(self.session_id, input).await;
+        let success = result.as_ref().is_ok_and(|turn| turn.success);
+        checkpoint.finish(success)?;
+        self.checkpoints.apply_queued_confirmation().await;
+        Ok(result?)
     }
 
     /// Re-read the merged MCP server config (global settings + workspace
@@ -2618,7 +2637,6 @@ pub async fn build_with_options(
     // Pass `session_id` so events for any other session get skipped
     // rather than seeded — defends against mixed/copied logs.
     let replayed = replay(&log_path, session_id)?;
-    let replayed_events_count = replayed.events.len();
     let next_sequence = replayed.max_sequence.map(|m| m + 1).unwrap_or(1);
 
     // JsonlEventEmitter is the EventBus: emits to memory + appends
@@ -2626,21 +2644,27 @@ pub async fn build_with_options(
     // carries the sequence counter across resumes so `Event.sequence`
     // stays monotonic within a session.
     let event_bus_typed = Arc::new(JsonlEventEmitter::open(&log_path, next_sequence)?);
-    let event_bus: Arc<dyn everruns_runtime::EventBus> = event_bus_typed.clone();
-    // Seed the in-memory event vec with what we just read off disk so
-    // `runtime.events()` after resume returns the full history — not
-    // just events emitted during the resumed run. Does not re-persist;
-    // these lines are already in the JSONL file. Move (not clone): the
-    // replay buffer isn't used again after this and the seeded vec can
-    // get large on long-lived sessions.
-    event_bus_typed.seed_replayed(replayed.events).await;
-
-    // Pre-seed the message store with anything reconstructed from disk
-    // so the agent sees prior conversation in its first context assembly.
     let message_store = Arc::new(InMemoryMessageRetriever::new());
-    if !replayed.messages.is_empty() {
-        message_store.seed(session_id, replayed.messages).await;
+    let checkpoints = Arc::new(CheckpointManager::open(
+        session_id,
+        session_dir.clone(),
+        log_path.clone(),
+        worktree.clone(),
+        event_bus_typed.clone(),
+        message_store.clone(),
+        replayed.max_sequence.unwrap_or(0),
+    )?);
+    let active_events = checkpoints.filter_active_events(replayed.events);
+    let replayed_events_count = active_events.len();
+    let active_messages = crate::session_log::messages_from_events(&active_events);
+
+    // Only the selected timeline branch enters the live stores. Abandoned
+    // suffixes remain in events.jsonl for redo and local history inspection.
+    event_bus_typed.seed_replayed(active_events).await;
+    if !active_messages.is_empty() {
+        message_store.seed(session_id, active_messages).await;
     }
+    let event_bus: Arc<dyn everruns_runtime::EventBus> = event_bus_typed.clone();
 
     // Start from the in-memory backend bundle, preserving Yolop's durable
     // event bus and replay-seeded message store, then let everruns-local attach
@@ -2654,6 +2678,7 @@ pub async fn build_with_options(
     let local_backends = LocalBackends::new(local_profile, base_backends)
         .context("initialize everruns-local backend stores")?;
     let task_registry: Arc<dyn SessionTaskRegistry> = local_backends.task_registry.clone();
+    checkpoints.attach_task_registry(task_registry.clone());
     // Install the wake seam: a `LocalPlatformStore` whose `send_message`
     // enqueues everruns background-task completion signals onto `background_wake`
     // for the host to run as a streamed turn (see `background_wake` and
@@ -2930,6 +2955,9 @@ pub async fn build_with_options(
     capabilities.register(WorktreeCapability {
         manager: worktree.clone(),
     });
+    capabilities.register(CheckpointCapability {
+        manager: checkpoints.clone(),
+    });
     // `/setup` (below) is the capability-sourced slash command. It implements
     // `Capability::execute_command` end to end.
     capabilities.register(SetupCapability {
@@ -3157,6 +3185,7 @@ pub async fn build_with_options(
             runtime: Arc::new(runtime),
             session_id,
             events: event_bus_typed,
+            checkpoints,
             session_store,
             workspace_root: canonical_root.clone(),
             connections,

@@ -7,6 +7,7 @@ pub(crate) mod approval;
 pub(crate) mod ast_grep;
 pub(crate) mod attribution;
 pub(crate) mod background;
+pub(crate) mod checkpoint;
 pub(crate) mod client_commands;
 pub(crate) mod config;
 pub(crate) mod edit_file_override;
@@ -38,6 +39,7 @@ pub(crate) use attribution::{ATTRIBUTION_CAPABILITY_ID, AttributionCapability};
 pub(crate) use background::{
     BACKGROUND_CAPABILITY_ID, BackgroundCapability, NarratedBackgroundExecutionCapability,
 };
+pub(crate) use checkpoint::{CHECKPOINT_CAPABILITY_ID, CheckpointCapability};
 pub(crate) use client_commands::{CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCapability};
 pub(crate) use config::{CONFIG_CAPABILITY_ID, ConfigCapability};
 pub(crate) use free_search::FreeSearchCapability;

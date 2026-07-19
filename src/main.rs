@@ -8,6 +8,7 @@ mod atif;
 mod background_wake;
 mod capabilities;
 mod capability_settings;
+mod checkpoint;
 mod clipboard_paste;
 mod codex_auth;
 mod codex_driver;
@@ -805,6 +806,10 @@ fn run_worktree_command(command: WorktreeCommand) -> Result<()> {
             for path in &report.removed {
                 println!("{action}: {}", path.display());
             }
+            let ref_action = if dry_run { "would detach" } else { "detached" };
+            for reference in &report.checkpoint_refs {
+                println!("{ref_action} checkpoint ref: {reference}");
+            }
             println!(
                 "kept {} referenced worktree(s); {} orphan(s) {action}",
                 report.kept,
@@ -1411,7 +1416,10 @@ async fn collect_print_turn(
         .unwrap_or(0);
 
     let input = model.input_message_with_images(prompt, images);
-    let result = handles.runtime.run_turn(handles.session_id, input).await?;
+    let result = handles.run_checkpointed_turn(prompt, input).await?;
+    if let Some(notice) = handles.checkpoints.take_notice() {
+        eprintln!("{notice}");
+    }
     let messages = handles
         .runtime
         .messages(handles.session_id)

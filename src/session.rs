@@ -108,6 +108,25 @@ impl Session {
             .collect())
     }
 
+    pub async fn active_lines(&self) -> Result<Vec<ChatLine>> {
+        Ok(self
+            .handles
+            .runtime
+            .events()
+            .await?
+            .iter()
+            .flat_map(lines_for_replayed_event)
+            .collect())
+    }
+
+    pub fn take_checkpoint_notice(&self) -> Option<String> {
+        self.handles.checkpoints.take_notice()
+    }
+
+    pub fn take_restored_prompt(&self) -> Option<String> {
+        self.handles.checkpoints.take_restored_prompt()
+    }
+
     /// Execute a capability-provided command through the runtime, returning a
     /// host-facing [`CommandOutcome`].
     pub async fn execute_command(
@@ -160,9 +179,12 @@ impl Session {
                 Err(_) => 0,
             };
 
-            let input = model.input_message_with_images(prompt, images);
-            let runtime = handles.runtime.clone();
-            let mut turn = tokio::spawn(async move { runtime.run_turn(session_id, input).await });
+            let input = model.input_message_with_images(prompt.clone(), images);
+            let turn_handles = handles.clone();
+            let mut turn =
+                tokio::spawn(
+                    async move { turn_handles.run_checkpointed_turn(&prompt, input).await },
+                );
 
             let mut emitted_events = HashSet::new();
             let mut delta_router = DeltaRouter::default();

@@ -563,6 +563,12 @@ mod tests {
             commands.iter().any(|c| c["name"] == "shell"),
             "expected /shell to be advertised, got: {commands:?}"
         );
+        for name in ["rewind", "undo", "redo"] {
+            assert!(
+                commands.iter().any(|command| command["name"] == name),
+                "expected /{name} to be advertised, got: {commands:?}"
+            );
+        }
         let setup = commands
             .iter()
             .find(|c| c["name"] == "setup")
