@@ -5779,6 +5779,43 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_renders_at_mention_suggestions() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.set_render_mode(RenderMode::Fullscreen);
+        let root = app.startup.workspace_root.clone();
+        std::fs::write(root.join("hello.txt"), b"hi").expect("write file");
+
+        for ch in ['@', 'h', 'e', 'l'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        let rows = render_app_lines(app, 100, 24);
+        assert!(
+            rows.iter().any(|row| row.contains("@hello.txt")),
+            "fullscreen should render the @file hint row: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_renders_reverse_search_prompt() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.set_render_mode(RenderMode::Fullscreen);
+        app.history.record("deploy prod");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        let rows = render_app_lines(app, 100, 24);
+        assert!(
+            rows.iter().any(|row| row.contains("reverse-search")),
+            "fullscreen should render the Ctrl+R search prompt: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn at_mention_completes_workspace_files() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
