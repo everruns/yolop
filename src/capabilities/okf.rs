@@ -408,4 +408,57 @@ mod tests {
         };
         assert!(cap.prompt().unwrap().contains("(1 concept document)"));
     }
+
+    /// End-to-end through the real entry point: build the capability from a
+    /// `WorkspaceHost` (exercising `new` → `host_root` → detection) and drive the
+    /// `Capability::system_prompt_contribution` trait method the harness calls.
+    #[tokio::test]
+    async fn new_over_bundle_workspace_emits_note_via_trait() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join(".okf/index.md"), "# Index\n");
+        write(
+            &dir.path().join(".okf/tables/users.md"),
+            "---\ntype: Table\n---\n# users\n",
+        );
+        let host = Arc::new(
+            WorkspaceHost::new(
+                Arc::new(std::sync::RwLock::new(dir.path().to_path_buf())),
+                dir.path().to_path_buf(),
+            )
+            .expect("workspace host"),
+        );
+
+        let cap = OkfCapability::new(host);
+        let ctx =
+            SystemPromptContext::without_file_store(everruns_core::typed_id::SessionId::new());
+        let note = cap
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("bundle present → note contributed");
+
+        assert!(note.contains("id=\"okf\""));
+        assert!(note.contains(".okf"));
+        assert!(note.contains("1 concept document"));
+        assert!(note.contains("okf` skill"));
+    }
+
+    /// The mirror case: no bundle in the workspace → the harness entry point
+    /// contributes nothing, so non-OKF repos are unaffected.
+    #[tokio::test]
+    async fn new_over_plain_workspace_contributes_nothing_via_trait() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("src/main.rs"), "fn main() {}\n");
+        let host = Arc::new(
+            WorkspaceHost::new(
+                Arc::new(std::sync::RwLock::new(dir.path().to_path_buf())),
+                dir.path().to_path_buf(),
+            )
+            .expect("workspace host"),
+        );
+
+        let cap = OkfCapability::new(host);
+        let ctx =
+            SystemPromptContext::without_file_store(everruns_core::typed_id::SessionId::new());
+        assert!(cap.system_prompt_contribution(&ctx).await.is_none());
+    }
 }
