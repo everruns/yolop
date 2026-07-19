@@ -186,6 +186,9 @@ pub struct App {
     /// non-terminal hosts emit no escape sequences.
     term_progress: tuika::TerminalProgress,
     native_progress: bool,
+    /// Shell-style Up/Down recall of previously submitted composer prompts,
+    /// persisted across sessions. See [`crate::prompt_history`].
+    history: crate::prompt_history::PromptHistory,
 }
 
 /// The renderer backing a TUI session.
@@ -452,6 +455,13 @@ impl App {
             scroll_metrics: (0, 0),
             term_progress: tuika::TerminalProgress::new(),
             native_progress: false,
+            // Tests run in-memory so recall never reads or appends to the real
+            // per-user history file.
+            history: if cfg!(test) {
+                crate::prompt_history::PromptHistory::in_memory()
+            } else {
+                crate::prompt_history::PromptHistory::load()
+            },
         };
         app.emit_system_banner();
         if should_setup {
@@ -1036,10 +1046,70 @@ impl App {
                     let _ = self.input.input(key);
                 }
             }
+            KeyCode::Up if self.try_history_prev() => {}
+            KeyCode::Down if self.try_history_next() => {}
             _ => {
                 let _ = self.input.input(normalize_printable_key(key));
             }
         }
+    }
+
+    /// Whether pressing Up should recall an older prompt rather than move the
+    /// composer cursor. Recall only kicks in when the composer is empty, or when
+    /// an unmodified recalled entry is showing and the cursor sits on the first
+    /// line — so editing a multi-line prompt (or a fresh draft) never loses text
+    /// to an accidental recall. Mirrors Codex's line-boundary gating.
+    fn history_recall_prev_allowed(&self) -> bool {
+        let text = self.input_text();
+        if text.is_empty() {
+            return true;
+        }
+        match self.history.current_entry() {
+            Some(entry) if entry == text => self.input.cursor().0 == 0,
+            _ => false,
+        }
+    }
+
+    /// Handle Up as history recall. Returns `true` when the key was consumed
+    /// (recall began, moved, or is parked at the oldest entry), `false` to let
+    /// the textarea move the cursor normally.
+    fn try_history_prev(&mut self) -> bool {
+        if !self.history_recall_prev_allowed() {
+            return false;
+        }
+        let current = self.input_text();
+        if let Some(entry) = self.history.navigate_up(&current) {
+            self.set_input_text(entry);
+            true
+        } else {
+            // No entries at all → let the textarea handle Up. Already browsing at
+            // the oldest entry → swallow the key so it doesn't move the cursor.
+            self.history.is_browsing()
+        }
+    }
+
+    /// Handle Down as history recall. Only active while browsing an unmodified
+    /// recalled entry with the cursor on the last line; otherwise the textarea
+    /// moves the cursor.
+    fn try_history_next(&mut self) -> bool {
+        if !self.history.is_browsing() {
+            return false;
+        }
+        let current = self.input_text();
+        match self.history.current_entry() {
+            Some(entry) if entry == current => {
+                let last_row = self.input.lines().len().saturating_sub(1);
+                if self.input.cursor().0 != last_row {
+                    return false;
+                }
+            }
+            // The user edited the recalled entry; treat Down as normal movement.
+            _ => return false,
+        }
+        if let Some(text) = self.history.navigate_down(&current) {
+            self.set_input_text(text);
+        }
+        true
     }
 
     fn suggestions(&self) -> Vec<CommandSuggestion> {
@@ -1182,6 +1252,10 @@ impl App {
         self.reset_input();
         let text = expanded.trim().to_string();
         let display_text = raw.trim().to_string();
+        // Record what the user typed (including slash/bang commands) for
+        // shell-style Up/Down recall. Uses the pre-expansion display text so
+        // paste placeholders recall as the user saw them.
+        self.history.record(&display_text);
         if let Some(command) = parse_bang_shell_command(&text) {
             if command.is_empty() {
                 self.push_system("usage: !<command>".into());
@@ -2013,7 +2087,7 @@ fn help_command_line(descriptor: &CommandDescriptor) -> String {
 
 fn help_shortcut_lines() -> [&'static str; 5] {
     [
-        "  Enter send · Shift-Enter newline · Tab complete slash command · ←/→ edit",
+        "  Enter send · Shift-Enter newline · Tab complete · ←/→ edit · ↑/↓ history",
         "  Ctrl+V paste image/text · Ctrl+B background tasks · !<cmd> shell alias",
         "  exit: Ctrl-C twice / Ctrl-D",
         "  cancel turn: Esc twice (while model is busy)",
@@ -5174,6 +5248,73 @@ mod tests {
             "Shift-Enter should edit the composer, not submit: {:?}",
             app.lines
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn up_down_recall_previous_prompts() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.history.record("first");
+        app.history.record("second");
+
+        let up = || KeyEvent::new(KeyCode::Up, KeyModifiers::empty());
+        let down = || KeyEvent::new(KeyCode::Down, KeyModifiers::empty());
+
+        // Up from an empty composer recalls newest-first.
+        app.handle_key(up()).await;
+        assert_eq!(app.input_text(), "second");
+        app.handle_key(up()).await;
+        assert_eq!(app.input_text(), "first");
+        // Already at the oldest entry: Up holds instead of clearing.
+        app.handle_key(up()).await;
+        assert_eq!(app.input_text(), "first");
+
+        // Down walks back toward newer, then restores the (empty) draft.
+        app.handle_key(down()).await;
+        assert_eq!(app.input_text(), "second");
+        app.handle_key(down()).await;
+        assert_eq!(app.input_text(), "");
+        assert!(!app.history.is_browsing());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn up_does_not_recall_over_an_unsent_draft() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.history.record("old prompt");
+
+        // A non-empty, freshly-typed draft must not be clobbered by recall.
+        for ch in ['h', 'i'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()))
+            .await;
+        assert_eq!(app.input_text(), "hi");
+        assert!(!app.history.is_browsing());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn submitting_a_prompt_records_it_for_recall() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        // `/cwd` is a client command: it records into history but starts no turn,
+        // so the app stays idle and recall stays reachable.
+        for ch in ['/', 'c', 'w', 'd'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert_eq!(app.input_text(), "");
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()))
+            .await;
+        assert_eq!(app.input_text(), "/cwd");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

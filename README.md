@@ -71,7 +71,8 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   bar (with a `bg` count whenever the session has background tasks), slash commands
   (`/help`, `/tools`, `/mcp`, `/cwd`, `/setup`, `/model`, `/effort`, `/goal`,
   `/shell`, `/background`, `/clear`, `/quit`), a read-only background-tasks panel
-  toggled with `Ctrl+B`, `!<command>` as a direct shell shortcut, and
+  toggled with `Ctrl+B`, `!<command>` as a direct shell shortcut, shell-style
+  `↑`/`↓` recall of previously submitted prompts (persisted across sessions), and
   natural-language requests for terminal actions such as "exit" or "clear the screen".
 - **Side questions** — `/btw <question>` answers a question about the current
   session out-of-band: same context as the main task, no tools, and nothing
