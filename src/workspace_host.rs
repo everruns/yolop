@@ -5,7 +5,9 @@
 // repointable disk handle synced from the worktree's active-root lock.
 
 use anyhow::{Context, Result, bail};
+use everruns_core::session_path::to_session_path;
 use everruns_runtime::RealDiskFileStore;
+use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -73,46 +75,86 @@ impl WorkspaceHost {
     }
 }
 
-/// The model-facing display alias for the workspace root. everruns' `MountFs`
-/// routes `/workspace/...` to the host root for the file tools (read/grep/edit);
-/// `repo_map` / `repo_symbols` resolve host paths here directly, bypassing
-/// `MountFs`, so they must honor the same alias.
-const WORKSPACE_ALIAS: &str = "/workspace";
+/// A disk path proven to live inside the workspace root.
+///
+/// The only way to obtain one from model-supplied input is [`resolve_host_scope`],
+/// which normalizes the `/workspace` display alias and enforces containment. The
+/// disk-scanning capabilities (`repo_map`, `repo_symbols`, `ast_grep`, `lsp`)
+/// resolve model paths through it, so a resolved scope is a *distinct type* from
+/// a bare `PathBuf` a tool might build by hand — a new tool that skips
+/// normalization can't produce a `HostPath` without going through the resolver.
+/// `Deref<Target = Path>` keeps it ergonomic at the call sites.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostPath(PathBuf);
+
+impl HostPath {
+    /// Borrow the contained, containment-checked host path.
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Consume into the owned host path.
+    pub fn into_path_buf(self) -> PathBuf {
+        self.0
+    }
+}
+
+impl Deref for HostPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for HostPath {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
 
 /// Map a model-facing path to a canonical host directory under `root`.
-pub fn resolve_host_scope(root: &Path, path: Option<&str>) -> Result<PathBuf> {
+///
+/// yolop presents the model its **real** host checkout path (#258), yet models
+/// still emit the `/workspace` alias from cloud-agent priors — so both spellings
+/// must resolve, on every path surface, forever. A real host-absolute path is
+/// honored directly (with a containment check); everything else — the
+/// `/workspace` alias, a session-absolute `/src`, a bare relative `src` — is
+/// funneled through everruns' `to_session_path`, the *same* normalizer the file
+/// tools reach via `MountFs`. That shared normalizer is the point: `repo_map` /
+/// `repo_symbols` / `ast_grep` / `lsp` now accept exactly what `read` / `grep` /
+/// `edit` accept, and the two can't drift because there is one algorithm.
+pub fn resolve_host_scope(root: &Path, path: Option<&str>) -> Result<HostPath> {
     let Some(path) = path else {
-        return Ok(root.to_path_buf());
+        return Ok(HostPath(root.to_path_buf()));
     };
     let trimmed = path.trim();
 
-    // The model frequently addresses scopes through the `/workspace` alias — a
-    // strong cloud-agent prior, and the route everruns' `MountFs` already
-    // accepts for the file tools. Strip it to a workspace-relative path so
-    // `repo_map`/`repo_symbols` don't 404 with "path not found: /workspace" on a
-    // scope that read/grep/edit resolve fine. Mirrors the alias handling in
-    // `everruns_core::session_path::to_session_path`.
-    if let Some(rest) = strip_workspace_alias(trimmed) {
-        return resolve_relative_scope(root, rest.trim_start_matches('/'), path);
-    }
-
+    // A real host-absolute path (what yolop actually shows the model): accept it
+    // when it resolves inside the workspace, reject it when it resolves outside.
+    // If it does not resolve as a real path it is almost certainly a session
+    // spelling (`/workspace/...`, `/src`), so fall through to the normalizer.
     let candidate = Path::new(trimmed);
-    if candidate.is_absolute() {
-        let canonical = candidate
-            .canonicalize()
-            .with_context(|| format!("path not found: {path}"))?;
-        if !canonical.starts_with(root) {
-            bail!("`path` must stay inside the workspace");
+    if candidate.is_absolute()
+        && let Ok(canonical) = candidate.canonicalize()
+    {
+        if canonical.starts_with(root) {
+            return Ok(HostPath(canonical));
         }
-        return Ok(canonical);
+        bail!("`path` must stay inside the workspace");
     }
 
-    resolve_relative_scope(root, trimmed, path)
+    // Alias / session-absolute / relative all normalize through the one shared
+    // normalizer (which strips `/workspace`, collapses slashes, and canonicalizes
+    // the spelling), then resolve relative to the real root.
+    let session = to_session_path(trimmed);
+    resolve_relative_scope(root, session.trim_start_matches('/'), path).map(HostPath)
 }
 
-/// Resolve a workspace-relative scope (already stripped of any `/workspace`
-/// alias) against `root`, rejecting traversal and enforcing containment.
-/// `original` is the caller-supplied spelling, used only for error messages.
+/// Resolve a workspace-relative scope (already normalized to a session path and
+/// stripped of its leading slash) against `root`, rejecting traversal and
+/// enforcing containment. `original` is the caller-supplied spelling, used only
+/// for error messages.
 fn resolve_relative_scope(root: &Path, relative: &str, original: &str) -> Result<PathBuf> {
     if relative.is_empty() || relative == "." {
         return Ok(root.to_path_buf());
@@ -134,17 +176,6 @@ fn resolve_relative_scope(root: &Path, relative: &str, original: &str) -> Result
         bail!("`path` must stay inside the workspace");
     }
     Ok(canonical)
-}
-
-/// Strip the `/workspace` display alias, returning the remainder for an exact
-/// match (`""`) or a `/workspace/<sub>` prefix. Returns `None` for unrelated
-/// paths, including near-misses like `/workspacefoo` that only share the prefix
-/// without the segment boundary.
-fn strip_workspace_alias(path: &str) -> Option<&str> {
-    if path == WORKSPACE_ALIAS {
-        return Some("");
-    }
-    path.strip_prefix("/workspace/")
 }
 
 /// Validate that `root` contains no traversal components (for tests/helpers).
@@ -174,50 +205,64 @@ mod tests {
 
         let host_path = root.join("pkg");
         let scope = resolve_host_scope(&root, host_path.to_str()).expect("host subpath");
-        assert_eq!(scope, root.join("pkg"));
+        assert_eq!(scope, HostPath(root.join("pkg")));
 
         let root_scope = resolve_host_scope(&root, root.to_str()).expect("host root");
-        assert_eq!(root_scope, root);
+        assert_eq!(root_scope, HostPath(root.clone()));
 
         let relative = resolve_host_scope(&root, Some("pkg")).expect("relative subpath");
-        assert_eq!(relative, root.join("pkg"));
+        assert_eq!(relative, HostPath(root.join("pkg")));
     }
 
+    // Every spelling a model might reach for — the `/workspace` alias, a
+    // session-absolute `/pkg`, the real host-absolute path, a bare relative, and
+    // their slash/​trailing-slash variants — must resolve to the *same* host path
+    // as the file tools' MountFs route. This table is the cross-cutting guard the
+    // per-tool suites never had: it fails the moment any spelling drifts.
     #[test]
-    fn resolve_host_scope_accepts_workspace_alias() {
+    fn resolve_host_scope_spelling_table_is_consistent() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::create_dir_all(dir.path().join("pkg")).expect("pkg dir");
         let root = fs::canonicalize(dir.path()).expect("canonical root");
 
-        // `/workspace` is the model-facing alias for the root; the file tools
-        // accept it via MountFs, so repo_map/repo_symbols must too.
-        assert_eq!(
-            resolve_host_scope(&root, Some("/workspace")).expect("alias root"),
-            root
-        );
-        assert_eq!(
-            resolve_host_scope(&root, Some("/workspace/pkg")).expect("alias subpath"),
-            root.join("pkg")
-        );
-        // Trailing/duplicate slashes still land on the alias target.
-        assert_eq!(
-            resolve_host_scope(&root, Some("/workspace/")).expect("alias root slash"),
-            root
-        );
-    }
+        let root_spellings = [
+            None,
+            Some(".".to_string()),
+            Some("/workspace".to_string()),
+            Some("/workspace/".to_string()),
+            Some("//workspace//".to_string()),
+            Some(root.to_str().expect("root utf8").to_string()),
+        ];
+        for spelling in root_spellings {
+            let scope = resolve_host_scope(&root, spelling.as_deref())
+                .unwrap_or_else(|e| panic!("root spelling {spelling:?}: {e}"));
+            assert_eq!(scope.as_path(), root, "root spelling {spelling:?}");
+        }
 
-    #[test]
-    fn resolve_host_scope_alias_rejects_escape_and_near_miss() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = fs::canonicalize(dir.path()).expect("canonical root");
+        let pkg = root.join("pkg");
+        let pkg_spellings = [
+            "pkg",
+            "/pkg",                          // session-absolute
+            "/workspace/pkg",                // display alias
+            "//workspace//pkg",              // alias with redundant slashes
+            pkg.to_str().expect("pkg utf8"), // real host-absolute
+        ];
+        for spelling in pkg_spellings {
+            let scope = resolve_host_scope(&root, Some(spelling))
+                .unwrap_or_else(|e| panic!("pkg spelling {spelling:?}: {e}"));
+            assert_eq!(scope.as_path(), pkg, "pkg spelling {spelling:?}");
+        }
 
-        // Traversal dressed up with the alias prefix must not escape the root.
-        let err =
-            resolve_host_scope(&root, Some("/workspace/../outside")).expect_err("alias escape");
-        assert!(err.to_string().contains("inside the workspace"));
+        // Escapes are rejected no matter how they are dressed up.
+        for escape in ["/workspace/../outside", "../outside", "//workspace//../x"] {
+            assert!(
+                resolve_host_scope(&root, Some(escape)).is_err(),
+                "escape {escape:?} must be rejected"
+            );
+        }
 
         // `/workspacefoo` shares the prefix but is not the `/workspace` segment,
-        // so it is treated as a real absolute path (which does not exist here).
+        // so it is a real absolute path that does not exist here — not the alias.
         let err = resolve_host_scope(&root, Some("/workspacefoo")).expect_err("near miss");
         assert!(err.to_string().contains("path not found"));
     }

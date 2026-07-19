@@ -188,7 +188,7 @@ impl LspManager {
                     self.spec_summary()
                 )
             })?;
-        Ok((file, spec))
+        Ok((file.into_path_buf(), spec))
     }
 
     fn spec_summary(&self) -> String {

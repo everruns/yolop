@@ -407,7 +407,7 @@ fn collect_repo_symbols(
     let mut files = Vec::new();
     let mut skipped_unsupported_files = 0;
     collect_supported_files(
-        &scope,
+        scope.as_path(),
         language_filter.as_deref(),
         &mut files,
         &mut skipped_unsupported_files,
@@ -424,7 +424,7 @@ fn collect_repo_symbols(
         MAX_CANDIDATES
     };
     let mut report = SymbolScanReport {
-        path: relative_path(&root, &scope),
+        path: relative_path(&root, scope.as_path()),
         query: options.query,
         languages: Vec::new(),
         scanned_files: 0,
