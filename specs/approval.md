@@ -77,8 +77,8 @@ The paranoia level can be changed three ways, all writing the same setting:
 ## Non-goals
 
 - **Not a hard sandbox.** Soft approval cannot *prevent* a tool call; it asks
-  the model to. Hard enforcement belongs to hooks (see `specs/hooks.md`), which
-  can block a tool deterministically. The two compose: hooks for guarantees,
-  soft approval for judgement.
+  the model to. Deterministic hooks can reject known operations, while the
+  implemented [`sandboxing`](./sandboxing.md) boundary contains arbitrary shell
+  execution. These controls compose with soft approval; they do not replace it.
 - **No bespoke approval UI.** Consent is spoken in chat; there is deliberately
   no modal or button.

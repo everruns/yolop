@@ -30,6 +30,7 @@ mod presentation;
 mod proc;
 mod prompt_history;
 mod runtime;
+mod sandbox;
 mod session;
 mod session_log;
 mod session_tasks_view;
@@ -533,6 +534,9 @@ async fn main() -> Result<()> {
     // ACP mode builds runtimes per session (cwd arrives via `session/new`), so
     // it bypasses the up-front runtime build and the TUI.
     if cli.acp {
+        if let Some(warning) = sandbox::danger_warning(settings.snapshot().sandbox_mode()) {
+            eprintln!("yolop: {warning}");
+        }
         if cli.trajectory_out.is_some() {
             eprintln!("yolop: --trajectory-out is ignored in --acp mode");
         }
@@ -543,6 +547,9 @@ async fn main() -> Result<()> {
     // transcript clear, quit), so only it enables `ClientCommandsCapability`.
     // `--print` is one-shot and never dispatches them.
     let interactive = cli.print.is_none();
+    if let Some(warning) = sandbox::danger_warning(settings.snapshot().sandbox_mode()) {
+        eprintln!("yolop: {warning}");
+    }
     let runtime = runtime::build_with_options(
         cwd,
         provider,

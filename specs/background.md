@@ -152,7 +152,9 @@ from an interrupted runner become retryable after the upstream claim timeout.
 
 ## Safety
 
-`spawn_background{bash}` runs the same unsandboxed shell as the `bash` tool, so
-it inherits that tool's approval policy; there is no separate background approval
-gate. Concurrency is bounded by Everruns' per-worker / per-session background-run
-limits.
+`spawn_background{bash}` runs through the same sandbox provider as the `bash`
+tool, so it inherits both containment and approval policy; there is no separate
+background approval gate. The implemented [`sandboxing`](./sandboxing.md)
+boundary routes foreground, direct, and background shell execution through one
+environment so detached work cannot bypass isolation. Concurrency is bounded
+by Everruns' per-worker / per-session background-run limits.

@@ -331,9 +331,10 @@ impl Session {
     ) -> TurnHandle {
         let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
         let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let sandbox = self.handles.sandbox.clone();
 
         tokio::spawn(async move {
-            let tool = BashTool::new(Workspace::new(workspace));
+            let tool = BashTool::with_sandbox(Workspace::new(workspace), sandbox);
             let run = tool.execute(serde_json::json!({
                 "command": command,
                 // Direct shell output is not persisted through a tool-call

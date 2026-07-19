@@ -105,12 +105,19 @@ Before tagging a release:
 
 ## Security And Threat Posture
 
-Yolop runs unsandboxed on the user's host. The threat surface is concentrated:
+Yolop uses native containment for arbitrary shell commands by default. The
+remaining threat surface is concentrated:
 
-- **Filesystem** — the write blocklist in `runtime.rs` is the only thing preventing rewrites of `.git/`, dependency caches, and build artifacts. Maintenance must verify it is still wired through the real-disk file store.
-- **Shell** — the bash tool spawns a real subprocess on the host. Maintenance must verify the timeout and the per-stream output cap.
+- **Filesystem** — structured file tools still use the rooted real-disk broker
+  and protected-path checks. Maintenance must verify those mounts and checks
+  remain wired.
+- **Shell** — arbitrary commands spawn through the configured sandbox provider.
+  Maintenance must run the workspace-write, outside-write, network-denial,
+  worktree-switch, timeout, and output-cap tests on macOS and Linux.
 - **Session log** — JSONL session logs contain prompts, tool arguments, and tool output. They must be created with `0o600` on Unix.
 - **API keys** — provider keys must only be read from process env. They must never be written to the session log or echoed to tracing output.
+
+[`sandboxing.md`](./sandboxing.md) defines the implemented boundary and its known limitations.
 
 ## Spec Hygiene
 

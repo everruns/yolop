@@ -1,8 +1,8 @@
 // Runtime construction: wires `InProcessRuntime` through a platform
 // `SessionFileSystemFactory` so the built-in `agent_instructions`,
 // `file_system`, and `skills` capabilities operate against the embedder's
-// actual workspace. Only the `bash` tool is custom — it shells out to the host
-// instead of running against the VFS.
+// actual workspace. Only the `bash` tool is custom — it executes through the
+// configured containment provider instead of running against the VFS.
 
 use crate::capabilities::mcp::McpCapability as YolopMcpCapability;
 use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, MemoryStore};
@@ -29,6 +29,7 @@ use crate::connectors::{
 use crate::goal::GoalStore;
 use crate::host_ui::{HostUi, TuiHandle, UiCommand};
 use crate::mcp_config::McpConfigStore;
+use crate::sandbox::SandboxProvider;
 use crate::settings::{Settings, SettingsStore};
 use crate::tools::Workspace;
 use crate::user_ask::UserAskStore;
@@ -2261,6 +2262,8 @@ pub struct RuntimeHandles {
     /// freshly minted token (the store caches connections in memory per
     /// handle), so `/mcp login` uses it rather than a separate handle.
     pub connections: Arc<ConnectionStore>,
+    /// Shared containment provider for host-triggered shell commands.
+    pub(crate) sandbox: Arc<dyn SandboxProvider>,
     /// Best-effort local lifecycle bridge when this process runs in Herdr.
     pub(crate) herdr: crate::capabilities::herdr::HerdrReporter,
 }
@@ -2529,6 +2532,7 @@ pub async fn build_with_options(
     let provider = options.provider_model.clone().unwrap_or(provider);
     let canonical_root = std::fs::canonicalize(&workspace_root)
         .with_context(|| format!("canonicalize workspace: {}", workspace_root.display()))?;
+    let sandbox = crate::sandbox::provider(settings.snapshot().sandbox_mode());
 
     // Pin the SessionId so resume can re-attach to the same session folder
     // (directory name is the session id).
@@ -3004,6 +3008,7 @@ pub async fn build_with_options(
     });
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
+        sandbox: sandbox.clone(),
         expose_command: !options.client_commands,
     });
     // `background` — the `/background` command listing this session's everruns
@@ -3189,6 +3194,7 @@ pub async fn build_with_options(
             session_store,
             workspace_root: canonical_root.clone(),
             connections,
+            sandbox: sandbox.clone(),
             herdr,
         },
         startup: StartupInfo {

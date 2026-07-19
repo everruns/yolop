@@ -61,6 +61,12 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   into `.git/`, `node_modules/`, `target/`, `dist/`, `build/`, `.next/`,
   `.venv/`, `venv/`, `.tox/`, `.gradle/` at any depth; reads are unrestricted
   inside the workspace.
+- **Native shell sandbox by default** — every foreground, background, slash,
+  and direct shell command runs under Seatbelt on macOS or bubblewrap on Linux.
+  The active workspace is writable, `.git` is read-only, and network access is
+  denied. Linux requires `bwrap`. You can set `sandbox = "off"` only when yolop
+  already runs inside a trusted VM/container; Yolop marks that mode `UNSAFE
+  HOST` and warns that it exposes host files, processes, and network.
 - **Soft approval** — an optional spoken-consent layer for critical actions.
   yolop batches the safe work and pauses to ask, in plain chat, only before
   destructive or outward-facing steps; you approve by replying "yes". The
@@ -255,8 +261,9 @@ The current level is always shown in the status bar. Change it with
 less careful ("stop asking me", "yolo mode") — it switches the level itself.
 The setting is saved to `settings.toml`, so it persists across sessions.
 
-Soft approval is judgement, not a guarantee. For deterministic enforcement
-(hard-blocking a tool), use [hooks](specs/hooks.md); the two compose.
+Soft approval is judgement, not a guarantee. Native shell
+[sandboxing](specs/sandboxing.md) supplies the kernel boundary; deterministic
+hooks can additionally block specific operations. The controls compose.
 For the public user-facing details, see
 [Approvals](./docs/features/approvals.md).
 
@@ -389,8 +396,8 @@ tools. See [`specs/mcp.md`](specs/mcp.md).
 
 A small TOML settings file persists the preferred provider, per-provider
 model picks, custom endpoint base URLs, the soft-approval level
-(`approval_mode`), Codex subscription login metadata, and (optionally)
-provider API tokens across runs:
+(`approval_mode`), shell sandbox mode (`sandbox`, default `native`), Codex
+subscription login metadata, and (optionally) provider API tokens across runs:
 `<config_dir>/yolop/settings.toml` —
 `~/.config/yolop/settings.toml` on Linux,
 `~/Library/Application Support/yolop/settings.toml` on macOS,
@@ -403,6 +410,11 @@ connected (env key, saved key/login, or no key needed); selecting a connected on
 jumps straight to model selection, and `c` opens key/base-URL configuration
 for any provider. Provider, model, and custom base URL choices are written
 to this file.
+
+To disable kernel containment for an already isolated environment, add
+`sandbox = "off"` or ask yolop to set that config key. This is dangerous on a
+normal host: commands then have unrestricted host file, process, and network
+access. Clearing the key restores the native default.
 
 The model picker queries the provider's models API live (OpenAI, Anthropic,
 and OpenRouter via the everruns drivers; Ollama, Gemini, and other

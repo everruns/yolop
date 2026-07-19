@@ -264,6 +264,64 @@ fn llmsim_print_smoke() {
 }
 
 #[test]
+fn unsafe_sandbox_opt_out_warns_from_the_real_binary() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_root = tmp.path().join(".config");
+    let linux_settings = config_root.join("yolop/settings.toml");
+    std::fs::create_dir_all(linux_settings.parent().unwrap()).unwrap();
+    std::fs::write(&linux_settings, "sandbox = \"off\"\n").unwrap();
+    let mac_settings = tmp
+        .path()
+        .join("Library/Application Support/yolop/settings.toml");
+    std::fs::create_dir_all(mac_settings.parent().unwrap()).unwrap();
+    std::fs::write(&mac_settings, "sandbox = \"off\"\n").unwrap();
+
+    let output = Command::new(yolop_binary())
+        .args([
+            "--provider",
+            "llmsim",
+            "--session-dir",
+            tmp.path().to_str().unwrap(),
+            "-p",
+            "hi",
+        ])
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", &config_root)
+        .output()
+        .expect("spawn yolop with sandbox disabled");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr={stderr}");
+    assert!(stderr.contains("DANGER"), "stderr={stderr}");
+    assert!(stderr.contains("UNSAFE HOST"), "stderr={stderr}");
+}
+
+#[test]
+fn unsafe_sandbox_opt_out_is_visible_in_tui_transcript_and_status() {
+    let mut tui = spawn_tui_llmsim_with_settings(
+        &yolop_binary(),
+        TuiSpawnOptions::default(),
+        "provider = \"llmsim\"\nsandbox = \"off\"\n",
+    );
+    assert!(
+        tui.wait_for_output("UNSAFE HOST", Duration::from_secs(3)),
+        "TUI did not show unsafe sandbox state: {}",
+        tui.output_text()
+    );
+    assert!(
+        tui.output_text().contains("DANGER"),
+        "{}",
+        tui.output_text()
+    );
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not finish startup: {}",
+        tui.output_text()
+    );
+    tui.write_input(b"\x03\x03");
+    assert!(tui.wait_or_kill(Duration::from_secs(10)).success());
+}
+
+#[test]
 fn llmsim_print_writes_atif_trajectory() {
     // End-to-end offline smoke for `--trajectory-out`: a one-shot llmsim run
     // must leave a parseable ATIF-v1.7 document with the user prompt and at
