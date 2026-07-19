@@ -26,6 +26,7 @@ mod mcp_oauth_login;
 mod oauth_flow;
 mod paste_attachment;
 mod presentation;
+mod prompt_history;
 mod runtime;
 mod session;
 mod session_log;

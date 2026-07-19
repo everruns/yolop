@@ -4,6 +4,7 @@
 //! mutation lives elsewhere.
 
 use super::*;
+use std::collections::HashMap;
 
 // Color presentation for the transcript view-model types defined in
 // `crate::transcript`. Labels and status semantics live in `crate::presentation`
@@ -358,11 +359,15 @@ pub(crate) fn draw_chrome(
 }
 
 pub(crate) fn chrome_preview_visible(state: &ViewState) -> bool {
-    state.presentation.stream_preview.is_some() || !state.command_suggestions.is_empty()
+    state.history_search.is_some()
+        || state.presentation.stream_preview.is_some()
+        || !state.command_suggestions.is_empty()
 }
 
 pub(crate) fn draw_chrome_layout(f: &mut ratatui::Frame, layout: ChromeLayout, state: &ViewState) {
-    if state.command_suggestions.is_empty() {
+    if let Some(search) = &state.history_search {
+        draw_history_search(f, layout.preview, search);
+    } else if state.command_suggestions.is_empty() {
         draw_stream_preview(f, layout.preview, state);
     } else {
         draw_suggestions(f, layout.preview, &state.command_suggestions);
@@ -886,6 +891,45 @@ pub(crate) fn draw_suggestions(
     );
 }
 
+pub(crate) fn draw_history_search(f: &mut ratatui::Frame, area: Rect, search: &HistorySearchView) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    f.render_widget(
+        Paragraph::new(history_search_preview_line(search, area.width)),
+        area,
+    );
+}
+
+/// The chrome row for an active reverse search: `(reverse-search)'query'` plus a
+/// `no match` marker when nothing matched. The matched entry itself previews in
+/// the composer below.
+pub(crate) fn history_search_preview_line(search: &HistorySearchView, width: u16) -> Line<'static> {
+    let prefix = "(reverse-search) ";
+    let query = format!("'{}'", search.query);
+    // Flag a non-empty query that matched nothing; a bare prompt stays quiet.
+    let suffix = if !search.matched && !search.query.is_empty() {
+        "  no match".to_string()
+    } else {
+        String::new()
+    };
+    let budget = (width as usize).saturating_sub(prefix.chars().count() + 1);
+    let query = truncate_end_chars(&query, budget.max(4));
+    let mut spans = vec![
+        Span::styled(
+            prefix,
+            Style::default()
+                .fg(ACCENT_BLUE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(query, Style::default().fg(TEXT_PRIMARY)),
+    ];
+    if !suffix.is_empty() {
+        spans.push(Span::styled(suffix, Style::default().fg(DIFF_DELETE)));
+    }
+    Line::from(spans)
+}
+
 pub(crate) fn suggestion_preview_line(
     suggestions: &[CommandSuggestion],
     width: u16,
@@ -1209,6 +1253,48 @@ pub(crate) fn diff_line_style(line: &str) -> Style {
     Style::default().fg(color)
 }
 
+/// Parse each fenced code block as a whole and return per-source-line highlight
+/// spans, keyed by line index. Only lines inside a block whose language we
+/// support get an entry; everything else is absent and rendered by the
+/// lightweight fallback highlighter. The stored spans are over each line's
+/// `trim_end`ed text so they line up with the render loop's `trimmed`.
+fn precompute_code_highlights(source_lines: &[&str]) -> HashMap<usize, Vec<Span<'static>>> {
+    let mut map = HashMap::new();
+    let mut index = 0;
+    while index < source_lines.len() {
+        let trimmed = source_lines[index].trim_end();
+        let Some(info) = trimmed.trim_start().strip_prefix("```") else {
+            index += 1;
+            continue;
+        };
+        // Opening fence: collect the block body up to the closing fence (or EOF).
+        let lang = info.trim();
+        let body_start = index + 1;
+        let mut body_end = body_start;
+        while body_end < source_lines.len()
+            && !source_lines[body_end].trim_start().starts_with("```")
+        {
+            body_end += 1;
+        }
+        let body: Vec<&str> = source_lines[body_start..body_end]
+            .iter()
+            .map(|line| line.trim_end())
+            .collect();
+        if let Some(highlighted) = super::syntax::highlight_lines(lang, &body) {
+            for (offset, spans) in highlighted.into_iter().enumerate() {
+                map.insert(body_start + offset, spans);
+            }
+        }
+        // Resume after the closing fence (or at EOF when unterminated).
+        index = if body_end < source_lines.len() {
+            body_end + 1
+        } else {
+            body_end
+        };
+    }
+    map
+}
+
 pub(crate) fn append_markdown_lines<'a>(
     lines: &mut Vec<Line<'a>>,
     first_prefix: &str,
@@ -1223,6 +1309,10 @@ pub(crate) fn append_markdown_lines<'a>(
     let mut first = true;
     let mut in_code = false;
     let source_lines = text.lines().collect::<Vec<_>>();
+    // Language-aware highlights for fenced blocks, keyed by source-line index.
+    // Whole blocks are parsed at once (tree-sitter needs full context); lines
+    // without an entry fall back to the lightweight keyword highlighter.
+    let code_highlights = precompute_code_highlights(&source_lines);
     let mut index = 0;
 
     while index < source_lines.len() {
@@ -1273,7 +1363,10 @@ pub(crate) fn append_markdown_lines<'a>(
         }
 
         let content_spans = if in_code {
-            markdown_code_spans(trimmed)
+            code_highlights
+                .get(&index)
+                .cloned()
+                .unwrap_or_else(|| markdown_code_spans(trimmed))
         } else {
             markdown_text_spans(trimmed)
         };
@@ -1351,16 +1444,14 @@ pub(crate) fn markdown_text_spans(text: &str) -> Vec<Span<'static>> {
         .strip_prefix("- ")
         .or_else(|| trimmed.strip_prefix("* "))
     {
-        return vec![
-            Span::styled("- ", Style::default().fg(ACCENT_GOLD)),
-            Span::raw(rest.to_string()),
-        ];
+        let mut spans = vec![Span::styled("- ", Style::default().fg(ACCENT_GOLD))];
+        spans.extend(linkify(rest));
+        return spans;
     }
     if let Some((marker, rest)) = numbered_marker(trimmed) {
-        return vec![
-            Span::styled(marker, Style::default().fg(ACCENT_GOLD)),
-            Span::raw(rest.to_string()),
-        ];
+        let mut spans = vec![Span::styled(marker, Style::default().fg(ACCENT_GOLD))];
+        spans.extend(linkify(rest));
+        return spans;
     }
     inline_code_spans(text)
 }
@@ -1374,10 +1465,9 @@ pub(crate) fn markdown_code_spans(text: &str) -> Vec<Span<'static>> {
 pub(crate) fn inline_code_spans(text: &str) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut rest = text;
-    let mut code = false;
     while let Some((before, after_tick)) = rest.split_once('`') {
         if !before.is_empty() {
-            spans.push(Span::raw(before.to_string()));
+            spans.extend(linkify(before));
         }
         if let Some((inside, after)) = after_tick.split_once('`') {
             spans.push(Span::styled(
@@ -1385,7 +1475,6 @@ pub(crate) fn inline_code_spans(text: &str) -> Vec<Span<'static>> {
                 Style::default().fg(TEXT_PRIMARY).bg(CODE_BG),
             ));
             rest = after;
-            code = true;
         } else {
             spans.push(Span::raw("`".to_string()));
             rest = after_tick;
@@ -1393,13 +1482,72 @@ pub(crate) fn inline_code_spans(text: &str) -> Vec<Span<'static>> {
         }
     }
     if !rest.is_empty() {
-        spans.push(Span::raw(rest.to_string()));
+        spans.extend(linkify(rest));
     }
-    if spans.is_empty() || !code {
+    if spans.is_empty() {
         vec![Span::raw(text.to_string())]
     } else {
         spans
     }
+}
+
+/// Split plain text into spans, styling any `http(s)://` URL as a link
+/// (accent + underline). ratatui 0.30 can't emit OSC 8 hyperlink escapes
+/// through its cell buffer, but styling the raw URL keeps it visually distinct
+/// and — because the literal URL stays in the terminal scrollback — modern
+/// emulators still auto-linkify it for click/⌘-click.
+pub(crate) fn linkify(text: &str) -> Vec<Span<'static>> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut spans = Vec::new();
+    let mut rest = text;
+    while let Some(start) = next_url_start(rest) {
+        let (before, from) = rest.split_at(start);
+        if !before.is_empty() {
+            spans.push(Span::raw(before.to_string()));
+        }
+        let end = url_end(from);
+        let (url, after) = from.split_at(end);
+        spans.push(Span::styled(
+            url.to_string(),
+            Style::default()
+                .fg(ACCENT_BLUE)
+                .add_modifier(Modifier::UNDERLINED),
+        ));
+        rest = after;
+    }
+    if !rest.is_empty() {
+        spans.push(Span::raw(rest.to_string()));
+    }
+    if spans.is_empty() {
+        spans.push(Span::raw(text.to_string()));
+    }
+    spans
+}
+
+/// Byte offset of the next `http://` or `https://` in `s`, if any.
+fn next_url_start(s: &str) -> Option<usize> {
+    match (s.find("https://"), s.find("http://")) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, b) => b,
+    }
+}
+
+/// Byte length of the URL at the start of `from`: up to the next whitespace,
+/// with trailing sentence punctuation trimmed so `(see https://x.dev).` links
+/// just the URL.
+fn url_end(from: &str) -> usize {
+    let raw_end = from.find(char::is_whitespace).unwrap_or(from.len());
+    from[..raw_end]
+        .trim_end_matches(|c| {
+            matches!(
+                c,
+                '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'' | '"'
+            )
+        })
+        .len()
 }
 
 pub(crate) fn simple_code_highlight(text: &str) -> Vec<Span<'static>> {
@@ -1675,7 +1823,11 @@ pub(crate) fn draw_input_cursor(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 pub(crate) fn message_separator_title(state: &ViewState) -> Line<'static> {
     if let Some(activity) = state.presentation.activity_text() {
-        return thinking_title(state.busy_frame, activity);
+        return thinking_title(
+            state.busy_frame,
+            activity,
+            state.presentation.turn_elapsed_secs,
+        );
     }
     Line::from(vec![
         Span::styled("─── ", Style::default().fg(ACCENT_BLUE)),
@@ -1690,19 +1842,44 @@ pub(crate) fn newline_shortcut_hint() -> &'static str {
     "Shift-Enter"
 }
 
-pub(crate) fn thinking_title(frame: u64, activity: &str) -> Line<'static> {
+pub(crate) fn thinking_title(
+    frame: u64,
+    activity: &str,
+    elapsed_secs: Option<u64>,
+) -> Line<'static> {
     const SPINNER: [&str; 4] = ["-", "\\", "|", "/"];
     let spinner = SPINNER[((frame / 2) as usize) % SPINNER.len()];
     let text = format!("{activity}...");
     let text_style = Style::default().fg(TEXT_MUTED).add_modifier(Modifier::BOLD);
-    let spans = vec![
+    let mut spans = vec![
         Span::styled("─── ", Style::default().fg(ACCENT_BLUE)),
         Span::styled(spinner.to_string(), Style::default().fg(ACCENT_GOLD)),
         Span::raw(" "),
         Span::styled(text, text_style),
-        Span::styled(" (input disabled) ", Style::default().fg(TEXT_DIM)),
     ];
+    // Live elapsed timer, like Codex's working indicator.
+    if let Some(secs) = elapsed_secs {
+        spans.push(Span::styled(
+            format!(" {}", format_elapsed(secs)),
+            Style::default().fg(TEXT_DIM),
+        ));
+    }
+    spans.push(Span::styled(
+        " (input disabled) ",
+        Style::default().fg(TEXT_DIM),
+    ));
     Line::from(spans)
+}
+
+/// Compact wall-clock formatting for the busy timer: `8s`, `1m03s`, `1h02m`.
+pub(crate) fn format_elapsed(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 pub(crate) fn draw_message_separator(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {

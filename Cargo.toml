@@ -69,6 +69,7 @@ tuika = { version = "0.1.0", path = "crates/tuika" }
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tree-sitter = "0.26"
+tree-sitter-highlight = "0.26"
 tree-sitter-bash = "0.25"
 tree-sitter-c = "0.24"
 tree-sitter-c-sharp = "0.23"

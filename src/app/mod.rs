@@ -30,6 +30,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -38,6 +39,7 @@ mod fullscreen;
 mod markdown_table;
 mod render;
 mod setup;
+mod syntax;
 mod viewport;
 
 // Re-export the moved free items so the rest of the crate (and the test module)
@@ -186,6 +188,29 @@ pub struct App {
     /// non-terminal hosts emit no escape sequences.
     term_progress: tuika::TerminalProgress,
     native_progress: bool,
+    /// Shell-style Up/Down recall of previously submitted composer prompts,
+    /// persisted across sessions. See [`crate::prompt_history`].
+    history: crate::prompt_history::PromptHistory,
+    /// Active Ctrl+R reverse-history search, if any. While set it owns the
+    /// keyboard and the composer previews the current match.
+    history_search: Option<HistorySearch>,
+    /// When the active turn began, for the live elapsed timer on the busy
+    /// indicator. `None` while idle.
+    turn_started_at: Option<Instant>,
+    /// Prompt tokens the most recent LLM generation consumed — the current fill
+    /// of the model's context window. `None` until the first generation.
+    context_used_tokens: Option<u32>,
+}
+
+/// In-progress Ctrl+R reverse search over [`App::history`].
+#[derive(Clone, Debug)]
+pub(crate) struct HistorySearch {
+    /// The incremental search query typed so far.
+    query: String,
+    /// Index of the entry currently matched, or `None` when nothing matches.
+    match_index: Option<usize>,
+    /// The composer rows captured on entry, restored if the search is cancelled.
+    saved_lines: Vec<String>,
 }
 
 /// The renderer backing a TUI session.
@@ -380,7 +405,17 @@ pub(crate) struct ModelOption {
 pub(crate) struct ViewState {
     pub presentation: PresentationState,
     pub command_suggestions: Vec<CommandSuggestion>,
+    /// Active Ctrl+R reverse-search prompt, if any. Takes over the chrome
+    /// preview row and suppresses command suggestions.
+    pub history_search: Option<HistorySearchView>,
     pub busy_frame: u64,
+}
+
+/// Render-facing view of an active reverse-history search.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistorySearchView {
+    pub query: String,
+    pub matched: bool,
 }
 
 impl ViewState {
@@ -452,6 +487,16 @@ impl App {
             scroll_metrics: (0, 0),
             term_progress: tuika::TerminalProgress::new(),
             native_progress: false,
+            // Tests run in-memory so recall never reads or appends to the real
+            // per-user history file.
+            history: if cfg!(test) {
+                crate::prompt_history::PromptHistory::in_memory()
+            } else {
+                crate::prompt_history::PromptHistory::load()
+            },
+            history_search: None,
+            turn_started_at: None,
+            context_used_tokens: None,
         };
         app.emit_system_banner();
         if should_setup {
@@ -496,15 +541,32 @@ impl App {
     /// once per frame; the clones are dominated by small `String`s.
     pub(crate) fn view_state(&self) -> ViewState {
         let presentation = self.presentation_state();
+        let history_search = self.history_search_view();
         ViewState {
-            command_suggestions: if !presentation.busy && self.setup.is_none() {
+            // The search prompt owns the chrome row while active, so suppress
+            // command suggestions to avoid two things fighting for it.
+            command_suggestions: if history_search.is_none()
+                && !presentation.busy
+                && self.setup.is_none()
+            {
                 self.suggestions()
             } else {
                 Vec::new()
             },
+            history_search,
             busy_frame: self.busy_frame,
             presentation,
         }
+    }
+
+    /// The active model's context-window size in tokens, from its static
+    /// profile. `None` for models without a profile (e.g. the `llmsim` sim), in
+    /// which case no context gauge is shown.
+    fn context_window_tokens(&self) -> Option<u32> {
+        let driver =
+            crate::runtime::Provider::from_name(&self.model.provider_name())?.driver_id()?;
+        let profile = everruns_core::get_model_profile(&driver, &self.model.model_id())?;
+        u32::try_from(profile.limits?.context).ok()
     }
 
     pub(crate) fn presentation_state(&self) -> PresentationState {
@@ -518,6 +580,9 @@ impl App {
             session_id: self.session.session_id().to_string(),
             lines_count: self.lines.len(),
             session_tokens: self.session_tokens,
+            turn_elapsed_secs: self.turn_started_at.map(|start| start.elapsed().as_secs()),
+            context_used_tokens: self.context_used_tokens,
+            context_window_tokens: self.context_window_tokens(),
             status_layout: self.status_layout,
             hooks_summary: self.startup.hook_summary(),
             approval_mode: self
@@ -762,6 +827,10 @@ impl App {
                         Some(self.session_tokens.unwrap_or(0).saturating_add(tokens));
                     return Ok(());
                 }
+                Ok(TurnEvent::ContextUsed(used)) => {
+                    self.context_used_tokens = Some(used);
+                    return Ok(());
+                }
                 Ok(TurnEvent::Done) => {
                     self.finish_busy();
                     self.after_turn_goal_check().await;
@@ -971,6 +1040,17 @@ impl App {
     }
 
     async fn handle_key(&mut self, key: KeyEvent) {
+        // Reverse-history search owns the keyboard while active (even Ctrl+C,
+        // which cancels the search rather than arming exit).
+        if self.history_search.is_some() {
+            self.handle_search_key(key);
+            return;
+        }
+        // Ctrl+R opens reverse-history search from the idle composer.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('r')) {
+            self.history_search_start();
+            return;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('c') => {
@@ -1036,13 +1116,223 @@ impl App {
                     let _ = self.input.input(key);
                 }
             }
+            KeyCode::Up if self.try_history_prev() => {}
+            KeyCode::Down if self.try_history_next() => {}
             _ => {
                 let _ = self.input.input(normalize_printable_key(key));
             }
         }
     }
 
+    /// Whether pressing Up should recall an older prompt rather than move the
+    /// composer cursor. Recall only kicks in when the composer is empty, or when
+    /// an unmodified recalled entry is showing and the cursor sits on the first
+    /// line — so editing a multi-line prompt (or a fresh draft) never loses text
+    /// to an accidental recall. Mirrors Codex's line-boundary gating.
+    fn history_recall_prev_allowed(&self) -> bool {
+        let text = self.input_text();
+        if text.is_empty() {
+            return true;
+        }
+        match self.history.current_entry() {
+            Some(entry) if entry == text => self.input.cursor().0 == 0,
+            _ => false,
+        }
+    }
+
+    /// Handle Up as history recall. Returns `true` when the key was consumed
+    /// (recall began, moved, or is parked at the oldest entry), `false` to let
+    /// the textarea move the cursor normally.
+    fn try_history_prev(&mut self) -> bool {
+        if !self.history_recall_prev_allowed() {
+            return false;
+        }
+        let current = self.input_text();
+        if let Some(entry) = self.history.navigate_up(&current) {
+            self.set_input_text(entry);
+            true
+        } else {
+            // No entries at all → let the textarea handle Up. Already browsing at
+            // the oldest entry → swallow the key so it doesn't move the cursor.
+            self.history.is_browsing()
+        }
+    }
+
+    /// Handle Down as history recall. Only active while browsing an unmodified
+    /// recalled entry with the cursor on the last line; otherwise the textarea
+    /// moves the cursor.
+    fn try_history_next(&mut self) -> bool {
+        if !self.history.is_browsing() {
+            return false;
+        }
+        let current = self.input_text();
+        match self.history.current_entry() {
+            Some(entry) if entry == current => {
+                let last_row = self.input.lines().len().saturating_sub(1);
+                if self.input.cursor().0 != last_row {
+                    return false;
+                }
+            }
+            // The user edited the recalled entry; treat Down as normal movement.
+            _ => return false,
+        }
+        if let Some(text) = self.history.navigate_down(&current) {
+            self.set_input_text(text);
+        }
+        true
+    }
+
+    /// Open Ctrl+R reverse-history search from the idle composer. No-op while a
+    /// turn or overlay owns the keyboard, or when there is no history to search.
+    fn history_search_start(&mut self) {
+        if self.busy
+            || self.setup.is_some()
+            || self.background_panel.is_some()
+            || self.pending_ask.is_some()
+            || self.history.is_empty()
+        {
+            return;
+        }
+        self.history.reset_navigation();
+        self.history_search = Some(HistorySearch {
+            query: String::new(),
+            match_index: None,
+            saved_lines: self.input.lines().to_vec(),
+        });
+        // An empty query lands on the newest entry, so Ctrl+R immediately
+        // previews the last prompt — like a shell.
+        self.history_search_refresh();
+    }
+
+    /// Keyboard handling while reverse search owns the composer.
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('r') if ctrl => self.history_search_cycle(),
+            // Ctrl+C / Ctrl+G / Esc abandon the search and restore the draft.
+            KeyCode::Char('c' | 'g') if ctrl => self.history_search_cancel(),
+            KeyCode::Esc => self.history_search_cancel(),
+            KeyCode::Enter => self.history_search_accept(),
+            KeyCode::Backspace => {
+                if let Some(search) = self.history_search.as_mut() {
+                    search.query.pop();
+                }
+                self.history_search_refresh();
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(search) = self.history_search.as_mut() {
+                    search.query.push(c);
+                }
+                self.history_search_refresh();
+            }
+            // Ignore anything else so stray keys don't leak into the composer.
+            _ => {}
+        }
+    }
+
+    /// Recompute the match from the newest entry for the current query and
+    /// preview it in the composer. Called after every query edit.
+    fn history_search_refresh(&mut self) {
+        let Some(search) = self.history_search.as_ref() else {
+            return;
+        };
+        let Some(newest) = self.history.newest_index() else {
+            return;
+        };
+        let hit = self.history.reverse_search(&search.query, newest);
+        self.apply_search_hit(hit);
+    }
+
+    /// Advance to the next older match for the current query (repeated Ctrl+R).
+    /// Holds on the current match when nothing older matches.
+    fn history_search_cycle(&mut self) {
+        let Some(search) = self.history_search.as_ref() else {
+            return;
+        };
+        let query = search.query.clone();
+        let start = match search.match_index {
+            Some(0) => return, // already at the oldest match
+            Some(i) => i - 1,
+            None => match self.history.newest_index() {
+                Some(n) => n,
+                None => return,
+            },
+        };
+        if let Some(hit) = self.history.reverse_search(&query, start) {
+            self.apply_search_hit(Some(hit));
+        }
+    }
+
+    /// Store the resolved match and mirror it into the composer (or clear the
+    /// composer when nothing matches).
+    fn apply_search_hit(&mut self, hit: Option<(usize, String)>) {
+        let Some(search) = self.history_search.as_mut() else {
+            return;
+        };
+        match hit {
+            Some((index, entry)) => {
+                search.match_index = Some(index);
+                self.set_input_text(entry);
+            }
+            None => {
+                search.match_index = None;
+                self.input = new_input_area(vec![String::new()]);
+            }
+        }
+    }
+
+    /// Accept the current match: keep it in the composer and leave search mode
+    /// so the user can edit or submit. With no match, restore the saved draft.
+    fn history_search_accept(&mut self) {
+        let Some(search) = self.history_search.take() else {
+            return;
+        };
+        match search.match_index.and_then(|i| self.history.entry_at(i)) {
+            Some(entry) => {
+                let entry = entry.to_string();
+                self.set_input_text(entry);
+            }
+            None => self.restore_saved_input(search.saved_lines),
+        }
+    }
+
+    /// Abandon the search and restore the composer to its pre-search contents.
+    fn history_search_cancel(&mut self) {
+        if let Some(search) = self.history_search.take() {
+            self.restore_saved_input(search.saved_lines);
+        }
+    }
+
+    fn restore_saved_input(&mut self, lines: Vec<String>) {
+        self.input = new_input_area(if lines.is_empty() {
+            vec![String::new()]
+        } else {
+            lines
+        });
+        self.input.move_cursor(CursorMove::End);
+    }
+
+    /// Snapshot of the active reverse search for rendering, if any.
+    pub(crate) fn history_search_view(&self) -> Option<HistorySearchView> {
+        self.history_search
+            .as_ref()
+            .map(|search| HistorySearchView {
+                query: search.query.clone(),
+                matched: search.match_index.is_some(),
+            })
+    }
+
     fn suggestions(&self) -> Vec<CommandSuggestion> {
+        // `@`-triggered file-path completion takes over the suggestion row when
+        // the word being typed starts with `@`. Restricted to single-line input
+        // so completion can safely rebuild the whole line (matching how slash
+        // completion works).
+        if self.input.lines().len() == 1
+            && let Some(file) =
+                file_path_suggestions(self.suggestion_input(), &self.startup.workspace_root)
+        {
+            return file;
+        }
         command_suggestions(self.suggestion_input(), &self.startup.capability_commands)
     }
 
@@ -1059,7 +1349,14 @@ impl App {
     }
 
     fn set_input_text(&mut self, text: String) {
-        self.input = new_input_area(vec![text]);
+        // Split on newlines so a recalled multi-line prompt restores as multiple
+        // composer rows rather than one row with embedded control characters.
+        let lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+        self.input = new_input_area(if lines.is_empty() {
+            vec![String::new()]
+        } else {
+            lines
+        });
         self.input.move_cursor(CursorMove::End);
     }
 
@@ -1182,6 +1479,10 @@ impl App {
         self.reset_input();
         let text = expanded.trim().to_string();
         let display_text = raw.trim().to_string();
+        // Record what the user typed (including slash/bang commands) for
+        // shell-style Up/Down recall. Uses the pre-expansion display text so
+        // paste placeholders recall as the user saw them.
+        self.history.record(&display_text);
         if let Some(command) = parse_bang_shell_command(&text) {
             if command.is_empty() {
                 self.push_system("usage: !<command>".into());
@@ -1679,6 +1980,7 @@ impl App {
         self.busy = false;
         self.busy_frame = 0;
         self.turn_activity = None;
+        self.turn_started_at = None;
         self.stream_preview = None;
         self.rx = None;
         self.turn_cancel = None;
@@ -1862,6 +2164,7 @@ impl App {
         self.esc_pending_cancel = false;
         self.busy = true;
         self.turn_activity = activity;
+        self.turn_started_at = Some(Instant::now());
         self.stream_preview = None;
         if self.native_progress {
             // Turn length is unknown, so show the terminal's busy/indeterminate
@@ -1991,6 +2294,82 @@ fn bang_command_suggestions(
     }]
 }
 
+/// Maximum `@file` completions surfaced at once.
+const FILE_SUGGESTION_LIMIT: usize = 12;
+
+/// File-path completions for an `@`-prefixed token in the composer, mirroring
+/// the Codex `@file` mention. Returns `None` when the word being typed is not an
+/// `@` mention (so command completion can take over). The returned `completion`
+/// rebuilds the whole single-line input with the mention replaced, matching how
+/// the Tab handler applies suggestions.
+fn file_path_suggestions(line: &str, workspace_root: &Path) -> Option<Vec<CommandSuggestion>> {
+    let (head, token) = split_trailing_token(line);
+    let path_prefix = token.strip_prefix('@')?;
+    let matches = list_path_completions(workspace_root, path_prefix, FILE_SUGGESTION_LIMIT);
+    if matches.is_empty() {
+        return None;
+    }
+    Some(
+        matches
+            .into_iter()
+            .map(|rel| CommandSuggestion {
+                completion: format!("{head}@{rel}"),
+                label: format!("@{rel}"),
+            })
+            .collect(),
+    )
+}
+
+/// Split a line into `(everything up to and including the last whitespace, last
+/// token)`. For `"explain @src/ma"` this yields `("explain ", "@src/ma")`.
+fn split_trailing_token(line: &str) -> (&str, &str) {
+    match line.rfind(char::is_whitespace) {
+        Some(idx) => line.split_at(idx + 1),
+        None => ("", line),
+    }
+}
+
+/// List workspace entries matching `prefix` (a path relative to the workspace
+/// root, `/`-separated). Directories get a trailing `/` so the user can keep
+/// descending. Hidden entries and `.git` are skipped unless explicitly typed.
+fn list_path_completions(workspace_root: &Path, prefix: &str, limit: usize) -> Vec<String> {
+    // Split the prefix into its directory part (already-typed dirs) and the
+    // final filename fragment we match against.
+    let (dir_part, frag) = match prefix.rfind('/') {
+        Some(idx) => (&prefix[..idx + 1], &prefix[idx + 1..]),
+        None => ("", prefix),
+    };
+    let scan_dir = workspace_root.join(dir_part);
+    let Ok(entries) = std::fs::read_dir(&scan_dir) else {
+        return Vec::new();
+    };
+    let want_hidden = frag.starts_with('.');
+    let mut names: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == ".git" {
+            continue;
+        }
+        if name.starts_with('.') && !want_hidden {
+            continue;
+        }
+        if !name.starts_with(frag) {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let suffix = if is_dir { "/" } else { "" };
+        names.push(format!("{dir_part}{name}{suffix}"));
+    }
+    // Directories first, then files, each alphabetical — a predictable order.
+    names.sort_by(|a, b| {
+        let a_dir = a.ends_with('/');
+        let b_dir = b.ends_with('/');
+        b_dir.cmp(&a_dir).then_with(|| a.cmp(b))
+    });
+    names.truncate(limit);
+    names
+}
+
 fn capability_command_display_usage(descriptor: &CommandDescriptor) -> String {
     capability_command_usage_with_prefix(
         descriptor,
@@ -2013,7 +2392,7 @@ fn help_command_line(descriptor: &CommandDescriptor) -> String {
 
 fn help_shortcut_lines() -> [&'static str; 5] {
     [
-        "  Enter send · Shift-Enter newline · Tab complete slash command · ←/→ edit",
+        "  Enter send · Shift-Enter newline · Tab complete (cmds, @files) · ↑/↓ history · Ctrl+R search",
         "  Ctrl+V paste image/text · Ctrl+B background tasks · !<cmd> shell alias",
         "  exit: Ctrl-C twice / Ctrl-D",
         "  cancel turn: Esc twice (while model is busy)",
@@ -2222,6 +2601,98 @@ mod tests {
     }
 
     #[test]
+    fn code_fence_gets_language_aware_highlighting() {
+        let mut lines: Vec<Line> = Vec::new();
+        append_markdown_lines(
+            &mut lines,
+            "",
+            Style::default(),
+            "```rust\nfn demo() {}\n```",
+            80,
+        );
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(
+            text.contains("fn demo() {}"),
+            "code content should render: {text:?}"
+        );
+        // Tree-sitter highlighting must color at least one token gold (keyword),
+        // proving the language-aware path ran rather than the flat fallback.
+        let has_keyword_color = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .any(|span| span.style.fg == Some(ACCENT_GOLD));
+        assert!(
+            has_keyword_color,
+            "rust fence should be syntax-highlighted: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn linkify_styles_urls_and_trims_trailing_punctuation() {
+        let spans = linkify("see https://example.com/docs, then stop");
+        let url = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "https://example.com/docs")
+            .expect("url span present");
+        assert_eq!(url.style.fg, Some(ACCENT_BLUE));
+        assert!(url.style.add_modifier.contains(Modifier::UNDERLINED));
+        // The trailing comma stays as plain text, not part of the link.
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "see https://example.com/docs, then stop");
+    }
+
+    #[test]
+    fn linkify_leaves_plain_text_untouched() {
+        let spans = linkify("no links here");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].style.fg, None);
+        assert_eq!(spans[0].content.as_ref(), "no links here");
+    }
+
+    #[test]
+    fn transcript_paragraph_links_urls() {
+        let mut lines: Vec<Line> = Vec::new();
+        append_markdown_lines(
+            &mut lines,
+            "",
+            Style::default(),
+            "Visit https://rust-lang.org for docs",
+            120,
+        );
+        let has_link = lines.iter().flat_map(|line| line.spans.iter()).any(|span| {
+            span.content.as_ref() == "https://rust-lang.org"
+                && span.style.add_modifier.contains(Modifier::UNDERLINED)
+        });
+        assert!(
+            has_link,
+            "paragraph URL should be styled as a link: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn history_search_preview_line_shows_query_and_no_match_flag() {
+        let matched = HistorySearchView {
+            query: "deploy".to_string(),
+            matched: true,
+        };
+        let rendered = line_text(&history_search_preview_line(&matched, 96));
+        assert!(rendered.starts_with("(reverse-search) 'deploy'"));
+        assert!(!rendered.contains("no match"));
+
+        let missed = HistorySearchView {
+            query: "zzz".to_string(),
+            matched: false,
+        };
+        let rendered = line_text(&history_search_preview_line(&missed, 96));
+        assert!(rendered.contains("'zzz'"));
+        assert!(rendered.contains("no match"));
+    }
+
+    #[test]
     fn command_suggestions_filter_first_arg_by_prefix() {
         // After `/pick <prefix>`, the suggestion source must be the arg's
         // declared `suggestions` — read straight from the descriptor with
@@ -2257,6 +2728,63 @@ mod tests {
 
         let suggestions = command_suggestions("/echo hello", &caps);
         assert!(suggestions.is_empty(), "got: {suggestions:?}");
+    }
+
+    #[test]
+    fn split_trailing_token_isolates_the_last_word() {
+        assert_eq!(
+            split_trailing_token("explain @src/ma"),
+            ("explain ", "@src/ma")
+        );
+        assert_eq!(split_trailing_token("@src"), ("", "@src"));
+        assert_eq!(split_trailing_token(""), ("", ""));
+    }
+
+    #[test]
+    fn list_path_completions_scopes_by_prefix_and_hides_dotfiles() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join("src/main.rs"), b"").unwrap();
+        std::fs::write(root.join("src/lib.rs"), b"").unwrap();
+        std::fs::write(root.join("README.md"), b"").unwrap();
+        std::fs::write(root.join(".env"), b"").unwrap();
+
+        // Bare prefix: directories first, dotfiles and .git hidden.
+        let top = list_path_completions(root, "", 12);
+        assert_eq!(top, vec!["src/".to_string(), "README.md".to_string()]);
+
+        // Into a directory.
+        let inside = list_path_completions(root, "src/", 12);
+        assert_eq!(
+            inside,
+            vec!["src/lib.rs".to_string(), "src/main.rs".to_string()]
+        );
+
+        // Filename fragment filters within a directory.
+        let filtered = list_path_completions(root, "src/ma", 12);
+        assert_eq!(filtered, vec!["src/main.rs".to_string()]);
+
+        // Explicitly typing a dot reveals dotfiles.
+        let dotted = list_path_completions(root, ".e", 12);
+        assert_eq!(dotted, vec![".env".to_string()]);
+    }
+
+    #[test]
+    fn file_path_suggestions_only_fire_on_at_mentions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("hello.txt"), b"").unwrap();
+
+        assert!(file_path_suggestions("no mention here", root).is_none());
+
+        let suggestions =
+            file_path_suggestions("please read @hel", root).expect("mention suggestions");
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].label, "@hello.txt");
+        // The completion rebuilds the whole line with the mention replaced.
+        assert_eq!(suggestions[0].completion, "please read @hello.txt");
     }
 
     #[test]
@@ -3472,6 +4000,9 @@ mod tests {
             session_id: SessionId::from_seed(770001).to_string(),
             lines_count: 3,
             session_tokens: None,
+            turn_elapsed_secs: None,
+            context_used_tokens: None,
+            context_window_tokens: None,
             status_layout: StatusLayout::Compact,
             hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),
@@ -3488,6 +4019,7 @@ mod tests {
         ViewState {
             presentation: presentation_state_idle(),
             command_suggestions: Vec::new(),
+            history_search: None,
             busy_frame: 0,
         }
     }
@@ -3885,6 +4417,9 @@ mod tests {
                         Ok(TurnEvent::Tokens(tokens)) => {
                             self.session_tokens =
                                 Some(self.session_tokens.unwrap_or(0).saturating_add(tokens));
+                        }
+                        Ok(TurnEvent::ContextUsed(used)) => {
+                            self.context_used_tokens = Some(used);
                         }
                         Ok(TurnEvent::Done) => {
                             self.finish_busy();
@@ -5177,6 +5712,227 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn up_down_recall_previous_prompts() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.history.record("first");
+        app.history.record("second");
+
+        let up = || KeyEvent::new(KeyCode::Up, KeyModifiers::empty());
+        let down = || KeyEvent::new(KeyCode::Down, KeyModifiers::empty());
+
+        // Up from an empty composer recalls newest-first.
+        app.handle_key(up()).await;
+        assert_eq!(app.input_text(), "second");
+        app.handle_key(up()).await;
+        assert_eq!(app.input_text(), "first");
+        // Already at the oldest entry: Up holds instead of clearing.
+        app.handle_key(up()).await;
+        assert_eq!(app.input_text(), "first");
+
+        // Down walks back toward newer, then restores the (empty) draft.
+        app.handle_key(down()).await;
+        assert_eq!(app.input_text(), "second");
+        app.handle_key(down()).await;
+        assert_eq!(app.input_text(), "");
+        assert!(!app.history.is_browsing());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn up_does_not_recall_over_an_unsent_draft() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.history.record("old prompt");
+
+        // A non-empty, freshly-typed draft must not be clobbered by recall.
+        for ch in ['h', 'i'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()))
+            .await;
+        assert_eq!(app.input_text(), "hi");
+        assert!(!app.history.is_browsing());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn submitting_a_prompt_records_it_for_recall() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        // `/cwd` is a client command: it records into history but starts no turn,
+        // so the app stays idle and recall stays reachable.
+        for ch in ['/', 'c', 'w', 'd'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+
+        assert_eq!(app.input_text(), "");
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()))
+            .await;
+        assert_eq!(app.input_text(), "/cwd");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_renders_at_mention_suggestions() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.set_render_mode(RenderMode::Fullscreen);
+        let root = app.startup.workspace_root.clone();
+        std::fs::write(root.join("hello.txt"), b"hi").expect("write file");
+
+        for ch in ['@', 'h', 'e', 'l'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        let rows = render_app_lines(app, 100, 24);
+        assert!(
+            rows.iter().any(|row| row.contains("@hello.txt")),
+            "fullscreen should render the @file hint row: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_renders_reverse_search_prompt() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.set_render_mode(RenderMode::Fullscreen);
+        app.history.record("deploy prod");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        let rows = render_app_lines(app, 100, 24);
+        assert!(
+            rows.iter().any(|row| row.contains("reverse-search")),
+            "fullscreen should render the Ctrl+R search prompt: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn at_mention_completes_workspace_files() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let root = app.startup.workspace_root.clone();
+        std::fs::write(root.join("hello.txt"), b"hi").expect("write file");
+
+        // Type "@hel" — the suggestion row should offer the matching file.
+        for ch in ['@', 'h', 'e', 'l'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        let suggestions = app.suggestions();
+        assert!(
+            suggestions.iter().any(|s| s.label == "@hello.txt"),
+            "expected @hello.txt among {suggestions:?}"
+        );
+
+        // Tab accepts the first suggestion, completing the mention in place.
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()))
+            .await;
+        assert_eq!(app.input_text(), "@hello.txt");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_r_reverse_search_matches_narrows_and_accepts() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        for entry in ["deploy staging", "run tests", "deploy prod"] {
+            app.history.record(entry);
+        }
+
+        // Ctrl+R opens search and previews the newest entry.
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        assert!(app.history_search.is_some());
+        assert_eq!(app.input_text(), "deploy prod");
+
+        // Typing narrows to the newest entry containing the query.
+        for ch in ['t', 'e', 's', 't'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        assert_eq!(app.input_text(), "run tests");
+        let view = app.history_search_view().expect("search active");
+        assert_eq!(view.query, "test");
+        assert!(view.matched);
+
+        // Enter accepts the match into the composer and leaves search mode.
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        assert!(app.history_search.is_none());
+        assert_eq!(app.input_text(), "run tests");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_r_cycles_older_matches_then_reports_no_match() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        for entry in ["deploy staging", "run tests", "deploy prod"] {
+            app.history.record(entry);
+        }
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        for ch in ['d', 'e', 'p', 'l', 'o', 'y'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        // Newest "deploy" match first.
+        assert_eq!(app.input_text(), "deploy prod");
+        // Ctrl+R again cycles to the older "deploy" entry.
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(app.input_text(), "deploy staging");
+
+        // A query with no match clears the preview and flags it in the view.
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::empty()))
+            .await;
+        assert_eq!(app.input_text(), "");
+        assert!(!app.history_search_view().unwrap().matched);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn esc_cancels_reverse_search_and_restores_draft() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.history.record("some old prompt");
+
+        // Type a draft, then search, then cancel — the draft must come back.
+        for ch in ['d', 'r', 'a', 'f', 't'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(app.input_text(), "some old prompt");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+        assert!(app.history_search.is_none());
+        assert_eq!(app.input_text(), "draft");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_r_with_empty_history_is_a_no_op() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        assert!(app.history_search.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn alt_shift_enter_submits_instead_of_inserting_newline() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
@@ -6253,6 +7009,33 @@ mod tests {
             "busy separator should signal input is disabled: {}",
             rows[0]
         );
+    }
+
+    #[test]
+    fn chrome_busy_shows_live_elapsed_timer() {
+        let state = ViewState {
+            presentation: PresentationState {
+                busy: true,
+                turn_activity: Some("reading files".to_string()),
+                turn_elapsed_secs: Some(75),
+                ..presentation_state_idle()
+            },
+            busy_frame: 4,
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 80, 4);
+        assert!(
+            rows[0].contains("1m15s"),
+            "busy separator should show the elapsed timer: {}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn format_elapsed_is_compact() {
+        assert_eq!(format_elapsed(8), "8s");
+        assert_eq!(format_elapsed(75), "1m15s");
+        assert_eq!(format_elapsed(3725), "1h02m");
     }
 
     #[test]
