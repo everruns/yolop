@@ -177,9 +177,36 @@ fn native_command(_cwd: &Path, _script: &str) -> Result<Command> {
 
 fn sandbox_temp_dir() -> Result<PathBuf> {
     let path = std::env::temp_dir().join(format!("yolop-sandbox-{}", std::process::id()));
-    std::fs::create_dir_all(&path)
-        .with_context(|| format!("create sandbox temp directory: {}", path.display()))?;
+    prepare_sandbox_temp(&path)?;
     Ok(path)
+}
+
+fn prepare_sandbox_temp(path: &Path) -> Result<()> {
+    use std::io::ErrorKind;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    match std::fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            let metadata = std::fs::symlink_metadata(path)
+                .with_context(|| format!("inspect sandbox temp directory: {}", path.display()))?;
+            if !metadata.file_type().is_dir() {
+                anyhow::bail!(
+                    "sandbox temp path is not a directory (possible path-alias attack): {}",
+                    path.display()
+                );
+            }
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("create sandbox temp directory: {}", path.display()));
+        }
+    }
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("secure sandbox temp directory: {}", path.display()))?;
+    Ok(())
 }
 
 fn sandbox_home_dir(temp: &Path) -> Result<PathBuf> {
@@ -242,6 +269,19 @@ pub(crate) fn configure_stdio(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_temp_rejects_a_preexisting_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        let alias = root.path().join("alias");
+        std::fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+
+        let error = prepare_sandbox_temp(&alias).unwrap_err().to_string();
+        assert!(error.contains("path-alias attack"), "{error}");
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
