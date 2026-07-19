@@ -28,6 +28,9 @@ pub(crate) struct PresentationState {
     pub session_id: String,
     pub lines_count: usize,
     pub session_tokens: Option<u64>,
+    /// Wall-clock seconds since the active turn began, or `None` when idle.
+    /// Drives the live elapsed timer on the busy indicator.
+    pub turn_elapsed_secs: Option<u64>,
     pub status_layout: StatusLayout,
     pub hooks_summary: String,
     pub approval_mode: String,
@@ -312,6 +315,7 @@ mod tests {
             session_id: "sess_123".to_string(),
             lines_count: 3,
             session_tokens: Some(42),
+            turn_elapsed_secs: None,
             status_layout: StatusLayout::Compact,
             hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),

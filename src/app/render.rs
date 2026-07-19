@@ -1768,7 +1768,11 @@ pub(crate) fn draw_input_cursor(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 pub(crate) fn message_separator_title(state: &ViewState) -> Line<'static> {
     if let Some(activity) = state.presentation.activity_text() {
-        return thinking_title(state.busy_frame, activity);
+        return thinking_title(
+            state.busy_frame,
+            activity,
+            state.presentation.turn_elapsed_secs,
+        );
     }
     Line::from(vec![
         Span::styled("─── ", Style::default().fg(ACCENT_BLUE)),
@@ -1783,19 +1787,44 @@ pub(crate) fn newline_shortcut_hint() -> &'static str {
     "Shift-Enter"
 }
 
-pub(crate) fn thinking_title(frame: u64, activity: &str) -> Line<'static> {
+pub(crate) fn thinking_title(
+    frame: u64,
+    activity: &str,
+    elapsed_secs: Option<u64>,
+) -> Line<'static> {
     const SPINNER: [&str; 4] = ["-", "\\", "|", "/"];
     let spinner = SPINNER[((frame / 2) as usize) % SPINNER.len()];
     let text = format!("{activity}...");
     let text_style = Style::default().fg(TEXT_MUTED).add_modifier(Modifier::BOLD);
-    let spans = vec![
+    let mut spans = vec![
         Span::styled("─── ", Style::default().fg(ACCENT_BLUE)),
         Span::styled(spinner.to_string(), Style::default().fg(ACCENT_GOLD)),
         Span::raw(" "),
         Span::styled(text, text_style),
-        Span::styled(" (input disabled) ", Style::default().fg(TEXT_DIM)),
     ];
+    // Live elapsed timer, like Codex's working indicator.
+    if let Some(secs) = elapsed_secs {
+        spans.push(Span::styled(
+            format!(" {}", format_elapsed(secs)),
+            Style::default().fg(TEXT_DIM),
+        ));
+    }
+    spans.push(Span::styled(
+        " (input disabled) ",
+        Style::default().fg(TEXT_DIM),
+    ));
     Line::from(spans)
+}
+
+/// Compact wall-clock formatting for the busy timer: `8s`, `1m03s`, `1h02m`.
+pub(crate) fn format_elapsed(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 pub(crate) fn draw_message_separator(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {

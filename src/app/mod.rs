@@ -193,6 +193,9 @@ pub struct App {
     /// Active Ctrl+R reverse-history search, if any. While set it owns the
     /// keyboard and the composer previews the current match.
     history_search: Option<HistorySearch>,
+    /// When the active turn began, for the live elapsed timer on the busy
+    /// indicator. `None` while idle.
+    turn_started_at: Option<Instant>,
 }
 
 /// In-progress Ctrl+R reverse search over [`App::history`].
@@ -488,6 +491,7 @@ impl App {
                 crate::prompt_history::PromptHistory::load()
             },
             history_search: None,
+            turn_started_at: None,
         };
         app.emit_system_banner();
         if should_setup {
@@ -561,6 +565,7 @@ impl App {
             session_id: self.session.session_id().to_string(),
             lines_count: self.lines.len(),
             session_tokens: self.session_tokens,
+            turn_elapsed_secs: self.turn_started_at.map(|start| start.elapsed().as_secs()),
             status_layout: self.status_layout,
             hooks_summary: self.startup.hook_summary(),
             approval_mode: self
@@ -1944,6 +1949,7 @@ impl App {
         self.busy = false;
         self.busy_frame = 0;
         self.turn_activity = None;
+        self.turn_started_at = None;
         self.stream_preview = None;
         self.rx = None;
         self.turn_cancel = None;
@@ -2127,6 +2133,7 @@ impl App {
         self.esc_pending_cancel = false;
         self.busy = true;
         self.turn_activity = activity;
+        self.turn_started_at = Some(Instant::now());
         self.stream_preview = None;
         if self.native_progress {
             // Turn length is unknown, so show the terminal's busy/indeterminate
@@ -3787,6 +3794,7 @@ mod tests {
             session_id: SessionId::from_seed(770001).to_string(),
             lines_count: 3,
             session_tokens: None,
+            turn_elapsed_secs: None,
             status_layout: StatusLayout::Compact,
             hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),
@@ -6728,6 +6736,33 @@ mod tests {
             "busy separator should signal input is disabled: {}",
             rows[0]
         );
+    }
+
+    #[test]
+    fn chrome_busy_shows_live_elapsed_timer() {
+        let state = ViewState {
+            presentation: PresentationState {
+                busy: true,
+                turn_activity: Some("reading files".to_string()),
+                turn_elapsed_secs: Some(75),
+                ..presentation_state_idle()
+            },
+            busy_frame: 4,
+            ..view_state_idle()
+        };
+        let rows = render_chrome_lines(&state, 80, 4);
+        assert!(
+            rows[0].contains("1m15s"),
+            "busy separator should show the elapsed timer: {}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn format_elapsed_is_compact() {
+        assert_eq!(format_elapsed(8), "8s");
+        assert_eq!(format_elapsed(75), "1m15s");
+        assert_eq!(format_elapsed(3725), "1h02m");
     }
 
     #[test]
