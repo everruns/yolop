@@ -27,4 +27,4 @@ pub use select::{SelectList, SelectOutcome, SelectState};
 pub use spacer::Spacer;
 pub use spinner::{Spinner, SpinnerStyle};
 pub use status_bar::StatusBar;
-pub use text::{Paragraph, Text, line_width};
+pub use text::{Paragraph, Text, Wrap, line_width, wrap_lines};

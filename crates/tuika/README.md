@@ -32,7 +32,8 @@ extraction into its own crate. Today yolop drives the component gallery from
 
 | Component | Purpose |
 | --- | --- |
-| `Text` / `Paragraph` | Styled lines / word-wrapped text |
+| `Text` / `Paragraph` | Styled lines / word-wrapped plain text |
+| `Wrap` | Word-wraps pre-styled lines, preserving per-span styles |
 | `Flex` | Flexbox container (the composition primitive) |
 | `Boxed` | Border + padding + title, focus-aware |
 | `Spacer` | Flexible filler |
