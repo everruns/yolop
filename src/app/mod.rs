@@ -30,6 +30,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -1302,6 +1303,16 @@ impl App {
     }
 
     fn suggestions(&self) -> Vec<CommandSuggestion> {
+        // `@`-triggered file-path completion takes over the suggestion row when
+        // the word being typed starts with `@`. Restricted to single-line input
+        // so completion can safely rebuild the whole line (matching how slash
+        // completion works).
+        if self.input.lines().len() == 1
+            && let Some(file) =
+                file_path_suggestions(self.suggestion_input(), &self.startup.workspace_root)
+        {
+            return file;
+        }
         command_suggestions(self.suggestion_input(), &self.startup.capability_commands)
     }
 
@@ -2263,6 +2274,82 @@ fn bang_command_suggestions(
     }]
 }
 
+/// Maximum `@file` completions surfaced at once.
+const FILE_SUGGESTION_LIMIT: usize = 12;
+
+/// File-path completions for an `@`-prefixed token in the composer, mirroring
+/// the Codex `@file` mention. Returns `None` when the word being typed is not an
+/// `@` mention (so command completion can take over). The returned `completion`
+/// rebuilds the whole single-line input with the mention replaced, matching how
+/// the Tab handler applies suggestions.
+fn file_path_suggestions(line: &str, workspace_root: &Path) -> Option<Vec<CommandSuggestion>> {
+    let (head, token) = split_trailing_token(line);
+    let path_prefix = token.strip_prefix('@')?;
+    let matches = list_path_completions(workspace_root, path_prefix, FILE_SUGGESTION_LIMIT);
+    if matches.is_empty() {
+        return None;
+    }
+    Some(
+        matches
+            .into_iter()
+            .map(|rel| CommandSuggestion {
+                completion: format!("{head}@{rel}"),
+                label: format!("@{rel}"),
+            })
+            .collect(),
+    )
+}
+
+/// Split a line into `(everything up to and including the last whitespace, last
+/// token)`. For `"explain @src/ma"` this yields `("explain ", "@src/ma")`.
+fn split_trailing_token(line: &str) -> (&str, &str) {
+    match line.rfind(char::is_whitespace) {
+        Some(idx) => line.split_at(idx + 1),
+        None => ("", line),
+    }
+}
+
+/// List workspace entries matching `prefix` (a path relative to the workspace
+/// root, `/`-separated). Directories get a trailing `/` so the user can keep
+/// descending. Hidden entries and `.git` are skipped unless explicitly typed.
+fn list_path_completions(workspace_root: &Path, prefix: &str, limit: usize) -> Vec<String> {
+    // Split the prefix into its directory part (already-typed dirs) and the
+    // final filename fragment we match against.
+    let (dir_part, frag) = match prefix.rfind('/') {
+        Some(idx) => (&prefix[..idx + 1], &prefix[idx + 1..]),
+        None => ("", prefix),
+    };
+    let scan_dir = workspace_root.join(dir_part);
+    let Ok(entries) = std::fs::read_dir(&scan_dir) else {
+        return Vec::new();
+    };
+    let want_hidden = frag.starts_with('.');
+    let mut names: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == ".git" {
+            continue;
+        }
+        if name.starts_with('.') && !want_hidden {
+            continue;
+        }
+        if !name.starts_with(frag) {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let suffix = if is_dir { "/" } else { "" };
+        names.push(format!("{dir_part}{name}{suffix}"));
+    }
+    // Directories first, then files, each alphabetical — a predictable order.
+    names.sort_by(|a, b| {
+        let a_dir = a.ends_with('/');
+        let b_dir = b.ends_with('/');
+        b_dir.cmp(&a_dir).then_with(|| a.cmp(b))
+    });
+    names.truncate(limit);
+    names
+}
+
 fn capability_command_display_usage(descriptor: &CommandDescriptor) -> String {
     capability_command_usage_with_prefix(
         descriptor,
@@ -2285,7 +2372,7 @@ fn help_command_line(descriptor: &CommandDescriptor) -> String {
 
 fn help_shortcut_lines() -> [&'static str; 5] {
     [
-        "  Enter send · Shift-Enter newline · Tab complete · ↑/↓ history · Ctrl+R search",
+        "  Enter send · Shift-Enter newline · Tab complete (cmds, @files) · ↑/↓ history · Ctrl+R search",
         "  Ctrl+V paste image/text · Ctrl+B background tasks · !<cmd> shell alias",
         "  exit: Ctrl-C twice / Ctrl-D",
         "  cancel turn: Esc twice (while model is busy)",
@@ -2579,6 +2666,63 @@ mod tests {
 
         let suggestions = command_suggestions("/echo hello", &caps);
         assert!(suggestions.is_empty(), "got: {suggestions:?}");
+    }
+
+    #[test]
+    fn split_trailing_token_isolates_the_last_word() {
+        assert_eq!(
+            split_trailing_token("explain @src/ma"),
+            ("explain ", "@src/ma")
+        );
+        assert_eq!(split_trailing_token("@src"), ("", "@src"));
+        assert_eq!(split_trailing_token(""), ("", ""));
+    }
+
+    #[test]
+    fn list_path_completions_scopes_by_prefix_and_hides_dotfiles() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join("src/main.rs"), b"").unwrap();
+        std::fs::write(root.join("src/lib.rs"), b"").unwrap();
+        std::fs::write(root.join("README.md"), b"").unwrap();
+        std::fs::write(root.join(".env"), b"").unwrap();
+
+        // Bare prefix: directories first, dotfiles and .git hidden.
+        let top = list_path_completions(root, "", 12);
+        assert_eq!(top, vec!["src/".to_string(), "README.md".to_string()]);
+
+        // Into a directory.
+        let inside = list_path_completions(root, "src/", 12);
+        assert_eq!(
+            inside,
+            vec!["src/lib.rs".to_string(), "src/main.rs".to_string()]
+        );
+
+        // Filename fragment filters within a directory.
+        let filtered = list_path_completions(root, "src/ma", 12);
+        assert_eq!(filtered, vec!["src/main.rs".to_string()]);
+
+        // Explicitly typing a dot reveals dotfiles.
+        let dotted = list_path_completions(root, ".e", 12);
+        assert_eq!(dotted, vec![".env".to_string()]);
+    }
+
+    #[test]
+    fn file_path_suggestions_only_fire_on_at_mentions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("hello.txt"), b"").unwrap();
+
+        assert!(file_path_suggestions("no mention here", root).is_none());
+
+        let suggestions =
+            file_path_suggestions("please read @hel", root).expect("mention suggestions");
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].label, "@hello.txt");
+        // The completion rebuilds the whole line with the mention replaced.
+        assert_eq!(suggestions[0].completion, "please read @hello.txt");
     }
 
     #[test]
@@ -5565,6 +5709,31 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()))
             .await;
         assert_eq!(app.input_text(), "/cwd");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn at_mention_completes_workspace_files() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let root = app.startup.workspace_root.clone();
+        std::fs::write(root.join("hello.txt"), b"hi").expect("write file");
+
+        // Type "@hel" — the suggestion row should offer the matching file.
+        for ch in ['@', 'h', 'e', 'l'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        let suggestions = app.suggestions();
+        assert!(
+            suggestions.iter().any(|s| s.label == "@hello.txt"),
+            "expected @hello.txt among {suggestions:?}"
+        );
+
+        // Tab accepts the first suggestion, completing the mention in place.
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()))
+            .await;
+        assert_eq!(app.input_text(), "@hello.txt");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
