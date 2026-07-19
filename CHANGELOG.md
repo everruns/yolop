@@ -10,6 +10,64 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.9.0] - 2026-07-19
+
+### Highlights
+
+- Extension platform greatly expanded: extensions can now contribute skills,
+  slash commands, and a status bar, install toolchain-free from crates.io,
+  scaffold themselves (Rust and TypeScript templates), live-reload while
+  enabled, and answer `ui/ask` reverse requests.
+- New experimental full-screen renderer built on **tuika**, a standalone
+  terminal-UI toolkit crate (layout, overlays, focus, motion, `view!` macro)
+  extracted with its own version and extensive snapshot/property test coverage.
+- `yolop-yep` gained new wire-protocol capabilities (`ui/ask` channel,
+  contributed slash commands and status bar, `schema/yep/v1/schema.json`
+  emission) and is published as **0.2.0**.
+- Hardened extension conformance (`doctor_extension` probe), release tooling
+  (tuika published before yolop), and runtime grep/blocklist behavior.
+
+### What's Changed
+
+* chore(release): make yolop-yep publish-clean, document two-crate publish ([#301](https://github.com/everruns/yolop/pull/301)) by @chaliy
+* fix(release): allow crates.io registry checks ([#302](https://github.com/everruns/yolop/pull/302)) by @chaliy
+* chore(release): yolop-yep 0.1.1 (clean packaging) + docs use cargo add ([#303](https://github.com/everruns/yolop/pull/303)) by @chaliy
+* fix(tui): stabilize resize and overlay rendering ([#305](https://github.com/everruns/yolop/pull/305)) by @chaliy
+* feat(herdr): add native session integration by @chaliy
+* fix(codex): drop unpaired tool-call items by @chaliy
+* feat(extensions): add doctor_extension conformance probe ([#308](https://github.com/everruns/yolop/pull/308)) by @chaliy
+* feat(extensions): toolchain-free crates.io install ([#309](https://github.com/everruns/yolop/pull/309)) by @chaliy
+* feat(yep): emit schema/yep/v1/schema.json for wire payloads ([#310](https://github.com/everruns/yolop/pull/310)) by @chaliy
+* chore(deps): bump the cargo-minor-and-patch group across 1 directory with 5 updates ([#304](https://github.com/everruns/yolop/pull/304)) by @dependabot
+* fix(ci): raise search-efficiency-eval timeout for slow provider days ([#311](https://github.com/everruns/yolop/pull/311)) by @chaliy
+* feat(tui): experimental full-screen renderer (tuika) behind --fullscreen ([#312](https://github.com/everruns/yolop/pull/312)) by @chaliy
+* feat(extensions): scaffold_extension for self-authored extensions ([#313](https://github.com/everruns/yolop/pull/313)) by @chaliy
+* feat(tui): tuika motion module — spinner, progress, native OSC 9;4 ([#314](https://github.com/everruns/yolop/pull/314)) by @chaliy
+* feat(extensions): TypeScript (Node.js) scaffold template ([#315](https://github.com/everruns/yolop/pull/315)) by @chaliy
+* feat(extensions): Rust scaffold template (compiled) ([#316](https://github.com/everruns/yolop/pull/316)) by @chaliy
+* test(evals): self-writing extension acceptance case ([#317](https://github.com/everruns/yolop/pull/317)) by @chaliy
+* feat(tui): declarative view! macro over the tuika builder API ([#319](https://github.com/everruns/yolop/pull/319)) by @chaliy
+* chore(deps): bump everruns to 0.17.12, restore real host-path display ([#318](https://github.com/everruns/yolop/pull/318)) by @chaliy
+* test(tui): palette/theme coverage for tuika components ([#320](https://github.com/everruns/yolop/pull/320)) by @chaliy
+* test(tui): resize/degenerate-size sweeps + fix flex out-of-bounds placement ([#321](https://github.com/everruns/yolop/pull/321)) by @chaliy
+* fix(acp): route reasoning summaries as thoughts by @chaliy
+* feat(extensions): extension-contributed status bar (status/changed) ([#323](https://github.com/everruns/yolop/pull/323)) by @chaliy
+* test(tui): proptest layout/overlay invariants + fix two bounds bugs ([#325](https://github.com/everruns/yolop/pull/325)) by @chaliy
+* test(tui): golden snapshot harness for tuika screens ([#326](https://github.com/everruns/yolop/pull/326)) by @chaliy
+* test(tui): terminal-variance PTY smoke + manual matrix for tuika ([#327](https://github.com/everruns/yolop/pull/327)) by @chaliy
+* refactor(tuika): extract into a standalone crate with its own version ([#328](https://github.com/everruns/yolop/pull/328)) by @chaliy
+* fix(runtime): preserve contextual grep through blocklist ([#329](https://github.com/everruns/yolop/pull/329)) by @chaliy
+* ci(release): publish the tuika crate before yolop ([#330](https://github.com/everruns/yolop/pull/330)) by @chaliy
+* feat(extensions): extension-contributed skills ([#331](https://github.com/everruns/yolop/pull/331)) by @chaliy
+* docs(tuika): add interactive select + overlay examples ([#332](https://github.com/everruns/yolop/pull/332)) by @chaliy
+* fix(ci): initialize extension skills in runtime test ([#333](https://github.com/everruns/yolop/pull/333)) by @chaliy
+* feat(extensions): extension-contributed slash commands ([#334](https://github.com/everruns/yolop/pull/334)) by @chaliy
+* feat(extensions): ui/ask reverse-request channel ([#335](https://github.com/everruns/yolop/pull/335)) by @chaliy
+* fix(evals): don't count a no-match search as a tool failure ([#336](https://github.com/everruns/yolop/pull/336)) by @chaliy
+* feat(extensions): live reload for enabled extension servers ([#337](https://github.com/everruns/yolop/pull/337)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.8.0...v0.9.0
+
 ## [0.8.0] - 2026-07-14
 
 ### Highlights
