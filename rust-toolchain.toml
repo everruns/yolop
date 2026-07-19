@@ -1,4 +1,4 @@
-# Pinned to 1.96.0: everruns-core 0.17.13 uses `if let` match guards, which
+# Pinned to 1.96.0: everruns-core 0.17.14 uses `if let` match guards, which
 # stabilized in Rust 1.96.0. Older stable toolchains fail with E0658.
 [toolchain]
 channel = "1.96.0"
