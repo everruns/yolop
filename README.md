@@ -68,8 +68,9 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   and set with `/setup approval <level>` (or just by telling yolop to be more
   or less careful). See [Soft approval](#soft-approval) below.
 - **TUI chat** (ratatui): scrolling transcript with language-aware syntax
-  highlighting of fenced code blocks (tree-sitter) and styled `http(s)` links,
-  multiline composer, a busy
+  highlighting of fenced code blocks (tree-sitter) and styled `http(s)` links
+  (set `YOLOP_HYPERLINKS=1` to also emit them as clickable OSC 8 terminal
+  hyperlinks), multiline composer, a busy
   indicator with a live elapsed timer while a turn runs, status
   bar (with a `bg` count whenever the session has background tasks and a `ctx`
   context-window gauge once the model reports usage), slash commands

@@ -54,7 +54,7 @@ pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseKind};
 pub use focus::FocusRegistry;
 pub use geometry::{Padding, Size};
 pub use host::{AltScreen, Overlay, paint, translate_event};
-pub use hyperlink::{is_web_url, osc8, write_line};
+pub use hyperlink::{HyperlinkBackend, is_web_url, osc8, write_line};
 pub use layout::{Align, Dimension, Direction, Justify, LayoutStyle};
 pub use native::{ProgressState, TerminalProgress};
 pub use overlay::{Anchor, Extent, OverlaySpec};
