@@ -15,10 +15,10 @@ use crate::capabilities::{
     ClientCommandsCapability, ClientUiContext, CodingBashCapability,
     CodingCliEnvironmentCapability, ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
     GOAL_CAPABILITY_ID, GoalCapability, HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability,
-    HooksCapability, LspCapability, PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability,
-    REPO_MAP_CAPABILITY_ID, RepoMapCapability, SESSION_HISTORY_CAPABILITY_ID, SETUP_CAPABILITY_ID,
-    SessionHistoryCapability, SetupCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
-    WorktreeCapability,
+    HooksCapability, LspCapability, OKF_CAPABILITY_ID, OkfCapability, PROGRESS_GUARD_CAPABILITY_ID,
+    ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
+    SESSION_HISTORY_CAPABILITY_ID, SETUP_CAPABILITY_ID, SessionHistoryCapability, SetupCapability,
+    USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability,
 };
 use crate::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::checkpoint::CheckpointManager;
@@ -2054,6 +2054,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new(SKILLS_CAPABILITY_ID),
         AgentCapabilityConfig::new(HERDR_CAPABILITY_ID),
         AgentCapabilityConfig::new(REPO_MAP_CAPABILITY_ID),
+        AgentCapabilityConfig::new(OKF_CAPABILITY_ID),
         AgentCapabilityConfig::new(SESSION_HISTORY_CAPABILITY_ID),
         AgentCapabilityConfig::new(CHECKPOINT_CAPABILITY_ID),
         AgentCapabilityConfig::new(AST_GREP_CAPABILITY_ID),
@@ -2758,6 +2759,10 @@ pub async fn build_with_options(
         skill_dirs.clone(),
     ));
     capabilities.register(RepoMapCapability::new(workspace_host.clone()));
+    // Native OKF awareness: detects an Open Knowledge Format bundle in the
+    // workspace and, only when one is present, points the agent at it and the
+    // bundled `okf` skill. Inert otherwise. See specs/okf.md.
+    capabilities.register(OkfCapability::new(workspace_host.clone()));
     capabilities.register(SessionHistoryCapability::new(
         sessions_dir.clone(),
         session_id,
