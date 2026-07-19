@@ -43,6 +43,88 @@ fn yolop_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_yolop"))
 }
 
+#[cfg(target_os = "linux")]
+fn run_linux_sandbox_worker(cwd: &Path, temp: &Path, script: &str) -> std::process::Output {
+    Command::new(yolop_binary())
+        .arg("__sandbox-exec")
+        .arg("--cwd")
+        .arg(cwd)
+        .arg("--temp")
+        .arg(temp)
+        .arg("--script")
+        .arg(script)
+        .output()
+        .expect("spawn Linux sandbox worker")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_sandbox_worker_enforces_filesystem_and_network_contract() {
+    use std::net::TcpListener;
+
+    let root = tempfile::tempdir().expect("sandbox root");
+    let workspace = root.path().join("workspace");
+    let private_temp = root.path().join("private-temp");
+    let outside = root.path().join("outside.txt");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    std::fs::create_dir_all(&private_temp).expect("private temp");
+    std::os::unix::fs::symlink(&outside, workspace.join("outside-link")).expect("outside symlink");
+
+    let script = format!(
+        "printf allowed > inside.txt && printf temp > {}/allowed.txt && \
+         ! printf denied > {} && ! printf denied > outside-link",
+        private_temp.display(),
+        outside.display(),
+    );
+    let output = run_linux_sandbox_worker(&workspace, &private_temp, &script);
+    assert!(
+        output.status.success(),
+        "filesystem policy failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read(workspace.join("inside.txt")).unwrap(),
+        b"allowed"
+    );
+    assert!(!outside.exists(), "sandbox wrote outside its workspace");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local listener");
+    let port = listener.local_addr().unwrap().port();
+    let output = run_linux_sandbox_worker(
+        &workspace,
+        &private_temp,
+        &format!(": > /dev/tcp/127.0.0.1/{port}"),
+    );
+    assert!(
+        !output.status.success(),
+        "sandbox unexpectedly created an IPv4 socket"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_sandbox_worker_tracks_each_active_worktree() {
+    let root = tempfile::tempdir().expect("sandbox root");
+    let first = root.path().join("first");
+    let second = root.path().join("second");
+    let private_temp = root.path().join("private-temp");
+    for path in [&first, &second, &private_temp] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+
+    for workspace in [&first, &second] {
+        let output = run_linux_sandbox_worker(workspace, &private_temp, "pwd > active.txt");
+        assert!(
+            output.status.success(),
+            "worker failed for {}",
+            workspace.display()
+        );
+        let recorded = std::fs::read_to_string(workspace.join("active.txt")).unwrap();
+        assert_eq!(recorded.trim(), workspace.to_str().unwrap());
+    }
+}
+
 fn session_ids(sessions_dir: &Path) -> Vec<String> {
     let mut ids: Vec<String> = std::fs::read_dir(sessions_dir)
         .expect("read sessions dir")

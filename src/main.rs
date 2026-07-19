@@ -173,6 +173,17 @@ enum Commands {
     /// bars, loader). Press `q` or `Esc` to quit. Hidden dev helper.
     #[command(hide = true)]
     TuikaGallery,
+    /// Internal Linux Landlock/seccomp worker. Not a user-facing command.
+    #[cfg(target_os = "linux")]
+    #[command(name = "__sandbox-exec", hide = true)]
+    SandboxExec {
+        #[arg(long)]
+        cwd: PathBuf,
+        #[arg(long)]
+        temp: PathBuf,
+        #[arg(long, allow_hyphen_values = true)]
+        script: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -844,6 +855,10 @@ fn run_command(command: Commands) -> Result<()> {
         Commands::Worktree(args) => run_worktree_command(args.command),
         Commands::Mcp(args) => run_mcp_command(args.command),
         Commands::TuikaGallery => run_tuika_gallery(),
+        #[cfg(target_os = "linux")]
+        Commands::SandboxExec { cwd, temp, script } => {
+            sandbox::run_linux_worker(&cwd, &temp, &script)
+        }
         Commands::Into(into) => match into.target {
             IntoTarget::Paseo(args) => {
                 let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));

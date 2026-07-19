@@ -80,43 +80,92 @@ fn native_command(cwd: &Path, script: &str) -> Result<Command> {
 
 #[cfg(target_os = "linux")]
 fn native_command(cwd: &Path, script: &str) -> Result<Command> {
-    let bwrap = find_in_path("bwrap").ok_or_else(|| anyhow::anyhow!(
-        "native sandbox unavailable: bubblewrap (`bwrap`) is required on Linux; refusing to run unsandboxed. Install bubblewrap or set `sandbox = \"off\"` only inside an already isolated environment"
-    ))?;
     let temp = sandbox_temp_dir()?;
     let home = sandbox_home_dir(&temp)?;
-    let mut command = Command::new(bwrap);
+    let executable = std::env::current_exe().context("resolve yolop sandbox worker executable")?;
+    let mut command = Command::new(executable);
     command
-        // An explicit user namespace supplies the namespaced CAP_NET_ADMIN
-        // bubblewrap needs to initialize loopback after --unshare-net. Without
-        // it, setuid bwrap builds fail closed on hardened hosts such as GitHub
-        // runners before the payload starts.
-        .args([
-            "--die-with-parent",
-            "--new-session",
-            "--unshare-user",
-            "--uid",
-            "0",
-            "--gid",
-            "0",
-            "--unshare-net",
-        ])
-        .args(["--ro-bind", "/", "/"])
-        .arg("--bind")
+        .arg("__sandbox-exec")
+        .arg("--cwd")
         .arg(cwd)
-        .arg(cwd)
-        .arg("--bind")
+        .arg("--temp")
         .arg(&temp)
-        .arg(&temp)
-        .arg("--chdir")
-        .arg(cwd);
-    let dot_git = cwd.join(".git");
-    if dot_git.exists() {
-        command.arg("--ro-bind").arg(&dot_git).arg(&dot_git);
-    }
-    command.arg("/bin/bash").arg("-lc").arg(script);
+        .arg("--script")
+        .arg(script)
+        .current_dir(cwd);
     apply_native_environment(&mut command, &home, &temp);
     Ok(command)
+}
+
+/// Apply Linux kernel restrictions in a fresh helper process, then replace it
+/// with bash. Keeping this out of `pre_exec` avoids allocation and locking in a
+/// post-fork callback of Tokio's multi-threaded parent.
+#[cfg(target_os = "linux")]
+pub(crate) fn run_linux_worker(cwd: &Path, temp: &Path, script: &str) -> Result<()> {
+    use landlock::{
+        ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
+        RulesetStatus,
+    };
+    use seccompiler::{
+        BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
+        SeccompRule,
+    };
+    use std::convert::TryInto;
+    use std::os::unix::process::CommandExt;
+
+    std::env::set_current_dir(cwd)
+        .with_context(|| format!("enter sandbox workspace: {}", cwd.display()))?;
+
+    // ABI V3 is the oldest policy that also mediates truncate(2); requiring
+    // full enforcement avoids silently weakening the write boundary.
+    let abi = ABI::V3;
+    let status = Ruleset::default()
+        .handle_access(AccessFs::from_all(abi))?
+        .create()?
+        .add_rule(PathBeneath::new(
+            PathFd::new("/")?,
+            AccessFs::from_read(abi),
+        ))?
+        .add_rule(PathBeneath::new(PathFd::new(cwd)?, AccessFs::from_all(abi)))?
+        .add_rule(PathBeneath::new(
+            PathFd::new(temp)?,
+            AccessFs::from_all(abi),
+        ))?
+        .restrict_self()?;
+    if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
+        anyhow::bail!(
+            "native sandbox unavailable: Landlock ABI v3 is not fully enforced by this Linux kernel; refusing to run unsandboxed. Set `sandbox = \"off\"` only inside an already isolated environment"
+        );
+    }
+
+    // Internet and packet sockets are denied. Unix sockets remain available
+    // for local toolchains and agents; the sanitized environment removes
+    // credential-bearing agent socket paths before this worker starts.
+    let socket_rules = [libc::AF_INET, libc::AF_INET6, libc::AF_PACKET]
+        .into_iter()
+        .map(|family| {
+            SeccompRule::new(vec![SeccompCondition::new(
+                0,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Eq,
+                family as u64,
+            )?])
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let filter: BpfProgram = SeccompFilter::new(
+        [(libc::SYS_socket, socket_rules)].into_iter().collect(),
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::EACCES as u32),
+        std::env::consts::ARCH.try_into()?,
+    )?
+    .try_into()?;
+    seccompiler::apply_filter(&filter)?;
+
+    Err(std::process::Command::new("/bin/bash")
+        .arg("-lc")
+        .arg(script)
+        .exec()
+        .into())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -181,15 +230,6 @@ fn seatbelt_escape(path: &Path) -> String {
     path.to_string_lossy()
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
-}
-
-#[cfg(target_os = "linux")]
-fn find_in_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|path| path.join(name))
-            .find(|path| path.is_file())
-    })
 }
 
 pub(crate) fn configure_stdio(command: &mut Command) {

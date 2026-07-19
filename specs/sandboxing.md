@@ -20,7 +20,7 @@ the active `WorkspaceHost` and retain the existing protected-path checks. System
 global, workspace, and extension skills also keep their existing read-only
 mounts. Model-provider credentials stay in the trusted parent process.
 
-This is intentionally a provider seam rather than Seatbelt/bubblewrap logic in
+This is intentionally a provider seam rather than OS-specific policy logic in
 the tool. A provider receives the canonical active workspace and script and
 returns the process to launch. Bashkit, agentOS, Daytona, Monty, or another
 backend can implement the same seam without changing tool schemas.
@@ -52,11 +52,21 @@ model rather than an implied guarantee.
 
 ### Linux
 
-The native provider requires `bwrap` (bubblewrap). It creates a new session and
-network namespace, mounts `/` read-only, bind-mounts only the active workspace
-and private temp read-write, then overlays the workspace `.git` path read-only.
-Bubblewrap relies on kernel namespaces and capability dropping; unavailable
-`bwrap` is an error, never an unsandboxed fallback.
+The native provider re-executes Yolop as a small policy worker. The worker uses
+Landlock to grant host reads plus writes only below the active workspace and
+private temp, then installs a seccomp-BPF filter that denies internet and packet
+socket creation before replacing itself with bash. Restrictions are inherited
+by descendants. A kernel that cannot enforce Landlock is an error, never an
+unsandboxed fallback.
+
+The policy requires full Landlock ABI v3 enforcement (Linux 6.2 or a backport)
+so direct truncate operations cannot bypass the write boundary.
+
+Landlock path rules are additive: a writable workspace grant cannot subtract a
+writable `.git` subtree. Linux therefore permits Git metadata writes that live
+inside the active workspace. Linked-worktree metadata outside that boundary
+remains read-only. This is weaker than the macOS policy and is communicated as
+a known limit.
 
 ## Unsafe opt-out
 
@@ -147,10 +157,11 @@ filesystem contents, credentials, and callback values are omitted by default.
 
 The active workspace is resolved immediately before each spawn. A worktree
 switch therefore changes the write boundary without rebuilding tool schemas or
-skill configuration. The worktree's `.git` indirection remains readable but is
-not writable from arbitrary shell commands. Git metadata mutation will require
-a future narrow Git broker or an explicit policy capability; it must not happen
-by weakening the entire shell boundary.
+skill configuration. On macOS, the worktree's `.git` indirection remains
+readable but is not writable from arbitrary shell commands. Linux Landlock
+cannot subtract that path from a writable parent, so metadata paths below the
+workspace remain writable there; linked metadata outside it remains protected.
+The boundary still tracks the newly active worktree for every command.
 
 ## Validation
 
@@ -165,14 +176,16 @@ The automated suite exercises the real `BashTool` launch path and asserts:
 - foreground and background execution retain the shared executor; and
 - runtime construction still resolves system skills and automatic settings.
 
-Platform CI must run the black-box contract suite on both macOS and Linux. The
-Linux job must install bubblewrap. Release validation also includes the normal
-llmsim packaged-binary smoke and a live provider smoke.
+Platform CI runs the black-box contract suite on both macOS and Linux. Release
+validation also includes the normal llmsim packaged-binary smoke and a live
+provider smoke.
 
 ## Known limitations
 
 - macOS host reads are allowed in the first provider for toolchain
   compatibility;
+- Linux host reads and workspace `.git` writes are allowed in the first
+  provider for toolchain and worktree compatibility;
 - native policy is fixed to workspace-write/network-deny (no custom mounts or
   network allowlist yet);
 - there is no typed Git mutation broker;

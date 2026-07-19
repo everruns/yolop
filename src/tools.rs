@@ -73,10 +73,15 @@ fn command_failure_hint(exit_code: i32, stderr: &str) -> Option<&'static str> {
 impl BashTool {
     #[cfg(test)]
     pub fn new(ws: Workspace) -> Self {
-        Self::with_sandbox(
-            ws,
-            crate::sandbox::provider(crate::settings::SandboxMode::Native),
-        )
+        // Linux's native provider re-execs the yolop binary. Unit tests run in
+        // the libtest harness, so its real-binary contract lives in
+        // tests/integration.rs instead.
+        let mode = if cfg!(target_os = "linux") {
+            crate::settings::SandboxMode::Off
+        } else {
+            crate::settings::SandboxMode::Native
+        };
+        Self::with_sandbox(ws, crate::sandbox::provider(mode))
     }
 
     pub fn with_sandbox(ws: Workspace, sandbox: Arc<dyn SandboxProvider>) -> Self {
@@ -454,7 +459,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn native_sandbox_allows_workspace_writes_and_denies_outside_writes() {
         let parent = tempfile::tempdir().unwrap();
@@ -485,7 +490,7 @@ mod tests {
         assert!(!outside.exists(), "sandbox wrote outside the workspace");
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn native_sandbox_denies_git_metadata_and_path_alias_escapes() {
         let parent = tempfile::tempdir().unwrap();
@@ -512,7 +517,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "safe");
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn native_sandbox_denies_network_connections() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -527,7 +532,7 @@ mod tests {
         assert_ne!(result["exit_code"], 0, "{result}");
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn native_sandbox_follows_active_worktree_per_command() {
         let parent = tempfile::tempdir().unwrap();

@@ -75,7 +75,7 @@ impl std::fmt::Display for WorktreesMode {
 /// Kernel containment used for arbitrary shell commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SandboxMode {
-    /// Seatbelt on macOS; bubblewrap namespaces on Linux.
+    /// Seatbelt on macOS; Landlock and seccomp on Linux.
     #[default]
     Native,
     /// Explicitly run commands directly on the host. Dangerous.
