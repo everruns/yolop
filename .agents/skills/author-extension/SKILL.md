@@ -87,8 +87,11 @@ Not yet available: providers.
 
 5. **Enable (ask first).** Show the user the contribution summary and ask
    before `enable_extension name=<name>` — enabling adds it to the harness and
-   runs its server every session. **Enabling takes effect on the next
-   session**, so tell the user to restart yolop to load it.
+   runs its server every session. In the interactive TUI it is **applied to the
+   running session immediately** (activated on the live agent), so its
+   tools/prompt/hooks are available on the **next turn** — no restart — and it's
+   persisted for future sessions. In `--print`/ACP there's no live session to
+   mutate, so it only takes effect next run.
 
 6. **Iterate live (already-enabled extensions).** Once an extension is enabled
    and its server has run this session, `reload_extension name=<name>` restarts

@@ -55,6 +55,14 @@ pub enum UiCommand {
     /// Set (or, when `status` is empty, clear) an extension's status-bar field.
     /// Pushed by an extension server's `status/changed` notification.
     SetExtensionStatus { ext: String, status: String },
+    /// Activate (`activate = true`) or deactivate an extension capability on the
+    /// live session so it takes effect this session, not just next. Pushed by
+    /// `enable_extension`/`disable_extension` after the settings write.
+    SetExtensionActive {
+        capability_id: String,
+        name: String,
+        activate: bool,
+    },
 }
 
 /// What a client-executed command can ask the host UI to do. Implemented per

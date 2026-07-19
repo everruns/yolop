@@ -8,6 +8,7 @@ use super::manager::LiveProcessRegistry;
 use super::package::{discover_extensions, extension_capability_id};
 use super::scaffold::{self, HookSpec, Language, ScaffoldRequest, ToolSpec};
 use super::store::{self, CrateFetcher, GitRunner, Source, SystemCrateFetcher, SystemGit};
+use crate::host_ui::UiCommand;
 use crate::settings::SettingsStore;
 use async_trait::async_trait;
 use everruns_core::capabilities::Capability;
@@ -15,6 +16,7 @@ use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedSender;
 
 pub const EXTENSIONS_CAPABILITY_ID: &str = "extensions";
 
@@ -26,6 +28,10 @@ pub struct ExtensionsCapability {
     crates: Arc<dyn CrateFetcher>,
     /// Live server processes, so `reload_extension` can restart one in place.
     live_processes: LiveProcessRegistry,
+    /// UI-command sink (the TUI's `ui_rx`) used to activate/deactivate an
+    /// extension on the live session after enable/disable; `None` in
+    /// `--print`/ACP, where enable/disable only persists for the next session.
+    ui_tx: Option<UnboundedSender<UiCommand>>,
 }
 
 impl ExtensionsCapability {
@@ -34,6 +40,7 @@ impl ExtensionsCapability {
         workspace_root: PathBuf,
         settings: Arc<SettingsStore>,
         live_processes: LiveProcessRegistry,
+        ui_tx: Option<UnboundedSender<UiCommand>>,
     ) -> Self {
         Self {
             extensions_dir,
@@ -42,6 +49,7 @@ impl ExtensionsCapability {
             git: Arc::new(SystemGit),
             crates: Arc::new(SystemCrateFetcher::default()),
             live_processes,
+            ui_tx,
         }
     }
 }
@@ -70,10 +78,10 @@ impl Capability for ExtensionsCapability {
             "Extensions are installable capability packages. Use `list_extensions` to see what is \
              installed and enabled, `install_extension` for a crates.io crate \
              (`crates.io:yolop-extension-<name>`), git URL, or local path, \
-             `enable_extension`/`disable_extension` to toggle one in the harness (takes effect \
-             next session), `reload_extension` to restart an enabled extension's server in \
-             place after editing its code (effective immediately, this session), and \
-             `remove_extension` to uninstall. To build a NEW extension \
+             `enable_extension`/`disable_extension` to toggle one (applied to the running \
+             session immediately in the TUI — effective on the next turn — and persisted for \
+             future sessions), `reload_extension` to restart an enabled extension's server in \
+             place after editing its code, and `remove_extension` to uninstall. To build a NEW \
              yourself, `scaffold_extension` generates a ready-to-edit package (manifest + \
              capability server) — declare what it contributes via `tools`, `hooks`, and/or \
              `prompt` — then edit the generated `handle_*` bodies, `install_extension \
@@ -91,6 +99,7 @@ impl Capability for ExtensionsCapability {
             git: self.git.clone(),
             crates: self.crates.clone(),
             live_processes: self.live_processes.clone(),
+            ui_tx: self.ui_tx.clone(),
         });
         vec![
             Box::new(ManageTool::new(ctx.clone(), Verb::Scaffold)),
@@ -112,6 +121,7 @@ struct ManageCtx {
     git: Arc<dyn GitRunner>,
     crates: Arc<dyn CrateFetcher>,
     live_processes: LiveProcessRegistry,
+    ui_tx: Option<UnboundedSender<UiCommand>>,
 }
 
 #[derive(Clone, Copy)]
@@ -350,12 +360,38 @@ impl ManageTool {
         }
         let cap_id = extension_capability_id(name);
         match self.ctx.settings.set_capability_enabled(&cap_id, enable) {
-            Ok(changed) => ToolExecutionResult::Success(json!({
-                "name": name,
-                "enabled": enable,
-                "changed": changed,
-                "note": "Takes effect on the next session.",
-            })),
+            Ok(changed) => {
+                // Persisted for next session; also apply live if the host has a
+                // session to mutate (the TUI). The App answers on `ui_rx` by
+                // calling activate/deactivate_capability, so the extension's
+                // tools/prompt/hooks land on the next turn — no restart.
+                let live = self
+                    .ctx
+                    .ui_tx
+                    .as_ref()
+                    .map(|tx| {
+                        tx.send(UiCommand::SetExtensionActive {
+                            capability_id: cap_id.clone(),
+                            name: name.to_string(),
+                            activate: enable,
+                        })
+                        .is_ok()
+                    })
+                    .unwrap_or(false);
+                let note = if live {
+                    "Applying to the running session now; effective on the next turn (and \
+                     persisted for future sessions)."
+                } else {
+                    "Takes effect on the next session."
+                };
+                ToolExecutionResult::Success(json!({
+                    "name": name,
+                    "enabled": enable,
+                    "changed": changed,
+                    "live": live,
+                    "note": note,
+                }))
+            }
             Err(err) => ToolExecutionResult::ToolError(format!("config write failed: {err}")),
         }
     }
@@ -456,10 +492,14 @@ impl Tool for ManageTool {
             }
             Verb::Remove => "Uninstall an extension by name and drop its enable override.",
             Verb::Enable => {
-                "Enable an installed extension (adds `ext:<name>` to the harness). Effective next session."
+                "Enable an installed extension (adds `ext:<name>` to the harness). In the TUI it \
+                 is also applied to the running session immediately — its tools/prompt/hooks are \
+                 live on the next turn — and persisted for future sessions."
             }
             Verb::Disable => {
-                "Disable an extension without uninstalling it. Effective next session."
+                "Disable an extension without uninstalling it. Applied to the running session \
+                 immediately in the TUI (if it was enabled this session) and persisted for \
+                 future sessions."
             }
             Verb::Reload => {
                 "Reload an enabled extension's server in place so edits to its implementation \
@@ -589,6 +629,7 @@ mod tests {
             git: Arc::new(crate::extensions::store::SystemGit),
             crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
             live_processes: LiveProcessRegistry::default(),
+            ui_tx: None,
         };
         (cap, settings, ext_dir)
     }
@@ -750,5 +791,59 @@ mod tests {
             ToolExecutionResult::ToolError(m) => assert!(m.contains("not enabled"), "{m}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn enable_disable_emit_live_activation_when_wired() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        seed_package(&src, "echo");
+        let ext_dir = tmp.path().join("extensions");
+        let settings = Arc::new(SettingsStore::open(tmp.path().join("settings.toml")));
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiCommand>();
+        let cap = ExtensionsCapability {
+            extensions_dir: ext_dir,
+            workspace_root: tmp.path().to_path_buf(),
+            settings,
+            git: Arc::new(crate::extensions::store::SystemGit),
+            crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
+            live_processes: LiveProcessRegistry::default(),
+            ui_tx: Some(ui_tx),
+        };
+        let tools = cap.tools();
+        let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
+        get("install_extension")
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await;
+
+        // enable persists AND signals live activation on the UI channel.
+        match get("enable_extension")
+            .execute(json!({"name": "echo"}))
+            .await
+        {
+            ToolExecutionResult::Success(v) => assert_eq!(v["live"], true),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            ui_rx.try_recv().unwrap(),
+            UiCommand::SetExtensionActive {
+                capability_id: "ext:echo".into(),
+                name: "echo".into(),
+                activate: true,
+            }
+        );
+
+        // disable signals deactivation.
+        get("disable_extension")
+            .execute(json!({"name": "echo"}))
+            .await;
+        assert_eq!(
+            ui_rx.try_recv().unwrap(),
+            UiCommand::SetExtensionActive {
+                capability_id: "ext:echo".into(),
+                name: "echo".into(),
+                activate: false,
+            }
+        );
     }
 }

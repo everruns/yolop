@@ -68,7 +68,7 @@ use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
 use everruns_mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
 use everruns_runtime::{
-    AgentBuilder, HarnessBuilder, InMemorySessionFileStore, InProcessRuntime,
+    AgentBuilder, CapabilityDelta, HarnessBuilder, InMemorySessionFileStore, InProcessRuntime,
     InProcessRuntimeBuilder, RealDiskFileStore, RuntimeBackends, RuntimeSessionStore,
     SessionBuilder, WriteBlocklistFileStore,
 };
@@ -2286,6 +2286,35 @@ impl RuntimeHandles {
         self.session_store.add_session(session).await?;
         Ok(names)
     }
+
+    /// Activate a registered `ext:<name>` capability on the live session so its
+    /// tools, prompt, hooks, commands, and contributed MCP servers appear on
+    /// the next turn — the hot-enable seam (EVE-795). The capability lands on
+    /// the session overlay (distinct from the harness layer a startup-enabled
+    /// extension rides), so it can also be live-deactivated.
+    pub async fn activate_capability(
+        &self,
+        capability_id: &str,
+    ) -> anyhow::Result<CapabilityDelta> {
+        Ok(self
+            .runtime
+            .activate_capability(self.session_id, AgentCapabilityConfig::new(capability_id))
+            .await?)
+    }
+
+    /// Deactivate a capability from the live session overlay. Succeeds only for
+    /// one activated *this session*; an extension enabled at startup rides the
+    /// harness layer and cannot be removed by a session-scoped op (its disable
+    /// takes effect next session via settings).
+    pub async fn deactivate_capability(
+        &self,
+        capability_id: &str,
+    ) -> anyhow::Result<CapabilityDelta> {
+        Ok(self
+            .runtime
+            .deactivate_capability(self.session_id, capability_id)
+            .await?)
+    }
 }
 
 pub struct StartupInfo {
@@ -2817,11 +2846,15 @@ pub async fn build_with_options(
             capabilities.register(capability);
         }
         // The always-on management surface (install/list/enable/remove/reload).
+        // Hand it the UI-command sink so enable/disable can activate the
+        // capability on the live session (TUI only); `None` elsewhere.
+        let manage_ui_tx = matches!(options.client_ui, ClientUiContext::Tui).then(|| ui_tx.clone());
         capabilities.register(crate::extensions::ExtensionsCapability::new(
             ext_dir,
             effective_root.clone(),
             settings.clone(),
             live_processes.clone(),
+            manage_ui_tx,
         ));
     }
     // Server name list for `/mcp` and StartupInfo, computed after extension
