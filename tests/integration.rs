@@ -43,6 +43,88 @@ fn yolop_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_yolop"))
 }
 
+#[cfg(target_os = "linux")]
+fn run_linux_sandbox_worker(cwd: &Path, temp: &Path, script: &str) -> std::process::Output {
+    Command::new(yolop_binary())
+        .arg("__sandbox-exec")
+        .arg("--cwd")
+        .arg(cwd)
+        .arg("--temp")
+        .arg(temp)
+        .arg("--script")
+        .arg(script)
+        .output()
+        .expect("spawn Linux sandbox worker")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_sandbox_worker_enforces_filesystem_and_network_contract() {
+    use std::net::TcpListener;
+
+    let root = tempfile::tempdir().expect("sandbox root");
+    let workspace = root.path().join("workspace");
+    let private_temp = root.path().join("private-temp");
+    let outside = root.path().join("outside.txt");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    std::fs::create_dir_all(&private_temp).expect("private temp");
+    std::os::unix::fs::symlink(&outside, workspace.join("outside-link")).expect("outside symlink");
+
+    let script = format!(
+        "printf allowed > inside.txt && printf temp > {}/allowed.txt && \
+         ! printf denied > {} && ! printf denied > outside-link",
+        private_temp.display(),
+        outside.display(),
+    );
+    let output = run_linux_sandbox_worker(&workspace, &private_temp, &script);
+    assert!(
+        output.status.success(),
+        "filesystem policy failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read(workspace.join("inside.txt")).unwrap(),
+        b"allowed"
+    );
+    assert!(!outside.exists(), "sandbox wrote outside its workspace");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local listener");
+    let port = listener.local_addr().unwrap().port();
+    let output = run_linux_sandbox_worker(
+        &workspace,
+        &private_temp,
+        &format!(": > /dev/tcp/127.0.0.1/{port}"),
+    );
+    assert!(
+        !output.status.success(),
+        "sandbox unexpectedly created an IPv4 socket"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_sandbox_worker_tracks_each_active_worktree() {
+    let root = tempfile::tempdir().expect("sandbox root");
+    let first = root.path().join("first");
+    let second = root.path().join("second");
+    let private_temp = root.path().join("private-temp");
+    for path in [&first, &second, &private_temp] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+
+    for workspace in [&first, &second] {
+        let output = run_linux_sandbox_worker(workspace, &private_temp, "pwd > active.txt");
+        assert!(
+            output.status.success(),
+            "worker failed for {}",
+            workspace.display()
+        );
+        let recorded = std::fs::read_to_string(workspace.join("active.txt")).unwrap();
+        assert_eq!(recorded.trim(), workspace.to_str().unwrap());
+    }
+}
+
 fn session_ids(sessions_dir: &Path) -> Vec<String> {
     let mut ids: Vec<String> = std::fs::read_dir(sessions_dir)
         .expect("read sessions dir")
@@ -261,6 +343,64 @@ fn llmsim_print_smoke() {
             "print mode should not emit {hidden:?}: {stdout}"
         );
     }
+}
+
+#[test]
+fn unsafe_sandbox_opt_out_warns_from_the_real_binary() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_root = tmp.path().join(".config");
+    let linux_settings = config_root.join("yolop/settings.toml");
+    std::fs::create_dir_all(linux_settings.parent().unwrap()).unwrap();
+    std::fs::write(&linux_settings, "sandbox = \"off\"\n").unwrap();
+    let mac_settings = tmp
+        .path()
+        .join("Library/Application Support/yolop/settings.toml");
+    std::fs::create_dir_all(mac_settings.parent().unwrap()).unwrap();
+    std::fs::write(&mac_settings, "sandbox = \"off\"\n").unwrap();
+
+    let output = Command::new(yolop_binary())
+        .args([
+            "--provider",
+            "llmsim",
+            "--session-dir",
+            tmp.path().to_str().unwrap(),
+            "-p",
+            "hi",
+        ])
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", &config_root)
+        .output()
+        .expect("spawn yolop with sandbox disabled");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr={stderr}");
+    assert!(stderr.contains("DANGER"), "stderr={stderr}");
+    assert!(stderr.contains("UNSAFE HOST"), "stderr={stderr}");
+}
+
+#[test]
+fn unsafe_sandbox_opt_out_is_visible_in_tui_transcript_and_status() {
+    let mut tui = spawn_tui_llmsim_with_settings(
+        &yolop_binary(),
+        TuiSpawnOptions::default(),
+        "provider = \"llmsim\"\nsandbox = \"off\"\n",
+    );
+    assert!(
+        tui.wait_for_output("UNSAFE HOST", Duration::from_secs(3)),
+        "TUI did not show unsafe sandbox state: {}",
+        tui.output_text()
+    );
+    assert!(
+        tui.output_text().contains("DANGER"),
+        "{}",
+        tui.output_text()
+    );
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not finish startup: {}",
+        tui.output_text()
+    );
+    tui.write_input(b"\x03\x03");
+    assert!(tui.wait_or_kill(Duration::from_secs(10)).success());
 }
 
 #[test]

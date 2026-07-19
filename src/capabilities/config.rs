@@ -516,6 +516,24 @@ impl SetConfigTool {
                     mode.as_str()
                 )))
             }
+            KeyTarget::Sandbox => {
+                if clearing {
+                    self.settings
+                        .set_sandbox_mode(crate::settings::SandboxMode::Native)
+                        .map_err(map_err)?;
+                    return Ok(saved(
+                        "cleared sandbox (default native); applies next run".to_string(),
+                    ));
+                }
+                let mode = crate::settings::SandboxMode::parse(value)
+                    .ok_or_else(|| "sandbox expects native or off".to_string())?;
+                self.settings.set_sandbox_mode(mode).map_err(map_err)?;
+                if mode == crate::settings::SandboxMode::Off {
+                    Ok(saved("sandbox = off; DANGER: next run uses UNSAFE HOST execution with unrestricted file, process, and network access".to_string()))
+                } else {
+                    Ok(saved("sandbox = native; applies next run".to_string()))
+                }
+            }
             KeyTarget::Model(provider) => {
                 if clearing {
                     let existed = self.settings.clear_model(provider).map_err(map_err)?;
@@ -775,6 +793,31 @@ mod tests {
             .execute(json!({ "key": "proactive_wake", "value": "maybe" }))
             .await;
         assert!(matches!(bad, ToolExecutionResult::ToolError(_)));
+    }
+
+    #[tokio::test]
+    async fn set_config_requires_explicit_unsafe_sandbox_opt_out_and_warns() {
+        let (_tmp, settings) = store();
+        let tool = set_config_tool(settings.clone());
+        let result = tool
+            .execute(json!({ "key": "sandbox", "value": "off" }))
+            .await;
+        let ToolExecutionResult::Success(message) = result else {
+            panic!("expected success");
+        };
+        assert!(message.to_string().contains("DANGER"), "{message}");
+        assert!(message.to_string().contains("UNSAFE HOST"), "{message}");
+        assert_eq!(
+            settings.snapshot().sandbox_mode(),
+            crate::settings::SandboxMode::Off
+        );
+
+        tool.execute(json!({ "key": "containment", "value": "clear" }))
+            .await;
+        assert_eq!(
+            settings.snapshot().sandbox_mode(),
+            crate::settings::SandboxMode::Native
+        );
     }
 
     #[tokio::test]

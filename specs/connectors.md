@@ -4,7 +4,7 @@ Status: v1 implemented (Daytona).
 
 ## Why
 
-Yolop runs unsandboxed on the user's host by default. Some tasks — untrusted
+Yolop sandboxes arbitrary local shell commands by default. Some tasks — untrusted
 code, heavy builds, network experiments — should run in an isolated remote
 environment instead. [Daytona](https://www.daytona.io/) provides cloud Linux
 sandboxes; upstream ships the integration as `everruns-integrations-daytona`.
@@ -89,5 +89,6 @@ docs for the full tool reference.
 ## See also
 
 - [`specs/configuration.md`](./configuration.md) — `[[capabilities]]` harness overrides
+- [`specs/sandboxing.md`](./sandboxing.md) — common execution-provider boundary
 - [`specs/maintenance.md`](./maintenance.md) — host threat surface
 - [Everruns Daytona integration](https://docs.everruns.com/integrations/daytona/)

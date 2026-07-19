@@ -131,3 +131,25 @@ jobs:
         env:
           YOLOP_REQUIRE_LIVE_TESTS: "1"
         run: doppler run -- cargo test --test integration -- --nocapture
+
+  sandbox-contract:
+    name: Sandbox Contract (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "sandbox-${{ runner.os }}"
+
+      - name: Run sandbox contract suite
+        run: cargo test sandbox -- --nocapture

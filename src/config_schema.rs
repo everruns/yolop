@@ -186,6 +186,16 @@ pub fn schema() -> &'static [ConfigField] {
             provider_scoped: false,
         },
         ConfigField {
+            key: "sandbox",
+            aliases: &["containment"],
+            title: "Shell sandbox",
+            description: "Kernel-enforced containment for every shell command. `native` is the safe default. `off` runs commands directly on the host and is dangerous; use it only when yolop itself already runs inside an isolated VM or container.",
+            kind: ValueKind::Text,
+            default: Some("native"),
+            examples: &["native", "off"],
+            provider_scoped: false,
+        },
+        ConfigField {
             key: "capabilities",
             aliases: &["capability"],
             title: "Harness capabilities",
@@ -235,6 +245,7 @@ pub enum KeyTarget {
     ApprovalMode,
     ProactiveWake,
     Worktrees,
+    Sandbox,
     /// Per-provider model spec, for the named provider.
     Model(String),
     /// Per-provider API token.
@@ -259,6 +270,7 @@ impl KeyTarget {
             KeyTarget::ApprovalMode => "approval_mode",
             KeyTarget::ProactiveWake => "proactive_wake",
             KeyTarget::Worktrees => "worktrees",
+            KeyTarget::Sandbox => "sandbox",
             KeyTarget::Model(_) => "models",
             KeyTarget::Token(_) => "tokens",
             KeyTarget::BaseUrl(_) => "base_urls",
@@ -312,6 +324,7 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "approval_mode" | "approval" => scalar(KeyTarget::ApprovalMode),
         "proactive_wake" | "background_wake" | "wake" => scalar(KeyTarget::ProactiveWake),
         "worktrees" | "worktree" => scalar(KeyTarget::Worktrees),
+        "sandbox" | "containment" => scalar(KeyTarget::Sandbox),
         "models" | "model_for" => scoped(KeyTarget::Model),
         "tokens" | "token" => scoped(KeyTarget::Token),
         "base_urls" | "base_url" | "url" => scoped(KeyTarget::BaseUrl),

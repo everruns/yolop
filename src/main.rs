@@ -30,6 +30,7 @@ mod presentation;
 mod proc;
 mod prompt_history;
 mod runtime;
+mod sandbox;
 mod session;
 mod session_log;
 mod session_tasks_view;
@@ -171,6 +172,17 @@ enum Commands {
     /// bars, loader). Press `q` or `Esc` to quit. Hidden dev helper.
     #[command(hide = true)]
     TuikaGallery,
+    /// Internal Linux Landlock/seccomp worker. Not a user-facing command.
+    #[cfg(target_os = "linux")]
+    #[command(name = "__sandbox-exec", hide = true)]
+    SandboxExec {
+        #[arg(long)]
+        cwd: PathBuf,
+        #[arg(long)]
+        temp: PathBuf,
+        #[arg(long, allow_hyphen_values = true)]
+        script: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -532,6 +544,9 @@ async fn main() -> Result<()> {
     // ACP mode builds runtimes per session (cwd arrives via `session/new`), so
     // it bypasses the up-front runtime build and the TUI.
     if cli.acp {
+        if let Some(warning) = sandbox::danger_warning(settings.snapshot().sandbox_mode()) {
+            eprintln!("yolop: {warning}");
+        }
         if cli.trajectory_out.is_some() {
             eprintln!("yolop: --trajectory-out is ignored in --acp mode");
         }
@@ -542,6 +557,9 @@ async fn main() -> Result<()> {
     // transcript clear, quit), so only it enables `ClientCommandsCapability`.
     // `--print` is one-shot and never dispatches them.
     let interactive = cli.print.is_none();
+    if let Some(warning) = sandbox::danger_warning(settings.snapshot().sandbox_mode()) {
+        eprintln!("yolop: {warning}");
+    }
     let runtime = runtime::build_with_options(
         cwd,
         provider,
@@ -836,6 +854,10 @@ fn run_command(command: Commands) -> Result<()> {
         Commands::Worktree(args) => run_worktree_command(args.command),
         Commands::Mcp(args) => run_mcp_command(args.command),
         Commands::TuikaGallery => run_tuika_gallery(),
+        #[cfg(target_os = "linux")]
+        Commands::SandboxExec { cwd, temp, script } => {
+            sandbox::run_linux_worker(&cwd, &temp, &script)
+        }
         Commands::Into(into) => match into.target {
             IntoTarget::Paseo(args) => {
                 let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));

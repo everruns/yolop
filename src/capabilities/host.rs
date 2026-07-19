@@ -279,6 +279,7 @@ pub(crate) const CODING_BASH_CAPABILITY_ID: &str = "yolop_bash";
 
 pub(crate) struct CodingBashCapability {
     pub(crate) workspace: Workspace,
+    pub(crate) sandbox: Arc<dyn crate::sandbox::SandboxProvider>,
     pub(crate) expose_command: bool,
 }
 
@@ -306,7 +307,10 @@ impl Capability for CodingBashCapability {
         None
     }
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![Box::new(BashTool::new(self.workspace.clone()))]
+        vec![Box::new(BashTool::with_sandbox(
+            self.workspace.clone(),
+            self.sandbox.clone(),
+        ))]
     }
     fn commands(&self) -> Vec<CommandDescriptor> {
         if !self.expose_command {
@@ -342,7 +346,7 @@ impl Capability for CodingBashCapability {
             .map(str::trim)
             .filter(|command| !command.is_empty())
             .ok_or_else(|| everruns_core::AgentLoopError::config("/shell requires: command"))?;
-        let result = BashTool::new(self.workspace.clone())
+        let result = BashTool::with_sandbox(self.workspace.clone(), self.sandbox.clone())
             .execute(json!({ "command": command, "output": "normal" }))
             .await;
         Ok(shell_command_result(result))

@@ -570,6 +570,12 @@ impl App {
     }
 
     pub(crate) fn presentation_state(&self) -> PresentationState {
+        let settings = self.settings.snapshot();
+        let approval_mode = if settings.sandbox_mode() == crate::settings::SandboxMode::Off {
+            format!("{} · UNSAFE HOST", settings.approval_mode().as_str())
+        } else {
+            settings.approval_mode().as_str().to_string()
+        };
         PresentationState {
             stream_preview: self.stream_preview.clone(),
             busy: self.busy,
@@ -585,12 +591,7 @@ impl App {
             context_window_tokens: self.context_window_tokens(),
             status_layout: self.status_layout,
             hooks_summary: self.startup.hook_summary(),
-            approval_mode: self
-                .settings
-                .snapshot()
-                .approval_mode()
-                .as_str()
-                .to_string(),
+            approval_mode,
             background: self.background_counts(),
             goal_indicator: self.goal_indicator(),
             ask_indicator: self.ask_indicator(),
@@ -686,6 +687,11 @@ impl App {
             self.startup.workspace_root.display()
         ));
         self.push_system(format!("model: {}", self.model.provider_label()));
+        let sandbox_mode = self.settings.snapshot().sandbox_mode();
+        self.push_system(format!("sandbox: {}", sandbox_mode.as_str()));
+        if let Some(warning) = crate::sandbox::danger_warning(sandbox_mode) {
+            self.push_system(warning.to_string());
+        }
         self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
         if !self.startup.capability_commands.is_empty() {
             let names: Vec<String> = self

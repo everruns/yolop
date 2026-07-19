@@ -4,9 +4,10 @@
 // capability now that yolop selects `RealDiskFileStore` through its platform
 // filesystem factory. The bash tool stays custom because the built-in `virtual_bash`
 // runs commands against the VFS, not against the real workspace, and the
-// security model for unsandboxed shell-on-host needs yolop-specific policy
-// (timeout, output cap). See EVE-478 for the eventual runtime-side story.
+// security model for real child processes needs yolop-specific containment,
+// timeout, and output policy.
 
+use crate::sandbox::SandboxProvider;
 use crate::workspace_host::WorkspaceHost;
 use async_trait::async_trait;
 use everruns_core::exec_tool_result::ExecToolResultPayload;
@@ -18,11 +19,9 @@ use everruns_core::{
     ToolContext,
 };
 use serde_json::{Value, json};
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 
 /// Workspace context for the bash tool. The host disk repoints when a session
 /// worktree is activated mid-session (EVE-660).
@@ -47,6 +46,7 @@ impl Workspace {
 
 pub struct BashTool {
     ws: Workspace,
+    sandbox: Arc<dyn SandboxProvider>,
     foreground_timeout_secs: u64,
     background_timeout_secs: u64,
     max_output_bytes: usize,
@@ -71,9 +71,23 @@ fn command_failure_hint(exit_code: i32, stderr: &str) -> Option<&'static str> {
 }
 
 impl BashTool {
+    #[cfg(test)]
     pub fn new(ws: Workspace) -> Self {
+        // Linux's native provider re-execs the yolop binary. Unit tests run in
+        // the libtest harness, so its real-binary contract lives in
+        // tests/integration.rs instead.
+        let mode = if cfg!(target_os = "linux") {
+            crate::settings::SandboxMode::Off
+        } else {
+            crate::settings::SandboxMode::Native
+        };
+        Self::with_sandbox(ws, crate::sandbox::provider(mode))
+    }
+
+    pub fn with_sandbox(ws: Workspace, sandbox: Arc<dyn SandboxProvider>) -> Self {
         Self {
             ws,
+            sandbox,
             foreground_timeout_secs: 120,
             background_timeout_secs: 24 * 60 * 60,
             max_output_bytes: 1024 * 1024,
@@ -109,13 +123,12 @@ impl BashTool {
 
         // kill_on_drop ensures a timed-out or canceled background command is
         // reaped when the owning future is dropped.
-        let mut child = Command::new("bash")
-            .arg("-lc")
-            .arg(command)
-            .current_dir(&cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
+        let mut process = self
+            .sandbox
+            .command(&cwd, command)
+            .map_err(|e| ToolExecutionResult::tool_error(format!("sandbox setup failed: {e:#}")))?;
+        crate::sandbox::configure_stdio(&mut process);
+        let mut child = process
             .spawn()
             .map_err(|e| ToolExecutionResult::tool_error(format!("spawn failed: {e}")))?;
         let mut stdout = child.stdout.take().unwrap();
@@ -443,6 +456,117 @@ mod tests {
             out.trim(),
             root_name,
             "cwd should reset to the workspace root between calls"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn native_sandbox_allows_workspace_writes_and_denies_outside_writes() {
+        let parent = tempfile::tempdir().unwrap();
+        let workspace = parent.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let outside = parent.path().join("outside.txt");
+        let tool = BashTool::new(Workspace::from_path(workspace.clone()));
+
+        let ToolExecutionResult::Success(inside) = tool
+            .execute(json!({ "command": "printf inside > allowed.txt" }))
+            .await
+        else {
+            panic!("expected structured result");
+        };
+        assert_eq!(inside["exit_code"], 0, "{inside}");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("allowed.txt")).unwrap(),
+            "inside"
+        );
+
+        let script = format!("printf escaped > '{}'", outside.display());
+        let ToolExecutionResult::Success(escaped) =
+            tool.execute(json!({ "command": script })).await
+        else {
+            panic!("expected structured result");
+        };
+        assert_ne!(escaped["exit_code"], 0, "{escaped}");
+        assert!(!outside.exists(), "sandbox wrote outside the workspace");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn native_sandbox_denies_git_metadata_and_path_alias_escapes() {
+        let parent = tempfile::tempdir().unwrap();
+        let workspace = parent.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(workspace.join(".git")).unwrap();
+        let outside = parent.path().join("outside.txt");
+        std::fs::write(&outside, "safe").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, workspace.join("escape-link")).unwrap();
+        let tool = BashTool::new(Workspace::from_path(workspace.clone()));
+
+        let script = format!(
+            "if printf git > .git/config; then exit 91; fi; if printf symlink > escape-link; then exit 92; fi; if ln '{}' hard-link 2>/dev/null; then exit 93; fi; exit 0",
+            outside.display()
+        );
+        let ToolExecutionResult::Success(result) = tool.execute(json!({ "command": script })).await
+        else {
+            panic!("expected structured result");
+        };
+        assert_eq!(result["exit_code"], 0, "{result}");
+        assert!(!workspace.join(".git/config").exists());
+        assert!(!workspace.join("hard-link").exists());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "safe");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn native_sandbox_denies_network_connections() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let workspace = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(workspace.path().to_path_buf()));
+        let script = format!("exec 3<>/dev/tcp/127.0.0.1/{port}");
+        let ToolExecutionResult::Success(result) = tool.execute(json!({ "command": script })).await
+        else {
+            panic!("expected structured result");
+        };
+        assert_ne!(result["exit_code"], 0, "{result}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn native_sandbox_follows_active_worktree_per_command() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("root");
+        let worktree = parent.path().join("worktree");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&worktree).unwrap();
+        let active = Arc::new(std::sync::RwLock::new(root.clone()));
+        let host = Arc::new(WorkspaceHost::new(active.clone(), root.clone()).expect("host"));
+        let tool = BashTool::new(Workspace::new(host));
+
+        let ToolExecutionResult::Success(first) = tool
+            .execute(json!({ "command": "printf root > marker" }))
+            .await
+        else {
+            panic!("expected root command result");
+        };
+        assert_eq!(first["exit_code"], 0, "{first}");
+
+        *active.write().expect("lock") = worktree.clone();
+        let ToolExecutionResult::Success(second) = tool
+            .execute(json!({ "command": "printf worktree > marker" }))
+            .await
+        else {
+            panic!("expected worktree command result");
+        };
+        assert_eq!(second["exit_code"], 0, "{second}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("marker")).unwrap(),
+            "root"
+        );
+        assert_eq!(
+            std::fs::read_to_string(worktree.join("marker")).unwrap(),
+            "worktree"
         );
     }
 

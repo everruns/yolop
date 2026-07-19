@@ -72,6 +72,33 @@ impl std::fmt::Display for WorktreesMode {
     }
 }
 
+/// Kernel containment used for arbitrary shell commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SandboxMode {
+    /// Seatbelt on macOS; Landlock and seccomp on Linux.
+    #[default]
+    Native,
+    /// Explicitly run commands directly on the host. Dangerous.
+    Off,
+}
+
+impl SandboxMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "native" | "on" | "default" => Some(Self::Native),
+            "off" | "none" | "disabled" | "unsafe-host" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
 /// running critical actions. Soft approval is prompt-engineering, not a
 /// hard gate: the chosen level is injected into the system prompt so the
 /// model itself decides when to ask, batches safe calls, and the user
@@ -149,6 +176,8 @@ pub struct Settings {
     pub proactive_wake: bool,
     /// Git worktree isolation for code changes (`auto`, `always`, `off`).
     pub worktrees: WorktreesMode,
+    /// Kernel sandbox for arbitrary shell commands. Enabled by default.
+    pub sandbox: SandboxMode,
     /// Global MCP servers (`[mcp.servers.<name>]` in settings.toml). Repo `.mcp.json` entries override these by name.
     pub mcp: McpSettings,
     /// Ordered harness capability overrides (`[[capabilities]]` in settings.toml).
@@ -168,6 +197,7 @@ impl Default for Settings {
             approval_mode: ApprovalMode::Normal,
             proactive_wake: true,
             worktrees: WorktreesMode::Auto,
+            sandbox: SandboxMode::Native,
             mcp: McpSettings::default(),
             capabilities: Vec::new(),
         }
@@ -205,6 +235,11 @@ impl Settings {
             .and_then(Value::as_str)
             .and_then(WorktreesMode::parse)
             .unwrap_or_default();
+        let sandbox = table
+            .get("sandbox")
+            .and_then(Value::as_str)
+            .and_then(SandboxMode::parse)
+            .unwrap_or_default();
         let string_map = |key: &str| {
             let mut map = BTreeMap::new();
             if let Some(t) = table.get(key).and_then(Value::as_table) {
@@ -231,6 +266,7 @@ impl Settings {
             approval_mode,
             proactive_wake,
             worktrees,
+            sandbox,
             mcp: parse_mcp_settings(table),
             capabilities: parse_capabilities_table(table),
         }
@@ -263,6 +299,10 @@ impl Settings {
                 "worktrees".to_string(),
                 Value::String(self.worktrees.as_str().to_string()),
             );
+        }
+        // The safe default stays implicit; an unsafe host opt-out is conspicuous.
+        if self.sandbox == SandboxMode::Off {
+            table.insert("sandbox".to_string(), Value::String("off".to_string()));
         }
         let mut insert_map = |key: &str, map: &BTreeMap<String, String>| {
             if !map.is_empty() {
@@ -341,6 +381,10 @@ impl Settings {
 
     pub fn worktrees_mode(&self) -> WorktreesMode {
         self.worktrees
+    }
+
+    pub fn sandbox_mode(&self) -> SandboxMode {
+        self.sandbox
     }
 
     pub fn capability_overrides_for(&self, id: &str) -> Vec<(usize, &CapabilityOverride)> {
@@ -531,6 +575,12 @@ impl SettingsStore {
     pub fn set_worktrees_mode(&self, mode: WorktreesMode) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         guard.worktrees = mode;
+        save_to(&self.path, &guard)
+    }
+
+    pub fn set_sandbox_mode(&self, mode: SandboxMode) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.sandbox = mode;
         save_to(&self.path, &guard)
     }
 
@@ -737,6 +787,27 @@ mod tests {
             !SettingsStore::open(path)
                 .snapshot()
                 .proactive_wake_enabled()
+        );
+    }
+
+    #[test]
+    fn sandbox_defaults_on_and_unsafe_opt_out_round_trips() {
+        let settings = Settings::from_table(&Table::new());
+        assert_eq!(settings.sandbox_mode(), SandboxMode::Native);
+        assert!(!settings.to_table().contains_key("sandbox"));
+
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store.set_sandbox_mode(SandboxMode::Off).expect("save");
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("read")
+                .contains("sandbox = \"off\"")
+        );
+        assert_eq!(
+            SettingsStore::open(path).snapshot().sandbox_mode(),
+            SandboxMode::Off
         );
     }
 
