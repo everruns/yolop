@@ -28,7 +28,12 @@ struct GalleryRun {
 
 /// Spawn `yolop tuika-gallery` under a pty of the given size, optionally resize
 /// mid-run, then send `q` and collect everything the terminal received.
-fn run_gallery(rows: u16, cols: u16, resize_to: Option<(u16, u16)>) -> GalleryRun {
+fn run_gallery(
+    rows: u16,
+    cols: u16,
+    resize_to: Option<(u16, u16)>,
+    hyperlinks: bool,
+) -> GalleryRun {
     let home = tempfile::tempdir().expect("home tempdir");
     let pty = NativePtySystem::default();
     let pair = pty
@@ -46,6 +51,8 @@ fn run_gallery(rows: u16, cols: u16, resize_to: Option<(u16, u16)>) -> GalleryRu
     cmd.env("HOME", home.path());
     cmd.env("XDG_CONFIG_HOME", home.path().join(".config"));
     cmd.env("XDG_DATA_HOME", home.path().join(".local/share"));
+    // Opt-in OSC 8 hyperlinks (the gallery honors this like the main TUI).
+    cmd.env("YOLOP_HYPERLINKS", if hyperlinks { "1" } else { "0" });
 
     let mut child = pair.slave.spawn_command(cmd).expect("spawn gallery");
     drop(pair.slave);
@@ -152,9 +159,13 @@ fn visible_text(bytes: &[u8]) -> String {
     out
 }
 
+/// The URL rendered in the gallery footer, emitted as an OSC 8 hyperlink target
+/// when `YOLOP_HYPERLINKS` is enabled.
+const GALLERY_URL: &str = "https://github.com/everruns/yolop";
+
 #[test]
 fn gallery_drives_altscreen_and_native_progress() {
-    let run = run_gallery(24, 80, None);
+    let run = run_gallery(24, 80, None, false);
     let out = &run.output;
 
     assert!(run.exited_ok, "gallery should exit cleanly on `q`");
@@ -186,7 +197,7 @@ fn gallery_drives_altscreen_and_native_progress() {
 #[test]
 fn gallery_survives_resize() {
     // Start wide, shrink to a small size mid-run.
-    let run = run_gallery(24, 100, Some((40, 12)));
+    let run = run_gallery(24, 100, Some((40, 12)), false);
     assert!(
         run.exited_ok,
         "gallery should survive a resize and exit cleanly"
@@ -194,5 +205,36 @@ fn gallery_survives_resize() {
     assert!(
         contains(&run.output, b"\x1b[?1049l"),
         "should still restore the screen after a resize"
+    );
+}
+
+#[test]
+fn gallery_emits_osc8_hyperlink_when_enabled() {
+    let run = run_gallery(24, 80, None, true);
+    assert!(run.exited_ok, "gallery should exit cleanly");
+    // With hyperlinks on, the footer URL is wrapped in an OSC 8 sequence
+    // (`ESC ] 8 ; ; <url> ST`) targeting itself — proven end-to-end through the
+    // real binary + HyperlinkBackend, not just the unit tests.
+    let osc8 = format!("\x1b]8;;{GALLERY_URL}\x1b\\");
+    assert!(
+        contains(&run.output, osc8.as_bytes()),
+        "expected OSC 8 hyperlink for {GALLERY_URL} when YOLOP_HYPERLINKS=1"
+    );
+}
+
+#[test]
+fn gallery_omits_osc8_hyperlink_when_disabled() {
+    let run = run_gallery(24, 80, None, false);
+    assert!(run.exited_ok, "gallery should exit cleanly");
+    // Default (disabled) backend is a pure pass-through: the URL still renders
+    // as visible text, but no OSC 8 escape is emitted.
+    assert!(
+        !contains(&run.output, b"\x1b]8;;"),
+        "no OSC 8 hyperlink should be emitted when hyperlinks are disabled"
+    );
+    let text = visible_text(&run.output);
+    assert!(
+        text.contains(GALLERY_URL),
+        "the URL should still be visible as text: {text:?}"
     );
 }
