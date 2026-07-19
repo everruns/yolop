@@ -48,7 +48,7 @@ pub mod view;
 // etc. for the common surface without deep paths.
 pub use components::{
     Boxed, Flex, Loader, Paragraph, ProgressBar, Scroll, ScrollState, SelectList, SelectOutcome,
-    SelectState, Spacer, Spinner, SpinnerStyle, StatusBar, Text,
+    SelectState, Spacer, Spinner, SpinnerStyle, StatusBar, Text, Wrap, wrap_lines,
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseKind};
 pub use focus::FocusRegistry;

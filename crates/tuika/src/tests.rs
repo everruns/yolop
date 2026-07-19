@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use super::anim;
 use super::components::{
     Loader, Paragraph, ProgressBar, Scroll, ScrollState, SelectList, SelectOutcome, SelectState,
-    Spinner, Text,
+    Spinner, Text, Wrap, line_width, wrap_lines,
 };
 use super::event::{Event, EventFlow, Key, KeyCode, Mouse, MouseKind};
 use super::focus::FocusRegistry;
@@ -150,6 +150,129 @@ fn paragraph_wraps_to_width() {
     let size = p.measure(Size::new(10, 10));
     assert!(size.height >= 2, "expected wrap, got {size:?}");
     assert!(size.width <= 10);
+}
+
+// ---- styled wrapping (wrap_lines / Wrap) ---------------------------------
+
+/// Concatenated text of a line's spans.
+fn line_text(line: &Line) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+#[test]
+fn wrap_lines_breaks_on_word_boundaries() {
+    let out = wrap_lines(&[Line::from("the quick brown fox jumps")], 9);
+    assert!(
+        out.iter().all(|l| line_width(l) <= 9),
+        "no output line may exceed the width: {out:?}"
+    );
+    // Every word survives, in order, un-split.
+    let words: Vec<String> = out
+        .iter()
+        .flat_map(|l| {
+            line_text(l)
+                .split_whitespace()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(words, ["the", "quick", "brown", "fox", "jumps"]);
+}
+
+#[test]
+fn wrap_lines_preserves_span_styles() {
+    let red = Style::default().fg(Color::Red);
+    let blue = Style::default().fg(Color::Blue);
+    let line = Line::from(vec![
+        Span::styled("red", red),
+        Span::raw(" "),
+        Span::styled("blue", blue),
+    ]);
+    // Wide enough that nothing wraps.
+    let out = wrap_lines(&[line], 40);
+    assert_eq!(out.len(), 1);
+    let spans = &out[0].spans;
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.content.starts_with("red") && s.style.fg == Some(Color::Red)),
+        "red run lost its style: {spans:?}"
+    );
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.content.contains("blue") && s.style.fg == Some(Color::Blue)),
+        "blue run lost its style: {spans:?}"
+    );
+}
+
+#[test]
+fn wrap_lines_style_survives_a_break() {
+    let accent = Style::default()
+        .fg(Color::Blue)
+        .add_modifier(Modifier::UNDERLINED);
+    // "aaaa bbbb", all accent, width 4 -> two lines, both still accent.
+    let out = wrap_lines(&[Line::from(Span::styled("aaaa bbbb", accent))], 4);
+    assert_eq!(out.len(), 2, "{out:?}");
+    for l in &out {
+        assert!(
+            l.spans.iter().all(|s| s.style.fg == Some(Color::Blue)
+                && s.style.add_modifier.contains(Modifier::UNDERLINED)),
+            "wrapped line dropped styling: {l:?}"
+        );
+    }
+}
+
+#[test]
+fn wrap_lines_hard_breaks_overlong_word() {
+    let word = "x".repeat(20);
+    let out = wrap_lines(&[Line::from(word.clone())], 8);
+    assert!(out.len() >= 3, "a 20-col word at width 8 needs >=3 lines");
+    assert!(out.iter().all(|l| line_width(l) <= 8));
+    let joined: String = out.iter().map(|l| line_text(l)).collect();
+    assert_eq!(joined, word, "hard-break must not lose characters");
+}
+
+#[test]
+fn wrap_lines_counts_wide_glyphs() {
+    // Each CJK glyph is 2 columns; no whitespace, so it hard-breaks at width 4.
+    let out = wrap_lines(&[Line::from("你好世界")], 4);
+    assert!(out.iter().all(|l| line_width(l) <= 4), "{out:?}");
+    let joined: String = out.iter().map(|l| line_text(l)).collect();
+    assert_eq!(joined, "你好世界");
+}
+
+#[test]
+fn wrap_lines_keeps_blank_lines() {
+    let lines = vec![Line::from("a"), Line::from(""), Line::from("b")];
+    let out = wrap_lines(&lines, 10);
+    assert_eq!(
+        out.len(),
+        3,
+        "a blank line must stay one blank row: {out:?}"
+    );
+    assert_eq!(line_text(&out[1]), "");
+}
+
+#[test]
+fn wrap_lines_zero_width_is_identity() {
+    let out = wrap_lines(&[Line::from("hello world")], 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(line_text(&out[0]), "hello world");
+}
+
+#[test]
+fn wrap_component_renders_reflowed() {
+    // "aa bb cc" at width 5 wraps to "aa bb" / "cc".
+    let mut buf = buffer(5, 3);
+    let w = Wrap::new(vec![Line::from("aa bb cc")]);
+    let theme = Theme::default();
+    let ctx = RenderCtx::new(&theme);
+    let area = buf.area;
+    let mut surface = Surface::new(&mut buf, area);
+    w.render(area, &mut surface, &ctx);
+    assert_eq!(row(&buf, 0), "aa bb");
+    assert_eq!(row(&buf, 1), "cc");
 }
 
 // ---- scroll state --------------------------------------------------------
