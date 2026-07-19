@@ -658,22 +658,18 @@ fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
     if text.is_empty() { None } else { Some(text) }
 }
 
-/// Run a mutating git subcommand with stdout/stderr **captured**, never
-/// inherited from the parent process.
+/// Run a mutating git subcommand with its output **captured**, never inherited.
 ///
 /// Worktree management runs while the TUI owns the terminal — most visibly the
 /// `--fullscreen` alternate screen, which has no scrollback to absorb stray
-/// output. A bare `Command::status()` inherits our stdio, so git's progress
-/// (`Preparing worktree …`, `From github.com…`, `HEAD is now at …`) prints
-/// straight onto the frame and corrupts the composer and status bar. Routing
-/// every worktree git call through `.output()` keeps that noise off the screen
-/// while still exposing the exit status and captured stderr for diagnostics.
+/// output — so git's progress (`Preparing worktree …`, `HEAD is now at …`)
+/// must not reach the frame. Goes through [`crate::proc::capture`], the shared
+/// choke point for terminal-safe subprocesses, and returns the completed
+/// `Output` so callers can gate on `status.success()` and surface stderr.
 fn git_run(repo_root: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
-    Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(args)
-        .output()
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(repo_root).args(args);
+    crate::proc::capture(&mut cmd)
 }
 
 pub fn restore_worktree_from_metadata(metadata: &SessionWorkspaceMetadata) -> Option<WorktreeInfo> {
@@ -880,8 +876,12 @@ mod tests {
             .output()
             .expect("git init");
 
-        let output = git_run(repo.path(), &["rev-parse", "--is-inside-work-tree"]).expect("git_run");
-        assert!(output.status.success(), "rev-parse should succeed in a repo");
+        let output =
+            git_run(repo.path(), &["rev-parse", "--is-inside-work-tree"]).expect("git_run");
+        assert!(
+            output.status.success(),
+            "rev-parse should succeed in a repo"
+        );
         assert_eq!(
             String::from_utf8_lossy(&output.stdout).trim(),
             "true",

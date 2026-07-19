@@ -213,9 +213,13 @@ impl ExtensionProcess {
             .current_dir(&self.spec.workspace_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // stderr is the server's free log channel, never parsed; inherit
-            // so `RUST_LOG`-style server logs land with yolop's own stderr.
-            .stderr(Stdio::inherit())
+            // stderr is the server's free log channel, never parsed. Pipe it and
+            // drain to tracing rather than inherit: inheriting writes the
+            // server's logs straight onto the terminal, which corrupts the TUI
+            // frame (most visibly the `--fullscreen` alternate screen). Routed to
+            // tracing, the logs still surface via `RUST_LOG` — just never on the
+            // raw screen.
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         // Resolve the command against the package's own `bin/` first.
         let bin_dir = self.spec.package_dir.join("bin");
@@ -243,6 +247,19 @@ impl ExtensionProcess {
             .stdin
             .take()
             .ok_or_else(|| anyhow!("extension server has no stdin"))?;
+        // Drain the server's stderr into tracing so its logs never touch the
+        // terminal the TUI owns. The task ends when the child exits and stderr
+        // hits EOF.
+        if let Some(stderr) = child.stderr.take() {
+            let ext = self.name().to_string();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::debug!(target: "yolop::ext", ext = %ext, "{line}");
+                }
+            });
+        }
 
         let init = InitializeParams {
             protocol_version: PROTOCOL_VERSION.to_string(),

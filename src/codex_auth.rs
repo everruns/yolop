@@ -512,6 +512,12 @@ async fn open_browser(url: &str) -> Result<()> {
         command
     };
     command.kill_on_drop(true);
+    // Detach stdio so a chatty browser launcher can't print onto the TUI frame
+    // (mirrors `crate::proc::detach_stdio`, which is for std `Command`).
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     let status = command
         .status()
         .await
