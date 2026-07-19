@@ -7,9 +7,8 @@ terminal.
 
 It is self-contained — it depends only on `ratatui`, `crossterm`, `textwrap`,
 and `unicode-width`, and knows nothing about yolop — and is staged for
-extraction into its own crate. Today yolop drives it from
-`src/app/fullscreen.rs` (the `--fullscreen` renderer) and `src/main.rs` (the
-`tuika-gallery` demo).
+extraction into its own crate. Today yolop drives the component gallery from
+`src/main.rs` (`tuika-gallery`).
 
 ## Model
 

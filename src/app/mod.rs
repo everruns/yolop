@@ -3586,36 +3586,24 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn fullscreen_renders_transcript_composer_and_status() {
+    async fn fullscreen_matches_regular_presentation() {
         let mut test = app_with_llmsim().await;
-        test.app.set_render_mode(RenderMode::Fullscreen);
         // Dismiss the first-run setup overlay so the base transcript is visible;
         // overlay compositing is covered by the tuika suite.
         test.app.setup = None;
         test.app.push_user("hello from user".to_string());
         test.app.input.insert_str("draft reply");
 
-        // `Terminal::new` (used by `render_app_lines`) defaults to a full
-        // viewport, matching the `--fullscreen` runtime path.
-        let rows = render_app_lines(&mut test.app, 60, 20);
-        let joined = rows.join("\n");
+        test.app.set_render_mode(RenderMode::Inline);
+        let regular = render_app_lines(&mut test.app, 60, 20);
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        let fullscreen = render_app_lines(&mut test.app, 60, 20);
+        let joined = fullscreen.join("\n");
 
-        assert!(
-            joined.contains("hello from user"),
-            "transcript should render in the full-screen body: {joined}"
-        );
-        assert!(
-            joined.contains("draft reply"),
-            "composer text should render in the full-screen composer: {joined}"
-        );
-        assert!(
-            joined.contains("llmsim"),
-            "status bar should surface the provider: {joined}"
-        );
-        assert!(
-            joined.contains('╭'),
-            "full-screen chrome should draw rounded tuika borders: {joined}"
-        );
+        assert_eq!(fullscreen, regular);
+        assert!(joined.contains("hello from user"));
+        assert!(joined.contains("draft reply"));
+        assert!(joined.contains("llmsim"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
