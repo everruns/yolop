@@ -106,6 +106,38 @@ impl PromptHistory {
         self.cursor.map(|i| self.entries[i].as_str())
     }
 
+    /// Whether there is anything to recall or search.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The entry at `index`, if it exists.
+    pub(crate) fn entry_at(&self, index: usize) -> Option<&str> {
+        self.entries.get(index).map(String::as_str)
+    }
+
+    /// Reverse (newest-first) case-insensitive substring search for the most
+    /// recent entry at or below `start_at` that contains `query`. An empty query
+    /// matches every entry, so a bare Ctrl+R walks straight back through history.
+    /// Returns the matched `(index, entry)`.
+    pub(crate) fn reverse_search(&self, query: &str, start_at: usize) -> Option<(usize, String)> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        let start = start_at.min(self.entries.len() - 1);
+        let needle = query.to_lowercase();
+        (0..=start)
+            .rev()
+            .find(|&i| self.entries[i].to_lowercase().contains(&needle))
+            .map(|i| (i, self.entries[i].clone()))
+    }
+
+    /// The newest entry's index, if any — the natural starting point for a fresh
+    /// reverse search.
+    pub(crate) fn newest_index(&self) -> Option<usize> {
+        self.entries.len().checked_sub(1)
+    }
+
     /// Move to the previous (older) entry, saving `current` as the draft on the
     /// first step. Returns the entry to place in the composer, or `None` when
     /// there is nothing older (history empty, or already at the oldest entry).
@@ -257,6 +289,35 @@ mod tests {
         assert!(!h.is_browsing());
         // The next Up starts from the newest (freshly recorded) entry.
         assert_eq!(h.navigate_up(""), Some("three".to_string()));
+    }
+
+    #[test]
+    fn reverse_search_finds_newest_match_and_cycles_older() {
+        let h = seeded(&["deploy staging", "run tests", "deploy prod", "run lint"]);
+        let newest = h.newest_index().unwrap();
+        // From the newest, "deploy" matches "deploy prod" (index 2) first.
+        let (i, entry) = h.reverse_search("deploy", newest).unwrap();
+        assert_eq!((i, entry.as_str()), (2, "deploy prod"));
+        // Cycling older (search below index 2) reaches "deploy staging".
+        let (i, entry) = h.reverse_search("deploy", i - 1).unwrap();
+        assert_eq!((i, entry.as_str()), (0, "deploy staging"));
+        // A query absent from index 0 (and below) yields no match there.
+        assert_eq!(h.reverse_search("prod", 0), None);
+    }
+
+    #[test]
+    fn reverse_search_is_case_insensitive_and_empty_matches_newest() {
+        let h = seeded(&["First", "SECOND"]);
+        assert_eq!(h.reverse_search("second", 1).unwrap().1, "SECOND");
+        // Empty query matches the newest entry.
+        assert_eq!(h.reverse_search("", 1).unwrap(), (1, "SECOND".to_string()));
+    }
+
+    #[test]
+    fn reverse_search_on_empty_history_is_none() {
+        let h = PromptHistory::in_memory();
+        assert!(h.newest_index().is_none());
+        assert_eq!(h.reverse_search("x", 0), None);
     }
 
     #[test]

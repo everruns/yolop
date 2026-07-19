@@ -358,11 +358,15 @@ pub(crate) fn draw_chrome(
 }
 
 pub(crate) fn chrome_preview_visible(state: &ViewState) -> bool {
-    state.presentation.stream_preview.is_some() || !state.command_suggestions.is_empty()
+    state.history_search.is_some()
+        || state.presentation.stream_preview.is_some()
+        || !state.command_suggestions.is_empty()
 }
 
 pub(crate) fn draw_chrome_layout(f: &mut ratatui::Frame, layout: ChromeLayout, state: &ViewState) {
-    if state.command_suggestions.is_empty() {
+    if let Some(search) = &state.history_search {
+        draw_history_search(f, layout.preview, search);
+    } else if state.command_suggestions.is_empty() {
         draw_stream_preview(f, layout.preview, state);
     } else {
         draw_suggestions(f, layout.preview, &state.command_suggestions);
@@ -884,6 +888,45 @@ pub(crate) fn draw_suggestions(
         Paragraph::new(suggestion_preview_line(suggestions, area.width)),
         area,
     );
+}
+
+pub(crate) fn draw_history_search(f: &mut ratatui::Frame, area: Rect, search: &HistorySearchView) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    f.render_widget(
+        Paragraph::new(history_search_preview_line(search, area.width)),
+        area,
+    );
+}
+
+/// The chrome row for an active reverse search: `(reverse-search)'query'` plus a
+/// `no match` marker when nothing matched. The matched entry itself previews in
+/// the composer below.
+pub(crate) fn history_search_preview_line(search: &HistorySearchView, width: u16) -> Line<'static> {
+    let prefix = "(reverse-search) ";
+    let query = format!("'{}'", search.query);
+    // Flag a non-empty query that matched nothing; a bare prompt stays quiet.
+    let suffix = if !search.matched && !search.query.is_empty() {
+        "  no match".to_string()
+    } else {
+        String::new()
+    };
+    let budget = (width as usize).saturating_sub(prefix.chars().count() + 1);
+    let query = truncate_end_chars(&query, budget.max(4));
+    let mut spans = vec![
+        Span::styled(
+            prefix,
+            Style::default()
+                .fg(ACCENT_BLUE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(query, Style::default().fg(TEXT_PRIMARY)),
+    ];
+    if !suffix.is_empty() {
+        spans.push(Span::styled(suffix, Style::default().fg(DIFF_DELETE)));
+    }
+    Line::from(spans)
 }
 
 pub(crate) fn suggestion_preview_line(

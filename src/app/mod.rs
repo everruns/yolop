@@ -189,6 +189,20 @@ pub struct App {
     /// Shell-style Up/Down recall of previously submitted composer prompts,
     /// persisted across sessions. See [`crate::prompt_history`].
     history: crate::prompt_history::PromptHistory,
+    /// Active Ctrl+R reverse-history search, if any. While set it owns the
+    /// keyboard and the composer previews the current match.
+    history_search: Option<HistorySearch>,
+}
+
+/// In-progress Ctrl+R reverse search over [`App::history`].
+#[derive(Clone, Debug)]
+pub(crate) struct HistorySearch {
+    /// The incremental search query typed so far.
+    query: String,
+    /// Index of the entry currently matched, or `None` when nothing matches.
+    match_index: Option<usize>,
+    /// The composer rows captured on entry, restored if the search is cancelled.
+    saved_lines: Vec<String>,
 }
 
 /// The renderer backing a TUI session.
@@ -383,7 +397,17 @@ pub(crate) struct ModelOption {
 pub(crate) struct ViewState {
     pub presentation: PresentationState,
     pub command_suggestions: Vec<CommandSuggestion>,
+    /// Active Ctrl+R reverse-search prompt, if any. Takes over the chrome
+    /// preview row and suppresses command suggestions.
+    pub history_search: Option<HistorySearchView>,
     pub busy_frame: u64,
+}
+
+/// Render-facing view of an active reverse-history search.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistorySearchView {
+    pub query: String,
+    pub matched: bool,
 }
 
 impl ViewState {
@@ -462,6 +486,7 @@ impl App {
             } else {
                 crate::prompt_history::PromptHistory::load()
             },
+            history_search: None,
         };
         app.emit_system_banner();
         if should_setup {
@@ -506,12 +531,19 @@ impl App {
     /// once per frame; the clones are dominated by small `String`s.
     pub(crate) fn view_state(&self) -> ViewState {
         let presentation = self.presentation_state();
+        let history_search = self.history_search_view();
         ViewState {
-            command_suggestions: if !presentation.busy && self.setup.is_none() {
+            // The search prompt owns the chrome row while active, so suppress
+            // command suggestions to avoid two things fighting for it.
+            command_suggestions: if history_search.is_none()
+                && !presentation.busy
+                && self.setup.is_none()
+            {
                 self.suggestions()
             } else {
                 Vec::new()
             },
+            history_search,
             busy_frame: self.busy_frame,
             presentation,
         }
@@ -981,6 +1013,17 @@ impl App {
     }
 
     async fn handle_key(&mut self, key: KeyEvent) {
+        // Reverse-history search owns the keyboard while active (even Ctrl+C,
+        // which cancels the search rather than arming exit).
+        if self.history_search.is_some() {
+            self.handle_search_key(key);
+            return;
+        }
+        // Ctrl+R opens reverse-history search from the idle composer.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('r')) {
+            self.history_search_start();
+            return;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('c') => {
@@ -1112,6 +1155,146 @@ impl App {
         true
     }
 
+    /// Open Ctrl+R reverse-history search from the idle composer. No-op while a
+    /// turn or overlay owns the keyboard, or when there is no history to search.
+    fn history_search_start(&mut self) {
+        if self.busy
+            || self.setup.is_some()
+            || self.background_panel.is_some()
+            || self.pending_ask.is_some()
+            || self.history.is_empty()
+        {
+            return;
+        }
+        self.history.reset_navigation();
+        self.history_search = Some(HistorySearch {
+            query: String::new(),
+            match_index: None,
+            saved_lines: self.input.lines().to_vec(),
+        });
+        // An empty query lands on the newest entry, so Ctrl+R immediately
+        // previews the last prompt — like a shell.
+        self.history_search_refresh();
+    }
+
+    /// Keyboard handling while reverse search owns the composer.
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('r') if ctrl => self.history_search_cycle(),
+            // Ctrl+C / Ctrl+G / Esc abandon the search and restore the draft.
+            KeyCode::Char('c' | 'g') if ctrl => self.history_search_cancel(),
+            KeyCode::Esc => self.history_search_cancel(),
+            KeyCode::Enter => self.history_search_accept(),
+            KeyCode::Backspace => {
+                if let Some(search) = self.history_search.as_mut() {
+                    search.query.pop();
+                }
+                self.history_search_refresh();
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(search) = self.history_search.as_mut() {
+                    search.query.push(c);
+                }
+                self.history_search_refresh();
+            }
+            // Ignore anything else so stray keys don't leak into the composer.
+            _ => {}
+        }
+    }
+
+    /// Recompute the match from the newest entry for the current query and
+    /// preview it in the composer. Called after every query edit.
+    fn history_search_refresh(&mut self) {
+        let Some(search) = self.history_search.as_ref() else {
+            return;
+        };
+        let Some(newest) = self.history.newest_index() else {
+            return;
+        };
+        let hit = self.history.reverse_search(&search.query, newest);
+        self.apply_search_hit(hit);
+    }
+
+    /// Advance to the next older match for the current query (repeated Ctrl+R).
+    /// Holds on the current match when nothing older matches.
+    fn history_search_cycle(&mut self) {
+        let Some(search) = self.history_search.as_ref() else {
+            return;
+        };
+        let query = search.query.clone();
+        let start = match search.match_index {
+            Some(0) => return, // already at the oldest match
+            Some(i) => i - 1,
+            None => match self.history.newest_index() {
+                Some(n) => n,
+                None => return,
+            },
+        };
+        if let Some(hit) = self.history.reverse_search(&query, start) {
+            self.apply_search_hit(Some(hit));
+        }
+    }
+
+    /// Store the resolved match and mirror it into the composer (or clear the
+    /// composer when nothing matches).
+    fn apply_search_hit(&mut self, hit: Option<(usize, String)>) {
+        let Some(search) = self.history_search.as_mut() else {
+            return;
+        };
+        match hit {
+            Some((index, entry)) => {
+                search.match_index = Some(index);
+                self.set_input_text(entry);
+            }
+            None => {
+                search.match_index = None;
+                self.input = new_input_area(vec![String::new()]);
+            }
+        }
+    }
+
+    /// Accept the current match: keep it in the composer and leave search mode
+    /// so the user can edit or submit. With no match, restore the saved draft.
+    fn history_search_accept(&mut self) {
+        let Some(search) = self.history_search.take() else {
+            return;
+        };
+        match search.match_index.and_then(|i| self.history.entry_at(i)) {
+            Some(entry) => {
+                let entry = entry.to_string();
+                self.set_input_text(entry);
+            }
+            None => self.restore_saved_input(search.saved_lines),
+        }
+    }
+
+    /// Abandon the search and restore the composer to its pre-search contents.
+    fn history_search_cancel(&mut self) {
+        if let Some(search) = self.history_search.take() {
+            self.restore_saved_input(search.saved_lines);
+        }
+    }
+
+    fn restore_saved_input(&mut self, lines: Vec<String>) {
+        self.input = new_input_area(if lines.is_empty() {
+            vec![String::new()]
+        } else {
+            lines
+        });
+        self.input.move_cursor(CursorMove::End);
+    }
+
+    /// Snapshot of the active reverse search for rendering, if any.
+    pub(crate) fn history_search_view(&self) -> Option<HistorySearchView> {
+        self.history_search
+            .as_ref()
+            .map(|search| HistorySearchView {
+                query: search.query.clone(),
+                matched: search.match_index.is_some(),
+            })
+    }
+
     fn suggestions(&self) -> Vec<CommandSuggestion> {
         command_suggestions(self.suggestion_input(), &self.startup.capability_commands)
     }
@@ -1129,7 +1312,14 @@ impl App {
     }
 
     fn set_input_text(&mut self, text: String) {
-        self.input = new_input_area(vec![text]);
+        // Split on newlines so a recalled multi-line prompt restores as multiple
+        // composer rows rather than one row with embedded control characters.
+        let lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+        self.input = new_input_area(if lines.is_empty() {
+            vec![String::new()]
+        } else {
+            lines
+        });
         self.input.move_cursor(CursorMove::End);
     }
 
@@ -2087,7 +2277,7 @@ fn help_command_line(descriptor: &CommandDescriptor) -> String {
 
 fn help_shortcut_lines() -> [&'static str; 5] {
     [
-        "  Enter send · Shift-Enter newline · Tab complete · ←/→ edit · ↑/↓ history",
+        "  Enter send · Shift-Enter newline · Tab complete · ↑/↓ history · Ctrl+R search",
         "  Ctrl+V paste image/text · Ctrl+B background tasks · !<cmd> shell alias",
         "  exit: Ctrl-C twice / Ctrl-D",
         "  cancel turn: Esc twice (while model is busy)",
@@ -2293,6 +2483,25 @@ mod tests {
 
         assert!(rendered.starts_with("Tab /help"));
         assert!(rendered.ends_with('…'));
+    }
+
+    #[test]
+    fn history_search_preview_line_shows_query_and_no_match_flag() {
+        let matched = HistorySearchView {
+            query: "deploy".to_string(),
+            matched: true,
+        };
+        let rendered = line_text(&history_search_preview_line(&matched, 96));
+        assert!(rendered.starts_with("(reverse-search) 'deploy'"));
+        assert!(!rendered.contains("no match"));
+
+        let missed = HistorySearchView {
+            query: "zzz".to_string(),
+            matched: false,
+        };
+        let rendered = line_text(&history_search_preview_line(&missed, 96));
+        assert!(rendered.contains("'zzz'"));
+        assert!(rendered.contains("no match"));
     }
 
     #[test]
@@ -3562,6 +3771,7 @@ mod tests {
         ViewState {
             presentation: presentation_state_idle(),
             command_suggestions: Vec::new(),
+            history_search: None,
             busy_frame: 0,
         }
     }
@@ -5315,6 +5525,98 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()))
             .await;
         assert_eq!(app.input_text(), "/cwd");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_r_reverse_search_matches_narrows_and_accepts() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        for entry in ["deploy staging", "run tests", "deploy prod"] {
+            app.history.record(entry);
+        }
+
+        // Ctrl+R opens search and previews the newest entry.
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        assert!(app.history_search.is_some());
+        assert_eq!(app.input_text(), "deploy prod");
+
+        // Typing narrows to the newest entry containing the query.
+        for ch in ['t', 'e', 's', 't'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        assert_eq!(app.input_text(), "run tests");
+        let view = app.history_search_view().expect("search active");
+        assert_eq!(view.query, "test");
+        assert!(view.matched);
+
+        // Enter accepts the match into the composer and leaves search mode.
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        assert!(app.history_search.is_none());
+        assert_eq!(app.input_text(), "run tests");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_r_cycles_older_matches_then_reports_no_match() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        for entry in ["deploy staging", "run tests", "deploy prod"] {
+            app.history.record(entry);
+        }
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        for ch in ['d', 'e', 'p', 'l', 'o', 'y'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        // Newest "deploy" match first.
+        assert_eq!(app.input_text(), "deploy prod");
+        // Ctrl+R again cycles to the older "deploy" entry.
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(app.input_text(), "deploy staging");
+
+        // A query with no match clears the preview and flags it in the view.
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::empty()))
+            .await;
+        assert_eq!(app.input_text(), "");
+        assert!(!app.history_search_view().unwrap().matched);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn esc_cancels_reverse_search_and_restores_draft() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.history.record("some old prompt");
+
+        // Type a draft, then search, then cancel — the draft must come back.
+        for ch in ['d', 'r', 'a', 'f', 't'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(app.input_text(), "some old prompt");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+        assert!(app.history_search.is_none());
+        assert_eq!(app.input_text(), "draft");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_r_with_empty_history_is_a_no_op() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+            .await;
+        assert!(app.history_search.is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
