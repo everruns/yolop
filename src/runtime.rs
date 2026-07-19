@@ -216,9 +216,7 @@ impl McpAuthProvider for StoredMcpAuthProvider {
 
 const HARNESS_PROMPT: &str = "\
 You are an expert terminal coding agent. File tools write under the workspace
-root. Shell commands run in the configured containment provider, which defaults
-to a native workspace-write/network-deny sandbox. Do not assume they can write
-outside the active workspace or reach the network.
+root; shell is sandboxed to workspace writes and no network by default.
 
 ## Workflow
 
