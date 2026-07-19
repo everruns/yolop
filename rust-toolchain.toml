@@ -1,5 +1,6 @@
-# Pinned to 1.96.0: everruns-core 0.17.13 uses `if let` match guards, which
-# stabilized in Rust 1.96.0. Older stable toolchains fail with E0658.
+# Pinned to everruns' declared MSRV (rust-version = 1.94.0). everruns-core
+# 0.17.13 briefly required 1.96.0 for `if let` match guards; 0.17.14 dropped
+# them, restoring 1.94.0 compatibility. Keep in sync with the everruns-* MSRV.
 [toolchain]
-channel = "1.96.0"
+channel = "1.94.0"
 components = ["rustfmt", "clippy"]
