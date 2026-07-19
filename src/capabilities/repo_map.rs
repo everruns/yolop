@@ -1921,6 +1921,45 @@ trait Named {
         assert!(report.symbols.iter().any(|s| s.name == "inside_fn"));
     }
 
+    #[tokio::test]
+    async fn repo_map_tool_accepts_workspace_alias_scope() {
+        // The model often passes the `/workspace` display alias as `path`; the
+        // file tools honor it via MountFs, so repo_map must resolve it to the
+        // workspace root instead of erroring with "path not found: /workspace".
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(&dir.path().join("pkg/inside.rs"), "pub fn pkg_fn() {}\n");
+        write(
+            &dir.path().join("other/elsewhere.rs"),
+            "pub fn other_fn() {}\n",
+        );
+
+        let capability = RepoMapCapability::new(host(dir.path()));
+        let tools = capability.tools();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name() == "repo_map")
+            .expect("repo_map tool");
+
+        // Alias root scans the whole workspace.
+        let ToolExecutionResult::Success(root) = tool
+            .execute(json!({ "path": "/workspace", "language": "rust" }))
+            .await
+        else {
+            panic!("expected success scanning /workspace");
+        };
+        assert_eq!(root["count"], json!(2));
+
+        // Alias subpath scopes to just that directory.
+        let ToolExecutionResult::Success(sub) = tool
+            .execute(json!({ "path": "/workspace/pkg", "language": "rust" }))
+            .await
+        else {
+            panic!("expected success scanning /workspace/pkg");
+        };
+        assert_eq!(sub["count"], json!(1));
+        assert_eq!(sub["files"][0]["symbols"][0]["name"], json!("pkg_fn"));
+    }
+
     #[test]
     fn accepts_host_absolute_subpath() {
         let dir = tempfile::tempdir().expect("tempdir");
