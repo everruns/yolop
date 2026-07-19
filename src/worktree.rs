@@ -461,32 +461,22 @@ fn create_worktree(repo_root: &Path, path: &Path, branch: &str, base_ref: &str) 
     // Best-effort fetch so origin/main is current when used as the base.
     if base_ref.starts_with("origin/") {
         let remote_branch = base_ref.strip_prefix("origin/").unwrap_or(base_ref);
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(repo_root)
-            .args(["fetch", "origin", remote_branch])
-            .status();
+        let _ = git_run(repo_root, &["fetch", "origin", remote_branch]);
     }
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args([
-            "worktree",
-            "add",
-            "-B",
-            branch,
-            &path.display().to_string(),
-            base_ref,
-        ])
-        .status()
-        .with_context(|| format!("git worktree add for {}", path.display()))?;
-    if status.success() {
+    let path_str = path.display().to_string();
+    let output = git_run(
+        repo_root,
+        &["worktree", "add", "-B", branch, &path_str, base_ref],
+    )
+    .with_context(|| format!("git worktree add for {}", path.display()))?;
+    if output.status.success() {
         copy_worktree_includes(repo_root, path);
         return Ok(());
     }
     bail!(
-        "git worktree add -B {branch} {} {base_ref} failed",
-        path.display()
+        "git worktree add -B {branch} {} {base_ref} failed: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
     );
 }
 
@@ -612,19 +602,16 @@ fn recreate_worktree(repo_root: &Path, saved: &WorktreeMetadata) -> Result<Workt
         let _ = std::fs::remove_dir_all(&path);
     }
     if branch_exists(repo_root, &saved.branch) {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(repo_root)
-            .args([
-                "worktree",
-                "add",
-                &path.display().to_string(),
-                &saved.branch,
-            ])
-            .status()
+        let path_str = path.display().to_string();
+        let output = git_run(repo_root, &["worktree", "add", &path_str, &saved.branch])
             .with_context(|| format!("reattach worktree branch {}", saved.branch))?;
-        if !status.success() {
-            bail!("git worktree add {} {}", path.display(), saved.branch);
+        if !output.status.success() {
+            bail!(
+                "git worktree add {} {}: {}",
+                path.display(),
+                saved.branch,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
         }
         copy_worktree_includes(repo_root, &path);
     } else {
@@ -681,6 +668,20 @@ fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
     }
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if text.is_empty() { None } else { Some(text) }
+}
+
+/// Run a mutating git subcommand with its output **captured**, never inherited.
+///
+/// Worktree management runs while the TUI owns the terminal — most visibly the
+/// `--fullscreen` alternate screen, which has no scrollback to absorb stray
+/// output — so git's progress (`Preparing worktree …`, `HEAD is now at …`)
+/// must not reach the frame. Goes through [`crate::proc::capture`], the shared
+/// choke point for terminal-safe subprocesses, and returns the completed
+/// `Output` so callers can gate on `status.success()` and surface stderr.
+fn git_run(repo_root: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(repo_root).args(args);
+    crate::proc::capture(&mut cmd)
 }
 
 pub fn restore_worktree_from_metadata(metadata: &SessionWorkspaceMetadata) -> Option<WorktreeInfo> {
@@ -796,13 +797,10 @@ fn main_repo_for_worktree(worktree_path: &Path) -> Option<PathBuf> {
 
 pub fn remove_worktree_path(path: &Path) -> Result<()> {
     if let Some(repo_root) = main_repo_for_worktree(path) {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(&repo_root)
-            .args(["worktree", "remove", "--force", &path.display().to_string()])
-            .status()
+        let path_str = path.display().to_string();
+        let output = git_run(&repo_root, &["worktree", "remove", "--force", &path_str])
             .with_context(|| format!("git worktree remove {}", path.display()))?;
-        if status.success() {
+        if output.status.success() {
             return Ok(());
         }
     }
@@ -962,6 +960,34 @@ mod tests {
         assert!(truncated.starts_with('…'));
         assert!(truncated.contains("session_019ee6c2"));
         assert!(truncated.chars().count() <= 40);
+    }
+
+    #[test]
+    fn git_run_captures_output_instead_of_inheriting_terminal() {
+        // Regression guard for the `--fullscreen` status-bar corruption: worktree
+        // git commands must capture their stdout/stderr rather than inherit the
+        // TUI's terminal. `git_run` uses `Command::output()`, so a command that
+        // writes to stdout must come back captured. If a caller ever reverts to
+        // `Command::status()` (terminal-inherited), the output would splatter the
+        // alternate screen — the exact leak seen with `Preparing worktree …`.
+        let repo = tempfile::tempdir().expect("repo");
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(repo.path())
+            .output()
+            .expect("git init");
+
+        let output =
+            git_run(repo.path(), &["rev-parse", "--is-inside-work-tree"]).expect("git_run");
+        assert!(
+            output.status.success(),
+            "rev-parse should succeed in a repo"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "true",
+            "git_run must capture stdout so worktree git output never reaches the TUI frame"
+        );
     }
 
     #[test]

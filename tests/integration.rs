@@ -463,6 +463,80 @@ fn tui_escape_does_not_exit_and_ctrl_c_exits() {
 }
 
 #[test]
+fn tui_default_renders_and_responds_smoke() {
+    tui_smoke(false);
+}
+
+#[test]
+fn tui_fullscreen_renders_and_responds_smoke() {
+    tui_smoke(true);
+}
+
+/// End-to-end smoke for both TUI renderers: start the TUI, drive one llmsim
+/// turn, and assert the rendered grid shows the composer and provider status
+/// bar with no subprocess output leaked onto the frame (the corruption this
+/// change fixes), then exit cleanly.
+fn tui_smoke(fullscreen: bool) {
+    let mode = if fullscreen { "fullscreen" } else { "default" };
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            fullscreen,
+            ..TuiSpawnOptions::default()
+        },
+    );
+    // Wait on the composer hint from the shared chrome, which both renderers
+    // draw (unlike the startup banner, which inline flushes to scrollback that
+    // the fullscreen alternate screen does not have).
+    assert!(
+        tui.wait_for_output("Enter to send", Duration::from_secs(5)),
+        "{mode}: composer never rendered: {}",
+        tui.output_text()
+    );
+
+    // Drive a turn end-to-end; llmsim's offline reply is deterministic. Match
+    // its tail, which stays on-screen at the bottom of the transcript (the
+    // "offline mode" head can scroll above the fullscreen window).
+    tui.write_input(b"hi\r");
+    assert!(
+        tui.wait_for_output("real responses", Duration::from_secs(10)),
+        "{mode}: llmsim response never rendered after a prompt: {}",
+        tui.output_text()
+    );
+
+    // Assert on the reconstructed grid (post-ANSI), which is what the user sees.
+    let screen = tui.screen_lines().join("\n");
+    assert!(
+        screen.contains("llmsim"),
+        "{mode}: provider status bar should be on-screen:\n{screen}"
+    );
+    // The frame must not carry leaked child-process output. These are the git
+    // progress lines that corrupted the --fullscreen status bar before the
+    // subprocess output was captured/detached.
+    for leak in ["Preparing worktree", "HEAD is now at", "From github.com"] {
+        assert!(
+            !screen.contains(leak),
+            "{mode}: subprocess output leaked onto the frame ({leak:?}):\n{screen}"
+        );
+    }
+
+    // Clean shutdown via Ctrl-C twice.
+    tui.write_input(b"\x03");
+    assert!(
+        tui.wait_for_output("Press Ctrl+C again to exit", Duration::from_secs(5)),
+        "{mode}: first Ctrl-C should invite a second press: {}",
+        tui.output_text()
+    );
+    tui.write_input(b"\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(5));
+    assert!(
+        status.success(),
+        "{mode}: second Ctrl-C should exit cleanly, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
+#[test]
 fn tui_alt_enter_sequence_submits_like_enter() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(

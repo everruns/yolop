@@ -88,7 +88,10 @@ pub async fn doctor(
         .current_dir(workspace_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        // Pipe (and drain to tracing below) rather than inherit: inheriting the
+        // probed server's stderr writes it onto the terminal, corrupting the TUI
+        // frame. See `extensions::manager` and `crate::proc`.
+        .stderr(Stdio::piped())
         .kill_on_drop(true);
     let bin_dir = package_dir.join("bin");
     if bin_dir.is_dir()
@@ -116,6 +119,17 @@ pub async fn doctor(
     let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
         return Report::fatal("spawn", "server has no stdio pipes");
     };
+    // Keep the probed server's stderr off the terminal; surface it via tracing.
+    if let Some(stderr) = child.stderr.take() {
+        let name = manifest.name.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::debug!(target: "yolop::ext", ext = %name, "{line}");
+            }
+        });
+    }
 
     let init = InitializeParams {
         protocol_version: PROTOCOL_VERSION.to_string(),

@@ -4207,6 +4207,111 @@ mod tests {
         assert!(!test.app.scroll.is_stuck_to_bottom());
     }
 
+    /// Render the same app state in regular and full-screen mode and return
+    /// `(fullscreen_rows, regular_rows)`. Full-screen now routes through the
+    /// shared presentation renderer (`render::draw_shared`), so the buffers
+    /// must be byte-for-byte identical — this is the helper the
+    /// unified-presentation parity tests build on.
+    fn render_regular_and_fullscreen(
+        app: &mut App,
+        width: u16,
+        height: u16,
+    ) -> (Vec<String>, Vec<String>) {
+        app.set_render_mode(RenderMode::Inline);
+        let regular = render_app_lines(app, width, height);
+        app.set_render_mode(RenderMode::Fullscreen);
+        let fullscreen = render_app_lines(app, width, height);
+        (fullscreen, regular)
+    }
+
+    /// `fullscreen_matches_regular_presentation` pins parity for the base
+    /// transcript state; this widens that guard to the states most likely to
+    /// tempt a mode-specific rendering fork — a busy turn with a token count, an
+    /// extension-pushed status segment, an open setup overlay, an overflowing
+    /// transcript, and an oversized paste in the composer. If any of these ever
+    /// diverges between the two modes, the unified-presentation invariant has
+    /// regressed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_shares_regular_presentation_across_states() {
+        type Mutate = fn(&mut App);
+        // (name, state mutation, a substring the frame must contain — empty to
+        // skip the content check, e.g. for the overlay case whose exact copy
+        // lives elsewhere).
+        let cases: &[(&str, Mutate, &str)] = &[
+            (
+                "busy turn with tokens",
+                |app| {
+                    app.busy = true;
+                    app.session_tokens = Some(4096);
+                    app.push_user("hello from user".to_string());
+                },
+                "hello from user",
+            ),
+            (
+                "extension status segment",
+                |app| {
+                    app.extension_status
+                        .insert("ext:lsp".to_string(), "indexing".to_string());
+                    app.push_user("hello from user".to_string());
+                },
+                "hello from user",
+            ),
+            (
+                "open setup overlay",
+                |app| {
+                    app.setup = Some(SetupStep::Provider { selected: 0 });
+                },
+                "",
+            ),
+            (
+                "transcript taller than the viewport",
+                |app| {
+                    for i in 0..80 {
+                        app.push_user(format!("line {i}"));
+                    }
+                },
+                "",
+            ),
+            (
+                "oversized paste in the composer",
+                |app| {
+                    let paste = (0..40)
+                        .map(|i| format!("pasteline{i}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    app.input.insert_str(paste);
+                },
+                "",
+            ),
+        ];
+
+        for (name, mutate, needle) in cases {
+            let mut test = app_with_llmsim().await;
+            // Start from a dismissed first-run overlay; cases that want it re-open
+            // it themselves.
+            test.app.setup = None;
+            mutate(&mut test.app);
+
+            let (fullscreen, regular) = render_regular_and_fullscreen(&mut test.app, 60, 20);
+
+            assert_eq!(
+                fullscreen, regular,
+                "full-screen must match regular presentation for state: {name}"
+            );
+            assert!(
+                fullscreen.iter().any(|row| !row.is_empty()),
+                "state {name} should render a non-blank frame (parity must not be vacuous)"
+            );
+            if !needle.is_empty() {
+                let joined = fullscreen.join("\n");
+                assert!(
+                    joined.contains(needle),
+                    "state {name} should render {needle:?}: {joined}"
+                );
+            }
+        }
+    }
+
     fn setup_overlay_text(app: &App) -> Vec<String> {
         setup_overlay_content(app)
             .0

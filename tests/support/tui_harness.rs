@@ -34,6 +34,9 @@ pub struct TuiSpawnOptions {
     pub cursor_reply_budget: usize,
     /// Directory prepended to `PATH` for subprocess lookup in the spawned TUI.
     pub path_prefix: Option<PathBuf>,
+    /// Launch the alternate-screen renderer (`--fullscreen`) instead of the
+    /// default inline TUI.
+    pub fullscreen: bool,
 }
 
 impl Default for TuiSpawnOptions {
@@ -44,6 +47,7 @@ impl Default for TuiSpawnOptions {
             cursor_row: 1,
             cursor_reply_budget: usize::MAX,
             path_prefix: None,
+            fullscreen: false,
         }
     }
 }
@@ -190,6 +194,9 @@ pub fn spawn_tui_llmsim_with_settings(
     let mut cmd = CommandBuilder::new(binary);
     cmd.args(["--provider", "llmsim", "--session-dir"]);
     cmd.arg(session_dir.path());
+    if options.fullscreen {
+        cmd.arg("--fullscreen");
+    }
     cmd.env("HOME", home.path());
     cmd.env("XDG_CONFIG_HOME", home.path().join(".config"));
     cmd.env("XDG_DATA_HOME", home.path().join(".local/share"));
