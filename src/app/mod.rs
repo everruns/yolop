@@ -2132,7 +2132,7 @@ mod tests {
         CreateSessionTask, SessionTaskState, TASK_KIND_BACKGROUND_TOOL,
     };
     use everruns_core::tool_types::ToolCall;
-    use everruns_core::{SessionId, TurnId};
+    use everruns_core::{MessageId, SessionId, TurnId};
 
     use everruns_core::command::{CommandArg, CommandDescriptor, CommandSource};
 
@@ -2579,6 +2579,7 @@ mod tests {
             EventContext::empty(),
             OutputMessageStartedData {
                 turn_id: TurnId::new(),
+                message_id: MessageId::new(),
                 model: None,
                 iteration: Some(3),
                 phase: None,
@@ -2871,12 +2872,14 @@ mod tests {
         let mut emitted = HashSet::new();
         let mut router = DeltaRouter::default();
         let turn_id = TurnId::new();
+        let message_id = MessageId::new();
 
         let delta_event = RuntimeEvent::new(
             SessionId::new(),
             EventContext::empty(),
             OutputMessageDeltaData {
                 turn_id,
+                message_id,
                 delta: "Hel".to_string(),
                 accumulated: "Hel".to_string(),
                 phase: None,
@@ -2889,6 +2892,7 @@ mod tests {
             EventContext::empty(),
             OutputMessageDeltaData {
                 turn_id,
+                message_id,
                 delta: "lo, world".to_string(),
                 accumulated: "Hello, world".to_string(),
                 phase: None,

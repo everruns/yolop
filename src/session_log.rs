@@ -1136,7 +1136,7 @@ mod tests {
         use everruns_core::events::{
             OUTPUT_MESSAGE_DELTA, OutputMessageDeltaData, TOOL_OUTPUT_DELTA, ToolOutputDeltaData,
         };
-        use everruns_core::typed_id::TurnId;
+        use everruns_core::typed_id::{MessageId, TurnId};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let session_id = SessionId::from_seed(99);
@@ -1152,6 +1152,7 @@ mod tests {
             EventContext::default(),
             OutputMessageDeltaData {
                 turn_id,
+                message_id: MessageId::new(),
                 delta: "hello".to_string(),
                 accumulated: "hello".to_string(),
                 phase: None,

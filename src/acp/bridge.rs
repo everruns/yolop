@@ -335,7 +335,7 @@ mod tests {
     };
     use everruns_core::message::{ExecutionPhase, Message};
     use everruns_core::tool_types::ToolCall;
-    use everruns_core::typed_id::{EventId, SessionId, TurnId};
+    use everruns_core::typed_id::{EventId, MessageId, SessionId, TurnId};
     use serde_json::json;
 
     fn event(data: EventData) -> Event {
@@ -358,6 +358,7 @@ mod tests {
         let updates = t.on_event(&event(EventData::OutputMessageDelta(
             OutputMessageDeltaData {
                 turn_id: TurnId::new(),
+                message_id: MessageId::new(),
                 delta: "Hel".into(),
                 accumulated: "Hel".into(),
                 phase: None,
@@ -377,6 +378,7 @@ mod tests {
         let _ = t.on_event(&event(EventData::OutputMessageDelta(
             OutputMessageDeltaData {
                 turn_id: TurnId::new(),
+                message_id: MessageId::new(),
                 delta: "Hi".into(),
                 accumulated: "Hi".into(),
                 phase: None,
@@ -665,6 +667,7 @@ mod tests {
         let mut t = Translator::new();
         let ev = event(EventData::OutputMessageDelta(OutputMessageDeltaData {
             turn_id: TurnId::new(),
+            message_id: MessageId::new(),
             delta: "x".into(),
             accumulated: "x".into(),
             phase: None,
