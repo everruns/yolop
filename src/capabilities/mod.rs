@@ -22,6 +22,7 @@ pub(crate) mod memory;
 pub(crate) mod model_discovery;
 pub(crate) mod model_ranking;
 pub(crate) mod narration;
+pub(crate) mod okf;
 pub(crate) mod progress_guard;
 pub(crate) mod repo_map;
 pub(crate) mod session_history;
@@ -52,6 +53,7 @@ pub(crate) use host::{
     SetupCapability,
 };
 pub(crate) use lsp::LspCapability;
+pub(crate) use okf::{OKF_CAPABILITY_ID, OkfCapability};
 pub(crate) use progress_guard::{PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability};
 pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
 pub(crate) use session_history::{SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCapability};
