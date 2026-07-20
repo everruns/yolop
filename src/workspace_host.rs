@@ -178,20 +178,6 @@ fn resolve_relative_scope(root: &Path, relative: &str, original: &str) -> Result
     Ok(canonical)
 }
 
-/// Validate that `root` contains no traversal components (for tests/helpers).
-#[allow(dead_code)]
-pub fn reject_escape(relative: &str) -> Result<()> {
-    if Path::new(relative).components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
-        bail!("`path` must stay inside the workspace");
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
