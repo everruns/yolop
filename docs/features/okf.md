@@ -86,6 +86,5 @@ read, and maintain, the bundle through the `okf` skill.
 
 ## Related
 
-- [`specs/okf.md`](../../specs/okf.md)
-- [`specs/skills.md`](../../specs/skills.md)
 - [OKF specification](https://okf.md/spec/)
+- [OKF overview](https://okf.md/)
