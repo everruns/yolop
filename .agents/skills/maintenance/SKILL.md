@@ -22,6 +22,7 @@ This skill is outcome-oriented. Choose the smallest set of actions that closes t
 - spec or docs drift
 - feature-completeness drift across CLI / TUI / specs / README / tests
 - test coverage gaps
+- code simplification / removing over-abstraction and dead code
 - security hygiene review
 - performance review of recently changed code
 - AGENTS / skills / command hygiene
@@ -95,13 +96,44 @@ A feature is ready only when its surfaces agree: CLI flags, TUI behavior,
 - check recently shipped features (see `git log` since the last tag) for a test that exercises them and a spec/README mention
 - outcome: a small reconnecting fix, or a finding naming the missing surface and user-visible impact
 
-### Code Simplification
+### Code Simplification And De-Abstraction
 
-On code touched during the pass:
+A first-class maintenance surface, not just incidental cleanup on touched
+files. A deep pass actively hunts for complexity the codebase no longer earns.
+Bias toward deleting code: the best maintenance often removes more than it adds.
+
+On code touched during the pass, always:
 
 - delete dead code, unreachable branches, commented-out blocks
 - drop TODOs that are already resolved
-- collapse premature generalization — code serves current needs, not hypothetical ones
+
+On a deep pass, also scan for and collapse over-abstraction:
+
+- **Single-use abstractions** — traits with one impl, a wrapper type that only
+  forwards, a generic with one instantiation, a builder for a two-field struct.
+  Inline them unless the seam is load-bearing (a real second impl, a public
+  extension point, a test double that earns its keep).
+- **Premature generalization** — code shaped for hypothetical futures instead of
+  current needs. Delete the unused flexibility; the git history keeps it.
+- **Indirection with no payoff** — a helper called once that only renames a
+  standard-library call, a module that re-exports one item, a config knob no
+  caller sets to anything but the default.
+- **Duplication that wants a helper** — the inverse: the same 5+ lines pasted in
+  three places is under-abstraction. Consolidate only when it genuinely reduces
+  total code and reads clearer, not to chase a DRY score.
+- **Deep nesting and sprawling match arms** — flatten with early returns, `let
+  ... else`, or extracted functions where it lowers cognitive load.
+- **Unclear names** — rename functions, variables, and types so intent is
+  legible without chasing definitions.
+
+Guardrails: keep each simplification small and independently reviewable; do not
+bundle a de-abstraction sweep with an unrelated fix. Verify with
+`cargo build`, `cargo clippy`, and `cargo test` — a simplification that changes
+behavior is a bug, not a cleanup. Removing a public API from a published crate
+(`yolop-yep`, `tuika`) is a breaking change: note it in the PR and confirm no
+external contract depends on it. When a simplification is too large to land
+inline (a cross-cutting abstraction with many call sites), defer it to a
+GitHub issue naming the abstraction and why it no longer pays its way.
 
 ### Security And Threat Posture
 
