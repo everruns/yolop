@@ -1,0 +1,13 @@
+%% Source of truth for okf.svg — anatomy of an OKF bundle.
+%% The SVG is hand-authored per specs (everruns diagram style, in color);
+%% update this .mmd first, then regenerate the SVG to match.
+flowchart LR
+  index["index.md<br/>bundle entry — read first"]
+  auth["modules/auth.md<br/>type: Module"]
+  signups["metrics/signups.md<br/>type: Metric"]
+  log["log.md<br/>dated changelog"]
+
+  index -->|lists| auth
+  index -->|lists| signups
+  auth -->|"links → /metrics/signups"| signups
+  index -.->|reserved| log
