@@ -58,7 +58,8 @@ Use this skill when the user asks to:
    - Fix issues you find and refresh the evidence.
 
 5. **Relevant artifacts stay in sync.**
-   - Update only the artifacts affected by the change: `specs/`, `AGENTS.md`, `README.md`.
+   - Update only the artifacts affected by the change: `specs/`, `AGENTS.md`,
+     `README.md`, `docs/`.
 
 6. **Smoke test impacted functionality.**
    - Always smoke test the flows affected by the change end-to-end. This is in

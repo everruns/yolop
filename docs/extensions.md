@@ -8,8 +8,7 @@ there's a Rust SDK ([`yolop-yep`](../crates/yolop-yep)) that makes it a few
 lines.
 
 This page covers **setting up** an existing extension and **creating** your
-own. For the protocol and design rationale, see
-[`specs/extensions.md`](../specs/extensions.md).
+own.
 
 ![Setting up a yolop extension](extensions-setup.gif)
 
@@ -191,5 +190,4 @@ Both are generated from the `yolop-yep` types (`cargo run -p yolop-yep
 > SDK ([published on crates.io](https://crates.io/crates/yolop-yep)), a
 > `doctor_extension` conformance check, toolchain-free **crates.io installs**
 > (`install_extension source="crates.io:yolop-extension-<name>"`), and
-> language-neutral **`meta.json` + `schema.json`** wire artifacts. Remaining
-> follow-ups are listed in [`specs/extensions.md`](../specs/extensions.md).
+> language-neutral **`meta.json` + `schema.json`** wire artifacts.

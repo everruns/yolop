@@ -10,7 +10,8 @@ The canonical agent workflow lives in [`.agents/skills/ship/SKILL.md`](../.agent
 
 1. Reach the requested goal, not just perform rituals around it.
 2. Match validation depth to the actual risk surface.
-3. Keep affected artifacts in sync (`README.md`, `AGENTS.md`, `specs/`).
+3. Keep affected artifacts in sync (`README.md`, `docs/`, `AGENTS.md`,
+   `specs/`).
 4. Merge only from a safe branch state with green CI.
 
 ## Ownership Boundary
@@ -26,7 +27,7 @@ Every shipped change MUST satisfy ALL of these. These are mandatory, not suggest
 2. **Goal achieved with evidence.** The requested behavior is implemented and validated with proof matching the risk.
 3. **Feature tested before merge.** Every behavior change is covered by an automated test that exercises the new or changed behavior directly — driving its real entry point, not merely adjacent code that still compiles — added or updated as part of the change. A behavior that is genuinely impractical to test automatically is the only exception: the PR body must say so, describe the manual verification performed instead, and list the gap under **Follow-ups**. Docs-only or config-only changes with no behavior change are exempt with stated justification. Changes to user-visible agent output, live activity, or status values must include tests against the terminal-independent presentation model in [`presentation.md`](./presentation.md); terminal-buffer tests alone are not enough.
 4. **Merge-ready code.** Touched code is reviewed for avoidable complexity. A structured security review is performed (see `.agents/skills/ship/SKILL.md` § Security Review). Issues are addressed or explicitly blocked.
-5. **Synced artifacts.** Affected artifacts are updated: README, AGENTS.md, specs. No code-duplicating prose.
+5. **Synced artifacts.** Affected artifacts are updated: README, docs, AGENTS.md, specs. No code-duplicating prose.
 6. **Smoke test impacted functionality.** In addition to the automated test in outcome 3, smoke test the affected flows end-to-end. Mandatory unless the change is docs-only or config-only with explicit justification. For runtime changes, run at least one live-provider smoke through Doppler.
 7. **Follow-ups surfaced.** TODOs, partial fixes, declined suggestions, missed edges, and spec/doc drift are explicitly listed under **Follow-ups** in the PR body (or `"No follow-ups."` if none).
 8. **Safe merge.** PR uses the template, CI is green, every review comment is addressed (via a code change when needed), answered inline on its own thread with a written reply, and marked resolved before merge. An inline reply is required even when the resolution is a pure code change. Merge is squash-only after a final clean comment sweep. Async reviewer bots get at least 2 minutes to comment after CI turns green.
@@ -54,7 +55,7 @@ Use the smallest set that gives high confidence.
 6. `doppler run -- cargo run -- --provider openai -p "<focused prompt>"` for end-to-end smoke.
 7. `cargo run -- --provider llmsim -p "hi"` for offline smoke when CI access to provider keys is unavailable.
 8. Ensure test coverage proves the fix or acceptance criteria, including important negative paths. For visible transcript or status changes, assert the presentation model output directly.
-9. Update `README.md`, `AGENTS.md`, and `specs/` when relevant.
+9. Update `README.md`, `docs/`, `AGENTS.md`, and `specs/` when relevant.
 
 ## Merge Discipline
 
@@ -66,6 +67,7 @@ Use the smallest set that gives high confidence.
 
 ## Related
 
+- [`specs/documentation.md`](./documentation.md)
 - [`specs/maintenance.md`](./maintenance.md)
 - [`.agents/skills/ship/SKILL.md`](../.agents/skills/ship/SKILL.md)
 - [`.agents/skills/maintenance/SKILL.md`](../.agents/skills/maintenance/SKILL.md)

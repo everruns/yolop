@@ -79,4 +79,5 @@ recorded in the session log.
 Soft approval is not a sandbox. It asks the model to pause at the right time,
 but it does not mechanically block a tool call. For deterministic enforcement,
 use hooks, which can block tool calls before they run. Soft approval is for
-judgement and workflow; hooks are for guarantees.
+judgement and workflow; hooks are for guarantees. See
+[Shell sandboxing](./sandboxing.md) for the kernel-enforced boundary.

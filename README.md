@@ -67,7 +67,8 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   access are denied, and macOS also makes workspace `.git` metadata read-only.
   You can set `sandbox = "off"` only when yolop already runs inside a trusted
   VM/container; Yolop marks that mode `UNSAFE HOST` and warns that it exposes
-  host files, processes, and network.
+  host files, processes, and network. See
+  [Shell sandboxing](./docs/features/sandboxing.md).
 - **Soft approval** — an optional spoken-consent layer for critical actions.
   yolop batches the safe work and pauses to ask, in plain chat, only before
   destructive or outward-facing steps; you approve by replying "yes". The
@@ -93,7 +94,7 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **Goal loops** — `/goal <condition>` keeps working across turns until a
   separate evaluator model confirms the condition from the transcript; use
   `/goal` for status and `/goal clear` to stop early. Works in `--print` mode
-  (`yolop -p "/goal …"`). See [`specs/goal.md`](./specs/goal.md).
+  (`yolop -p "/goal …"`).
 - **Planning** — `write_todos` keeps multi-step tasks on track, and
   loop detection stops the model from retrying the same failing tool call.
 - **One-shot mode** — `--print` runs a single prompt non-interactively, for
@@ -112,14 +113,14 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **AST edit** *(optional, off by default)* — `ast_edit` applies
   pattern/replacement rewrites with a preview-first `dry_run` flow (default)
   before writing. Enable with `[[capabilities]] ref = "ast_edit"` in
-  `settings.toml`. See [`specs/ast_edit.md`](./specs/ast_edit.md).
+  `settings.toml`.
 - **LSP** *(optional, off by default)* — real language servers
   (rust-analyzer, typescript-language-server, pyright, gopls, clangd, or any
   configured binary) behind `lsp_diagnostics`, `lsp_definition`,
   `lsp_references`, `lsp_hover`, `lsp_rename` (workspace-wide, fixes every
   reference), `lsp_symbols`, and `lsp_code_actions`. Servers spawn lazily
   per language on first use. Enable with `[[capabilities]] ref = "lsp"` in
-  `settings.toml`. See [`specs/lsp.md`](./specs/lsp.md).
+  `settings.toml`.
 - **Shell** — `bash -lc` from the workspace root, with a 120 s wall-clock
   timeout and per-stream 1 MiB output cap; large output is spilled to disk
   under the session folder and stays readable for model tool calls. Use
@@ -138,7 +139,6 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   schedule fires or a task finishes while the session is idle, yolop
   proactively wakes the agent with a turn so it reacts without waiting for
   your next prompt (turn off with the `proactive_wake` setting).
-  See [`specs/background.md`](./specs/background.md).
 - **Web** — `free_web_search` (best-effort SERP/developer search), `web_fetch`
   (HTTP GET/HEAD with markdown/text conversion and DNS-pinned SSRF protection),
   and `duckduckgo_instant_answer` (curated facts and abstracts). All work
@@ -159,33 +159,29 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   `recall` / `forget` tools. Only memory *titles* are injected each turn
   (progressive disclosure); bodies are recalled on demand, so the prompt stays
   small however much you remember. Tunable through the generic capability-config
-  system (`disclosed_titles`, `recall_limit`, `soft_cap`). See
-  [`specs/memory.md`](./specs/memory.md).
+  system (`disclosed_titles`, `recall_limit`, `soft_cap`).
 - **Skills** — `SKILL.md` files discovered from workspace
   (`.agents/skills/`), global (`<config_dir>/yolop/skills/`), ephemeral
   environment integrations, and system (bundled) scopes, exposed via
   `list_skills`, `read_skill`, `write_skill`, and `activate_skill`.
   Workspace/global skills installed after startup are
   available immediately; the bundled `skill-management` skill covers search,
-  npx-style imports, and upgrades. See [`specs/skills.md`](./specs/skills.md).
+  npx-style imports, and upgrades.
 - **OKF knowledge** — native [Open Knowledge Format](https://okf.md/spec/)
   support. The bundled `okf` skill teaches reading, authoring, and validating
   OKF bundles (knowledge as a directory of markdown + YAML frontmatter), and the
   default-on `okf` capability detects a bundle in the workspace and points the
   agent at it — inert when none is present. Override the location with
   `YOLOP_OKF_BUNDLE_DIR`; otherwise `.okf/` and `okf/` are auto-detected by
-  content signature. See [OKF](./docs/features/okf.md) and
-  [`specs/okf.md`](./specs/okf.md).
+  content signature. See [OKF](./docs/features/okf.md).
 - **Herdr-aware sessions** — when launched in a Herdr pane, Yolop reports
   `working`, `idle`, and explicit `blocked` lifecycle states and exposes
-  read-only Herdr operating guidance without installing a global skill. See
-  [`specs/herdr.md`](./specs/herdr.md).
+  read-only Herdr operating guidance without installing a global skill.
 - **Infinity context** — older history is trimmed out of the live prompt but
   stays queryable via `query_history`, so long sessions don't hit the wall.
 - **Tool search** — provider-agnostic deferred tool loading: core file/shell
   tools stay loaded, long-tail tools are hidden until the model pulls them in
-  on demand, saving input tokens on every provider. See
-  [`specs/tool-search.md`](./specs/tool-search.md).
+  on demand, saving input tokens on every provider.
 - **Prompt caching** — Anthropic prompt-caching markers out of the box.
 
 ### Extensibility
@@ -214,12 +210,11 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 - **Checkpoint rewind** — every turn gets a durable conversation checkpoint and,
   in Yolop-owned Git worktrees, an exact workspace snapshot. `/undo`, `/redo`,
   and `/rewind` preview and restore either axis without changing `HEAD` or the
-  real Git index. See [`specs/checkpointing.md`](specs/checkpointing.md).
+  real Git index.
 - **Session search** — `search_sessions` finds recent local sessions by a
   distinctive user/assistant phrase, or lists recent sessions when no query is
   supplied. This keeps investigations of prior or crashed runs grounded in the
-  saved event log before source-code analysis. See
-  [`specs/session-history.md`](specs/session-history.md).
+  saved event log before source-code analysis.
 
 ### Providers
 
@@ -271,9 +266,11 @@ The current level is always shown in the status bar. Change it with
 less careful ("stop asking me", "yolo mode") — it switches the level itself.
 The setting is saved to `settings.toml`, so it persists across sessions.
 
-Soft approval is judgement, not a guarantee. Native shell
-[sandboxing](specs/sandboxing.md) supplies the kernel boundary; deterministic
-hooks can additionally block specific operations. The controls compose.
+Soft approval is judgement, not a guarantee. Native shell sandboxing supplies
+the kernel boundary; deterministic hooks can additionally block specific
+operations. The controls compose. See
+[Shell sandboxing](./docs/features/sandboxing.md) for containment setup,
+platform requirements, and limitations.
 For the public user-facing details, see
 [Approvals](./docs/features/approvals.md).
 
@@ -297,9 +294,7 @@ yolop into zed
 
 That adds a custom ACP agent server to `~/.config/zed/settings.json` using
 the current yolop executable, preserving any existing `env` and extra
-settings on re-run. Then pick **yolop** in Zed's agent panel. See
-[`specs/acp.md`](./specs/acp.md) for the full protocol surface, mappings, and
-current limitations.
+settings on re-run. Then pick **yolop** in Zed's agent panel.
 
 ## MCP servers
 
@@ -357,7 +352,7 @@ server in `.mcp.json` if that repo needs to override it:
 Trust model: HTTP requests keep yolop's DNS-pinned SSRF protection; stdio
 servers run local processes you listed yourself, so authoring `.mcp.json` is
 the act of consent. MCP tools run autonomously like the rest of yolop's
-tools. See [`specs/mcp.md`](specs/mcp.md).
+tools.
 
 ## Reference
 
@@ -467,8 +462,8 @@ never echoed — but it is plain text on disk, so treat it the same way you
 would `~/.aws/credentials`.
 
 The settings file is also **schema-described**: every key carries a title,
-description, type, default, and examples (see `specs/configuration.md`). yolop
-itself can read and edit it through the `get_config` and `set_config` tools or
+description, type, default, and examples. yolop itself can read and edit it
+through the `get_config` and `set_config` tools or
 the `yolop-config` skill — for example, "use anthropic by default", "store my
 OpenAI key", or "set the default model to gpt-5.5 high". Unknown keys in the
 file are ignored, never fatal, so the format stays forward-compatible.
@@ -544,8 +539,7 @@ sets it up.
 ## Releases
 
 Yolop ships to the `everruns/homebrew-tap` Homebrew tap and to crates.io as
-the `yolop` crate. See [`specs/release.md`](./specs/release.md) for the
-release procedure and [`CHANGELOG.md`](./CHANGELOG.md) for what shipped in
+the `yolop` crate. See [`CHANGELOG.md`](./CHANGELOG.md) for what shipped in
 each version.
 
 ## License
