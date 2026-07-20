@@ -40,7 +40,9 @@ doppler run -- bash -lc 'GH_TOKEN="$GITHUB_TOKEN" <command>'
 
 - `specs/` contains durable feature specifications. Read the relevant spec
   before changing behavior in that area.
-- `README.md` is the user-facing entry point — keep it current.
+- `README.md` is the public entry point; `docs/` contains standalone guidance
+  for external users. Neither may link to internal `specs/` or `.agents/`
+  material. See `specs/documentation.md` for the documentation contract.
 - Specs capture **why** and **what**, not exhaustive **how**. Do not duplicate
   fields, enum variants, or exact tool schemas already in source.
 

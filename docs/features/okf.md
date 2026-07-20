@@ -132,6 +132,4 @@ until a bundle is present.
 
 ## Related
 
-- [`specs/okf.md`](../../specs/okf.md)
-- [`specs/skills.md`](../../specs/skills.md)
 - [OKF specification](https://okf.md/spec/)

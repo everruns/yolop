@@ -82,14 +82,14 @@ useful changes:
 
 ### Specs And Docs Alignment
 
-- changed behavior reflected in `specs/`, `README.md`, or `AGENTS.md`
+- changed behavior reflected in `specs/`, `README.md`, `docs/`, or `AGENTS.md`
 - stale duplicate prose removed in favor of links to source files
 - README provider and model lists match `runtime.rs`
 
 ### Feature Completeness Drift
 
 A feature is ready only when its surfaces agree: CLI flags, TUI behavior,
-`specs/`, `README.md`, tests, bundled `skills/`.
+`specs/`, `README.md`, `docs/`, tests, bundled `skills/`.
 
 - diff `clap` definitions in `src/` against the README flag table
 - check recently shipped features (see `git log` since the last tag) for a test that exercises them and a spec/README mention

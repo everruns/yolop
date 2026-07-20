@@ -135,5 +135,5 @@ does not add a second hook engine.
 
 ## Related
 
-- [`specs/hooks.md`](../../specs/hooks.md)
-- [`specs/yolop.md`](../../specs/yolop.md)
+- [Approvals](./approvals.md)
+- [Shell sandboxing](./sandboxing.md)

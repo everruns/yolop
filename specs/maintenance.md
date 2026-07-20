@@ -13,7 +13,9 @@ The canonical agent workflow lives in [`.agents/skills/maintenance/SKILL.md`](..
 3. Match validation depth to the actual risk surface.
 4. Keep release claims honest.
 5. Detect drift between yolop and its upstream source (`examples/coding-cli` in `everruns/everruns`).
-6. Detect feature-completeness drift: features that look shipped on one surface (CLI flags, TUI behavior, specs, README, tests, bundled skills) but are missing or stale on another.
+6. Detect feature-completeness drift: features that look shipped on one surface
+   (CLI flags, TUI behavior, specs, README, docs, tests, bundled skills) but are
+   missing or stale on another.
 
 ## Ownership Boundary
 
@@ -24,7 +26,8 @@ The canonical agent workflow lives in [`.agents/skills/maintenance/SKILL.md`](..
 
 - Maintenance is risk-proportional, not sweep-proportional.
 - The selected scope must be explained, including what was skipped and why.
-- If maintenance changes code or behavior, affected artifacts must stay in sync: `README.md`, `AGENTS.md`, `specs/`.
+- If maintenance changes code or behavior, affected artifacts must stay in sync:
+  `README.md`, `docs/`, `AGENTS.md`, `specs/`.
 - Maintenance prefers concrete fixes over ceremonial audits when a safe local fix exists.
 - Dependency upgrades against external registries should respect a short release-age floor (≥1 day for patch, ≥7 days for minor/major) to avoid landing same-day yanks.
 
@@ -51,10 +54,11 @@ Deferred items are not failures. Untracked ones are.
 
 A feature is not release-ready merely because one surface exists. Yolop's
 surfaces are the CLI flags, the presentation model, the TUI behavior, `--print`
-output, ACP output, `specs/`, `README.md`, the test suite, and bundled system
-skills. Maintenance should catch:
+output, ACP output, `specs/`, `README.md`, `docs/`, the test suite, and bundled
+system skills. Maintenance should catch:
 
-- flags or behavior present in `src/` but absent from `README.md` or `specs/`
+- flags or behavior present in `src/` but absent from `README.md`, `docs/`, or
+  `specs/`
 - specs or README describing behavior the binary no longer has
 - shipped features with no test exercising them
 - user-visible transcript/status behavior tested only through terminal buffers
@@ -130,4 +134,5 @@ Specs preserve design intent, rationale, and constraints — not implementation 
 ## Related
 
 - [`.agents/skills/maintenance/SKILL.md`](../.agents/skills/maintenance/SKILL.md)
+- [`specs/documentation.md`](./documentation.md)
 - [`specs/shipping.md`](./shipping.md)
