@@ -1,56 +1,30 @@
 ---
 title: OKF
-description: Native Open Knowledge Format support — read, author, and validate markdown knowledge bundles, and have Yolop notice one in your workspace automatically.
+description: Read, author, and validate Open Knowledge Format bundles — portable markdown knowledge — with Yolop's built-in okf skill.
 ---
 
 The [Open Knowledge Format](https://okf.md/spec/) (OKF, an open specification
 from Google Cloud) represents a body of knowledge as a plain **directory of
 markdown files with YAML frontmatter** — no database, SDK, or runtime. It is a
-portable way to hand an agent the curated context it needs: architecture notes,
-data models, metrics, processes, conventions. If you can `cat` a file, you can
-read OKF.
+portable way to keep the curated context an agent needs — architecture notes,
+data models, metrics, processes, conventions — right in the repo. If you can
+`cat` a file, you can read OKF.
 
-Yolop supports OKF with two cooperating pieces: a bundled **`okf` skill** that
-teaches reading, authoring, and validating bundles, and an always-on **`okf`
-capability** that detects a bundle in your workspace and points the agent at it.
-Neither requires configuration, and both are inert in repositories that have no
-bundle.
-
-## How it works
-
-```mermaid
-flowchart LR
-  Start["Session start"] --> Detect["okf capability: detect bundle"]
-  Detect -->|none found| Inert["stay silent (no change)"]
-  Detect -->|bundle found| Note["contribute system-prompt note:<br/>path + concept count"]
-  Note --> Agent["Agent reads bundle/index.md,<br/>follows links to concepts"]
-  Agent --> Skill["okf skill: author / validate / maintain"]
-```
-
-At session start the capability looks for a bundle. When it confidently finds
-one it adds a short note to the system prompt naming the bundle path and how many
-concept documents it holds, so the agent knows to consult the bundle **before**
-exploring the repo file-by-file. When no bundle is present it contributes
-nothing.
+Yolop ships a built-in **`okf` skill** that knows the format end to end: it
+reads a bundle as high-signal context, authors new concepts, converts other
+sources into OKF, and validates conformance. The skill is compiled into the
+binary, so it works offline.
 
 ## What a bundle looks like
 
-A bundle is just a directory tree of markdown. The unit of knowledge is a
-**concept** — one markdown file — identified by its path minus `.md` (its
-*concept-id*). Concepts link to each other with ordinary markdown links, turning
-the directory into a graph.
+A bundle is a directory tree of markdown. The unit of knowledge is a **concept**
+— one markdown file — identified by its path minus `.md` (its *concept-id*).
+Concepts link to each other with ordinary markdown links, so the directory is a
+graph, not just a folder.
 
-```
-.okf/
-├── index.md            # directory listing (read first)
-├── log.md              # dated changelog
-├── modules/
-│   └── auth.md         # a concept document
-└── metrics/
-    └── signups.md
-```
+![Anatomy of an OKF bundle: an index.md entry point listing typed concept documents that link to each other, plus a reserved log.md changelog](okf.svg)
 
-Every concept file carries YAML frontmatter. Only `type` is required:
+Every concept file carries YAML frontmatter, and only `type` is required:
 
 ```markdown
 ---
@@ -71,65 +45,47 @@ Handles login, tokens, and session lifecycle.
 ```
 
 `index.md` and `log.md` are **reserved** files (both optional): `index.md` is a
-listing for cheap orientation, `log.md` is a chronological changelog. A bundle
-conforms to OKF v0.1 when every non-reserved `.md` file has parseable
-frontmatter with a non-empty `type`; everything else is soft guidance.
-
-## Detection
-
-OKF defines **no canonical bundle marker** — no required root manifest and no
-fixed directory name — so Yolop never assumes one is present. It resolves a
-bundle in this order:
-
-| Order | Source | Accepted when |
-|---|---|---|
-| 1 | `YOLOP_OKF_BUNDLE_DIR` (workspace-relative or absolute) | it resolves to a directory (trusted — you declared it) |
-| 2 | Conventional roots `.okf/` then `okf/` | a content signature holds: an `index.md`, or a non-reserved `.md` whose frontmatter has a non-empty `type` |
-| 3 | — | nothing detected; the capability stays silent |
-
-The content signature is what keeps a plain markdown directory (a Jekyll site,
-an Obsidian vault, `docs/`) from being mistaken for a bundle. Detection runs once
-at session start and the candidate scan is bounded, so a mis-pointed directory
-cannot stall startup. A bundle added mid-session is picked up on the next
-session.
+listing you read first for cheap orientation, `log.md` is a dated changelog. A
+bundle conforms to OKF v0.1 when every non-reserved `.md` file has parseable
+frontmatter with a non-empty `type` — everything else is soft guidance.
 
 ## Working with a bundle
 
-The `okf` skill carries the full format model and drives these workflows. It is
-compiled into the binary, so it works offline.
-
-- **Consume** — read `<bundle>/index.md` first, then follow links into the
-  concept documents relevant to the task instead of grepping blindly. The
-  capability's note nudges the agent to do this automatically.
-- **Author / convert** — create concept files (one idea per file, always a
-  `type`), link them with `/`-absolute concept links, and keep `index.md` and
-  `log.md` current. The skill also covers converting a Notion export, Obsidian
-  vault, or CSV into OKF.
-- **Validate** — the skill ships a zero-dependency checker for the three
-  conformance rules, with `--strict` (require `title`/`description`/`timestamp`)
-  and `--check-links` (report broken intra-bundle links) modes.
-- **Produce / maintain** — because the skill teaches authoring, a repository can
-  instruct Yolop (for example from `AGENTS.md`) to keep its bundle current after
-  changes that alter durable facts; Yolop updates the affected concepts,
-  `index.md`, and `log.md` through the skill. No separate feature is needed.
-
-Ask in plain language:
+Just ask Yolop in plain language; the skill supplies the how-to.
 
 ```text
 document this service as an OKF bundle
-validate the .okf bundle
+validate the knowledge bundle
+convert my Obsidian vault to OKF
 what does the knowledge base say about auth?
 ```
 
-## Configuration
+- **Read** — Yolop reads `index.md` first, then follows links into the concepts
+  relevant to the task instead of grepping blindly.
+- **Author / convert** — one idea per file, always a `type`, linked with
+  `/`-absolute concept links; `index.md` and `log.md` kept current. Covers
+  converting a Notion export, Obsidian vault, or CSV into OKF.
+- **Validate** — a zero-dependency checker enforces the three conformance rules,
+  with `--strict` (also require `title`/`description`/`timestamp`) and
+  `--check-links` (report broken intra-bundle links) modes.
 
-| Setting | Effect |
-|---|---|
-| `YOLOP_OKF_BUNDLE_DIR` | Point detection at a bundle in a non-conventional location (workspace-relative or absolute). Otherwise `.okf/` and `okf/` are auto-detected by content signature. |
+## How Yolop finds your bundle
 
-There is nothing to enable: the capability is on by default and does nothing
-until a bundle is present.
+OKF deliberately defines **no fixed directory name and no root marker** — a
+bundle is any directory you decide holds one. Yolop does not guess: it does not
+probe for a magic folder or invent a convention. If you keep a bundle in a repo
+and want Yolop to reach for it on its own, point at it in `AGENTS.md`:
+
+```markdown
+Knowledge lives in the OKF bundle under `./knowledge` — consult it before
+exploring the code, and keep it current when durable facts change.
+```
+
+Yolop re-reads `AGENTS.md` every turn, so that one line is enough for it to
+read, and maintain, the bundle through the `okf` skill.
 
 ## Related
 
+- [`specs/okf.md`](../../specs/okf.md)
+- [`specs/skills.md`](../../specs/skills.md)
 - [OKF specification](https://okf.md/spec/)

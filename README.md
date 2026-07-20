@@ -167,13 +167,11 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   Workspace/global skills installed after startup are
   available immediately; the bundled `skill-management` skill covers search,
   npx-style imports, and upgrades.
-- **OKF knowledge** — native [Open Knowledge Format](https://okf.md/spec/)
-  support. The bundled `okf` skill teaches reading, authoring, and validating
-  OKF bundles (knowledge as a directory of markdown + YAML frontmatter), and the
-  default-on `okf` capability detects a bundle in the workspace and points the
-  agent at it — inert when none is present. Override the location with
-  `YOLOP_OKF_BUNDLE_DIR`; otherwise `.okf/` and `okf/` are auto-detected by
-  content signature. See [OKF](./docs/features/okf.md).
+- **OKF knowledge** — a bundled `okf` skill for the
+  [Open Knowledge Format](https://okf.md/spec/): read, author, convert to, and
+  validate knowledge bundles (a directory of markdown + YAML frontmatter). Point
+  Yolop at a repo's bundle from `AGENTS.md` and it reads and maintains it through
+  the skill. See [OKF](./docs/features/okf.md).
 - **Herdr-aware sessions** — when launched in a Herdr pane, Yolop reports
   `working`, `idle`, and explicit `blocked` lifecycle states and exposes
   read-only Herdr operating guidance without installing a global skill.

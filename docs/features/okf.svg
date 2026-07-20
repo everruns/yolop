@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 350" fill="none">
+  <style>
+    text { font-family: 'Geist', 'Inter', system-ui, sans-serif; }
+    .label { font-size: 13px; fill: #0A0A0A; font-weight: 600; }
+    .path { font-family: 'Geist Mono', 'SF Mono', monospace; font-size: 12px; fill: #0A0A0A; font-weight: 600; }
+    .sublabel { font-size: 11px; fill: #404040; font-weight: 400; }
+    .header-text { font-size: 11px; fill: #A0A0A0; font-weight: 400; letter-spacing: 0.08em; }
+    .mono { font-family: 'Geist Mono', 'SF Mono', monospace; font-size: 10px; fill: #404040; }
+    .chip { font-family: 'Geist Mono', 'SF Mono', monospace; font-size: 10px; fill: #0A0A0A; font-weight: 600; }
+    .step-num { font-size: 10px; fill: #FFFFFF; font-weight: 600; }
+    .arrow-label { font-size: 10px; fill: #0A1636; font-weight: 500; }
+  </style>
+  <rect width="800" height="350" fill="#FFFFFF"/>
+
+  <!-- Section headers -->
+  <text x="148" y="74" text-anchor="middle" class="header-text">BUNDLE ENTRY</text>
+  <text x="570" y="48" text-anchor="middle" class="header-text">CONCEPT DOCUMENTS</text>
+
+  <!-- A: index.md (Navy accent) -->
+  <rect x="48" y="90" width="200" height="96" fill="#EEF1F8" stroke="#0A1636" stroke-width="1"/>
+  <rect x="48" y="90" width="6" height="96" fill="#0A1636"/>
+  <text x="152" y="128" text-anchor="middle" class="path">index.md</text>
+  <text x="152" y="148" text-anchor="middle" class="sublabel">bundle entry — read first</text>
+  <text x="152" y="167" text-anchor="middle" class="mono">reserved file</text>
+
+  <!-- B: modules/auth.md (Gold accent) -->
+  <rect x="430" y="64" width="280" height="92" fill="#FBF4E6" stroke="#B8862B" stroke-width="1"/>
+  <rect x="442" y="76" width="104" height="20" fill="#D4A43A"/>
+  <text x="452" y="90" class="chip">type: Module</text>
+  <text x="442" y="124" class="path">modules/auth.md</text>
+  <text x="442" y="143" class="sublabel">Handles login, tokens, sessions</text>
+
+  <!-- C: metrics/signups.md (Gold accent) -->
+  <rect x="430" y="232" width="280" height="92" fill="#FBF4E6" stroke="#B8862B" stroke-width="1"/>
+  <rect x="442" y="244" width="96" height="20" fill="#D4A43A"/>
+  <text x="452" y="258" class="chip">type: Metric</text>
+  <text x="442" y="292" class="path">metrics/signups.md</text>
+  <text x="442" y="311" class="sublabel">Daily new-signup count</text>
+
+  <!-- D: log.md (reserved, Slate dashed) -->
+  <rect x="48" y="250" width="200" height="64" fill="#F5F5F5" stroke="#404040" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="148" y="284" text-anchor="middle" class="label">log.md</text>
+  <text x="148" y="302" text-anchor="middle" class="sublabel">dated changelog</text>
+
+  <!-- Arrow 1: index -> auth (lists) -->
+  <line x1="248" y1="120" x2="424" y2="110" stroke="#0A1636" stroke-width="1.5"/>
+  <polygon points="424,105 434,110 424,115" fill="#0A1636"/>
+  <rect x="318" y="105" width="18" height="18" fill="#0A1636"/>
+  <text x="327" y="118" text-anchor="middle" class="step-num">1</text>
+  <text x="342" y="118" class="arrow-label">lists</text>
+
+  <!-- Arrow 2: index -> signups (lists) -->
+  <line x1="248" y1="158" x2="424" y2="270" stroke="#0A1636" stroke-width="1.5"/>
+  <polygon points="424,265 434,270 422,277" fill="#0A1636"/>
+  <rect x="318" y="205" width="18" height="18" fill="#0A1636"/>
+  <text x="327" y="218" text-anchor="middle" class="step-num">2</text>
+  <text x="342" y="212" class="arrow-label">lists</text>
+
+  <!-- Arrow 3: auth -> signups (graph link) -->
+  <line x1="570" y1="156" x2="570" y2="226" stroke="#0A1636" stroke-width="1.5"/>
+  <polygon points="565,226 575,226 570,234" fill="#0A1636"/>
+  <rect x="543" y="182" width="18" height="18" fill="#0A1636"/>
+  <text x="552" y="195" text-anchor="middle" class="step-num">3</text>
+  <text x="584" y="195" class="arrow-label">links → /metrics/signups</text>
+
+  <!-- Dashed connector: index -> log (both reserved, same bundle) -->
+  <line x1="148" y1="186" x2="148" y2="250" stroke="#A0A0A0" stroke-width="1" stroke-dasharray="3 3"/>
+  <text x="156" y="222" class="mono">same bundle</text>
+</svg>
