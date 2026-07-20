@@ -268,8 +268,42 @@ pub fn lines_for_event(event: &RuntimeEvent) -> Vec<ChatLine> {
             }
             lines
         }
+        EventData::ContextCompacted(data) => vec![ChatLine {
+            author: Author::System,
+            text: compacted_summary_line(data),
+        }],
         _ => Vec::new(),
     }
+}
+
+/// One-line summary of a completed compaction, e.g.
+/// `⊟ compacted context · 142 → 38 msgs · observation_masking+aggressive_trim · 120ms`.
+fn compacted_summary_line(data: &everruns_core::events::ContextCompactedData) -> String {
+    let saved = data.messages_before.saturating_sub(data.messages_after);
+    let mut line = format!(
+        "⊟ compacted context · {} → {} msgs",
+        data.messages_before, data.messages_after
+    );
+    if saved > 0 {
+        line.push_str(&format!(" (−{saved})"));
+    }
+    if !data.strategy_used.is_empty() {
+        line.push_str(&format!(" · {}", data.strategy_used));
+    }
+    line.push_str(&format!(" · {}", format_duration_ms(data.duration_ms)));
+    line
+}
+
+/// Compact millisecond duration: `120ms`, `1.2s`, `1m03s`.
+fn format_duration_ms(ms: u64) -> String {
+    if ms < 1_000 {
+        return format!("{ms}ms");
+    }
+    let secs = ms / 1_000;
+    if secs < 60 {
+        return format!("{:.1}s", ms as f64 / 1_000.0);
+    }
+    format!("{}m{:02}s", secs / 60, secs % 60)
 }
 
 fn append_bash_diagnostics(lines: &mut Vec<ChatLine>, result: &Value) {
@@ -400,6 +434,10 @@ pub fn status_for_event(event: &RuntimeEvent) -> Option<ActivityStatus> {
             )))
         }
         EventData::ReasonThinkingStarted(_) => Some(fallback_status("thinking deeply")),
+        EventData::ContextCompacting(data) => Some(activity_status(format!(
+            "compacting context ({})…",
+            data.reason
+        ))),
         EventData::TurnCancelled(_) => Some(activity_status("turn cancelled")),
         EventData::TurnFailed(data) => Some(activity_status(format!(
             "turn failed: {}",
@@ -850,5 +888,88 @@ mod tests {
             summarize_tool_result(&data),
             "error: Invalid URL: must start with http:// or https://"
         );
+    }
+
+    fn event(data: impl Into<EventData>) -> RuntimeEvent {
+        RuntimeEvent::new(
+            everruns_core::typed_id::SessionId::new(),
+            everruns_core::events::EventContext::empty(),
+            data.into(),
+        )
+    }
+
+    #[test]
+    fn context_compacted_renders_a_system_summary_line() {
+        use everruns_core::events::{CompactionStepData, ContextCompactedData};
+
+        let event = event(ContextCompactedData {
+            strategy_used: "observation_masking+aggressive_trim".into(),
+            messages_before: 142,
+            messages_after: 38,
+            duration_ms: 120,
+            steps: vec![CompactionStepData {
+                strategy: "observation_masking".into(),
+                messages_after: 96,
+                duration_ms: 4,
+            }],
+        });
+
+        let lines = lines_for_event(&event);
+        assert_eq!(lines.len(), 1, "expected one summary line: {lines:?}");
+        let line = &lines[0];
+        assert_eq!(line.author, Author::System);
+        assert!(line.text.contains("142 → 38 msgs"), "{}", line.text);
+        assert!(line.text.contains("(−104)"), "{}", line.text);
+        assert!(
+            line.text.contains("observation_masking+aggressive_trim"),
+            "{}",
+            line.text
+        );
+        assert!(line.text.contains("120ms"), "{}", line.text);
+    }
+
+    #[test]
+    fn context_compacted_survives_replay() {
+        use everruns_core::events::ContextCompactedData;
+
+        let event = event(ContextCompactedData {
+            strategy_used: "native".into(),
+            messages_before: 50,
+            messages_after: 12,
+            duration_ms: 2_400,
+            steps: Vec::new(),
+        });
+
+        let lines = lines_for_replayed_event(&event);
+        assert_eq!(lines.len(), 1, "replay should render the notice: {lines:?}");
+        assert_eq!(lines[0].author, Author::System);
+        // sub-minute duration falls back to seconds formatting.
+        assert!(lines[0].text.contains("2.4s"), "{}", lines[0].text);
+    }
+
+    #[test]
+    fn context_compacting_reports_reason_as_activity() {
+        use everruns_core::events::{CompactionReason, ContextCompactingData};
+
+        let event = event(ContextCompactingData {
+            reason: CompactionReason::ProactiveBudget,
+            strategy: "auto".into(),
+            messages_before: 142,
+        });
+
+        let status = status_for_event(&event).expect("compacting should set activity");
+        assert!(
+            status.text.contains("compacting context"),
+            "{}",
+            status.text
+        );
+        assert!(status.text.contains("proactive_budget"), "{}", status.text);
+    }
+
+    #[test]
+    fn duration_formatting_scales_by_magnitude() {
+        assert_eq!(format_duration_ms(120), "120ms");
+        assert_eq!(format_duration_ms(2_400), "2.4s");
+        assert_eq!(format_duration_ms(63_000), "1m03s");
     }
 }
