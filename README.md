@@ -174,7 +174,8 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   default-on `okf` capability detects a bundle in the workspace and points the
   agent at it — inert when none is present. Override the location with
   `YOLOP_OKF_BUNDLE_DIR`; otherwise `.okf/` and `okf/` are auto-detected by
-  content signature. See [`specs/okf.md`](./specs/okf.md).
+  content signature. See [OKF](./docs/features/okf.md) and
+  [`specs/okf.md`](./specs/okf.md).
 - **Herdr-aware sessions** — when launched in a Herdr pane, Yolop reports
   `working`, `idle`, and explicit `blocked` lifecycle states and exposes
   read-only Herdr operating guidance without installing a global skill. See
