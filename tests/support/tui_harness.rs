@@ -37,6 +37,8 @@ pub struct TuiSpawnOptions {
     /// Launch the alternate-screen renderer (`--fullscreen`) instead of the
     /// default inline TUI.
     pub fullscreen: bool,
+    /// Workspace passed through `-C`; useful for real-binary containment tests.
+    pub workspace: Option<PathBuf>,
 }
 
 impl Default for TuiSpawnOptions {
@@ -48,6 +50,7 @@ impl Default for TuiSpawnOptions {
             cursor_reply_budget: usize::MAX,
             path_prefix: None,
             fullscreen: false,
+            workspace: None,
         }
     }
 }
@@ -196,6 +199,10 @@ pub fn spawn_tui_llmsim_with_settings(
     cmd.arg(session_dir.path());
     if options.fullscreen {
         cmd.arg("--fullscreen");
+    }
+    if let Some(workspace) = options.workspace {
+        cmd.arg("-C");
+        cmd.arg(workspace);
     }
     cmd.env("HOME", home.path());
     cmd.env("XDG_CONFIG_HOME", home.path().join(".config"));

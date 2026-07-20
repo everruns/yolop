@@ -59,6 +59,15 @@ struct BashRunOutput {
     out_truncated: bool,
     err_truncated: bool,
     duration: Duration,
+    sandbox_mode: crate::settings::SandboxMode,
+}
+
+fn likely_sandbox_denial(mode: crate::settings::SandboxMode, exit_code: i32, stderr: &str) -> bool {
+    if mode != crate::settings::SandboxMode::Native || exit_code == 0 {
+        return false;
+    }
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("operation not permitted") || stderr.contains("permission denied")
 }
 
 fn command_failure_hint(exit_code: i32, stderr: &str) -> Option<&'static str> {
@@ -116,6 +125,7 @@ impl BashTool {
         let timeout_secs = self.timeout_secs(sink.is_some());
         let timeout = Duration::from_secs(timeout_secs);
         let max_bytes = self.max_output_bytes;
+        let sandbox_mode = self.sandbox.mode();
 
         if let Some(sink) = &sink {
             let _ = sink.status("Running bash command").await;
@@ -213,6 +223,7 @@ impl BashTool {
             out_truncated,
             err_truncated,
             duration: start.elapsed(),
+            sandbox_mode,
         })
     }
 }
@@ -310,7 +321,11 @@ impl Tool for BashTool {
             "truncated": truncated || output.out_truncated || output.err_truncated,
             "total_lines": total_lines,
             "output_limited": output.out_truncated || output.err_truncated,
+            "sandbox": output.sandbox_mode.as_str(),
         });
+        if likely_sandbox_denial(output.sandbox_mode, exit_code, &output.stderr_text) {
+            result["sandbox_denial"] = json!("likely");
+        }
         if let Some(hint) = command_failure_hint(exit_code, &output.stderr_text) {
             result["hint"] = json!(hint);
         }
@@ -356,6 +371,8 @@ impl BackgroundExecutableTool for BashTool {
             raw_output,
         } = payload;
         let output_limited = output.out_truncated || output.err_truncated;
+        let sandbox_denial =
+            likely_sandbox_denial(output.sandbox_mode, exit_code, &output.stderr_text);
         let _ = sink
             .progress(BackgroundProgress {
                 current: Some(output.duration.as_millis() as u64),
@@ -373,6 +390,7 @@ impl BackgroundExecutableTool for BashTool {
             "truncated": truncated || output_limited,
             "total_lines": total_lines,
             "output_limited": output_limited,
+            "sandbox": output.sandbox_mode.as_str(),
         });
 
         if success {
@@ -388,9 +406,14 @@ impl BackgroundExecutableTool for BashTool {
             let hint = command_failure_hint(exit_code, &output.stderr_text)
                 .map(|hint| format!(" {hint}"))
                 .unwrap_or_default();
+            let sandbox_hint = if sandbox_denial {
+                " Native sandbox likely blocked this operation."
+            } else {
+                ""
+            };
             Err(ToolExecutionResult::tool_error(format!(
-                "Bash command exited with code {exit_code} after {} ms.{hint}",
-                output.duration.as_millis()
+                "Bash command exited with code {exit_code} after {} ms.{sandbox_hint}{hint}",
+                output.duration.as_millis(),
             )))
         }
     }
@@ -404,6 +427,14 @@ mod tests {
     use everruns_core::{ToolCall, ToolContext};
     use everruns_runtime::RealDiskFileStore;
     use std::sync::Mutex;
+
+    #[cfg(target_os = "macos")]
+    fn sandbox_test_root() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("yolop-sandbox-test-")
+            .tempdir_in(std::env::current_dir().unwrap())
+            .expect("sandbox test root outside shared temp")
+    }
 
     #[test]
     fn bash_tool_requests_output_persistence() {
@@ -426,6 +457,32 @@ mod tests {
         assert!(desc.contains("no state persists") || desc.contains("state persists"));
         assert!(desc.contains("cd"));
         assert!(desc.contains("workspace root"));
+    }
+
+    #[test]
+    fn sandbox_denial_classifier_requires_native_mode_and_failed_os_denial() {
+        use crate::settings::SandboxMode;
+
+        assert!(likely_sandbox_denial(
+            SandboxMode::Native,
+            1,
+            "touch: Operation not permitted"
+        ));
+        assert!(likely_sandbox_denial(
+            SandboxMode::Native,
+            1,
+            "open: Permission denied"
+        ));
+        assert!(!likely_sandbox_denial(
+            SandboxMode::Off,
+            1,
+            "touch: Operation not permitted"
+        ));
+        assert!(!likely_sandbox_denial(
+            SandboxMode::Native,
+            0,
+            "Permission denied"
+        ));
     }
 
     // Lock the behavior the description promises: a `cd` in one call does not
@@ -462,7 +519,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn native_sandbox_allows_workspace_writes_and_denies_outside_writes() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = sandbox_test_root();
         let workspace = parent.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
         let outside = parent.path().join("outside.txt");
@@ -492,8 +549,44 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
+    async fn native_sandbox_allows_shared_slash_tmp_writes() {
+        let parent = sandbox_test_root();
+        let workspace = parent.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let shared_temp = tempfile::Builder::new()
+            .prefix("yolop-shared-tmp-test-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let target = shared_temp.path().join("allowed.txt");
+        let outside = parent.path().join("outside-via-tmp.txt");
+        std::os::unix::fs::symlink(&outside, shared_temp.path().join("escape-link")).unwrap();
+        let tool = BashTool::new(Workspace::from_path(workspace));
+
+        let ToolExecutionResult::Success(result) = tool
+            .execute(json!({
+                "command": format!(
+                    "printf shared > '{}' && ! printf escaped > '{}'",
+                    target.display(),
+                    shared_temp.path().join("escape-link").display()
+                )
+            }))
+            .await
+        else {
+            panic!("expected structured result");
+        };
+
+        assert_eq!(result["exit_code"], 0, "{result}");
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "shared");
+        assert!(
+            !outside.exists(),
+            "shared /tmp symlink escaped writable roots"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
     async fn native_sandbox_denies_git_metadata_and_path_alias_escapes() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = sandbox_test_root();
         let workspace = parent.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
         std::fs::create_dir(workspace.join(".git")).unwrap();
@@ -535,7 +628,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn native_sandbox_follows_active_worktree_per_command() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = sandbox_test_root();
         let root = parent.path().join("root");
         let worktree = parent.path().join("worktree");
         std::fs::create_dir(&root).unwrap();
@@ -568,6 +661,17 @@ mod tests {
             std::fs::read_to_string(worktree.join("marker")).unwrap(),
             "worktree"
         );
+
+        let ToolExecutionResult::Success(stale) = tool
+            .execute(json!({
+                "command": format!("printf stale > '{}'", root.join("stale").display())
+            }))
+            .await
+        else {
+            panic!("expected stale-root command result");
+        };
+        assert_ne!(stale["exit_code"], 0, "{stale}");
+        assert!(!root.join("stale").exists());
     }
 
     #[tokio::test]

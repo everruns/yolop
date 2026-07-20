@@ -17,6 +17,7 @@ impl Author {
             Author::Narration => TEXT_MUTED,
             Author::Tool => TEXT_MUTED,
             Author::ToolDetail => TEXT_MUTED,
+            Author::Stderr | Author::Sandbox => ERROR_RED,
             Author::Diff => ACCENT_BLUE,
             Author::System => TEXT_DIM,
         }
@@ -1055,6 +1056,11 @@ pub(crate) fn should_insert_chat_gap(current: &Author, next: Option<&Author>) ->
             | (&Author::Tool, &Author::ToolDetail)
             | (&Author::ToolDetail, &Author::Tool)
             | (&Author::ToolDetail, &Author::ToolDetail)
+            | (&Author::Tool, &Author::Stderr)
+            | (&Author::ToolDetail, &Author::Stderr)
+            | (&Author::Stderr, &Author::ToolDetail)
+            | (&Author::Stderr, &Author::Stderr)
+            | (&Author::Stderr, &Author::Sandbox)
     )
 }
 
@@ -1069,6 +1075,16 @@ pub(crate) fn append_chat_lines<'a>(
             lines,
             "           ",
             Style::default().fg(TEXT_MUTED),
+            &presented.text,
+            inner_width,
+        );
+        return;
+    }
+    if matches!(presented.author, Author::Stderr) {
+        append_wrapped_plain(
+            lines,
+            "         ● ",
+            Style::default().fg(ERROR_RED),
             &presented.text,
             inner_width,
         );

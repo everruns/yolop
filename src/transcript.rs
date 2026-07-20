@@ -25,6 +25,8 @@ pub enum Author {
     Narration,
     Tool,
     ToolDetail,
+    Stderr,
+    Sandbox,
     Diff,
     System,
 }
@@ -249,6 +251,11 @@ pub fn lines_for_event(event: &RuntimeEvent) -> Vec<ChatLine> {
                     format!("{marker} {label}  {summary}")
                 },
             }];
+            if data.tool_name == "bash"
+                && let Some(result) = result_value(data)
+            {
+                append_bash_diagnostics(&mut lines, &result);
+            }
             if (data.tool_name == "edit_file" || data.tool_name == "ast_edit")
                 && let Some(diff) = extract_field(data, "diff")
             {
@@ -262,6 +269,26 @@ pub fn lines_for_event(event: &RuntimeEvent) -> Vec<ChatLine> {
             lines
         }
         _ => Vec::new(),
+    }
+}
+
+fn append_bash_diagnostics(lines: &mut Vec<ChatLine>, result: &Value) {
+    if let Some(stderr) = result
+        .get("stderr")
+        .and_then(Value::as_str)
+        .map(str::trim_end)
+        .filter(|stderr| !stderr.is_empty())
+    {
+        lines.push(ChatLine {
+            author: Author::Stderr,
+            text: format!("stderr:\n{stderr}"),
+        });
+    }
+    if result.get("sandbox_denial").and_then(Value::as_str) == Some("likely") {
+        lines.push(ChatLine {
+            author: Author::Sandbox,
+            text: "native sandbox likely blocked this operation".into(),
+        });
     }
 }
 
@@ -663,10 +690,7 @@ fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
         text: format!("shell exited with code {exit_code}"),
     }];
 
-    for (label, author) in [
-        ("stdout", Author::ToolDetail),
-        ("stderr", Author::ToolDetail),
-    ] {
+    for (label, author) in [("stdout", Author::ToolDetail), ("stderr", Author::Stderr)] {
         if let Some(text) = value.get(label).and_then(Value::as_str) {
             let text = text.trim_end();
             if !text.is_empty() {
@@ -676,6 +700,12 @@ fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
                 });
             }
         }
+    }
+    if value.get("sandbox_denial").and_then(Value::as_str) == Some("likely") {
+        out.push(ChatLine {
+            author: Author::Sandbox,
+            text: "native sandbox likely blocked this operation".into(),
+        });
     }
     if value
         .get("truncated")
@@ -723,6 +753,56 @@ mod tests {
             narration: None,
             tool_call_fingerprint: None,
         }
+    }
+
+    #[test]
+    fn shell_denial_distinguishes_stderr_and_explains_native_sandbox() {
+        let lines = shell_success_lines(&json!({
+            "exit_code": 1,
+            "success": false,
+            "stdout": "",
+            "stderr": "touch: /outside: Operation not permitted\n",
+            "sandbox": "native",
+            "sandbox_denial": "likely"
+        }));
+
+        assert!(lines.iter().any(|line| {
+            line.author == Author::Stderr && line.text.contains("Operation not permitted")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.author == Author::Sandbox
+                && line.text == "native sandbox likely blocked this operation"
+        }));
+    }
+
+    #[test]
+    fn model_bash_denial_renders_stderr_and_sandbox_explanation() {
+        let data = ToolCompletedData::success(
+            "call-1".into(),
+            "bash".into(),
+            vec![ContentPart::text(
+                json!({
+                    "command": "touch /outside",
+                    "exit_code": 1,
+                    "success": false,
+                    "stderr": "touch: Operation not permitted",
+                    "sandbox": "native",
+                    "sandbox_denial": "likely"
+                })
+                .to_string(),
+            )],
+            None,
+        );
+        let event = RuntimeEvent::new(
+            everruns_core::typed_id::SessionId::new(),
+            everruns_core::events::EventContext::empty(),
+            data,
+        );
+
+        let lines = lines_for_event(&event);
+
+        assert!(lines.iter().any(|line| line.author == Author::Stderr));
+        assert!(lines.iter().any(|line| line.author == Author::Sandbox));
     }
 
     #[test]

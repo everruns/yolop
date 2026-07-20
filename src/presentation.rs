@@ -82,6 +82,8 @@ impl Author {
             Author::Narration => "note",
             Author::Tool => "tool",
             Author::ToolDetail => "",
+            Author::Stderr => "",
+            Author::Sandbox => "sandbox",
             Author::Diff => "diff",
             Author::System => "system",
         }
@@ -121,7 +123,7 @@ impl PresentationState {
 
 pub(crate) fn present_transcript_line(chat: &ChatLine) -> PresentedTranscriptLine {
     let label = match chat.author {
-        Author::ToolDetail => None,
+        Author::ToolDetail | Author::Stderr => None,
         _ => Some(chat.author.label()),
     };
     PresentedTranscriptLine {
@@ -405,6 +407,22 @@ mod tests {
             plain_transcript_line(&line),
             "tool › ✓ Bash `git status --short` exit=0"
         );
+    }
+
+    #[test]
+    fn presentation_distinguishes_stderr_detail_from_sandbox_notice() {
+        let stderr = present_transcript_line(&ChatLine {
+            author: Author::Stderr,
+            text: "stderr:\nOperation not permitted".to_string(),
+        });
+        let sandbox = present_transcript_line(&ChatLine {
+            author: Author::Sandbox,
+            text: "native sandbox likely blocked this operation".to_string(),
+        });
+
+        assert_eq!(stderr.label, None);
+        assert_eq!(sandbox.label, Some("sandbox"));
+        assert_eq!(sandbox.text, "native sandbox likely blocked this operation");
     }
 
     #[test]
