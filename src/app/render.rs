@@ -163,13 +163,11 @@ pub(crate) fn bottom_rect(area: Rect, height: u16) -> Rect {
 }
 
 pub(crate) fn chrome_height(input_height: u16, status_rows: u16, preview_visible: bool) -> u16 {
-    let preview_height = u16::from(input_height == 1 && preview_visible);
-    let status_separator_height = u16::from(input_height < 3);
-    let fixed_rows = preview_height
-        .saturating_add(1)
-        .saturating_add(status_separator_height)
-        .saturating_add(status_rows);
-    input_height.saturating_add(fixed_rows)
+    input_height.saturating_add(chrome_fixed_rows(
+        input_height,
+        status_rows,
+        preview_visible,
+    ))
 }
 
 pub(crate) fn chrome_dimensions(

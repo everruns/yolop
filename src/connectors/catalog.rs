@@ -61,11 +61,6 @@ impl ConnectionCatalogBuilder {
 }
 
 impl ConnectionCatalog {
-    #[allow(dead_code)]
-    pub fn register(&mut self, provider: impl Connector + 'static) {
-        self.providers.register(provider);
-    }
-
     pub fn get(&self, provider_id: &str) -> Option<&Arc<dyn Connector>> {
         self.providers.get(provider_id)
     }

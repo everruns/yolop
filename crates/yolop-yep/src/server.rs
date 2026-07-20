@@ -5,7 +5,7 @@
 
 use crate::protocol::{
     ErrorObject, HookFireParams, PROTOCOL_VERSION, ToolCallParams, classify_line,
-    version_compatible,
+    response_error_line, version_compatible,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -218,7 +218,7 @@ impl Server {
 }
 
 fn error_line(id: u64, error: ErrorObject) -> String {
-    json!({ "id": id, "error": error }).to_string()
+    response_error_line(id, &error)
 }
 
 #[cfg(test)]

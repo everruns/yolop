@@ -1915,13 +1915,6 @@ impl App {
         self.status_layout = layout;
     }
 
-    fn toggle_status_layout(&mut self) {
-        self.status_layout = match self.status_layout {
-            StatusLayout::Compact => StatusLayout::Expanded,
-            StatusLayout::Expanded => StatusLayout::Compact,
-        };
-    }
-
     /// Route a mouse-wheel event to the full-screen transcript scroll. Returns
     /// true when consumed. Uses the metrics recorded by the last full-screen
     /// draw so it need not re-run layout.
@@ -1945,7 +1938,7 @@ impl App {
             return false;
         }
         if self.mouse_is_on_status(mouse, terminal_area) {
-            self.toggle_status_layout();
+            self.set_status_layout(None);
             return true;
         }
         false

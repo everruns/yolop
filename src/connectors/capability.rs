@@ -86,7 +86,7 @@ struct ConnectorTools {
     store: Arc<ConnectionStore>,
 }
 
-fn connector_json(info: &ConnectorInfo) -> Value {
+fn connector_json_with_path(info: &ConnectorInfo, path: &str) -> Value {
     json!({
         "provider": info.provider_id,
         "display_name": info.display_name,
@@ -95,16 +95,8 @@ fn connector_json(info: &ConnectorInfo) -> Value {
         "connection_type": info.connection_type,
         "connected": info.connected,
         "form_schema": info.form_schema,
-        "storage_path": null,
+        "storage_path": path,
     })
-}
-
-fn connector_json_with_path(info: &ConnectorInfo, path: &str) -> Value {
-    let mut value = connector_json(info);
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert("storage_path".to_string(), json!(path));
-    }
-    value
 }
 
 struct ListConnectorsTool {
