@@ -1,4 +1,4 @@
-//! `tuika` — a small retained-tree terminal UI toolkit over
+//! `tuika` — a small composable terminal UI toolkit over
 //! [`ratatui`](https://docs.rs/ratatui).
 //!
 //! `tuika` adds the pieces ratatui leaves to you — a flexbox-style layout
@@ -27,6 +27,10 @@
 //!
 //! Add a component by implementing [`view::View`] in a new module under
 //! [`components`]. No registration step; containers accept any boxed `View`.
+//!
+//! Existing ratatui widgets should normally be wrapped in [`RatatuiView`],
+//! which preserves Tuika clipping without exposing the frame buffer.
+//! [`TerminalSession`] and [`Runner`] are optional host-side lifecycle helpers.
 
 pub mod anim;
 pub mod components;
@@ -38,27 +42,36 @@ pub mod geometry;
 pub mod host;
 pub mod hyperlink;
 pub mod layout;
+pub mod live;
 pub mod native;
 pub mod overlay;
+pub mod ratatui_view;
+pub mod runner;
 pub mod style;
 pub mod surface;
+pub mod testing;
 pub mod view;
 
 // Curated top-level re-exports so callers write `tuika::Flex`, `tuika::Theme`,
 // etc. for the common surface without deep paths.
 pub use components::{
-    Boxed, Flex, Loader, Paragraph, ProgressBar, Scroll, ScrollState, SelectList, SelectOutcome,
-    SelectState, Spacer, Spinner, SpinnerStyle, StatusBar, Text, Wrap, wrap_lines,
+    Boxed, Constrained, Flex, KeyHints, Loader, Paragraph, ProgressBar, Responsive, Scroll,
+    ScrollState, SelectList, SelectOutcome, SelectState, Spacer, Spinner, SpinnerStyle, StatusBar,
+    Tabs, TabsState, Text, Wrap, wrap_lines,
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseKind};
 pub use focus::FocusRegistry;
 pub use geometry::{Padding, Size};
-pub use host::{AltScreen, Overlay, paint, translate_event};
+pub use host::{AltScreen, Overlay, TerminalSession, paint, translate_event};
 pub use hyperlink::{HyperlinkBackend, is_web_url, osc8, write_line};
 pub use layout::{Align, Dimension, Direction, Justify, LayoutStyle};
+pub use live::{Live, LiveView, RedrawHandle};
 pub use native::{ProgressState, TerminalProgress};
 pub use overlay::{Anchor, Extent, OverlaySpec};
+pub use ratatui_view::RatatuiView;
+pub use runner::{Runner, RunnerConfig};
 pub use style::{BorderStyle, Theme};
+pub use surface::Surface;
 pub use view::{Element, RenderCtx, View, element};
 
 #[cfg(test)]

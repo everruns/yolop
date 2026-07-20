@@ -8,23 +8,31 @@
 //! a new module here and implement `View`; nothing else needs to change.
 
 mod boxed;
+mod constrained;
 mod flex;
+mod key_hints;
 mod loader;
 mod progress_bar;
+mod responsive;
 mod scroll;
 mod select;
 mod spacer;
 mod spinner;
 mod status_bar;
+mod tabs;
 mod text;
 
 pub use boxed::Boxed;
+pub use constrained::Constrained;
 pub use flex::Flex;
+pub use key_hints::KeyHints;
 pub use loader::Loader;
 pub use progress_bar::ProgressBar;
+pub use responsive::Responsive;
 pub use scroll::{Scroll, ScrollState};
 pub use select::{SelectList, SelectOutcome, SelectState};
 pub use spacer::Spacer;
 pub use spinner::{Spinner, SpinnerStyle};
 pub use status_bar::StatusBar;
+pub use tabs::{Tabs, TabsState};
 pub use text::{Paragraph, Text, Wrap, line_width, wrap_lines};

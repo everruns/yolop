@@ -168,7 +168,11 @@ fn gallery_drives_altscreen_and_native_progress() {
     let run = run_gallery(24, 80, None, false);
     let out = &run.output;
 
-    assert!(run.exited_ok, "gallery should exit cleanly on `q`");
+    assert!(
+        run.exited_ok,
+        "gallery should exit cleanly on `q`: {}",
+        visible_text(out)
+    );
     assert!(
         contains(out, b"\x1b[?1049h"),
         "should enter the alternate screen"
@@ -176,6 +180,16 @@ fn gallery_drives_altscreen_and_native_progress() {
     assert!(
         contains(out, b"\x1b[?1049l"),
         "should restore the main screen on exit"
+    );
+    assert!(contains(out, b"\x1b[?25l"), "should hide the cursor");
+    assert!(
+        contains(out, b"\x1b[?25h"),
+        "should restore the cursor on exit"
+    );
+    assert!(contains(out, b"\x1b[?1000h"), "should enable mouse capture");
+    assert!(
+        contains(out, b"\x1b[?1000l"),
+        "should disable mouse capture on exit"
     );
     // OSC 9;4: indeterminate on start, cleared on exit.
     assert!(
@@ -200,7 +214,8 @@ fn gallery_survives_resize() {
     let run = run_gallery(24, 100, Some((40, 12)), false);
     assert!(
         run.exited_ok,
-        "gallery should survive a resize and exit cleanly"
+        "gallery should survive a resize and exit cleanly: {}",
+        visible_text(&run.output)
     );
     assert!(
         contains(&run.output, b"\x1b[?1049l"),

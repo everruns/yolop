@@ -1,21 +1,25 @@
 //! Terminal host: alternate-screen lifecycle, event translation, compositor.
 //!
-//! This is the seam between `tuika` and a real terminal. [`AltScreen`] enters
-//! the alternate-screen buffer and mouse-capture on construction and restores
-//! them on drop (RAII, so a panic still cleans up) — the Codex-style
-//! full-screen entry. [`translate_event`] maps crossterm input to `tuika`
-//! [`Event`]s. [`paint`] composites a root view plus any overlays into the
-//! frame buffer: background fill, root, then each overlay last (clearing its
-//! rect first), which is why overlays never leak surrounding chrome here.
+//! This is the seam between `tuika` and a real terminal. [`TerminalSession`]
+//! owns the complete full-screen lifecycle; [`AltScreen`] is the narrower
+//! guard for hosts that manage raw mode and cursor visibility themselves.
+//! [`translate_event`] maps crossterm input to `tuika` [`Event`]s. [`paint`]
+//! composites a root view plus any overlays into the frame buffer: background
+//! fill, root, then each overlay last (clearing its rect first), which is why
+//! overlays never leak surrounding chrome here.
 
 use std::io::{self, Write};
 
+use crossterm::cursor::{Hide, Show};
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode as CtKeyCode, KeyEventKind,
     KeyModifiers, MouseEventKind as CtMouseKind,
 };
 use crossterm::execute;
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    is_raw_mode_enabled,
+};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -52,6 +56,62 @@ impl AltScreen {
 }
 
 impl Drop for AltScreen {
+    fn drop(&mut self) {
+        self.leave();
+    }
+}
+
+/// Complete RAII ownership of a full-screen terminal session.
+///
+/// Construction enables raw mode, enters the alternate screen, enables mouse
+/// capture, and hides the cursor. Drop restores the terminal, including when
+/// unwinding from a panic. Pre-existing raw mode is preserved rather than
+/// disabled. If construction fails partway through, it performs the same
+/// best-effort rollback before returning.
+pub struct TerminalSession {
+    active: bool,
+    raw_mode_owned: bool,
+}
+
+impl TerminalSession {
+    /// Enter a full-screen terminal session, rolling back on failure.
+    pub fn enter() -> io::Result<Self> {
+        let raw_mode_owned = !is_raw_mode_enabled()?;
+        if raw_mode_owned {
+            enable_raw_mode()?;
+        }
+        let mut out = io::stdout();
+        if let Err(error) =
+            execute!(out, EnterAlternateScreen, EnableMouseCapture, Hide).and_then(|()| out.flush())
+        {
+            let _ = execute!(out, Show, DisableMouseCapture, LeaveAlternateScreen);
+            if raw_mode_owned {
+                let _ = disable_raw_mode();
+            }
+            return Err(error);
+        }
+        Ok(Self {
+            active: true,
+            raw_mode_owned,
+        })
+    }
+
+    /// Restore the terminal immediately. Calling this more than once is safe.
+    pub fn leave(&mut self) {
+        if !self.active {
+            return;
+        }
+        let mut out = io::stdout();
+        let _ = execute!(out, Show, DisableMouseCapture, LeaveAlternateScreen);
+        let _ = out.flush();
+        if self.raw_mode_owned {
+            let _ = disable_raw_mode();
+        }
+        self.active = false;
+    }
+}
+
+impl Drop for TerminalSession {
     fn drop(&mut self) {
         self.leave();
     }

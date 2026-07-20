@@ -945,47 +945,33 @@ fn hyperlinks_enabled() -> bool {
 /// and a loader on the alternate screen, and drives the terminal's native
 /// OSC 9;4 progress indicator while running. Quits on `q`/`Esc`/`Ctrl-C`.
 fn run_tuika_gallery() -> Result<()> {
-    use crossterm::event::{self, Event as CtEvent, KeyCode as CtKeyCode, KeyEventKind};
+    use std::ops::ControlFlow;
     use std::time::Duration;
 
-    let mut raw = RawModeGuard::new()?;
-    let mut alt = tuika::AltScreen::enter()?;
     // Route through the same hyperlink-aware backend as the main TUI so the
     // demo's URL becomes a clickable OSC 8 link when YOLOP_HYPERLINKS is set.
     let backend = tuika::HyperlinkBackend::new(io::stdout(), hyperlinks_enabled());
-    let mut terminal = Terminal::with_options(
-        backend,
-        TerminalOptions {
-            viewport: Viewport::Fullscreen,
-        },
-    )?;
     let theme = tuika::Theme::default();
     let mut progress = tuika::TerminalProgress::new();
     progress.indeterminate();
-
-    let mut frame: u64 = 0;
-    loop {
-        terminal.draw(|f| {
-            let area = f.area();
-            let root = build_gallery(frame, &theme);
-            tuika::paint(f.buffer_mut(), area, &theme, root.as_ref(), &[]);
-        })?;
-
-        if event::poll(Duration::from_millis(80))?
-            && let CtEvent::Key(key) = event::read()?
-            && key.kind != KeyEventKind::Release
-            && matches!(key.code, CtKeyCode::Char('q') | CtKeyCode::Esc)
-        {
-            break;
-        }
-        frame = frame.wrapping_add(1);
-    }
-
+    let runner = tuika::Runner::new(tuika::RunnerConfig {
+        tick_rate: Duration::from_millis(80),
+    });
+    runner.run_with_backend(
+        &theme,
+        backend,
+        |frame| build_gallery(frame, &theme),
+        |event| match event {
+            tuika::Event::Key(key)
+                if matches!(key.code, tuika::KeyCode::Esc | tuika::KeyCode::Char('q'))
+                    || (key.ctrl && matches!(key.code, tuika::KeyCode::Char('c'))) =>
+            {
+                ControlFlow::Break(())
+            }
+            _ => ControlFlow::Continue(()),
+        },
+    )?;
     progress.clear();
-    let _ = terminal.clear();
-    drop(terminal);
-    alt.leave();
-    raw.disable()?;
     Ok(())
 }
 

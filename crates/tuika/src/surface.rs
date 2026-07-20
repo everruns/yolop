@@ -43,6 +43,57 @@ impl<'a> Surface<'a> {
         }
     }
 
+    /// Render one or more ratatui widgets without giving them unrestricted
+    /// access to the frame buffer.
+    ///
+    /// The callback receives a temporary [`Buffer`] covering `area`. Existing
+    /// cells are copied into it first, so widgets that only patch styles retain
+    /// the surrounding background. After the callback returns, only cells in
+    /// this surface's clip are composited back. A widget that writes outside
+    /// its assigned area therefore cannot overwrite a sibling or an overlay.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ratatui::widgets::{Sparkline, Widget};
+    /// use tuika::Surface;
+    ///
+    /// # fn draw(surface: &mut Surface<'_>) {
+    /// let values = [1, 4, 2, 8];
+    /// let area = surface.area();
+    /// surface.render_ratatui(area, |area, buffer| {
+    ///     Sparkline::default().data(&values).render(area, buffer);
+    /// });
+    /// # }
+    /// ```
+    pub fn render_ratatui(&mut self, area: Rect, render: impl FnOnce(Rect, &mut Buffer)) {
+        let render_area = area.intersection(self.buffer.area);
+        if render_area.is_empty() {
+            return;
+        }
+
+        // A custom View can pass any Rect. Restrict allocation to the actual
+        // frame while retaining the full assigned area for normal clipped
+        // composition inside that frame.
+        let mut scratch = Buffer::empty(render_area);
+        for y in render_area.y..render_area.bottom() {
+            for x in render_area.x..render_area.right() {
+                scratch[(x, y)] = self.buffer[(x, y)].clone();
+            }
+        }
+
+        render(render_area, &mut scratch);
+
+        let destination = render_area.intersection(self.clip);
+        for y in destination.y..destination.bottom() {
+            for x in destination.x..destination.right() {
+                if let Some(cell) = scratch.cell((x, y)) {
+                    self.buffer[(x, y)] = cell.clone();
+                }
+            }
+        }
+    }
+
     fn contains(&self, x: u16, y: u16) -> bool {
         x >= self.clip.x && x < self.clip.right() && y >= self.clip.y && y < self.clip.bottom()
     }

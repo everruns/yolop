@@ -2,9 +2,10 @@
 name = "tuika"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 authors = ["Everruns <support@everruns.com>"]
 license = "MIT"
-description = "A small retained-tree terminal UI toolkit — flexbox layout, overlays, focus, and components over ratatui."
+description = "A composable terminal UI toolkit — flexbox layout, overlays, focus, and safe ratatui interoperability."
 homepage = "https://github.com/everruns/yolop"
 repository = "https://github.com/everruns/yolop"
 readme = "README.md"
