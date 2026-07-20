@@ -23,6 +23,166 @@ use super::style::Theme;
 use super::surface::Surface;
 use super::view::{RenderCtx, View, element};
 
+// ---- ratatui interoperability -------------------------------------------
+
+#[test]
+fn ratatui_rendering_preserves_clip_even_if_buffer_expands() {
+    let mut buf = Buffer::filled(Rect::new(0, 0, 12, 3), ratatui::buffer::Cell::new("#"));
+    let clip = Rect::new(4, 1, 4, 1);
+    {
+        let mut surface = Surface::new(&mut buf, clip);
+        surface.render_ratatui(Rect::new(2, 0, 8, 3), |_area, scratch| {
+            let expanded = Buffer::filled(Rect::new(0, 0, 12, 3), ratatui::buffer::Cell::new("x"));
+            scratch.merge(&expanded);
+        });
+    }
+
+    for y in 0..3 {
+        for x in 0..12 {
+            let expected = if y == 1 && (4..8).contains(&x) {
+                "x"
+            } else {
+                "#"
+            };
+            assert_eq!(buf[(x, y)].symbol(), expected, "cell ({x}, {y})");
+        }
+    }
+}
+
+#[test]
+fn ratatui_rendering_starts_with_existing_cells() {
+    use ratatui::style::Color;
+
+    let mut cell = ratatui::buffer::Cell::new(".");
+    cell.set_bg(Color::Blue);
+    let mut buf = Buffer::filled(Rect::new(0, 0, 4, 1), cell);
+    let area = buf.area;
+    {
+        let mut surface = Surface::new(&mut buf, area);
+        surface.render_ratatui(area, |_area, scratch| {
+            scratch[(1, 0)].set_char('x');
+        });
+    }
+    assert_eq!(buf[(1, 0)].symbol(), "x");
+    assert_eq!(buf[(1, 0)].bg, Color::Blue);
+}
+
+#[test]
+fn ratatui_rendering_limits_scratch_to_the_frame() {
+    let mut buf = buffer(3, 2);
+    let area = buf.area;
+    let mut surface = Surface::new(&mut buf, area);
+    surface.render_ratatui(Rect::new(0, 0, u16::MAX, u16::MAX), |actual, _| {
+        assert_eq!(actual, Rect::new(0, 0, 3, 2));
+    });
+}
+
+#[test]
+fn ratatui_rendering_tolerates_a_callback_that_resizes_its_buffer() {
+    let mut buf = Buffer::filled(Rect::new(0, 0, 4, 1), ratatui::buffer::Cell::new("#"));
+    let area = buf.area;
+    let mut surface = Surface::new(&mut buf, area);
+    surface.render_ratatui(area, |_area, scratch| {
+        scratch.resize(Rect::new(0, 0, 1, 1));
+        scratch[(0, 0)].set_char('x');
+    });
+    assert_eq!(row(&buf, 0), "x###");
+}
+
+#[test]
+fn ratatui_view_renders_borrowing_widget_data() {
+    use ratatui::widgets::{Sparkline, Widget};
+
+    let data = vec![1, 2, 4, 8];
+    let view = crate::RatatuiView::fill(move |area, buffer| {
+        Sparkline::default().data(&data).render(area, buffer);
+    });
+    let theme = Theme::default();
+    let rendered = crate::testing::render(&view, 4, 1, &theme);
+    assert_ne!(row(&rendered, 0), "");
+}
+
+// ---- responsive and data-driven views ----------------------------------
+
+#[test]
+fn responsive_selects_layout_from_render_width() {
+    let view = crate::Responsive::new(
+        10,
+        element(Text::raw("compact")),
+        element(Text::raw("wide")),
+    );
+    let theme = Theme::default();
+    let compact = crate::testing::render(&view, 8, 1, &theme);
+    let wide = crate::testing::render(&view, 12, 1, &theme);
+    assert_eq!(row(&compact, 0), "compact");
+    assert_eq!(row(&wide, 0), "wide");
+}
+
+#[test]
+fn constrained_clamps_intrinsic_measurement() {
+    let constrained = crate::Constrained::new(element(Text::raw("long content")))
+        .min_size(4, 1)
+        .max_size(6, 2);
+    assert_eq!(constrained.measure(Size::new(20, 10)), Size::new(6, 1));
+    assert_eq!(constrained.measure(Size::new(3, 1)), Size::new(3, 1));
+}
+
+#[test]
+fn live_view_reads_updated_data_without_reconstruction() {
+    let redraw = crate::RedrawHandle::default();
+    let value = crate::Live::with_redraw(1u32, redraw.clone());
+    let view = crate::LiveView::new(value.clone(), |value| {
+        element(Text::raw(format!("count: {value}")))
+    });
+    let theme = Theme::default();
+    assert_eq!(
+        row(&crate::testing::render(&view, 12, 1, &theme), 0),
+        "count: 1"
+    );
+    value.set(2);
+    assert!(redraw.take());
+    assert_eq!(
+        row(&crate::testing::render(&view, 12, 1, &theme), 0),
+        "count: 2"
+    );
+}
+
+#[test]
+fn tabs_state_wraps_and_tabs_render_selection() {
+    let mut state = crate::TabsState::default();
+    assert_eq!(
+        state.handle(&Event::Key(Key::new(KeyCode::Left)), 3),
+        EventFlow::Consumed
+    );
+    assert_eq!(state.selected(), 2);
+
+    let tabs = crate::Tabs::new(
+        vec![Line::from("one"), Line::from("two"), Line::from("three")],
+        &state,
+    );
+    let theme = Theme::default();
+    let rendered = crate::testing::render(&tabs, 20, 1, &theme);
+    assert!(row(&rendered, 0).contains("one  two  three"));
+    assert!(
+        rendered[(10, 0)]
+            .modifier
+            .contains(ratatui::style::Modifier::UNDERLINED)
+    );
+}
+
+#[test]
+fn key_hints_measure_unicode_by_terminal_width() {
+    let hints = crate::KeyHints::new([("⌘", "開く")]);
+    assert_eq!(hints.measure(Size::new(20, 1)), Size::new(8, 1));
+}
+
+#[test]
+fn public_testing_grid_is_stable_and_rectangular() {
+    let theme = Theme::default();
+    let rendered = crate::testing::render(&Text::raw("hi"), 3, 2, &theme);
+    assert_eq!(crate::testing::grid(&rendered), "hi \n   ");
+}
+
 /// Read a buffer row into a trimmed string for assertions.
 fn row(buffer: &Buffer, y: u16) -> String {
     let area = buffer.area;

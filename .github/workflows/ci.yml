@@ -20,6 +20,24 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  tuika-msrv:
+    name: Tuika MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "tuika-msrv"
+
+      - name: Check Tuika
+        run: cargo check --locked -p tuika --all-targets
+
   lint:
     name: Format + Clippy
     runs-on: ubuntu-latest

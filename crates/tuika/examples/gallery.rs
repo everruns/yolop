@@ -10,7 +10,6 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEventKind};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::{Terminal, TerminalOptions, Viewport};
@@ -71,8 +70,7 @@ fn build(frame: u64, theme: &Theme) -> tuika::Element {
 }
 
 fn main() -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut alt = tuika::AltScreen::enter()?;
+    let _session = tuika::TerminalSession::enter()?;
     // Hyperlinks enabled so the footer URL demos as a real OSC 8 link.
     let mut terminal = Terminal::with_options(
         HyperlinkBackend::new(io::stdout(), true),
@@ -104,7 +102,5 @@ fn main() -> io::Result<()> {
     progress.clear();
     let _ = terminal.clear();
     drop(terminal);
-    alt.leave();
-    disable_raw_mode()?;
     Ok(())
 }

@@ -1,14 +1,13 @@
 # tuika
 
-A small retained-tree terminal UI toolkit. `tuika` provides the layout,
+A small composable terminal UI toolkit. `tuika` provides the layout,
 overlay, focus, and component primitives that `ratatui` leaves to you, while
 letting `ratatui` keep ownership of the cell buffer and its diff against the
 terminal.
 
-It is self-contained — it depends only on `ratatui`, `crossterm`, `textwrap`,
-and `unicode-width`, and knows nothing about yolop — and is staged for
-extraction into its own crate. Today yolop drives the component gallery from
-`src/main.rs` (`tuika-gallery`).
+It is a published, self-contained crate that depends only on `ratatui`,
+`crossterm`, `textwrap`, and `unicode-width`. It knows nothing about yolop;
+yolop is one production consumer.
 
 ## Model
 
@@ -18,6 +17,9 @@ extraction into its own crate. Today yolop drives the component gallery from
 - **State** that must survive across frames — scroll offset, selection index,
   focus — lives in host-persisted `*State` structs (the `StatefulWidget`
   idiom), not in the view tree.
+- **Live data** (`Live` / `LiveView`) is shared application state read at render
+  time. Updates request a redraw from the runner; Tuika does not spawn data
+  sources or reconcile a retained widget tree.
 - **Layout** is a flexbox subset (`layout`): `Dimension` (`Auto`/`Fixed`/
   `Percent`/`Flex`), `Align`, `Justify`, `Direction`, over a direction-agnostic
   axis so rows and columns share one solver.
@@ -35,11 +37,13 @@ extraction into its own crate. Today yolop drives the component gallery from
 | `Text` / `Paragraph` | Styled lines / word-wrapped plain text |
 | `Wrap` | Word-wraps pre-styled lines, preserving per-span styles |
 | `Flex` | Flexbox container (the composition primitive) |
+| `Responsive` / `Constrained` | Breakpoint selection and min/max measurement |
 | `Boxed` | Border + padding + title, focus-aware |
 | `Spacer` | Flexible filler |
 | `Scroll` (+ `ScrollState`) | Vertical scroll viewport + scrollbar |
 | `SelectList` (+ `SelectState`) | Selectable list |
 | `StatusBar` | One-row left/right status segments |
+| `Tabs` / `KeyHints` | Host-state tab navigation and command hints |
 | `Spinner` | Frame-cycled activity glyph |
 | `ProgressBar` | Determinate (sub-cell) / indeterminate bar |
 | `Loader` | Spinner + message + hint row |
@@ -69,6 +73,7 @@ Each enters the alternate screen; press `q` (or `esc`) to quit.
 | `gallery`  | `cargo run -p tuika --example gallery`    | motion components + native OSC 9;4 progress        |
 | `select`   | `cargo run -p tuika --example select`     | `SelectState` + `SelectList` (stateful-widget idiom) |
 | `overlay`  | `cargo run -p tuika --example overlay`    | `OverlaySpec` centered dialog + input routing      |
+| `ratatui_dashboard` | `cargo run -p tuika --example ratatui_dashboard` | mixed Ratatui widgets + responsive live data |
 
 (Embedded in yolop, the gallery is also reachable as `yolop tuika-gallery`.)
 
@@ -101,14 +106,60 @@ Grammar (each keyword consumes exactly one node):
   a component **from another crate** participates in the DSL:
 
   ```rust
-  use other_crate::Sparkline;
-  crate::view! { col { node(Sparkline::new(&data)) } };
+  use other_crate::CustomView;
+  crate::view! { col { node(CustomView::new(&data)) } };
   ```
 
-First-class `Sparkline { … }` syntax for external components (with their own
-constructors and named attrs) needs a proc-macro; that lands when `tuika`
-becomes its own crate. Until then, `node(...)` covers every third-party
-component. The `tuika-gallery` demo is built entirely with `view!`.
+`node(...)` accepts any type that already implements Tuika's `View`; it does
+not make a Ratatui `Widget` implement `View`. Use `RatatuiView` for Ratatui
+widgets. The `tuika-gallery` demo is built entirely with `view!`.
+
+## Ratatui interoperability
+
+Tuika deliberately does not duplicate Ratatui's widget catalog. Wrap existing
+widgets in `RatatuiView`; they render into an isolated buffer and only the
+assigned clip is composited into the frame:
+
+```rust
+use ratatui::widgets::{Sparkline, Widget};
+use tuika::{RatatuiView, Size};
+
+let values = vec![1, 4, 2, 8];
+let chart = RatatuiView::sized(Size::new(20, 4), move |area, buffer| {
+    Sparkline::default().data(&values).render(area, buffer);
+});
+```
+
+The closure form supports widgets that borrow captured data. Stateful widgets
+can capture host-owned synchronized state and call `StatefulWidget::render`
+inside the same closure. `Surface::render_ratatui` is the lower-level escape
+hatch for custom views that need several widgets. Neither API exposes the
+frame's mutable buffer.
+
+## Responsive and live views
+
+`Responsive` chooses complete compact/wide view trees from the current width;
+this supports row-to-column reflow and intentionally omitted secondary
+content. `Constrained` supplies min/max intrinsic measurements to flex layout.
+
+`Live<T>` is shared application data with a narrow read/update API. `LiveView`
+derives a fresh view from its current value each frame. Connect it to
+`Runner::redraw_handle()` when background producers should invalidate the
+screen. Producers retain ownership of their threads, tasks, retries, and
+lifecycle.
+
+## Terminal lifecycle and runner
+
+`TerminalSession` is the complete RAII guard: it owns raw mode, alternate
+screen, mouse capture, and cursor visibility, including rollback after partial
+initialization. It preserves raw mode when the caller had already enabled it.
+`AltScreen` remains available for hosts that intentionally own raw mode and
+cursor visibility themselves.
+
+`Runner` is an optional synchronous event loop for dashboards and small tools.
+It owns `TerminalSession`, frame scheduling, Crossterm event translation, and
+data-driven redraw checks. Async applications can keep their existing loop and
+call `paint` directly.
 
 ## Native terminal progress
 
@@ -137,6 +188,20 @@ ratatui `Buffer` and reading cells back — no real terminal:
 - **PTY smoke** (`tests/tuika_pty.rs`) — drives the real binary under a
   pseudo-terminal and asserts the terminal-facing protocol: alternate-screen
   enter/leave, OSC 9;4 progress, resize survival, clean exit.
+
+Downstream crates can use `tuika::testing::{render, render_sizes, grid}` for
+buffer assertions, resize sweeps, and stable glyph snapshots without a real
+terminal or `TestBackend` setup.
+
+## Compatibility
+
+- Minimum supported Rust version: **1.88**, declared as `rust-version` and
+  checked in CI.
+- Tuika 0.x follows Cargo semver: minor releases may make deliberate breaking
+  API changes; patch releases do not.
+- Ratatui and Crossterm are part of Tuika's public interoperability surface.
+  Tuika tracks compatible minor lines deliberately; applications should use
+  matching versions so Cargo can deduplicate them.
 
 ### Manual terminal matrix
 

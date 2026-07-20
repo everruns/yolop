@@ -10,13 +10,12 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::event::{self};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::backend::CrosstermBackend;
 use ratatui::text::{Line, Span};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use tuika::{
-    AltScreen, Element, Event, KeyCode, Overlay, OverlaySpec, Padding, Text, Theme, paint,
+    Element, Event, KeyCode, Overlay, OverlaySpec, Padding, TerminalSession, Text, Theme, paint,
     translate_event, view,
 };
 
@@ -24,8 +23,7 @@ fn main() -> io::Result<()> {
     let mut open = false;
     let mut confirmed = 0u32;
 
-    enable_raw_mode()?;
-    let mut alt = AltScreen::enter()?;
+    let _session = TerminalSession::enter()?;
     let mut terminal = Terminal::with_options(
         CrosstermBackend::new(io::stdout()),
         TerminalOptions {
@@ -116,7 +114,5 @@ fn main() -> io::Result<()> {
 
     let _ = terminal.clear();
     drop(terminal);
-    alt.leave();
-    disable_raw_mode()?;
     Ok(())
 }
