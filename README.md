@@ -63,12 +63,13 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   inside the workspace.
 - **Native shell sandbox by default** — every foreground, background, slash,
   and direct shell command runs under Seatbelt on macOS or Landlock + seccomp
-  on Linux. The active workspace is writable, writes outside it and network
-  access are denied, and macOS also makes workspace `.git` metadata read-only.
+  on Linux. The active workspace and `/tmp` are writable, other writes and
+  network access are denied, and macOS also makes workspace `.git` metadata
+  read-only.
   You can set `sandbox = "off"` only when yolop already runs inside a trusted
   VM/container; Yolop marks that mode `UNSAFE HOST` and warns that it exposes
   host files, processes, and network. See
-  [Shell sandboxing](./docs/features/sandboxing.md).
+  [Shell sandboxing](./docs/features/sandboxing/sandboxing.md).
 - **Soft approval** — an optional spoken-consent layer for critical actions.
   yolop batches the safe work and pauses to ask, in plain chat, only before
   destructive or outward-facing steps; you approve by replying "yes". The
@@ -269,7 +270,7 @@ The setting is saved to `settings.toml`, so it persists across sessions.
 Soft approval is judgement, not a guarantee. Native shell sandboxing supplies
 the kernel boundary; deterministic hooks can additionally block specific
 operations. The controls compose. See
-[Shell sandboxing](./docs/features/sandboxing.md) for containment setup,
+[Shell sandboxing](./docs/features/sandboxing/sandboxing.md) for containment setup,
 platform requirements, and limitations.
 For the public user-facing details, see
 [Approvals](./docs/features/approvals.md).

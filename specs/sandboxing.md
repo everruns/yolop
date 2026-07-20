@@ -28,10 +28,11 @@ backend can implement the same seam without changing tool schemas.
 ## Default policy
 
 `sandbox = "native"` is the implicit default. It provides a live writable
-workspace, a private temporary directory, no network, and restrictions inherited
-by descendant processes. The provider is selected once when a runtime is built;
-each command resolves the current workspace again, so worktree activation is
-reflected on the next command.
+workspace, writable shared `/tmp`, a private temporary directory exposed as
+`$TMPDIR` and `$HOME`, no network, and restrictions inherited by descendant
+processes. The provider is selected once when a runtime is built; each command
+resolves the current workspace again, so worktree activation is reflected on
+the next command.
 
 Native execution is fail closed. If the required OS primitive is unavailable,
 the command returns a sandbox-setup error and is not retried on the host.
@@ -41,7 +42,8 @@ the command returns a sandbox-setup error and is not retried on the host.
 The native provider launches `/usr/bin/sandbox-exec` with a Seatbelt profile:
 
 - processes and host reads are allowed for compiler/SDK compatibility;
-- writes are allowed only below the active workspace and Yolop sandbox temp;
+- writes are allowed only below the active workspace, `/tmp`, and Yolop
+  sandbox temp;
 - `.git` below the active workspace is read-only; and
 - all network access is denied.
 
@@ -53,11 +55,11 @@ model rather than an implied guarantee.
 ### Linux
 
 The native provider re-executes Yolop as a small policy worker. The worker uses
-Landlock to grant host reads plus writes only below the active workspace and
-private temp, then installs a seccomp-BPF filter that denies internet and packet
-socket creation before replacing itself with bash. Restrictions are inherited
-by descendants. A kernel that cannot enforce Landlock is an error, never an
-unsandboxed fallback.
+Landlock to grant host reads plus writes only below the active workspace,
+`/tmp`, and private temp, then installs a seccomp-BPF filter that denies internet
+and packet socket creation before replacing itself with bash. Restrictions are
+inherited by descendants. A kernel that cannot enforce Landlock is an error,
+never an unsandboxed fallback.
 
 The policy requires full Landlock ABI v3 enforcement (Linux 6.2 or a backport)
 so direct truncate operations cannot bypass the write boundary.
@@ -92,6 +94,7 @@ The implemented host seam is deliberately small:
 
 ```rust
 trait SandboxProvider: Send + Sync {
+    fn mode(&self) -> SandboxMode;
     fn command(&self, cwd: &Path, script: &str) -> Result<tokio::process::Command>;
 }
 ```
@@ -101,6 +104,12 @@ provider owns policy compilation and launch but not output collection,
 timeouts, cancellation, or background event streaming; those remain in the
 shared `BashTool` executor. That separation guarantees every entry point keeps
 the existing lifecycle semantics.
+
+Results identify the selected provider mode. When native execution fails with
+an OS denial signature, the result also carries a `likely` sandbox-denial
+classification. Presentation renders stderr with a red marker and explains the
+likely containment denial. The classification remains probabilistic because
+Linux does not distinguish Landlock `EACCES` from ordinary permission errors.
 
 The next protocol revision may expand this into a session-oriented interface
 for providers with virtual filesystems, snapshots, or remote lifecycle:
@@ -162,6 +171,11 @@ readable but is not writable from arbitrary shell commands. Linux Landlock
 cannot subtract that path from a writable parent, so metadata paths below the
 workspace remain writable there; linked metadata outside it remains protected.
 The boundary still tracks the newly active worktree for every command.
+Shared `/tmp` is an overlapping writable root: when managed worktrees are
+stored below it, sibling worktrees are also writable by path. The active-root
+resolution guarantee still covers worktrees stored elsewhere, including the
+home-directory fallback, but `/tmp` must not be represented as session
+isolation.
 
 ## Validation
 
@@ -170,11 +184,16 @@ The automated suite exercises the real `BashTool` launch path and asserts:
 - the safe default and sparse settings serialization;
 - explicit unsafe opt-out persistence and danger messaging;
 - writes inside the workspace succeed;
-- writes outside it fail;
+- writes in shared `/tmp` succeed;
+- writes outside the workspace and `/tmp` fail;
 - network connections fail;
 - the active worktree is resolved per command;
 - foreground and background execution retain the shared executor; and
-- runtime construction still resolves system skills and automatic settings.
+- runtime construction still resolves system skills and automatic settings;
+- an `AGENTS.md`-loaded real-binary TUI session cannot write outside its
+  workspace through `!shell`; and
+- denial output carries provider metadata and an explicit user-facing
+  containment explanation.
 
 Platform CI runs the black-box contract suite on both macOS and Linux. Release
 validation also includes the normal llmsim packaged-binary smoke and a live
@@ -186,10 +205,17 @@ provider smoke.
   compatibility;
 - Linux host reads and workspace `.git` writes are allowed in the first
   provider for toolchain and worktree compatibility;
-- native policy is fixed to workspace-write/network-deny (no custom mounts or
-  network allowlist yet);
+- shared `/tmp` is writable for development-tool compatibility and permits
+  filesystem communication with other host processes;
+- managed worktrees below `/tmp` are not mutually write-isolated by the native
+  provider;
+- native policy has fixed writable roots and no custom mounts or network
+  allowlist yet;
 - there is no typed Git mutation broker;
-- MCP/extension server processes are user-configured control-plane processes
-  and are not automatically moved into this shell sandbox; and
+- structured file tools and trusted Git worktree/checkpoint operations use
+  their own host-side boundaries;
+- hooks use Bashkit virtual execution rather than the native shell provider;
+- LSP, MCP, and extension server processes are configured control-plane
+  processes and are not automatically moved into this shell sandbox; and
 - resource controls are the existing wall-clock/output limits, not yet cgroup
   or VM quotas.

@@ -11,6 +11,7 @@ use std::process::Stdio;
 use tokio::process::Command;
 
 pub(crate) trait SandboxProvider: Send + Sync {
+    fn mode(&self) -> SandboxMode;
     fn command(&self, cwd: &Path, script: &str) -> Result<Command>;
 }
 
@@ -30,6 +31,10 @@ pub(crate) fn danger_warning(mode: SandboxMode) -> Option<&'static str> {
 struct UnsafeHost;
 
 impl SandboxProvider for UnsafeHost {
+    fn mode(&self) -> SandboxMode {
+        SandboxMode::Off
+    }
+
     fn command(&self, cwd: &Path, script: &str) -> Result<Command> {
         let mut command = Command::new("bash");
         command.arg("-lc").arg(script).current_dir(cwd);
@@ -40,6 +45,10 @@ impl SandboxProvider for UnsafeHost {
 struct NativeSandbox;
 
 impl SandboxProvider for NativeSandbox {
+    fn mode(&self) -> SandboxMode {
+        SandboxMode::Native
+    }
+
     fn command(&self, cwd: &Path, script: &str) -> Result<Command> {
         native_command(cwd, script)
     }
@@ -56,11 +65,13 @@ fn native_command(cwd: &Path, script: &str) -> Result<Command> {
 
     // Seatbelt denies network and all writes by default. Reads stay available
     // so compilers, SDKs, package caches and system skills continue to work;
-    // only the active workspace and a private temporary directory are writable.
+    // the active workspace, private temp, and conventional shared /tmp are
+    // writable for tool compatibility. The explicit /private/tmp spelling
+    // covers macOS path canonicalization through the /tmp symlink.
     let temp = sandbox_temp_dir()?;
     let home = sandbox_home_dir(&temp)?;
     let profile = format!(
-        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write* (subpath \"{}\") (subpath \"{}\"))\n(deny network*)\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
+        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write* (subpath \"{}\") (subpath \"{}\") (subpath \"/tmp\") (subpath \"/private/tmp\"))\n(deny network*)\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
         seatbelt_escape(cwd),
         seatbelt_escape(&temp),
         seatbelt_escape(&cwd.join(".git")),
@@ -129,6 +140,10 @@ pub(crate) fn run_linux_worker(cwd: &Path, temp: &Path, script: &str) -> Result<
         .add_rule(PathBeneath::new(PathFd::new(cwd)?, AccessFs::from_all(abi)))?
         .add_rule(PathBeneath::new(
             PathFd::new(temp)?,
+            AccessFs::from_all(abi),
+        ))?
+        .add_rule(PathBeneath::new(
+            PathFd::new("/tmp")?,
             AccessFs::from_all(abi),
         ))?
         .restrict_self()?;

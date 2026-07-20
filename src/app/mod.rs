@@ -78,6 +78,7 @@ const ACCENT_GOLD: Color = Color::Rgb(126, 94, 19);
 const TEXT_PRIMARY: Color = Color::Rgb(230, 230, 232);
 const TEXT_MUTED: Color = Color::Rgb(140, 140, 145);
 const TEXT_DIM: Color = Color::Rgb(72, 72, 78);
+const ERROR_RED: Color = Color::Rgb(196, 78, 78);
 const DIFF_ADD: Color = Color::Rgb(132, 166, 142);
 const DIFF_DELETE: Color = Color::Rgb(180, 132, 136);
 const DIFF_META: Color = Color::Rgb(108, 132, 188);
@@ -3710,6 +3711,22 @@ mod tests {
     }
 
     #[test]
+    fn stderr_lines_use_a_red_dot_marker() {
+        let mut lines = Vec::new();
+        append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::Stderr,
+                text: "stderr:\nOperation not permitted".to_string(),
+            },
+            96,
+        );
+
+        assert!(line_text(&lines[0]).starts_with("         ● stderr:"));
+        assert_eq!(lines[0].spans[0].style.fg, Some(ERROR_RED));
+    }
+
+    #[test]
     fn markdown_table_renders_columns_within_width() {
         let width = 48;
         let mut lines = Vec::new();
@@ -3867,6 +3884,14 @@ mod tests {
                 author: Author::ToolDetail,
                 text: "stdout: output with a long uninterrupted token abcdefghijklmnopqrstuvwxyz"
                     .into(),
+            },
+            ChatLine {
+                author: Author::Stderr,
+                text: "stderr: permission denied for a deliberately-long-path".into(),
+            },
+            ChatLine {
+                author: Author::Sandbox,
+                text: "native sandbox likely blocked this operation".into(),
             },
         ];
 

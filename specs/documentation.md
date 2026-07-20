@@ -12,8 +12,10 @@ Yolop without requiring knowledge of repository internals.
   the primary workflows, and links to public guides for details.
 - `docs/` is public, task-oriented documentation for external users. A page in
   this directory must stand on its own for someone who installed Yolop.
-- `docs/features/` contains focused guides for user-visible features. Use a
-  short kebab-case filename such as `sandboxing.md`.
+- `docs/features/` contains focused guides for user-visible features. A guide
+  without companion assets may use a short kebab-case filename. A guide with
+  captures or diagrams uses a same-named subdirectory so its Markdown, source
+  visuals, and generated assets stay together.
 - `specs/` is internal durable product and design memory. It records intent,
   constraints, tradeoffs, and architectural decisions for maintainers.
 - `.agents/` and `AGENTS.md` contain contributor and agent workflows, not user
@@ -64,6 +66,32 @@ or source-level schemas unless the user must author that schema directly.
 - Documentation-only changes are validated with the public-boundary check and
   review of changed relative links; runtime test suites are unnecessary unless
   behavior also changes.
+
+## Visual evidence
+
+CLI and TUI feature guides should use reproducible VHS captures as the default
+visual evidence. A capture is part of the documentation source, not a manually
+staged marketing artifact:
+
+- colocate the `.tape` source and generated asset with the owning guide. Put
+  guides with visuals below `docs/features/<feature>/`;
+- exercise the real Yolop binary and the real user-visible workflow;
+- prefer deterministic offline providers, fixtures, waits, and terminal
+  dimensions so regeneration is stable;
+- use repository-relative output paths and exclude credentials, personal paths,
+  session identifiers, and network dependencies;
+- keep the terminal crop legible and focused on the feature outcome; and
+- regenerate the asset whenever the captured behavior or presentation changes.
+
+Use an animated GIF when typing or state transitions help explain the feature.
+Use a VHS-generated PNG for a single terminal state where motion adds no value.
+Use diagrams for architecture or relationships that a terminal recording cannot
+communicate clearly. Manual screenshots are a fallback for surfaces VHS cannot
+drive, not the primary CLI/TUI capture workflow. Every embedded visual needs
+descriptive alt text and must remain understandable from the surrounding prose.
+Run tapes from the repository root
+(`vhs docs/features/<feature>/<capture>.tape`) so their relative output paths
+resolve consistently.
 
 ## Enforcement
 
