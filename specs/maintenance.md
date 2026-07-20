@@ -16,6 +16,7 @@ The canonical agent workflow lives in [`.agents/skills/maintenance/SKILL.md`](..
 6. Detect feature-completeness drift: features that look shipped on one surface
    (CLI flags, TUI behavior, specs, README, docs, tests, bundled skills) but are
    missing or stale on another.
+7. Reduce accidental complexity: remove over-abstraction, dead code, and premature generalization the codebase no longer earns.
 
 ## Ownership Boundary
 
@@ -122,6 +123,37 @@ remaining threat surface is concentrated:
 - **API keys** — provider keys must only be read from process env. They must never be written to the session log or echoed to tracing output.
 
 [`sandboxing.md`](./sandboxing.md) defines the implemented boundary and its known limitations.
+
+## Code Simplification And De-Abstraction
+
+Complexity accretes: an abstraction added for a second caller that never
+arrived, a trait with one impl, a config knob nobody sets. A deep maintenance
+pass treats removing that complexity as real work, not a side effect. The bias
+is toward deletion — the healthiest passes often remove more code than they add.
+
+Maintenance should look for and collapse:
+
+- single-use abstractions (one-impl traits, forwarding wrappers, single-instantiation generics, builders for trivial structs) — unless the seam is load-bearing
+- premature generalization: flexibility shaped for hypothetical futures, not current callers
+- indirection with no payoff: helpers that only rename a stdlib call, modules that re-export one item, always-default knobs
+- under-abstraction: the same block pasted in several places, where a shared helper genuinely reduces total code
+- deep nesting and long match arms that a flatten or extraction makes legible
+- names that hide intent
+
+Constraints:
+
+- A simplification must preserve behavior. It is verified by build, clippy, and
+  the test suite — a behavior change disguised as cleanup is a regression.
+- Keep simplifications small and independently reviewable; do not fold a
+  de-abstraction sweep into an unrelated change.
+- Removing a public item from a published crate (`yolop-yep`, `tuika`) is a
+  breaking change and must be called out, not slipped in.
+- A simplification too large to land inline (a cross-cutting abstraction with
+  many call sites) is deferred to a tracked issue naming the abstraction and why
+  it no longer pays its way — same discipline as any other deferred finding.
+
+This is the inverse of premature abstraction, not an argument against all
+abstraction: an abstraction that carries real, current weight stays.
 
 ## Spec Hygiene
 

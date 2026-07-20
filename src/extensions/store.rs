@@ -152,14 +152,17 @@ pub fn hash_package_dir(dir: &Path) -> Result<String> {
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
     }
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(7 + digest.len() * 2);
-    hex.push_str("sha256:");
-    for byte in digest {
-        use std::fmt::Write;
+    Ok(format!("sha256:{}", hex_encode(&hasher.finalize())))
+}
+
+/// Lowercase hex encoding of a byte slice (SHA-256 digests, here).
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
         let _ = write!(hex, "{byte:02x}");
     }
-    Ok(hex)
+    hex
 }
 
 fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Result<()> {
@@ -221,7 +224,7 @@ pub async fn install(
             source.clone()
         }
         Source::Git { url, rev } => {
-            let resolved_rev = git.clone_into(url, rev.as_str_opt(), &staging)?;
+            let resolved_rev = git.clone_into(url, rev_opt(rev), &staging)?;
             Source::Git {
                 url: url.clone(),
                 rev: resolved_rev,
@@ -232,7 +235,7 @@ pub async fn install(
             version,
         } => {
             let resolved_version = crates
-                .fetch_into(crate_name, version.as_str_opt(), &staging)
+                .fetch_into(crate_name, rev_opt(version), &staging)
                 .await
                 .with_context(|| format!("fetching crate {crate_name}"))?;
             Source::Crate {
@@ -361,13 +364,9 @@ impl GitRunner for SystemGit {
     }
 }
 
-trait RevOpt {
-    fn as_str_opt(&self) -> Option<&str>;
-}
-impl RevOpt for String {
-    fn as_str_opt(&self) -> Option<&str> {
-        (!self.is_empty()).then_some(self.as_str())
-    }
+/// A non-empty revision/version string as `Some(&str)`, empty as `None`.
+fn rev_opt(value: &str) -> Option<&str> {
+    (!value.is_empty()).then_some(value)
 }
 
 /// Seam for crates.io fetches, so install logic is testable without a network.
@@ -514,13 +513,7 @@ fn parse_semver(v: &str) -> Vec<u64> {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(bytes);
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write;
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
+    hex_encode(&Sha256::digest(bytes))
 }
 
 /// Unpack a `.crate` (gzip'd tar) into `dest`, dropping the leading
