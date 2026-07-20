@@ -1047,50 +1047,19 @@ impl ProviderChoice {
             return Self::default_codex();
         }
         if env_non_empty("ANTHROPIC_API_KEY").is_some() || settings.has_token("anthropic") {
-            let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL);
-            return Self::Anthropic {
-                reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                    "EVERRUNS_CLI_REASONING_EFFORT",
-                ))
-                .or_else(|| profile_default_reasoning_effort(&DriverId::Anthropic, &model)),
-                model,
-            };
+            return Self::default_anthropic();
         }
         if env_non_empty("OPENROUTER_API_KEY").is_some() || settings.has_token("openrouter") {
-            let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL);
-            return Self::OpenRouter {
-                base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
-                reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                    "EVERRUNS_CLI_REASONING_EFFORT",
-                ))
-                .or_else(|| profile_default_reasoning_effort(&DriverId::OpenRouter, &model)),
-                model,
-            };
+            return Self::default_openrouter();
         }
         if google_api_key().is_some() || settings.has_token("google") {
-            let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL);
-            return Self::Google {
-                base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
-                reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                    "EVERRUNS_CLI_REASONING_EFFORT",
-                ))
-                .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAI, &model)),
-                model,
-            };
+            return Self::default_google();
         }
         if env_non_empty("OLLAMA_BASE_URL").is_some()
             || env_non_empty("OLLAMA_API_KEY").is_some()
             || settings.has_token("ollama")
         {
-            let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL);
-            return Self::Ollama {
-                base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
-                reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                    "EVERRUNS_CLI_REASONING_EFFORT",
-                ))
-                .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAI, &model)),
-                model,
-            };
+            return Self::default_ollama();
         }
         // The custom endpoint has no default model, so it is auto-selected
         // only when a model is also known (env override or a persisted
@@ -1101,14 +1070,7 @@ impl ProviderChoice {
             && (env_non_empty("EVERRUNS_CLI_MODEL").is_some()
                 || settings.model_for("custom").is_some())
         {
-            let model = env_or_default("EVERRUNS_CLI_MODEL", "");
-            return Self::Custom {
-                reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                    "EVERRUNS_CLI_REASONING_EFFORT",
-                ))
-                .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAICompletions, &model)),
-                model,
-            };
+            return Self::default_custom();
         }
         Self::default_openai()
     }
@@ -1116,10 +1078,7 @@ impl ProviderChoice {
     fn default_openai() -> Self {
         let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENAI_MODEL);
         Self::OpenAi {
-            reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                "EVERRUNS_CLI_REASONING_EFFORT",
-            ))
-            .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAI, &model)),
+            reasoning_effort: default_reasoning_effort(&DriverId::OpenAI, &model),
             model,
         }
     }
@@ -1135,6 +1094,51 @@ impl ProviderChoice {
                     .and_then(|profile| profile.reasoning_effort)
                     .and_then(|config| reasoning_effort_value(&config.default))
             }),
+            model,
+        }
+    }
+
+    fn default_anthropic() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL);
+        Self::Anthropic {
+            reasoning_effort: default_reasoning_effort(&DriverId::Anthropic, &model),
+            model,
+        }
+    }
+
+    fn default_google() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL);
+        Self::Google {
+            base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
+            reasoning_effort: default_reasoning_effort(&DriverId::OpenAI, &model),
+            model,
+        }
+    }
+
+    fn default_openrouter() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL);
+        Self::OpenRouter {
+            base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
+            reasoning_effort: default_reasoning_effort(&DriverId::OpenRouter, &model),
+            model,
+        }
+    }
+
+    fn default_ollama() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL);
+        Self::Ollama {
+            base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
+            reasoning_effort: default_reasoning_effort(&DriverId::OpenAI, &model),
+            model,
+        }
+    }
+
+    /// The custom endpoint has no default model; callers gate on a model being
+    /// known before selecting it, and an empty model is rejected downstream.
+    fn default_custom() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", "");
+        Self::Custom {
+            reasoning_effort: default_reasoning_effort(&DriverId::OpenAICompletions, &model),
             model,
         }
     }
@@ -1180,64 +1184,14 @@ impl ProviderChoice {
         match provider {
             Provider::OpenAi => Ok(Self::default_openai()),
             Provider::Codex => Ok(Self::default_codex()),
-            Provider::Anthropic => {
-                let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_ANTHROPIC_MODEL);
-                Ok(Self::Anthropic {
-                    reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                        "EVERRUNS_CLI_REASONING_EFFORT",
-                    ))
-                    .or_else(|| profile_default_reasoning_effort(&DriverId::Anthropic, &model)),
-                    model,
-                })
-            }
-            Provider::Google => {
-                let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL);
-                Ok(Self::Google {
-                    base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
-                    reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                        "EVERRUNS_CLI_REASONING_EFFORT",
-                    ))
-                    .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAI, &model)),
-                    model,
-                })
-            }
-            Provider::OpenRouter => {
-                let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OPENROUTER_MODEL);
-                Ok(Self::OpenRouter {
-                    base_url: env_or_default("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
-                    reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                        "EVERRUNS_CLI_REASONING_EFFORT",
-                    ))
-                    .or_else(|| profile_default_reasoning_effort(&DriverId::OpenRouter, &model)),
-                    model,
-                })
-            }
-            Provider::Ollama => {
-                let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_OLLAMA_MODEL);
-                Ok(Self::Ollama {
-                    base_url: env_or_default("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL),
-                    reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                        "EVERRUNS_CLI_REASONING_EFFORT",
-                    ))
-                    .or_else(|| profile_default_reasoning_effort(&DriverId::OpenAI, &model)),
-                    model,
-                })
-            }
+            Provider::Anthropic => Ok(Self::default_anthropic()),
+            Provider::Google => Ok(Self::default_google()),
+            Provider::OpenRouter => Ok(Self::default_openrouter()),
+            Provider::Ollama => Ok(Self::default_ollama()),
             // No sensible default model exists for an arbitrary endpoint; an
             // empty model is rejected later by `model_with_provider` so the
             // setup wizard (or a saved model from settings) must fill it in.
-            Provider::Custom => {
-                let model = env_or_default("EVERRUNS_CLI_MODEL", "");
-                Ok(Self::Custom {
-                    reasoning_effort: normalize_reasoning_effort(env_non_empty(
-                        "EVERRUNS_CLI_REASONING_EFFORT",
-                    ))
-                    .or_else(|| {
-                        profile_default_reasoning_effort(&DriverId::OpenAICompletions, &model)
-                    }),
-                    model,
-                })
-            }
+            Provider::Custom => Ok(Self::default_custom()),
             Provider::Sim => Ok(Self::Sim),
         }
     }
@@ -2019,6 +1973,13 @@ fn profile_default_reasoning_effort(provider_type: &DriverId, model: &str) -> Op
     model_profile(provider_type, model)
         .and_then(|profile| profile.reasoning_effort.clone())
         .and_then(|config| reasoning_effort_value(&config.default))
+}
+
+/// The reasoning effort for a fresh provider default: the `EVERRUNS_CLI_REASONING_EFFORT`
+/// override if set, else the model profile's default for `provider_type`.
+fn default_reasoning_effort(provider_type: &DriverId, model: &str) -> Option<String> {
+    normalize_reasoning_effort(env_non_empty("EVERRUNS_CLI_REASONING_EFFORT"))
+        .or_else(|| profile_default_reasoning_effort(provider_type, model))
 }
 
 fn reasoning_effort_option(value: &ReasoningEffortValue) -> ReasoningEffortOption {
