@@ -172,7 +172,7 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   [Open Knowledge Format](https://okf.md/spec/): read, author, convert to, and
   validate knowledge bundles (a directory of markdown + YAML frontmatter). Point
   Yolop at a repo's bundle from `AGENTS.md` and it reads and maintains it through
-  the skill. See [OKF](./docs/features/okf.md).
+  the skill. See [OKF](./docs/features/okf/okf.md).
 - **Herdr-aware sessions** — when launched in a Herdr pane, Yolop reports
   `working`, `idle`, and explicit `blocked` lifecycle states and exposes
   read-only Herdr operating guidance without installing a global skill.
