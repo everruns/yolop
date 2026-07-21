@@ -4439,6 +4439,35 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_scroll_reveals_full_history() {
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        for i in 0..80 {
+            test.app.push_user(format!("line {i}"));
+        }
+        // Bottom-stuck by default: the newest line is visible, the oldest is
+        // scrolled off the top.
+        let bottom = render_app_lines(&mut test.app, 40, 12).join("\n");
+        assert!(
+            bottom.contains("line 79"),
+            "newest line should be visible at the bottom:\n{bottom}"
+        );
+        assert!(
+            !bottom.contains("line 0"),
+            "oldest line should be scrolled off:\n{bottom}"
+        );
+        // Scroll to the very top: the *full* history is reachable — the old
+        // recent-tail mirror could never render "line 0".
+        test.app.scroll.jump_to_top();
+        let top = render_app_lines(&mut test.app, 40, 12).join("\n");
+        assert!(
+            top.contains("line 0"),
+            "oldest line should be reachable by scrolling to the top:\n{top}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fullscreen_mouse_drag_selects_and_copies_transcript() {
         let mut test = app_with_llmsim().await;
         test.app.setup = None;
