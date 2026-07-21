@@ -76,6 +76,33 @@ pub(super) fn draw_shared(f: &mut ratatui::Frame, app: &mut App) {
     draw_recent_transcript(f, layout.transcript, app);
     draw_chrome_layout(f, layout.chrome, &state);
     draw_input(f, layout.chrome.input, app);
+
+    // Full-screen mouse selection: record the transcript's inner rect (so the
+    // event handler can bound drags to it), copy a just-released selection off
+    // this freshly rendered frame, and paint the highlight over it.
+    if app.render_mode.is_fullscreen() {
+        let inner = Rect {
+            x: layout.transcript.x.saturating_add(1),
+            y: layout.transcript.y,
+            width: layout.transcript.width.saturating_sub(2),
+            height: layout.transcript.height,
+        };
+        app.set_selection_area(inner);
+        if let Some(range) = app.selection_range() {
+            if app.take_pending_copy() {
+                let text = tuika::selected_text(f.buffer_mut(), inner, range);
+                if !text.is_empty() {
+                    let _ = tuika::write_clipboard(&mut std::io::stdout(), &text);
+                }
+            }
+            tuika::highlight(
+                f.buffer_mut(),
+                inner,
+                range,
+                Style::default().add_modifier(Modifier::REVERSED),
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
