@@ -284,32 +284,48 @@ impl TextInputState {
 
     /// The cursor's visual `(row, col)` in wrapped coordinates at `width`.
     fn visual_cursor(&self, width: u16) -> (u16, u16) {
-        let width = width.max(1) as usize;
-        let mut vrow: usize = 0;
-        for (r, line) in self.lines.iter().enumerate() {
-            let len = line.chars().count();
-            if r == self.row {
-                let vr = self.col / width;
-                let vc = self.col % width;
-                return ((vrow + vr) as u16, vc as u16);
-            }
-            vrow += (len / width) + 1; // rows for this line (incl. trailing/empty)
-        }
-        (vrow as u16, 0)
+        visual_cursor_at(&self.lines, self.row, self.col, width)
     }
 
-    /// The cursor cell in terminal coordinates, given the rendered `area`.
-    /// Clamped inside `area`.
+    /// The visual-row scroll offset that keeps the cursor visible in a
+    /// `height`-row viewport at `width`: once the text is taller than the
+    /// viewport the cursor rests on the last visible row; otherwise 0. A bounded
+    /// composer (see [`TextInput`]) renders and places its cursor through this.
+    pub fn scroll_offset(&self, width: u16, height: u16) -> u16 {
+        self.visual_cursor(width)
+            .0
+            .saturating_sub(height.saturating_sub(1))
+    }
+
+    /// The cursor cell in terminal coordinates, given the rendered `area`,
+    /// accounting for scroll-to-cursor when the text is taller than the area.
     pub fn cursor_screen(&self, area: Rect) -> (u16, u16) {
         let (vrow, vcol) = self.visual_cursor(area.width);
+        let offset = vrow.saturating_sub(area.height.saturating_sub(1));
         let x = area
             .x
             .saturating_add(vcol.min(area.width.saturating_sub(1)));
         let y = area
             .y
-            .saturating_add(vrow.min(area.height.saturating_sub(1)));
+            .saturating_add((vrow - offset).min(area.height.saturating_sub(1)));
         (x, y)
     }
+}
+
+/// The cursor's visual `(row, col)` for `lines` with the logical cursor at
+/// `(row, col)`, char-soft-wrapped to `width`. Shared by [`TextInputState`] and
+/// [`TextInput`] so the rendered scroll offset and the placed cursor agree.
+fn visual_cursor_at(lines: &[String], row: usize, col: usize, width: u16) -> (u16, u16) {
+    let width = width.max(1) as usize;
+    let mut vrow: usize = 0;
+    for (r, line) in lines.iter().enumerate() {
+        let len = line.chars().count();
+        if r == row {
+            return ((vrow + col / width) as u16, (col % width) as u16);
+        }
+        vrow += (len / width) + 1; // rows for this line (incl. trailing/empty)
+    }
+    (vrow as u16, 0)
 }
 
 /// Char-soft-wrap `lines` to `width`, returning visual rows as
@@ -341,14 +357,19 @@ fn wrap_visual_rows(lines: &[String], width: u16) -> Vec<(usize, Vec<char>)> {
 /// Renders a snapshot of a [`TextInputState`]'s wrapped text.
 ///
 /// Owns its lines (cloned from the state at construction, like [`Scroll`]) so it
-/// is `'static` and composes into a [`view!`](crate::view!) tree. The host places
-/// the terminal cursor separately via [`TextInputState::cursor_screen`].
+/// is `'static` and composes into a [`view!`](crate::view!) tree. When the text
+/// is taller than the render area it **scrolls to the cursor** (the cursor's
+/// visual row stays on screen), so it backs a bounded composer without losing the
+/// caret. The host places the terminal cursor through
+/// [`TextInputState::cursor_screen`], which derives the same offset.
 ///
 /// [`Scroll`]: crate::Scroll
 ///
 /// ![textinput demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/textinput.gif)
 pub struct TextInput {
     lines: Vec<String>,
+    /// Logical cursor `(row, col)`, so a bounded render can scroll to it.
+    cursor: (usize, usize),
     style: Style,
 }
 
@@ -356,6 +377,7 @@ impl TextInput {
     pub fn new(state: &TextInputState) -> Self {
         Self {
             lines: state.lines.clone(),
+            cursor: (state.row, state.col),
             style: Style::default(),
         }
     }
@@ -363,6 +385,13 @@ impl TextInput {
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
+    }
+
+    /// Visual-row offset that keeps the cursor on screen in `height` rows.
+    fn scroll_offset(&self, width: u16, height: u16) -> u16 {
+        visual_cursor_at(&self.lines, self.cursor.0, self.cursor.1, width)
+            .0
+            .saturating_sub(height.saturating_sub(1))
     }
 }
 
@@ -376,11 +405,13 @@ impl View for TextInput {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        for (vrow, (_logical, chars)) in wrap_visual_rows(&self.lines, area.width)
+        let offset = self.scroll_offset(area.width, area.height) as usize;
+        for (i, (_logical, chars)) in wrap_visual_rows(&self.lines, area.width)
             .into_iter()
             .enumerate()
+            .skip(offset)
         {
-            let y = area.y.saturating_add(vrow as u16);
+            let y = area.y.saturating_add((i - offset) as u16);
             if y >= area.bottom() {
                 break;
             }
