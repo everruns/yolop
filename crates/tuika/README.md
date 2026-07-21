@@ -6,8 +6,8 @@ letting `ratatui` keep ownership of the cell buffer and its diff against the
 terminal.
 
 It is a published, self-contained crate that depends only on `ratatui`,
-`crossterm`, `textwrap`, and `unicode-width`. It knows nothing about yolop;
-yolop is one production consumer.
+`crossterm`, `textwrap`, `unicode-segmentation`, and `unicode-width`. It knows
+nothing about yolop; yolop is one production consumer.
 
 ## Model
 

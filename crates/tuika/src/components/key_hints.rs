@@ -2,8 +2,8 @@
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
-use unicode_width::UnicodeWidthStr;
 
+use crate::width::str_cols;
 use crate::{RenderCtx, Size, Surface, View};
 
 /// A one-line sequence of styled key and action labels.
@@ -32,7 +32,7 @@ impl View for KeyHints {
         let width = self
             .hints
             .iter()
-            .map(|(key, label)| key.width() + label.width() + 3)
+            .map(|(key, label)| (str_cols(key) + str_cols(label)) as usize + 3)
             .sum::<usize>()
             .min(available.width as usize) as u16;
         Size::new(width, u16::from(available.height > 0))

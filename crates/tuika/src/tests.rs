@@ -404,6 +404,39 @@ fn wrap_lines_counts_wide_glyphs() {
 }
 
 #[test]
+fn set_string_places_multi_scalar_emoji_in_one_wide_cell() {
+    // A ZWJ family (multiple scalars) is a single grapheme: it must occupy one
+    // cell and advance the cursor by 2, not scatter one component per cell.
+    const FAMILY: &str = "👨\u{200D}👩\u{200D}👧";
+    let mut buf = Buffer::filled(Rect::new(0, 0, 6, 1), ratatui::buffer::Cell::new("."));
+    let end = {
+        let mut surface = Surface::new(&mut buf, Rect::new(0, 0, 6, 1));
+        surface.set_string(0, 0, &format!("{FAMILY}x"), Style::default())
+    };
+    assert_eq!(
+        buf[(0, 0)].symbol(),
+        FAMILY,
+        "whole cluster lands in one cell"
+    );
+    assert_eq!(buf[(1, 0)].symbol(), " ", "trailing half of the wide glyph");
+    assert_eq!(buf[(2, 0)].symbol(), "x", "next glyph starts at column 2");
+    assert_eq!(end, 3, "cursor advanced 2 (emoji) + 1 (x)");
+}
+
+#[test]
+fn wrap_lines_keeps_emoji_clusters_intact() {
+    // "❤️" carries VS16 → width 2. A grapheme must never be split mid-cluster
+    // by the wrapper, and each output line must respect the width budget.
+    let out = wrap_lines(&[Line::from("❤\u{FE0F} 你 ok")], 4);
+    assert!(out.iter().all(|l| line_width(l) <= 4), "{out:?}");
+    let joined: String = out.iter().map(|l| line_text(l)).collect();
+    assert!(
+        joined.contains("❤\u{FE0F}"),
+        "heart+VS16 survived: {joined:?}"
+    );
+}
+
+#[test]
 fn wrap_lines_keeps_blank_lines() {
     let lines = vec![Line::from("a"), Line::from(""), Line::from("b")];
     let out = wrap_lines(&lines, 10);

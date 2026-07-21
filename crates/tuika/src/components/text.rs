@@ -9,11 +9,12 @@
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::geometry::Size;
 use crate::surface::Surface;
 use crate::view::{RenderCtx, View};
+use crate::width::{grapheme_cols, str_cols};
 
 /// Draw pre-styled `lines` top-down from `area`'s origin, clipping to `area`.
 /// Shared by [`Text`] and [`Wrap`].
@@ -37,7 +38,7 @@ fn draw_lines(lines: &[Line<'static>], area: Rect, surface: &mut Surface) {
 pub fn line_width(line: &Line) -> u16 {
     line.spans
         .iter()
-        .map(|s| UnicodeWidthStr::width(s.content.as_ref()) as u16)
+        .map(|s| str_cols(s.content.as_ref()))
         .fold(0, u16::saturating_add)
 }
 
@@ -105,7 +106,7 @@ impl View for Paragraph {
         let lines = self.wrap(available.width);
         let width = lines
             .iter()
-            .map(|l| UnicodeWidthStr::width(l.as_str()) as u16)
+            .map(|l| str_cols(l.as_str()))
             .max()
             .unwrap_or(0);
         Size::new(width, lines.len() as u16)
@@ -122,9 +123,9 @@ impl View for Paragraph {
     }
 }
 
-/// Display columns of a single char (0 for zero-width).
-fn char_cols(ch: char) -> u16 {
-    UnicodeWidthChar::width(ch).unwrap_or(0) as u16
+/// Whether a grapheme cluster is a break opportunity (all-whitespace).
+fn is_break(cluster: &str) -> bool {
+    cluster.chars().all(char::is_whitespace)
 }
 
 /// Word-wrap pre-styled `lines` to `width` columns, preserving each span's
@@ -150,27 +151,29 @@ pub fn wrap_lines(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
 }
 
 fn wrap_one(line: &Line<'static>, width: u16, out: &mut Vec<Line<'static>>) {
-    let cells: Vec<(char, Style)> = line
+    // Cells are grapheme clusters, not `char`s, so a multi-scalar emoji stays
+    // intact across the reflow instead of being split mid-cluster.
+    let cells: Vec<(&str, Style)> = line
         .spans
         .iter()
-        .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
+        .flat_map(|s| s.content.graphemes(true).map(move |g| (g, s.style)))
         .collect();
     let before = out.len();
-    let mut cur: Vec<(char, Style)> = Vec::new();
+    let mut cur: Vec<(&str, Style)> = Vec::new();
     let mut cur_w = 0u16;
     let mut i = 0;
     let n = cells.len();
     while i < n {
         // Collapse a run of whitespace into a single break opportunity.
-        if cells[i].0.is_whitespace() {
+        if is_break(cells[i].0) {
             i += 1;
             continue;
         }
         // Gather one word (a maximal run of non-whitespace).
         let start = i;
         let mut word_w = 0u16;
-        while i < n && !cells[i].0.is_whitespace() {
-            word_w = word_w.saturating_add(char_cols(cells[i].0));
+        while i < n && !is_break(cells[i].0) {
+            word_w = word_w.saturating_add(grapheme_cols(cells[i].0));
             i += 1;
         }
         let word = &cells[start..i];
@@ -181,7 +184,7 @@ fn wrap_one(line: &Line<'static>, width: u16, out: &mut Vec<Line<'static>>) {
             // stays continuous across the join.
             if sep == 1 {
                 let prev = cur.last().map(|c| c.1).unwrap_or_default();
-                cur.push((' ', prev));
+                cur.push((" ", prev));
                 cur_w += 1;
             }
             cur.extend_from_slice(word);
@@ -201,14 +204,14 @@ fn wrap_one(line: &Line<'static>, width: u16, out: &mut Vec<Line<'static>>) {
                 cur.clear();
                 cur_w = 0;
             }
-            for &(ch, st) in word {
-                let w = char_cols(ch);
+            for &(g, st) in word {
+                let w = grapheme_cols(g);
                 if cur_w + w > width && !cur.is_empty() {
                     out.push(coalesce(&cur));
                     cur.clear();
                     cur_w = 0;
                 }
-                cur.push((ch, st));
+                cur.push((g, st));
                 cur_w += w;
             }
         }
@@ -222,21 +225,21 @@ fn wrap_one(line: &Line<'static>, width: u16, out: &mut Vec<Line<'static>>) {
     }
 }
 
-/// Merge a run of styled cells into a [`Line`], coalescing adjacent cells with
-/// equal style into one [`Span`].
-fn coalesce(cells: &[(char, Style)]) -> Line<'static> {
+/// Merge a run of styled grapheme cells into a [`Line`], coalescing adjacent
+/// cells with equal style into one [`Span`].
+fn coalesce(cells: &[(&str, Style)]) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut buf = String::new();
     let mut run: Option<Style> = None;
-    for &(ch, st) in cells {
+    for &(g, st) in cells {
         match run {
-            Some(s) if s == st => buf.push(ch),
+            Some(s) if s == st => buf.push_str(g),
             _ => {
                 if let Some(s) = run.take() {
                     spans.push(Span::styled(std::mem::take(&mut buf), s));
                 }
                 run = Some(st);
-                buf.push(ch);
+                buf.push_str(g);
             }
         }
     }
