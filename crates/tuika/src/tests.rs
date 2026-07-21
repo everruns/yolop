@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use super::anim;
 use super::components::{
     Loader, Paragraph, ProgressBar, Scroll, ScrollState, SelectList, SelectOutcome, SelectState,
-    Spinner, Text, Wrap, line_width, wrap_lines,
+    Spinner, Text, TextInput, TextInputState, Wrap, line_width, wrap_lines,
 };
 use super::event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 use super::focus::FocusRegistry;
@@ -1495,4 +1495,154 @@ fn nested_flex_tree_lays_out_status_and_body() {
     // Body box drew a rounded border on the top row with its title.
     assert!(row(&buf, 0).contains("Body"));
     assert_eq!(buf[(0, 0)].symbol(), "╭");
+}
+
+// ---- TextInput -----------------------------------------------------------
+
+fn press(state: &mut TextInputState, code: KeyCode) -> bool {
+    state.handle(&Event::Key(Key::new(code)))
+}
+
+fn type_str(state: &mut TextInputState, s: &str) {
+    for ch in s.chars() {
+        assert!(press(state, KeyCode::Char(ch)));
+    }
+}
+
+#[test]
+fn text_input_starts_empty() {
+    let state = TextInputState::new();
+    assert!(state.is_empty());
+    assert_eq!(state.text(), "");
+    assert_eq!(state.cursor(), (0, 0));
+    assert_eq!(state.line_count(), 1);
+}
+
+#[test]
+fn text_input_types_and_edits() {
+    let mut state = TextInputState::new();
+    type_str(&mut state, "helo");
+    assert_eq!(state.text(), "helo");
+    assert_eq!(state.cursor(), (0, 4));
+
+    // Move back and insert the missing 'l' → "hello".
+    press(&mut state, KeyCode::Left);
+    press(&mut state, KeyCode::Left);
+    assert_eq!(state.cursor(), (0, 2));
+    assert!(press(&mut state, KeyCode::Char('l')));
+    assert_eq!(state.text(), "hello");
+    assert_eq!(state.cursor(), (0, 3));
+}
+
+#[test]
+fn text_input_backspace_and_delete() {
+    let mut state = TextInputState::from_text("abc");
+    assert_eq!(state.cursor(), (0, 3));
+    press(&mut state, KeyCode::Backspace);
+    assert_eq!(state.text(), "ab");
+    press(&mut state, KeyCode::Home);
+    press(&mut state, KeyCode::Delete);
+    assert_eq!(state.text(), "b");
+    assert_eq!(state.cursor(), (0, 0));
+}
+
+#[test]
+fn text_input_newline_splits_and_backspace_joins() {
+    let mut state = TextInputState::from_text("abcd");
+    press(&mut state, KeyCode::Home);
+    press(&mut state, KeyCode::Right);
+    press(&mut state, KeyCode::Right);
+    assert_eq!(state.cursor(), (0, 2));
+    press(&mut state, KeyCode::Enter);
+    assert_eq!(state.text(), "ab\ncd");
+    assert_eq!(state.line_count(), 2);
+    assert_eq!(state.cursor(), (1, 0));
+
+    // Backspace at column 0 rejoins the two logical lines.
+    press(&mut state, KeyCode::Backspace);
+    assert_eq!(state.text(), "abcd");
+    assert_eq!(state.cursor(), (0, 2));
+    assert_eq!(state.line_count(), 1);
+}
+
+#[test]
+fn text_input_vertical_movement_clamps_column() {
+    let mut state = TextInputState::from_text("longline\nhi");
+    // Cursor is at end of "hi" (row 1, col 2). Move up onto the longer line:
+    // column is preserved (2), not clamped, because "longline" is longer.
+    press(&mut state, KeyCode::Up);
+    assert_eq!(state.cursor(), (0, 2));
+    // From end of "longline" move down — clamps onto the shorter "hi".
+    press(&mut state, KeyCode::End);
+    assert_eq!(state.cursor(), (0, 8));
+    press(&mut state, KeyCode::Down);
+    assert_eq!(state.cursor(), (1, 2));
+}
+
+#[test]
+fn text_input_paste_inserts_multiline() {
+    let mut state = TextInputState::new();
+    assert!(state.handle(&Event::Paste("one\ntwo".to_string())));
+    assert_eq!(state.text(), "one\ntwo");
+    assert_eq!(state.line_count(), 2);
+    assert_eq!(state.cursor(), (1, 3));
+}
+
+#[test]
+fn text_input_ctrl_keys_ignored() {
+    let mut state = TextInputState::from_text("x");
+    let ctrl_a = Event::Key(Key {
+        code: KeyCode::Char('a'),
+        ctrl: true,
+        alt: false,
+        shift: false,
+    });
+    assert!(!state.handle(&ctrl_a));
+    assert_eq!(state.text(), "x");
+}
+
+fn render_view_rows(view: &dyn View, w: u16, h: u16) -> Vec<String> {
+    let theme = Theme::default();
+    let mut buf = buffer(w, h);
+    let area = buf.area;
+    let ctx = RenderCtx::new(&theme);
+    let mut surface = Surface::new(&mut buf, area);
+    view.render(area, &mut surface, &ctx);
+    (0..h).map(|y| row(&buf, y)).collect()
+}
+
+#[test]
+fn text_input_renders_wrapped_rows() {
+    let mut state = TextInputState::new();
+    type_str(&mut state, "abcdef");
+    // Width 4 wraps "abcdef" onto two visual rows: "abcd" / "ef".
+    assert_eq!(state.visual_height(4), 2);
+    let out = render_view_rows(&TextInput::new(&state), 4, 2);
+    assert_eq!(out[0], "abcd");
+    assert_eq!(out[1], "ef");
+}
+
+#[test]
+fn text_input_cursor_screen_follows_wrap() {
+    let mut state = TextInputState::new();
+    type_str(&mut state, "abcd");
+    // At width 4 the line fills exactly, so the cursor rests on a fresh row.
+    assert_eq!(state.visual_height(4), 2);
+    let area = Rect::new(2, 1, 4, 3);
+    // Cursor after "abcd" → visual row 1, col 0, offset by area origin.
+    assert_eq!(state.cursor_screen(area), (2, 2));
+    // Move home → back to the first visual row.
+    press(&mut state, KeyCode::Home);
+    assert_eq!(state.cursor_screen(area), (2, 1));
+}
+
+#[test]
+fn text_input_set_and_clear() {
+    let mut state = TextInputState::new();
+    state.set_text("hello\nworld");
+    assert_eq!(state.cursor(), (1, 5));
+    assert_eq!(state.line_count(), 2);
+    state.clear();
+    assert!(state.is_empty());
+    assert_eq!(state.cursor(), (0, 0));
 }

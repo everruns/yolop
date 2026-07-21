@@ -62,7 +62,7 @@ pub use clipboard::{osc52, write_clipboard};
 pub use components::{
     Boxed, Constrained, Flex, KeyHints, Loader, Paragraph, ProgressBar, Responsive, Rule, Scroll,
     ScrollState, SelectList, SelectOutcome, SelectState, Spacer, Spinner, SpinnerStyle, StatusBar,
-    Tabs, TabsState, Text, Wrap, wrap_lines,
+    Tabs, TabsState, Text, TextInput, TextInputState, Wrap, wrap_lines,
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 pub use focus::FocusRegistry;
