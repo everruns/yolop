@@ -625,6 +625,22 @@ fn translate_maps_button_modifiers_and_drag() {
     assert!(!m.plain());
 }
 
+// ---- rule (separator) ----------------------------------------------------
+
+#[test]
+fn rule_renders_title_then_fills_to_width() {
+    use ratatui::style::Color;
+    let theme = Theme::default();
+    let rule = crate::Rule::new()
+        .title(Line::from(Span::raw("─ hi ")))
+        .style(Style::default().fg(Color::Blue));
+    let buf = crate::testing::render(&rule, 10, 1, &theme);
+    assert_eq!(row(&buf, 0), "─ hi ─────");
+    // The fill run carries the rule's style.
+    assert_eq!(buf[(9, 0)].symbol(), "─");
+    assert_eq!(buf[(9, 0)].fg, Color::Blue);
+}
+
 // ---- probe: reading laid-out rects back out ------------------------------
 
 #[test]

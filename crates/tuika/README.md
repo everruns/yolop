@@ -36,6 +36,7 @@ yolop is one production consumer.
 | --- | --- |
 | `Text` / `Paragraph` | Styled lines / word-wrapped plain text |
 | `Wrap` | Word-wraps pre-styled lines, preserving per-span styles |
+| `Rule` | Horizontal separator: optional title + fill glyph to width |
 | `Flex` | Flexbox container (the composition primitive) |
 | `Responsive` / `Constrained` | Breakpoint selection and min/max measurement |
 | `Boxed` | Border + padding + title, focus-aware |
