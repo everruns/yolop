@@ -214,11 +214,179 @@ impl TextInputState {
         self.col = self.lines[self.row].chars().count();
     }
 
+    /// The column of the previous word start on the current line: skip trailing
+    /// whitespace, then the word itself. Used by word-move and word-delete.
+    fn prev_word_col(&self) -> usize {
+        let chars = self.row_chars(self.row);
+        let mut i = self.col.min(chars.len());
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        i
+    }
+
+    /// The column of the next word end on the current line: skip leading
+    /// whitespace, then the word itself.
+    fn next_word_col(&self) -> usize {
+        let chars = self.row_chars(self.row);
+        let len = chars.len();
+        let mut i = self.col.min(len);
+        while i < len && chars[i].is_whitespace() {
+            i += 1;
+        }
+        while i < len && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        i
+    }
+
+    /// Move to the previous word boundary, crossing to the prior line at col 0.
+    pub fn move_word_left(&mut self) {
+        if self.col == 0 {
+            self.move_left();
+            return;
+        }
+        self.col = self.prev_word_col();
+    }
+
+    /// Move to the next word boundary, crossing to the next line at line end.
+    pub fn move_word_right(&mut self) {
+        if self.col >= self.lines[self.row].chars().count() {
+            self.move_right();
+            return;
+        }
+        self.col = self.next_word_col();
+    }
+
+    /// Delete from the cursor back to the previous word boundary (joins the
+    /// prior line when already at col 0).
+    pub fn delete_word_left(&mut self) {
+        if self.col == 0 {
+            self.backspace();
+            return;
+        }
+        let start = self.prev_word_col();
+        let mut chars = self.row_chars(self.row);
+        chars.drain(start..self.col);
+        self.col = start;
+        self.set_row(self.row, chars);
+    }
+
+    /// Delete from the cursor forward to the next word boundary (joins the next
+    /// line when already at line end).
+    pub fn delete_word_right(&mut self) {
+        let len = self.lines[self.row].chars().count();
+        if self.col >= len {
+            self.delete();
+            return;
+        }
+        let end = self.next_word_col();
+        let mut chars = self.row_chars(self.row);
+        chars.drain(self.col..end);
+        self.set_row(self.row, chars);
+    }
+
+    /// Delete from the cursor to the end of the line; at line end, joins the
+    /// next line (emacs `C-k`).
+    pub fn kill_to_line_end(&mut self) {
+        let mut chars = self.row_chars(self.row);
+        if self.col < chars.len() {
+            chars.truncate(self.col);
+            self.set_row(self.row, chars);
+        } else {
+            self.delete();
+        }
+    }
+
+    /// Delete from the start of the line to the cursor (emacs `C-u`).
+    pub fn kill_to_line_start(&mut self) {
+        let chars = self.row_chars(self.row);
+        let tail: Vec<char> = chars[self.col.min(chars.len())..].to_vec();
+        self.set_row(self.row, tail);
+        self.col = 0;
+    }
+
     /// Apply an input event. Returns `true` when the buffer or cursor changed.
     /// Enter inserts a newline; a host that submits on Enter should intercept it
     /// before calling this.
+    ///
+    /// Beyond the plain keys, an emacs-style keymap covers the readline bindings
+    /// a terminal composer is expected to honor (so the widget matches what
+    /// `ratatui-textarea` gave hosts before): `C-a`/`C-e` line start/end,
+    /// `C-f`/`C-b` char move, `C-p`/`C-n` line move, `C-h`/`C-d` delete,
+    /// `C-k`/`C-u` kill to line end/start, `C-w`/`M-Backspace` delete word back,
+    /// `M-f`/`M-b` word move, `M-d` delete word forward.
     pub fn handle(&mut self, event: &Event) -> bool {
         match event {
+            Event::Key(k) if k.ctrl && !k.alt => match k.code {
+                KeyCode::Char('a') => {
+                    self.move_home();
+                    true
+                }
+                KeyCode::Char('e') => {
+                    self.move_end();
+                    true
+                }
+                KeyCode::Char('f') => {
+                    self.move_right();
+                    true
+                }
+                KeyCode::Char('b') => {
+                    self.move_left();
+                    true
+                }
+                KeyCode::Char('p') => {
+                    self.move_up();
+                    true
+                }
+                KeyCode::Char('n') => {
+                    self.move_down();
+                    true
+                }
+                KeyCode::Char('h') => {
+                    self.backspace();
+                    true
+                }
+                KeyCode::Char('d') => {
+                    self.delete();
+                    true
+                }
+                KeyCode::Char('k') => {
+                    self.kill_to_line_end();
+                    true
+                }
+                KeyCode::Char('u') => {
+                    self.kill_to_line_start();
+                    true
+                }
+                KeyCode::Char('w') => {
+                    self.delete_word_left();
+                    true
+                }
+                _ => false,
+            },
+            Event::Key(k) if k.alt && !k.ctrl => match k.code {
+                KeyCode::Char('f') => {
+                    self.move_word_right();
+                    true
+                }
+                KeyCode::Char('b') => {
+                    self.move_word_left();
+                    true
+                }
+                KeyCode::Char('d') => {
+                    self.delete_word_right();
+                    true
+                }
+                KeyCode::Backspace => {
+                    self.delete_word_left();
+                    true
+                }
+                _ => false,
+            },
             Event::Key(k) if !k.ctrl && !k.alt => match k.code {
                 KeyCode::Char(c) => {
                     self.insert_char(c);

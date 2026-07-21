@@ -1564,6 +1564,24 @@ fn press(state: &mut TextInputState, code: KeyCode) -> bool {
     state.handle(&Event::Key(Key::new(code)))
 }
 
+fn press_ctrl(state: &mut TextInputState, code: KeyCode) -> bool {
+    state.handle(&Event::Key(Key {
+        code,
+        ctrl: true,
+        alt: false,
+        shift: false,
+    }))
+}
+
+fn press_alt(state: &mut TextInputState, code: KeyCode) -> bool {
+    state.handle(&Event::Key(Key {
+        code,
+        ctrl: false,
+        alt: true,
+        shift: false,
+    }))
+}
+
 fn type_str(state: &mut TextInputState, s: &str) {
     for ch in s.chars() {
         assert!(press(state, KeyCode::Char(ch)));
@@ -1650,16 +1668,99 @@ fn text_input_paste_inserts_multiline() {
 }
 
 #[test]
-fn text_input_ctrl_keys_ignored() {
+fn text_input_unbound_ctrl_keys_ignored() {
+    // A ctrl combo with no binding (C-z) is a no-op the host can repurpose.
     let mut state = TextInputState::from_text("x");
-    let ctrl_a = Event::Key(Key {
-        code: KeyCode::Char('a'),
-        ctrl: true,
-        alt: false,
-        shift: false,
-    });
-    assert!(!state.handle(&ctrl_a));
+    assert!(!press_ctrl(&mut state, KeyCode::Char('z')));
     assert_eq!(state.text(), "x");
+}
+
+#[test]
+fn text_input_emacs_cursor_bindings() {
+    let mut state = TextInputState::from_text("hello");
+    // C-a → line start, C-e → line end, C-f/C-b → char right/left.
+    assert!(press_ctrl(&mut state, KeyCode::Char('a')));
+    assert_eq!(state.cursor(), (0, 0));
+    assert!(press_ctrl(&mut state, KeyCode::Char('f')));
+    assert_eq!(state.cursor(), (0, 1));
+    assert!(press_ctrl(&mut state, KeyCode::Char('e')));
+    assert_eq!(state.cursor(), (0, 5));
+    assert!(press_ctrl(&mut state, KeyCode::Char('b')));
+    assert_eq!(state.cursor(), (0, 4));
+
+    // C-p / C-n move between logical lines.
+    state = TextInputState::from_text("ab\ncd");
+    press(&mut state, KeyCode::Home);
+    assert!(press_ctrl(&mut state, KeyCode::Char('p')));
+    assert_eq!(state.cursor(), (0, 0));
+    assert!(press_ctrl(&mut state, KeyCode::Char('n')));
+    assert_eq!(state.cursor(), (1, 0));
+}
+
+#[test]
+fn text_input_emacs_delete_bindings() {
+    // C-h backspaces, C-d deletes forward.
+    let mut state = TextInputState::from_text("abc");
+    assert!(press_ctrl(&mut state, KeyCode::Char('h')));
+    assert_eq!(state.text(), "ab");
+    press(&mut state, KeyCode::Home);
+    assert!(press_ctrl(&mut state, KeyCode::Char('d')));
+    assert_eq!(state.text(), "b");
+}
+
+#[test]
+fn text_input_kill_to_line_end_and_start() {
+    // C-k kills from the cursor to end of line.
+    let mut state = TextInputState::from_text("hello world");
+    press(&mut state, KeyCode::Home);
+    press(&mut state, KeyCode::Right);
+    press(&mut state, KeyCode::Right);
+    press(&mut state, KeyCode::Right);
+    press(&mut state, KeyCode::Right);
+    press(&mut state, KeyCode::Right); // cursor after "hello"
+    assert!(press_ctrl(&mut state, KeyCode::Char('k')));
+    assert_eq!(state.text(), "hello");
+    assert_eq!(state.cursor(), (0, 5));
+
+    // C-k at line end joins the next line.
+    let mut state = TextInputState::from_text("ab\ncd");
+    press(&mut state, KeyCode::Home);
+    press(&mut state, KeyCode::Up);
+    press(&mut state, KeyCode::End);
+    assert!(press_ctrl(&mut state, KeyCode::Char('k')));
+    assert_eq!(state.text(), "abcd");
+
+    // C-u kills from line start to the cursor.
+    let mut state = TextInputState::from_text("hello world");
+    assert!(press_ctrl(&mut state, KeyCode::Char('u')));
+    assert_eq!(state.text(), "");
+    assert_eq!(state.cursor(), (0, 0));
+}
+
+#[test]
+fn text_input_word_move_and_delete() {
+    // M-b / M-f jump by word; C-w / M-d delete a word back / forward.
+    let mut state = TextInputState::from_text("foo bar baz");
+    assert!(press_alt(&mut state, KeyCode::Char('b')));
+    assert_eq!(state.cursor(), (0, 8)); // start of "baz"
+    assert!(press_alt(&mut state, KeyCode::Char('b')));
+    assert_eq!(state.cursor(), (0, 4)); // start of "bar"
+
+    // C-w at the start of "bar" deletes the previous word "foo ".
+    assert!(press_ctrl(&mut state, KeyCode::Char('w')));
+    assert_eq!(state.text(), "bar baz");
+    assert_eq!(state.cursor(), (0, 0));
+
+    // M-f to the end of "bar", then M-d deletes the next word " baz".
+    assert!(press_alt(&mut state, KeyCode::Char('f')));
+    assert_eq!(state.cursor(), (0, 3)); // end of "bar"
+    assert!(press_alt(&mut state, KeyCode::Char('d')));
+    assert_eq!(state.text(), "bar");
+
+    // M-Backspace deletes the previous word too.
+    let mut state = TextInputState::from_text("alpha beta");
+    assert!(press_alt(&mut state, KeyCode::Backspace));
+    assert_eq!(state.text(), "alpha ");
 }
 
 fn render_view_rows(view: &dyn View, w: u16, h: u16) -> Vec<String> {
