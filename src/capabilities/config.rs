@@ -3,7 +3,7 @@
 //
 // `settings.toml` is loaded tolerantly (unknown keys are ignored, never
 // fatal). This capability layers *semantics* on top of that file via the
-// informational schema in `crate::config_schema`: it exposes `get_config` (read
+// informational schema in `crate::config::schema`: it exposes `get_config` (read
 // the schema + current values) and `set_config` (validate + persist any known
 // key) so the agent can configure yolop the way a user describes it, and it
 // drops a short always-on pointer into the system prompt so the agent knows the
@@ -13,17 +13,17 @@
 // the interactive `/setup` command to switch the *live* model mid-session.
 
 use crate::capabilities::narration::{narrate_get_config, narrate_set_config};
-use crate::capability_settings::{
+use crate::config::capability_settings::{
     CapabilityCatalog, apply_capability_settings, build_capability_override,
     capability_catalog_json, capability_catalog_list, effective_harness_json, overrides_to_json,
     parse_override_from_json, stored_override_json,
 };
-use crate::config_schema::{KeyTarget, ValueKind, known_keys, parse_key, schema};
-use crate::config_service::{ConfigService, current_value, scoped_current};
+use crate::config::schema::{KeyTarget, ValueKind, known_keys, parse_key, schema};
+use crate::config::service::{ConfigService, current_value, scoped_current};
+use crate::config::{ApprovalMode, Settings, SettingsStore};
 use crate::runtime::{
     ProviderChoice, SUPPORTED_PROVIDERS, coding_harness_defaults, resolve_for_settings,
 };
-use crate::settings::{ApprovalMode, Settings, SettingsStore};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::ToolNarrationPhase;
@@ -98,11 +98,11 @@ impl Capability for ConfigCapability {
 // ---------- field rendering ----------
 //
 // The per-target read helpers (`current_value`, `scoped_current`) live in
-// `crate::config_service` so any capability can reuse them through the
+// `crate::config::service` so any capability can reuse them through the
 // `ConfigService`; here we only assemble the schema-described field view.
 
 /// JSON description of a schema field, optionally with its current value(s).
-fn field_json(settings: &Settings, field: &crate::config_schema::ConfigField) -> Value {
+fn field_json(settings: &Settings, field: &crate::config::schema::ConfigField) -> Value {
     let current = if field.key == "capabilities" {
         overrides_to_json(&settings.capabilities)
     } else if field.provider_scoped {
@@ -504,11 +504,11 @@ impl SetConfigTool {
             KeyTarget::Worktrees => {
                 if clearing {
                     self.settings
-                        .set_worktrees_mode(crate::settings::WorktreesMode::Auto)
+                        .set_worktrees_mode(crate::config::WorktreesMode::Auto)
                         .map_err(map_err)?;
                     return Ok(saved("cleared worktrees (default auto)".to_string()));
                 }
-                let mode = crate::settings::WorktreesMode::parse(value)
+                let mode = crate::config::WorktreesMode::parse(value)
                     .ok_or_else(|| "worktrees expects auto, always, or off".to_string())?;
                 self.settings.set_worktrees_mode(mode).map_err(map_err)?;
                 Ok(saved(format!(
@@ -519,16 +519,16 @@ impl SetConfigTool {
             KeyTarget::Sandbox => {
                 if clearing {
                     self.settings
-                        .set_sandbox_mode(crate::settings::SandboxMode::Native)
+                        .set_sandbox_mode(crate::config::SandboxMode::Native)
                         .map_err(map_err)?;
                     return Ok(saved(
                         "cleared sandbox (default native); applies next run".to_string(),
                     ));
                 }
-                let mode = crate::settings::SandboxMode::parse(value)
+                let mode = crate::config::SandboxMode::parse(value)
                     .ok_or_else(|| "sandbox expects native or off".to_string())?;
                 self.settings.set_sandbox_mode(mode).map_err(map_err)?;
-                if mode == crate::settings::SandboxMode::Off {
+                if mode == crate::config::SandboxMode::Off {
                     Ok(saved("sandbox = off; DANGER: next run uses UNSAFE HOST execution with unrestricted file, process, and network access".to_string()))
                 } else {
                     Ok(saved("sandbox = native; applies next run".to_string()))
@@ -750,7 +750,7 @@ mod tests {
         assert!(matches!(ok, ToolExecutionResult::Success(_)));
         assert_eq!(
             settings.snapshot().approval_mode(),
-            crate::settings::ApprovalMode::Protective
+            crate::config::ApprovalMode::Protective
         );
 
         // Alias and lenient synonyms route through the same path.
@@ -758,7 +758,7 @@ mod tests {
             .await;
         assert_eq!(
             settings.snapshot().approval_mode(),
-            crate::settings::ApprovalMode::Off
+            crate::config::ApprovalMode::Off
         );
 
         let bad = tool
@@ -809,14 +809,14 @@ mod tests {
         assert!(message.to_string().contains("UNSAFE HOST"), "{message}");
         assert_eq!(
             settings.snapshot().sandbox_mode(),
-            crate::settings::SandboxMode::Off
+            crate::config::SandboxMode::Off
         );
 
         tool.execute(json!({ "key": "containment", "value": "clear" }))
             .await;
         assert_eq!(
             settings.snapshot().sandbox_mode(),
-            crate::settings::SandboxMode::Native
+            crate::config::SandboxMode::Native
         );
     }
 

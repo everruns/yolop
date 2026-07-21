@@ -7,8 +7,8 @@
 // the everruns-core model profile registry so the UI can show human-readable
 // names and descriptions even when the provider's API returns bare ids.
 
+use crate::config::Settings;
 use crate::runtime::ProviderChoice;
-use crate::settings::Settings;
 use anyhow::{Context, Result, anyhow};
 use everruns_core::DriverId;
 use everruns_core::driver_registry::{DiscoveredModel, DriverRegistry, ProviderConfig};

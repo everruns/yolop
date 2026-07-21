@@ -1,6 +1,6 @@
 //! Session checkpoint commands and the conversational restore tool.
 
-use crate::checkpoint::{CheckpointManager, RestoreMode, safe_display};
+use crate::session_state::checkpoint::{CheckpointManager, RestoreMode, safe_display};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::command::{

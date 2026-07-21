@@ -18,7 +18,7 @@ It works in the interactive TUI and in headless `-p/--print` mode (including
 failed turns and `/goal` runs); `--acp` ignores it because the editor owns the
 session lifecycle there.
 
-`src/atif.rs` owns the serializer: it folds the runtime event log into steps
+`src/session_state/atif.rs` owns the serializer: it folds the runtime event log into steps
 (user input → user step, each reason/act iteration → one agent step with
 reasoning, tool calls, and tool results keyed by `source_call_id`, token usage
 into per-step and final metrics). Export is best-effort and never fails the
@@ -27,5 +27,5 @@ run.
 ## Non-goals
 
 - Not a replay or resume format — the per-session JSONL log stays the local
-  source of truth (see `src/session_log.rs`).
+  source of truth (see `src/runtime/session_log.rs`).
 - No image/multimodal export yet; text content only.

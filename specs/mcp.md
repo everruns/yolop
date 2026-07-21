@@ -105,18 +105,18 @@ live reload above).
   now).
 - MCP **resources** and **prompts** (tools are the 90% case).
 - ACP MCP pass-through: `mcpServers` supplied by an ACP client is still
-  accepted-and-ignored (see `src/acp/protocol.rs`); only yolop's own
+  accepted-and-ignored (see `src/editor/acp/protocol.rs`); only yolop's own
   `.mcp.json` is honored.
 
 ## Where it lives
 
 | Concern | Location |
 |---------|----------|
-| Config loading (scopes, merge, `${VAR}`) | `src/mcp_config.rs` |
-| Wiring into the session | `src/runtime.rs` (`session_mcp_servers`, `StartupInfo.mcp_server_names`) |
-| `/mcp` command (list/reload/enable/disable/remove) | `src/capabilities/client_commands.rs`, `src/host_ui.rs`, `src/app/mod.rs` |
-| Live reload seam | `src/runtime.rs` (`RuntimeHandles::reload_mcp_servers`), `src/session.rs` |
-| OAuth login (discovery, DCR, PKCE) | `src/mcp_oauth_login.rs` |
-| OAuth token storage | `src/mcp_oauth.rs` (connection store) |
-| Auth provider (stored token + refresh, env fallback) | `src/runtime.rs` (`StoredMcpAuthProvider`) |
+| Config loading (scopes, merge, `${VAR}`) | `src/config/mcp.rs` |
+| Wiring into the session | `src/runtime/mod.rs` (`session_mcp_servers`, `StartupInfo.mcp_server_names`) |
+| `/mcp` command (list/reload/enable/disable/remove) | `src/capabilities/client_commands.rs`, `src/tui/host_ui.rs`, `src/tui/mod.rs` |
+| Live reload seam | `src/runtime/mod.rs` (`RuntimeHandles::reload_mcp_servers`), `src/runtime/session.rs` |
+| OAuth login (discovery, DCR, PKCE) | `src/auth/mcp_oauth_login.rs` |
+| OAuth token storage | `src/auth/mcp_oauth.rs` (connection store) |
+| Auth provider (stored token + refresh, env fallback) | `src/runtime/mod.rs` (`StoredMcpAuthProvider`) |
 | Client / transports / executor | upstream `everruns-mcp`, `everruns-runtime` (`mcp-stdio` feature) |

@@ -2,56 +2,21 @@
 // Decision: support both interactive TUI and a `--print` one-shot mode so the
 // example is testable in CI and easy to demo against a real codebase.
 
-mod acp;
-mod app;
-mod atif;
-mod background_wake;
+mod auth;
 mod capabilities;
-mod capability_settings;
-mod checkpoint;
-mod clipboard_paste;
-mod codex_auth;
-mod codex_driver;
-mod config_schema;
-mod config_service;
+mod config;
 mod connectors;
+mod drivers;
+mod editor;
+mod exec;
 mod extensions;
-mod goal;
-mod hooks_config;
-mod host_ui;
-mod image_input;
-mod into;
-mod mcp_config;
-mod mcp_oauth;
-mod mcp_oauth_login;
-mod oauth_flow;
-mod paste_attachment;
-mod presentation;
-mod proc;
-mod prompt_history;
 mod runtime;
-mod sandbox;
-mod session;
-mod session_log;
-mod session_tasks_view;
-mod settings;
-#[cfg(test)]
-mod test_env;
-mod tools;
-mod transcript;
-mod user_ask;
+mod session_state;
+mod tui;
 mod version;
-mod workspace_host;
-mod worktree;
 
 #[cfg(test)]
-mod streaming_tests;
-
-#[cfg(test)]
-mod mcp_e2e_tests;
-
-#[cfg(test)]
-mod agent_scenarios;
+mod testing;
 
 use crate::capabilities::ClientUiContext;
 use anyhow::{Context, Result};
@@ -60,8 +25,9 @@ use anyhow::{Context, Result};
 // LTO/dead-code elimination when we register capabilities explicitly.
 extern crate everruns_integrations_daytona;
 extern crate everruns_integrations_parallel;
-use app::{App, COMPOSER_VIEWPORT_HEIGHT, maybe_reanchor_inline_viewport};
 use clap::{Args, Parser, Subcommand};
+use config::SettingsStore;
+use config::mcp::{McpConfigScope, McpConfigStore};
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -71,13 +37,12 @@ use crossterm::{execute, queue};
 use everruns_core::command::ExecuteCommandRequest;
 use everruns_core::message::{ContentPart, MessageRole};
 use everruns_core::typed_id::SessionId;
-use mcp_config::{McpConfigScope, McpConfigStore};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use runtime::{BuiltRuntime, ProviderChoice, ResolvedProviderChoice, resolve_for_settings};
-use settings::SettingsStore;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tui::{App, COMPOSER_VIEWPORT_HEIGHT, maybe_reanchor_inline_viewport};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -534,7 +499,7 @@ async fn async_main() -> Result<()> {
     // loads to defaults when the file does not exist, and writes will
     // error visibly via `/setup` rather than killing
     // startup — keeps `--print` usable in stripped-down environments.
-    let settings_path = settings::default_settings_path().unwrap_or_else(|| {
+    let settings_path = config::default_settings_path().unwrap_or_else(|| {
         eprintln!(
             "yolop: no platform config dir resolvable — settings will not persist across runs"
         );
@@ -560,27 +525,27 @@ async fn async_main() -> Result<()> {
     };
     let sessions_dir = match cli.session_dir.clone() {
         Some(p) => p,
-        None => session_log::default_sessions_dir()?,
+        None => runtime::session_log::default_sessions_dir()?,
     };
     let cwd = resolve_workspace_root(cli.cwd.clone(), resume_session_id, &sessions_dir)?;
 
     // ACP mode builds runtimes per session (cwd arrives via `session/new`), so
     // it bypasses the up-front runtime build and the TUI.
     if cli.acp {
-        if let Some(warning) = sandbox::danger_warning(settings.snapshot().sandbox_mode()) {
+        if let Some(warning) = exec::sandbox::danger_warning(settings.snapshot().sandbox_mode()) {
             eprintln!("yolop: {warning}");
         }
         if cli.trajectory_out.is_some() {
             eprintln!("yolop: --trajectory-out is ignored in --acp mode");
         }
-        return acp::run_stdio(provider, settings, sessions_dir).await;
+        return editor::acp::run_stdio(provider, settings, sessions_dir).await;
     }
 
     // Only the interactive TUI can apply terminal-side commands (overlays,
     // transcript clear, quit), so only it enables `ClientCommandsCapability`.
     // `--print` is one-shot and never dispatches them.
     let interactive = cli.print.is_none();
-    if let Some(warning) = sandbox::danger_warning(settings.snapshot().sandbox_mode()) {
+    if let Some(warning) = exec::sandbox::danger_warning(settings.snapshot().sandbox_mode()) {
         eprintln!("yolop: {warning}");
     }
     let runtime = runtime::build_with_options(
@@ -597,9 +562,9 @@ async fn async_main() -> Result<()> {
                 ClientUiContext::Print
             },
             session_kind: if interactive {
-                session_log::SessionKind::Interactive
+                runtime::session_log::SessionKind::Interactive
             } else {
-                session_log::SessionKind::Print
+                runtime::session_log::SessionKind::Print
             },
             initial_prompt: cli.print.clone(),
             ..Default::default()
@@ -608,10 +573,10 @@ async fn async_main() -> Result<()> {
     .await?;
 
     if let Some(prompt) = cli.print {
-        let image_parts = image_input::load_image_parts(&cli.images)?;
+        let image_parts = tui::input::image_input::load_image_parts(&cli.images)?;
         return run_print_mode(runtime, prompt, image_parts, cli.trajectory_out).await;
     }
-    let pending_images = image_input::load_image_parts(&cli.images)?;
+    let pending_images = tui::input::image_input::load_image_parts(&cli.images)?;
     run_tui(runtime, pending_images, cli.trajectory_out, cli.fullscreen).await
 }
 
@@ -624,8 +589,8 @@ fn resolve_workspace_root(
         return Ok(cwd);
     }
     if let Some(session_id) = resume_session_id {
-        let session_dir = session_log::session_dir_path(sessions_dir, session_id);
-        if let Some(saved) = session_log::read_session_workspace(&session_dir)? {
+        let session_dir = runtime::session_log::session_dir_path(sessions_dir, session_id);
+        if let Some(saved) = runtime::session_log::read_session_workspace(&session_dir)? {
             return Ok(saved);
         }
     }
@@ -633,7 +598,7 @@ fn resolve_workspace_root(
 }
 
 fn run_mcp_command(command: McpCommand) -> Result<()> {
-    use crate::mcp_config::{McpServerEntry, McpServerSummary};
+    use crate::config::mcp::{McpServerEntry, McpServerSummary};
     use everruns_core::{McpServerTransportType, ScopedMcpServer};
     use std::collections::HashMap;
 
@@ -824,7 +789,7 @@ fn parse_mcp_auth_mode(value: &str) -> Result<everruns_core::McpServerAuthMode> 
 fn run_worktree_command(command: WorktreeCommand) -> Result<()> {
     match command {
         WorktreeCommand::List => {
-            let paths = worktree::list_worktree_paths_on_disk()?;
+            let paths = exec::worktree::list_worktree_paths_on_disk()?;
             if paths.is_empty() {
                 println!("no yolop worktrees found on disk");
             } else {
@@ -840,9 +805,9 @@ fn run_worktree_command(command: WorktreeCommand) -> Result<()> {
         } => {
             let sessions_dir = match session_dir {
                 Some(path) => path,
-                None => session_log::default_sessions_dir()?,
+                None => runtime::session_log::default_sessions_dir()?,
             };
-            let report = worktree::prune_orphan_worktrees(&sessions_dir, dry_run)?;
+            let report = exec::worktree::prune_orphan_worktrees(&sessions_dir, dry_run)?;
             let action = if dry_run { "would remove" } else { "removed" };
             for path in &report.removed {
                 println!("{action}: {}", path.display());
@@ -879,33 +844,33 @@ fn run_command(command: Commands) -> Result<()> {
         Commands::TuikaGallery => run_tuika_gallery(),
         #[cfg(target_os = "linux")]
         Commands::SandboxExec { cwd, temp, script } => {
-            sandbox::run_linux_worker(&cwd, &temp, &script)
+            exec::sandbox::run_linux_worker(&cwd, &temp, &script)
         }
         Commands::Into(into) => match into.target {
             IntoTarget::Paseo(args) => {
                 let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));
-                let result = into::into_paseo(into::PaseoIntoOptions {
+                let result = editor::into::into_paseo(editor::into::PaseoIntoOptions {
                     settings_path: None,
                     agent_name: "yolop".to_string(),
                     command,
                     force: args.force,
                 })?;
                 match result.status {
-                    into::IntoStatus::Unchanged => {
+                    editor::into::IntoStatus::Unchanged => {
                         println!(
                             "yolop: Paseo already has `{}` ACP provider configured at {}",
                             result.agent_name,
                             result.settings_path.display()
                         );
                     }
-                    into::IntoStatus::Created => {
+                    editor::into::IntoStatus::Created => {
                         println!(
                             "yolop: added `{}` ACP provider to {}",
                             result.agent_name,
                             result.settings_path.display()
                         );
                     }
-                    into::IntoStatus::Updated => {
+                    editor::into::IntoStatus::Updated => {
                         println!(
                             "yolop: updated `{}` ACP provider in {}",
                             result.agent_name,
@@ -919,28 +884,28 @@ fn run_command(command: Commands) -> Result<()> {
             }
             IntoTarget::Zed(args) => {
                 let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));
-                let result = into::into_zed(into::ZedIntoOptions {
+                let result = editor::into::into_zed(editor::into::ZedIntoOptions {
                     settings_path: None,
                     agent_name: "yolop".to_string(),
                     command,
                     force: args.force,
                 })?;
                 match result.status {
-                    into::IntoStatus::Unchanged => {
+                    editor::into::IntoStatus::Unchanged => {
                         println!(
                             "yolop: Zed already has `{}` configured at {}",
                             result.agent_name,
                             result.settings_path.display()
                         );
                     }
-                    into::IntoStatus::Created => {
+                    editor::into::IntoStatus::Created => {
                         println!(
                             "yolop: added `{}` ACP agent to {}",
                             result.agent_name,
                             result.settings_path.display()
                         );
                     }
-                    into::IntoStatus::Updated => {
+                    editor::into::IntoStatus::Updated => {
                         println!(
                             "yolop: updated `{}` ACP agent in {}",
                             result.agent_name,
@@ -1111,7 +1076,7 @@ async fn run_tui(
     let mut app = App::new(runtime, pending_images);
     app.enable_native_progress();
     if fullscreen {
-        app.set_render_mode(app::RenderMode::Fullscreen);
+        app.set_render_mode(tui::RenderMode::Fullscreen);
     }
     let result = app.run(&mut terminal).await;
     let show_resume_hint = app.should_show_resume_hint();
@@ -1275,8 +1240,8 @@ async fn write_trajectory_if_requested(
             return;
         }
     };
-    let trajectory = atif::trajectory_from_events(
-        atif::AgentInfo {
+    let trajectory = session_state::atif::trajectory_from_events(
+        session_state::atif::AgentInfo {
             name: "yolop".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             model_name: Some(model.model_id()),
@@ -1284,7 +1249,7 @@ async fn write_trajectory_if_requested(
         handles.session_id,
         &events,
     );
-    if let Err(err) = atif::write_trajectory_file(path, &trajectory) {
+    if let Err(err) = session_state::atif::write_trajectory_file(path, &trajectory) {
         eprintln!(
             "yolop: failed to write trajectory to {}: {err}",
             path.display()
@@ -1353,14 +1318,15 @@ async fn run_print_mode(
                 handles.session_id,
                 ExecuteCommandRequest {
                     name: "ask".to_string(),
-                    arguments: Some(user_ask::USER_ASK_EVALUATE_ARG.to_string()),
+                    arguments: Some(session_state::user_ask::USER_ASK_EVALUATE_ARG.to_string()),
                     controls: None,
                 },
             )
             .await?;
         if evaluation.success {
-            if let Ok(parsed) = user_ask::parse_evaluation_response(&evaluation.message)
-                && parsed.outcome == user_ask::AskOutcome::Blocked
+            if let Ok(parsed) =
+                session_state::user_ask::parse_evaluation_response(&evaluation.message)
+                && parsed.outcome == session_state::user_ask::AskOutcome::Blocked
             {
                 handles.report_herdr_state(capabilities::herdr::HerdrState::Blocked);
             }
@@ -1376,9 +1342,9 @@ async fn run_print_mode(
 /// can finish end-of-run work (trajectory export) before setting the exit code.
 async fn run_print_goal(
     handles: &runtime::RuntimeHandles,
-    worktree: &crate::worktree::WorktreeManager,
+    worktree: &crate::exec::worktree::WorktreeManager,
     model: &runtime::ModelState,
-    goal_store: &goal::GoalStore,
+    goal_store: &session_state::goal::GoalStore,
     arguments: &str,
     color: bool,
 ) -> Result<bool> {
@@ -1426,7 +1392,7 @@ async fn run_print_goal(
                 session_id,
                 ExecuteCommandRequest {
                     name: "goal".to_string(),
-                    arguments: Some(goal::GOAL_EVALUATE_ARG.to_string()),
+                    arguments: Some(session_state::goal::GOAL_EVALUATE_ARG.to_string()),
                     controls: None,
                 },
             )
@@ -1435,7 +1401,7 @@ async fn run_print_goal(
             eprintln!("goal evaluation failed: {}", evaluation.message);
             return Ok(false);
         }
-        let parsed = goal::parse_evaluation_response(&evaluation.message)?;
+        let parsed = session_state::goal::parse_evaluation_response(&evaluation.message)?;
         if parsed.met {
             print_final_output(&turn.output);
             return Ok(true);
@@ -1453,7 +1419,7 @@ struct PrintTurn {
 
 async fn collect_print_turn(
     handles: &runtime::RuntimeHandles,
-    worktree: &crate::worktree::WorktreeManager,
+    worktree: &crate::exec::worktree::WorktreeManager,
     model: &runtime::ModelState,
     prompt: &str,
     images: Vec<ContentPart>,
@@ -1566,7 +1532,7 @@ mod tests {
 
     #[test]
     fn pick_provider_applies_saved_model_for_saved_provider() {
-        let _guard = crate::test_env::lock();
+        let _guard = crate::testing::test_env::lock();
         unsafe {
             std::env::remove_var("EVERRUNS_CLI_MODEL");
         }
@@ -1603,10 +1569,13 @@ mod tests {
         let sessions = tempfile::tempdir().expect("sessions tempdir");
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let session_id = SessionId::from_seed(42);
-        let session_dir = session_log::session_dir_path(sessions.path(), session_id);
-        session_log::write_session_workspace(
+        let session_dir = runtime::session_log::session_dir_path(sessions.path(), session_id);
+        runtime::session_log::write_session_workspace(
             &session_dir,
-            &session_log::SessionWorkspaceMetadata::new(workspace.path().to_path_buf(), None),
+            &runtime::session_log::SessionWorkspaceMetadata::new(
+                workspace.path().to_path_buf(),
+                None,
+            ),
         )
         .expect("write workspace metadata");
 
@@ -1622,10 +1591,10 @@ mod tests {
         let saved = tempfile::tempdir().expect("saved workspace tempdir");
         let explicit = tempfile::tempdir().expect("explicit workspace tempdir");
         let session_id = SessionId::from_seed(43);
-        let session_dir = session_log::session_dir_path(sessions.path(), session_id);
-        session_log::write_session_workspace(
+        let session_dir = runtime::session_log::session_dir_path(sessions.path(), session_id);
+        runtime::session_log::write_session_workspace(
             &session_dir,
-            &session_log::SessionWorkspaceMetadata::new(saved.path().to_path_buf(), None),
+            &runtime::session_log::SessionWorkspaceMetadata::new(saved.path().to_path_buf(), None),
         )
         .expect("write workspace metadata");
 
@@ -1641,17 +1610,17 @@ mod tests {
 
     #[test]
     fn inline_viewport_anchor_fills_space_above_bottom_target() {
-        assert_eq!(app::rows_below_inline_viewport(4, 18, 60), 38);
+        assert_eq!(tui::rows_below_inline_viewport(4, 18, 60), 38);
     }
 
     #[test]
     fn inline_viewport_anchor_does_not_scroll_when_already_low_enough() {
-        assert_eq!(app::rows_below_inline_viewport(42, 18, 60), 0);
-        assert_eq!(app::rows_below_inline_viewport(50, 18, 60), 0);
+        assert_eq!(tui::rows_below_inline_viewport(42, 18, 60), 0);
+        assert_eq!(tui::rows_below_inline_viewport(50, 18, 60), 0);
     }
 
     #[test]
     fn inline_viewport_anchor_handles_small_terminals() {
-        assert_eq!(app::rows_below_inline_viewport(0, 18, 10), 0);
+        assert_eq!(tui::rows_below_inline_viewport(0, 18, 10), 0);
     }
 }

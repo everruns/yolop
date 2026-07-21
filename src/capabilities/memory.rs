@@ -14,7 +14,7 @@
 // See specs/memory.md for the design and configuration knobs.
 
 use crate::capabilities::narration::stable_labeled;
-use crate::settings::SettingsStore;
+use crate::config::SettingsStore;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -595,7 +595,7 @@ fn serialize(memories: &[Memory]) -> String {
 
 /// Atomic write: stage into a sibling temp file, `fsync`, then `rename` over the
 /// target. The temp file is created 0o600 on Unix so memory — which may hold
-/// personal facts — stays owner-only. Mirrors `settings::save_to`.
+/// personal facts — stays owner-only. Mirrors `crate::config::save_to`.
 fn save_to(path: &Path, memories: &[Memory]) -> Result<()> {
     let content = serialize(memories);
     let parent = path

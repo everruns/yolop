@@ -5,7 +5,7 @@
 //! lexical search is too narrow.
 
 use crate::capabilities::narration::stable_labeled;
-use crate::workspace_host::WorkspaceHost;
+use crate::exec::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
@@ -395,7 +395,7 @@ fn collect_repo_symbols(
     let root = workspace_root
         .canonicalize()
         .with_context(|| format!("canonicalize workspace root {}", workspace_root.display()))?;
-    let scope = crate::workspace_host::resolve_host_scope(&root, options.path.as_deref())?;
+    let scope = crate::exec::workspace_host::resolve_host_scope(&root, options.path.as_deref())?;
     let language_filter = options.language.as_deref().map(normalize_language_filter);
     if let Some(filter) = language_filter.as_deref()
         && !LANGUAGES

@@ -5,7 +5,7 @@
 // files.
 
 use crate::capabilities::narration::stable_labeled;
-use crate::hooks_config::{HookScope, HooksStore};
+use crate::config::hooks::{HookScope, HooksStore};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};

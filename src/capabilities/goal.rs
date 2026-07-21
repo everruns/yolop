@@ -4,7 +4,7 @@
 //! transcript and decides whether the condition holds. If not, the host starts
 //! another turn automatically.
 
-use crate::goal::{
+use crate::session_state::goal::{
     GOAL_CAPABILITY_ID, GOAL_COMMAND_NAME, GoalCommandOutcome, GoalStore, evaluate_active_goal,
     evaluation_result_message, format_status, is_goal_evaluate_request,
 };
@@ -120,7 +120,7 @@ impl Capability for GoalCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::goal::GOAL_EVALUATE_ARG;
+    use crate::session_state::goal::GOAL_EVALUATE_ARG;
     use everruns_core::command_host::{
         CommandHost, CommandTurnContext, SessionCompletion, SessionCompletionError,
     };
@@ -234,7 +234,8 @@ mod tests {
             .await
             .expect("evaluate");
         assert!(result.success);
-        let evaluation = crate::goal::parse_evaluation_response(&result.message).expect("parse");
+        let evaluation =
+            crate::session_state::goal::parse_evaluation_response(&result.message).expect("parse");
         assert!(evaluation.met);
         assert!(!store.is_active(session_id));
     }

@@ -1,5 +1,5 @@
 use crate::capabilities::narration::stable_labeled;
-use crate::mcp_config::{McpConfigScope, McpConfigStore, McpServerEntry};
+use crate::config::mcp::{McpConfigScope, McpConfigStore, McpServerEntry};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::ToolNarrationPhase;

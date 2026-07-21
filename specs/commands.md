@@ -99,7 +99,7 @@ portable case ever arises.
 - This spec owns yolop's command surface: the single-registry contract, the
   client/terminal execution target, the `HostUi`/`UiCommand` port, and the host
   gating. The terminal commands themselves live in
-  `src/capabilities/client_commands.rs`; the port lives in `src/host_ui.rs`.
+  `src/capabilities/client_commands.rs`; the port lives in `src/tui/host_ui.rs`.
 
 ## Related
 

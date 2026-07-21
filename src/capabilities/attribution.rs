@@ -7,7 +7,7 @@
 // hard enforcement — so it lives entirely in `system_prompt_contribution` and
 // reads the flag live through the shared config service each turn.
 
-use crate::config_service::ConfigService;
+use crate::config::service::ConfigService;
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use std::sync::Arc;
@@ -71,7 +71,7 @@ impl Capability for AttributionCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::SettingsStore;
+    use crate::config::SettingsStore;
 
     #[tokio::test]
     async fn attribution_prompt_follows_settings() {
