@@ -672,6 +672,9 @@ impl App {
             turn_elapsed_secs: self.turn_started_at.map(|start| start.elapsed().as_secs()),
             context_used_tokens: self.context_used_tokens,
             context_window_tokens: self.context_window_tokens(),
+            compaction_budget_percent: Some(
+                (crate::runtime::YOLOP_COMPACTION_BUDGET_PERCENT * 100.0).round() as u8,
+            ),
             status_layout: self.status_layout,
             hooks_summary: self.startup.hook_summary(),
             approval_mode,
@@ -4168,6 +4171,7 @@ mod tests {
             turn_elapsed_secs: None,
             context_used_tokens: None,
             context_window_tokens: None,
+            compaction_budget_percent: None,
             status_layout: StatusLayout::Compact,
             hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),
