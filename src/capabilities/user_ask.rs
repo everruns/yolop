@@ -4,7 +4,7 @@
 //! pivot, and runs a tool-less evaluator at turn end. Does not auto-continue turns.
 
 use crate::capabilities::narration::stable_labeled;
-use crate::user_ask::{
+use crate::session_state::user_ask::{
     USER_ASK_CAPABILITY_ID, USER_ASK_COMMAND_NAME, UserAskCommandOutcome, UserAskStore,
     evaluate_active_user_ask, evaluation_result_message, format_status,
     is_user_ask_evaluate_request, system_prompt_block,
@@ -127,9 +127,9 @@ impl Capability for UserAskCapability {
     }
 
     fn system_prompt_preview(&self) -> Option<String> {
-        Some(system_prompt_block(&crate::user_ask::UserAskStatus {
-            active: None,
-        }))
+        Some(system_prompt_block(
+            &crate::session_state::user_ask::UserAskStatus { active: None },
+        ))
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
@@ -259,7 +259,7 @@ impl Tool for ClearUserAskTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::user_ask::USER_ASK_EVALUATE_ARG;
+    use crate::session_state::user_ask::USER_ASK_EVALUATE_ARG;
     use everruns_core::command_host::{
         CommandHost, CommandTurnContext, SessionCompletion, SessionCompletionError,
     };
@@ -374,9 +374,12 @@ mod tests {
             .await
             .expect("evaluate");
         assert!(result.success);
-        let evaluation =
-            crate::user_ask::parse_evaluation_response(&result.message).expect("parse");
-        assert_eq!(evaluation.outcome, crate::user_ask::AskOutcome::Achieved);
+        let evaluation = crate::session_state::user_ask::parse_evaluation_response(&result.message)
+            .expect("parse");
+        assert_eq!(
+            evaluation.outcome,
+            crate::session_state::user_ask::AskOutcome::Achieved
+        );
         assert!(!store.is_active(session_id));
     }
 }

@@ -2,10 +2,10 @@
 // TUI-facing slash commands that mutate this process's provider selection.
 
 use crate::capabilities::narration::stable_labeled;
-use crate::config_service::ConfigService;
+use crate::config::service::ConfigService;
+use crate::config::{ApprovalMode, SettingsStore};
+use crate::exec::tools::{BashTool, Workspace};
 use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS, resolve_for_settings};
-use crate::settings::{ApprovalMode, SettingsStore};
-use crate::tools::{BashTool, Workspace};
 use async_trait::async_trait;
 use chrono::Local;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
@@ -279,7 +279,7 @@ pub(crate) const CODING_BASH_CAPABILITY_ID: &str = "yolop_bash";
 
 pub(crate) struct CodingBashCapability {
     pub(crate) workspace: Workspace,
-    pub(crate) sandbox: Arc<dyn crate::sandbox::SandboxProvider>,
+    pub(crate) sandbox: Arc<dyn crate::exec::sandbox::SandboxProvider>,
     pub(crate) expose_command: bool,
 }
 
@@ -1316,7 +1316,7 @@ impl SetupCapability {
     /// True when no provider preference is saved and no API token is set —
     /// either via env var or in the settings file. Used by the TUI at
     /// startup to auto-open the wizard on a fresh install.
-    pub(crate) fn needs_onboarding(settings: &crate::settings::Settings) -> bool {
+    pub(crate) fn needs_onboarding(settings: &crate::config::Settings) -> bool {
         if settings.default_provider.is_some() {
             return false;
         }
@@ -1500,8 +1500,8 @@ mod tests {
     #[test]
     fn needs_onboarding_true_for_empty_settings() {
         // Serialize against every other env-mutating test in this
-        // binary; cf. `crate::test_env`.
-        let _guard = crate::test_env::lock();
+        // binary; cf. `crate::testing::test_env`.
+        let _guard = crate::testing::test_env::lock();
         unsafe {
             std::env::remove_var("OPENAI_API_KEY");
             std::env::remove_var("ANTHROPIC_API_KEY");
@@ -1513,7 +1513,7 @@ mod tests {
             std::env::remove_var("CUSTOM_BASE_URL");
             std::env::remove_var("CUSTOM_API_KEY");
         }
-        let settings = crate::settings::Settings::default();
+        let settings = crate::config::Settings::default();
         assert!(SetupCapability::needs_onboarding(&settings));
     }
 
@@ -1521,7 +1521,7 @@ mod tests {
     fn needs_onboarding_ignores_custom_api_key_without_base_url() {
         // A stray CUSTOM_API_KEY is not a usable credential: without a base
         // URL the custom provider cannot run, so onboarding must still open.
-        let _guard = crate::test_env::lock();
+        let _guard = crate::testing::test_env::lock();
         unsafe {
             std::env::remove_var("OPENAI_API_KEY");
             std::env::remove_var("ANTHROPIC_API_KEY");
@@ -1533,7 +1533,7 @@ mod tests {
             std::env::remove_var("CUSTOM_BASE_URL");
             std::env::set_var("CUSTOM_API_KEY", "sk-orphan");
         }
-        let settings = crate::settings::Settings::default();
+        let settings = crate::config::Settings::default();
         assert!(SetupCapability::needs_onboarding(&settings));
 
         unsafe {
@@ -1548,7 +1548,7 @@ mod tests {
 
     #[test]
     fn needs_onboarding_false_when_provider_is_saved() {
-        let settings = crate::settings::Settings {
+        let settings = crate::config::Settings {
             default_provider: Some("anthropic".to_string()),
             ..Default::default()
         };
@@ -1559,7 +1559,7 @@ mod tests {
     fn needs_onboarding_false_when_token_is_saved() {
         let mut tokens = std::collections::BTreeMap::new();
         tokens.insert("openai".to_string(), "sk-test".to_string());
-        let settings = crate::settings::Settings {
+        let settings = crate::config::Settings {
             default_provider: None,
             tokens,
             ..Default::default()

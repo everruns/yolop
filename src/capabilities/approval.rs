@@ -14,14 +14,14 @@
 //     `tool.completed` line in the per-session `events.jsonl` audit log.
 //
 // The paranoia level is central configuration (`approval_mode` in
-// settings.toml, see `crate::settings::ApprovalMode`), surfaced in the status
+// settings.toml, see `crate::config::ApprovalMode`), surfaced in the status
 // bar, switchable with `/setup approval <level>` and — because users address
 // yolop in natural language ("yolop, be more careful") — with the
 // `set_approval_mode` tool.
 
 use crate::capabilities::narration::stable_labeled;
-use crate::config_service::ConfigService;
-use crate::settings::{ApprovalMode, SettingsStore};
+use crate::config::service::ConfigService;
+use crate::config::{ApprovalMode, SettingsStore};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};

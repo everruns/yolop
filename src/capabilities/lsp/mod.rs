@@ -16,7 +16,7 @@ mod client;
 mod manager;
 
 use crate::capabilities::narration::stable_labeled;
-use crate::workspace_host::WorkspaceHost;
+use crate::exec::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};

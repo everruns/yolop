@@ -81,7 +81,7 @@ Active asks are stored in `<session_dir>/user_ask.json` so a resumed session
 ## Ownership
 
 - `UserAskCapability` and `UserAskStore` live in yolop (`src/capabilities/user_ask.rs`,
-  `src/user_ask.rs`).
+  `src/session_state/user_ask.rs`).
 - Evaluator calls use upstream `CommandHost::completion` (everruns-core).
 
 ## Related

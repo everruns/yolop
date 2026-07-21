@@ -62,7 +62,7 @@ restored without starting a turn until `/goal resume`.
 ## Ownership
 
 - `GoalCapability` and `GoalStore` live in yolop (`src/capabilities/goal.rs`,
-  `src/goal.rs`).
+  `src/session_state/goal.rs`).
 - Evaluator calls use upstream `CommandHost::completion` (everruns-core); no
   `everruns-core` API changes are required.
 

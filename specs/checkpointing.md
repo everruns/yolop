@@ -228,7 +228,7 @@ be duplicated in the UI.
 
 Version 1 is implemented inside Yolop without an Everruns protocol change:
 
-- `src/session_log.rs` already owns append-only event persistence, replay
+- `src/runtime/session_log.rs` already owns append-only event persistence, replay
   filtering, sequence continuity, private permissions, tail repair, and the
   single-writer file lock. Timeline materialization belongs beside it.
 - Runtime construction already creates a concrete `InMemoryMessageRetriever`

@@ -21,7 +21,7 @@ forcing slash-command syntax.
 
 ### Schema registry — single source of truth
 
-`src/config_schema.rs` is a compile-time registry of `ConfigField`s. Each field
+`src/config/schema.rs` is a compile-time registry of `ConfigField`s. Each field
 carries a canonical `key`, `aliases`, `title`, `description`, value `kind`
 (`text` / `bool` / `secret`), effective `default`, `examples`, and whether it is
 `provider_scoped` (addressed as `<key>.<provider>`). This one registry feeds
@@ -76,7 +76,7 @@ remains the way to switch the *live* model mid-session.
 
 Configuration is exposed to the rest of the agent as a **service** so that
 capabilities can read it without re-parsing the TOML or reaching into store
-internals. `src/config_service.rs` defines the `ConfigService` trait:
+internals. `src/config/service.rs` defines the `ConfigService` trait:
 
 - a generic `current(key)` that reads any value by its schema key (e.g.
   `models.openai`), with secrets reduced to `stored`/`unset`, and

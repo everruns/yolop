@@ -90,7 +90,7 @@ pub async fn doctor(
         .stdout(Stdio::piped())
         // Pipe (and drain to tracing below) rather than inherit: inheriting the
         // probed server's stderr writes it onto the terminal, corrupting the TUI
-        // frame. See `extensions::manager` and `crate::proc`.
+        // frame. See `extensions::manager` and `crate::exec::proc`.
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let bin_dir = package_dir.join("bin");

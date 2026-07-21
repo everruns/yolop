@@ -4,7 +4,7 @@
 //! `WorkspaceEdit`s to the workspace disk.
 
 use super::client::LspClient;
-use crate::workspace_host::WorkspaceHost;
+use crate::exec::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -168,7 +168,7 @@ impl LspManager {
             .map_err(|err| anyhow!(err.to_string()))?
             .canonicalize()
             .context("canonicalize workspace root")?;
-        let file = crate::workspace_host::resolve_host_scope(&root, Some(path))?;
+        let file = crate::exec::workspace_host::resolve_host_scope(&root, Some(path))?;
         if !file.is_file() {
             bail!("`{path}` is not a file in the workspace");
         }

@@ -31,8 +31,8 @@ pub(crate) mod user_ask;
 pub(crate) mod worktree_cmd;
 pub(crate) mod yolop;
 
-pub(crate) use crate::goal::GOAL_CAPABILITY_ID;
-pub(crate) use crate::user_ask::USER_ASK_CAPABILITY_ID;
+pub(crate) use crate::session_state::goal::GOAL_CAPABILITY_ID;
+pub(crate) use crate::session_state::user_ask::USER_ASK_CAPABILITY_ID;
 pub(crate) use approval::{APPROVAL_CAPABILITY_ID, ApprovalCapability};
 pub(crate) use ast_grep::{AST_GREP_CAPABILITY_ID, AstEditCapability, AstGrepCapability};
 pub(crate) use attribution::{ATTRIBUTION_CAPABILITY_ID, AttributionCapability};

@@ -124,7 +124,7 @@ The standing guardrail is the write blocklist on filesystem writes (see
 ## Architecture
 
 ```
-src/acp/
+src/editor/acp/
   mod.rs        # module root: production RuntimeFactory, run_stdio entry, e2e tests
   protocol.rs   # SDK-backed ACP schema shim plus yolop helpers
   bridge.rs     # pure runtime-event → session/update translation (Translator)

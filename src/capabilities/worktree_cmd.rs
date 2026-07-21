@@ -1,6 +1,6 @@
 //! `/worktree` — session git worktree status and auto-activation control.
 
-use crate::worktree::WorktreeManager;
+use crate::exec::worktree::WorktreeManager;
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::command::{

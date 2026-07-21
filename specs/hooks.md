@@ -228,10 +228,10 @@ v1 behavior:
 
 Implemented:
 
-1. `src/hooks_config.rs` parses the two scope files into a yolop-owned
+1. `src/config/hooks.rs` parses the two scope files into a yolop-owned
    envelope, validates each hook through `UserHookSpec::validate`, and produces
    an effective upstream `UserHooksConfig`.
-2. `src/runtime.rs` registers `everruns_core::capabilities::UserHooksCapability`
+2. `src/runtime/mod.rs` registers `everruns_core::capabilities::UserHooksCapability`
    and enables it with `AgentCapabilityConfig::with_config("user_hooks", ...)`
    only when hooks are configured.
 3. `StartupInfo` includes effective hook counts; `--print` shows loaded hooks.

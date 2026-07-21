@@ -13,7 +13,7 @@
 //! `--print` hosts, which have no overlay/transcript to drive, omit it.
 
 use crate::capabilities::narration::stable_labeled;
-use crate::host_ui::{HostUi, UiCommand};
+use crate::tui::host_ui::{HostUi, UiCommand};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::command::{

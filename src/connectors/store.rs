@@ -74,7 +74,7 @@ impl ConnectionsFile {
 }
 
 pub fn default_connections_path() -> Option<PathBuf> {
-    crate::settings::default_settings_path().map(|p| {
+    crate::config::default_settings_path().map(|p| {
         p.parent()
             .map(|dir| dir.join("connections.toml"))
             .unwrap_or_else(|| PathBuf::from("connections.toml"))

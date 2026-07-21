@@ -5,7 +5,7 @@
 // `bash` tool: it streams to a session-file log, tracks a `background_tool`
 // session task, and on completion signals the session. yolop delivers that
 // signal to the host as a proactive wake turn via the platform-store wake seam
-// (see `crate::background_wake`).
+// (see `crate::runtime::background_wake`).
 //
 // This capability adds only the `/background` command, which lists the
 // session's everruns tasks. The model inspects and controls them with the
@@ -17,7 +17,7 @@
 // instead of the generic "Running Spawn Background" fallback.
 
 use crate::capabilities::narration::narrate_spawn_background;
-use crate::session_tasks_view::render_task_list;
+use crate::tui::session_tasks_view::render_task_list;
 use async_trait::async_trait;
 use everruns_core::capabilities::{
     BackgroundExecutionCapability, Capability, CapabilityLocalization, CapabilityStatus,

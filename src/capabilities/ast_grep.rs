@@ -4,7 +4,7 @@
 //! read-only code shapes; `ast_edit` applies pattern/replacement rewrites with a
 //! preview-first `dry_run` flow before writing.
 
-use crate::workspace_host::WorkspaceHost;
+use crate::exec::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, bail};
 use ast_grep_core::matcher::Pattern;
 use ast_grep_core::meta_var::MetaVariable;
@@ -677,7 +677,7 @@ fn ast_grep(workspace_root: &Path, options: AstGrepOptions) -> Result<AstGrepRep
     let root = workspace_root
         .canonicalize()
         .context("canonicalize workspace root")?;
-    let scope = crate::workspace_host::resolve_host_scope(&root, options.path.as_deref())?;
+    let scope = crate::exec::workspace_host::resolve_host_scope(&root, options.path.as_deref())?;
     let language_filter = match options.language.as_deref() {
         Some(language) => Some(resolve_language_filter(language)?),
         None => None,
@@ -793,7 +793,7 @@ fn ast_edit(workspace_root: &Path, options: AstEditOptions) -> Result<AstEditRep
     let root = workspace_root
         .canonicalize()
         .context("canonicalize workspace root")?;
-    let scope = crate::workspace_host::resolve_host_scope(&root, options.path.as_deref())?;
+    let scope = crate::exec::workspace_host::resolve_host_scope(&root, options.path.as_deref())?;
     let language_filter = match options.language.as_deref() {
         Some(language) => Some(resolve_language_filter(language)?),
         None => None,
