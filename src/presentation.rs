@@ -35,6 +35,10 @@ pub(crate) struct PresentationState {
     pub context_used_tokens: Option<u32>,
     /// The active model's context-window size, when known.
     pub context_window_tokens: Option<u32>,
+    /// Whole percent (0–100) of the context window at which proactive compaction
+    /// is expected to trigger, when compaction is active. Drives the threshold
+    /// mark on the context gauge. `None` hides the mark.
+    pub compaction_budget_percent: Option<u8>,
     pub status_layout: StatusLayout,
     pub hooks_summary: String,
     pub approval_mode: String,
@@ -156,7 +160,11 @@ fn expanded_status_lines(state: &PresentationState) -> Vec<StatusLine> {
         status_value(message_count_label(state.lines_count)),
         status_field("tokens", token_label(state.session_tokens)),
     ];
-    if let Some(ctx) = context_label(state.context_used_tokens, state.context_window_tokens) {
+    if let Some(ctx) = context_label(
+        state.context_used_tokens,
+        state.context_window_tokens,
+        state.compaction_budget_percent,
+    ) {
         counts.push(status_field("ctx", ctx));
     }
     if let Some(bg) = background_label(state.background, false) {
@@ -208,7 +216,11 @@ fn status_contributions(state: &PresentationState) -> Vec<Vec<StatusField>> {
         StatusLayout::Expanded => "[collapse ↑]",
     };
     let mut counts = vec![status_value(message_count_label(state.lines_count))];
-    if let Some(ctx) = context_label(state.context_used_tokens, state.context_window_tokens) {
+    if let Some(ctx) = context_label(
+        state.context_used_tokens,
+        state.context_window_tokens,
+        state.compaction_budget_percent,
+    ) {
         counts.push(status_field("ctx", ctx));
     }
     if let Some(bg) = background_label(state.background, true) {
@@ -307,19 +319,57 @@ fn message_count_label(count: usize) -> String {
     format!("{count} msgs")
 }
 
-/// Context-window fill as `pct% (used/total)`, e.g. `45% (90k/200k)`. `None`
+/// Number of cells in the inline context-gauge bar.
+const CONTEXT_GAUGE_CELLS: u32 = 8;
+
+/// Context-window fill as a small gauge, e.g. `██╿█░░░░ 45% (90k/200k)`. `None`
 /// until we have both a usage sample and a known window size.
-pub(crate) fn context_label(used: Option<u32>, window: Option<u32>) -> Option<String> {
+///
+/// When `compaction_budget_percent` is set, a `╿` tick marks the fraction of the
+/// window at which proactive compaction is expected to trigger. The mark is a
+/// guide, not a guarantee: the gauge fill is real prompt-token usage, while
+/// compaction actually triggers on a char/4 token *estimate* of the message
+/// history (everruns-core `should_compact_proactively`), so the true trigger
+/// point can drift from the mark.
+pub(crate) fn context_label(
+    used: Option<u32>,
+    window: Option<u32>,
+    compaction_budget_percent: Option<u8>,
+) -> Option<String> {
     let (used, window) = (used?, window?);
     if window == 0 {
         return None;
     }
-    let pct = ((u64::from(used) * 100) / u64::from(window)).min(100);
+    let pct = ((u64::from(used) * 100) / u64::from(window)).min(100) as u32;
+    let bar = context_gauge_bar(pct, compaction_budget_percent);
     Some(format!(
-        "{pct}% ({}/{})",
+        "{bar} {pct}% ({}/{})",
         compact_token_count(used),
         compact_token_count(window)
     ))
+}
+
+/// Render the `CONTEXT_GAUGE_CELLS`-wide gauge: filled cells for `used_pct`, a
+/// `╿` tick at the compaction threshold when known (it overrides the cell it
+/// lands on). Both `used_pct` and `threshold` are whole percents (0–100).
+fn context_gauge_bar(used_pct: u32, threshold: Option<u8>) -> String {
+    let filled = (used_pct * CONTEXT_GAUGE_CELLS)
+        .div_ceil(100)
+        .min(CONTEXT_GAUGE_CELLS);
+    let tick = threshold
+        .filter(|&t| t <= 100)
+        .map(|t| (u32::from(t) * CONTEXT_GAUGE_CELLS / 100).min(CONTEXT_GAUGE_CELLS - 1));
+    (0..CONTEXT_GAUGE_CELLS)
+        .map(|i| {
+            if Some(i) == tick {
+                '╿'
+            } else if i < filled {
+                '█'
+            } else {
+                '░'
+            }
+        })
+        .collect()
 }
 
 /// Render a token count compactly: `900`, `90k`, `1.2M`.
@@ -354,6 +404,7 @@ mod tests {
             turn_elapsed_secs: None,
             context_used_tokens: None,
             context_window_tokens: None,
+            compaction_budget_percent: None,
             status_layout: StatusLayout::Compact,
             hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),
@@ -530,22 +581,42 @@ mod tests {
 
     #[test]
     fn context_label_formats_percentage_and_compact_counts() {
+        // Without a compaction budget the gauge has no threshold tick.
         assert_eq!(
-            context_label(Some(90_000), Some(200_000)).as_deref(),
-            Some("45% (90k/200k)")
+            context_label(Some(90_000), Some(200_000), None).as_deref(),
+            Some("████░░░░ 45% (90k/200k)")
         );
         assert_eq!(
-            context_label(Some(1_500_000), Some(2_000_000)).as_deref(),
-            Some("75% (1.5M/2.0M)")
+            context_label(Some(1_500_000), Some(2_000_000), None).as_deref(),
+            Some("██████░░ 75% (1.5M/2.0M)")
         );
         // Clamped to 100% and safe against a zero/absent window.
         assert_eq!(
-            context_label(Some(300), Some(200)).as_deref(),
-            Some("100% (300/200)")
+            context_label(Some(300), Some(200), None).as_deref(),
+            Some("████████ 100% (300/200)")
         );
-        assert_eq!(context_label(Some(10), None), None);
-        assert_eq!(context_label(None, Some(200_000)), None);
-        assert_eq!(context_label(Some(10), Some(0)), None);
+        assert_eq!(context_label(Some(10), None, None), None);
+        assert_eq!(context_label(None, Some(200_000), None), None);
+        assert_eq!(context_label(Some(10), Some(0), None), None);
+    }
+
+    #[test]
+    fn context_label_marks_the_compaction_threshold() {
+        // 45% fill (4/8 cells), threshold 20% → tick lands on cell index 1.
+        assert_eq!(
+            context_label(Some(90_000), Some(200_000), Some(20)).as_deref(),
+            Some("█╿██░░░░ 45% (90k/200k)")
+        );
+        // Threshold clamps into range; 100% lands on the final cell.
+        assert_eq!(
+            context_label(Some(200_000), Some(200_000), Some(100)).as_deref(),
+            Some("███████╿ 100% (200k/200k)")
+        );
+        // An out-of-range budget is ignored rather than panicking.
+        assert_eq!(
+            context_label(Some(50_000), Some(200_000), Some(150)).as_deref(),
+            Some("██░░░░░░ 25% (50k/200k)")
+        );
     }
 
     #[test]
@@ -564,9 +635,38 @@ mod tests {
         assert!(
             values
                 .iter()
-                .any(|(label, value)| *label == Some("ctx") && value == "25% (50k/200k)"),
+                .any(|(label, value)| *label == Some("ctx") && value == "██░░░░░░ 25% (50k/200k)"),
             "expected a ctx gauge in {values:?}"
         );
+    }
+
+    #[test]
+    fn status_gauge_marks_compaction_threshold_in_both_layouts() {
+        // Fullscreen and inline share this status path, so proving the mark
+        // lands in the rendered `ctx` field covers both modes.
+        let base = PresentationState {
+            context_used_tokens: Some(50_000),
+            context_window_tokens: Some(200_000),
+            compaction_budget_percent: Some(20),
+            ..state()
+        };
+        for layout in [StatusLayout::Compact, StatusLayout::Expanded] {
+            let model = PresentationState {
+                status_layout: layout,
+                ..base.clone()
+            };
+            let ctx = model
+                .status_lines()
+                .into_iter()
+                .flat_map(|line| line.fields)
+                .find(|field| field.label == Some("ctx"))
+                .map(|field| field.value)
+                .unwrap_or_default();
+            assert!(
+                ctx.contains('╿'),
+                "{layout:?} ctx gauge should carry the compaction threshold mark: {ctx:?}"
+            );
+        }
     }
 
     #[test]

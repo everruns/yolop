@@ -904,6 +904,13 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
 ];
 const YOLOP_KEEP_RECENT_TOOL_OUTPUTS: u64 = 3;
 
+/// Fraction of the model context window at which proactive compaction triggers.
+/// Kept low: yolop favors a tight, cheap context and lets the compaction cascade
+/// (observation masking → aggressive trim) keep older tool output from
+/// accumulating. Surfaced to the TUI so the context gauge can mark this point —
+/// see `crate::presentation::context_label`.
+pub(crate) const YOLOP_COMPACTION_BUDGET_PERCENT: f32 = 0.20;
+
 #[derive(Clone, Debug)]
 pub enum ProviderChoice {
     Anthropic {
@@ -2025,7 +2032,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
             serde_json::json!({
                 "strategy": "auto",
                 "proactive": true,
-                "budget_percent": 0.20,
+                "budget_percent": YOLOP_COMPACTION_BUDGET_PERCENT,
                 "observation_masking": {
                     "keep_recent_tool_outputs": YOLOP_KEEP_RECENT_TOOL_OUTPUTS,
                     "summary_format": "one_line"
