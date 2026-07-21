@@ -14,12 +14,18 @@
 //! cargo run -p tuika --example demo -- spinner          # interactive, records a GIF
 //! cargo run -p tuika --example demo -- spinner --dump    # print one frame as text
 //! cargo run -p tuika --example demo -- list              # list scene names
+//! cargo run -p tuika --example demo -- check             # verify the docs assets
 //! ```
 //!
 //! Interactive mode enters the alternate screen and animates from a frame
-//! counter; press `q` or `Esc` to quit.
+//! counter; press `q` or `Esc` to quit. `check` holds the registry, tapes,
+//! recorded GIFs, and doc references in lockstep (run by `docs/generate.sh` and
+//! in CI); it exits non-zero on any drift.
 
+use std::collections::BTreeSet;
+use std::fs;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crossterm::event::{self, Event as CtEvent, KeyCode as CtKeyCode, KeyEventKind};
@@ -77,6 +83,10 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    if name == "check" {
+        return check();
+    }
+
     let Some(&(_, blurb, build)) = DEMOS.iter().find(|(n, _, _)| *n == name) else {
         eprintln!("unknown scene {name:?}; run `list` to see the options");
         std::process::exit(2);
@@ -86,6 +96,114 @@ fn main() -> io::Result<()> {
         return dump(name, blurb, build);
     }
     run(name, blurb, build)
+}
+
+// ---------------------------------------------------------------------------
+// `check` — the gallery integrity guard. The scene registry above is the source
+// of truth: every scene needs a tape and a non-empty recording, no orphan tape
+// or GIF may linger, and every `demos/<name>.gif` referenced by a component doc
+// or the gallery README must map to a real scene. Runs in CI (tuika-msrv) and
+// at the end of docs/generate.sh, so drift fails loudly instead of shipping a
+// broken image to docs.rs.
+// ---------------------------------------------------------------------------
+
+fn check() -> io::Result<()> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let names: BTreeSet<&str> = DEMOS.iter().map(|(n, _, _)| *n).collect();
+    let mut errors: Vec<String> = Vec::new();
+
+    // Every scene has a tape and a non-empty recording.
+    for name in &names {
+        let tape = dir.join(format!("docs/tapes/{name}.tape"));
+        if !tape.exists() {
+            errors.push(format!("scene `{name}` has no tape at {}", tape.display()));
+        }
+        let gif = dir.join(format!("docs/demos/{name}.gif"));
+        match fs::metadata(&gif) {
+            Ok(m) if m.len() > 0 => {}
+            Ok(_) => errors.push(format!("recording {} is empty", gif.display())),
+            Err(_) => errors.push(format!(
+                "scene `{name}` has no recording at {} (run docs/generate.sh)",
+                gif.display()
+            )),
+        }
+    }
+
+    // No orphan tape or GIF without a scene.
+    for (sub, ext) in [("docs/tapes", "tape"), ("docs/demos", "gif")] {
+        for stem in stems(&dir.join(sub), ext) {
+            if !names.contains(stem.as_str()) {
+                errors.push(format!("{sub}/{stem}.{ext} has no matching scene in DEMOS"));
+            }
+        }
+    }
+
+    // Every demo GIF referenced by a component doc or the README maps to a scene.
+    let mut sources: Vec<PathBuf> = vec![dir.join("docs/README.md")];
+    for entry in fs::read_dir(dir.join("src/components"))?.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+            sources.push(path);
+        }
+    }
+    for path in sources {
+        let text = fs::read_to_string(&path)?;
+        for referenced in referenced_gifs(&text) {
+            if !names.contains(referenced.as_str()) {
+                errors.push(format!(
+                    "{} references demos/{referenced}.gif but there is no such scene",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        println!(
+            "ok: {} scenes, tapes, recordings, and references in sync",
+            names.len()
+        );
+        Ok(())
+    } else {
+        for e in &errors {
+            eprintln!("error: {e}");
+        }
+        std::process::exit(1);
+    }
+}
+
+/// File stems (without extension) of every `*.ext` entry in `dir`.
+fn stems(dir: &Path, ext: &str) -> BTreeSet<String> {
+    let Ok(read) = fs::read_dir(dir) else {
+        return BTreeSet::new();
+    };
+    read.filter_map(Result::ok)
+        .filter_map(|e| {
+            let path = e.path();
+            (path.extension().and_then(|s| s.to_str()) == Some(ext))
+                .then(|| path.file_stem().and_then(|s| s.to_str()).map(str::to_owned))
+                .flatten()
+        })
+        .collect()
+}
+
+/// Every `demos/<name>.gif` reference in `text` — matches both the relative
+/// `demos/x.gif` in the README and the absolute `.../docs/demos/x.gif` URLs
+/// embedded in component docs.
+fn referenced_gifs(text: &str) -> BTreeSet<String> {
+    const MARKER: &str = "demos/";
+    let mut found = BTreeSet::new();
+    for (idx, _) in text.match_indices(MARKER) {
+        let rest = &text[idx + MARKER.len()..];
+        let Some(end) = rest.find(".gif") else {
+            continue;
+        };
+        let stem = &rest[..end];
+        if !stem.is_empty() && stem.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+            found.insert(stem.to_owned());
+        }
+    }
+    found
 }
 
 /// Common chrome: a title/blurb header, a rule, then the scene body.
