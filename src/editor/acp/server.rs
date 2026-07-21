@@ -36,19 +36,20 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::config::SettingsStore;
+use crate::config::{ApprovalMode, SettingsStore};
 use crate::exec::worktree::WorktreeManager;
 use crate::runtime::background_wake::{WakeReceiver, frame_wake_prompt};
 use crate::runtime::{BuiltRuntime, ModelState, ProviderChoice, RuntimeHandles};
 
 use super::bridge::Translator;
+use super::modes;
 use super::protocol::{
     self, AgentCapabilities, AuthenticateParams, AuthenticateResult, AvailableCommand,
-    AvailableCommandInput, InitializeParams, InitializeResult, LoadSessionParams,
-    LoadSessionResult, McpCapabilities, McpServer, NewSessionParams, NewSessionResult,
-    PromptCapabilities, PromptParams, PromptResult, SessionNotification, SessionUpdate, StopReason,
-    ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
-    UnstructuredCommandInput,
+    AvailableCommandInput, CurrentModeUpdate, InitializeParams, InitializeResult,
+    LoadSessionParams, LoadSessionResult, McpCapabilities, McpServer, NewSessionParams,
+    NewSessionResult, PromptCapabilities, PromptParams, PromptResult, SessionNotification,
+    SessionUpdate, SetSessionModeParams, SetSessionModeResult, StopReason, ToolCall,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
 };
 
 /// How often the prompt loop wakes to check whether the turn task finished,
@@ -211,8 +212,14 @@ struct Session {
     worktree: Arc<WorktreeManager>,
     commands: StdMutex<Vec<CommandDescriptor>>,
     cancel: StdMutex<Option<oneshot::Sender<()>>>,
-    /// Settings source, read for the `proactive_wake` opt-out.
+    /// Settings source, read for the `proactive_wake` opt-out and the
+    /// approval-level ↔ session-mode mapping.
     settings: Arc<SettingsStore>,
+    /// Last approval level reported to the client as the current session mode.
+    /// Compared after each turn so a level changed out of band (the
+    /// `set_approval_mode` tool, `/setup approval`) surfaces as a
+    /// `current_mode_update` instead of silently drifting from the picker.
+    last_mode: StdMutex<ApprovalMode>,
     /// Retained for the ACP session lifetime so due local schedules keep polling.
     _schedule_runner: everruns_local::LocalScheduleRunnerHandle,
     /// Serializes turns for this session. Both a client prompt and a background
@@ -383,6 +390,19 @@ where
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            {
+                let server = server.clone();
+                async move |params: SetSessionModeParams, responder, _cx| {
+                    match apply_set_mode(&server, &params) {
+                        Ok(()) => responder.respond(SetSessionModeResult::new())?,
+                        Err(err) => responder.respond_with_error(err)?,
+                    }
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .on_receive_notification(
             {
                 let server = server.clone();
@@ -492,9 +512,10 @@ async fn handle_new_session<F: RuntimeFactory>(
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
+    let mode = built.settings.snapshot().approval_mode();
     let acp_id = register_session(server, peer, built);
 
-    Ok(NewSessionResult::new(acp_id))
+    Ok(NewSessionResult::new(acp_id).modes(modes::session_mode_state(mode)))
 }
 
 async fn handle_load_session<F: RuntimeFactory>(
@@ -534,7 +555,11 @@ async fn handle_load_session<F: RuntimeFactory>(
     };
 
     replay_session_history(peer, &session).await?;
-    Ok((LoadSessionResult::new(), session.acp_id.clone()))
+    let mode = session.settings.snapshot().approval_mode();
+    Ok((
+        LoadSessionResult::new().modes(modes::session_mode_state(mode)),
+        session.acp_id.clone(),
+    ))
 }
 
 fn register_session<F: RuntimeFactory>(
@@ -551,6 +576,7 @@ fn register_session<F: RuntimeFactory>(
         worktree: built.worktree,
         commands: StdMutex::new(commands.clone()),
         cancel: StdMutex::new(None),
+        last_mode: StdMutex::new(built.settings.snapshot().approval_mode()),
         settings: built.settings,
         _schedule_runner: built.schedule_runner,
         turn_lock: tokio::sync::Mutex::new(()),
@@ -661,11 +687,54 @@ async fn handle_prompt<F: RuntimeFactory>(
     // dispatch; `run_prompt` does not take the lock itself, so the poller can
     // reuse it under its own guard.
     let _turn = session.turn_lock.lock().await;
+    let mode_peer = peer.clone();
     let stop_reason = match parse_command_prompt(&prompt) {
         Some(command) => run_slash_command(peer, session.clone(), command).await,
         None => run_prompt(peer, session.clone(), prompt, input).await,
     };
+    // A level changed mid-turn (the `set_approval_mode` tool, `/setup approval`)
+    // must reach the client's mode picker, not just the settings file.
+    emit_mode_change_if_needed(&mode_peer, &session);
     Ok(PromptResult::new(stop_reason))
+}
+
+/// Persist a client `session/set_mode` by mapping the mode id to an approval
+/// level (globally — see [`modes`]). Refreshes `last_mode` so the change the
+/// client just made is not re-echoed as an out-of-band `current_mode_update`.
+fn apply_set_mode<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    params: &SetSessionModeParams,
+) -> std::result::Result<(), agent_client_protocol::Error> {
+    let session = server
+        .session(&params.session_id.to_string())
+        .ok_or_else(|| invalid_params("unknown session id"))?;
+    let mode = modes::approval_mode_from_id(&params.mode_id.to_string())
+        .ok_or_else(|| invalid_params(format!("unknown session mode `{}`", params.mode_id)))?;
+    session
+        .settings
+        .set_approval_mode(mode)
+        .map_err(|e| internal_error(format!("set approval mode: {e}")))?;
+    *session.last_mode.lock().unwrap() = mode;
+    Ok(())
+}
+
+/// Push a `current_mode_update` when the approval level changed out of band
+/// since it was last reported (the `set_approval_mode` tool, `/setup approval`),
+/// so the client's mode picker stays in sync with the setting.
+fn emit_mode_change_if_needed(peer: &Peer, session: &Session) {
+    let current = session.settings.snapshot().approval_mode();
+    let changed = {
+        let mut last = session.last_mode.lock().unwrap();
+        let changed = *last != current;
+        *last = current;
+        changed
+    };
+    if changed {
+        peer.session_update(
+            &session.acp_id,
+            SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(modes::mode_id(current))),
+        );
+    }
 }
 
 async fn respond_prompt<F: RuntimeFactory>(

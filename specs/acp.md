@@ -34,7 +34,8 @@ ACP protocol version: **1** (integer).
 | `session/load` | client → agent | Rehydrates an existing yolop JSONL session for the supplied `sessionId` and `cwd`, replays persisted conversation history as `session/update` notifications, and then returns success. |
 | `session/prompt` | client → agent | Runs one turn, or executes a recognised `/command`; streams `session/update`s, and resolves a `stopReason`. |
 | `session/cancel` | client → agent | Notification. Abandons the in-flight turn for that session and resolves the prompt with `stopReason: "cancelled"`. |
-| `session/update` | agent → client | Notification. Streams the turn (see below). |
+| `session/set_mode` | client → agent | Sets the approval level (session mode). See below. |
+| `session/update` | agent → client | Notification. Streams the turn (see below), including `current_mode_update` when the level changes out of band. |
 
 `loadSession` is advertised as `true`. `session/load` uses the same JSONL
 replay path as CLI `--session`: prior user and assistant messages are streamed
@@ -75,6 +76,26 @@ pass through literally — the client has already resolved its own placeholders.
 An `sse` (or otherwise unsupported) transport is rejected with `InvalidParams`
 rather than silently dropped, so a client that ignored the advertised
 capabilities gets a clear error instead of a server that quietly went missing.
+
+### Session modes
+
+Yolop surfaces its approval level (`ApprovalMode`: `protective` / `normal` /
+`off`, see `src/capabilities/approval.rs`) as ACP session modes, so an editor
+can switch it from the same mode picker it uses for other agents — one
+vocabulary across every front end instead of an ACP-only taxonomy.
+
+- `session/new` and `session/load` responses carry a `modes` block listing the
+  three levels (strictest first) with the current one selected.
+- `session/set_mode` maps the mode id back to a level and persists it. Because
+  yolop is a single-user CLI whose settings are shared across sessions, this
+  changes the level globally — exactly like `/setup approval` — rather than
+  per-session. An unknown mode id is rejected with `InvalidParams`.
+- When the level changes out of band (the `set_approval_mode` tool, `/setup
+  approval`), yolop emits a `current_mode_update` after the turn so the picker
+  stays in sync.
+
+The level drives the soft-approval prompt block (`src/capabilities/approval.rs`)
+that guides the model on when to pause for spoken consent.
 
 ### Streaming a turn
 

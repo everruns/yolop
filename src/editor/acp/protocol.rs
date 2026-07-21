@@ -10,13 +10,16 @@ pub use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthenticateRequest as AuthenticateParams,
     AuthenticateResponse as AuthenticateResult, AvailableCommand, AvailableCommandInput,
     AvailableCommandsUpdate, CancelNotification, Content, ContentBlock, ContentChunk,
-    InitializeRequest as InitializeParams, InitializeResponse as InitializeResult,
-    LoadSessionRequest as LoadSessionParams, LoadSessionResponse as LoadSessionResult,
-    McpCapabilities, McpServer, NewSessionRequest as NewSessionParams,
-    NewSessionResponse as NewSessionResult, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
-    PromptCapabilities, PromptRequest as PromptParams, PromptResponse as PromptResult,
-    SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall, ToolCallContent,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+    CurrentModeUpdate, InitializeRequest as InitializeParams,
+    InitializeResponse as InitializeResult, LoadSessionRequest as LoadSessionParams,
+    LoadSessionResponse as LoadSessionResult, McpCapabilities, McpServer,
+    NewSessionRequest as NewSessionParams, NewSessionResponse as NewSessionResult, Plan, PlanEntry,
+    PlanEntryPriority, PlanEntryStatus, PromptCapabilities, PromptRequest as PromptParams,
+    PromptResponse as PromptResult, SessionMode, SessionModeId, SessionModeState,
+    SessionNotification, SessionUpdate, SetSessionModeRequest as SetSessionModeParams,
+    SetSessionModeResponse as SetSessionModeResult, StopReason, TextContent, ToolCall,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    UnstructuredCommandInput,
 };
 use serde_json::{Map, Value};
 

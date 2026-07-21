@@ -14,6 +14,7 @@
 //!   * [`server`] — SDK-backed transport/dispatch plus turn streaming.
 
 mod bridge;
+mod modes;
 mod protocol;
 mod server;
 
@@ -95,7 +96,7 @@ mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::{
         InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, SessionId,
-        SessionNotification, SessionUpdate, StopReason,
+        SessionModeId, SessionNotification, SessionUpdate, SetSessionModeRequest, StopReason,
     };
     use agent_client_protocol::{
         Agent, ByteStreams, Client, ConnectionTo, JsonRpcRequest, SessionMessage,
@@ -378,6 +379,81 @@ mod tests {
         assert_eq!(init.protocol_version, protocol::PROTOCOL_VERSION);
         assert!(init.agent_capabilities.load_session);
         assert!(init.agent_capabilities.prompt_capabilities.embedded_context);
+        // Client-provided MCP servers over `http` are accepted (#1).
+        assert!(init.agent_capabilities.mcp_capabilities.http);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn advertises_modes_and_set_mode_switches_level() {
+        with_sdk_client(fixed("hi"), |client| async move {
+            // A new session advertises the three approval levels, defaulting to
+            // `normal`.
+            let cwd1 = tempfile::tempdir().expect("cwd tempdir").keep();
+            let s1 = client
+                .cx
+                .send_request(NewSessionRequest::new(cwd1))
+                .block_task()
+                .await?;
+            let modes1 = s1.modes.clone().expect("modes advertised");
+            assert_eq!(modes1.current_mode_id.to_string(), "normal");
+            let ids: Vec<String> = modes1
+                .available_modes
+                .iter()
+                .map(|m| m.id.to_string())
+                .collect();
+            assert_eq!(ids, vec!["protective", "normal", "off"]);
+
+            // Switching the mode persists the approval level.
+            client
+                .cx
+                .send_request(SetSessionModeRequest::new(
+                    s1.session_id.clone(),
+                    SessionModeId::new("protective"),
+                ))
+                .block_task()
+                .await?;
+
+            // A fresh session (the level is a shared setting) now reports the
+            // switched level as current.
+            let cwd2 = tempfile::tempdir().expect("cwd tempdir").keep();
+            let s2 = client
+                .cx
+                .send_request(NewSessionRequest::new(cwd2))
+                .block_task()
+                .await?;
+            assert_eq!(
+                s2.modes
+                    .expect("modes advertised")
+                    .current_mode_id
+                    .to_string(),
+                "protective"
+            );
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn set_mode_with_unknown_id_is_invalid_params() {
+        let err = with_sdk_client(fixed("hi"), |client| async move {
+            let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+            let session = client
+                .cx
+                .send_request(NewSessionRequest::new(cwd))
+                .block_task()
+                .await?;
+            let result = client
+                .cx
+                .send_request(SetSessionModeRequest::new(
+                    session.session_id.clone(),
+                    SessionModeId::new("whenever"),
+                ))
+                .block_task()
+                .await;
+            Ok(result.expect_err("unknown mode must be rejected"))
+        })
+        .await;
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::InvalidParams);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
