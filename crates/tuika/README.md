@@ -1,5 +1,11 @@
 # tuika
 
+[![crates.io](https://img.shields.io/crates/v/tuika.svg)](https://crates.io/crates/tuika)
+[![docs.rs](https://img.shields.io/docsrs/tuika)](https://docs.rs/tuika)
+[![downloads](https://img.shields.io/crates/d/tuika.svg)](https://crates.io/crates/tuika)
+[![license](https://img.shields.io/crates/l/tuika.svg)](https://github.com/everruns/yolop/blob/main/LICENSE)
+![msrv](https://img.shields.io/badge/rust-1.88%2B-blue.svg)
+
 A small composable terminal UI toolkit. `tuika` provides the layout,
 overlay, focus, and component primitives that `ratatui` leaves to you, while
 letting `ratatui` keep ownership of the cell buffer and its diff against the
@@ -8,6 +14,16 @@ terminal.
 It is a published, self-contained crate that depends only on `ratatui`,
 `crossterm`, `textwrap`, `unicode-segmentation`, and `unicode-width`. It knows
 nothing about yolop; yolop is one production consumer.
+
+## Install
+
+```bash
+cargo add tuika
+```
+
+`ratatui` and `crossterm` are part of `tuika`'s public interoperability
+surface, so pin the same minor versions in your own crate and Cargo will
+deduplicate them (see [Compatibility](#compatibility)).
 
 ## Model
 
@@ -31,6 +47,10 @@ nothing about yolop; yolop is one production consumer.
   can drive the terminal's own OSC 9;4 progress indicator.
 
 ## Components
+
+See the [component gallery](docs/README.md) for an animated demo of each
+component (the same GIFs are embedded inline in the [docs.rs](https://docs.rs/tuika)
+API docs).
 
 | Component | Purpose |
 | --- | --- |

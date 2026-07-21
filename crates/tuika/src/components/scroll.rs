@@ -121,6 +121,8 @@ impl ScrollState {
 
 /// A windowed view of `lines`, showing the slice at `offset` and a scrollbar
 /// when content overflows.
+///
+/// ![scroll demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/scroll.gif)
 pub struct Scroll {
     lines: Vec<Line<'static>>,
     offset: u16,

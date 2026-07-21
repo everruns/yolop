@@ -43,6 +43,8 @@ pub fn line_width(line: &Line) -> u16 {
 }
 
 /// A block of pre-styled lines, drawn top-down and clipped.
+///
+/// ![text demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/text.gif)
 pub struct Text {
     lines: Vec<Line<'static>>,
 }

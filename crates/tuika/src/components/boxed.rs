@@ -15,6 +15,8 @@ use crate::view::{Element, RenderCtx, View};
 use super::text::line_width;
 
 /// A bordered, padded container wrapping one child.
+///
+/// ![boxed demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/boxed.gif)
 pub struct Boxed {
     child: Element,
     border: BorderStyle,

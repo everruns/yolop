@@ -16,6 +16,8 @@ use crate::surface::Surface;
 use crate::view::{RenderCtx, View};
 
 /// A one-row horizontal rule with an optional leading title.
+///
+/// ![rule demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/rule.gif)
 pub struct Rule {
     title: Line<'static>,
     glyph: char,

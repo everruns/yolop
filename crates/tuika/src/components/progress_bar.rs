@@ -16,6 +16,8 @@ use crate::view::{RenderCtx, View};
 const EIGHTHS: [char; 9] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
 
 /// A single-row progress bar.
+///
+/// ![progress_bar demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/progress_bar.gif)
 pub struct ProgressBar {
     /// `Some(0.0..=1.0)` for a determinate bar; `None` for indeterminate.
     fraction: Option<f32>,

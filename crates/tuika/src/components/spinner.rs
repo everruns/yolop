@@ -34,6 +34,8 @@ impl SpinnerStyle {
 }
 
 /// An animated spinner glyph.
+///
+/// ![spinner demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/spinner.gif)
 pub struct Spinner {
     style: SpinnerStyle,
     frame: u64,
