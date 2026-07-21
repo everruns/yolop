@@ -63,6 +63,24 @@ ACP clients may select the provider, model, and reasoning effort for a new Yolop
 
 `provider` is required when `selectedModel` is present. `model` and `reasoningEffort` are optional and use the selected provider's defaults when omitted. Yolop validates all supplied values before creating the runtime and returns ACP `InvalidParams` for unsupported selections. Requests without `selectedModel` keep Yolop's configured defaults.
 
+### Prompt content
+
+`promptCapabilities` advertises `image: true` and `embeddedContext: true`
+(`audio: false`). Inbound content blocks map to the model input as:
+
+- **Text** — passed through.
+- **Image** — forwarded as an image content part.
+- **Resource** (embedded context) — folded into the model's prompt text: text
+  contents are inlined inside a `<resource uri="…">` block; binary contents are
+  referenced by URI and MIME type rather than dumped as base64.
+- **ResourceLink** — folded in as a one-line `[linked resource: name (uri)]`
+  reference so the model knows it was attached.
+
+Resource folding targets the *model* text only; the text used for slash-command
+detection and the checkpoint label stays the pure user text, so a resource
+attached to a `/command` never derails parsing. Audio is dropped (see
+Non-goals).
+
 ### MCP servers
 
 The `initialize` response advertises `mcpCapabilities.http: true`; the `stdio`
@@ -252,7 +270,17 @@ same way.
 - Client-provided filesystem (`fs/read_text_file`, `fs/write_text_file`):
   yolop's runtime reads and writes the host disk directly under the workspace
   root, so it does not route file ops back through the client.
-- Terminals and audio prompt content. (Image prompt content and MCP-server
-  pass-through are supported — see above.)
+- Terminals (`terminal/*`): deliberately unsupported. ACP terminals have the
+  **client** execute the command in its own environment, which would bypass
+  yolop's Landlock sandbox and write blocklist — the core of its shell-safety
+  model — and split execution (shell client-side, file edits agent-side). The
+  gain over the status quo is a live-terminal widget rather than the command
+  output yolop already streams as tool-call content, which does not justify the
+  loss of the sandbox. Revisit only behind an explicit opt-in that the user
+  accepts the trade-off for.
+- Audio prompt content (`audio: false`): low value for a coding agent, and the
+  runtime's `ContentPart` has no audio variant, so there is no path to forward
+  it to the model even if advertised. Embedded/linked **resource** context and
+  image content are supported (see Prompt content); MCP-server pass-through too.
 - In-flight turn interruption beyond abandoning the task — the runtime has no
   mid-turn cancellation hook yet.

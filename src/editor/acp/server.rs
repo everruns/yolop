@@ -1106,7 +1106,10 @@ async fn refresh_available_commands(peer: &Arc<Peer>, session: &Arc<Session>) {
 }
 
 fn prompt_input(model: &ModelState, blocks: &[protocol::ContentBlock]) -> InputMessage {
-    model.input_message_with_images(protocol::prompt_text(blocks), prompt_image_parts(blocks))
+    model.input_message_with_images(
+        protocol::prompt_model_text(blocks),
+        prompt_image_parts(blocks),
+    )
 }
 
 fn prompt_image_parts(blocks: &[protocol::ContentBlock]) -> Vec<ContentPart> {
