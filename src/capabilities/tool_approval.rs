@@ -22,8 +22,8 @@ use everruns_core::tool_types::{ToolCall, ToolDefinition};
 use everruns_core::traits::ToolContext;
 use everruns_core::typed_id::SessionId;
 
-use crate::config_service::ConfigService;
-use crate::settings::ApprovalMode;
+use crate::config::ApprovalMode;
+use crate::config::service::ConfigService;
 
 pub(crate) const TOOL_APPROVAL_CAPABILITY_ID: &str = "yolop_tool_approval";
 

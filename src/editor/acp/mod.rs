@@ -508,15 +508,15 @@ mod tests {
         // tool actually executed. The server writes a marker file on each call,
         // so the filesystem proves execution — nothing is mocked but the LLM.
         let test = "client_mcp_server_is_discovered_and_its_tool_executes";
-        let Some(python) = crate::mcp_e2e_tests::require_python3(test) else {
+        let Some(python) = crate::testing::mcp_e2e::require_python3(test) else {
             return;
         };
         let marker = tempfile::tempdir().expect("marker tempdir").keep();
-        let tool = crate::mcp_e2e_tests::mcp_tool("echo", "echo");
+        let tool = crate::testing::mcp_e2e::mcp_tool("echo", "echo");
         let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
         // The scripted model calls the client-supplied server's tool on the turn.
         let (mut w, mut reader, _server) = start_raw_server(
-            crate::mcp_e2e_tests::script(&tool, "hello-acp-mcp"),
+            crate::testing::mcp_e2e::script(&tool, "hello-acp-mcp"),
             sessions,
         );
 
@@ -528,7 +528,7 @@ mod tests {
         collect_until_response_id(&mut reader, 0).await;
 
         let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
-        let fixture = crate::mcp_e2e_tests::fixture_server();
+        let fixture = crate::testing::mcp_e2e::fixture_server();
         send_json(
             &mut w,
             json!({

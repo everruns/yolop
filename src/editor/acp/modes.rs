@@ -8,7 +8,7 @@
 //! every session a client opens, `session/set_mode` changes the level globally
 //! (exactly like `/setup approval`), not per-session.
 
-use crate::settings::ApprovalMode;
+use crate::config::ApprovalMode;
 
 use super::protocol::{SessionMode, SessionModeId, SessionModeState};
 
