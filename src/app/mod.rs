@@ -1925,11 +1925,7 @@ impl App {
             _ => return false,
         };
         let (content_h, viewport_h) = self.scroll_metrics;
-        let event = tuika::Event::Mouse(tuika::Mouse {
-            kind: tuika_kind,
-            column: 0,
-            row: 0,
-        });
+        let event = tuika::Event::Mouse(tuika::Mouse::at(tuika_kind, 0, 0));
         self.scroll.handle(&event, content_h, viewport_h).consumed()
     }
 

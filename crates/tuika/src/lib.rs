@@ -33,6 +33,7 @@
 //! [`TerminalSession`] and [`Runner`] are optional host-side lifecycle helpers.
 
 pub mod anim;
+pub mod clipboard;
 pub mod components;
 pub mod event;
 #[macro_use]
@@ -43,6 +44,7 @@ pub mod host;
 pub mod hyperlink;
 pub mod layout;
 pub mod live;
+pub mod mouse;
 pub mod native;
 pub mod overlay;
 pub mod ratatui_view;
@@ -54,18 +56,22 @@ pub mod view;
 
 // Curated top-level re-exports so callers write `tuika::Flex`, `tuika::Theme`,
 // etc. for the common surface without deep paths.
+pub use clipboard::{osc52, write_clipboard};
 pub use components::{
     Boxed, Constrained, Flex, KeyHints, Loader, Paragraph, ProgressBar, Responsive, Scroll,
     ScrollState, SelectList, SelectOutcome, SelectState, Spacer, Spinner, SpinnerStyle, StatusBar,
     Tabs, TabsState, Text, Wrap, wrap_lines,
 };
-pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseKind};
+pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 pub use focus::FocusRegistry;
 pub use geometry::{Padding, Size};
 pub use host::{AltScreen, Overlay, TerminalSession, paint, translate_event};
 pub use hyperlink::{HyperlinkBackend, is_web_url, osc8, write_line};
 pub use layout::{Align, Dimension, Direction, Justify, LayoutStyle};
 pub use live::{Live, LiveView, RedrawHandle};
+pub use mouse::{
+    Click, ClickTracker, HitMap, SelectionRange, SelectionState, highlight, selected_text,
+};
 pub use native::{ProgressState, TerminalProgress};
 pub use overlay::{Anchor, Extent, OverlaySpec};
 pub use ratatui_view::RatatuiView;

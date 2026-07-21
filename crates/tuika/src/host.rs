@@ -13,7 +13,7 @@ use std::io::{self, Write};
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode as CtKeyCode, KeyEventKind,
-    KeyModifiers, MouseEventKind as CtMouseKind,
+    KeyModifiers, MouseButton as CtMouseButton, MouseEventKind as CtMouseKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -24,7 +24,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use super::event::{Event, Key, KeyCode, Mouse, MouseKind};
+use super::event::{Event, Key, KeyCode, Mouse, MouseButton, MouseKind};
 use super::style::Theme;
 use super::surface::Surface;
 use super::view::{RenderCtx, View};
@@ -190,21 +190,34 @@ pub fn translate_event(event: CtEvent) -> Option<Event> {
         }
         CtEvent::Mouse(m) => {
             let kind = match m.kind {
-                CtMouseKind::Down(_) => MouseKind::Down,
-                CtMouseKind::Up(_) => MouseKind::Up,
+                CtMouseKind::Down(b) => MouseKind::Down(button(b)),
+                CtMouseKind::Up(b) => MouseKind::Up(button(b)),
+                CtMouseKind::Drag(b) => MouseKind::Drag(button(b)),
+                CtMouseKind::Moved => MouseKind::Moved,
                 CtMouseKind::ScrollUp => MouseKind::ScrollUp,
                 CtMouseKind::ScrollDown => MouseKind::ScrollDown,
-                CtMouseKind::Moved | CtMouseKind::Drag(_) => MouseKind::Moved,
-                _ => return None,
+                CtMouseKind::ScrollLeft => MouseKind::ScrollLeft,
+                CtMouseKind::ScrollRight => MouseKind::ScrollRight,
             };
             Some(Event::Mouse(Mouse {
                 kind,
                 column: m.column,
                 row: m.row,
+                shift: m.modifiers.contains(KeyModifiers::SHIFT),
+                ctrl: m.modifiers.contains(KeyModifiers::CONTROL),
+                alt: m.modifiers.contains(KeyModifiers::ALT),
             }))
         }
         CtEvent::Paste(text) => Some(Event::Paste(text)),
         CtEvent::Resize(width, height) => Some(Event::Resize { width, height }),
         _ => None,
+    }
+}
+
+fn button(b: CtMouseButton) -> MouseButton {
+    match b {
+        CtMouseButton::Left => MouseButton::Left,
+        CtMouseButton::Right => MouseButton::Right,
+        CtMouseButton::Middle => MouseButton::Middle,
     }
 }
