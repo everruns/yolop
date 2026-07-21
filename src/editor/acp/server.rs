@@ -26,6 +26,9 @@ use async_trait::async_trait;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
 use everruns_core::mcp_server::{McpServerTransportType, ScopedMcpServer};
 use everruns_core::message::{ContentPart, ImageContentPart};
+use everruns_core::tool_types::{
+    ToolCall as RuntimeToolCall, ToolDefinition as RuntimeToolDefinition,
+};
 use everruns_core::typed_id::SessionId as RuntimeSessionId;
 use everruns_core::{InputMessage, ScopedMcpServers};
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
@@ -36,18 +39,20 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use crate::capabilities::{ApprovalDecision, ToolApprover};
 use crate::config::{ApprovalMode, SettingsStore};
 use crate::exec::worktree::WorktreeManager;
 use crate::runtime::background_wake::{WakeReceiver, frame_wake_prompt};
 use crate::runtime::{BuiltRuntime, ModelState, ProviderChoice, RuntimeHandles};
 
-use super::bridge::Translator;
+use super::bridge::{Translator, tool_kind};
 use super::modes;
 use super::protocol::{
     self, AgentCapabilities, AuthenticateParams, AuthenticateResult, AvailableCommand,
     AvailableCommandInput, CurrentModeUpdate, InitializeParams, InitializeResult,
     LoadSessionParams, LoadSessionResult, McpCapabilities, McpServer, NewSessionParams,
-    NewSessionResult, PromptCapabilities, PromptParams, PromptResult, SessionNotification,
+    NewSessionResult, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptParams,
+    PromptResult, RequestPermissionOutcome, RequestPermissionParams, SessionNotification,
     SessionUpdate, SetSessionModeParams, SetSessionModeResult, StopReason, ToolCall,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
 };
@@ -68,6 +73,7 @@ pub trait RuntimeFactory: Send + Sync + 'static {
         resume_session_id: Option<RuntimeSessionId>,
         model_selection: Option<ProviderChoice>,
         client_mcp_servers: ScopedMcpServers,
+        tool_approver: Option<Arc<dyn ToolApprover>>,
     ) -> Result<BuiltRuntime>;
 }
 
@@ -199,6 +205,92 @@ impl Peer {
         let notification = SessionNotification::new(session_id.to_string(), update);
         if let Err(err) = self.cx.send_notification(notification) {
             tracing::warn!(%err, "acp: failed to send session update");
+        }
+    }
+}
+
+/// Backs the tool-approval gate with the ACP client: each gated tool becomes a
+/// `session/request_permission` the client renders, and the turn suspends on the
+/// answer. Safe because the whole turn runs in a spawned task (see
+/// `respond_prompt`), off the SDK event loop, so awaiting the client reply never
+/// deadlocks dispatch.
+struct AcpToolApprover {
+    peer: Arc<Peer>,
+}
+
+/// Option ids for the four ACP permission choices, mapped back to a decision.
+const PERMISSION_ALLOW_ONCE: &str = "allow_once";
+const PERMISSION_ALLOW_ALWAYS: &str = "allow_always";
+const PERMISSION_REJECT_ONCE: &str = "reject_once";
+const PERMISSION_REJECT_ALWAYS: &str = "reject_always";
+
+#[async_trait]
+impl ToolApprover for AcpToolApprover {
+    async fn approve(
+        &self,
+        session_id: RuntimeSessionId,
+        tool_call: &RuntimeToolCall,
+        tool_def: &RuntimeToolDefinition,
+    ) -> ApprovalDecision {
+        let fields = ToolCallUpdateFields::new()
+            .title(tool_def.name().to_string())
+            .kind(tool_kind(&tool_call.name))
+            .status(ToolCallStatus::Pending);
+        let request = RequestPermissionParams::new(
+            session_id.to_string(),
+            ToolCallUpdate::new(tool_call.id.clone(), fields),
+            vec![
+                PermissionOption::new(
+                    PERMISSION_ALLOW_ONCE,
+                    "Allow",
+                    PermissionOptionKind::AllowOnce,
+                ),
+                PermissionOption::new(
+                    PERMISSION_ALLOW_ALWAYS,
+                    "Allow, don't ask again",
+                    PermissionOptionKind::AllowAlways,
+                ),
+                PermissionOption::new(
+                    PERMISSION_REJECT_ONCE,
+                    "Reject",
+                    PermissionOptionKind::RejectOnce,
+                ),
+                PermissionOption::new(
+                    PERMISSION_REJECT_ALWAYS,
+                    "Reject, don't ask again",
+                    PermissionOptionKind::RejectAlways,
+                ),
+            ],
+        );
+
+        match self.peer.cx.send_request(request).block_task().await {
+            Ok(response) => match response.outcome {
+                RequestPermissionOutcome::Cancelled => ApprovalDecision::Cancelled,
+                RequestPermissionOutcome::Selected(selected) => {
+                    match selected.option_id.to_string().as_str() {
+                        PERMISSION_ALLOW_ONCE => ApprovalDecision::Allow,
+                        PERMISSION_ALLOW_ALWAYS => ApprovalDecision::AllowAlways,
+                        PERMISSION_REJECT_ONCE => ApprovalDecision::Reject,
+                        PERMISSION_REJECT_ALWAYS => ApprovalDecision::RejectAlways,
+                        other => {
+                            tracing::warn!(option = other, "acp: unknown permission option");
+                            ApprovalDecision::Reject
+                        }
+                    }
+                }
+                // `RequestPermissionOutcome` is non-exhaustive: treat any future
+                // variant as a rejection rather than silently allowing.
+                _ => ApprovalDecision::Reject,
+            },
+            Err(err) => {
+                // The client could not answer (no permission UI, or the
+                // connection is winding down). Fall back to allowing so a client
+                // without `session/request_permission` keeps working rather than
+                // having every mutating tool blocked; the soft-approval prompt
+                // still nudges the model.
+                tracing::warn!(%err, "acp: request_permission failed; allowing tool");
+                ApprovalDecision::Unavailable
+            }
         }
     }
 }
@@ -505,10 +597,18 @@ async fn handle_new_session<F: RuntimeFactory>(
     let model_selection = selected_model_from_new_session(&params)?;
     let cwd = params.cwd;
     let client_mcp_servers = scoped_mcp_servers_from_acp(&params.mcp_servers)?;
+    let tool_approver: Option<Arc<dyn ToolApprover>> =
+        Some(Arc::new(AcpToolApprover { peer: peer.clone() }));
 
     let built = server
         .factory
-        .build(cwd, None, model_selection, client_mcp_servers)
+        .build(
+            cwd,
+            None,
+            model_selection,
+            client_mcp_servers,
+            tool_approver,
+        )
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
@@ -537,6 +637,8 @@ async fn handle_load_session<F: RuntimeFactory>(
                 )));
             }
             let client_mcp_servers = scoped_mcp_servers_from_acp(&params.mcp_servers)?;
+            let tool_approver: Option<Arc<dyn ToolApprover>> =
+                Some(Arc::new(AcpToolApprover { peer: peer.clone() }));
             let built = server
                 .factory
                 .build(
@@ -544,6 +646,7 @@ async fn handle_load_session<F: RuntimeFactory>(
                     Some(resume_session_id),
                     None,
                     client_mcp_servers,
+                    tool_approver,
                 )
                 .await
                 .map_err(|e| internal_error(format!("load runtime: {e}")))?;

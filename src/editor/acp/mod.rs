@@ -57,6 +57,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         resume_session_id: Option<RuntimeSessionId>,
         model_selection: Option<ProviderChoice>,
         client_mcp_servers: ScopedMcpServers,
+        tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
     ) -> Result<BuiltRuntime> {
         build_with_options(
             cwd,
@@ -68,6 +69,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
                 client_ui: ClientUiContext::Acp,
                 provider_model: model_selection,
                 client_mcp_servers,
+                tool_approver,
                 ..BuildOptions::default()
             },
         )
@@ -133,6 +135,7 @@ mod tests {
             resume_session_id: Option<RuntimeSessionId>,
             model_selection: Option<ProviderChoice>,
             client_mcp_servers: ScopedMcpServers,
+            tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
         ) -> Result<BuiltRuntime> {
             build_with_options(
                 cwd,
@@ -145,6 +148,7 @@ mod tests {
                     client_ui: ClientUiContext::Acp,
                     provider_model: model_selection,
                     client_mcp_servers,
+                    tool_approver,
                     ..BuildOptions::default()
                 },
             )
@@ -454,6 +458,148 @@ mod tests {
         })
         .await;
         assert_eq!(err.code, agent_client_protocol::ErrorCode::InvalidParams);
+    }
+
+    /// Collect the tool-call statuses (from `tool_call` and `tool_call_update`)
+    /// seen for a raw prompt whose gated tool triggers `session/request_permission`,
+    /// answering each permission request with `option_id`.
+    async fn statuses_for_gated_prompt(
+        w: &mut DuplexStream,
+        reader: &mut Lines<BufReader<DuplexStream>>,
+        session_id: &str,
+        prompt_id: i64,
+        option_id: &str,
+    ) -> (bool, Vec<String>) {
+        send_json(
+            w,
+            json!({
+                "jsonrpc": "2.0", "id": prompt_id, "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "go" }] }
+            }),
+        )
+        .await;
+
+        let mut asked = false;
+        let mut statuses = Vec::new();
+        loop {
+            let msg = next_json(reader).await;
+            match msg.get("method").and_then(Value::as_str) {
+                Some("session/request_permission") => {
+                    asked = true;
+                    // The prompt names the gated tool.
+                    assert_eq!(msg["params"]["toolCall"]["toolCallId"], "call_1");
+                    assert_eq!(msg["params"]["options"].as_array().unwrap().len(), 4);
+                    send_json(
+                        w,
+                        json!({
+                            "jsonrpc": "2.0", "id": msg["id"],
+                            "result": { "outcome": { "outcome": "selected", "optionId": option_id } }
+                        }),
+                    )
+                    .await;
+                }
+                Some("session/update") => {
+                    if let Some(status) = msg["params"]["update"]
+                        .get("status")
+                        .and_then(Value::as_str)
+                    {
+                        statuses.push(status.to_string());
+                    }
+                }
+                _ => {
+                    if msg.get("id").and_then(Value::as_i64) == Some(prompt_id)
+                        && (msg.get("result").is_some() || msg.get("error").is_some())
+                    {
+                        return (asked, statuses);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drive initialize → new session → set protective, returning the raw
+    /// channel plus the session id, ready for a gated prompt.
+    async fn protective_session(
+        config: LlmSimConfig,
+        sessions_dir: PathBuf,
+    ) -> (
+        DuplexStream,
+        Lines<BufReader<DuplexStream>>,
+        tokio::task::JoinHandle<Result<()>>,
+        String,
+    ) {
+        let (mut w, mut reader, server) = start_raw_server(config, sessions_dir);
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd, "mcpServers": [] } }),
+        )
+        .await;
+        let (new_resp, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_resp["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/set_mode",
+                    "params": { "sessionId": session_id, "modeId": "protective" } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 2).await;
+
+        (w, reader, server, session_id)
+    }
+
+    fn one_bash_call() -> LlmSimConfig {
+        LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".to_string(),
+                arguments: json!({ "command": "printf gated" }),
+                id: Some("call_1".to_string()),
+            }]),
+            SimTurn::Assistant("done".to_string()),
+        ])
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protective_mode_blocks_tool_when_permission_rejected() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let (mut w, mut reader, _server, session_id) =
+            protective_session(one_bash_call(), sessions.path().to_path_buf()).await;
+
+        let (asked, statuses) =
+            statuses_for_gated_prompt(&mut w, &mut reader, &session_id, 3, "reject_once").await;
+
+        assert!(asked, "protective mode must request permission before bash");
+        assert!(
+            statuses.iter().any(|s| s == "failed"),
+            "a rejected tool must surface as failed; saw {statuses:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protective_mode_runs_tool_when_permission_allowed() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let (mut w, mut reader, _server, session_id) =
+            protective_session(one_bash_call(), sessions.path().to_path_buf()).await;
+
+        let (asked, statuses) =
+            statuses_for_gated_prompt(&mut w, &mut reader, &session_id, 3, "allow_once").await;
+
+        assert!(asked, "protective mode must request permission before bash");
+        assert!(
+            statuses.iter().any(|s| s == "completed"),
+            "an allowed tool must run to completion; saw {statuses:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

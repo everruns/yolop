@@ -2485,6 +2485,11 @@ pub struct BuildOptions {
     /// client-configured server wins on a name collision. Empty for hosts that
     /// do not carry per-session MCP config (the TUI, `--print`).
     pub client_mcp_servers: ScopedMcpServers,
+    /// Host that can interactively approve tool calls (ACP
+    /// `session/request_permission`). When set, the tool-approval gate is
+    /// registered and enforces the current approval level; hosts without an
+    /// interactive prompt (the TUI, `--print`) leave it `None`.
+    pub tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
 }
 
 impl Default for BuildOptions {
@@ -2497,6 +2502,7 @@ impl Default for BuildOptions {
             client_commands: false,
             client_ui: ClientUiContext::None,
             client_mcp_servers: ScopedMcpServers::new(),
+            tool_approver: None,
         }
     }
 }
@@ -3001,6 +3007,16 @@ pub async fn build_with_options(
         config: settings.clone(),
         settings: settings.clone(),
     });
+    // Hard approval gate — the enforcement half of the same `approval_mode`.
+    // Only registered when the host can service an interactive prompt (ACP);
+    // it blocks risky tools behind that approval instead of trusting the model
+    // to pause.
+    if let Some(approver) = options.tool_approver.clone() {
+        capabilities.register(crate::capabilities::ToolApprovalCapability::new(
+            approver,
+            settings.clone(),
+        ));
+    }
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
         sandbox: sandbox.clone(),
@@ -3098,11 +3114,19 @@ pub async fn build_with_options(
     // Seed harness/agent/session explicitly so Yolop can attach harness
     // metadata that Everruns forwards to LLM calls and observability.
     let session_title = format!("yolop @ {}", effective_root.display());
-    let harness_capabilities = coding_harness_capabilities(
+    let mut harness_capabilities = coding_harness_capabilities(
         options.client_commands,
         hook_capability_config,
         &settings_snapshot,
     );
+    // Resolve the hard approval gate only when a host supplied an approver
+    // (ACP): registering it above is not enough — its pre-tool hook is collected
+    // only from the *resolved* capability set.
+    if options.tool_approver.is_some() {
+        harness_capabilities.push(AgentCapabilityConfig::new(
+            crate::capabilities::tool_approval::TOOL_APPROVAL_CAPABILITY_ID,
+        ));
+    }
     let user_ask_enabled = harness_capabilities
         .iter()
         .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID);

@@ -13,13 +13,14 @@ pub use agent_client_protocol::schema::v1::{
     CurrentModeUpdate, InitializeRequest as InitializeParams,
     InitializeResponse as InitializeResult, LoadSessionRequest as LoadSessionParams,
     LoadSessionResponse as LoadSessionResult, McpCapabilities, McpServer,
-    NewSessionRequest as NewSessionParams, NewSessionResponse as NewSessionResult, Plan, PlanEntry,
-    PlanEntryPriority, PlanEntryStatus, PromptCapabilities, PromptRequest as PromptParams,
-    PromptResponse as PromptResult, SessionMode, SessionModeId, SessionModeState,
-    SessionNotification, SessionUpdate, SetSessionModeRequest as SetSessionModeParams,
-    SetSessionModeResponse as SetSessionModeResult, StopReason, TextContent, ToolCall,
-    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
-    UnstructuredCommandInput,
+    NewSessionRequest as NewSessionParams, NewSessionResponse as NewSessionResult,
+    PermissionOption, PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
+    PromptCapabilities, PromptRequest as PromptParams, PromptResponse as PromptResult,
+    RequestPermissionOutcome, RequestPermissionRequest as RequestPermissionParams, SessionMode,
+    SessionModeId, SessionModeState, SessionNotification, SessionUpdate,
+    SetSessionModeRequest as SetSessionModeParams, SetSessionModeResponse as SetSessionModeResult,
+    StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
 };
 use serde_json::{Map, Value};
 

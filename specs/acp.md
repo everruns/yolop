@@ -35,6 +35,7 @@ ACP protocol version: **1** (integer).
 | `session/prompt` | client → agent | Runs one turn, or executes a recognised `/command`; streams `session/update`s, and resolves a `stopReason`. |
 | `session/cancel` | client → agent | Notification. Abandons the in-flight turn for that session and resolves the prompt with `stopReason: "cancelled"`. |
 | `session/set_mode` | client → agent | Sets the approval level (session mode). See below. |
+| `session/request_permission` | agent → client | Issued before a tool the current level gates; the turn suspends on the answer. See Permissions. |
 | `session/update` | agent → client | Notification. Streams the turn (see below), including `current_mode_update` when the level changes out of band. |
 
 `loadSession` is advertised as `true`. `session/load` uses the same JSONL
@@ -94,8 +95,10 @@ vocabulary across every front end instead of an ACP-only taxonomy.
   approval`), yolop emits a `current_mode_update` after the turn so the picker
   stays in sync.
 
-The level drives the soft-approval prompt block (`src/capabilities/approval.rs`)
-that guides the model on when to pause for spoken consent.
+The level drives both the soft-approval prompt block
+(`src/capabilities/approval.rs`) and the hard permission gate (see Permissions
+below): it selects which tools require an interactive
+`session/request_permission`.
 
 ### Streaming a turn
 
@@ -152,10 +155,27 @@ The runtime does not expose token-limit or refusal outcomes distinctly, so
 
 ### Permissions
 
-yolop runs tools autonomously: file writes, deletes, and `bash` execute without
-a per-call approval gate, so the agent never issues `session/request_permission`.
-The standing guardrail is the write blocklist on filesystem writes (see
-`specs/maintenance.md`).
+The session mode (approval level) drives a hard gate. Before a tool runs, a
+native pre-tool hook (`src/capabilities/tool_approval.rs`) checks whether the
+current level requires approval for that tool, classified by the runtime's own
+`ToolHints`:
+
+- `off` — never asks; tools run autonomously (unchanged behaviour).
+- `normal` — asks before `destructive` or `open_world` (outward-facing) tools.
+- `protective` — asks before any tool that is not `readonly`.
+
+When approval is required, yolop issues `session/request_permission` with four
+options (allow once / always, reject once / always) and the turn genuinely
+suspends until the client answers — this is safe because the turn already runs
+in its own task, off the SDK event loop. "Always" answers are remembered per
+tool for the session; a rejection blocks the tool with an error the model sees.
+
+The gate only runs when the host can service an interactive prompt: the ACP
+server wires a client-backed approver, while the TUI and `--print` keep the
+soft-approval guidance alone. If the client cannot answer (no permission UI, or
+the connection is closing), the gate falls back to allowing so an editor without
+`session/request_permission` keeps working — the write blocklist on filesystem
+writes (see `specs/maintenance.md`) remains the standing guardrail either way.
 
 ## Architecture
 
