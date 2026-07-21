@@ -11,6 +11,8 @@ use crate::surface::Surface;
 use crate::view::{RenderCtx, View};
 
 /// A one-line status bar with left- and right-anchored segment groups.
+///
+/// ![status_bar demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/status_bar.gif)
 pub struct StatusBar {
     left: Vec<Span<'static>>,
     right: Vec<Span<'static>>,

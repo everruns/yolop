@@ -345,6 +345,8 @@ fn wrap_visual_rows(lines: &[String], width: u16) -> Vec<(usize, Vec<char>)> {
 /// the terminal cursor separately via [`TextInputState::cursor_screen`].
 ///
 /// [`Scroll`]: crate::Scroll
+///
+/// ![textinput demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/textinput.gif)
 pub struct TextInput {
     lines: Vec<String>,
     style: Style,

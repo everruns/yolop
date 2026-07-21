@@ -51,6 +51,8 @@ impl TabsState {
 }
 
 /// A one-line tab strip derived from [`TabsState`].
+///
+/// ![tabs demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/tabs.gif)
 pub struct Tabs {
     labels: Vec<Line<'static>>,
     selected: usize,

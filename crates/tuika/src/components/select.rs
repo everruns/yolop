@@ -80,6 +80,8 @@ impl SelectState {
 }
 
 /// Renders `items` with the selected row highlighted.
+///
+/// ![select demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/select.gif)
 pub struct SelectList {
     items: Vec<Line<'static>>,
     selected: usize,

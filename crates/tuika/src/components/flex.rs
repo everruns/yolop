@@ -20,6 +20,8 @@ struct Child {
 }
 
 /// A flexbox container of child views.
+///
+/// ![flex demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/flex.gif)
 pub struct Flex {
     style: LayoutStyle,
     children: Vec<Child>,

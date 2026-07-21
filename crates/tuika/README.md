@@ -32,6 +32,10 @@ nothing about yolop; yolop is one production consumer.
 
 ## Components
 
+See the [component gallery](docs/README.md) for an animated demo of each
+component (the same GIFs are embedded inline in the [docs.rs](https://docs.rs/tuika)
+API docs).
+
 | Component | Purpose |
 | --- | --- |
 | `Text` / `Paragraph` | Styled lines / word-wrapped plain text |

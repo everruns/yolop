@@ -13,6 +13,8 @@ use crate::view::{RenderCtx, View};
 use super::spinner::{Spinner, SpinnerStyle};
 
 /// An animated loading row.
+///
+/// ![loader demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/loader.gif)
 pub struct Loader {
     frame: u64,
     message: String,
