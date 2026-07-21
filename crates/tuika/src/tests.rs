@@ -12,11 +12,12 @@ use super::components::{
     Loader, Paragraph, ProgressBar, Scroll, ScrollState, SelectList, SelectOutcome, SelectState,
     Spinner, Text, Wrap, line_width, wrap_lines,
 };
-use super::event::{Event, EventFlow, Key, KeyCode, Mouse, MouseKind};
+use super::event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 use super::focus::FocusRegistry;
 use super::geometry::{Padding, Size};
 use super::host::{self, Overlay};
 use super::layout::{Align, Dimension, Item, Justify, LayoutStyle, solve};
+use super::mouse::{ClickTracker, HitMap, SelectionState, highlight, selected_text};
 use super::native::{self, ProgressState};
 use super::overlay::{Anchor, Extent, OverlaySpec};
 use super::style::Theme;
@@ -435,6 +436,195 @@ fn wrap_component_renders_reflowed() {
     assert_eq!(row(&buf, 1), "cc");
 }
 
+// ---- mouse: selection, hit-testing, clicks -------------------------------
+
+fn down(col: u16, row: u16) -> Mouse {
+    Mouse::at(MouseKind::Down(MouseButton::Left), col, row)
+}
+fn drag(col: u16, row: u16) -> Mouse {
+    Mouse::at(MouseKind::Drag(MouseButton::Left), col, row)
+}
+fn up(col: u16, row: u16) -> Mouse {
+    Mouse::at(MouseKind::Up(MouseButton::Left), col, row)
+}
+
+#[test]
+fn selection_tracks_a_left_drag() {
+    let mut sel = SelectionState::new();
+    assert!(!sel.handle(&down(1, 0))); // fresh press: nothing to redraw yet
+    assert!(sel.handle(&drag(4, 0)));
+    assert!(sel.handle(&up(4, 0)));
+    let range = sel.range().expect("a drag selects");
+    assert_eq!(range.start, (1, 0));
+    assert_eq!(range.end, (4, 0));
+    assert!(sel.is_active());
+}
+
+#[test]
+fn selection_normalizes_a_backwards_drag() {
+    let mut sel = SelectionState::new();
+    sel.handle(&down(5, 1));
+    sel.handle(&drag(2, 0));
+    sel.handle(&up(2, 0));
+    let range = sel.range().expect("selection");
+    // Reading order: (col=2,row=0) comes before (col=5,row=1).
+    assert_eq!(range.start, (2, 0));
+    assert_eq!(range.end, (5, 1));
+}
+
+#[test]
+fn a_plain_click_leaves_no_selection() {
+    let mut sel = SelectionState::new();
+    sel.handle(&down(3, 0));
+    sel.handle(&up(3, 0)); // released on the same cell, no drag
+    assert!(sel.range().is_none());
+    assert!(!sel.is_active());
+}
+
+#[test]
+fn a_new_press_clears_the_previous_selection() {
+    let mut sel = SelectionState::new();
+    sel.handle(&down(0, 0));
+    sel.handle(&drag(3, 0));
+    sel.handle(&up(3, 0));
+    assert!(sel.range().is_some());
+    // Pressing again to start a new gesture must drop the old selection.
+    assert!(sel.handle(&down(1, 1)));
+    assert!(sel.range().is_none());
+}
+
+#[test]
+fn selected_text_reads_one_row() {
+    let theme = Theme::default();
+    let buf = crate::testing::render(&Text::raw("hello world"), 11, 1, &theme);
+    let mut sel = SelectionState::new();
+    sel.handle(&down(0, 0));
+    sel.handle(&drag(4, 0));
+    sel.handle(&up(4, 0));
+    let text = selected_text(&buf, buf.area, sel.range().unwrap());
+    assert_eq!(text, "hello");
+}
+
+#[test]
+fn selected_text_spans_rows_linearly() {
+    let theme = Theme::default();
+    let lines = vec![Line::from("hello"), Line::from("world")];
+    let buf = crate::testing::render(&Text::new(lines), 5, 2, &theme);
+    let mut sel = SelectionState::new();
+    // From the "llo" of row 0 through the "wo" of row 1.
+    sel.handle(&down(2, 0));
+    sel.handle(&drag(1, 1));
+    sel.handle(&up(1, 1));
+    let text = selected_text(&buf, buf.area, sel.range().unwrap());
+    assert_eq!(text, "llo\nwo");
+}
+
+#[test]
+fn selected_text_trims_trailing_blanks() {
+    let theme = Theme::default();
+    let buf = crate::testing::render(&Text::raw("hi"), 10, 1, &theme);
+    let mut sel = SelectionState::new();
+    sel.handle(&down(0, 0));
+    sel.handle(&drag(9, 0)); // drag well past the text into blank cells
+    sel.handle(&up(9, 0));
+    let text = selected_text(&buf, buf.area, sel.range().unwrap());
+    assert_eq!(text, "hi");
+}
+
+#[test]
+fn highlight_patches_selected_cells_only() {
+    use ratatui::style::Color;
+    let theme = Theme::default();
+    let mut buf = crate::testing::render(&Text::raw("hello"), 5, 1, &theme);
+    let area = buf.area;
+    let mut sel = SelectionState::new();
+    sel.handle(&down(0, 0));
+    sel.handle(&drag(2, 0));
+    sel.handle(&up(2, 0));
+    highlight(
+        &mut buf,
+        area,
+        sel.range().unwrap(),
+        Style::default().bg(Color::Blue),
+    );
+    // Selected cells (0..=2) get the highlight bg; the glyph survives.
+    for col in 0..=2 {
+        assert_eq!(
+            buf[(col, 0)].bg,
+            Color::Blue,
+            "cell {col} should be highlighted"
+        );
+    }
+    assert_eq!(
+        buf[(0, 0)].symbol(),
+        "h",
+        "highlight must not clobber the glyph"
+    );
+    // An unselected cell is untouched.
+    assert_ne!(buf[(4, 0)].bg, Color::Blue);
+}
+
+#[test]
+fn hit_map_last_region_wins_and_misses_return_none() {
+    let mut hits: HitMap<&str> = HitMap::new();
+    hits.push(Rect::new(0, 0, 10, 10), "background");
+    hits.push(Rect::new(2, 2, 3, 3), "panel"); // pushed later -> wins on overlap
+    hits.push(Rect::new(0, 0, 0, 0), "zero"); // zero-area never matches
+    assert_eq!(hits.hit(3, 3), Some(&"panel"));
+    assert_eq!(hits.hit(8, 8), Some(&"background"));
+    assert_eq!(hits.hit(50, 50), None);
+    // hit_event resolves an event's coordinates.
+    assert_eq!(hits.hit_event(&down(3, 3)), Some(&"panel"));
+}
+
+#[test]
+fn click_tracker_detects_a_click() {
+    let mut clicks = ClickTracker::new();
+    assert!(clicks.handle(&down(4, 2)).is_none()); // press alone is not a click
+    let click = clicks
+        .handle(&up(4, 2))
+        .expect("down+up on one cell is a click");
+    assert_eq!(
+        (click.column, click.row, click.button),
+        (4, 2, MouseButton::Left)
+    );
+}
+
+#[test]
+fn click_tracker_drag_cancels_the_click() {
+    let mut clicks = ClickTracker::new();
+    clicks.handle(&down(4, 2));
+    clicks.handle(&drag(6, 2)); // moved -> this is a selection, not a click
+    assert!(clicks.handle(&up(6, 2)).is_none());
+}
+
+#[test]
+fn click_tracker_release_on_another_cell_is_not_a_click() {
+    let mut clicks = ClickTracker::new();
+    clicks.handle(&down(4, 2));
+    assert!(clicks.handle(&up(9, 9)).is_none());
+}
+
+#[test]
+fn translate_maps_button_modifiers_and_drag() {
+    use crossterm::event::{
+        Event as CtEvent, KeyModifiers, MouseButton as CtButton, MouseEvent, MouseEventKind,
+    };
+    let ct = CtEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(CtButton::Right),
+        column: 7,
+        row: 3,
+        modifiers: KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+    });
+    let Some(Event::Mouse(m)) = host::translate_event(ct) else {
+        panic!("expected a mouse event");
+    };
+    assert_eq!(m.kind, MouseKind::Down(MouseButton::Right));
+    assert_eq!((m.column, m.row), (7, 3));
+    assert!(m.shift && m.ctrl && !m.alt);
+    assert!(!m.plain());
+}
+
 // ---- scroll state --------------------------------------------------------
 
 #[test]
@@ -446,11 +636,7 @@ fn scroll_sticks_to_bottom_until_scrolled_up() {
     assert!(s.is_stuck_to_bottom());
 
     // Wheel up unsticks and moves up by 3.
-    let up = Event::Mouse(Mouse {
-        kind: MouseKind::ScrollUp,
-        column: 0,
-        row: 0,
-    });
+    let up = Event::Mouse(Mouse::at(MouseKind::ScrollUp, 0, 0));
     assert_eq!(s.handle(&up, 100, 10), EventFlow::Consumed);
     assert!(!s.is_stuck_to_bottom());
     assert_eq!(s.offset(), 87);

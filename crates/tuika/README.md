@@ -171,6 +171,37 @@ so it works in both the inline and full-screen renderers; terminals that don't
 understand it ignore the sequence. yolop shows it (indeterminate) while a turn
 runs and clears it when idle.
 
+## Mouse, selection, and clipboard
+
+Enabling mouse capture (which `AltScreen` / `TerminalSession` do) means the
+terminal stops doing its own click-drag text selection and hands every drag to
+the app instead. The `mouse` module rebuilds those affordances over the grid
+you already rendered:
+
+- **Text selection.** `SelectionState` turns a left-button `Down → Drag → Up`
+  gesture into a `SelectionRange` (a plain click selects nothing; a new press
+  clears the old selection). `selected_text(buffer, area, range)` reads the text
+  back out of the rendered `ratatui::Buffer` — linear/stream selection like a
+  terminal's own, wide glyphs intact — and `highlight(buffer, area, range,
+  style)` paints it in.
+- **Clicks and regions.** `HitMap<T>` maps screen rects to values (a button, a
+  link, a row); the last-pushed match wins, so children/overlays registered
+  after their parents take precedence. `ClickTracker` turns a same-cell
+  `Down`/`Up` into a `Click` and lets an intervening drag cancel it.
+- **Clipboard.** `clipboard::write_clipboard(out, text)` copies via **OSC 52**
+  (`clipboard::osc52` is the pure encoder) — no platform clipboard library,
+  works over SSH. Same tmux caveat as OSC 8: needs `allow-passthrough on`.
+
+The enriched event model carries what selection and clicks need: `MouseKind` is
+`Down/Up/Drag(MouseButton)`, `Moved`, and `ScrollUp/Down/Left/Right`, and every
+`Mouse` reports `shift/ctrl/alt`. **Shift-drag** is deliberately left to the
+terminal — most emulators use it to bypass app mouse capture for a native
+selection — so a host should act on `plain()` left-drags.
+
+**Touch** arrives as mouse events: terminal emulators translate a tap to a
+`Down`+`Up` and a swipe to scroll or a drag, so touch flows through this same
+path — there is no separate touch event to handle.
+
 ## Testing
 
 Layout and rendering are tested hermetically by rendering into an in-memory
