@@ -10,6 +10,40 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.10.0] - 2026-07-20
+
+### Highlights
+
+- Add checkpoint rewind and undo for recovering earlier session state.
+- Contain shell execution by default, with clearer sandbox denials and temporary-directory support.
+- Add live extension hot-enabling and Open Knowledge Format support through the bundled skill.
+- Expand the fullscreen TUI with a richer composer, syntax highlighting, OSC 8 hyperlinks, and safer Tuika interoperability.
+
+### What's Changed
+
+* chore: deep maintenance — de-abstraction surface + audit cleanups ([#359](https://github.com/everruns/yolop/pull/359)) by @mchalyi
+* docs: move OKF feature doc into its own folder ([#358](https://github.com/everruns/yolop/pull/358)) by @mchalyi
+* refactor: skill-only OKF support (drop detection capability) ([#356](https://github.com/everruns/yolop/pull/356)) by @mchalyi
+* feat(sandbox): improve denial visibility and temp support ([#357](https://github.com/everruns/yolop/pull/357)) by @mchalyi
+* chore(docs): define public documentation boundary ([#355](https://github.com/everruns/yolop/pull/355)) by @mchalyi
+* docs: add user-facing OKF feature doc ([#354](https://github.com/everruns/yolop/pull/354)) by @mchalyi
+* feat(tuika): add safe ratatui composition foundation ([#353](https://github.com/everruns/yolop/pull/353)) by @mchalyi
+* feat: native Open Knowledge Format (OKF) support ([#349](https://github.com/everruns/yolop/pull/349)) by @mchalyi
+* feat(tuika): styled-span text wrapping (`wrap_lines` + `Wrap`) ([#351](https://github.com/everruns/yolop/pull/351)) by @mchalyi
+* feat(sandbox): contain shell execution by default ([#348](https://github.com/everruns/yolop/pull/348)) by @mchalyi
+* feat(tui): demo and end-to-end proof for OSC 8 hyperlinks ([#350](https://github.com/everruns/yolop/pull/350)) by @mchalyi
+* feat(tui): opt-in OSC 8 hyperlinks (`tuika` `HyperlinkBackend`) ([#343](https://github.com/everruns/yolop/pull/343)) by @mchalyi
+* fix(tui): stop leaked subprocess output from corrupting the TUI ([commit](https://github.com/everruns/yolop/commit/784883e77c2532753e3cd5f836b4c4f507266532)) by @mchalyi
+* feat(session): add checkpoint rewind and undo ([#347](https://github.com/everruns/yolop/pull/347)) by @mchalyi
+* feat(extensions): hot-enable an extension on the live session ([#345](https://github.com/everruns/yolop/pull/345)) by @mchalyi
+* chore(deps): bump everruns to 0.17.14, unpin Rust to 1.94.0 ([#344](https://github.com/everruns/yolop/pull/344)) by @mchalyi
+* fix(tools): honor `/workspace` alias in host-path scope resolution ([#342](https://github.com/everruns/yolop/pull/342)) by @mchalyi
+* feat(tui): Codex-inspired composer, highlighting, and status features ([#341](https://github.com/everruns/yolop/pull/341)) by @mchalyi
+* fix(tui): unify fullscreen presentation ([#340](https://github.com/everruns/yolop/pull/340)) by @mchalyi
+* chore(deps): bump everruns to 0.17.13, pin Rust 1.96.0 ([#339](https://github.com/everruns/yolop/pull/339)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.9.0...v0.10.0
+
 ## [0.9.0] - 2026-07-19
 
 ### Highlights
