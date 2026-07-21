@@ -27,26 +27,29 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use tuika::{Element, Padding, RectProbe, Rule, Text, TextInput, TextInputState, element, view};
+use tuika::{
+    Boxed, Element, Overlay, Padding, RectProbe, Rule, Spacer, Text, TextInput, TextInputState,
+    element, view,
+};
 
 use super::render;
-use super::{ACCENT_BLUE, ACCENT_GOLD, App};
+use super::{ACCENT_BLUE, ACCENT_GOLD, App, DIFF_META, PANEL_BG, TEXT_PRIMARY};
 
 pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
-    // Overlays own the whole viewport; borrow the shared sheet renderers until
-    // they move onto tuika.
+    // Overlays own the whole viewport, composited as tuika overlays over a blank
+    // base (same "sheet" behavior as inline, but tuika-native).
     if app.pending_ask.is_some() {
-        render::draw_ask_overlay(f, area, app);
+        draw_ask_overlay(f, area, app);
         return;
     }
     if app.setup.is_some() {
-        render::draw_setup_overlay(f, area, app);
+        draw_setup_overlay(f, area, app);
         return;
     }
     if app.background_panel.is_some() {
-        render::draw_background_panel(f, area, app);
+        draw_background_overlay(f, area, app);
         return;
     }
     if area.width < 4 || area.height == 0 {
@@ -192,4 +195,99 @@ fn composer_row(composer: &TextInputState, probe: &RectProbe) -> Element {
             grow(1) { node(probe.wrap(element(TextInput::new(composer)))) }
         }
     }
+}
+
+// ---- overlays (setup / ask / background) as tuika overlays ----------------
+
+/// Paint `lines` inside a centered bordered panel, composited as a tuika
+/// [`Overlay`] over a blank base — the "sheet" that owns the viewport. Places
+/// the terminal cursor at `cursor` (a `(row, col)` inside the panel interior)
+/// when given.
+///
+/// The panel uses the shared [`render::setup_panel_rect`] geometry, and
+/// [`Boxed`]'s default border + `symmetric(1, 0)` padding reproduces the inline
+/// overlay's interior rect exactly, so the two modes place content identically.
+fn draw_panel_overlay(
+    f: &mut Frame,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    cursor: Option<(usize, usize)>,
+) {
+    let panel = render::setup_panel_rect(area);
+    if panel.width == 0 || panel.height == 0 {
+        return;
+    }
+    let boxed = Boxed::new(element(Text::new(lines)))
+        .background(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
+    let theme = tuika::Theme {
+        background: Color::Reset,
+        surface: PANEL_BG,
+        ..tuika::Theme::default()
+    };
+    let overlay = Overlay {
+        area: panel,
+        view: &boxed,
+        clear: true,
+    };
+    tuika::paint(f.buffer_mut(), area, &theme, &Spacer, &[overlay]);
+
+    if let Some((row, col)) = cursor {
+        let inner_x = panel.x.saturating_add(2);
+        let inner_y = panel.y.saturating_add(1);
+        let inner_w = panel.width.saturating_sub(4);
+        let inner_h = panel.height.saturating_sub(2);
+        if inner_w > 0 && inner_h > row as u16 {
+            f.set_cursor_position((
+                inner_x.saturating_add((col as u16).min(inner_w.saturating_sub(1))),
+                inner_y.saturating_add(row as u16),
+            ));
+        }
+    }
+}
+
+fn draw_setup_overlay(f: &mut Frame, area: Rect, app: &App) {
+    if app.setup.is_none() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let (lines, cursor) = render::setup_overlay_content(app);
+    draw_panel_overlay(f, area, lines, cursor);
+}
+
+fn draw_ask_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let Some(ask) = app.pending_ask.as_ref() else {
+        return;
+    };
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let (lines, cursor) = render::ask_overlay_content(ask);
+    draw_panel_overlay(f, area, lines, Some(cursor));
+}
+
+fn draw_background_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let Some(offset) = app.background_panel else {
+        return;
+    };
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let panel = render::setup_panel_rect(area);
+    let inner_h = panel.height.saturating_sub(2) as usize;
+    let body = app.background_panel_body();
+    let texts = render::background_panel_lines(&body, offset, inner_h);
+    let lines: Vec<Line<'static>> = texts
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| {
+            if i == 0 {
+                Line::from(Span::styled(
+                    text,
+                    Style::default().fg(DIFF_META).add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::raw(text)
+            }
+        })
+        .collect();
+    draw_panel_overlay(f, area, lines, None);
 }
