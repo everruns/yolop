@@ -82,20 +82,22 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        // Kept in lockstep with the palette in `crate::app` so inline and
-        // full-screen share one look.
+        // tuika's own toolkit identity — a warm red-on-dark palette. This is a
+        // neutral default for any app built on tuika; it is deliberately NOT any
+        // one host's brand. A host with its own look builds its own `Theme` (see
+        // yolop's `fullscreen::yolop_theme`) rather than relying on this.
         Theme {
-            background: Color::Rgb(18, 18, 22),
-            surface: Color::Rgb(28, 28, 34),
-            text: Color::Rgb(230, 230, 232),
-            muted: Color::Rgb(140, 140, 145),
-            dim: Color::Rgb(72, 72, 78),
-            accent: Color::Rgb(45, 91, 158),
-            accent_alt: Color::Rgb(126, 94, 19),
-            border: Color::Rgb(72, 72, 78),
-            border_focused: Color::Rgb(45, 91, 158),
-            selection_bg: Color::Rgb(45, 91, 158),
-            selection_fg: Color::Rgb(230, 230, 232),
+            background: Color::Rgb(20, 18, 20),
+            surface: Color::Rgb(34, 28, 30),
+            text: Color::Rgb(235, 230, 230),
+            muted: Color::Rgb(150, 140, 142),
+            dim: Color::Rgb(90, 74, 78),
+            accent: Color::Rgb(200, 60, 70),
+            accent_alt: Color::Rgb(230, 140, 90),
+            border: Color::Rgb(90, 74, 78),
+            border_focused: Color::Rgb(200, 60, 70),
+            selection_bg: Color::Rgb(120, 30, 40),
+            selection_fg: Color::Rgb(240, 235, 235),
         }
     }
 }

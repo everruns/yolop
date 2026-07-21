@@ -9,8 +9,9 @@
 //! [`tuika::paint`]:
 //!
 //! - **separators** are [`tuika::Rule`]s (blue message rule, gold status rule);
-//! - **the composer** is a [`tuika::TextInput`] fed from a snapshot of the
-//!   shared composer text model (`app.input`) — no ratatui-textarea widget;
+//! - **the composer** is a [`tuika::TextInput`] over full-screen's own model of
+//!   record ([`App::composer`], a tuika `TextInputState` that handles its own
+//!   key events) — no ratatui-textarea widget;
 //! - **the preview row** (reverse-search / suggestions / streaming preview) and
 //!   **the status** are [`tuika::Text`] views built from the same pure line
 //!   builders the inline chrome uses, so the two modes cannot visually drift;
@@ -34,7 +35,34 @@ use tuika::{
 };
 
 use super::render;
-use super::{ACCENT_BLUE, ACCENT_GOLD, App, DIFF_META, PANEL_BG, TEXT_PRIMARY};
+use super::{
+    ACCENT_BLUE, ACCENT_GOLD, App, DIFF_META, PANEL_BG, TEXT_DIM, TEXT_MUTED, TEXT_PRIMARY,
+};
+
+/// The full-screen renderer's tuika [`Theme`](tuika::Theme), built from yolop's
+/// own palette.
+///
+/// NOTE (item 6): tuika's `Theme::default()` is the toolkit's neutral identity
+/// (a red-on-dark look), deliberately not any host's brand. yolop owns its
+/// colors here, so every theme-driven tuika component in full-screen — the
+/// `Scroll` scrollbar, `Boxed` borders, `SelectList` selection — renders in
+/// yolop's palette instead of the toolkit default. `background: Reset` lets the
+/// terminal's own background own the alternate screen.
+pub(crate) fn yolop_theme() -> tuika::Theme {
+    tuika::Theme {
+        background: Color::Reset,
+        surface: PANEL_BG,
+        text: TEXT_PRIMARY,
+        muted: TEXT_MUTED,
+        dim: TEXT_DIM,
+        accent: ACCENT_BLUE,
+        accent_alt: ACCENT_GOLD,
+        border: TEXT_DIM,
+        border_focused: ACCENT_BLUE,
+        selection_bg: ACCENT_BLUE,
+        selection_fg: TEXT_PRIMARY,
+    }
+}
 
 pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -121,11 +149,9 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         }
     };
 
-    // Transparent background so the styled lines' own colors show through.
-    let theme = tuika::Theme {
-        background: Color::Reset,
-        ..tuika::Theme::default()
-    };
+    // yolop's own palette (see `yolop_theme`); a Reset background lets the
+    // styled lines' own colors show through.
+    let theme = yolop_theme();
     tuika::paint(f.buffer_mut(), area, &theme, root.as_ref(), &[]);
 
     // Mouse text selection over the transcript. Its selectable inner rect is the
@@ -248,11 +274,7 @@ fn draw_panel_overlay(
     }
     let boxed = Boxed::new(element(Text::new(lines)))
         .background(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
-    let theme = tuika::Theme {
-        background: Color::Reset,
-        surface: PANEL_BG,
-        ..tuika::Theme::default()
-    };
+    let theme = yolop_theme();
     let overlay = Overlay {
         area: panel,
         view: &boxed,
