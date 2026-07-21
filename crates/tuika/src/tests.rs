@@ -625,6 +625,21 @@ fn translate_maps_button_modifiers_and_drag() {
     assert!(!m.plain());
 }
 
+// ---- probe: reading laid-out rects back out ------------------------------
+
+#[test]
+fn probe_reports_the_rect_a_view_was_painted_into() {
+    let probe = crate::RectProbe::new();
+    assert_eq!(probe.rect(), Rect::ZERO, "an unpainted probe reads ZERO");
+    let root = crate::Flex::column()
+        .fixed(1, element(Text::raw("header")))
+        .grow(1, probe.wrap(element(Text::raw("body"))));
+    let theme = Theme::default();
+    let _ = crate::testing::render(&root, 10, 5, &theme);
+    // The grown body lands below the 1-row header and fills the rest.
+    assert_eq!(probe.rect(), Rect::new(0, 1, 10, 4));
+}
+
 // ---- scroll state --------------------------------------------------------
 
 #[test]
