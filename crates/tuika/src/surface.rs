@@ -10,9 +10,10 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::style::BorderGlyphs;
+use super::width::grapheme_cols;
 
 /// A clipped view into the frame buffer for one component.
 pub struct Surface<'a> {
@@ -118,22 +119,37 @@ impl<'a> Surface<'a> {
         }
     }
 
-    /// Draw `text` starting at (`x`, `y`), advancing by each glyph's display
-    /// width and stopping at the clip's right edge. Returns the exclusive end
-    /// column actually written.
+    /// Set a cell to a whole grapheme cluster (may be several scalars, e.g. an
+    /// emoji ZWJ sequence) and style, if it is inside the clip.
+    fn set_cluster(&mut self, x: u16, y: u16, cluster: &str, style: Style) {
+        if self.contains(x, y) {
+            let cell = &mut self.buffer[(x, y)];
+            cell.set_symbol(cluster);
+            cell.set_style(style);
+        }
+    }
+
+    /// Draw `text` starting at (`x`, `y`), advancing by each grapheme cluster's
+    /// display width and stopping at the clip's right edge. Returns the
+    /// exclusive end column actually written.
+    ///
+    /// Iteration is per grapheme cluster, not per `char`, so a multi-scalar
+    /// emoji (ZWJ family, flag, skin-tone, or a VS16-promoted glyph) lands in a
+    /// single cell with the correct width instead of being scattered across
+    /// several — see [`crate::width`].
     pub fn set_string(&mut self, x: u16, y: u16, text: &str, style: Style) -> u16 {
         let mut col = x;
-        for ch in text.chars() {
-            let w = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+        for cluster in text.graphemes(true) {
+            let w = grapheme_cols(cluster);
             if w == 0 {
                 continue;
             }
             if col >= self.clip.right() {
                 break;
             }
-            self.set(col, y, ch, style);
+            self.set_cluster(col, y, cluster, style);
             // Blank the trailing cell of a wide glyph so stale content behind a
-            // double-width char never shows through.
+            // double-width cluster never shows through.
             if w == 2 && col + 1 < self.clip.right() {
                 self.set(col + 1, y, ' ', style);
             }

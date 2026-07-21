@@ -49,10 +49,9 @@ impl Default for StatusBar {
 }
 
 fn spans_width(spans: &[Span]) -> u16 {
-    use unicode_width::UnicodeWidthStr;
     spans
         .iter()
-        .map(|s| UnicodeWidthStr::width(s.content.as_ref()) as u16)
+        .map(|s| crate::width::str_cols(s.content.as_ref()))
         .fold(0, u16::saturating_add)
 }
 

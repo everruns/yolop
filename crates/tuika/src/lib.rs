@@ -5,8 +5,8 @@
 //! solver, anchored overlays, focus/input-ownership, an alternate-screen host,
 //! and a set of components (text, boxes, scroll, select, spinner, progress) —
 //! while letting ratatui keep ownership of the cell buffer and its diff against
-//! the terminal. It depends only on `ratatui`, `crossterm`, `textwrap`, and
-//! `unicode-width`.
+//! the terminal. It depends only on `ratatui`, `crossterm`, `textwrap`,
+//! `unicode-segmentation`, and `unicode-width`.
 //!
 //! It was extracted from the [yolop](https://github.com/everruns/yolop) coding
 //! agent, whose full-screen renderer is built on it, but it knows nothing about
@@ -53,6 +53,7 @@ pub mod style;
 pub mod surface;
 pub mod testing;
 pub mod view;
+pub mod width;
 
 // Curated top-level re-exports so callers write `tuika::Flex`, `tuika::Theme`,
 // etc. for the common surface without deep paths.
@@ -79,6 +80,7 @@ pub use runner::{Runner, RunnerConfig};
 pub use style::{BorderStyle, Theme};
 pub use surface::Surface;
 pub use view::{Element, RenderCtx, View, element};
+pub use width::{grapheme_cols, str_cols};
 
 #[cfg(test)]
 mod proptests;
