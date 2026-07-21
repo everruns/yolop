@@ -1,6 +1,7 @@
 # Sandboxed execution
 
 Status: implemented for arbitrary shell execution on macOS and Linux.
+Windows runs the shell unsandboxed (no native containment yet) and warns.
 
 ## Purpose and boundary
 
@@ -34,8 +35,10 @@ processes. The provider is selected once when a runtime is built; each command
 resolves the current workspace again, so worktree activation is reflected on
 the next command.
 
-Native execution is fail closed. If the required OS primitive is unavailable,
-the command returns a sandbox-setup error and is not retried on the host.
+On macOS and Linux, native execution is fail closed: if the required OS
+primitive is unavailable, the command returns a sandbox-setup error and is not
+retried on the host. Windows has no native provider yet and is the documented
+exception — see [Windows](#windows) below.
 
 ### macOS
 
@@ -69,6 +72,18 @@ writable `.git` subtree. Linux therefore permits Git metadata writes that live
 inside the active workspace. Linked-worktree metadata outside that boundary
 remains read-only. This is weaker than the macOS policy and is communicated as
 a known limit.
+
+### Windows
+
+There is no native sandbox on Windows yet, so the platform is fail *open*, not
+fail closed: every mode — including the `native` default — runs the shell with
+full host access. The shell is PowerShell (`powershell.exe -NoProfile
+-NonInteractive -Command`) rather than bash, since it ships in-box on every
+supported Windows. Because nothing is contained, the startup warning fires for
+every mode on Windows (not only `off`), and the `bash` tool advertises
+PowerShell so the model emits the right syntax. A native provider built on
+Windows primitives (restricted tokens, ACLs, a firewall-isolated user) is the
+path to fail-closed parity and is tracked as future work.
 
 ## Unsafe opt-out
 

@@ -491,8 +491,31 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<St
     (selected, notes)
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Windows caps the main-thread stack at 1 MiB. The entry future (settings
+    // load → runtime build → TUI/print loop) is large enough to overflow that,
+    // though it fits comfortably in the 8 MiB default Linux and macOS give the
+    // main thread. Run the whole program on a thread with an explicit large
+    // stack so every platform behaves like the generous default, and give the
+    // tokio worker threads a matching stack for deep async work spawned onto
+    // them.
+    let worker = std::thread::Builder::new()
+        .name("yolop-main".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .thread_stack_size(8 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("build tokio runtime")
+                .block_on(async_main())
+        })
+        .expect("spawn yolop main thread");
+    worker.join().expect("yolop main thread panicked")
+}
+
+async fn async_main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

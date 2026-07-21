@@ -252,20 +252,38 @@ impl Tool for BashTool {
         Some("Bash")
     }
     fn description(&self) -> &str {
-        "Run a bash command. Each call is a fresh non-interactive shell already \
-         rooted at the workspace, so no state persists between calls: the working \
-         directory, shell variables, and exports reset every time. A bare `cd` is \
-         pointless — you are already at the workspace root; use paths relative to \
-         it, or chain within one call (`cd sub && cmd`). Captures stdout/stderr \
-         with configurable verbosity. 120s timeout; run commands that wait on \
-         external events (CI runs, deploys) detached via `spawn_background` \
-         instead."
+        #[cfg(windows)]
+        {
+            "Run a PowerShell command. Each call is a fresh non-interactive shell \
+             already rooted at the workspace, so no state persists between calls: \
+             the working directory and shell variables reset every time. A bare \
+             `cd` is pointless — you are already at the workspace root; use paths \
+             relative to it, or chain within one call (`cd sub; cmd`). Captures \
+             stdout/stderr with configurable verbosity. 120s timeout; run commands \
+             that wait on external events (CI runs, deploys) detached via \
+             `spawn_background` instead."
+        }
+        #[cfg(not(windows))]
+        {
+            "Run a bash command. Each call is a fresh non-interactive shell already \
+             rooted at the workspace, so no state persists between calls: the working \
+             directory, shell variables, and exports reset every time. A bare `cd` is \
+             pointless — you are already at the workspace root; use paths relative to \
+             it, or chain within one call (`cd sub && cmd`). Captures stdout/stderr \
+             with configurable verbosity. 120s timeout; run commands that wait on \
+             external events (CI runs, deploys) detached via `spawn_background` \
+             instead."
+        }
     }
     fn parameters_schema(&self) -> Value {
+        #[cfg(windows)]
+        let command_description = "Shell command to run via PowerShell.";
+        #[cfg(not(windows))]
+        let command_description = "Shell command to run via bash -lc.";
         json!({
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "Shell command to run via bash -lc."},
+                "command": {"type": "string", "description": command_description},
                 "output": everruns_core::tool_output_sanitizer::output_verbosity_schema()
             },
             "required": ["command"],

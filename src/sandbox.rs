@@ -23,9 +23,51 @@ pub(crate) fn provider(mode: SandboxMode) -> std::sync::Arc<dyn SandboxProvider>
 }
 
 pub(crate) fn danger_warning(mode: SandboxMode) -> Option<&'static str> {
-    (mode == SandboxMode::Off).then_some(
-        "DANGER: sandbox disabled (UNSAFE HOST) — shell commands can access and modify files, processes, and the network outside the workspace",
-    )
+    #[cfg(windows)]
+    {
+        // No native sandbox exists for Windows yet, so every mode — including
+        // the `native` default — runs with full host access. Warn regardless
+        // of the configured mode.
+        let _ = mode;
+        Some(
+            "WARNING: sandboxing is not available on Windows — shell commands run unsandboxed with full access to your files, processes, and the network",
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        (mode == SandboxMode::Off).then_some(
+            "DANGER: sandbox disabled (UNSAFE HOST) — shell commands can access and modify files, processes, and the network outside the workspace",
+        )
+    }
+}
+
+/// Base shell invocation for the current platform. This is the single place the
+/// host shell is chosen, so the sandbox providers stay platform-agnostic. Unix
+/// wraps the script in a bash login shell (`bash -lc`); Windows runs it through
+/// PowerShell.
+fn shell_command(cwd: &Path, script: &str) -> Command {
+    #[cfg(windows)]
+    {
+        // `powershell.exe` (Windows PowerShell 5.1) ships in-box on every
+        // supported Windows, so it needs no install step. `-Command` runs
+        // inline script text and is exempt from the script-file execution
+        // policy. If argument quoting ever bites, `-EncodedCommand` (base64
+        // UTF-16LE) is the hardening path.
+        let mut command = Command::new("powershell.exe");
+        command
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg(script)
+            .current_dir(cwd);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new("bash");
+        command.arg("-lc").arg(script).current_dir(cwd);
+        command
+    }
 }
 
 struct UnsafeHost;
@@ -36,9 +78,7 @@ impl SandboxProvider for UnsafeHost {
     }
 
     fn command(&self, cwd: &Path, script: &str) -> Result<Command> {
-        let mut command = Command::new("bash");
-        command.arg("-lc").arg(script).current_dir(cwd);
-        Ok(command)
+        Ok(shell_command(cwd, script))
     }
 }
 
@@ -183,7 +223,15 @@ pub(crate) fn run_linux_worker(cwd: &Path, temp: &Path, script: &str) -> Result<
         .into())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+fn native_command(cwd: &Path, script: &str) -> Result<Command> {
+    // Windows has no native sandbox implementation yet. Rather than refuse to
+    // run, execute unsandboxed — the user is warned at startup via
+    // `danger_warning`, which fires for every mode on Windows.
+    Ok(shell_command(cwd, script))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn native_command(_cwd: &Path, _script: &str) -> Result<Command> {
     anyhow::bail!(
         "native sandbox is supported only on macOS and Linux; refusing to run unsandboxed. Set `sandbox = \"off\"` only inside an already isolated environment"
@@ -307,6 +355,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn native_is_the_safe_default_provider() {
         assert!(danger_warning(SandboxMode::Native).is_none());
@@ -315,6 +364,28 @@ mod tests {
                 .unwrap()
                 .contains("UNSAFE HOST")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_warns_unsandboxed_for_every_mode() {
+        // Windows has no sandbox, so even the `native` default must warn that
+        // commands run with full host access.
+        assert!(danger_warning(SandboxMode::Native).is_some());
+        assert!(danger_warning(SandboxMode::Off).is_some());
+    }
+
+    #[test]
+    fn shell_command_uses_the_platform_shell() {
+        let command = shell_command(Path::new("."), "echo hi");
+        let program = command.as_std().get_program().to_string_lossy();
+        #[cfg(windows)]
+        assert!(
+            program.to_ascii_lowercase().contains("powershell"),
+            "expected PowerShell on Windows, got {program}"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(program, "bash");
     }
 
     #[test]
