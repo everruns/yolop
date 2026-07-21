@@ -74,6 +74,7 @@ Each enters the alternate screen; press `q` (or `esc`) to quit.
 | `select`   | `cargo run -p tuika --example select`     | `SelectState` + `SelectList` (stateful-widget idiom) |
 | `overlay`  | `cargo run -p tuika --example overlay`    | `OverlaySpec` centered dialog + input routing      |
 | `ratatui_dashboard` | `cargo run -p tuika --example ratatui_dashboard` | mixed Ratatui widgets + responsive live data |
+| `mouse`     | `cargo run -p tuika --example mouse`      | drag-to-select + highlight + OSC 52 copy, clickable buttons |
 
 (Embedded in yolop, the gallery is also reachable as `yolop tuika-gallery`.)
 
