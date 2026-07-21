@@ -39,6 +39,12 @@ impl SelectState {
         self.selected
     }
 
+    /// Set the highlighted index directly. Lets a host drive the selection from
+    /// its own state (e.g. mirroring an external index into the list).
+    pub fn select(&mut self, index: usize) {
+        self.selected = index;
+    }
+
     /// Keep the index in range as the list length changes.
     pub fn clamp(&mut self, len: usize) {
         if len == 0 {

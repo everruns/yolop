@@ -4558,6 +4558,21 @@ mod tests {
             (0..buffer.area.width).any(|x| matches!(buffer[(x, y)].symbol(), "╭" | "╮" | "╰" | "╯"))
         });
         assert!(has_border, "the tuika overlay panel should draw a border");
+        // The provider list is a tuika SelectList (item 4): the selected row is
+        // caret-marked and highlighted with the theme's selection background
+        // (yolop's accent, via yolop_theme).
+        let has_caret = (0..buffer.area.height)
+            .any(|y| (0..buffer.area.width).any(|x| buffer[(x, y)].symbol() == "›"));
+        assert!(
+            has_caret,
+            "the SelectList should mark the selected row:\n{text}"
+        );
+        let has_selection_bg = (0..buffer.area.height)
+            .any(|y| (0..buffer.area.width).any(|x| buffer[(x, y)].bg == ACCENT_BLUE));
+        assert!(
+            has_selection_bg,
+            "the selected row should use the theme selection background"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
