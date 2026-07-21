@@ -438,31 +438,11 @@ pub(crate) fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
     }
 }
 
-/// Overlay for an extension `ui/ask` prompt: the question plus a live echo of
-/// the answer being typed. Owns the viewport like the setup overlay.
-pub(crate) fn draw_ask_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let Some(ask) = app.pending_ask.as_ref() else {
-        return;
-    };
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let panel = setup_panel_rect(area);
-    if panel.width == 0 || panel.height == 0 {
-        return;
-    }
-    f.render_widget(Clear, area);
-    f.render_widget(Clear, panel);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
-    f.render_widget(block, panel);
-    let inner = Rect {
-        x: panel.x.saturating_add(2),
-        y: panel.y.saturating_add(1),
-        width: panel.width.saturating_sub(4),
-        height: panel.height.saturating_sub(2),
-    };
+/// The `ui/ask` overlay body: the question plus a live echo of the answer being
+/// typed, and the `(row, col)` cursor cell within the panel interior. Pure, so
+/// both the inline sheet renderer and the full-screen tuika overlay show the
+/// same content.
+pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usize, usize)) {
     let field = if ask.value.is_empty() {
         ask.placeholder
             .as_ref()
@@ -488,18 +468,48 @@ pub(crate) fn draw_ask_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Style::default().add_modifier(Modifier::DIM),
         )),
     ];
+    // The typed answer is on row 4, after the "> " prompt.
+    let cursor = (4, "> ".len() + ask.value.chars().count());
+    (lines, cursor)
+}
+
+/// Overlay for an extension `ui/ask` prompt: the question plus a live echo of
+/// the answer being typed. Owns the viewport like the setup overlay.
+pub(crate) fn draw_ask_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let Some(ask) = app.pending_ask.as_ref() else {
+        return;
+    };
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let panel = setup_panel_rect(area);
+    if panel.width == 0 || panel.height == 0 {
+        return;
+    }
+    f.render_widget(Clear, area);
+    f.render_widget(Clear, panel);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
+    f.render_widget(block, panel);
+    let inner = Rect {
+        x: panel.x.saturating_add(2),
+        y: panel.y.saturating_add(1),
+        width: panel.width.saturating_sub(4),
+        height: panel.height.saturating_sub(2),
+    };
+    let (lines, (cursor_row, cursor_col)) = ask_overlay_content(ask);
     f.render_widget(
         Paragraph::new(lines).style(Style::default().bg(PANEL_BG)),
         inner,
     );
     // Park the cursor after the typed value.
-    let col = "> ".len() + ask.value.chars().count();
-    if inner.width > 0 && inner.height > 4 {
+    if inner.width > 0 && inner.height > cursor_row as u16 {
         f.set_cursor_position((
             inner
                 .x
-                .saturating_add((col as u16).min(inner.width.saturating_sub(1))),
-            inner.y.saturating_add(4),
+                .saturating_add((cursor_col as u16).min(inner.width.saturating_sub(1))),
+            inner.y.saturating_add(cursor_row as u16),
         ));
     }
 }

@@ -305,7 +305,7 @@ struct PendingCodexLogin {
 
 /// An in-flight extension `ui/ask`: the prompt shown, the answer being typed,
 /// and the oneshot that delivers it back to the extension server.
-struct PendingAsk {
+pub(crate) struct PendingAsk {
     prompt: String,
     placeholder: Option<String>,
     value: String,
@@ -4384,6 +4384,39 @@ mod tests {
             cell.symbol() == ">" && cell.fg == ACCENT_BLUE
         });
         assert!(has_prompt, "the blue '>' prompt should render");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_setup_overlay_renders_via_tuika() {
+        use ratatui::backend::TestBackend;
+        let mut test = app_with_llmsim().await;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        // First-run setup overlay is present; it should composite as a tuika
+        // overlay — a bordered panel with the setup content.
+        assert!(test.app.setup.is_some(), "first run should offer setup");
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut test.app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+
+        let text: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("Set Up Yolop"),
+            "setup overlay title should render:\n{text}"
+        );
+        // tuika's Boxed draws a rounded border — find one of its corners.
+        let has_border = (0..buffer.area.height).any(|y| {
+            (0..buffer.area.width).any(|x| matches!(buffer[(x, y)].symbol(), "╭" | "╮" | "╰" | "╯"))
+        });
+        assert!(has_border, "the tuika overlay panel should draw a border");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
