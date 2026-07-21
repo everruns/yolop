@@ -853,6 +853,152 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
     (lines, cursor)
 }
 
+/// A setup step's navigable option list, split from its chrome, for rendering as
+/// a tuika `SelectList` in the full-screen overlay.
+pub(crate) struct SetupPicker {
+    pub header: Vec<Line<'static>>,
+    pub options: Vec<Line<'static>>,
+    pub selected: usize,
+    pub footer: Vec<Line<'static>>,
+}
+
+/// The option rows + surrounding chrome for the *bounded* list steps (provider,
+/// credential method, reasoning effort), so full-screen can render them through a
+/// tuika `SelectList` instead of hand-highlighted [`setup_row`] lines (item 4).
+///
+/// NOTE (duplication): this intentionally mirrors the per-step option iteration
+/// in [`setup_overlay_content`] rather than refactoring it, so the inline sheet
+/// renderer stays byte-identical. The two share [`setup_option_line`] for the row
+/// formatting. The **model picker** is deliberately excluded — it windows a
+/// possibly-huge list (`model_window`) and has a custom-id input mode that
+/// `SelectList` can't yet express, so it keeps the windowed Text path; a
+/// windowing `SelectList` is a tuika follow-up. Input steps and Codex login
+/// return `None` too (nothing to select).
+pub(crate) fn setup_picker(app: &App) -> Option<SetupPicker> {
+    match app.setup.as_ref()? {
+        SetupStep::Provider { selected } => {
+            let header = vec![
+                setup_title("Set Up Yolop"),
+                setup_hint("Connected providers jump straight to model selection."),
+                Line::from(""),
+            ];
+            let current = app.current_provider_name();
+            let snapshot = app.settings.snapshot();
+            let options = PROVIDER_OPTIONS
+                .iter()
+                .enumerate()
+                .map(|(idx, option)| {
+                    let (_, status) = App::provider_status(&snapshot, option.name);
+                    let mut hint = format!("{} · {status}", option.hint);
+                    if option.name == current {
+                        hint.push_str(" · current");
+                    }
+                    setup_option_line(idx + 1, option.label, &hint)
+                })
+                .collect();
+            let footer = vec![setup_footer(
+                "Enter select · c configure key/URL · ↑/↓ move · Esc cancel",
+            )];
+            Some(SetupPicker {
+                header,
+                options,
+                selected: *selected,
+                footer,
+            })
+        }
+        SetupStep::Credential {
+            provider,
+            selected,
+            error,
+            ..
+        } => {
+            let header = vec![
+                setup_title(&format!("API Key for {}", App::provider_label(provider))),
+                setup_hint("Choose how yolop should authenticate this provider."),
+                Line::from(""),
+            ];
+            let options = App::credential_options(provider)
+                .iter()
+                .enumerate()
+                .map(|(idx, option)| setup_option_line(idx + 1, &option.label, &option.hint))
+                .collect();
+            let mut footer = Vec::new();
+            push_setup_error(&mut footer, error.as_deref());
+            footer.push(setup_footer("Enter confirm · ↑/↓ move · Esc back"));
+            Some(SetupPicker {
+                header,
+                options,
+                selected: *selected,
+                footer,
+            })
+        }
+        SetupStep::PickEffort { selected, error } => {
+            let effort_options = app.model.reasoning_effort_options();
+            if effort_options.is_empty() {
+                // No options — the Text path shows the explanatory hint instead.
+                return None;
+            }
+            let header = vec![
+                setup_title("Select Reasoning Effort"),
+                setup_hint(
+                    "Profile-defined options for the current model — this session and future sessions.",
+                ),
+                Line::from(""),
+            ];
+            let current = app.model.reasoning_effort();
+            let default = app.model.default_reasoning_effort();
+            let options = effort_options
+                .iter()
+                .enumerate()
+                .map(|(idx, option)| {
+                    let mut hint = String::new();
+                    if Some(option.value.as_str()) == current.as_deref() {
+                        hint.push_str("current");
+                    }
+                    if Some(option.value.as_str()) == default.as_deref() {
+                        if !hint.is_empty() {
+                            hint.push_str(" · ");
+                        }
+                        hint.push_str("profile default");
+                    }
+                    setup_option_line(idx + 1, &option.label, &hint)
+                })
+                .collect();
+            let mut footer = Vec::new();
+            push_setup_error(&mut footer, error.as_deref());
+            footer.push(setup_footer("Enter confirm · ↑/↓ move · Esc cancel"));
+            Some(SetupPicker {
+                header,
+                options,
+                selected: *selected,
+                footer,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// One picker option row — `index. label   hint` — with no selection marker or
+/// highlight (the `SelectList` adds the caret and applies the selection style).
+/// Shares the label column width with [`setup_row`].
+pub(crate) fn setup_option_line(index: usize, label: &str, hint: &str) -> Line<'static> {
+    let pad = 28usize.saturating_sub(label.chars().count()).max(2);
+    Line::from(vec![
+        Span::styled(
+            format!("{index}. "),
+            Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+        ),
+        Span::styled(
+            format!("{label}{}", " ".repeat(pad)),
+            Style::default().fg(TEXT_PRIMARY).bg(PANEL_BG),
+        ),
+        Span::styled(
+            hint.to_string(),
+            Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+        ),
+    ])
+}
+
 pub(crate) fn setup_title(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),

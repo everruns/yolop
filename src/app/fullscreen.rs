@@ -30,8 +30,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use tuika::{
-    Boxed, Element, Overlay, Padding, RectProbe, Rule, Scroll, Spacer, Text, TextInput,
-    TextInputState, element, view,
+    Boxed, Element, Overlay, Padding, RectProbe, Rule, Scroll, SelectList, SelectState, Spacer,
+    Text, TextInput, TextInputState, element, view,
 };
 
 use super::render;
@@ -268,12 +268,21 @@ fn draw_panel_overlay(
     lines: Vec<Line<'static>>,
     cursor: Option<(usize, usize)>,
 ) {
+    panel_overlay(f, area, element(Text::new(lines)), cursor);
+}
+
+/// Composite `content` inside the centered bordered panel as a tuika [`Overlay`]
+/// over a blank base, placing the terminal cursor at `cursor` when given.
+///
+/// The panel uses the shared [`render::setup_panel_rect`] geometry, and
+/// [`Boxed`]'s default border + `symmetric(1, 0)` padding reproduces the inline
+/// overlay's interior rect exactly, so the two modes place content identically.
+fn panel_overlay(f: &mut Frame, area: Rect, content: Element, cursor: Option<(usize, usize)>) {
     let panel = render::setup_panel_rect(area);
     if panel.width == 0 || panel.height == 0 {
         return;
     }
-    let boxed = Boxed::new(element(Text::new(lines)))
-        .background(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
+    let boxed = Boxed::new(content).background(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
     let theme = yolop_theme();
     let overlay = Overlay {
         area: panel,
@@ -300,8 +309,40 @@ fn draw_setup_overlay(f: &mut Frame, area: Rect, app: &App) {
     if app.setup.is_none() || area.width == 0 || area.height == 0 {
         return;
     }
-    let (lines, cursor) = render::setup_overlay_content(app);
-    draw_panel_overlay(f, area, lines, cursor);
+    // Bounded list steps (provider / credential / effort) render through a real
+    // tuika SelectList (item 4); other steps (input fields, Codex login, the
+    // windowed model picker) fall back to the styled-Line Text path.
+    if let Some(picker) = render::setup_picker(app) {
+        draw_setup_picker(f, area, picker);
+    } else {
+        let (lines, cursor) = render::setup_overlay_content(app);
+        draw_panel_overlay(f, area, lines, cursor);
+    }
+}
+
+/// Render a bounded setup step as `header · SelectList · footer` inside the
+/// panel. The `SelectState`'s index is driven from the step's own `selected`
+/// field (navigation still flows through `App::handle_setup_key`); promoting
+/// `SelectState` to the navigation source is the same deferred unification as the
+/// composer's.
+fn draw_setup_picker(f: &mut Frame, area: Rect, picker: render::SetupPicker) {
+    let render::SetupPicker {
+        header,
+        options,
+        selected,
+        footer,
+    } = picker;
+    let mut state = SelectState::new();
+    state.select(selected);
+    let list = SelectList::new(options, &state);
+    let content = view! {
+        col {
+            node(Text::new(header))
+            node(list)
+            node(Text::new(footer))
+        }
+    };
+    panel_overlay(f, area, content, None);
 }
 
 fn draw_ask_overlay(f: &mut Frame, area: Rect, app: &App) {

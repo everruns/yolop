@@ -767,6 +767,14 @@ fn select_navigation_wraps_and_confirms() {
 }
 
 #[test]
+fn select_state_select_sets_index_directly() {
+    // A host can drive the highlight from its own state.
+    let mut s = SelectState::new();
+    s.select(2);
+    assert_eq!(s.selected(), 2);
+}
+
+#[test]
 fn select_highlights_current_row() {
     let items = vec![Line::from("alpha"), Line::from("beta")];
     let mut state = SelectState::new();
