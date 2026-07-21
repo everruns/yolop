@@ -156,6 +156,66 @@ mod tests {
         }
     }
 
+    /// Like [`ScriptedFactory`], but after each build it records the MCP server
+    /// names actually wired into the session, so a wire-level `session/new` test
+    /// can assert the client's `mcpServers` reached the runtime end to end.
+    struct RecordingFactory {
+        config: LlmSimConfig,
+        sessions_dir: PathBuf,
+        settings: Arc<SettingsStore>,
+        seen_servers: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl RuntimeFactory for RecordingFactory {
+        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+            let session_dir = session_dir_path(&self.sessions_dir, session_id);
+            session_log_path(&session_dir).exists()
+                || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+        }
+
+        async fn build(
+            &self,
+            cwd: PathBuf,
+            resume_session_id: Option<RuntimeSessionId>,
+            model_selection: Option<ProviderChoice>,
+            client_mcp_servers: ScopedMcpServers,
+            tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
+        ) -> Result<BuiltRuntime> {
+            let built = build_with_options(
+                cwd,
+                ProviderChoice::Sim,
+                resume_session_id,
+                self.sessions_dir.clone(),
+                self.settings.clone(),
+                BuildOptions {
+                    llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
+                    client_ui: ClientUiContext::Acp,
+                    provider_model: model_selection,
+                    client_mcp_servers,
+                    tool_approver,
+                    ..BuildOptions::default()
+                },
+            )
+            .await?;
+            // Read the servers resolved onto the live session — what the next
+            // turn would use — rather than the raw request, proving the whole
+            // session/new → build → session chain.
+            use everruns_core::SessionStore;
+            if let Ok(Some(session)) = built
+                .handles
+                .session_store
+                .get_session(built.handles.session_id)
+                .await
+            {
+                let mut names: Vec<String> = session.mcp_servers.keys().cloned().collect();
+                names.sort();
+                *self.seen_servers.lock().unwrap() = names;
+            }
+            Ok(built)
+        }
+    }
+
     struct SdkClient {
         cx: ConnectionTo<Agent>,
         init: InitializeResponse,
@@ -385,6 +445,60 @@ mod tests {
         assert!(init.agent_capabilities.prompt_capabilities.embedded_context);
         // Client-provided MCP servers over `http` are accepted (#1).
         assert!(init.agent_capabilities.mcp_capabilities.http);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_new_wires_client_mcp_servers_into_session() {
+        // End to end over the wire: a `session/new` carrying `mcpServers`
+        // (one http, one stdio) must land both servers on the built session.
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        let settings = Arc::new(SettingsStore::open(sessions.join("settings.toml")));
+        let seen_servers = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let factory = Arc::new(RecordingFactory {
+            config: fixed("hi"),
+            sessions_dir: sessions,
+            settings,
+            seen_servers: seen_servers.clone(),
+        });
+
+        let (client_w, agent_r) = tokio::io::duplex(64 * 1024);
+        let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
+        let _server = tokio::spawn(async move {
+            let _ = serve(agent_r, agent_w, factory).await;
+        });
+        let mut w = client_w;
+        let mut reader = BufReader::new(client_r).lines();
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0", "id": 1, "method": "session/new",
+                "params": {
+                    "cwd": cwd,
+                    "mcpServers": [
+                        { "type": "http", "name": "docs", "url": "https://example.com/mcp", "headers": [] },
+                        { "name": "fs", "command": "/usr/bin/mcp-fs", "args": [], "env": [] }
+                    ]
+                }
+            }),
+        )
+        .await;
+        let (resp, _) = collect_until_response_id(&mut reader, 1).await;
+        assert!(resp.get("result").is_some(), "session/new failed: {resp}");
+
+        let names = seen_servers.lock().unwrap().clone();
+        assert!(
+            names.contains(&"docs".to_string()) && names.contains(&"fs".to_string()),
+            "client mcpServers must reach the session; wired: {names:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
