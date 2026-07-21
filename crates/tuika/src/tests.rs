@@ -792,6 +792,46 @@ fn select_highlights_current_row() {
     assert_eq!(buf[(0, 0)].bg, ratatui::style::Color::Reset);
 }
 
+#[test]
+fn select_viewport_windows_a_long_list_and_keeps_selection_visible() {
+    // 20 items, viewport of 4: the selection must always be on screen.
+    let items: Vec<Line> = (0..20).map(|i| Line::from(format!("item{i}"))).collect();
+    let mut state = SelectState::new();
+    state.select(12);
+    let theme = Theme::default();
+    let list = SelectList::new(items.clone(), &state).viewport(4);
+    // Windowed height is the viewport, not the full list.
+    assert_eq!(list.measure(Size::new(20, 40)).height, 4);
+    let rendered = crate::testing::render(&list, 20, 4, &theme);
+    let text = crate::testing::grid(&rendered);
+    assert!(
+        text.contains("item12"),
+        "selection should be visible:\n{text}"
+    );
+    assert!(
+        !text.contains("item0\n") && !text.contains("item19"),
+        "far items windowed out"
+    );
+    // A scrollbar occupies the last column on at least one row.
+    let has_scrollbar = (0..4).any(|y| matches!(rendered[(19, y)].symbol(), "█" | "│"));
+    assert!(
+        has_scrollbar,
+        "overflowing list should draw a scrollbar:\n{text}"
+    );
+}
+
+#[test]
+fn select_viewport_shows_whole_list_when_it_fits() {
+    let items: Vec<Line> = (0..3).map(|i| Line::from(format!("item{i}"))).collect();
+    let state = SelectState::new();
+    let list = SelectList::new(items, &state).viewport(8);
+    // Fits within the viewport → no windowing, height is the item count.
+    assert_eq!(list.measure(Size::new(20, 40)).height, 3);
+    let theme = Theme::default();
+    let text = crate::testing::grid(&crate::testing::render(&list, 20, 3, &theme));
+    assert!(text.contains("item0") && text.contains("item2"));
+}
+
 // ---- overlay -------------------------------------------------------------
 
 #[test]
