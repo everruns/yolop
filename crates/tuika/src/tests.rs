@@ -1238,6 +1238,19 @@ fn theme_helper_styles_map_to_slots() {
 }
 
 #[test]
+fn default_theme_is_the_toolkit_identity_not_a_host_brand() {
+    use ratatui::style::Color;
+    // tuika's own look is warm red-on-dark. It is deliberately a neutral toolkit
+    // identity, not any host's brand — a host with its own palette builds its own
+    // `Theme` (e.g. yolop's `fullscreen::yolop_theme`) instead of inheriting this.
+    let t = Theme::default();
+    assert_eq!(t.accent, Color::Rgb(200, 60, 70));
+    assert_eq!(t.selection_bg, Color::Rgb(120, 30, 40));
+    // Not yolop's accent blue.
+    assert_ne!(t.accent, Color::Rgb(45, 91, 158));
+}
+
+#[test]
 fn boxed_border_follows_theme_focus_color() {
     use super::components::{Boxed, Text};
     let t = rainbow_theme();

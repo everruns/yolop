@@ -4515,6 +4515,18 @@ mod tests {
         assert!(test.app.input.lines().join("").is_empty());
     }
 
+    #[test]
+    fn fullscreen_theme_uses_yolop_palette_not_tuika_default() {
+        // Full-screen builds its own tuika Theme from yolop's palette (item 6),
+        // rather than inheriting tuika's neutral toolkit default.
+        let theme = fullscreen::yolop_theme();
+        assert_eq!(theme.accent, ACCENT_BLUE);
+        assert_eq!(theme.accent_alt, ACCENT_GOLD);
+        assert_eq!(theme.surface, PANEL_BG);
+        // tuika's default is a different (red) identity.
+        assert_ne!(theme.accent, tuika::Theme::default().accent);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fullscreen_setup_overlay_renders_via_tuika() {
         use ratatui::backend::TestBackend;
