@@ -48,7 +48,7 @@ deduplicate them (see [Compatibility](#compatibility)).
 
 ## Components
 
-See the [component gallery](docs/README.md) for an animated demo of each
+See the [component gallery](docs/components.md) for an animated demo of each
 component (the same GIFs are embedded inline in the [docs.rs](https://docs.rs/tuika)
 API docs).
 
