@@ -91,7 +91,21 @@ pub struct App {
     model: ModelState,
     pub lines: Vec<ChatLine>,
     printed_lines: usize,
+    /// Inline composer model (ratatui-textarea). The source of truth for the
+    /// **inline** renderer's composer.
+    ///
+    /// NOTE (item 1, two-model split): the full-screen renderer does NOT use this
+    /// — it owns [`App::composer`], a tuika `TextInputState` that handles its own
+    /// key events. The composer read/write surface (`input_text`, `set_input_text`,
+    /// `reset_input`, paste, history, …) is mode-aware and delegates to whichever
+    /// model backs the active renderer, so the two stay isolated. Unifying both on
+    /// `TextInputState` (making inline an adapter and dropping ratatui-textarea) is
+    /// a deliberate future step; kept split here to leave the shipped inline path
+    /// untouched.
     pub input: TextArea<'static>,
+    /// Full-screen composer model (tuika). The source of truth for the
+    /// **full-screen** renderer's composer; see the NOTE on [`App::input`].
+    composer: tuika::TextInputState,
     pub busy: bool,
     pub should_quit: bool,
     ctrl_c_exit: bool,
@@ -449,6 +463,7 @@ impl App {
             lines: Vec::new(),
             printed_lines: 0,
             input: new_input_area(vec![String::new()]),
+            composer: tuika::TextInputState::new(),
             busy: false,
             should_quit: false,
             ctrl_c_exit: false,
@@ -1221,7 +1236,7 @@ impl App {
         }
         match key.code {
             KeyCode::Enter if key.modifiers == KeyModifiers::SHIFT => {
-                self.input.insert_newline();
+                self.composer_insert_newline();
             }
             KeyCode::Enter => {
                 self.submit_input().await;
@@ -1230,14 +1245,36 @@ impl App {
                 if let Some(suggestion) = self.suggestions().first() {
                     self.set_input_text(suggestion.completion.clone());
                 } else {
-                    let _ = self.input.input(key);
+                    self.composer_edit_key(key);
                 }
             }
             KeyCode::Up if self.try_history_prev() => {}
             KeyCode::Down if self.try_history_next() => {}
             _ => {
-                let _ = self.input.input(normalize_printable_key(key));
+                self.composer_edit_key(normalize_printable_key(key));
             }
+        }
+    }
+
+    /// Insert a newline in the active composer.
+    fn composer_insert_newline(&mut self) {
+        if self.composer_is_fullscreen() {
+            self.composer.newline();
+        } else {
+            self.input.insert_newline();
+        }
+    }
+
+    /// Feed one editing key to the active composer. In full-screen the tuika
+    /// `TextInputState` handles the event itself (item 5, component-driven
+    /// input); inline forwards to the ratatui-textarea.
+    fn composer_edit_key(&mut self, key: KeyEvent) {
+        if self.composer_is_fullscreen() {
+            if let Some(event) = tuika::translate_event(CrosstermEvent::Key(key)) {
+                self.composer.handle(&event);
+            }
+        } else {
+            let _ = self.input.input(key);
         }
     }
 
@@ -1252,7 +1289,7 @@ impl App {
             return true;
         }
         match self.history.current_entry() {
-            Some(entry) if entry == text => self.input.cursor().0 == 0,
+            Some(entry) if entry == text => self.composer_cursor_row() == 0,
             _ => false,
         }
     }
@@ -1285,8 +1322,8 @@ impl App {
         let current = self.input_text();
         match self.history.current_entry() {
             Some(entry) if entry == current => {
-                let last_row = self.input.lines().len().saturating_sub(1);
-                if self.input.cursor().0 != last_row {
+                let last_row = self.composer_line_count().saturating_sub(1);
+                if self.composer_cursor_row() != last_row {
                     return false;
                 }
             }
@@ -1314,7 +1351,7 @@ impl App {
         self.history_search = Some(HistorySearch {
             query: String::new(),
             match_index: None,
-            saved_lines: self.input.lines().to_vec(),
+            saved_lines: self.composer_lines(),
         });
         // An empty query lands on the newest entry, so Ctrl+R immediately
         // previews the last prompt — like a shell.
@@ -1393,7 +1430,7 @@ impl App {
             }
             None => {
                 search.match_index = None;
-                self.input = new_input_area(vec![String::new()]);
+                self.clear_composer_text();
             }
         }
     }
@@ -1421,12 +1458,7 @@ impl App {
     }
 
     fn restore_saved_input(&mut self, lines: Vec<String>) {
-        self.input = new_input_area(if lines.is_empty() {
-            vec![String::new()]
-        } else {
-            lines
-        });
-        self.input.move_cursor(CursorMove::End);
+        self.set_input_text(lines.join("\n"));
     }
 
     /// Snapshot of the active reverse search for rendering, if any.
@@ -1444,28 +1476,72 @@ impl App {
         // the word being typed starts with `@`. Restricted to single-line input
         // so completion can safely rebuild the whole line (matching how slash
         // completion works).
-        if self.input.lines().len() == 1
+        if self.composer_line_count() == 1
             && let Some(file) =
-                file_path_suggestions(self.suggestion_input(), &self.startup.workspace_root)
+                file_path_suggestions(&self.suggestion_input(), &self.startup.workspace_root)
         {
             return file;
         }
-        command_suggestions(self.suggestion_input(), &self.startup.capability_commands)
+        command_suggestions(&self.suggestion_input(), &self.startup.capability_commands)
     }
 
-    fn suggestion_input(&self) -> &str {
-        self.input
-            .lines()
-            .first()
-            .map(String::as_str)
-            .unwrap_or_default()
+    fn composer_line_count(&self) -> usize {
+        if self.composer_is_fullscreen() {
+            self.composer.line_count()
+        } else {
+            self.input.lines().len()
+        }
+    }
+
+    /// The composer's first line — the anchor for `@`/slash completion.
+    fn suggestion_input(&self) -> String {
+        self.composer_lines().into_iter().next().unwrap_or_default()
+    }
+
+    // ---- composer read/write surface (mode-aware; see the NOTE on `App::input`) --
+
+    /// Whether the full-screen composer (`self.composer`) backs the active
+    /// renderer. Inline uses `self.input` (ratatui-textarea).
+    fn composer_is_fullscreen(&self) -> bool {
+        self.render_mode.is_fullscreen()
     }
 
     fn input_text(&self) -> String {
-        self.input.lines().join("\n")
+        if self.composer_is_fullscreen() {
+            self.composer.text()
+        } else {
+            self.input.lines().join("\n")
+        }
+    }
+
+    /// The composer's logical lines.
+    fn composer_lines(&self) -> Vec<String> {
+        if self.composer_is_fullscreen() {
+            self.composer
+                .text()
+                .split('\n')
+                .map(str::to_string)
+                .collect()
+        } else {
+            self.input.lines().to_vec()
+        }
+    }
+
+    /// The composer cursor's logical row (line index).
+    fn composer_cursor_row(&self) -> usize {
+        if self.composer_is_fullscreen() {
+            self.composer.cursor().0
+        } else {
+            self.input.cursor().0
+        }
     }
 
     fn set_input_text(&mut self, text: String) {
+        if self.composer_is_fullscreen() {
+            // `set_text` splits on newlines and parks the cursor at the end.
+            self.composer.set_text(&text);
+            return;
+        }
         // Split on newlines so a recalled multi-line prompt restores as multiple
         // composer rows rather than one row with embedded control characters.
         let lines: Vec<String> = text.split('\n').map(str::to_string).collect();
@@ -1477,12 +1553,28 @@ impl App {
         self.input.move_cursor(CursorMove::End);
     }
 
+    /// Clear the composer text (only) to a single empty line, leaving pending
+    /// pastes intact — used by reverse-search's "no match" state.
+    fn clear_composer_text(&mut self) {
+        if self.composer_is_fullscreen() {
+            self.composer.clear();
+        } else {
+            self.input = new_input_area(vec![String::new()]);
+        }
+    }
+
     fn reset_input(&mut self) {
-        self.input = new_input_area(vec![String::new()]);
+        self.clear_composer_text();
         self.pending_pastes.clear();
     }
 
     fn input_height(&self, input_width: u16) -> u16 {
+        if self.composer_is_fullscreen() {
+            return self
+                .composer
+                .visual_height(input_width)
+                .clamp(1, MAX_INPUT_HEIGHT);
+        }
         wrapped_input_visual_lines(&self.input, input_width).clamp(1, MAX_INPUT_HEIGHT as usize)
             as u16
     }
@@ -1511,10 +1603,19 @@ impl App {
                 char_count,
                 &self.pending_pastes,
             );
-            self.input.insert_str(&placeholder);
+            self.composer_insert_str(&placeholder);
             self.pending_pastes.push((placeholder, pasted));
         } else {
-            self.input.insert_str(&pasted);
+            self.composer_insert_str(&pasted);
+        }
+    }
+
+    /// Insert a string at the composer cursor (honoring embedded newlines).
+    fn composer_insert_str(&mut self, s: &str) {
+        if self.composer_is_fullscreen() {
+            self.composer.insert_str(s);
+        } else {
+            self.input.insert_str(s);
         }
     }
 
@@ -4293,7 +4394,10 @@ mod tests {
         // overlay compositing is covered by the tuika suite.
         test.app.setup = None;
         test.app.push_user("hello from user".to_string());
+        // The two renderers own separate composer models now (item 1), so seed
+        // the same draft into both.
         test.app.input.insert_str("draft reply");
+        test.app.composer.set_text("draft reply");
 
         test.app.set_render_mode(RenderMode::Inline);
         let regular = render_app_lines(&mut test.app, 60, 20).join("\n");
@@ -4357,11 +4461,9 @@ mod tests {
         let mut test = app_with_llmsim().await;
         test.app.setup = None;
         test.app.set_render_mode(RenderMode::Fullscreen);
-        // Two composer rows; the tuika TextInput must render both, after the
-        // blue "> " prompt.
-        test.app.input.insert_str("first line");
-        test.app.input.insert_newline();
-        test.app.input.insert_str("second line");
+        // Two composer rows in full-screen's own model of record (the tuika
+        // TextInputState); the TextInput must render both, after the blue "> ".
+        test.app.composer.set_text("first line\nsecond line");
 
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -4388,6 +4490,29 @@ mod tests {
             cell.symbol() == ">" && cell.fg == ACCENT_BLUE
         });
         assert!(has_prompt, "the blue '>' prompt should render");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_keys_route_into_the_composer() {
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        // Editing keys drive full-screen's own TextInputState (item 5,
+        // component-driven input), not the inline ratatui-textarea.
+        for c in "hi".chars() {
+            test.app
+                .handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()))
+                .await;
+        }
+        test.app
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT))
+            .await;
+        test.app
+            .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()))
+            .await;
+        assert_eq!(test.app.composer.text(), "hi\nx");
+        // The inline model stayed empty — the two composers are isolated.
+        assert!(test.app.input.lines().join("").is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

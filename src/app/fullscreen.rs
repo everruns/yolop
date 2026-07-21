@@ -100,14 +100,6 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     app.scroll_metrics = (scroll_content_h, transcript_height);
     app.scroll.clamp(scroll_content_h, transcript_height);
 
-    // The composer is a real tuika TextInput. Its text is a snapshot of the
-    // shared composer model (`app.input`); inline mode keeps owning that model,
-    // full-screen mode only reads it here.
-    let mut composer = TextInputState::new();
-    composer.set_text(&app.input.lines().join("\n"));
-    let cursor = app.input.cursor();
-    composer.set_cursor(cursor.0, cursor.1);
-
     // Probes recover the rects tuika assigns so the host can place the terminal
     // cursor inside the composer and bound mouse selection to the transcript.
     let transcript_probe = RectProbe::new();
@@ -115,12 +107,15 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
 
     let transcript = Scroll::new(scroll_lines, &app.scroll);
 
+    // The composer is a real tuika TextInput reading full-screen's own composer
+    // model of record (`app.composer`) — no per-frame mirror from a
+    // ratatui-textarea. `App` routes editing keys straight into it.
     let root = view! {
         col {
             grow(1) { node(transcript_view(transcript, &transcript_probe)) }
             fixed(preview_height) { node(preview_view(preview_line)) }
             fixed(1) { node(message_rule(&state)) }
-            fixed(input_height) { node(composer_row(&composer, &input_probe)) }
+            fixed(input_height) { node(composer_row(&app.composer, &input_probe)) }
             fixed(status_sep_height) { node(status_rule()) }
             fixed(status_rows) { node(Text::new(status_lines)) }
         }
@@ -163,7 +158,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     if !app.busy {
         let input_rect = input_probe.rect();
         if input_rect.width > 0 && input_rect.height > 0 {
-            let (x, y) = composer.cursor_screen(input_rect);
+            let (x, y) = app.composer.cursor_screen(input_rect);
             f.set_cursor_position((x, y));
         }
     }
