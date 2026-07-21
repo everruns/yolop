@@ -4348,6 +4348,45 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_composer_renders_multiline_input_via_tuika() {
+        use ratatui::backend::TestBackend;
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        // Two composer rows; the tuika TextInput must render both, after the
+        // blue "> " prompt.
+        test.app.input.insert_str("first line");
+        test.app.input.insert_newline();
+        test.app.input.insert_str("second line");
+
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut test.app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+
+        let text: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for needle in ["first line", "second line", "> "] {
+            assert!(
+                text.contains(needle),
+                "tuika composer should render {needle:?}:\n{text}"
+            );
+        }
+        // The blue prompt is bold accent-blue at the composer's left edge.
+        let has_prompt = (0..buffer.area.height).any(|y| {
+            let cell = &buffer[(0, y)];
+            cell.symbol() == ">" && cell.fg == ACCENT_BLUE
+        });
+        assert!(has_prompt, "the blue '>' prompt should render");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fullscreen_scroll_wheel_unsticks_from_bottom() {
         let mut test = app_with_llmsim().await;
         test.app.set_render_mode(RenderMode::Fullscreen);

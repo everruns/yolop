@@ -1,25 +1,33 @@
-//! Full-screen renderer, composed with the `tuika` view tree.
+//! Full-screen renderer, built as a native `tuika` view tree.
 //!
-//! Where the inline renderer ([`super::render::draw_shared`]) lays out the
-//! chrome with a hand-rolled ratatui split, the full-screen mode builds the
-//! same vertical composition — transcript, the blue message separator, the
-//! composer, the gold status separator, the session status — as a `tuika`
-//! `Flex` column and paints it through `tuika::paint`. Content is the *same*
-//! styled lines the inline renderer uses (from `super::render`), so the design
-//! (colors, separators, status) cannot drift.
+//! This is the tuika-native counterpart to the inline renderer
+//! ([`super::render::draw_shared`]). Where the inline mode paints the chrome
+//! with hand-rolled ratatui splits and widgets, the full-screen mode composes
+//! the whole frame — transcript, the blue message separator, the composer, the
+//! gold status separator, the session status, and the preview popup row — as a
+//! `tuika` [`view!`] tree of real components and paints it with
+//! [`tuika::paint`]:
 //!
-//! Two regions are drawn by the shared ratatui renderers into rects `tuika`
-//! reserved for them (via [`tuika::RectProbe`]): the composer, which is the
-//! `ratatui-textarea` widget plus the real terminal cursor, and the streaming
-//! preview. Full-screen mouse text selection (see [`super::App`]) is applied
-//! over the transcript rect the same probe reports.
+//! - **separators** are [`tuika::Rule`]s (blue message rule, gold status rule);
+//! - **the composer** is a [`tuika::TextInput`] fed from a snapshot of the
+//!   shared composer text model (`app.input`) — no ratatui-textarea widget;
+//! - **the preview row** (reverse-search / suggestions / streaming preview) and
+//!   **the status** are [`tuika::Text`] views built from the same pure line
+//!   builders the inline chrome uses, so the two modes cannot visually drift;
+//! - **the transcript** is bottom-aligned styled lines inside a probed region so
+//!   full-screen mouse text selection (see [`super::App`]) can be bounded to it.
+//!
+//! Crucially, the full-screen frame calls **no** `render::draw_*` painter for
+//! its own chrome — only the shared *content* builders (which return styled
+//! [`Line`]s). The setup / ask / background overlays still borrow the inline
+//! sheet renderers; they move onto tuika in a follow-up.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 
-use tuika::{Element, Flex, Padding, RectProbe, Spacer, Text, element};
+use tuika::{Element, Padding, RectProbe, Rule, Text, TextInput, TextInputState, element, view};
 
 use super::render;
 use super::{ACCENT_BLUE, ACCENT_GOLD, App};
@@ -27,7 +35,8 @@ use super::{ACCENT_BLUE, ACCENT_GOLD, App};
 pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
-    // Overlays own the whole viewport; reuse the shared sheet renderers.
+    // Overlays own the whole viewport; borrow the shared sheet renderers until
+    // they move onto tuika.
     if app.pending_ask.is_some() {
         render::draw_ask_overlay(f, area, app);
         return;
@@ -59,41 +68,37 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let status_sep_height = u16::from(input_height < 3);
     let transcript_height = area.height.saturating_sub(chrome_height);
 
-    // Content as styled lines — the exact builders the inline renderer uses.
+    // Content as styled lines — the exact pure builders the inline renderer uses,
+    // so colors, separators, and status can never drift between the two modes.
     let inner_w = area.width.saturating_sub(2) as usize;
-    let transcript =
+    let transcript_lines =
         render::recent_transcript_lines(app, inner_w, transcript_height.max(1) as usize);
-    let message_separator = render::separator_line(
-        render::message_separator_title(&state),
-        area.width,
-        Style::default().fg(ACCENT_BLUE),
-    );
-    let status_separator =
-        render::separator_line(Line::from(""), area.width, Style::default().fg(ACCENT_GOLD));
     let status_lines = render::session_status_lines(&state);
+    let preview_line = render::preview_slot_line(&state, area.width);
 
-    // Probes recover the rects tuika assigns to regions the shared ratatui
-    // renderers finish drawing (composer, preview) and the transcript.
+    // The composer is a real tuika TextInput. Its text is a snapshot of the
+    // shared composer model (`app.input`); inline mode keeps owning that model,
+    // full-screen mode only reads it here.
+    let mut composer = TextInputState::new();
+    composer.set_text(&app.input.lines().join("\n"));
+    let cursor = app.input.cursor();
+    composer.set_cursor(cursor.0, cursor.1);
+
+    // Probes recover the rects tuika assigns so the host can place the terminal
+    // cursor inside the composer and bound mouse selection to the transcript.
     let transcript_probe = RectProbe::new();
-    let preview_probe = RectProbe::new();
     let input_probe = RectProbe::new();
 
-    let mut col = Flex::column().grow(1, transcript_view(transcript, &transcript_probe));
-    if preview_height > 0 {
-        col = col.fixed(preview_height, preview_probe.wrap(element(Spacer)));
-    }
-    col = col.fixed(1, element(Text::new(vec![message_separator])));
-    col = col.fixed(input_height, input_probe.wrap(element(Spacer)));
-    if status_sep_height > 0 {
-        col = col.fixed(
-            status_sep_height,
-            element(Text::new(vec![status_separator])),
-        );
-    }
-    if status_rows > 0 {
-        col = col.fixed(status_rows, element(Text::new(status_lines)));
-    }
-    let root = element(col);
+    let root = view! {
+        col {
+            grow(1) { node(transcript_view(transcript_lines, &transcript_probe)) }
+            fixed(preview_height) { node(preview_view(preview_line)) }
+            fixed(1) { node(message_rule(&state)) }
+            fixed(input_height) { node(composer_row(&composer, &input_probe)) }
+            fixed(status_sep_height) { node(status_rule()) }
+            fixed(status_rows) { node(Text::new(status_lines)) }
+        }
+    };
 
     // Transparent background so the styled lines' own colors show through.
     let theme = tuika::Theme {
@@ -127,25 +132,64 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         );
     }
 
-    // Ratatui-native regions, into the rects tuika reserved for them.
-    if preview_height > 0 {
-        render::draw_preview_slot(f, preview_probe.rect(), &state);
+    // Place the real terminal cursor inside the composer's TextInput rect, unless
+    // a turn is running (input disabled).
+    if !app.busy {
+        let input_rect = input_probe.rect();
+        if input_rect.width > 0 && input_rect.height > 0 {
+            let (x, y) = composer.cursor_screen(input_rect);
+            f.set_cursor_position((x, y));
+        }
     }
-    render::draw_input(f, input_probe.rect(), app);
 }
 
-/// The transcript: its styled lines bottom-aligned within a one-column inset,
+/// The transcript region: styled lines bottom-aligned within a one-column inset,
 /// probed so the host can bound mouse selection to it.
 fn transcript_view(lines: Vec<Line<'static>>, probe: &RectProbe) -> Element {
     let height = (lines.len() as u16).max(1);
-    let inner = Flex::column()
-        .padding(Padding {
-            left: 1,
-            right: 1,
-            top: 0,
-            bottom: 0,
-        })
-        .grow(1, element(Spacer))
-        .fixed(height, element(Text::new(lines)));
-    probe.wrap(element(inner))
+    let inner = view! {
+        col(padding = Padding { left: 1, right: 1, top: 0, bottom: 0 }) {
+            grow(1) { spacer() }
+            fixed(height) { node(Text::new(lines)) }
+        }
+    };
+    probe.wrap(inner)
+}
+
+/// The preview popup row: one line (reverse-search / suggestions / stream tail)
+/// or empty when the row is hidden.
+fn preview_view(line: Option<Line<'static>>) -> Element {
+    element(Text::new(line.map(|l| vec![l]).unwrap_or_default()))
+}
+
+/// The blue message separator — a [`Rule`] whose title is the composer hint (or
+/// the busy "thinking" indicator), filled out with `─` in accent blue.
+fn message_rule(state: &super::ViewState) -> Element {
+    element(
+        Rule::new()
+            .title(render::message_separator_title(state))
+            .style(Style::default().fg(ACCENT_BLUE)),
+    )
+}
+
+/// The gold status separator — a full-width [`Rule`] with no title.
+fn status_rule() -> Element {
+    element(Rule::new().style(Style::default().fg(ACCENT_GOLD)))
+}
+
+/// The composer row: the blue `> ` prompt then the [`TextInput`], the latter
+/// probed so the host can place the terminal cursor in it.
+fn composer_row(composer: &TextInputState, probe: &RectProbe) -> Element {
+    let prompt = Line::from(Span::styled(
+        "> ",
+        Style::default()
+            .fg(ACCENT_BLUE)
+            .add_modifier(Modifier::BOLD),
+    ));
+    view! {
+        row {
+            fixed(2) { node(Text::new(vec![prompt])) }
+            grow(1) { node(probe.wrap(element(TextInput::new(composer)))) }
+        }
+    }
 }
