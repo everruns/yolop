@@ -76,33 +76,6 @@ pub(super) fn draw_shared(f: &mut ratatui::Frame, app: &mut App) {
     draw_recent_transcript(f, layout.transcript, app);
     draw_chrome_layout(f, layout.chrome, &state);
     draw_input(f, layout.chrome.input, app);
-
-    // Full-screen mouse selection: record the transcript's inner rect (so the
-    // event handler can bound drags to it), copy a just-released selection off
-    // this freshly rendered frame, and paint the highlight over it.
-    if app.render_mode.is_fullscreen() {
-        let inner = Rect {
-            x: layout.transcript.x.saturating_add(1),
-            y: layout.transcript.y,
-            width: layout.transcript.width.saturating_sub(2),
-            height: layout.transcript.height,
-        };
-        app.set_selection_area(inner);
-        if let Some(range) = app.selection_range() {
-            if app.take_pending_copy() {
-                let text = tuika::selected_text(f.buffer_mut(), inner, range);
-                if !text.is_empty() {
-                    let _ = tuika::write_clipboard(&mut std::io::stdout(), &text);
-                }
-            }
-            tuika::highlight(
-                f.buffer_mut(),
-                inner,
-                range,
-                Style::default().add_modifier(Modifier::REVERSED),
-            );
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -390,14 +363,21 @@ pub(crate) fn chrome_preview_visible(state: &ViewState) -> bool {
         || !state.command_suggestions.is_empty()
 }
 
-pub(crate) fn draw_chrome_layout(f: &mut ratatui::Frame, layout: ChromeLayout, state: &ViewState) {
+/// The preview row multiplexes (in priority order) the Ctrl+R reverse-search
+/// prompt, the `@`/command suggestions, and the streaming preview. Shared by the
+/// inline chrome and the full-screen renderer so both show the same popups.
+pub(crate) fn draw_preview_slot(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
     if let Some(search) = &state.history_search {
-        draw_history_search(f, layout.preview, search);
+        draw_history_search(f, area, search);
     } else if state.command_suggestions.is_empty() {
-        draw_stream_preview(f, layout.preview, state);
+        draw_stream_preview(f, area, state);
     } else {
-        draw_suggestions(f, layout.preview, &state.command_suggestions);
+        draw_suggestions(f, area, &state.command_suggestions);
     }
+}
+
+pub(crate) fn draw_chrome_layout(f: &mut ratatui::Frame, layout: ChromeLayout, state: &ViewState) {
+    draw_preview_slot(f, layout.preview, state);
     draw_message_separator(f, layout.message_separator, state);
     draw_status_separator(f, layout.status_separator);
     draw_session_status(f, layout.session_status, state);
@@ -1936,14 +1916,17 @@ pub(crate) fn draw_status_separator(f: &mut ratatui::Frame, area: Rect) {
     draw_separator(f, area, Line::from(""), Style::default().fg(ACCENT_GOLD));
 }
 
-pub(crate) fn draw_session_status(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
-    let lines = state
+pub(crate) fn session_status_lines(state: &ViewState) -> Vec<Line<'static>> {
+    state
         .presentation
         .status_lines()
         .iter()
         .map(status_line)
-        .collect::<Vec<_>>();
-    f.render_widget(Paragraph::new(lines), area);
+        .collect()
+}
+
+pub(crate) fn draw_session_status(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
+    f.render_widget(Paragraph::new(session_status_lines(state)), area);
 }
 
 fn status_line(line: &StatusLine) -> Line<'static> {

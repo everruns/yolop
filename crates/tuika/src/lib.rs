@@ -47,6 +47,7 @@ pub mod live;
 pub mod mouse;
 pub mod native;
 pub mod overlay;
+pub mod probe;
 pub mod ratatui_view;
 pub mod runner;
 pub mod style;
@@ -74,6 +75,7 @@ pub use mouse::{
 };
 pub use native::{ProgressState, TerminalProgress};
 pub use overlay::{Anchor, Extent, OverlaySpec};
+pub use probe::{Probe, RectProbe};
 pub use ratatui_view::RatatuiView;
 pub use runner::{Runner, RunnerConfig};
 pub use style::{BorderStyle, Theme};
