@@ -183,6 +183,13 @@ pub struct App {
     /// Last (content_height, viewport_height) the full-screen transcript drew,
     /// so mouse/paging handlers can clamp scrolling without re-laying out.
     scroll_metrics: (u16, u16),
+    /// Full-screen mouse text selection over the transcript. `selection_area`
+    /// is the transcript's inner rect recorded by the last draw (so the event
+    /// handler can bound drags to it); `pending_copy` defers the OSC 52 copy to
+    /// the next draw, where the freshly rendered frame buffer is readable.
+    selection: tuika::SelectionState,
+    selection_area: Rect,
+    pending_copy: bool,
     /// Drives the terminal's native OSC 9;4 progress indicator (Ghostty top
     /// bar / taskbar) while a turn runs. Works in both renderers. Enabled only
     /// for real TUI sessions via [`App::enable_native_progress`] so tests and
@@ -486,6 +493,9 @@ impl App {
             render_mode: RenderMode::default(),
             scroll: tuika::ScrollState::new(),
             scroll_metrics: (0, 0),
+            selection: tuika::SelectionState::new(),
+            selection_area: Rect::ZERO,
+            pending_copy: false,
             term_progress: tuika::TerminalProgress::new(),
             native_progress: false,
             // Tests run in-memory so recall never reads or appends to the real
@@ -522,6 +532,78 @@ impl App {
     /// `run_tui` before the loop when `--fullscreen` is set.
     pub(crate) fn set_render_mode(&mut self, mode: RenderMode) {
         self.render_mode = mode;
+    }
+
+    /// The active full-screen transcript selection, if any (read by the draw to
+    /// highlight and copy it).
+    pub(crate) fn selection_range(&self) -> Option<tuika::SelectionRange> {
+        self.selection.range()
+    }
+
+    /// Record the transcript's inner rect (the selectable region) from the draw.
+    pub(crate) fn set_selection_area(&mut self, area: Rect) {
+        self.selection_area = area;
+    }
+
+    /// Take and clear the deferred-copy flag set when a drag was released.
+    pub(crate) fn take_pending_copy(&mut self) -> bool {
+        std::mem::take(&mut self.pending_copy)
+    }
+
+    /// Route a full-screen mouse event to transcript text selection. Returns
+    /// `true` when the event was consumed (a redraw follows). A left-drag that
+    /// starts inside the transcript selects; releasing it arms a clipboard copy
+    /// (performed in the next draw). Shift/Ctrl/Alt gestures are left alone so
+    /// the terminal's own Shift-drag selection still works.
+    fn handle_fullscreen_selection(&mut self, mouse: MouseEvent) -> bool {
+        let Some(tuika::Event::Mouse(m)) = tuika::translate_event(CrosstermEvent::Mouse(mouse))
+        else {
+            return false;
+        };
+        if !m.plain() {
+            return false;
+        }
+        match m.kind {
+            tuika::MouseKind::Down(tuika::MouseButton::Left) => {
+                let a = self.selection_area;
+                let inside = a.width > 0
+                    && a.height > 0
+                    && m.column >= a.x
+                    && m.column < a.right()
+                    && m.row >= a.y
+                    && m.row < a.bottom();
+                if inside {
+                    self.selection.handle(&m);
+                    true
+                } else {
+                    // A press elsewhere dismisses any existing selection but is
+                    // otherwise left for the normal mouse handler (e.g. status).
+                    let had = self.selection.range().is_some();
+                    self.selection.clear();
+                    had
+                }
+            }
+            tuika::MouseKind::Drag(tuika::MouseButton::Left)
+            | tuika::MouseKind::Up(tuika::MouseButton::Left) => {
+                if self.selection.handle(&m) {
+                    if matches!(m.kind, tuika::MouseKind::Up(tuika::MouseButton::Left))
+                        && self.selection.range().is_some()
+                    {
+                        self.pending_copy = true;
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Drop any full-screen selection (on scroll, key input, or new output —
+    /// its cell coordinates no longer point at the same text).
+    fn clear_selection(&mut self) {
+        self.selection.clear();
     }
 
     /// Enable the terminal's native OSC 9;4 progress indicator for this session.
@@ -940,12 +1022,19 @@ impl App {
                     if key.code == KeyCode::Esc && self.handle_escape_prefixed_enter().await? {
                         continue;
                     }
+                    if self.render_mode.is_fullscreen() {
+                        self.clear_selection();
+                    }
                     self.handle_key(key).await;
                 }
                 CrosstermEvent::Mouse(mouse) => {
-                    if self.render_mode.is_fullscreen() && self.handle_fullscreen_scroll(mouse.kind)
-                    {
-                        continue;
+                    if self.render_mode.is_fullscreen() {
+                        if self.handle_fullscreen_scroll(mouse.kind) {
+                            continue;
+                        }
+                        if self.handle_fullscreen_selection(mouse) {
+                            continue;
+                        }
                     }
                     let area = terminal.get_frame().area();
                     if self.handle_mouse(mouse, area) {
@@ -1924,6 +2013,8 @@ impl App {
             MouseEventKind::ScrollDown => tuika::MouseKind::ScrollDown,
             _ => return false,
         };
+        // Scrolling moves the text under any selection; drop it.
+        self.clear_selection();
         let (content_h, viewport_h) = self.scroll_metrics;
         let event = tuika::Event::Mouse(tuika::Mouse::at(tuika_kind, 0, 0));
         self.scroll.handle(&event, content_h, viewport_h).consumed()
@@ -4225,6 +4316,74 @@ mod tests {
         // A wheel-up should be consumed and detach from the bottom.
         assert!(test.app.handle_fullscreen_scroll(MouseEventKind::ScrollUp));
         assert!(!test.app.scroll.is_stuck_to_bottom());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_mouse_drag_selects_and_copies_transcript() {
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        test.app.push_user("hello from user".to_string());
+
+        // First draw records the transcript's selectable inner rect.
+        let _ = render_app_lines(&mut test.app, 60, 12);
+        let area = test.app.selection_area;
+        assert!(
+            area.width > 0 && area.height > 0,
+            "the draw should record the transcript rect"
+        );
+
+        // Drag across the bottom transcript row (where the pushed line renders).
+        let row = area.bottom() - 1;
+        let ev = |kind, column| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(
+            test.app
+                .handle_fullscreen_selection(ev(MouseEventKind::Down(MouseButton::Left), area.x))
+        );
+        assert!(
+            test.app.handle_fullscreen_selection(ev(
+                MouseEventKind::Drag(MouseButton::Left),
+                area.x + 5
+            ))
+        );
+        assert!(test.app.handle_fullscreen_selection(ev(
+            MouseEventKind::Up(MouseButton::Left),
+            area.right() - 1
+        )));
+
+        let range = test
+            .app
+            .selection_range()
+            .expect("a left-drag builds a selection");
+        assert!(test.app.pending_copy, "releasing the drag arms the copy");
+
+        // Second draw: highlights the selection and performs the deferred copy.
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut test.app)).expect("draw");
+        assert!(!test.app.pending_copy, "the draw consumes the pending copy");
+
+        let buffer = terminal.backend().buffer();
+        let highlighted = (range.start.0..=range.end.0).any(|x| {
+            buffer[(x, row)]
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        });
+        assert!(highlighted, "the selected row should be highlighted");
+        let text = tuika::selected_text(buffer, test.app.selection_area, range);
+        assert!(
+            text.contains("hello"),
+            "the selection should copy the transcript text, got {text:?}"
+        );
+
+        // Scrolling clears the stale selection.
+        test.app.handle_fullscreen_scroll(MouseEventKind::ScrollUp);
+        assert!(test.app.selection_range().is_none());
     }
 
     /// Render the same app state in regular and full-screen mode and return
