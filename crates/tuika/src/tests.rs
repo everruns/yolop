@@ -1646,3 +1646,25 @@ fn text_input_set_and_clear() {
     assert!(state.is_empty());
     assert_eq!(state.cursor(), (0, 0));
 }
+
+#[test]
+fn text_input_set_cursor_clamps() {
+    let mut state = TextInputState::from_text("hi\nthere");
+    state.set_cursor(0, 1);
+    assert_eq!(state.cursor(), (0, 1));
+    // Row past the end clamps to the last line; col past its end clamps too.
+    state.set_cursor(9, 9);
+    assert_eq!(state.cursor(), (1, 5));
+}
+
+#[test]
+fn text_input_composes_into_view_tree() {
+    // Owning its snapshot makes TextInput `'static`, so it splices into a
+    // `view!` tree via `element(...)` — the property the fullscreen composer
+    // relies on.
+    let mut state = TextInputState::new();
+    type_str(&mut state, "hi");
+    let tree = element(TextInput::new(&state));
+    let out = render_el(&tree, 4, 1);
+    assert_eq!(out[0], "hi");
+}

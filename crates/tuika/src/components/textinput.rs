@@ -91,6 +91,13 @@ impl TextInputState {
         *self = Self::new();
     }
 
+    /// Move the cursor to `(row, col)`, clamped into the buffer. Lets a host
+    /// mirror an external editor's cursor into this state for rendering.
+    pub fn set_cursor(&mut self, row: usize, col: usize) {
+        self.row = row.min(self.lines.len().saturating_sub(1));
+        self.col = col.min(self.lines[self.row].chars().count());
+    }
+
     fn row_chars(&self, row: usize) -> Vec<char> {
         self.lines[row].chars().collect()
     }
@@ -267,25 +274,7 @@ impl TextInputState {
     /// `(logical_row, chars)`. A line that fills the width exactly emits a
     /// trailing empty row so the cursor can rest on a fresh line.
     fn visual_rows(&self, width: u16) -> Vec<(usize, Vec<char>)> {
-        let width = width.max(1) as usize;
-        let mut rows = Vec::new();
-        for (r, line) in self.lines.iter().enumerate() {
-            let chars: Vec<char> = line.chars().collect();
-            if chars.is_empty() {
-                rows.push((r, Vec::new()));
-                continue;
-            }
-            let mut start = 0;
-            while start < chars.len() {
-                let end = (start + width).min(chars.len());
-                rows.push((r, chars[start..end].to_vec()));
-                start = end;
-            }
-            if chars.len().is_multiple_of(width) {
-                rows.push((r, Vec::new()));
-            }
-        }
-        rows
+        wrap_visual_rows(&self.lines, width)
     }
 
     /// Number of visual rows the text occupies at `width`.
@@ -323,16 +312,48 @@ impl TextInputState {
     }
 }
 
-/// Renders a [`TextInputState`]'s wrapped text.
-pub struct TextInput<'a> {
-    state: &'a TextInputState,
+/// Char-soft-wrap `lines` to `width`, returning visual rows as
+/// `(logical_row, chars)`. A line that fills the width exactly emits a trailing
+/// empty row so the cursor can rest on a fresh line. Shared by [`TextInputState`]
+/// (cursor math) and [`TextInput`] (rendering).
+fn wrap_visual_rows(lines: &[String], width: u16) -> Vec<(usize, Vec<char>)> {
+    let width = width.max(1) as usize;
+    let mut rows = Vec::new();
+    for (r, line) in lines.iter().enumerate() {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            rows.push((r, Vec::new()));
+            continue;
+        }
+        let mut start = 0;
+        while start < chars.len() {
+            let end = (start + width).min(chars.len());
+            rows.push((r, chars[start..end].to_vec()));
+            start = end;
+        }
+        if chars.len().is_multiple_of(width) {
+            rows.push((r, Vec::new()));
+        }
+    }
+    rows
+}
+
+/// Renders a snapshot of a [`TextInputState`]'s wrapped text.
+///
+/// Owns its lines (cloned from the state at construction, like [`Scroll`]) so it
+/// is `'static` and composes into a [`view!`](crate::view!) tree. The host places
+/// the terminal cursor separately via [`TextInputState::cursor_screen`].
+///
+/// [`Scroll`]: crate::Scroll
+pub struct TextInput {
+    lines: Vec<String>,
     style: Style,
 }
 
-impl<'a> TextInput<'a> {
-    pub fn new(state: &'a TextInputState) -> Self {
+impl TextInput {
+    pub fn new(state: &TextInputState) -> Self {
         Self {
-            state,
+            lines: state.lines.clone(),
             style: Style::default(),
         }
     }
@@ -343,16 +364,19 @@ impl<'a> TextInput<'a> {
     }
 }
 
-impl View for TextInput<'_> {
+impl View for TextInput {
     fn measure(&self, available: Size) -> Size {
-        Size::new(available.width, self.state.visual_height(available.width))
+        let height = wrap_visual_rows(&self.lines, available.width).len().max(1) as u16;
+        Size::new(available.width, height)
     }
 
     fn render(&self, area: Rect, surface: &mut Surface, _ctx: &RenderCtx) {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        for (vrow, (_logical, chars)) in self.state.visual_rows(area.width).into_iter().enumerate()
+        for (vrow, (_logical, chars)) in wrap_visual_rows(&self.lines, area.width)
+            .into_iter()
+            .enumerate()
         {
             let y = area.y.saturating_add(vrow as u16);
             if y >= area.bottom() {
