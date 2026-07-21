@@ -60,7 +60,7 @@ pub mod width;
 // etc. for the common surface without deep paths.
 pub use clipboard::{osc52, write_clipboard};
 pub use components::{
-    Boxed, Constrained, Flex, KeyHints, Loader, Paragraph, ProgressBar, Responsive, Scroll,
+    Boxed, Constrained, Flex, KeyHints, Loader, Paragraph, ProgressBar, Responsive, Rule, Scroll,
     ScrollState, SelectList, SelectOutcome, SelectState, Spacer, Spinner, SpinnerStyle, StatusBar,
     Tabs, TabsState, Text, Wrap, wrap_lines,
 };
