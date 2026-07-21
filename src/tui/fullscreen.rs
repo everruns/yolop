@@ -331,10 +331,14 @@ fn draw_setup_picker(f: &mut Frame, area: Rect, picker: render::SetupPicker) {
         options,
         selected,
         footer,
+        viewport,
     } = picker;
     let mut state = SelectState::new();
     state.select(selected);
-    let list = SelectList::new(options, &state);
+    let mut list = SelectList::new(options, &state);
+    if let Some(rows) = viewport {
+        list = list.viewport(rows);
+    }
     let content = view! {
         col {
             node(Text::new(header))

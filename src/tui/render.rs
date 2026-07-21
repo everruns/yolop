@@ -860,20 +860,25 @@ pub(crate) struct SetupPicker {
     pub options: Vec<Line<'static>>,
     pub selected: usize,
     pub footer: Vec<Line<'static>>,
+    /// Max visible option rows, for a `SelectList` viewport; `None` shows all.
+    pub viewport: Option<u16>,
 }
 
-/// The option rows + surrounding chrome for the *bounded* list steps (provider,
-/// credential method, reasoning effort), so full-screen can render them through a
-/// tuika `SelectList` instead of hand-highlighted [`setup_row`] lines (item 4).
+/// The option rows + surrounding chrome for the list-selection steps (provider,
+/// credential method, reasoning effort, and the model list), so full-screen can
+/// render them through a tuika `SelectList` instead of hand-highlighted
+/// [`setup_row`] lines (item 4). The model list sets [`SetupPicker::viewport`] so
+/// the `SelectList` windows its (possibly huge) options with a scrollbar.
 ///
 /// NOTE (duplication): this intentionally mirrors the per-step option iteration
 /// in [`setup_overlay_content`] rather than refactoring it, so the inline sheet
 /// renderer stays byte-identical. The two share [`setup_option_line`] for the row
-/// formatting. The **model picker** is deliberately excluded — it windows a
-/// possibly-huge list (`model_window`) and has a custom-id input mode that
-/// `SelectList` can't yet express, so it keeps the windowed Text path; a
-/// windowing `SelectList` is a tuika follow-up. Input steps and Codex login
-/// return `None` too (nothing to select).
+/// formatting. The model picker's **custom-id input** sub-mode (`custom: Some`)
+/// returns `None` here so it falls back to the shared text-input panel path —
+/// that sub-mode is a `TextInput`, not a list. Other input steps and Codex login
+/// return `None` too (nothing to select). The inline `setup_overlay_content` also
+/// draws a "─── more models ───" divider between recommended and other models;
+/// the `SelectList` path omits it (the scrollbar conveys position instead).
 pub(crate) fn setup_picker(app: &App) -> Option<SetupPicker> {
     match app.setup.as_ref()? {
         SetupStep::Provider { selected } => {
@@ -904,6 +909,7 @@ pub(crate) fn setup_picker(app: &App) -> Option<SetupPicker> {
                 options,
                 selected: *selected,
                 footer,
+                viewport: None,
             })
         }
         SetupStep::Credential {
@@ -930,6 +936,7 @@ pub(crate) fn setup_picker(app: &App) -> Option<SetupPicker> {
                 options,
                 selected: *selected,
                 footer,
+                viewport: None,
             })
         }
         SetupStep::PickEffort { selected, error } => {
@@ -972,6 +979,52 @@ pub(crate) fn setup_picker(app: &App) -> Option<SetupPicker> {
                 options,
                 selected: *selected,
                 footer,
+                viewport: None,
+            })
+        }
+        // The model list is a windowed SelectList. Its custom-id sub-mode
+        // (`custom: Some`) is a text input, so it falls back to the Text path.
+        SetupStep::PickModel {
+            provider,
+            selected,
+            custom: None,
+            error,
+        } => {
+            let header = vec![
+                setup_title("Select Model"),
+                setup_hint(&if provider == "custom" {
+                    "Model id served by your endpoint. Applies to this session and future sessions."
+                        .to_string()
+                } else {
+                    format!(
+                        "{} models. Applies to this session and future sessions.",
+                        App::provider_label(provider)
+                    )
+                }),
+                Line::from(""),
+            ];
+            let current = app.model.model_id();
+            let options = app
+                .model_options(provider)
+                .iter()
+                .enumerate()
+                .map(|(idx, option)| {
+                    let mut hint = option.hint.to_string();
+                    if option.spec.as_deref() == Some(current.as_str()) {
+                        hint.push_str(" · current");
+                    }
+                    setup_option_line(idx + 1, &option.label, &hint)
+                })
+                .collect();
+            let mut footer = Vec::new();
+            push_setup_error(&mut footer, error.as_deref());
+            footer.push(setup_footer("Enter confirm · ↑/↓ move · Esc back"));
+            Some(SetupPicker {
+                header,
+                options,
+                selected: *selected,
+                footer,
+                viewport: Some(MAX_VISIBLE_MODEL_ROWS as u16),
             })
         }
         _ => None,
