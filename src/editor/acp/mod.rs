@@ -502,6 +502,88 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_mcp_server_is_discovered_and_its_tool_executes() {
+        // Live round-trip: a real stdio MCP server (the Python echo fixture)
+        // supplied via `session/new` `mcpServers` must be discovered and its
+        // tool actually executed. The server writes a marker file on each call,
+        // so the filesystem proves execution — nothing is mocked but the LLM.
+        let test = "client_mcp_server_is_discovered_and_its_tool_executes";
+        let Some(python) = crate::mcp_e2e_tests::require_python3(test) else {
+            return;
+        };
+        let marker = tempfile::tempdir().expect("marker tempdir").keep();
+        let tool = crate::mcp_e2e_tests::mcp_tool("echo", "echo");
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        // The scripted model calls the client-supplied server's tool on the turn.
+        let (mut w, mut reader, _server) = start_raw_server(
+            crate::mcp_e2e_tests::script(&tool, "hello-acp-mcp"),
+            sessions,
+        );
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        let fixture = crate::mcp_e2e_tests::fixture_server();
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0", "id": 1, "method": "session/new",
+                "params": {
+                    "cwd": cwd,
+                    "mcpServers": [{
+                        "name": "echo",
+                        "command": python.to_str().unwrap(),
+                        "args": [ fixture.to_str().unwrap(), marker.to_str().unwrap() ],
+                        "env": []
+                    }]
+                }
+            }),
+        )
+        .await;
+        let (new_resp, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_resp["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Disable the approval gate so this test isolates MCP discovery and
+        // execution (the permission gate has its own tests).
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/set_mode",
+                    "params": { "sessionId": session_id, "modeId": "off" } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 2).await;
+
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "use the echo tool" }] }
+            }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 3).await;
+
+        let called = marker.join("echo.called");
+        assert!(
+            called.exists(),
+            "the client-supplied MCP server must be discovered and its tool executed (marker missing)"
+        );
+        let body = std::fs::read_to_string(&called).unwrap();
+        assert!(
+            body.contains("hello-acp-mcp"),
+            "the server should receive the call arguments: {body}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn advertises_modes_and_set_mode_switches_level() {
         with_sdk_client(fixed("hi"), |client| async move {
             // A new session advertises the three approval levels, defaulting to
