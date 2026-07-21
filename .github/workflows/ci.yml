@@ -38,6 +38,9 @@ jobs:
       - name: Check Tuika
         run: cargo check --locked -p tuika --all-targets
 
+      - name: Verify component gallery assets
+        run: cargo run --locked -p tuika --example demo -- check
+
   lint:
     name: Format + Clippy
     runs-on: ubuntu-latest

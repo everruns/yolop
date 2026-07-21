@@ -38,4 +38,7 @@ for tape in "${tapes[@]}"; do
   vhs "${tape}"
 done
 
+echo "Verifying gallery assets…"
+cargo run -q -p tuika --example demo -- check
+
 echo "Done. GIFs written to crates/tuika/docs/demos/"
