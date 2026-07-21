@@ -27,6 +27,7 @@ use crate::capabilities::ClientUiContext;
 use crate::config::SettingsStore;
 use crate::runtime::session_log::{legacy_session_log_path, session_dir_path, session_log_path};
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
+use everruns_core::ScopedMcpServers;
 use everruns_core::typed_id::SessionId as RuntimeSessionId;
 
 pub use server::{RuntimeFactory, serve};
@@ -54,6 +55,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         cwd: PathBuf,
         resume_session_id: Option<RuntimeSessionId>,
         model_selection: Option<ProviderChoice>,
+        client_mcp_servers: ScopedMcpServers,
     ) -> Result<BuiltRuntime> {
         build_with_options(
             cwd,
@@ -64,6 +66,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
             BuildOptions {
                 client_ui: ClientUiContext::Acp,
                 provider_model: model_selection,
+                client_mcp_servers,
                 ..BuildOptions::default()
             },
         )
@@ -128,6 +131,7 @@ mod tests {
             cwd: PathBuf,
             resume_session_id: Option<RuntimeSessionId>,
             model_selection: Option<ProviderChoice>,
+            client_mcp_servers: ScopedMcpServers,
         ) -> Result<BuiltRuntime> {
             build_with_options(
                 cwd,
@@ -139,6 +143,7 @@ mod tests {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
                     client_ui: ClientUiContext::Acp,
                     provider_model: model_selection,
+                    client_mcp_servers,
                     ..BuildOptions::default()
                 },
             )

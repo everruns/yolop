@@ -61,6 +61,21 @@ ACP clients may select the provider, model, and reasoning effort for a new Yolop
 
 `provider` is required when `selectedModel` is present. `model` and `reasoningEffort` are optional and use the selected provider's defaults when omitted. Yolop validates all supplied values before creating the runtime and returns ACP `InvalidParams` for unsupported selections. Requests without `selectedModel` keep Yolop's configured defaults.
 
+### MCP servers
+
+The `initialize` response advertises `mcpCapabilities.http: true`; the `stdio`
+transport is mandatory for every agent and needs no flag. `sse` is not
+advertised — the runtime has no SSE transport.
+
+`session/new` and `session/load` honour the `mcpServers` list: each `http` or
+`stdio` entry is translated into the runtime's scoped MCP config and merged over
+the file-based `.mcp.json`/global config for that session, so a
+client-configured server wins on a name collision (see `specs/mcp.md`). Values
+pass through literally — the client has already resolved its own placeholders.
+An `sse` (or otherwise unsupported) transport is rejected with `InvalidParams`
+rather than silently dropped, so a client that ignored the advertised
+capabilities gets a clear error instead of a server that quietly went missing.
+
 ### Streaming a turn
 
 While a turn runs, runtime events are translated into `session/update`
@@ -196,6 +211,7 @@ same way.
 - Client-provided filesystem (`fs/read_text_file`, `fs/write_text_file`):
   yolop's runtime reads and writes the host disk directly under the workspace
   root, so it does not route file ops back through the client.
-- Terminals, MCP-server pass-through, and audio/image prompt content.
+- Terminals and audio prompt content. (Image prompt content and MCP-server
+  pass-through are supported — see above.)
 - In-flight turn interruption beyond abandoning the task — the runtime has no
   mid-turn cancellation hook yet.

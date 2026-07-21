@@ -2480,6 +2480,11 @@ pub struct BuildOptions {
     /// that exercise it). ACP and `--print` leave it `false`.
     pub client_commands: bool,
     pub client_ui: ClientUiContext,
+    /// MCP servers supplied by the client for this session (ACP `session/new`
+    /// `mcpServers`). Merged over the file-based `.mcp.json`/global config, so a
+    /// client-configured server wins on a name collision. Empty for hosts that
+    /// do not carry per-session MCP config (the TUI, `--print`).
+    pub client_mcp_servers: ScopedMcpServers,
 }
 
 impl Default for BuildOptions {
@@ -2491,6 +2496,7 @@ impl Default for BuildOptions {
             initial_prompt: None,
             client_commands: false,
             client_ui: ClientUiContext::None,
+            client_mcp_servers: ScopedMcpServers::new(),
         }
     }
 }
@@ -2601,6 +2607,15 @@ pub async fn build_with_options(
     // best-effort per scope: a malformed file is warned about and skipped, so
     // it never sinks the session or masks the other scope.
     let mut mcp_servers: ScopedMcpServers = crate::config::mcp::load_mcp_servers(&canonical_root);
+    // Client-supplied servers (ACP `session/new` `mcpServers`) overlay the
+    // file-based config: a name present in both resolves to the client's entry,
+    // matching the "the editor configured this for the agent" expectation.
+    if !options.client_mcp_servers.is_empty() {
+        mcp_servers = everruns_core::mcp_server::merge_scoped_mcp_servers(
+            &mcp_servers,
+            &options.client_mcp_servers,
+        );
+    }
     let hooks_store = Arc::new(crate::config::hooks::HooksStore::beside_settings(
         &settings,
         canonical_root.clone(),
@@ -3820,6 +3835,85 @@ mod tests {
             built.startup.mcp_server_names.contains(&"docs".to_string()),
             "mcp servers: {:?}",
             built.startup.mcp_server_names
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_merges_client_mcp_servers_over_dot_mcp_json() {
+        // Client-supplied servers (ACP `session/new` `mcpServers`) join the
+        // file-based config, and on a name collision the client's entry wins.
+        use everruns_core::mcp_server::{McpServerTransportType, ScopedMcpServer};
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        std::fs::write(
+            workspace.path().join(".mcp.json"),
+            r#"{ "mcpServers": {
+                "docs": { "type": "http", "url": "https://file.example.com/mcp" }
+            } }"#,
+        )
+        .expect("write .mcp.json");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+
+        let mut client_mcp_servers = ScopedMcpServers::new();
+        // Collides with the file entry by name — the client URL must win.
+        client_mcp_servers.insert(
+            "docs".to_string(),
+            ScopedMcpServer {
+                transport_type: McpServerTransportType::Http,
+                url: "https://client.example.com/mcp".to_string(),
+                ..ScopedMcpServer::default()
+            },
+        );
+        // A client-only server also flows through.
+        client_mcp_servers.insert(
+            "issues".to_string(),
+            ScopedMcpServer {
+                transport_type: McpServerTransportType::Http,
+                url: "https://client.example.com/issues".to_string(),
+                ..ScopedMcpServer::default()
+            },
+        );
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions {
+                client_mcp_servers,
+                ..BuildOptions::default()
+            },
+        )
+        .await
+        .expect("build runtime");
+
+        assert!(
+            built.startup.mcp_server_names.contains(&"docs".to_string())
+                && built
+                    .startup
+                    .mcp_server_names
+                    .contains(&"issues".to_string()),
+            "mcp servers: {:?}",
+            built.startup.mcp_server_names
+        );
+        let docs = {
+            use everruns_core::SessionStore;
+            built
+                .handles
+                .session_store
+                .get_session(built.handles.session_id)
+                .await
+                .expect("get session")
+                .expect("session exists")
+                .mcp_servers
+                .get("docs")
+                .cloned()
+                .expect("docs server present")
+        };
+        assert_eq!(
+            docs.url, "https://client.example.com/mcp",
+            "client entry must override the file entry on name collision"
         );
     }
 

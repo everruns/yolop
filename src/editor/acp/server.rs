@@ -23,10 +23,11 @@ use std::time::Duration;
 use agent_client_protocol::{Agent, Client, ConnectionTo, Lines, Responder};
 use anyhow::Result;
 use async_trait::async_trait;
-use everruns_core::InputMessage;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
+use everruns_core::mcp_server::{McpServerTransportType, ScopedMcpServer};
 use everruns_core::message::{ContentPart, ImageContentPart};
 use everruns_core::typed_id::SessionId as RuntimeSessionId;
+use everruns_core::{InputMessage, ScopedMcpServers};
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -44,9 +45,10 @@ use super::bridge::Translator;
 use super::protocol::{
     self, AgentCapabilities, AuthenticateParams, AuthenticateResult, AvailableCommand,
     AvailableCommandInput, InitializeParams, InitializeResult, LoadSessionParams,
-    LoadSessionResult, NewSessionParams, NewSessionResult, PromptCapabilities, PromptParams,
-    PromptResult, SessionNotification, SessionUpdate, StopReason, ToolCall, ToolCallStatus,
-    ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+    LoadSessionResult, McpCapabilities, McpServer, NewSessionParams, NewSessionResult,
+    PromptCapabilities, PromptParams, PromptResult, SessionNotification, SessionUpdate, StopReason,
+    ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    UnstructuredCommandInput,
 };
 
 /// How often the prompt loop wakes to check whether the turn task finished,
@@ -64,6 +66,7 @@ pub trait RuntimeFactory: Send + Sync + 'static {
         cwd: PathBuf,
         resume_session_id: Option<RuntimeSessionId>,
         model_selection: Option<ProviderChoice>,
+        client_mcp_servers: ScopedMcpServers,
     ) -> Result<BuiltRuntime>;
 }
 
@@ -130,6 +133,58 @@ fn selected_model_from_meta(
         .resolve_model_spec(&spec)
         .map(Some)
         .map_err(|err| invalid_params(err.to_string()))
+}
+
+/// Translate the ACP `mcpServers` list into the runtime's scoped MCP config.
+///
+/// yolop advertises `mcp_capabilities.http` and the always-mandatory stdio
+/// transport, so only `http` and `stdio` entries are expected. An `sse` (or any
+/// other) transport is rejected with `InvalidParams` rather than silently
+/// dropped, so a client that ignored our capabilities gets a clear error
+/// instead of a server that quietly went missing. Values are passed through
+/// literally — the client already resolved any of its own placeholders.
+fn scoped_mcp_servers_from_acp(
+    servers: &[McpServer],
+) -> std::result::Result<ScopedMcpServers, agent_client_protocol::Error> {
+    let mut scoped = ScopedMcpServers::new();
+    for server in servers {
+        let (name, entry) = match server {
+            McpServer::Http(http) => (
+                http.name.clone(),
+                ScopedMcpServer {
+                    transport_type: McpServerTransportType::Http,
+                    url: http.url.clone(),
+                    headers: http
+                        .headers
+                        .iter()
+                        .map(|h| (h.name.clone(), h.value.clone()))
+                        .collect(),
+                    ..ScopedMcpServer::default()
+                },
+            ),
+            McpServer::Stdio(stdio) => (
+                stdio.name.clone(),
+                ScopedMcpServer {
+                    transport_type: McpServerTransportType::Stdio,
+                    command: Some(stdio.command.to_string_lossy().into_owned()),
+                    args: stdio.args.clone(),
+                    env: stdio
+                        .env
+                        .iter()
+                        .map(|e| (e.name.clone(), e.value.clone()))
+                        .collect(),
+                    ..ScopedMcpServer::default()
+                },
+            ),
+            other => {
+                return Err(invalid_params(format!(
+                    "unsupported mcp transport for server: {other:?}"
+                )));
+            }
+        };
+        scoped.insert(name, entry);
+    }
+    Ok(scoped)
 }
 
 /// SDK connection wrapper plus yolop-local ids for synthetic command tool calls.
@@ -404,6 +459,10 @@ fn handle_initialize(params: InitializeParams) -> InitializeResult {
                     .audio(false)
                     .embedded_context(true),
             )
+            // Client-configured MCP servers: `http` is advertised; the `stdio`
+            // transport is mandatory for all agents and needs no flag. `sse` is
+            // not advertised (the runtime has no SSE transport).
+            .mcp_capabilities(McpCapabilities::new().http(true))
             .meta(protocol::meta(json!({
                 "yolop.dev/acp": {
                     "commandMetadata": true,
@@ -425,10 +484,11 @@ async fn handle_new_session<F: RuntimeFactory>(
 ) -> std::result::Result<NewSessionResult, agent_client_protocol::Error> {
     let model_selection = selected_model_from_new_session(&params)?;
     let cwd = params.cwd;
+    let client_mcp_servers = scoped_mcp_servers_from_acp(&params.mcp_servers)?;
 
     let built = server
         .factory
-        .build(cwd, None, model_selection)
+        .build(cwd, None, model_selection, client_mcp_servers)
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
@@ -455,9 +515,15 @@ async fn handle_load_session<F: RuntimeFactory>(
                     "unknown session id `{requested_id}`"
                 )));
             }
+            let client_mcp_servers = scoped_mcp_servers_from_acp(&params.mcp_servers)?;
             let built = server
                 .factory
-                .build(params.cwd, Some(resume_session_id), None)
+                .build(
+                    params.cwd,
+                    Some(resume_session_id),
+                    None,
+                    client_mcp_servers,
+                )
                 .await
                 .map_err(|e| internal_error(format!("load runtime: {e}")))?;
             let acp_id = register_session(server, peer, built);
@@ -1065,6 +1131,53 @@ mod tests {
         assert_eq!(selected.provider_name(), "openai");
         assert_eq!(selected.model_id(), "gpt-5.2");
         assert_eq!(selected.reasoning_effort(), Some("high"));
+    }
+
+    #[test]
+    fn translates_http_and_stdio_mcp_servers() {
+        let servers: Vec<McpServer> = serde_json::from_value(json!([
+            {
+                "type": "http",
+                "name": "docs",
+                "url": "https://example.com/mcp",
+                "headers": [{ "name": "Authorization", "value": "Bearer t" }]
+            },
+            {
+                "name": "fs",
+                "command": "/usr/bin/mcp-fs",
+                "args": ["--root", "/tmp"],
+                "env": [{ "name": "RUST_LOG", "value": "info" }]
+            }
+        ]))
+        .expect("valid ACP mcp servers");
+
+        let scoped = scoped_mcp_servers_from_acp(&servers).expect("translated");
+
+        let docs = scoped.get("docs").expect("http server present");
+        assert_eq!(docs.transport_type, McpServerTransportType::Http);
+        assert_eq!(docs.url, "https://example.com/mcp");
+        assert_eq!(
+            docs.headers.get("Authorization").map(String::as_str),
+            Some("Bearer t")
+        );
+
+        let fs = scoped.get("fs").expect("stdio server present");
+        assert_eq!(fs.transport_type, McpServerTransportType::Stdio);
+        assert_eq!(fs.command.as_deref(), Some("/usr/bin/mcp-fs"));
+        assert_eq!(fs.args, vec!["--root".to_string(), "/tmp".to_string()]);
+        assert_eq!(fs.env.get("RUST_LOG").map(String::as_str), Some("info"));
+    }
+
+    #[test]
+    fn rejects_unsupported_sse_mcp_transport() {
+        let servers: Vec<McpServer> = serde_json::from_value(json!([
+            { "type": "sse", "name": "stream", "url": "https://example.com/sse", "headers": [] }
+        ]))
+        .expect("valid ACP sse server");
+
+        let error =
+            scoped_mcp_servers_from_acp(&servers).expect_err("sse transport must be rejected");
+        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
     }
 
     #[test]
