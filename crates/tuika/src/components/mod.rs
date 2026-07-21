@@ -22,6 +22,7 @@ mod spinner;
 mod status_bar;
 mod tabs;
 mod text;
+mod textinput;
 
 pub use boxed::Boxed;
 pub use constrained::Constrained;
@@ -38,3 +39,4 @@ pub use spinner::{Spinner, SpinnerStyle};
 pub use status_bar::StatusBar;
 pub use tabs::{Tabs, TabsState};
 pub use text::{Paragraph, Text, Wrap, line_width, wrap_lines};
+pub use textinput::{TextInput, TextInputState};
