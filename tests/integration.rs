@@ -374,6 +374,11 @@ fn llmsim_print_smoke() {
     }
 }
 
+// The `off` opt-out warning is a unix-only contract: on Windows there is no
+// sandbox at all, so `danger_warning` reports "sandboxing is not available"
+// for every mode rather than the `off`-specific DANGER/UNSAFE HOST text. The
+// Windows end-to-end equivalent is `windows_warns_*` below.
+#[cfg(not(windows))]
 #[test]
 fn unsafe_sandbox_opt_out_warns_from_the_real_binary() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -406,6 +411,34 @@ fn unsafe_sandbox_opt_out_warns_from_the_real_binary() {
     assert!(stderr.contains("UNSAFE HOST"), "stderr={stderr}");
 }
 
+// End-to-end proof that Windows surfaces the unsandboxed warning from the real
+// binary. Unlike the unix `off` opt-out, no configuration is needed: the
+// warning fires for the default `native` mode because Windows has no sandbox.
+#[cfg(windows)]
+#[test]
+fn windows_warns_that_sandboxing_is_unavailable_from_the_real_binary() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(yolop_binary())
+        .args([
+            "--provider",
+            "llmsim",
+            "--session-dir",
+            tmp.path().to_str().unwrap(),
+            "-p",
+            "hi",
+        ])
+        .env("HOME", tmp.path())
+        .output()
+        .expect("spawn yolop on windows");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr={stderr}");
+    assert!(
+        stderr.contains("sandboxing is not available on Windows"),
+        "stderr={stderr}"
+    );
+}
+
+#[cfg(not(windows))]
 #[test]
 fn unsafe_sandbox_opt_out_is_visible_in_tui_transcript_and_status() {
     let mut tui = spawn_tui_llmsim_with_settings(
