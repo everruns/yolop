@@ -235,7 +235,7 @@ impl Translator {
 /// Map built-in and dynamically prefixed MCP tool names to ACP's semantic
 /// categories. Unknown tools are executable actions, which is more useful to
 /// clients than ACP's omitted `other` default.
-fn tool_kind(name: &str) -> ToolKind {
+pub(super) fn tool_kind(name: &str) -> ToolKind {
     let name = everruns_core::parse_mcp_tool_name(name)
         .map(|(_, tool)| tool)
         .unwrap_or_else(|| name.to_string());

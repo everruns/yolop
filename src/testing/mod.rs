@@ -6,6 +6,8 @@
 
 pub mod test_env;
 
-mod mcp_e2e;
+// `pub(crate)` so the ACP e2e suite can reuse the real MCP echo-server fixture
+// helpers (see `editor::acp` tests).
+pub(crate) mod mcp_e2e;
 mod scenarios;
 mod streaming;

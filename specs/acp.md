@@ -34,7 +34,9 @@ ACP protocol version: **1** (integer).
 | `session/load` | client → agent | Rehydrates an existing yolop JSONL session for the supplied `sessionId` and `cwd`, replays persisted conversation history as `session/update` notifications, and then returns success. |
 | `session/prompt` | client → agent | Runs one turn, or executes a recognised `/command`; streams `session/update`s, and resolves a `stopReason`. |
 | `session/cancel` | client → agent | Notification. Abandons the in-flight turn for that session and resolves the prompt with `stopReason: "cancelled"`. |
-| `session/update` | agent → client | Notification. Streams the turn (see below). |
+| `session/set_mode` | client → agent | Sets the approval level (session mode). See below. |
+| `session/request_permission` | agent → client | Issued before a tool the current level gates; the turn suspends on the answer. See Permissions. |
+| `session/update` | agent → client | Notification. Streams the turn (see below), including `current_mode_update` when the level changes out of band. |
 
 `loadSession` is advertised as `true`. `session/load` uses the same JSONL
 replay path as CLI `--session`: prior user and assistant messages are streamed
@@ -60,6 +62,61 @@ ACP clients may select the provider, model, and reasoning effort for a new Yolop
 ```
 
 `provider` is required when `selectedModel` is present. `model` and `reasoningEffort` are optional and use the selected provider's defaults when omitted. Yolop validates all supplied values before creating the runtime and returns ACP `InvalidParams` for unsupported selections. Requests without `selectedModel` keep Yolop's configured defaults.
+
+### Prompt content
+
+`promptCapabilities` advertises `image: true` and `embeddedContext: true`
+(`audio: false`). Inbound content blocks map to the model input as:
+
+- **Text** — passed through.
+- **Image** — forwarded as an image content part.
+- **Resource** (embedded context) — folded into the model's prompt text: text
+  contents are inlined inside a `<resource uri="…">` block; binary contents are
+  referenced by URI and MIME type rather than dumped as base64.
+- **ResourceLink** — folded in as a one-line `[linked resource: name (uri)]`
+  reference so the model knows it was attached.
+
+Resource folding targets the *model* text only; the text used for slash-command
+detection and the checkpoint label stays the pure user text, so a resource
+attached to a `/command` never derails parsing. Audio is dropped (see
+Non-goals).
+
+### MCP servers
+
+The `initialize` response advertises `mcpCapabilities.http: true`; the `stdio`
+transport is mandatory for every agent and needs no flag. `sse` is not
+advertised — the runtime has no SSE transport.
+
+`session/new` and `session/load` honour the `mcpServers` list: each `http` or
+`stdio` entry is translated into the runtime's scoped MCP config and merged over
+the file-based `.mcp.json`/global config for that session, so a
+client-configured server wins on a name collision (see `specs/mcp.md`). Values
+pass through literally — the client has already resolved its own placeholders.
+An `sse` (or otherwise unsupported) transport is rejected with `InvalidParams`
+rather than silently dropped, so a client that ignored the advertised
+capabilities gets a clear error instead of a server that quietly went missing.
+
+### Session modes
+
+Yolop surfaces its approval level (`ApprovalMode`: `protective` / `normal` /
+`off`, see `src/capabilities/approval.rs`) as ACP session modes, so an editor
+can switch it from the same mode picker it uses for other agents — one
+vocabulary across every front end instead of an ACP-only taxonomy.
+
+- `session/new` and `session/load` responses carry a `modes` block listing the
+  three levels (strictest first) with the current one selected.
+- `session/set_mode` maps the mode id back to a level and persists it. Because
+  yolop is a single-user CLI whose settings are shared across sessions, this
+  changes the level globally — exactly like `/setup approval` — rather than
+  per-session. An unknown mode id is rejected with `InvalidParams`.
+- When the level changes out of band (the `set_approval_mode` tool, `/setup
+  approval`), yolop emits a `current_mode_update` after the turn so the picker
+  stays in sync.
+
+The level drives both the soft-approval prompt block
+(`src/capabilities/approval.rs`) and the hard permission gate (see Permissions
+below): it selects which tools require an interactive
+`session/request_permission`.
 
 ### Streaming a turn
 
@@ -116,10 +173,27 @@ The runtime does not expose token-limit or refusal outcomes distinctly, so
 
 ### Permissions
 
-yolop runs tools autonomously: file writes, deletes, and `bash` execute without
-a per-call approval gate, so the agent never issues `session/request_permission`.
-The standing guardrail is the write blocklist on filesystem writes (see
-`specs/maintenance.md`).
+The session mode (approval level) drives a hard gate. Before a tool runs, a
+native pre-tool hook (`src/capabilities/tool_approval.rs`) checks whether the
+current level requires approval for that tool, classified by the runtime's own
+`ToolHints`:
+
+- `off` — never asks; tools run autonomously (unchanged behaviour).
+- `normal` — asks before `destructive` or `open_world` (outward-facing) tools.
+- `protective` — asks before any tool that is not `readonly`.
+
+When approval is required, yolop issues `session/request_permission` with four
+options (allow once / always, reject once / always) and the turn genuinely
+suspends until the client answers — this is safe because the turn already runs
+in its own task, off the SDK event loop. "Always" answers are remembered per
+tool for the session; a rejection blocks the tool with an error the model sees.
+
+The gate only runs when the host can service an interactive prompt: the ACP
+server wires a client-backed approver, while the TUI and `--print` keep the
+soft-approval guidance alone. If the client cannot answer (no permission UI, or
+the connection is closing), the gate falls back to allowing so an editor without
+`session/request_permission` keeps working — the write blocklist on filesystem
+writes (see `specs/maintenance.md`) remains the standing guardrail either way.
 
 ## Architecture
 
@@ -196,6 +270,17 @@ same way.
 - Client-provided filesystem (`fs/read_text_file`, `fs/write_text_file`):
   yolop's runtime reads and writes the host disk directly under the workspace
   root, so it does not route file ops back through the client.
-- Terminals, MCP-server pass-through, and audio/image prompt content.
+- Terminals (`terminal/*`): deliberately unsupported. ACP terminals have the
+  **client** execute the command in its own environment, which would bypass
+  yolop's Landlock sandbox and write blocklist — the core of its shell-safety
+  model — and split execution (shell client-side, file edits agent-side). The
+  gain over the status quo is a live-terminal widget rather than the command
+  output yolop already streams as tool-call content, which does not justify the
+  loss of the sandbox. Revisit only behind an explicit opt-in that the user
+  accepts the trade-off for.
+- Audio prompt content (`audio: false`): low value for a coding agent, and the
+  runtime's `ContentPart` has no audio variant, so there is no path to forward
+  it to the model even if advertised. Embedded/linked **resource** context and
+  image content are supported (see Prompt content); MCP-server pass-through too.
 - In-flight turn interruption beyond abandoning the task — the runtime has no
   mid-turn cancellation hook yet.

@@ -25,6 +25,9 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
   - **global**: `<config_dir>/yolop/mcp.json` (e.g. `~/.config/yolop/mcp.json`)
   - **workspace**: `<workspace_root>/.mcp.json` — overrides global by name.
   A malformed file warns and is skipped rather than failing startup.
+  - **ACP client**: servers passed in `session/new` `mcpServers` (see
+    `specs/acp.md`) overlay both file scopes for that session, so a
+    client-configured server wins on a name collision.
 - **Secrets via env**: string fields support `${VAR}` expansion from the
   environment (`"Authorization": "Bearer ${DOCS_TOKEN}"`), so tokens stay out of
   the file. Unset placeholders are left intact so the gap is debuggable.
@@ -104,9 +107,6 @@ live reload above).
   configured `client_id` for servers without dynamic registration (DCR-only for
   now).
 - MCP **resources** and **prompts** (tools are the 90% case).
-- ACP MCP pass-through: `mcpServers` supplied by an ACP client is still
-  accepted-and-ignored (see `src/editor/acp/protocol.rs`); only yolop's own
-  `.mcp.json` is honored.
 
 ## Where it lives
 

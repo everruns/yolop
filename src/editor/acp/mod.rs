@@ -14,6 +14,7 @@
 //!   * [`server`] — SDK-backed transport/dispatch plus turn streaming.
 
 mod bridge;
+mod modes;
 mod protocol;
 mod server;
 
@@ -27,6 +28,7 @@ use crate::capabilities::ClientUiContext;
 use crate::config::SettingsStore;
 use crate::runtime::session_log::{legacy_session_log_path, session_dir_path, session_log_path};
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
+use everruns_core::ScopedMcpServers;
 use everruns_core::typed_id::SessionId as RuntimeSessionId;
 
 pub use server::{RuntimeFactory, serve};
@@ -54,6 +56,8 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         cwd: PathBuf,
         resume_session_id: Option<RuntimeSessionId>,
         model_selection: Option<ProviderChoice>,
+        client_mcp_servers: ScopedMcpServers,
+        tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
     ) -> Result<BuiltRuntime> {
         build_with_options(
             cwd,
@@ -64,6 +68,8 @@ impl RuntimeFactory for ConfigRuntimeFactory {
             BuildOptions {
                 client_ui: ClientUiContext::Acp,
                 provider_model: model_selection,
+                client_mcp_servers,
+                tool_approver,
                 ..BuildOptions::default()
             },
         )
@@ -92,7 +98,7 @@ mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::{
         InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, SessionId,
-        SessionNotification, SessionUpdate, StopReason,
+        SessionModeId, SessionNotification, SessionUpdate, SetSessionModeRequest, StopReason,
     };
     use agent_client_protocol::{
         Agent, ByteStreams, Client, ConnectionTo, JsonRpcRequest, SessionMessage,
@@ -128,6 +134,8 @@ mod tests {
             cwd: PathBuf,
             resume_session_id: Option<RuntimeSessionId>,
             model_selection: Option<ProviderChoice>,
+            client_mcp_servers: ScopedMcpServers,
+            tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
         ) -> Result<BuiltRuntime> {
             build_with_options(
                 cwd,
@@ -139,10 +147,72 @@ mod tests {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
                     client_ui: ClientUiContext::Acp,
                     provider_model: model_selection,
+                    client_mcp_servers,
+                    tool_approver,
                     ..BuildOptions::default()
                 },
             )
             .await
+        }
+    }
+
+    /// Like [`ScriptedFactory`], but after each build it records the MCP server
+    /// names actually wired into the session, so a wire-level `session/new` test
+    /// can assert the client's `mcpServers` reached the runtime end to end.
+    struct RecordingFactory {
+        config: LlmSimConfig,
+        sessions_dir: PathBuf,
+        settings: Arc<SettingsStore>,
+        seen_servers: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl RuntimeFactory for RecordingFactory {
+        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+            let session_dir = session_dir_path(&self.sessions_dir, session_id);
+            session_log_path(&session_dir).exists()
+                || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+        }
+
+        async fn build(
+            &self,
+            cwd: PathBuf,
+            resume_session_id: Option<RuntimeSessionId>,
+            model_selection: Option<ProviderChoice>,
+            client_mcp_servers: ScopedMcpServers,
+            tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
+        ) -> Result<BuiltRuntime> {
+            let built = build_with_options(
+                cwd,
+                ProviderChoice::Sim,
+                resume_session_id,
+                self.sessions_dir.clone(),
+                self.settings.clone(),
+                BuildOptions {
+                    llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
+                    client_ui: ClientUiContext::Acp,
+                    provider_model: model_selection,
+                    client_mcp_servers,
+                    tool_approver,
+                    ..BuildOptions::default()
+                },
+            )
+            .await?;
+            // Read the servers resolved onto the live session — what the next
+            // turn would use — rather than the raw request, proving the whole
+            // session/new → build → session chain.
+            use everruns_core::SessionStore;
+            if let Ok(Some(session)) = built
+                .handles
+                .session_store
+                .get_session(built.handles.session_id)
+                .await
+            {
+                let mut names: Vec<String> = session.mcp_servers.keys().cloned().collect();
+                names.sort();
+                *self.seen_servers.lock().unwrap() = names;
+            }
+            Ok(built)
         }
     }
 
@@ -373,6 +443,359 @@ mod tests {
         assert_eq!(init.protocol_version, protocol::PROTOCOL_VERSION);
         assert!(init.agent_capabilities.load_session);
         assert!(init.agent_capabilities.prompt_capabilities.embedded_context);
+        // Client-provided MCP servers over `http` are accepted (#1).
+        assert!(init.agent_capabilities.mcp_capabilities.http);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_new_wires_client_mcp_servers_into_session() {
+        // End to end over the wire: a `session/new` carrying `mcpServers`
+        // (one http, one stdio) must land both servers on the built session.
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        let settings = Arc::new(SettingsStore::open(sessions.join("settings.toml")));
+        let seen_servers = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let factory = Arc::new(RecordingFactory {
+            config: fixed("hi"),
+            sessions_dir: sessions,
+            settings,
+            seen_servers: seen_servers.clone(),
+        });
+
+        let (client_w, agent_r) = tokio::io::duplex(64 * 1024);
+        let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
+        let _server = tokio::spawn(async move {
+            let _ = serve(agent_r, agent_w, factory).await;
+        });
+        let mut w = client_w;
+        let mut reader = BufReader::new(client_r).lines();
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0", "id": 1, "method": "session/new",
+                "params": {
+                    "cwd": cwd,
+                    "mcpServers": [
+                        { "type": "http", "name": "docs", "url": "https://example.com/mcp", "headers": [] },
+                        { "name": "fs", "command": "/usr/bin/mcp-fs", "args": [], "env": [] }
+                    ]
+                }
+            }),
+        )
+        .await;
+        let (resp, _) = collect_until_response_id(&mut reader, 1).await;
+        assert!(resp.get("result").is_some(), "session/new failed: {resp}");
+
+        let names = seen_servers.lock().unwrap().clone();
+        assert!(
+            names.contains(&"docs".to_string()) && names.contains(&"fs".to_string()),
+            "client mcpServers must reach the session; wired: {names:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_mcp_server_is_discovered_and_its_tool_executes() {
+        // Live round-trip: a real stdio MCP server (the Python echo fixture)
+        // supplied via `session/new` `mcpServers` must be discovered and its
+        // tool actually executed. The server writes a marker file on each call,
+        // so the filesystem proves execution — nothing is mocked but the LLM.
+        let test = "client_mcp_server_is_discovered_and_its_tool_executes";
+        let Some(python) = crate::testing::mcp_e2e::require_python3(test) else {
+            return;
+        };
+        let marker = tempfile::tempdir().expect("marker tempdir").keep();
+        let tool = crate::testing::mcp_e2e::mcp_tool("echo", "echo");
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        // The scripted model calls the client-supplied server's tool on the turn.
+        let (mut w, mut reader, _server) = start_raw_server(
+            crate::testing::mcp_e2e::script(&tool, "hello-acp-mcp"),
+            sessions,
+        );
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        let fixture = crate::testing::mcp_e2e::fixture_server();
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0", "id": 1, "method": "session/new",
+                "params": {
+                    "cwd": cwd,
+                    "mcpServers": [{
+                        "name": "echo",
+                        "command": python.to_str().unwrap(),
+                        "args": [ fixture.to_str().unwrap(), marker.to_str().unwrap() ],
+                        "env": []
+                    }]
+                }
+            }),
+        )
+        .await;
+        let (new_resp, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_resp["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Disable the approval gate so this test isolates MCP discovery and
+        // execution (the permission gate has its own tests).
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/set_mode",
+                    "params": { "sessionId": session_id, "modeId": "off" } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 2).await;
+
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "use the echo tool" }] }
+            }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 3).await;
+
+        let called = marker.join("echo.called");
+        assert!(
+            called.exists(),
+            "the client-supplied MCP server must be discovered and its tool executed (marker missing)"
+        );
+        let body = std::fs::read_to_string(&called).unwrap();
+        assert!(
+            body.contains("hello-acp-mcp"),
+            "the server should receive the call arguments: {body}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn advertises_modes_and_set_mode_switches_level() {
+        with_sdk_client(fixed("hi"), |client| async move {
+            // A new session advertises the three approval levels, defaulting to
+            // `normal`.
+            let cwd1 = tempfile::tempdir().expect("cwd tempdir").keep();
+            let s1 = client
+                .cx
+                .send_request(NewSessionRequest::new(cwd1))
+                .block_task()
+                .await?;
+            let modes1 = s1.modes.clone().expect("modes advertised");
+            assert_eq!(modes1.current_mode_id.to_string(), "normal");
+            let ids: Vec<String> = modes1
+                .available_modes
+                .iter()
+                .map(|m| m.id.to_string())
+                .collect();
+            assert_eq!(ids, vec!["protective", "normal", "off"]);
+
+            // Switching the mode persists the approval level.
+            client
+                .cx
+                .send_request(SetSessionModeRequest::new(
+                    s1.session_id.clone(),
+                    SessionModeId::new("protective"),
+                ))
+                .block_task()
+                .await?;
+
+            // A fresh session (the level is a shared setting) now reports the
+            // switched level as current.
+            let cwd2 = tempfile::tempdir().expect("cwd tempdir").keep();
+            let s2 = client
+                .cx
+                .send_request(NewSessionRequest::new(cwd2))
+                .block_task()
+                .await?;
+            assert_eq!(
+                s2.modes
+                    .expect("modes advertised")
+                    .current_mode_id
+                    .to_string(),
+                "protective"
+            );
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn set_mode_with_unknown_id_is_invalid_params() {
+        let err = with_sdk_client(fixed("hi"), |client| async move {
+            let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+            let session = client
+                .cx
+                .send_request(NewSessionRequest::new(cwd))
+                .block_task()
+                .await?;
+            let result = client
+                .cx
+                .send_request(SetSessionModeRequest::new(
+                    session.session_id.clone(),
+                    SessionModeId::new("whenever"),
+                ))
+                .block_task()
+                .await;
+            Ok(result.expect_err("unknown mode must be rejected"))
+        })
+        .await;
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::InvalidParams);
+    }
+
+    /// Collect the tool-call statuses (from `tool_call` and `tool_call_update`)
+    /// seen for a raw prompt whose gated tool triggers `session/request_permission`,
+    /// answering each permission request with `option_id`.
+    async fn statuses_for_gated_prompt(
+        w: &mut DuplexStream,
+        reader: &mut Lines<BufReader<DuplexStream>>,
+        session_id: &str,
+        prompt_id: i64,
+        option_id: &str,
+    ) -> (bool, Vec<String>) {
+        send_json(
+            w,
+            json!({
+                "jsonrpc": "2.0", "id": prompt_id, "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "go" }] }
+            }),
+        )
+        .await;
+
+        let mut asked = false;
+        let mut statuses = Vec::new();
+        loop {
+            let msg = next_json(reader).await;
+            match msg.get("method").and_then(Value::as_str) {
+                Some("session/request_permission") => {
+                    asked = true;
+                    // The prompt names the gated tool.
+                    assert_eq!(msg["params"]["toolCall"]["toolCallId"], "call_1");
+                    assert_eq!(msg["params"]["options"].as_array().unwrap().len(), 4);
+                    send_json(
+                        w,
+                        json!({
+                            "jsonrpc": "2.0", "id": msg["id"],
+                            "result": { "outcome": { "outcome": "selected", "optionId": option_id } }
+                        }),
+                    )
+                    .await;
+                }
+                Some("session/update") => {
+                    if let Some(status) = msg["params"]["update"]
+                        .get("status")
+                        .and_then(Value::as_str)
+                    {
+                        statuses.push(status.to_string());
+                    }
+                }
+                _ => {
+                    if msg.get("id").and_then(Value::as_i64) == Some(prompt_id)
+                        && (msg.get("result").is_some() || msg.get("error").is_some())
+                    {
+                        return (asked, statuses);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drive initialize → new session → set protective, returning the raw
+    /// channel plus the session id, ready for a gated prompt.
+    async fn protective_session(
+        config: LlmSimConfig,
+        sessions_dir: PathBuf,
+    ) -> (
+        DuplexStream,
+        Lines<BufReader<DuplexStream>>,
+        tokio::task::JoinHandle<Result<()>>,
+        String,
+    ) {
+        let (mut w, mut reader, server) = start_raw_server(config, sessions_dir);
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd, "mcpServers": [] } }),
+        )
+        .await;
+        let (new_resp, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_resp["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/set_mode",
+                    "params": { "sessionId": session_id, "modeId": "protective" } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 2).await;
+
+        (w, reader, server, session_id)
+    }
+
+    fn one_bash_call() -> LlmSimConfig {
+        LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".to_string(),
+                arguments: json!({ "command": "printf gated" }),
+                id: Some("call_1".to_string()),
+            }]),
+            SimTurn::Assistant("done".to_string()),
+        ])
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protective_mode_blocks_tool_when_permission_rejected() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let (mut w, mut reader, _server, session_id) =
+            protective_session(one_bash_call(), sessions.path().to_path_buf()).await;
+
+        let (asked, statuses) =
+            statuses_for_gated_prompt(&mut w, &mut reader, &session_id, 3, "reject_once").await;
+
+        assert!(asked, "protective mode must request permission before bash");
+        assert!(
+            statuses.iter().any(|s| s == "failed"),
+            "a rejected tool must surface as failed; saw {statuses:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protective_mode_runs_tool_when_permission_allowed() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let (mut w, mut reader, _server, session_id) =
+            protective_session(one_bash_call(), sessions.path().to_path_buf()).await;
+
+        let (asked, statuses) =
+            statuses_for_gated_prompt(&mut w, &mut reader, &session_id, 3, "allow_once").await;
+
+        assert!(asked, "protective mode must request permission before bash");
+        assert!(
+            statuses.iter().any(|s| s == "completed"),
+            "an allowed tool must run to completion; saw {statuses:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

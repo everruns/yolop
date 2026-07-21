@@ -23,10 +23,14 @@ use std::time::Duration;
 use agent_client_protocol::{Agent, Client, ConnectionTo, Lines, Responder};
 use anyhow::Result;
 use async_trait::async_trait;
-use everruns_core::InputMessage;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
+use everruns_core::mcp_server::{McpServerTransportType, ScopedMcpServer};
 use everruns_core::message::{ContentPart, ImageContentPart};
+use everruns_core::tool_types::{
+    ToolCall as RuntimeToolCall, ToolDefinition as RuntimeToolDefinition,
+};
 use everruns_core::typed_id::SessionId as RuntimeSessionId;
+use everruns_core::{InputMessage, ScopedMcpServers};
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -35,18 +39,22 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::config::SettingsStore;
+use crate::capabilities::{ApprovalDecision, ToolApprover};
+use crate::config::{ApprovalMode, SettingsStore};
 use crate::exec::worktree::WorktreeManager;
 use crate::runtime::background_wake::{WakeReceiver, frame_wake_prompt};
 use crate::runtime::{BuiltRuntime, ModelState, ProviderChoice, RuntimeHandles};
 
-use super::bridge::Translator;
+use super::bridge::{Translator, tool_kind};
+use super::modes;
 use super::protocol::{
     self, AgentCapabilities, AuthenticateParams, AuthenticateResult, AvailableCommand,
-    AvailableCommandInput, InitializeParams, InitializeResult, LoadSessionParams,
-    LoadSessionResult, NewSessionParams, NewSessionResult, PromptCapabilities, PromptParams,
-    PromptResult, SessionNotification, SessionUpdate, StopReason, ToolCall, ToolCallStatus,
-    ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+    AvailableCommandInput, CurrentModeUpdate, InitializeParams, InitializeResult,
+    LoadSessionParams, LoadSessionResult, McpCapabilities, McpServer, NewSessionParams,
+    NewSessionResult, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptParams,
+    PromptResult, RequestPermissionOutcome, RequestPermissionParams, SessionNotification,
+    SessionUpdate, SetSessionModeParams, SetSessionModeResult, StopReason, ToolCall,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
 };
 
 /// How often the prompt loop wakes to check whether the turn task finished,
@@ -64,6 +72,8 @@ pub trait RuntimeFactory: Send + Sync + 'static {
         cwd: PathBuf,
         resume_session_id: Option<RuntimeSessionId>,
         model_selection: Option<ProviderChoice>,
+        client_mcp_servers: ScopedMcpServers,
+        tool_approver: Option<Arc<dyn ToolApprover>>,
     ) -> Result<BuiltRuntime>;
 }
 
@@ -132,6 +142,58 @@ fn selected_model_from_meta(
         .map_err(|err| invalid_params(err.to_string()))
 }
 
+/// Translate the ACP `mcpServers` list into the runtime's scoped MCP config.
+///
+/// yolop advertises `mcp_capabilities.http` and the always-mandatory stdio
+/// transport, so only `http` and `stdio` entries are expected. An `sse` (or any
+/// other) transport is rejected with `InvalidParams` rather than silently
+/// dropped, so a client that ignored our capabilities gets a clear error
+/// instead of a server that quietly went missing. Values are passed through
+/// literally — the client already resolved any of its own placeholders.
+fn scoped_mcp_servers_from_acp(
+    servers: &[McpServer],
+) -> std::result::Result<ScopedMcpServers, agent_client_protocol::Error> {
+    let mut scoped = ScopedMcpServers::new();
+    for server in servers {
+        let (name, entry) = match server {
+            McpServer::Http(http) => (
+                http.name.clone(),
+                ScopedMcpServer {
+                    transport_type: McpServerTransportType::Http,
+                    url: http.url.clone(),
+                    headers: http
+                        .headers
+                        .iter()
+                        .map(|h| (h.name.clone(), h.value.clone()))
+                        .collect(),
+                    ..ScopedMcpServer::default()
+                },
+            ),
+            McpServer::Stdio(stdio) => (
+                stdio.name.clone(),
+                ScopedMcpServer {
+                    transport_type: McpServerTransportType::Stdio,
+                    command: Some(stdio.command.to_string_lossy().into_owned()),
+                    args: stdio.args.clone(),
+                    env: stdio
+                        .env
+                        .iter()
+                        .map(|e| (e.name.clone(), e.value.clone()))
+                        .collect(),
+                    ..ScopedMcpServer::default()
+                },
+            ),
+            other => {
+                return Err(invalid_params(format!(
+                    "unsupported mcp transport for server: {other:?}"
+                )));
+            }
+        };
+        scoped.insert(name, entry);
+    }
+    Ok(scoped)
+}
+
 /// SDK connection wrapper plus yolop-local ids for synthetic command tool calls.
 struct Peer {
     cx: ConnectionTo<Client>,
@@ -147,6 +209,92 @@ impl Peer {
     }
 }
 
+/// Backs the tool-approval gate with the ACP client: each gated tool becomes a
+/// `session/request_permission` the client renders, and the turn suspends on the
+/// answer. Safe because the whole turn runs in a spawned task (see
+/// `respond_prompt`), off the SDK event loop, so awaiting the client reply never
+/// deadlocks dispatch.
+struct AcpToolApprover {
+    peer: Arc<Peer>,
+}
+
+/// Option ids for the four ACP permission choices, mapped back to a decision.
+const PERMISSION_ALLOW_ONCE: &str = "allow_once";
+const PERMISSION_ALLOW_ALWAYS: &str = "allow_always";
+const PERMISSION_REJECT_ONCE: &str = "reject_once";
+const PERMISSION_REJECT_ALWAYS: &str = "reject_always";
+
+#[async_trait]
+impl ToolApprover for AcpToolApprover {
+    async fn approve(
+        &self,
+        session_id: RuntimeSessionId,
+        tool_call: &RuntimeToolCall,
+        tool_def: &RuntimeToolDefinition,
+    ) -> ApprovalDecision {
+        let fields = ToolCallUpdateFields::new()
+            .title(tool_def.name().to_string())
+            .kind(tool_kind(&tool_call.name))
+            .status(ToolCallStatus::Pending);
+        let request = RequestPermissionParams::new(
+            session_id.to_string(),
+            ToolCallUpdate::new(tool_call.id.clone(), fields),
+            vec![
+                PermissionOption::new(
+                    PERMISSION_ALLOW_ONCE,
+                    "Allow",
+                    PermissionOptionKind::AllowOnce,
+                ),
+                PermissionOption::new(
+                    PERMISSION_ALLOW_ALWAYS,
+                    "Allow, don't ask again",
+                    PermissionOptionKind::AllowAlways,
+                ),
+                PermissionOption::new(
+                    PERMISSION_REJECT_ONCE,
+                    "Reject",
+                    PermissionOptionKind::RejectOnce,
+                ),
+                PermissionOption::new(
+                    PERMISSION_REJECT_ALWAYS,
+                    "Reject, don't ask again",
+                    PermissionOptionKind::RejectAlways,
+                ),
+            ],
+        );
+
+        match self.peer.cx.send_request(request).block_task().await {
+            Ok(response) => match response.outcome {
+                RequestPermissionOutcome::Cancelled => ApprovalDecision::Cancelled,
+                RequestPermissionOutcome::Selected(selected) => {
+                    match selected.option_id.to_string().as_str() {
+                        PERMISSION_ALLOW_ONCE => ApprovalDecision::Allow,
+                        PERMISSION_ALLOW_ALWAYS => ApprovalDecision::AllowAlways,
+                        PERMISSION_REJECT_ONCE => ApprovalDecision::Reject,
+                        PERMISSION_REJECT_ALWAYS => ApprovalDecision::RejectAlways,
+                        other => {
+                            tracing::warn!(option = other, "acp: unknown permission option");
+                            ApprovalDecision::Reject
+                        }
+                    }
+                }
+                // `RequestPermissionOutcome` is non-exhaustive: treat any future
+                // variant as a rejection rather than silently allowing.
+                _ => ApprovalDecision::Reject,
+            },
+            Err(err) => {
+                // The client could not answer (no permission UI, or the
+                // connection is winding down). Fall back to allowing so a client
+                // without `session/request_permission` keeps working rather than
+                // having every mutating tool blocked; the soft-approval prompt
+                // still nudges the model.
+                tracing::warn!(%err, "acp: request_permission failed; allowing tool");
+                ApprovalDecision::Unavailable
+            }
+        }
+    }
+}
+
 /// State for one open ACP session: the runtime handles plus a one-shot cancel
 /// channel armed for the duration of each in-flight prompt.
 struct Session {
@@ -156,8 +304,14 @@ struct Session {
     worktree: Arc<WorktreeManager>,
     commands: StdMutex<Vec<CommandDescriptor>>,
     cancel: StdMutex<Option<oneshot::Sender<()>>>,
-    /// Settings source, read for the `proactive_wake` opt-out.
+    /// Settings source, read for the `proactive_wake` opt-out and the
+    /// approval-level ↔ session-mode mapping.
     settings: Arc<SettingsStore>,
+    /// Last approval level reported to the client as the current session mode.
+    /// Compared after each turn so a level changed out of band (the
+    /// `set_approval_mode` tool, `/setup approval`) surfaces as a
+    /// `current_mode_update` instead of silently drifting from the picker.
+    last_mode: StdMutex<ApprovalMode>,
     /// Retained for the ACP session lifetime so due local schedules keep polling.
     _schedule_runner: everruns_local::LocalScheduleRunnerHandle,
     /// Serializes turns for this session. Both a client prompt and a background
@@ -328,6 +482,19 @@ where
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            {
+                let server = server.clone();
+                async move |params: SetSessionModeParams, responder, _cx| {
+                    match apply_set_mode(&server, &params) {
+                        Ok(()) => responder.respond(SetSessionModeResult::new())?,
+                        Err(err) => responder.respond_with_error(err)?,
+                    }
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .on_receive_notification(
             {
                 let server = server.clone();
@@ -404,6 +571,10 @@ fn handle_initialize(params: InitializeParams) -> InitializeResult {
                     .audio(false)
                     .embedded_context(true),
             )
+            // Client-configured MCP servers: `http` is advertised; the `stdio`
+            // transport is mandatory for all agents and needs no flag. `sse` is
+            // not advertised (the runtime has no SSE transport).
+            .mcp_capabilities(McpCapabilities::new().http(true))
             .meta(protocol::meta(json!({
                 "yolop.dev/acp": {
                     "commandMetadata": true,
@@ -425,16 +596,26 @@ async fn handle_new_session<F: RuntimeFactory>(
 ) -> std::result::Result<NewSessionResult, agent_client_protocol::Error> {
     let model_selection = selected_model_from_new_session(&params)?;
     let cwd = params.cwd;
+    let client_mcp_servers = scoped_mcp_servers_from_acp(&params.mcp_servers)?;
+    let tool_approver: Option<Arc<dyn ToolApprover>> =
+        Some(Arc::new(AcpToolApprover { peer: peer.clone() }));
 
     let built = server
         .factory
-        .build(cwd, None, model_selection)
+        .build(
+            cwd,
+            None,
+            model_selection,
+            client_mcp_servers,
+            tool_approver,
+        )
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
+    let mode = built.settings.snapshot().approval_mode();
     let acp_id = register_session(server, peer, built);
 
-    Ok(NewSessionResult::new(acp_id))
+    Ok(NewSessionResult::new(acp_id).modes(modes::session_mode_state(mode)))
 }
 
 async fn handle_load_session<F: RuntimeFactory>(
@@ -455,9 +636,18 @@ async fn handle_load_session<F: RuntimeFactory>(
                     "unknown session id `{requested_id}`"
                 )));
             }
+            let client_mcp_servers = scoped_mcp_servers_from_acp(&params.mcp_servers)?;
+            let tool_approver: Option<Arc<dyn ToolApprover>> =
+                Some(Arc::new(AcpToolApprover { peer: peer.clone() }));
             let built = server
                 .factory
-                .build(params.cwd, Some(resume_session_id), None)
+                .build(
+                    params.cwd,
+                    Some(resume_session_id),
+                    None,
+                    client_mcp_servers,
+                    tool_approver,
+                )
                 .await
                 .map_err(|e| internal_error(format!("load runtime: {e}")))?;
             let acp_id = register_session(server, peer, built);
@@ -468,7 +658,11 @@ async fn handle_load_session<F: RuntimeFactory>(
     };
 
     replay_session_history(peer, &session).await?;
-    Ok((LoadSessionResult::new(), session.acp_id.clone()))
+    let mode = session.settings.snapshot().approval_mode();
+    Ok((
+        LoadSessionResult::new().modes(modes::session_mode_state(mode)),
+        session.acp_id.clone(),
+    ))
 }
 
 fn register_session<F: RuntimeFactory>(
@@ -485,6 +679,7 @@ fn register_session<F: RuntimeFactory>(
         worktree: built.worktree,
         commands: StdMutex::new(commands.clone()),
         cancel: StdMutex::new(None),
+        last_mode: StdMutex::new(built.settings.snapshot().approval_mode()),
         settings: built.settings,
         _schedule_runner: built.schedule_runner,
         turn_lock: tokio::sync::Mutex::new(()),
@@ -595,11 +790,54 @@ async fn handle_prompt<F: RuntimeFactory>(
     // dispatch; `run_prompt` does not take the lock itself, so the poller can
     // reuse it under its own guard.
     let _turn = session.turn_lock.lock().await;
+    let mode_peer = peer.clone();
     let stop_reason = match parse_command_prompt(&prompt) {
         Some(command) => run_slash_command(peer, session.clone(), command).await,
         None => run_prompt(peer, session.clone(), prompt, input).await,
     };
+    // A level changed mid-turn (the `set_approval_mode` tool, `/setup approval`)
+    // must reach the client's mode picker, not just the settings file.
+    emit_mode_change_if_needed(&mode_peer, &session);
     Ok(PromptResult::new(stop_reason))
+}
+
+/// Persist a client `session/set_mode` by mapping the mode id to an approval
+/// level (globally — see [`modes`]). Refreshes `last_mode` so the change the
+/// client just made is not re-echoed as an out-of-band `current_mode_update`.
+fn apply_set_mode<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    params: &SetSessionModeParams,
+) -> std::result::Result<(), agent_client_protocol::Error> {
+    let session = server
+        .session(&params.session_id.to_string())
+        .ok_or_else(|| invalid_params("unknown session id"))?;
+    let mode = modes::approval_mode_from_id(&params.mode_id.to_string())
+        .ok_or_else(|| invalid_params(format!("unknown session mode `{}`", params.mode_id)))?;
+    session
+        .settings
+        .set_approval_mode(mode)
+        .map_err(|e| internal_error(format!("set approval mode: {e}")))?;
+    *session.last_mode.lock().unwrap() = mode;
+    Ok(())
+}
+
+/// Push a `current_mode_update` when the approval level changed out of band
+/// since it was last reported (the `set_approval_mode` tool, `/setup approval`),
+/// so the client's mode picker stays in sync with the setting.
+fn emit_mode_change_if_needed(peer: &Peer, session: &Session) {
+    let current = session.settings.snapshot().approval_mode();
+    let changed = {
+        let mut last = session.last_mode.lock().unwrap();
+        let changed = *last != current;
+        *last = current;
+        changed
+    };
+    if changed {
+        peer.session_update(
+            &session.acp_id,
+            SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(modes::mode_id(current))),
+        );
+    }
 }
 
 async fn respond_prompt<F: RuntimeFactory>(
@@ -868,7 +1106,10 @@ async fn refresh_available_commands(peer: &Arc<Peer>, session: &Arc<Session>) {
 }
 
 fn prompt_input(model: &ModelState, blocks: &[protocol::ContentBlock]) -> InputMessage {
-    model.input_message_with_images(protocol::prompt_text(blocks), prompt_image_parts(blocks))
+    model.input_message_with_images(
+        protocol::prompt_model_text(blocks),
+        prompt_image_parts(blocks),
+    )
 }
 
 fn prompt_image_parts(blocks: &[protocol::ContentBlock]) -> Vec<ContentPart> {
@@ -1065,6 +1306,53 @@ mod tests {
         assert_eq!(selected.provider_name(), "openai");
         assert_eq!(selected.model_id(), "gpt-5.2");
         assert_eq!(selected.reasoning_effort(), Some("high"));
+    }
+
+    #[test]
+    fn translates_http_and_stdio_mcp_servers() {
+        let servers: Vec<McpServer> = serde_json::from_value(json!([
+            {
+                "type": "http",
+                "name": "docs",
+                "url": "https://example.com/mcp",
+                "headers": [{ "name": "Authorization", "value": "Bearer t" }]
+            },
+            {
+                "name": "fs",
+                "command": "/usr/bin/mcp-fs",
+                "args": ["--root", "/tmp"],
+                "env": [{ "name": "RUST_LOG", "value": "info" }]
+            }
+        ]))
+        .expect("valid ACP mcp servers");
+
+        let scoped = scoped_mcp_servers_from_acp(&servers).expect("translated");
+
+        let docs = scoped.get("docs").expect("http server present");
+        assert_eq!(docs.transport_type, McpServerTransportType::Http);
+        assert_eq!(docs.url, "https://example.com/mcp");
+        assert_eq!(
+            docs.headers.get("Authorization").map(String::as_str),
+            Some("Bearer t")
+        );
+
+        let fs = scoped.get("fs").expect("stdio server present");
+        assert_eq!(fs.transport_type, McpServerTransportType::Stdio);
+        assert_eq!(fs.command.as_deref(), Some("/usr/bin/mcp-fs"));
+        assert_eq!(fs.args, vec!["--root".to_string(), "/tmp".to_string()]);
+        assert_eq!(fs.env.get("RUST_LOG").map(String::as_str), Some("info"));
+    }
+
+    #[test]
+    fn rejects_unsupported_sse_mcp_transport() {
+        let servers: Vec<McpServer> = serde_json::from_value(json!([
+            { "type": "sse", "name": "stream", "url": "https://example.com/sse", "headers": [] }
+        ]))
+        .expect("valid ACP sse server");
+
+        let error =
+            scoped_mcp_servers_from_acp(&servers).expect_err("sse transport must be rejected");
+        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
     }
 
     #[test]

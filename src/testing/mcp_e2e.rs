@@ -37,7 +37,7 @@ fn python3() -> Option<PathBuf> {
 /// (`CI` env set) a missing `python3` panics — a silently green check would not
 /// be exercising anything (matching the live-smoke job's stance in
 /// `.github/workflows/ci.yml`). Locally it skips with a warning.
-fn require_python3(test: &str) -> Option<PathBuf> {
+pub(crate) fn require_python3(test: &str) -> Option<PathBuf> {
     if let Some(python) = python3() {
         return Some(python);
     }
@@ -49,18 +49,18 @@ fn require_python3(test: &str) -> Option<PathBuf> {
     None
 }
 
-fn fixture_server() -> PathBuf {
+pub(crate) fn fixture_server() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp_echo_server.py")
 }
 
 /// The prefixed tool name the runtime exposes for `<server>`/`<tool>`
 /// (`mcp_<server>__<tool>`); both names here sanitize to themselves.
-fn mcp_tool(server: &str, tool: &str) -> String {
+pub(crate) fn mcp_tool(server: &str, tool: &str) -> String {
     format!("mcp_{server}__{tool}")
 }
 
 /// One scripted tool call followed by a closing assistant turn.
-fn script(tool: &str, message: &str) -> LlmSimConfig {
+pub(crate) fn script(tool: &str, message: &str) -> LlmSimConfig {
     LlmSimConfig::scripted(vec![
         SimTurn::ToolCalls(vec![SimToolCall {
             name: tool.to_string(),
