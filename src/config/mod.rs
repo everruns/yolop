@@ -78,30 +78,91 @@ impl std::fmt::Display for WorktreesMode {
     }
 }
 
-/// Kernel containment used for arbitrary shell commands.
+/// Filesystem and network containment used for arbitrary shell commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SandboxMode {
-    /// Seatbelt on macOS; Landlock and seccomp on Linux.
+    /// Host reads plus private-temp writes; workspace writes and network denied.
+    ReadOnly,
+    /// Host reads plus workspace/private-temp writes; network denied.
     #[default]
-    Native,
+    WorkspaceWrite,
     /// Explicitly run commands directly on the host. Dangerous.
-    Off,
+    DangerFullAccess,
 }
 
 impl SandboxMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Native => "native",
-            Self::Off => "off",
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::DangerFullAccess => "danger-full-access",
         }
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "native" | "on" | "default" => Some(Self::Native),
-            "off" | "none" | "disabled" | "unsafe-host" => Some(Self::Off),
+            "read-only" | "readonly" => Some(Self::ReadOnly),
+            "workspace-write" | "workspace" | "native" | "on" | "default" => {
+                Some(Self::WorkspaceWrite)
+            }
+            "danger-full-access" | "full-access" | "off" | "none" | "disabled" | "unsafe-host" => {
+                Some(Self::DangerFullAccess)
+            }
             _ => None,
         }
+    }
+}
+
+impl std::str::FromStr for SandboxMode {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Self::parse(raw).ok_or_else(|| {
+            format!(
+                "unknown sandbox mode `{raw}`; expected read-only, workspace-write, or danger-full-access"
+            )
+        })
+    }
+}
+
+/// When a shell command must stop for explicit user approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApprovalPolicy {
+    /// Ask before commands outside Yolop's conservative read-only allowlist.
+    Untrusted,
+    /// Try inside the sandbox, then ask before retrying a sandbox denial with full access.
+    OnFailure,
+    /// Work inside the sandbox and ask only when the model requests full access.
+    #[default]
+    OnRequest,
+    /// Never prompt or grant full-access escalation.
+    Never,
+}
+
+impl ApprovalPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Untrusted => "untrusted",
+            Self::OnFailure => "on-failure",
+            Self::OnRequest => "on-request",
+            Self::Never => "never",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "untrusted" => Some(Self::Untrusted),
+            "on-failure" | "on_failure" => Some(Self::OnFailure),
+            "on-request" | "on_request" | "auto" | "default" => Some(Self::OnRequest),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ApprovalPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -177,12 +238,14 @@ pub struct Settings {
     /// Soft-approval paranoia level, injected into the system prompt each
     /// turn. Central, cross-session, surfaced in the status bar.
     pub approval_mode: ApprovalMode,
+    /// Hard shell escalation policy, independent from soft approval.
+    pub approval_policy: ApprovalPolicy,
     /// Whether the TUI auto-starts a turn when a background task finishes while
     /// idle (proactive wake). On by default; disable for a quieter session.
     pub proactive_wake: bool,
     /// Git worktree isolation for code changes (`auto`, `always`, `off`).
     pub worktrees: WorktreesMode,
-    /// Kernel sandbox for arbitrary shell commands. Enabled by default.
+    /// Sandbox boundary for arbitrary shell commands.
     pub sandbox: SandboxMode,
     /// Global MCP servers (`[mcp.servers.<name>]` in settings.toml). Repo `.mcp.json` entries override these by name.
     pub mcp: McpSettings,
@@ -201,9 +264,10 @@ impl Default for Settings {
             codex_auth: None,
             attribution: true,
             approval_mode: ApprovalMode::Normal,
+            approval_policy: ApprovalPolicy::OnRequest,
             proactive_wake: true,
             worktrees: WorktreesMode::Auto,
-            sandbox: SandboxMode::Native,
+            sandbox: SandboxMode::WorkspaceWrite,
             mcp: McpSettings::default(),
             capabilities: Vec::new(),
         }
@@ -232,6 +296,11 @@ impl Settings {
             .and_then(Value::as_str)
             .and_then(ApprovalMode::parse)
             .unwrap_or_default();
+        let approval_policy = table
+            .get("approval_policy")
+            .and_then(Value::as_str)
+            .and_then(ApprovalPolicy::parse)
+            .unwrap_or_default();
         let proactive_wake = table
             .get("proactive_wake")
             .and_then(Value::as_bool)
@@ -242,7 +311,8 @@ impl Settings {
             .and_then(WorktreesMode::parse)
             .unwrap_or_default();
         let sandbox = table
-            .get("sandbox")
+            .get("sandbox_mode")
+            .or_else(|| table.get("sandbox"))
             .and_then(Value::as_str)
             .and_then(SandboxMode::parse)
             .unwrap_or_default();
@@ -270,6 +340,7 @@ impl Settings {
             codex_auth,
             attribution,
             approval_mode,
+            approval_policy,
             proactive_wake,
             worktrees,
             sandbox,
@@ -300,15 +371,23 @@ impl Settings {
                 Value::String(self.approval_mode.as_str().to_string()),
             );
         }
+        if self.approval_policy != ApprovalPolicy::OnRequest {
+            table.insert(
+                "approval_policy".to_string(),
+                Value::String(self.approval_policy.as_str().to_string()),
+            );
+        }
         if self.worktrees != WorktreesMode::Auto {
             table.insert(
                 "worktrees".to_string(),
                 Value::String(self.worktrees.as_str().to_string()),
             );
         }
-        // The safe default stays implicit; an unsafe host opt-out is conspicuous.
-        if self.sandbox == SandboxMode::Off {
-            table.insert("sandbox".to_string(), Value::String("off".to_string()));
+        if self.sandbox != SandboxMode::WorkspaceWrite {
+            table.insert(
+                "sandbox_mode".to_string(),
+                Value::String(self.sandbox.as_str().to_string()),
+            );
         }
         let mut insert_map = |key: &str, map: &BTreeMap<String, String>| {
             if !map.is_empty() {
@@ -379,6 +458,10 @@ impl Settings {
 
     pub fn approval_mode(&self) -> ApprovalMode {
         self.approval_mode
+    }
+
+    pub fn approval_policy(&self) -> ApprovalPolicy {
+        self.approval_policy
     }
 
     pub fn proactive_wake_enabled(&self) -> bool {
@@ -575,6 +658,12 @@ impl SettingsStore {
     pub fn set_approval_mode(&self, mode: ApprovalMode) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         guard.approval_mode = mode;
+        save_to(&self.path, &guard)
+    }
+
+    pub fn set_approval_policy(&self, policy: ApprovalPolicy) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.approval_policy = policy;
         save_to(&self.path, &guard)
     }
 
@@ -797,23 +886,66 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_defaults_on_and_unsafe_opt_out_round_trips() {
+    fn sandbox_defaults_to_workspace_write_and_full_access_round_trips() {
         let settings = Settings::from_table(&Table::new());
-        assert_eq!(settings.sandbox_mode(), SandboxMode::Native);
-        assert!(!settings.to_table().contains_key("sandbox"));
+        assert_eq!(settings.sandbox_mode(), SandboxMode::WorkspaceWrite);
+        assert!(!settings.to_table().contains_key("sandbox_mode"));
 
         let tmp = tempfile::tempdir().expect("tmp");
         let path = tmp.path().join("settings.toml");
         let store = SettingsStore::open(path.clone());
-        store.set_sandbox_mode(SandboxMode::Off).expect("save");
+        store
+            .set_sandbox_mode(SandboxMode::DangerFullAccess)
+            .expect("save");
         assert!(
             std::fs::read_to_string(&path)
                 .expect("read")
-                .contains("sandbox = \"off\"")
+                .contains("sandbox_mode = \"danger-full-access\"")
         );
         assert_eq!(
             SettingsStore::open(path).snapshot().sandbox_mode(),
-            SandboxMode::Off
+            SandboxMode::DangerFullAccess
+        );
+    }
+
+    #[test]
+    fn sandbox_and_approval_policy_parse_codex_matrix_and_legacy_aliases() {
+        assert_eq!(SandboxMode::parse("read-only"), Some(SandboxMode::ReadOnly));
+        assert_eq!(
+            SandboxMode::parse("native"),
+            Some(SandboxMode::WorkspaceWrite)
+        );
+        assert_eq!(
+            SandboxMode::parse("off"),
+            Some(SandboxMode::DangerFullAccess)
+        );
+        assert_eq!(
+            ApprovalPolicy::parse("on-failure"),
+            Some(ApprovalPolicy::OnFailure)
+        );
+        assert_eq!(ApprovalPolicy::parse("never"), Some(ApprovalPolicy::Never));
+    }
+
+    #[test]
+    fn approval_policy_defaults_to_on_request_and_round_trips() {
+        let settings = Settings::from_table(&Table::new());
+        assert_eq!(settings.approval_policy(), ApprovalPolicy::OnRequest);
+        assert!(!settings.to_table().contains_key("approval_policy"));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store
+            .set_approval_policy(ApprovalPolicy::OnFailure)
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("approval_policy = \"on-failure\"")
+        );
+        assert_eq!(
+            SettingsStore::open(path).snapshot().approval_policy(),
+            ApprovalPolicy::OnFailure
         );
     }
 

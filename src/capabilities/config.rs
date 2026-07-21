@@ -501,6 +501,17 @@ impl SetConfigTool {
                     mode.as_str()
                 )))
             }
+            KeyTarget::ApprovalPolicy => {
+                let policy = crate::config::ApprovalPolicy::parse(value).ok_or_else(|| {
+                    "approval_policy expects untrusted, on-failure, on-request, or never"
+                        .to_string()
+                })?;
+                self.settings.set_approval_policy(policy).map_err(map_err)?;
+                Ok(saved(format!(
+                    "approval_policy = {}; applies next run",
+                    policy.as_str()
+                )))
+            }
             KeyTarget::Worktrees => {
                 if clearing {
                     self.settings
@@ -519,19 +530,25 @@ impl SetConfigTool {
             KeyTarget::Sandbox => {
                 if clearing {
                     self.settings
-                        .set_sandbox_mode(crate::config::SandboxMode::Native)
+                        .set_sandbox_mode(crate::config::SandboxMode::WorkspaceWrite)
                         .map_err(map_err)?;
                     return Ok(saved(
-                        "cleared sandbox (default native); applies next run".to_string(),
+                        "cleared sandbox_mode (default workspace-write); applies next run"
+                            .to_string(),
                     ));
                 }
-                let mode = crate::config::SandboxMode::parse(value)
-                    .ok_or_else(|| "sandbox expects native or off".to_string())?;
+                let mode = crate::config::SandboxMode::parse(value).ok_or_else(|| {
+                    "sandbox_mode expects read-only, workspace-write, or danger-full-access"
+                        .to_string()
+                })?;
                 self.settings.set_sandbox_mode(mode).map_err(map_err)?;
-                if mode == crate::config::SandboxMode::Off {
-                    Ok(saved("sandbox = off; DANGER: next run uses UNSAFE HOST execution with unrestricted file, process, and network access".to_string()))
+                if mode == crate::config::SandboxMode::DangerFullAccess {
+                    Ok(saved("sandbox_mode = danger-full-access; DANGER: next run uses UNSAFE HOST execution with unrestricted file, process, and network access".to_string()))
                 } else {
-                    Ok(saved("sandbox = native; applies next run".to_string()))
+                    Ok(saved(format!(
+                        "sandbox_mode = {}; applies next run",
+                        mode.as_str()
+                    )))
                 }
             }
             KeyTarget::Model(provider) => {
@@ -768,6 +785,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_config_routes_hard_approval_policy() {
+        let (_tmp, settings) = store();
+        let tool = set_config_tool(settings.clone());
+        let result = tool
+            .execute(json!({ "key": "approval_policy", "value": "on-failure" }))
+            .await;
+        assert!(matches!(result, ToolExecutionResult::Success(_)));
+        assert_eq!(
+            settings.snapshot().approval_policy(),
+            crate::config::ApprovalPolicy::OnFailure
+        );
+
+        let bad = tool
+            .execute(json!({ "key": "approval_policy", "value": "sometimes" }))
+            .await;
+        assert!(matches!(bad, ToolExecutionResult::ToolError(_)));
+    }
+
+    #[tokio::test]
     async fn set_config_routes_proactive_wake_with_alias_and_clear() {
         let (_tmp, settings) = store();
         let tool = set_config_tool(settings.clone());
@@ -809,14 +845,14 @@ mod tests {
         assert!(message.to_string().contains("UNSAFE HOST"), "{message}");
         assert_eq!(
             settings.snapshot().sandbox_mode(),
-            crate::config::SandboxMode::Off
+            crate::config::SandboxMode::DangerFullAccess
         );
 
         tool.execute(json!({ "key": "containment", "value": "clear" }))
             .await;
         assert_eq!(
             settings.snapshot().sandbox_mode(),
-            crate::config::SandboxMode::Native
+            crate::config::SandboxMode::WorkspaceWrite
         );
     }
 

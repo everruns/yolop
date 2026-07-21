@@ -2196,6 +2196,8 @@ pub struct BuiltRuntime {
     /// Receiver for extension `ui/ask` requests; the TUI prompts the user and
     /// answers each via its oneshot. Empty/never-written outside the TUI.
     pub ask_rx: mpsc::UnboundedReceiver<crate::tui::host_ui::AskRequest>,
+    /// Receiver for hard shell escalation approvals. Only the TUI services it.
+    pub sandbox_approval_rx: crate::sandbox_approval::ApprovalReceiver,
     /// Receiver for everruns background-task completion signals, delivered via
     /// the wake seam (`background_wake`). The host (TUI/ACP) drains it and runs
     /// a streamed turn so the agent reacts to finished `spawn_background` work.
@@ -2238,6 +2240,8 @@ pub struct RuntimeHandles {
     pub connections: Arc<ConnectionStore>,
     /// Shared containment provider for host-triggered shell commands.
     pub(crate) sandbox: Arc<dyn SandboxProvider>,
+    pub(crate) sandbox_approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
+    pub(crate) approval_policy: crate::config::ApprovalPolicy,
     /// Best-effort local lifecycle bridge when this process runs in Herdr.
     pub(crate) herdr: crate::capabilities::herdr::HerdrReporter,
 }
@@ -2521,10 +2525,20 @@ pub async fn build_with_options(
     // Unit-test binaries are libtest harnesses and cannot service the Linux
     // worker subcommand. Real-binary coverage lives in tests/integration.rs.
     #[cfg(all(test, target_os = "linux"))]
-    let sandbox_mode = crate::config::SandboxMode::Off;
+    let sandbox_mode = crate::config::SandboxMode::DangerFullAccess;
     #[cfg(not(all(test, target_os = "linux")))]
     let sandbox_mode = settings.snapshot().sandbox_mode();
     let sandbox = crate::exec::sandbox::provider(sandbox_mode);
+    let approval_policy = settings.snapshot().approval_policy();
+    let (sandbox_approval_gate, sandbox_approval_rx) = if options.client_ui == ClientUiContext::Tui
+    {
+        crate::sandbox_approval::ApprovalGate::channel()
+    } else {
+        (
+            crate::sandbox_approval::ApprovalGate::deny(),
+            crate::sandbox_approval::denied_receiver(),
+        )
+    };
 
     // Pin the SessionId so resume can re-attach to the same session folder
     // (directory name is the session id).
@@ -3021,6 +3035,8 @@ pub async fn build_with_options(
         workspace: workspace.clone(),
         sandbox: sandbox.clone(),
         expose_command: !options.client_commands,
+        approval_policy,
+        approval_gate: sandbox_approval_gate.clone(),
     });
     // `background` — the `/background` command listing this session's everruns
     // tasks. Detached work runs through everruns `spawn_background` (which wraps
@@ -3214,6 +3230,8 @@ pub async fn build_with_options(
             workspace_root: canonical_root.clone(),
             connections,
             sandbox: sandbox.clone(),
+            sandbox_approval_gate,
+            approval_policy,
             herdr,
         },
         startup: StartupInfo {
@@ -3234,6 +3252,7 @@ pub async fn build_with_options(
         settings,
         ui_rx,
         ask_rx,
+        sandbox_approval_rx,
         background_wake: background_wake_rx,
         schedule_runner,
         workspace_host,

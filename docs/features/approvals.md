@@ -1,16 +1,33 @@
 # Approvals
 
-yolop is autonomous by default. It does not stop for a yes/no prompt before
-each tool call, file edit, or shell command. Instead, yolop uses **soft
-approval**: spoken consent in the chat for the small set of actions that are
-destructive, irreversible, or outward-facing.
+Yolop has two independent approval layers. **Hard shell approval** controls
+when a command may execute or cross the sandbox boundary. **Soft approval** is
+spoken consent in chat for actions that require judgement beyond shell access,
+including destructive or outward-facing structured tools.
+
+## Hard shell approval policies
+
+`approval_policy` composes with any `sandbox_mode`:
+
+| Policy | Behavior |
+|---|---|
+| `untrusted` | Ask before a command outside Yolop's conservative read-only command set. |
+| `on-failure` | Run sandboxed first; if the sandbox likely denies it, ask before retrying with `danger-full-access`. |
+| `on-request` | Run sandboxed by default; ask only when the agent explicitly requests `danger-full-access`. This is the default. |
+| `never` | Never prompt and never grant a full-access escalation. |
+
+The TUI renders shell approvals as a yes/no prompt with the command and reason.
+One-shot print and ACP sessions do not service this shell-escalation gate, so
+those requests fail closed. ACP's separate general tool-permission gate remains
+available to compatible editor clients. The default **Auto** preset is
+`workspace-write × on-request`.
 
 Soft approval is guidance to the model, not a hard permission gate. yolop is
 prompted to batch safe work, pause before critical actions, ask one short
 approval question, record the approval, and then continue. There is no separate
 approval modal or button.
 
-## Approval levels
+## Soft approval levels
 
 The `approval_mode` setting controls how cautious yolop should be:
 
@@ -76,8 +93,8 @@ recorded in the session log.
 
 ## Limits
 
-Soft approval is not a sandbox. It asks the model to pause at the right time,
+Soft approval is not a hard gate. It asks the model to pause at the right time,
 but it does not mechanically block a tool call. For deterministic enforcement,
-use hooks, which can block tool calls before they run. Soft approval is for
-judgement and workflow; hooks are for guarantees. See
+use the shell approval policy or hooks. Soft approval is for judgement and
+workflow; hard approvals, hooks, and sandboxing provide enforcement. See
 [Shell sandboxing](./sandboxing.md) for the kernel-enforced boundary.

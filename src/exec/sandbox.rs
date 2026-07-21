@@ -17,8 +17,10 @@ pub(crate) trait SandboxProvider: Send + Sync {
 
 pub(crate) fn provider(mode: SandboxMode) -> std::sync::Arc<dyn SandboxProvider> {
     match mode {
-        SandboxMode::Native => std::sync::Arc::new(NativeSandbox),
-        SandboxMode::Off => std::sync::Arc::new(UnsafeHost),
+        SandboxMode::ReadOnly | SandboxMode::WorkspaceWrite => {
+            std::sync::Arc::new(NativeSandbox { mode })
+        }
+        SandboxMode::DangerFullAccess => std::sync::Arc::new(UnsafeHost),
     }
 }
 
@@ -26,7 +28,7 @@ pub(crate) fn danger_warning(mode: SandboxMode) -> Option<&'static str> {
     #[cfg(windows)]
     {
         // No native sandbox exists for Windows yet, so every mode — including
-        // the `native` default — runs with full host access. Warn regardless
+        // the default — runs with full host access. Warn regardless
         // of the configured mode.
         let _ = mode;
         Some(
@@ -35,8 +37,8 @@ pub(crate) fn danger_warning(mode: SandboxMode) -> Option<&'static str> {
     }
     #[cfg(not(windows))]
     {
-        (mode == SandboxMode::Off).then_some(
-            "DANGER: sandbox disabled (UNSAFE HOST) — shell commands can access and modify files, processes, and the network outside the workspace",
+        (mode == SandboxMode::DangerFullAccess).then_some(
+            "DANGER: danger-full-access (UNSAFE HOST) — shell commands can access and modify files, processes, and the network outside the workspace",
         )
     }
 }
@@ -74,7 +76,7 @@ struct UnsafeHost;
 
 impl SandboxProvider for UnsafeHost {
     fn mode(&self) -> SandboxMode {
-        SandboxMode::Off
+        SandboxMode::DangerFullAccess
     }
 
     fn command(&self, cwd: &Path, script: &str) -> Result<Command> {
@@ -82,24 +84,26 @@ impl SandboxProvider for UnsafeHost {
     }
 }
 
-struct NativeSandbox;
+struct NativeSandbox {
+    mode: SandboxMode,
+}
 
 impl SandboxProvider for NativeSandbox {
     fn mode(&self) -> SandboxMode {
-        SandboxMode::Native
+        self.mode
     }
 
     fn command(&self, cwd: &Path, script: &str) -> Result<Command> {
-        native_command(cwd, script)
+        native_command(cwd, script, self.mode)
     }
 }
 
 #[cfg(target_os = "macos")]
-fn native_command(cwd: &Path, script: &str) -> Result<Command> {
+fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command> {
     let executable = Path::new("/usr/bin/sandbox-exec");
     if !executable.is_file() {
         anyhow::bail!(
-            "native sandbox unavailable: /usr/bin/sandbox-exec is missing; refusing to run unsandboxed. Set `sandbox = \"off\"` only inside an already isolated environment"
+            "native sandbox unavailable: /usr/bin/sandbox-exec is missing; refusing to run unsandboxed. Set `sandbox_mode = \"danger-full-access\"` only inside an already isolated environment"
         )
     }
 
@@ -110,10 +114,21 @@ fn native_command(cwd: &Path, script: &str) -> Result<Command> {
     // covers macOS path canonicalization through the /tmp symlink.
     let temp = sandbox_temp_dir()?;
     let home = sandbox_home_dir(&temp)?;
+    let workspace_write = if mode == SandboxMode::WorkspaceWrite {
+        format!(" (subpath \"{}\")", seatbelt_escape(cwd))
+    } else {
+        String::new()
+    };
+    let shared_temp_write = if mode == SandboxMode::WorkspaceWrite {
+        " (subpath \"/tmp\") (subpath \"/private/tmp\")"
+    } else {
+        ""
+    };
     let profile = format!(
-        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write* (subpath \"{}\") (subpath \"{}\") (subpath \"/tmp\") (subpath \"/private/tmp\"))\n(deny network*)\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
-        seatbelt_escape(cwd),
+        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write*{} (subpath \"{}\"){})\n(deny network*)\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
+        workspace_write,
         seatbelt_escape(&temp),
+        shared_temp_write,
         seatbelt_escape(&cwd.join(".git")),
         seatbelt_escape(&cwd.join(".git")),
     );
@@ -130,7 +145,7 @@ fn native_command(cwd: &Path, script: &str) -> Result<Command> {
 }
 
 #[cfg(target_os = "linux")]
-fn native_command(cwd: &Path, script: &str) -> Result<Command> {
+fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command> {
     let temp = sandbox_temp_dir()?;
     let home = sandbox_home_dir(&temp)?;
     let executable = std::env::current_exe().context("resolve yolop sandbox worker executable")?;
@@ -141,6 +156,8 @@ fn native_command(cwd: &Path, script: &str) -> Result<Command> {
         .arg(cwd)
         .arg("--temp")
         .arg(&temp)
+        .arg("--mode")
+        .arg(mode.as_str())
         .arg("--script")
         .arg(script)
         .current_dir(cwd);
@@ -152,7 +169,12 @@ fn native_command(cwd: &Path, script: &str) -> Result<Command> {
 /// with bash. Keeping this out of `pre_exec` avoids allocation and locking in a
 /// post-fork callback of Tokio's multi-threaded parent.
 #[cfg(target_os = "linux")]
-pub(crate) fn run_linux_worker(cwd: &Path, temp: &Path, script: &str) -> Result<()> {
+pub(crate) fn run_linux_worker(
+    cwd: &Path,
+    temp: &Path,
+    mode: SandboxMode,
+    script: &str,
+) -> Result<()> {
     use landlock::{
         ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
         RulesetStatus,
@@ -164,32 +186,41 @@ pub(crate) fn run_linux_worker(cwd: &Path, temp: &Path, script: &str) -> Result<
     use std::convert::TryInto;
     use std::os::unix::process::CommandExt;
 
+    if mode == SandboxMode::DangerFullAccess {
+        anyhow::bail!("the sandbox worker cannot run danger-full-access");
+    }
+
     std::env::set_current_dir(cwd)
         .with_context(|| format!("enter sandbox workspace: {}", cwd.display()))?;
 
     // ABI V3 is the oldest policy that also mediates truncate(2); requiring
     // full enforcement avoids silently weakening the write boundary.
     let abi = ABI::V3;
-    let status = Ruleset::default()
+    let ruleset = Ruleset::default()
         .handle_access(AccessFs::from_all(abi))?
         .create()?
         .add_rule(PathBeneath::new(
             PathFd::new("/")?,
             AccessFs::from_read(abi),
         ))?
-        .add_rule(PathBeneath::new(PathFd::new(cwd)?, AccessFs::from_all(abi)))?
         .add_rule(PathBeneath::new(
             PathFd::new(temp)?,
             AccessFs::from_all(abi),
-        ))?
-        .add_rule(PathBeneath::new(
-            PathFd::new("/tmp")?,
-            AccessFs::from_all(abi),
-        ))?
-        .restrict_self()?;
+        ))?;
+    let ruleset = if mode == SandboxMode::WorkspaceWrite {
+        ruleset
+            .add_rule(PathBeneath::new(PathFd::new(cwd)?, AccessFs::from_all(abi)))?
+            .add_rule(PathBeneath::new(
+                PathFd::new("/tmp")?,
+                AccessFs::from_all(abi),
+            ))?
+    } else {
+        ruleset
+    };
+    let status = ruleset.restrict_self()?;
     if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
         anyhow::bail!(
-            "native sandbox unavailable: Landlock ABI v3 is not fully enforced by this Linux kernel; refusing to run unsandboxed. Set `sandbox = \"off\"` only inside an already isolated environment"
+            "native sandbox unavailable: Landlock ABI v3 is not fully enforced by this Linux kernel; refusing to run unsandboxed. Set `sandbox_mode = \"danger-full-access\"` only inside an already isolated environment"
         );
     }
 
@@ -224,7 +255,7 @@ pub(crate) fn run_linux_worker(cwd: &Path, temp: &Path, script: &str) -> Result<
 }
 
 #[cfg(target_os = "windows")]
-fn native_command(cwd: &Path, script: &str) -> Result<Command> {
+fn native_command(cwd: &Path, script: &str, _mode: SandboxMode) -> Result<Command> {
     // Windows has no native sandbox implementation yet. Rather than refuse to
     // run, execute unsandboxed — the user is warned at startup via
     // `danger_warning`, which fires for every mode on Windows.
@@ -232,9 +263,9 @@ fn native_command(cwd: &Path, script: &str) -> Result<Command> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn native_command(_cwd: &Path, _script: &str) -> Result<Command> {
+fn native_command(_cwd: &Path, _script: &str, _mode: SandboxMode) -> Result<Command> {
     anyhow::bail!(
-        "native sandbox is supported only on macOS and Linux; refusing to run unsandboxed. Set `sandbox = \"off\"` only inside an already isolated environment"
+        "native sandbox is supported only on macOS and Linux; refusing to run unsandboxed. Set `sandbox_mode = \"danger-full-access\"` only inside an already isolated environment"
     )
 }
 
@@ -358,9 +389,9 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn native_is_the_safe_default_provider() {
-        assert!(danger_warning(SandboxMode::Native).is_none());
+        assert!(danger_warning(SandboxMode::WorkspaceWrite).is_none());
         assert!(
-            danger_warning(SandboxMode::Off)
+            danger_warning(SandboxMode::DangerFullAccess)
                 .unwrap()
                 .contains("UNSAFE HOST")
         );

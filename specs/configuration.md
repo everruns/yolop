@@ -38,10 +38,11 @@ Keys are addressed the way a human would name them:
 | `tokens.<provider>`       | secret | Provider API token (owner-only on disk; env vars override).    |
 | `base_urls.<provider>`    | text   | Endpoint base URL (used by the `custom` provider).             |
 | `approval_mode`           | text   | Soft-approval paranoia level (`protective` / `normal` / `off`). |
+| `approval_policy`         | text   | Hard shell approval policy (`untrusted` / `on-failure` / `on-request` / `never`). |
 | `attribution`             | bool   | Commit/PR attribution on/off.                                  |
 | `proactive_wake`          | bool   | Auto-start a turn when a background task finishes (TUI); on by default. |
 | `worktrees`               | text   | Worktree isolation (`auto` / `always` / `off`).             |
-| `sandbox`                 | text   | Shell containment (`native` by default; `off` is dangerous). |
+| `sandbox_mode`            | text   | Shell containment (`read-only` / `workspace-write` / `danger-full-access`). |
 | `capabilities`            | list   | Ordered `[[capabilities]]` harness overrides; `capabilities.<ref>` for schema metadata. |
 
 `default_provider` is persisted under that name on disk; the legacy `provider`

@@ -7,8 +7,10 @@
 // security model for real child processes needs yolop-specific containment,
 // timeout, and output policy.
 
+use crate::config::{ApprovalPolicy, SandboxMode};
 use crate::exec::sandbox::SandboxProvider;
 use crate::exec::workspace_host::WorkspaceHost;
+use crate::sandbox_approval::{ApprovalGate, ApprovalRequest};
 use async_trait::async_trait;
 use everruns_core::exec_tool_result::ExecToolResultPayload;
 use everruns_core::tool_narration::ToolNarrationPhase;
@@ -47,6 +49,8 @@ impl Workspace {
 pub struct BashTool {
     ws: Workspace,
     sandbox: Arc<dyn SandboxProvider>,
+    approval_policy: ApprovalPolicy,
+    approval_gate: Arc<ApprovalGate>,
     foreground_timeout_secs: u64,
     background_timeout_secs: u64,
     max_output_bytes: usize,
@@ -59,11 +63,11 @@ struct BashRunOutput {
     out_truncated: bool,
     err_truncated: bool,
     duration: Duration,
-    sandbox_mode: crate::config::SandboxMode,
+    sandbox_mode: SandboxMode,
 }
 
-fn likely_sandbox_denial(mode: crate::config::SandboxMode, exit_code: i32, stderr: &str) -> bool {
-    if mode != crate::config::SandboxMode::Native || exit_code == 0 {
+fn likely_sandbox_denial(mode: SandboxMode, exit_code: i32, stderr: &str) -> bool {
+    if mode == SandboxMode::DangerFullAccess || exit_code == 0 {
         return false;
     }
     let stderr = stderr.to_ascii_lowercase();
@@ -86,17 +90,29 @@ impl BashTool {
         // the libtest harness, so its real-binary contract lives in
         // tests/integration.rs instead.
         let mode = if cfg!(target_os = "linux") {
-            crate::config::SandboxMode::Off
+            SandboxMode::DangerFullAccess
         } else {
-            crate::config::SandboxMode::Native
+            SandboxMode::WorkspaceWrite
         };
-        Self::with_sandbox(ws, crate::exec::sandbox::provider(mode))
+        Self::with_policy(
+            ws,
+            crate::exec::sandbox::provider(mode),
+            ApprovalPolicy::Never,
+            ApprovalGate::deny(),
+        )
     }
 
-    pub fn with_sandbox(ws: Workspace, sandbox: Arc<dyn SandboxProvider>) -> Self {
+    pub(crate) fn with_policy(
+        ws: Workspace,
+        sandbox: Arc<dyn SandboxProvider>,
+        approval_policy: ApprovalPolicy,
+        approval_gate: Arc<ApprovalGate>,
+    ) -> Self {
         Self {
             ws,
             sandbox,
+            approval_policy,
+            approval_gate,
             foreground_timeout_secs: 120,
             background_timeout_secs: 24 * 60 * 60,
             max_output_bytes: 1024 * 1024,
@@ -115,6 +131,7 @@ impl BashTool {
         &self,
         command: &str,
         sink: Option<Arc<dyn BackgroundEventSink>>,
+        sandbox: &Arc<dyn SandboxProvider>,
     ) -> Result<BashRunOutput, ToolExecutionResult> {
         let cwd = match self.ws.host.spawn_cwd() {
             Ok(cwd) => cwd,
@@ -125,7 +142,7 @@ impl BashTool {
         let timeout_secs = self.timeout_secs(sink.is_some());
         let timeout = Duration::from_secs(timeout_secs);
         let max_bytes = self.max_output_bytes;
-        let sandbox_mode = self.sandbox.mode();
+        let sandbox_mode = sandbox.mode();
 
         if let Some(sink) = &sink {
             let _ = sink.status("Running bash command").await;
@@ -133,8 +150,7 @@ impl BashTool {
 
         // kill_on_drop ensures a timed-out or canceled background command is
         // reaped when the owning future is dropped.
-        let mut process = self
-            .sandbox
+        let mut process = sandbox
             .command(&cwd, command)
             .map_err(|e| ToolExecutionResult::tool_error(format!("sandbox setup failed: {e:#}")))?;
         crate::exec::sandbox::configure_stdio(&mut process);
@@ -226,6 +242,123 @@ impl BashTool {
             sandbox_mode,
         })
     }
+
+    async fn request_approval(
+        &self,
+        command: &str,
+        reason: String,
+        full_access: bool,
+    ) -> Result<(), ToolExecutionResult> {
+        let request = ApprovalRequest {
+            command: command.to_string(),
+            reason,
+            full_access,
+        };
+        if self.approval_gate.approve(request).await {
+            Ok(())
+        } else {
+            Err(ToolExecutionResult::tool_error(
+                "shell command was not approved",
+            ))
+        }
+    }
+
+    async fn execute_with_policy(
+        &self,
+        command: &str,
+        sink: Option<Arc<dyn BackgroundEventSink>>,
+        request_full_access: bool,
+        justification: Option<&str>,
+    ) -> Result<BashRunOutput, ToolExecutionResult> {
+        if self.sandbox.mode() == SandboxMode::DangerFullAccess {
+            if self.approval_policy == ApprovalPolicy::Untrusted && !trusted_command(command) {
+                self.request_approval(
+                    command,
+                    "command is outside the trusted read-only set".into(),
+                    false,
+                )
+                .await?;
+            }
+            return self.run_command(command, sink, &self.sandbox).await;
+        }
+
+        match self.approval_policy {
+            ApprovalPolicy::Untrusted => {
+                if !trusted_command(command) {
+                    self.request_approval(
+                        command,
+                        "command is outside the trusted read-only set".into(),
+                        false,
+                    )
+                    .await?;
+                }
+                self.run_command(command, sink, &self.sandbox).await
+            }
+            ApprovalPolicy::OnRequest if request_full_access => {
+                let reason = justification
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| {
+                        ToolExecutionResult::tool_error(
+                            "require_escalated requires a non-empty justification",
+                        )
+                    })?
+                    .to_string();
+                self.request_approval(command, reason, true).await?;
+                self.run_command(
+                    command,
+                    sink,
+                    &crate::exec::sandbox::provider(SandboxMode::DangerFullAccess),
+                )
+                .await
+            }
+            ApprovalPolicy::Never if request_full_access => Err(ToolExecutionResult::tool_error(
+                "approval_policy=never forbids danger-full-access escalation",
+            )),
+            ApprovalPolicy::OnFailure => {
+                let first = self
+                    .run_command(command, sink.clone(), &self.sandbox)
+                    .await?;
+                if likely_sandbox_denial(first.sandbox_mode, first.exit_code, &first.stderr_text) {
+                    self.request_approval(
+                        command,
+                        "command failed because the sandbox likely blocked it; retry with danger-full-access"
+                            .into(),
+                        true,
+                    )
+                    .await?;
+                    self.run_command(
+                        command,
+                        sink,
+                        &crate::exec::sandbox::provider(SandboxMode::DangerFullAccess),
+                    )
+                    .await
+                } else {
+                    Ok(first)
+                }
+            }
+            ApprovalPolicy::OnRequest | ApprovalPolicy::Never => {
+                self.run_command(command, sink, &self.sandbox).await
+            }
+        }
+    }
+}
+
+fn trusted_command(command: &str) -> bool {
+    if command.contains(['>', '<', ';', '&', '|', '`', '\n']) || command.contains("$(") {
+        return false;
+    }
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let Some(program) = words.first().copied() else {
+        return true;
+    };
+    match program {
+        "pwd" | "ls" | "cat" | "head" | "tail" | "wc" | "rg" | "grep" | "stat" | "file"
+        | "which" => true,
+        "git" => words
+            .get(1)
+            .is_some_and(|subcommand| *subcommand == "status"),
+        _ => false,
+    }
 }
 
 #[async_trait]
@@ -284,6 +417,12 @@ impl Tool for BashTool {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": command_description},
+                "sandbox_permissions": {
+                    "type": "string",
+                    "enum": ["use_default", "require_escalated"],
+                    "description": "Use require_escalated only when the command must run with danger-full-access. The active approval policy decides whether Yolop may ask."
+                },
+                "justification": {"type": "string", "description": "Short user-facing reason for require_escalated."},
                 "output": everruns_core::tool_output_sanitizer::output_verbosity_schema()
             },
             "required": ["command"],
@@ -310,7 +449,13 @@ impl Tool for BashTool {
             .get("output")
             .and_then(Value::as_str)
             .unwrap_or("auto");
-        let output = match self.run_command(&command, None).await {
+        let request_full_access = arguments.get("sandbox_permissions").and_then(Value::as_str)
+            == Some("require_escalated");
+        let justification = arguments.get("justification").and_then(Value::as_str);
+        let output = match self
+            .execute_with_policy(&command, None, request_full_access, justification)
+            .await
+        {
             Ok(output) => output,
             Err(err) => return err,
         };
@@ -372,7 +517,17 @@ impl BackgroundExecutableTool for BashTool {
             .get("output")
             .and_then(Value::as_str)
             .unwrap_or("auto");
-        let output = self.run_command(&command, Some(sink.clone())).await?;
+        let request_full_access = arguments.get("sandbox_permissions").and_then(Value::as_str)
+            == Some("require_escalated");
+        let justification = arguments.get("justification").and_then(Value::as_str);
+        let output = self
+            .execute_with_policy(
+                &command,
+                Some(sink.clone()),
+                request_full_access,
+                justification,
+            )
+            .await?;
         let payload = ExecToolResultPayload::new(
             &output.stdout_text,
             &output.stderr_text,
@@ -482,25 +637,96 @@ mod tests {
         use crate::config::SandboxMode;
 
         assert!(likely_sandbox_denial(
-            SandboxMode::Native,
+            SandboxMode::WorkspaceWrite,
             1,
             "touch: Operation not permitted"
         ));
         assert!(likely_sandbox_denial(
-            SandboxMode::Native,
+            SandboxMode::WorkspaceWrite,
             1,
             "open: Permission denied"
         ));
         assert!(!likely_sandbox_denial(
-            SandboxMode::Off,
+            SandboxMode::DangerFullAccess,
             1,
             "touch: Operation not permitted"
         ));
         assert!(!likely_sandbox_denial(
-            SandboxMode::Native,
+            SandboxMode::WorkspaceWrite,
             0,
             "Permission denied"
         ));
+    }
+
+    #[test]
+    fn untrusted_policy_allowlist_is_conservative() {
+        for command in ["pwd", "rg sandbox src", "git status --short"] {
+            assert!(trusted_command(command), "expected trusted: {command}");
+        }
+        for command in [
+            "cargo test",
+            "git commit -m test",
+            "git diff",
+            "cat file > copy",
+            "rg foo | head",
+            "sed -i s/a/b/ file",
+            "curl example.com",
+        ] {
+            assert!(!trusted_command(command), "expected untrusted: {command}");
+        }
+    }
+
+    #[tokio::test]
+    async fn never_policy_rejects_requested_escalation() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::with_policy(
+            Workspace::from_path(dir.path().to_path_buf()),
+            crate::exec::sandbox::provider(SandboxMode::WorkspaceWrite),
+            ApprovalPolicy::Never,
+            ApprovalGate::deny(),
+        );
+        let result = tool
+            .execute(json!({
+                "command": "pwd",
+                "sandbox_permissions": "require_escalated",
+                "justification": "test"
+            }))
+            .await;
+        assert!(
+            matches!(result, ToolExecutionResult::ToolError(message) if message.contains("forbids"))
+        );
+    }
+
+    #[tokio::test]
+    async fn on_request_policy_gates_then_runs_full_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let (gate, mut approvals) = ApprovalGate::channel();
+        let tool = BashTool::with_policy(
+            Workspace::from_path(dir.path().to_path_buf()),
+            crate::exec::sandbox::provider(SandboxMode::ReadOnly),
+            ApprovalPolicy::OnRequest,
+            gate,
+        );
+        let execute = tool.execute(json!({
+            "command": "printf approved > result.txt",
+            "sandbox_permissions": "require_escalated",
+            "justification": "write the requested result"
+        }));
+        let approve = async move {
+            let (request, reply) = approvals.recv().await.unwrap();
+            assert!(request.full_access);
+            assert_eq!(request.reason, "write the requested result");
+            reply.send(true).unwrap();
+        };
+        let (result, ()) = tokio::join!(execute, approve);
+        let ToolExecutionResult::Success(result) = result else {
+            panic!("expected approved execution");
+        };
+        assert_eq!(result["sandbox"], "danger-full-access");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("result.txt")).unwrap(),
+            "approved"
+        );
     }
 
     // Lock the behavior the description promises: a `cd` in one call does not
@@ -563,6 +789,29 @@ mod tests {
         };
         assert_ne!(escaped["exit_code"], 0, "{escaped}");
         assert!(!outside.exists(), "sandbox wrote outside the workspace");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn read_only_sandbox_denies_workspace_writes() {
+        let parent = sandbox_test_root();
+        let workspace = parent.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let tool = BashTool::with_policy(
+            Workspace::from_path(workspace.clone()),
+            crate::exec::sandbox::provider(SandboxMode::ReadOnly),
+            ApprovalPolicy::Never,
+            ApprovalGate::deny(),
+        );
+
+        let ToolExecutionResult::Success(result) = tool
+            .execute(json!({ "command": "printf blocked > denied.txt" }))
+            .await
+        else {
+            panic!("expected structured result");
+        };
+        assert_ne!(result["exit_code"], 0, "{result}");
+        assert!(!workspace.join("denied.txt").exists());
     }
 
     #[cfg(target_os = "macos")]
@@ -871,7 +1120,7 @@ mod tests {
         tool.max_output_bytes = 5;
         let sink = Arc::new(RecordingSink::default());
         let output = tool
-            .run_command("printf 1234567890", Some(sink.clone()))
+            .run_command("printf 1234567890", Some(sink.clone()), &tool.sandbox)
             .await
             .expect("background command should return capped output");
 

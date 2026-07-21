@@ -144,6 +144,8 @@ pub struct App {
     /// The `ui/ask` prompt currently shown, if any. Owns the keyboard (even
     /// mid-turn) until the user answers or dismisses it.
     pending_ask: Option<PendingAsk>,
+    sandbox_approval_rx: crate::sandbox_approval::ApprovalReceiver,
+    pending_sandbox_approval: Option<PendingSandboxApproval>,
     /// Settings store shared with the runtime (same instance
     /// `SetupCapability` writes). Used to resolve credentials when querying
     /// provider models APIs and to show per-provider connection status in
@@ -324,6 +326,10 @@ pub(crate) struct PendingAsk {
     reply: Option<oneshot::Sender<crate::tui::host_ui::AskAnswer>>,
 }
 
+struct PendingSandboxApproval {
+    reply: oneshot::Sender<bool>,
+}
+
 enum CodexLoginEvent {
     DeviceCode {
         id: u64,
@@ -482,6 +488,8 @@ impl App {
             extension_status: std::collections::BTreeMap::new(),
             ask_rx: runtime.ask_rx,
             pending_ask: None,
+            sandbox_approval_rx: runtime.sandbox_approval_rx,
+            pending_sandbox_approval: None,
             settings: runtime.settings,
             model_catalog: HashMap::new(),
             model_fetches_in_flight: HashSet::new(),
@@ -666,10 +674,20 @@ impl App {
 
     pub(crate) fn presentation_state(&self) -> PresentationState {
         let settings = self.settings.snapshot();
-        let approval_mode = if settings.sandbox_mode() == crate::config::SandboxMode::Off {
-            format!("{} · UNSAFE HOST", settings.approval_mode().as_str())
+        let sandbox = settings.sandbox_mode();
+        let approval_mode = if sandbox == crate::config::SandboxMode::DangerFullAccess {
+            format!(
+                "{} · {} · UNSAFE HOST",
+                settings.approval_mode().as_str(),
+                settings.approval_policy().as_str()
+            )
         } else {
-            settings.approval_mode().as_str().to_string()
+            format!(
+                "{} · {} · {}",
+                settings.approval_mode().as_str(),
+                sandbox.as_str(),
+                settings.approval_policy().as_str()
+            )
         };
         PresentationState {
             stream_preview: self.stream_preview.clone(),
@@ -787,6 +805,10 @@ impl App {
         self.push_system(format!("model: {}", self.model.provider_label()));
         let sandbox_mode = self.settings.snapshot().sandbox_mode();
         self.push_system(format!("sandbox: {}", sandbox_mode.as_str()));
+        self.push_system(format!(
+            "approval policy: {}",
+            self.settings.snapshot().approval_policy().as_str()
+        ));
         if let Some(warning) = crate::exec::sandbox::danger_warning(sandbox_mode) {
             self.push_system(warning.to_string());
         }
@@ -861,6 +883,7 @@ impl App {
                         );
                     }
                     if self.should_quit {
+                        self.deny_pending_sandbox_approval();
                         return Ok(());
                     }
 
@@ -874,6 +897,7 @@ impl App {
                 }
             }
             if self.should_quit {
+                self.deny_pending_sandbox_approval();
                 return Ok(());
             }
         }
@@ -984,6 +1008,24 @@ impl App {
                 reply: Some(request.reply),
             });
             applied_ui_command = true;
+        }
+        if self.pending_ask.is_none()
+            && self.pending_sandbox_approval.is_none()
+            && let Ok((request, reply)) = self.sandbox_approval_rx.try_recv()
+        {
+            self.push_system(format!("approval needed: {}", request.reason));
+            self.lines.push(ChatLine {
+                author: Author::Tool,
+                text: request.command,
+            });
+            let scope = if request.full_access {
+                "danger-full-access"
+            } else {
+                "this command inside the active sandbox"
+            };
+            self.push_system(format!("press y to approve {scope}, n or Esc to deny"));
+            self.pending_sandbox_approval = Some(PendingSandboxApproval { reply });
+            return Ok(());
         }
         if applied_ui_command {
             return Ok(());
@@ -1207,6 +1249,22 @@ impl App {
         }
 
         self.disarm_ctrl_c_pending_exit_if_grace_elapsed();
+
+        if self.pending_sandbox_approval.is_some() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(pending) = self.pending_sandbox_approval.take() {
+                        let _ = pending.reply.send(true);
+                        self.push_system("approved".into());
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.deny_pending_sandbox_approval();
+                }
+                _ => {}
+            }
+            return;
+        }
 
         // The background panel overlay captures navigation keys (even mid-turn,
         // so you can watch tasks while a turn runs).
@@ -1628,6 +1686,13 @@ impl App {
                 let _ = reply.send(answer);
             }
             self.push_system(format!("answered: {shown}"));
+        }
+    }
+
+    fn deny_pending_sandbox_approval(&mut self) {
+        if let Some(pending) = self.pending_sandbox_approval.take() {
+            let _ = pending.reply.send(false);
+            self.push_system("denied".into());
         }
     }
 
@@ -4977,6 +5042,24 @@ mod tests {
         assert!(
             lines.contains("[task_panel] background_tool running: write marker"),
             "panel should list the session task row: {lines}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn presentation_state_exposes_sandbox_and_hard_approval_matrix() {
+        let test = app_with_llmsim().await;
+        test.app
+            .settings
+            .set_sandbox_mode(crate::config::SandboxMode::ReadOnly)
+            .unwrap();
+        test.app
+            .settings
+            .set_approval_policy(crate::config::ApprovalPolicy::Never)
+            .unwrap();
+
+        assert_eq!(
+            test.app.presentation_state().approval_mode,
+            "normal · read-only · never"
         );
     }
 
