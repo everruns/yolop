@@ -1811,6 +1811,46 @@ fn text_input_renders_wrapped_rows() {
 }
 
 #[test]
+fn text_input_word_wraps_at_spaces() {
+    let mut state = TextInputState::new();
+    type_str(&mut state, "hello world foo");
+    // Width 8 breaks at the last space that fits, not mid-word: "hello " then
+    // "world " then "foo".
+    assert_eq!(state.visual_height(8), 3);
+    let out = render_view_rows(&TextInput::new(&state), 8, 3);
+    assert_eq!(out[0], "hello");
+    assert_eq!(out[1], "world");
+    assert_eq!(out[2], "foo");
+}
+
+#[test]
+fn text_input_hard_breaks_overlong_word() {
+    let mut state = TextInputState::new();
+    type_str(&mut state, "abcdefghij");
+    // A single word longer than the width still hard-breaks so it fits.
+    assert_eq!(state.visual_height(4), 3);
+    let out = render_view_rows(&TextInput::new(&state), 4, 3);
+    assert_eq!(out[0], "abcd");
+    assert_eq!(out[1], "efgh");
+    assert_eq!(out[2], "ij");
+}
+
+#[test]
+fn text_input_cursor_tracks_word_wrap() {
+    let mut state = TextInputState::from_text("hello world");
+    // Cursor at end (col 11). Width 8 → "hello " / "world"; cursor sits after
+    // "world" on the second visual row at col 5.
+    let area = Rect::new(0, 0, 8, 3);
+    assert_eq!(state.cursor_screen(area), (5, 1));
+    // Move to just after the space (col 6, start of "world") → row 1, col 0.
+    state.move_home();
+    for _ in 0..6 {
+        state.move_right();
+    }
+    assert_eq!(state.cursor_screen(area), (0, 1));
+}
+
+#[test]
 fn text_input_cursor_screen_follows_wrap() {
     let mut state = TextInputState::new();
     type_str(&mut state, "abcd");
