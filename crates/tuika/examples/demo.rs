@@ -1,26 +1,20 @@
 //! Single-component demo harness.
 //!
-//! It renders one component per scene inside a small labeled frame. It powers
-//! two things:
-//!
-//! - the animated GIFs under `crates/tuika/docs/demos/`, recorded with
-//!   [VHS](https://github.com/charmbracelet/vhs) from the tapes in
-//!   `crates/tuika/docs/tapes/` (see `crates/tuika/docs/generate.sh`);
-//! - a headless text dump used to eyeball a scene without a real terminal.
-//!
-//! Usage:
+//! It renders one component per scene inside a small labeled frame, and is the
+//! source of truth for the gallery: the scene registry drives the CLI, the tape
+//! generator, and the integrity check.
 //!
 //! ```text
 //! cargo run -p tuika --example demo -- spinner          # interactive, records a GIF
 //! cargo run -p tuika --example demo -- spinner --dump    # print one frame as text
 //! cargo run -p tuika --example demo -- list              # list scene names
 //! cargo run -p tuika --example demo -- check             # verify the docs assets
+//! cargo run -p tuika --example demo -- tapes <dir>       # emit VHS tapes (used by the generator)
 //! ```
 //!
-//! Interactive mode enters the alternate screen and animates from a frame
-//! counter; press `q` or `Esc` to quit. `check` holds the registry, tapes,
-//! recorded GIFs, and doc references in lockstep (run by `docs/generate.sh` and
-//! in CI); it exits non-zero on any drift.
+//! The GIFs under `docs/demos/` are recorded by `scripts/gen-tuika-demos.sh`,
+//! which asks this example to emit the VHS tapes and records each — the tapes
+//! are generated, not committed. See `crates/tuika/AGENTS.md`.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -39,107 +33,234 @@ use tuika::{
     TabsState, Text, TextInput, TextInputState, Theme, element, paint, view,
 };
 
-/// Every scene: a name, a one-line blurb, and a pure builder from the frame
-/// counter. The registry is the single source of truth for the CLI, the
-/// generator, and the docs.
 type Build = fn(u64, &Theme) -> Element;
 
-const DEMOS: &[(&str, &str, Build)] = &[
-    ("spinner", "frame-cycled activity glyphs", scene_spinner),
-    (
+/// A single gallery scene. The registry below is the one place a component's
+/// demo is declared — name, blurb, recording size, and builder.
+struct Demo {
+    name: &'static str,
+    blurb: &'static str,
+    /// Content height in rows; sets the recorded frame's height.
+    rows: u16,
+    /// Motion scenes hold longer and record at a higher frame rate.
+    animated: bool,
+    build: Build,
+}
+
+const fn demo(
+    name: &'static str,
+    blurb: &'static str,
+    rows: u16,
+    animated: bool,
+    build: Build,
+) -> Demo {
+    Demo {
+        name,
+        blurb,
+        rows,
+        animated,
+        build,
+    }
+}
+
+const DEMOS: &[Demo] = &[
+    demo(
+        "spinner",
+        "frame-cycled activity glyphs",
+        10,
+        true,
+        scene_spinner,
+    ),
+    demo(
         "progress_bar",
         "determinate & indeterminate bars",
+        12,
+        true,
         scene_progress,
     ),
-    ("loader", "spinner + message + hint row", scene_loader),
-    ("text", "styled lines and word-wrapped prose", scene_text),
-    ("rule", "titled horizontal separators", scene_rule),
-    ("boxed", "borders, titles, and padding", scene_boxed),
-    ("flex", "flexbox grow / fixed distribution", scene_flex),
-    (
+    demo(
+        "loader",
+        "spinner + message + hint row",
+        9,
+        true,
+        scene_loader,
+    ),
+    demo(
+        "text",
+        "styled lines and word-wrapped prose",
+        11,
+        false,
+        scene_text,
+    ),
+    demo(
+        "rule",
+        "titled horizontal separators",
+        12,
+        false,
+        scene_rule,
+    ),
+    demo(
+        "boxed",
+        "borders, titles, and padding",
+        12,
+        false,
+        scene_boxed,
+    ),
+    demo(
+        "flex",
+        "flexbox grow / fixed distribution",
+        10,
+        false,
+        scene_flex,
+    ),
+    demo(
         "scroll",
         "viewport + scrollbar over long content",
+        13,
+        true,
         scene_scroll,
     ),
-    ("select", "keyboard-navigable selection list", scene_select),
-    ("tabs", "host-state tab strip", scene_tabs),
-    (
+    demo(
+        "select",
+        "keyboard-navigable selection list",
+        11,
+        true,
+        scene_select,
+    ),
+    demo("tabs", "host-state tab strip", 9, true, scene_tabs),
+    demo(
         "status_bar",
         "left / right status segments",
+        7,
+        false,
         scene_status_bar,
     ),
-    ("textinput", "multi-line edit model", scene_textinput),
+    demo(
+        "textinput",
+        "multi-line edit model",
+        9,
+        true,
+        scene_textinput,
+    ),
 ];
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let name = args.first().map(String::as_str).unwrap_or("list");
+    let cmd = args.first().map(String::as_str).unwrap_or("list");
 
-    if name == "list" || name == "--list" || name == "-h" || name == "--help" {
-        println!("scenes:");
-        for (n, blurb, _) in DEMOS {
-            println!("  {n:<14} {blurb}");
+    match cmd {
+        "list" | "--list" | "-h" | "--help" => {
+            println!("scenes:");
+            for d in DEMOS {
+                println!("  {:<14} {}", d.name, d.blurb);
+            }
+            Ok(())
         }
-        return Ok(());
+        "check" => check(),
+        "tapes" => {
+            let Some(dir) = args.get(1) else {
+                eprintln!("usage: demo tapes <output-dir>");
+                std::process::exit(2);
+            };
+            emit_tapes(Path::new(dir))
+        }
+        name => {
+            let Some(d) = DEMOS.iter().find(|d| d.name == name) else {
+                eprintln!("unknown scene {name:?}; run `list` to see the options");
+                std::process::exit(2);
+            };
+            if args.iter().any(|a| a == "--dump") {
+                dump(d.name, d.blurb, d.build)
+            } else {
+                run(d.name, d.blurb, d.build)
+            }
+        }
     }
-
-    if name == "check" {
-        return check();
-    }
-
-    let Some(&(_, blurb, build)) = DEMOS.iter().find(|(n, _, _)| *n == name) else {
-        eprintln!("unknown scene {name:?}; run `list` to see the options");
-        std::process::exit(2);
-    };
-
-    if args.iter().any(|a| a == "--dump") {
-        return dump(name, blurb, build);
-    }
-    run(name, blurb, build)
 }
 
 // ---------------------------------------------------------------------------
-// `check` — the gallery integrity guard. The scene registry above is the source
-// of truth: every scene needs a tape and a non-empty recording, no orphan tape
-// or GIF may linger, and every `demos/<name>.gif` referenced by a component doc
-// or the gallery README must map to a real scene. Runs in CI (tuika-msrv) and
-// at the end of docs/generate.sh, so drift fails loudly instead of shipping a
-// broken image to docs.rs.
+// `tapes` — emit a VHS tape per scene from the registry, so the tapes are
+// generated rather than committed. Recorded at 2× pixel density and displayed
+// at half width, so the GIFs stay crisp on HiDPI screens. `Output` is relative
+// to the tuika crate dir (the generator cds there); the command is an absolute
+// path to this very binary.
+// ---------------------------------------------------------------------------
+
+fn emit_tapes(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    let bin = std::env::current_exe()?;
+    for d in DEMOS {
+        let height = u32::from(d.rows) * 52 + 96;
+        let (hold, fps) = if d.animated {
+            ("4s", 24)
+        } else {
+            ("1600ms", 12)
+        };
+        let tape = format!(
+            "# Generated by `demo -- tapes`; recorded by scripts/gen-tuika-demos.sh.\n\
+             # Do not edit or commit — regenerate from the scene registry instead.\n\
+             Output docs/demos/{name}.gif\n\
+             \n\
+             Set Shell bash\n\
+             Set FontSize 40\n\
+             Set Width 1760\n\
+             Set Height {height}\n\
+             Set Padding 40\n\
+             Set Framerate {fps}\n\
+             \n\
+             Hide\n\
+             Type \"{bin} {name}\"\n\
+             Enter\n\
+             Sleep 900ms\n\
+             Show\n\
+             Sleep {hold}\n",
+            name = d.name,
+            bin = bin.display(),
+        );
+        fs::write(dir.join(format!("{}.tape", d.name)), tape)?;
+    }
+    println!("wrote {} tapes to {}", DEMOS.len(), dir.display());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `check` — the gallery integrity guard. The scene registry is the source of
+// truth: every scene needs a non-empty recording, no orphan GIF may linger, and
+// every `demos/<name>.gif` referenced by a component doc or `components.md` must
+// map to a real scene. Runs in CI (tuika-msrv) and at the end of the generator,
+// so drift fails loudly instead of shipping a broken image to docs.rs.
 // ---------------------------------------------------------------------------
 
 fn check() -> io::Result<()> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let names: BTreeSet<&str> = DEMOS.iter().map(|(n, _, _)| *n).collect();
+    let demos = dir.join("docs/demos");
+    let names: BTreeSet<&str> = DEMOS.iter().map(|d| d.name).collect();
     let mut errors: Vec<String> = Vec::new();
 
-    // Every scene has a tape and a non-empty recording.
+    // Every scene has a non-empty recording.
     for name in &names {
-        let tape = dir.join(format!("docs/tapes/{name}.tape"));
-        if !tape.exists() {
-            errors.push(format!("scene `{name}` has no tape at {}", tape.display()));
-        }
-        let gif = dir.join(format!("docs/demos/{name}.gif"));
+        let gif = demos.join(format!("{name}.gif"));
         match fs::metadata(&gif) {
             Ok(m) if m.len() > 0 => {}
             Ok(_) => errors.push(format!("recording {} is empty", gif.display())),
             Err(_) => errors.push(format!(
-                "scene `{name}` has no recording at {} (run docs/generate.sh)",
+                "scene `{name}` has no recording at {} (run scripts/gen-tuika-demos.sh)",
                 gif.display()
             )),
         }
     }
 
-    // No orphan tape or GIF without a scene.
-    for (sub, ext) in [("docs/tapes", "tape"), ("docs/demos", "gif")] {
-        for stem in stems(&dir.join(sub), ext) {
-            if !names.contains(stem.as_str()) {
-                errors.push(format!("{sub}/{stem}.{ext} has no matching scene in DEMOS"));
-            }
+    // No orphan recording without a scene.
+    for stem in stems(&demos, "gif") {
+        if !names.contains(stem.as_str()) {
+            errors.push(format!(
+                "docs/demos/{stem}.gif has no matching scene in DEMOS"
+            ));
         }
     }
 
-    // Every demo GIF referenced by a component doc or the README maps to a scene.
-    let mut sources: Vec<PathBuf> = vec![dir.join("docs/README.md")];
+    // Every demo GIF referenced by a component doc or components.md maps to a scene.
+    let mut sources: Vec<PathBuf> = vec![dir.join("docs/components.md")];
     for entry in fs::read_dir(dir.join("src/components"))?.filter_map(Result::ok) {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("rs") {
@@ -160,7 +281,7 @@ fn check() -> io::Result<()> {
 
     if errors.is_empty() {
         println!(
-            "ok: {} scenes, tapes, recordings, and references in sync",
+            "ok: {} scenes, recordings, and references in sync",
             names.len()
         );
         Ok(())
@@ -188,8 +309,8 @@ fn stems(dir: &Path, ext: &str) -> BTreeSet<String> {
 }
 
 /// Every `demos/<name>.gif` reference in `text` — matches both the relative
-/// `demos/x.gif` in the README and the absolute `.../docs/demos/x.gif` URLs
-/// embedded in component docs.
+/// `demos/x.gif` in `components.md` and the absolute `.../docs/demos/x.gif`
+/// URLs embedded in component docs.
 fn referenced_gifs(text: &str) -> BTreeSet<String> {
     const MARKER: &str = "demos/";
     let mut found = BTreeSet::new();
