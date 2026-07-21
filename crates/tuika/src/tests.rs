@@ -1673,6 +1673,32 @@ fn render_view_rows(view: &dyn View, w: u16, h: u16) -> Vec<String> {
 }
 
 #[test]
+fn text_input_scrolls_to_cursor_when_taller_than_area() {
+    // 10 single-row lines; cursor at the end (line 9).
+    let mut state = TextInputState::new();
+    for i in 0..10 {
+        type_str(&mut state, &format!("line{i}"));
+        if i < 9 {
+            state.newline();
+        }
+    }
+    // A 3-row viewport shows the last three rows (containing the cursor), not the
+    // top — the composer scrolls to the caret.
+    let out = render_view_rows(&TextInput::new(&state), 10, 3);
+    assert_eq!(out, vec!["line7", "line8", "line9"]);
+    // The placed cursor sits on the last visible row, consistent with the scroll.
+    let (_, y) = state.cursor_screen(Rect::new(0, 0, 10, 3));
+    assert_eq!(y, 2);
+    // Move to the top: the viewport follows the cursor back up.
+    for _ in 0..9 {
+        state.move_up();
+    }
+    let out = render_view_rows(&TextInput::new(&state), 10, 3);
+    assert_eq!(out, vec!["line0", "line1", "line2"]);
+    assert_eq!(state.cursor_screen(Rect::new(0, 0, 10, 3)).1, 0);
+}
+
+#[test]
 fn text_input_renders_wrapped_rows() {
     let mut state = TextInputState::new();
     type_str(&mut state, "abcdef");
