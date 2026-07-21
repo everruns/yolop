@@ -14,13 +14,14 @@
 //! - **the preview row** (reverse-search / suggestions / streaming preview) and
 //!   **the status** are [`tuika::Text`] views built from the same pure line
 //!   builders the inline chrome uses, so the two modes cannot visually drift;
-//! - **the transcript** is bottom-aligned styled lines inside a probed region so
-//!   full-screen mouse text selection (see [`super::App`]) can be bounded to it.
+//! - **the transcript** is a [`tuika::Scroll`] over the *full* history, bound to
+//!   [`App`]'s persisted `ScrollState`, inside a probed region so full-screen
+//!   mouse text selection (see [`super::App`]) can be bounded to it.
 //!
-//! Crucially, the full-screen frame calls **no** `render::draw_*` painter for
-//! its own chrome — only the shared *content* builders (which return styled
-//! [`Line`]s). The setup / ask / background overlays still borrow the inline
-//! sheet renderers; they move onto tuika in a follow-up.
+//! Crucially, the full-screen frame calls **no** `render::draw_*` painter — not
+//! for its chrome and not for the setup / ask / background overlays (which
+//! composite as tuika [`Overlay`]s, see below). It uses only the shared *content*
+//! builders, which return styled [`Line`]s.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -28,8 +29,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use tuika::{
-    Boxed, Element, Overlay, Padding, RectProbe, Rule, Spacer, Text, TextInput, TextInputState,
-    element, view,
+    Boxed, Element, Overlay, Padding, RectProbe, Rule, Scroll, Spacer, Text, TextInput,
+    TextInputState, element, view,
 };
 
 use super::render;
@@ -61,6 +62,14 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let desired_input_height = app.input_height(input_width);
     let status_rows = state.status_row_count();
     let preview_visible = render::chrome_preview_visible(&state);
+    // NOTE (layout policy, item 2): `chrome_dimensions` stays hand-rolled on
+    // purpose. tuika's Flex solver places the rows of the `view!` tree below, but
+    // *how tall the composer may grow* and *whether the preview/status-separator
+    // rows appear at all* is yolop UX policy (shrink the composer to keep the
+    // transcript visible on a short viewport; mirror Codex's composer behavior) —
+    // not something a generic constraint solver can infer. We compute those
+    // heights here and hand the solver fixed sizes; the solver still owns
+    // placement, wrapping, and the transcript's `grow(1)` fill.
     let (chrome_height, input_height) = render::chrome_dimensions(
         area.height,
         desired_input_height,
@@ -69,15 +78,27 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     );
     let preview_height = u16::from(input_height == 1 && preview_visible);
     let status_sep_height = u16::from(input_height < 3);
-    let transcript_height = area.height.saturating_sub(chrome_height);
+    let transcript_height = area.height.saturating_sub(chrome_height).max(1);
 
     // Content as styled lines — the exact pure builders the inline renderer uses,
     // so colors, separators, and status can never drift between the two modes.
     let inner_w = area.width.saturating_sub(2) as usize;
-    let transcript_lines =
-        render::recent_transcript_lines(app, inner_w, transcript_height.max(1) as usize);
     let status_lines = render::session_status_lines(&state);
     let preview_line = render::preview_slot_line(&state, area.width);
+
+    // The transcript is a real Scroll over the *full* history, bound to the
+    // persisted ScrollState. Short content is top-padded so it rests at the
+    // bottom (the inline scrollback feel); taller content scrolls, and
+    // stick-to-bottom keeps the newest line visible as the turn streams.
+    let scroll_lines = pad_to_bottom(
+        render::full_transcript_lines(app, inner_w),
+        transcript_height,
+    );
+    let scroll_content_h = scroll_lines.len() as u16;
+    // Record metrics + reconcile the offset before rendering, so the mouse-wheel
+    // / paging handlers (which reuse these metrics) clamp correctly.
+    app.scroll_metrics = (scroll_content_h, transcript_height);
+    app.scroll.clamp(scroll_content_h, transcript_height);
 
     // The composer is a real tuika TextInput. Its text is a snapshot of the
     // shared composer model (`app.input`); inline mode keeps owning that model,
@@ -92,9 +113,11 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let transcript_probe = RectProbe::new();
     let input_probe = RectProbe::new();
 
+    let transcript = Scroll::new(scroll_lines, &app.scroll);
+
     let root = view! {
         col {
-            grow(1) { node(transcript_view(transcript_lines, &transcript_probe)) }
+            grow(1) { node(transcript_view(transcript, &transcript_probe)) }
             fixed(preview_height) { node(preview_view(preview_line)) }
             fixed(1) { node(message_rule(&state)) }
             fixed(input_height) { node(composer_row(&composer, &input_probe)) }
@@ -146,14 +169,25 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
-/// The transcript region: styled lines bottom-aligned within a one-column inset,
-/// probed so the host can bound mouse selection to it.
-fn transcript_view(lines: Vec<Line<'static>>, probe: &RectProbe) -> Element {
-    let height = (lines.len() as u16).max(1);
+/// Top-pad `lines` with blanks so a history shorter than the viewport rests at
+/// the bottom of the scroll region (matching the inline scrollback feel). A
+/// history taller than the viewport is returned unchanged and simply scrolls.
+fn pad_to_bottom(lines: Vec<Line<'static>>, viewport_h: u16) -> Vec<Line<'static>> {
+    let deficit = (viewport_h as usize).saturating_sub(lines.len());
+    if deficit == 0 {
+        return lines;
+    }
+    let mut padded = vec![Line::from(""); deficit];
+    padded.extend(lines);
+    padded
+}
+
+/// The transcript region: a [`Scroll`] within a one-column inset, probed so the
+/// host can bound mouse selection to it.
+fn transcript_view(scroll: Scroll, probe: &RectProbe) -> Element {
     let inner = view! {
         col(padding = Padding { left: 1, right: 1, top: 0, bottom: 0 }) {
-            grow(1) { spacer() }
-            fixed(height) { node(Text::new(lines)) }
+            grow(1) { node(scroll) }
         }
     };
     probe.wrap(inner)
