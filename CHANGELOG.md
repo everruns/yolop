@@ -40,6 +40,7 @@ tags the version and publishes to crates.io and the Homebrew tap.
 * fix(tools): honor `/workspace` alias in host-path scope resolution ([#342](https://github.com/everruns/yolop/pull/342)) by @mchalyi
 * feat(tui): Codex-inspired composer, highlighting, and status features ([#341](https://github.com/everruns/yolop/pull/341)) by @mchalyi
 * fix(tui): unify fullscreen presentation ([#340](https://github.com/everruns/yolop/pull/340)) by @mchalyi
+* chore(deps): bump everruns to 0.17.13, pin Rust 1.96.0 ([#339](https://github.com/everruns/yolop/pull/339)) by @chaliy
 
 **Full Changelog**: https://github.com/everruns/yolop/compare/v0.9.0...v0.10.0
 
