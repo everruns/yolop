@@ -2,6 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/tuika.svg)](https://crates.io/crates/tuika)
 [![docs.rs](https://img.shields.io/docsrs/tuika)](https://docs.rs/tuika)
+[![downloads](https://img.shields.io/crates/d/tuika.svg)](https://crates.io/crates/tuika)
 [![license](https://img.shields.io/crates/l/tuika.svg)](https://github.com/everruns/yolop/blob/main/LICENSE)
 ![msrv](https://img.shields.io/badge/rust-1.88%2B-blue.svg)
 
