@@ -376,6 +376,21 @@ pub(crate) fn draw_preview_slot(f: &mut ratatui::Frame, area: Rect, state: &View
     }
 }
 
+/// The multiplexed preview-row content, as one styled line, for the full-screen
+/// tuika renderer. Same priority order as [`draw_preview_slot`] — reverse
+/// search, else command suggestions, else the streaming preview — but pure, so
+/// the full-screen renderer paints it through a tuika view instead of a ratatui
+/// widget. `None` when the row is empty.
+pub(crate) fn preview_slot_line(state: &ViewState, width: u16) -> Option<Line<'static>> {
+    if let Some(search) = &state.history_search {
+        Some(history_search_preview_line(search, width))
+    } else if !state.command_suggestions.is_empty() {
+        Some(suggestion_preview_line(&state.command_suggestions, width))
+    } else {
+        stream_preview_line(state, width)
+    }
+}
+
 pub(crate) fn draw_chrome_layout(f: &mut ratatui::Frame, layout: ChromeLayout, state: &ViewState) {
     draw_preview_slot(f, layout.preview, state);
     draw_message_separator(f, layout.message_separator, state);
@@ -963,19 +978,16 @@ pub(crate) fn suggestion_preview_line(
     ])
 }
 
-pub(crate) fn draw_stream_preview(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
-    if area.height == 0 {
-        return;
-    }
-    let Some(preview) = state.presentation.stream_preview.as_ref() else {
-        return;
-    };
-    let inner_width = area.width as usize;
+/// The streaming-preview row: `label › …tail`, showing the most recent non-empty
+/// line of the accumulated stream so the eye tracks the live tail. `None` when
+/// nothing is streaming or `width` is zero. Pure so both the inline chrome and
+/// the full-screen tuika renderer draw the identical line.
+pub(crate) fn stream_preview_line(state: &ViewState, width: u16) -> Option<Line<'static>> {
+    let preview = state.presentation.stream_preview.as_ref()?;
+    let inner_width = width as usize;
     if inner_width == 0 {
-        return;
+        return None;
     }
-    // Show the most recent line of the accumulated stream so the eye
-    // tracks the live tail rather than the start of a long response.
     let tail = preview
         .text
         .lines()
@@ -987,18 +999,25 @@ pub(crate) fn draw_stream_preview(f: &mut ratatui::Frame, area: Rect, state: &Vi
     let prefix_w = prefix.chars().count();
     let max_text = inner_width.saturating_sub(prefix_w + 1).max(8);
     let truncated = truncate_tail_chars(tail, max_text);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                prefix,
-                Style::default()
-                    .fg(preview.kind.color())
-                    .add_modifier(Modifier::DIM),
-            ),
-            Span::styled(truncated, Style::default().fg(TEXT_MUTED)),
-        ])),
-        area,
-    );
+    Some(Line::from(vec![
+        Span::styled(
+            prefix,
+            Style::default()
+                .fg(preview.kind.color())
+                .add_modifier(Modifier::DIM),
+        ),
+        Span::styled(truncated, Style::default().fg(TEXT_MUTED)),
+    ]))
+}
+
+pub(crate) fn draw_stream_preview(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
+    if area.height == 0 {
+        return;
+    }
+    let Some(line) = stream_preview_line(state, area.width) else {
+        return;
+    };
+    f.render_widget(Paragraph::new(line), area);
 }
 
 /// Keep the last `max_chars` of `text`. Streaming preview reads better
