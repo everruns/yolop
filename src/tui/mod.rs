@@ -4540,6 +4540,33 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_model_picker_is_a_windowed_selectlist() {
+        let mut test = app_with_llmsim().await;
+        // The model list renders as a windowed tuika SelectList (item 4 / PR J).
+        test.app.setup = Some(SetupStep::PickModel {
+            provider: "openai".to_string(),
+            selected: 0,
+            custom: None,
+            error: None,
+        });
+        let picker = render::setup_picker(&test.app).expect("model list is a picker");
+        assert_eq!(picker.viewport, Some(render::MAX_VISIBLE_MODEL_ROWS as u16));
+        assert!(!picker.options.is_empty(), "model list has options");
+        // The custom-id sub-mode is a text input, not a list, so it falls back to
+        // the shared text panel path (not a picker).
+        test.app.setup = Some(SetupStep::PickModel {
+            provider: "openai".to_string(),
+            selected: 0,
+            custom: Some("my-model".to_string()),
+            error: None,
+        });
+        assert!(
+            render::setup_picker(&test.app).is_none(),
+            "custom-id sub-mode is not a SelectList picker"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fullscreen_setup_overlay_renders_via_tuika() {
         use ratatui::backend::TestBackend;
         let mut test = app_with_llmsim().await;
