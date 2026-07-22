@@ -123,6 +123,13 @@ struct Cli {
     #[arg(long)]
     fullscreen: bool,
 
+    /// Color theme for the interactive TUI. `yolop` (default) is yolop's own
+    /// palette; other values select a bundled `tuika` preset (e.g.
+    /// `solarized-dark`, `gruvbox-dark`, `dracula`, `light`). Persisted default
+    /// comes from settings when unset.
+    #[arg(long, value_name = "NAME")]
+    theme: Option<String>,
+
     /// Enable shell sandboxing for this run. Commands may write only in the
     /// workspace and temporary directories, and network access is blocked.
     #[arg(long)]
@@ -560,6 +567,9 @@ async fn async_main() -> Result<()> {
     if let Some(warning) = exec::sandbox::danger_warning(effective_sandbox_mode) {
         eprintln!("yolop: {warning}");
     }
+    // Captured before `settings` is moved into the runtime build below; used to
+    // resolve the TUI theme once the runtime is ready.
+    let saved_theme = settings.snapshot().theme().map(str::to_string);
     let runtime = runtime::build_with_options(
         cwd,
         provider,
@@ -584,6 +594,28 @@ async fn async_main() -> Result<()> {
         },
     )
     .await?;
+
+    // Resolve the interactive TUI theme: the `--theme` flag wins, else the
+    // persisted `theme` setting. Done before the print-mode branch so a bad
+    // `--theme` is rejected in every mode; the override only affects the TUI
+    // (print/ACP never read it), so setting it here is otherwise harmless.
+    if let Some(name) = cli.theme.as_deref() {
+        // An explicit flag is a hard error when unknown.
+        let theme = tui::fullscreen::resolve_theme(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown --theme `{name}`; expected one of: {}",
+                tui::fullscreen::theme_names().join(", ")
+            )
+        })?;
+        tui::fullscreen::set_theme_override(theme);
+    } else if let Some(name) = saved_theme.as_deref() {
+        // A persisted value is best-effort: warn and fall back rather than
+        // refusing to start (e.g. a theme from a newer version).
+        match tui::fullscreen::resolve_theme(name) {
+            Some(theme) => tui::fullscreen::set_theme_override(theme),
+            None => eprintln!("yolop: ignoring unknown saved theme `{name}`"),
+        }
+    }
 
     if let Some(prompt) = cli.print {
         let image_parts = tui::input::image_input::load_image_parts(&cli.images)?;
@@ -1615,6 +1647,7 @@ mod tests {
             session_dir: None,
             trajectory_out: None,
             fullscreen: false,
+            theme: None,
             sandbox: false,
         }
     }
@@ -1673,6 +1706,7 @@ mod tests {
             session_dir: None,
             trajectory_out: None,
             fullscreen: false,
+            theme: None,
             sandbox: false,
         };
 

@@ -208,6 +208,24 @@ pub fn schema() -> &'static [ConfigField] {
             provider_scoped: false,
         },
         ConfigField {
+            key: "theme",
+            aliases: &[],
+            title: "TUI color theme",
+            description: "Color theme for the interactive TUI. `yolop` is yolop's own palette; \
+                          other values select a bundled tuika preset. The `--theme` flag \
+                          overrides this for a single run.",
+            kind: ValueKind::Text,
+            default: Some("yolop"),
+            examples: &[
+                "yolop",
+                "solarized-dark",
+                "gruvbox-dark",
+                "dracula",
+                "light",
+            ],
+            provider_scoped: false,
+        },
+        ConfigField {
             key: "capabilities",
             aliases: &["capability"],
             title: "Harness capabilities",
@@ -259,6 +277,8 @@ pub enum KeyTarget {
     ProactiveWake,
     Worktrees,
     Sandbox,
+    /// Interactive TUI color theme.
+    Theme,
     /// Per-provider model spec, for the named provider.
     Model(String),
     /// Per-provider API token.
@@ -285,6 +305,7 @@ impl KeyTarget {
             KeyTarget::ProactiveWake => "proactive_wake",
             KeyTarget::Worktrees => "worktrees",
             KeyTarget::Sandbox => "sandbox_mode",
+            KeyTarget::Theme => "theme",
             KeyTarget::Model(_) => "models",
             KeyTarget::Token(_) => "tokens",
             KeyTarget::BaseUrl(_) => "base_urls",
@@ -340,6 +361,7 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "proactive_wake" | "background_wake" | "wake" => scalar(KeyTarget::ProactiveWake),
         "worktrees" | "worktree" => scalar(KeyTarget::Worktrees),
         "sandbox_mode" | "sandbox" | "containment" => scalar(KeyTarget::Sandbox),
+        "theme" => scalar(KeyTarget::Theme),
         "models" | "model_for" => scoped(KeyTarget::Model),
         "tokens" | "token" => scoped(KeyTarget::Token),
         "base_urls" | "base_url" | "url" => scoped(KeyTarget::BaseUrl),

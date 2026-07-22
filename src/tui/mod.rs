@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
-mod fullscreen;
+pub(crate) mod fullscreen;
 mod render;
 mod setup;
 mod viewport;

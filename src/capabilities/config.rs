@@ -551,6 +551,27 @@ impl SetConfigTool {
                     )))
                 }
             }
+            KeyTarget::Theme => {
+                if clearing {
+                    self.settings.set_theme(None).map_err(map_err)?;
+                    return Ok(saved(
+                        "cleared theme (default: yolop's own palette)".to_string(),
+                    ));
+                }
+                // Validate against the same names `--theme` accepts (yolop + tuika presets).
+                if crate::tui::fullscreen::resolve_theme(value).is_none() {
+                    return Err(format!(
+                        "unknown theme `{value}`; expected one of: {}",
+                        crate::tui::fullscreen::theme_names().join(", ")
+                    ));
+                }
+                self.settings
+                    .set_theme(Some(value.to_string()))
+                    .map_err(map_err)?;
+                Ok(saved(format!(
+                    "theme = {value}; applies to new interactive sessions"
+                )))
+            }
             KeyTarget::Model(provider) => {
                 if clearing {
                     let existed = self.settings.clear_model(provider).map_err(map_err)?;
@@ -780,6 +801,30 @@ mod tests {
 
         let bad = tool
             .execute(json!({ "key": "approval_mode", "value": "whenever" }))
+            .await;
+        assert!(matches!(bad, ToolExecutionResult::ToolError(_)));
+    }
+
+    #[tokio::test]
+    async fn set_config_routes_theme() {
+        let (_tmp, settings) = store();
+        let tool = set_config_tool(settings.clone());
+
+        // A bundled preset persists.
+        let ok = tool
+            .execute(json!({ "key": "theme", "value": "gruvbox-dark" }))
+            .await;
+        assert!(matches!(ok, ToolExecutionResult::Success(_)));
+        assert_eq!(settings.snapshot().theme(), Some("gruvbox-dark"));
+
+        // `yolop` means the default and is not persisted.
+        tool.execute(json!({ "key": "theme", "value": "yolop" }))
+            .await;
+        assert_eq!(settings.snapshot().theme(), None);
+
+        // An unknown theme is rejected at the entry point.
+        let bad = tool
+            .execute(json!({ "key": "theme", "value": "no-such-theme" }))
             .await;
         assert!(matches!(bad, ToolExecutionResult::ToolError(_)));
     }
