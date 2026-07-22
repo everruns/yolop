@@ -57,9 +57,64 @@ fn run_linux_sandbox_worker(cwd: &Path, temp: &Path, script: &str) -> std::proce
         .expect("spawn Linux sandbox worker")
 }
 
+/// Whether the native shell sandbox can actually be enforced on this host.
+/// Reuses the real worker path on Linux (Landlock ABI v3) and checks for
+/// `sandbox-exec` on macOS; other platforms have no native sandbox to probe.
+/// Probed once and cached.
+fn native_sandbox_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        #[cfg(target_os = "linux")]
+        {
+            let dir = tempfile::tempdir().expect("sandbox probe tempdir");
+            let ws = dir.path().join("ws");
+            let tmp = dir.path().join("tmp");
+            std::fs::create_dir_all(&ws).expect("probe workspace");
+            std::fs::create_dir_all(&tmp).expect("probe temp");
+            let out = run_linux_sandbox_worker(&ws, &tmp, "true");
+            if out.status.success() {
+                return true;
+            }
+            // Only the explicit refusal means "unavailable"; any other failure
+            // should surface in the test rather than be swallowed as a skip.
+            !String::from_utf8_lossy(&out.stderr).contains("native sandbox unavailable")
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::path::Path::new("/usr/bin/sandbox-exec").exists()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            true
+        }
+    })
+}
+
+/// Gate a sandbox-dependent test: skip locally when the native sandbox is
+/// unavailable, but make its absence a hard failure under `CI` so the sandbox
+/// contract is never silently un-tested where it can run. Mirrors
+/// `require_python3` in the MCP e2e suite.
+fn require_native_sandbox(test: &str) -> bool {
+    if native_sandbox_available() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "{test}: the native shell sandbox is required in CI but is unavailable on this host",
+    );
+    eprintln!(
+        "skipping {test}: native shell sandbox unavailable (set CI=1 to make this a hard failure)"
+    );
+    false
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_sandbox_worker_enforces_filesystem_and_network_contract() {
+    if !require_native_sandbox("linux_sandbox_worker_enforces_filesystem_and_network_contract") {
+        return;
+    }
     use std::net::TcpListener;
 
     let root = tempfile::Builder::new()
@@ -119,6 +174,9 @@ fn linux_sandbox_worker_enforces_filesystem_and_network_contract() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_sandbox_worker_tracks_each_active_worktree() {
+    if !require_native_sandbox("linux_sandbox_worker_tracks_each_active_worktree") {
+        return;
+    }
     let root = tempfile::Builder::new()
         .prefix("yolop-linux-worktree-test-")
         .tempdir_in(std::env::current_dir().unwrap())
@@ -1510,6 +1568,9 @@ fn tui_submit_turn_renders_assistant_in_scrollback() {
 
 #[test]
 fn tui_bang_shell_runs_shell_without_model_turn() {
+    if !require_native_sandbox("tui_bang_shell_runs_shell_without_model_turn") {
+        return;
+    }
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
@@ -1546,6 +1607,9 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn tui_agents_context_cannot_bypass_native_shell_sandbox() {
+    if !require_native_sandbox("tui_agents_context_cannot_bypass_native_shell_sandbox") {
+        return;
+    }
     let root = tempfile::Builder::new()
         .prefix("yolop-tui-sandbox-test-")
         .tempdir_in(std::env::current_dir().unwrap())
