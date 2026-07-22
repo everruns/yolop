@@ -23,12 +23,10 @@ use everruns_core::session_task::{SessionTask, SessionTaskRegistry};
 use everruns_core::typed_id::SessionId;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
-use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -98,20 +96,13 @@ pub struct App {
     model: ModelState,
     pub lines: Vec<ChatLine>,
     printed_lines: usize,
-    /// Inline composer model (ratatui-textarea). The source of truth for the
-    /// **inline** renderer's composer.
-    ///
-    /// NOTE (item 1, two-model split): the full-screen renderer does NOT use this
-    /// — it owns [`App::composer`], a tuika `TextInputState` that handles its own
-    /// key events. The composer read/write surface (`input_text`, `set_input_text`,
-    /// `reset_input`, paste, history, …) is mode-aware and delegates to whichever
-    /// model backs the active renderer, so the two stay isolated. Unifying both on
-    /// `TextInputState` (making inline an adapter and dropping ratatui-textarea) is
-    /// a deliberate future step; kept split here to leave the shipped inline path
-    /// untouched.
-    pub input: TextArea<'static>,
-    /// Full-screen composer model (tuika). The source of truth for the
-    /// **full-screen** renderer's composer; see the NOTE on [`App::input`].
+    /// The single composer model, shared by **both** renderers: a tuika
+    /// [`TextInputState`](tuika::TextInputState) that owns the draft text and
+    /// cursor and applies its own edits (emacs bindings, word movement, wrapping).
+    /// Inline and full-screen both read and write it, render it through the same
+    /// [`TextInput`](tuika::TextInput) view, and place the terminal cursor via
+    /// [`cursor_screen`](tuika::TextInputState::cursor_screen) — so the two modes
+    /// can never drift.
     composer: tuika::TextInputState,
     pub busy: bool,
     pub should_quit: bool,
@@ -425,11 +416,11 @@ pub(crate) struct ModelOption {
 /// up a full runtime.
 ///
 /// Owned rather than borrowed because building it does not need to
-/// borrow `App` for the duration of a draw: `draw_input` needs `&mut
-/// App` for the input field's `Widget` impl, and a borrowed `ViewState`
-/// would block that within a single `draw()`. The per-frame clone cost
-/// is dominated by `String`-sized fields and is negligible compared to
-/// the chrome render itself.
+/// borrow `App` for the duration of a draw: `draw_input` borrows `App`
+/// to paint the composer, and a borrowed `ViewState` would block that
+/// within a single `draw()`. The per-frame clone cost is dominated by
+/// `String`-sized fields and is negligible compared to the chrome
+/// render itself.
 #[derive(Clone, Debug)]
 pub(crate) struct ViewState {
     pub presentation: PresentationState,
@@ -469,7 +460,6 @@ impl App {
             model: runtime.model,
             lines: Vec::new(),
             printed_lines: 0,
-            input: new_input_area(vec![String::new()]),
             composer: tuika::TextInputState::new(),
             busy: false,
             should_quit: false,
@@ -1263,25 +1253,16 @@ impl App {
         }
     }
 
-    /// Insert a newline in the active composer.
+    /// Insert a newline in the composer.
     fn composer_insert_newline(&mut self) {
-        if self.composer_is_fullscreen() {
-            self.composer.newline();
-        } else {
-            self.input.insert_newline();
-        }
+        self.composer.newline();
     }
 
-    /// Feed one editing key to the active composer. In full-screen the tuika
-    /// `TextInputState` handles the event itself (item 5, component-driven
-    /// input); inline forwards to the ratatui-textarea.
+    /// Feed one editing key to the composer. The tuika `TextInputState` handles
+    /// the event itself (component-driven input) after translation from crossterm.
     fn composer_edit_key(&mut self, key: KeyEvent) {
-        if self.composer_is_fullscreen() {
-            if let Some(event) = tuika::translate_event(CrosstermEvent::Key(key)) {
-                self.composer.handle(&event);
-            }
-        } else {
-            let _ = self.input.input(key);
+        if let Some(event) = tuika::translate_event(CrosstermEvent::Key(key)) {
+            self.composer.handle(&event);
         }
     }
 
@@ -1493,11 +1474,7 @@ impl App {
     }
 
     fn composer_line_count(&self) -> usize {
-        if self.composer_is_fullscreen() {
-            self.composer.line_count()
-        } else {
-            self.input.lines().len()
-        }
+        self.composer.line_count()
     }
 
     /// The composer's first line — the anchor for `@`/slash completion.
@@ -1505,69 +1482,36 @@ impl App {
         self.composer_lines().into_iter().next().unwrap_or_default()
     }
 
-    // ---- composer read/write surface (mode-aware; see the NOTE on `App::input`) --
-
-    /// Whether the full-screen composer (`self.composer`) backs the active
-    /// renderer. Inline uses `self.input` (ratatui-textarea).
-    fn composer_is_fullscreen(&self) -> bool {
-        self.render_mode.is_fullscreen()
-    }
+    // ---- composer read/write surface (over the shared `TextInputState`) --------
 
     fn input_text(&self) -> String {
-        if self.composer_is_fullscreen() {
-            self.composer.text()
-        } else {
-            self.input.lines().join("\n")
-        }
+        self.composer.text()
     }
 
     /// The composer's logical lines.
     fn composer_lines(&self) -> Vec<String> {
-        if self.composer_is_fullscreen() {
-            self.composer
-                .text()
-                .split('\n')
-                .map(str::to_string)
-                .collect()
-        } else {
-            self.input.lines().to_vec()
-        }
+        self.composer
+            .text()
+            .split('\n')
+            .map(str::to_string)
+            .collect()
     }
 
     /// The composer cursor's logical row (line index).
     fn composer_cursor_row(&self) -> usize {
-        if self.composer_is_fullscreen() {
-            self.composer.cursor().0
-        } else {
-            self.input.cursor().0
-        }
+        self.composer.cursor().0
     }
 
     fn set_input_text(&mut self, text: String) {
-        if self.composer_is_fullscreen() {
-            // `set_text` splits on newlines and parks the cursor at the end.
-            self.composer.set_text(&text);
-            return;
-        }
-        // Split on newlines so a recalled multi-line prompt restores as multiple
-        // composer rows rather than one row with embedded control characters.
-        let lines: Vec<String> = text.split('\n').map(str::to_string).collect();
-        self.input = new_input_area(if lines.is_empty() {
-            vec![String::new()]
-        } else {
-            lines
-        });
-        self.input.move_cursor(CursorMove::End);
+        // `set_text` splits on newlines (restoring a recalled multi-line prompt as
+        // multiple rows) and parks the cursor at the end.
+        self.composer.set_text(&text);
     }
 
     /// Clear the composer text (only) to a single empty line, leaving pending
     /// pastes intact — used by reverse-search's "no match" state.
     fn clear_composer_text(&mut self) {
-        if self.composer_is_fullscreen() {
-            self.composer.clear();
-        } else {
-            self.input = new_input_area(vec![String::new()]);
-        }
+        self.composer.clear();
     }
 
     fn reset_input(&mut self) {
@@ -1576,14 +1520,9 @@ impl App {
     }
 
     fn input_height(&self, input_width: u16) -> u16 {
-        if self.composer_is_fullscreen() {
-            return self
-                .composer
-                .visual_height(input_width)
-                .clamp(1, MAX_INPUT_HEIGHT);
-        }
-        wrapped_input_visual_lines(&self.input, input_width).clamp(1, MAX_INPUT_HEIGHT as usize)
-            as u16
+        self.composer
+            .visual_height(input_width)
+            .clamp(1, MAX_INPUT_HEIGHT)
     }
 
     fn handle_paste(&mut self, pasted: String) {
@@ -1619,11 +1558,7 @@ impl App {
 
     /// Insert a string at the composer cursor (honoring embedded newlines).
     fn composer_insert_str(&mut self, s: &str) {
-        if self.composer_is_fullscreen() {
-            self.composer.insert_str(s);
-        } else {
-            self.input.insert_str(s);
-        }
+        self.composer.insert_str(s);
     }
 
     fn try_paste_clipboard(&mut self) {
@@ -2677,31 +2612,6 @@ fn capability_command_usage_with_prefix(descriptor: &CommandDescriptor, prefix: 
     }
 }
 
-fn new_input_area(lines: Vec<String>) -> TextArea<'static> {
-    let mut input = TextArea::new(lines);
-    input.set_wrap_mode(WrapMode::Word);
-    input.set_style(Style::default().fg(TEXT_PRIMARY));
-    input.set_cursor_line_style(Style::default());
-    input.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
-    input
-}
-
-/// Visual rows the composer needs at `width`, including soft-wrapped logical lines.
-fn wrapped_input_visual_lines(input: &TextArea<'_>, width: u16) -> usize {
-    let width = width.max(1);
-    let mut scratch = input.clone();
-    let area = Rect {
-        x: 0,
-        y: 0,
-        width,
-        height: MAX_INPUT_HEIGHT,
-    };
-    let mut buf = Buffer::empty(area);
-    Widget::render(&scratch, area, &mut buf);
-    scratch.move_cursor(CursorMove::End);
-    scratch.screen_cursor().row + 1
-}
-
 fn normalize_printable_key(mut key: KeyEvent) -> KeyEvent {
     if !key.modifiers.contains(KeyModifiers::SHIFT)
         || key
@@ -3121,23 +3031,26 @@ mod tests {
         assert_eq!(help_entries[0].completion, "/help");
     }
 
-    #[test]
-    fn input_area_supports_multiline_and_cursor_editing() {
-        let mut input = new_input_area(vec![String::new()]);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composer_supports_multiline_and_cursor_editing() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
 
+        // Type "ac", move left, insert "b" → "abc", move right, newline, "d".
         for key in [
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()),
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::empty()),
             KeyEvent::new(KeyCode::Left, KeyModifiers::empty()),
             KeyEvent::new(KeyCode::Char('b'), KeyModifiers::empty()),
             KeyEvent::new(KeyCode::Right, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
             KeyEvent::new(KeyCode::Char('d'), KeyModifiers::empty()),
         ] {
-            let _ = input.input(key);
+            app.handle_key(key).await;
         }
 
-        assert_eq!(input.lines(), ["abc", "d"]);
+        assert_eq!(app.composer.text(), "abc\nd");
     }
 
     #[test]
@@ -4406,9 +4319,8 @@ mod tests {
         // overlay compositing is covered by the tuika suite.
         test.app.setup = None;
         test.app.push_user("hello from user".to_string());
-        // The two renderers own separate composer models now (item 1), so seed
-        // the same draft into both.
-        test.app.input.insert_str("draft reply");
+        // Both renderers share one composer model, so the same draft appears in
+        // either mode.
         test.app.composer.set_text("draft reply");
 
         test.app.set_render_mode(RenderMode::Inline);
@@ -4509,8 +4421,7 @@ mod tests {
         let mut test = app_with_llmsim().await;
         test.app.setup = None;
         test.app.set_render_mode(RenderMode::Fullscreen);
-        // Editing keys drive full-screen's own TextInputState (item 5,
-        // component-driven input), not the inline ratatui-textarea.
+        // Editing keys drive the shared TextInputState (component-driven input).
         for c in "hi".chars() {
             test.app
                 .handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()))
@@ -4523,8 +4434,6 @@ mod tests {
             .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()))
             .await;
         assert_eq!(test.app.composer.text(), "hi\nx");
-        // The inline model stayed empty — the two composers are isolated.
-        assert!(test.app.input.lines().join("").is_empty());
     }
 
     #[test]
@@ -4798,7 +4707,7 @@ mod tests {
                         .map(|i| format!("pasteline{i}"))
                         .collect::<Vec<_>>()
                         .join("\n");
-                    app.input.insert_str(paste);
+                    app.composer.insert_str(&paste);
                 },
                 "",
             ),
@@ -6735,10 +6644,10 @@ mod tests {
 
         assert_eq!(app.input_height(80), 1);
         for expected in 2..=MAX_INPUT_HEIGHT {
-            app.input.insert_newline();
+            app.composer.newline();
             assert_eq!(app.input_height(80), expected);
         }
-        app.input.insert_newline();
+        app.composer.newline();
         assert_eq!(app.input_height(80), MAX_INPUT_HEIGHT);
     }
 
@@ -6758,31 +6667,25 @@ mod tests {
         }
 
         assert_eq!(
-            app.input.lines().len(),
+            app.composer.line_count(),
             1,
             "composer stays one logical line"
         );
         let input_width = 10;
-        let measured = app.input_height(input_width) as usize;
+        let measured = app.input_height(input_width);
         assert!(
             measured >= 2,
             "soft-wrapped composer should grow past one row (got {measured})"
         );
 
-        let mut textarea = new_input_area(vec![app.input_text()]);
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: input_width,
-            height: MAX_INPUT_HEIGHT,
-        };
-        let mut buf = Buffer::empty(area);
-        Widget::render(&textarea, area, &mut buf);
-        textarea.move_cursor(CursorMove::End);
-        let expected = textarea.screen_cursor().row as usize + 1;
+        // `input_height` is the composer's own visual height, clamped to the
+        // bound — the App delegates straight to the shared TextInputState.
+        let expected = tuika::TextInputState::from_text(&app.input_text())
+            .visual_height(input_width)
+            .clamp(1, MAX_INPUT_HEIGHT);
         assert_eq!(
             measured, expected,
-            "composer height should match textarea wrap layout"
+            "composer height should match TextInput wrap layout"
         );
     }
 

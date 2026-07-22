@@ -2074,8 +2074,14 @@ pub(crate) fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         )),
         prompt_area,
     );
-    app.input.set_block(ratatui::widgets::Block::default());
-    f.render_widget(&app.input, input_area);
+    // Render the shared composer through tuika's TextInput view — the same
+    // component and word-wrap the full-screen renderer uses, so the two modes
+    // stay identical.
+    let theme = crate::tui::fullscreen::yolop_theme();
+    let view = tuika::element(
+        tuika::TextInput::new(&app.composer).style(Style::default().fg(TEXT_PRIMARY)),
+    );
+    tuika::paint(f.buffer_mut(), input_area, &theme, view.as_ref(), &[]);
     draw_input_cursor(f, input_area, app);
 }
 
@@ -2083,20 +2089,12 @@ pub(crate) fn draw_input_cursor(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if app.busy || app.setup.is_some() {
         return;
     }
-
-    let inner_width = area.width;
-    let inner_height = area.height;
-    if inner_width == 0 || inner_height == 0 {
+    if area.width == 0 || area.height == 0 {
         return;
     }
-
-    let cursor = app.input.screen_cursor();
-    let x = area
-        .x
-        .saturating_add((cursor.col as u16).min(inner_width.saturating_sub(1)));
-    let y = area
-        .y
-        .saturating_add((cursor.row as u16).min(inner_height.saturating_sub(1)));
+    // `cursor_screen` derives the same scroll-to-cursor offset the TextInput
+    // rendered with, and clamps into `area`.
+    let (x, y) = app.composer.cursor_screen(area);
     f.set_cursor_position((x, y));
 }
 
