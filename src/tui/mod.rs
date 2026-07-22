@@ -4121,7 +4121,7 @@ mod tests {
     }
 
     #[test]
-    fn should_not_insert_chat_gap_inside_tool_blocks() {
+    fn should_not_insert_chat_gap_inside_tool_or_diff_blocks() {
         assert!(!should_insert_chat_gap(&Author::Tool, Some(&Author::Tool)));
         assert!(!should_insert_chat_gap(
             &Author::Tool,
@@ -4140,6 +4140,11 @@ mod tests {
             Some(&Author::Assistant)
         ));
         assert!(!should_insert_chat_gap(&Author::ToolDetail, None));
+        assert!(!should_insert_chat_gap(&Author::Diff, Some(&Author::Diff)));
+        assert!(should_insert_chat_gap(
+            &Author::Diff,
+            Some(&Author::Assistant)
+        ));
     }
 
     #[test]
