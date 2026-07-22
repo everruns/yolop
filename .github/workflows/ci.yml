@@ -48,6 +48,8 @@ jobs:
               - 'rust-toolchain.toml'
               - '**/build.rs'
               - '.github/workflows/ci.yml'
+              - 'crates/tuika/benches/check_iai.py'
+              - '**/iai-baseline.json'
             # The dedicated MSRV check only compiles `-p tuika`, which depends on
             # neither yolop, yolop-yep, nor tuika-codeformatters. Scope it to
             # tuika's own sources plus the workspace-wide inputs that reach it
@@ -281,6 +283,59 @@ jobs:
             target/criterion/**
             bench-output.txt
           if-no-files-found: warn
+
+  iai:
+    name: iai-callgrind (instruction counts)
+    needs: changes
+    # Instruction counts are deterministic and machine-independent, so unlike the
+    # wall-clock `benchmarks` job this one IS a gate: it fails the build when a
+    # change regresses instruction counts past the tolerance in the committed
+    # iai-baseline.json. Runs on Rust-affecting PRs and pushes; ubuntu-latest
+    # matches the x86_64/glibc the baseline was captured on.
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "debug"
+
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Install iai-callgrind-runner
+        # Must match the iai-callgrind library version in Cargo.toml.
+        run: cargo install iai-callgrind-runner --version 0.16.1 --locked
+
+      - name: Run instruction-count benchmarks
+        run: |
+          rm -rf target/iai
+          cargo bench --locked -p tuika --bench markdown_iai \
+            -p tuika-codeformatters --bench highlight_iai -- --save-summary=json
+
+      - name: Check against committed baseline
+        # On workflow_dispatch, regenerate and upload the baseline instead of
+        # gating — the clean way to refresh it from CI's exact environment.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python3 crates/tuika/benches/check_iai.py --update
+          else
+            python3 crates/tuika/benches/check_iai.py
+          fi
+
+      - name: Upload regenerated baseline
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: iai-baseline
+          path: '**/iai-baseline.json'
+          if-no-files-found: error
 
   # The (comparatively scarce) Windows runner only spins up when the change
   # actually touches Rust — not on doc- or eval-only changes.

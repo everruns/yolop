@@ -37,7 +37,15 @@ proptest = "1"
 criterion = { version = "0.5", default-features = false, features = [
     "cargo_bench_support",
 ] }
+# Instruction-count benchmark harness (deterministic, machine-independent) for
+# the committed baseline / CI regression gate. Needs Valgrind + a version-matched
+# `iai-callgrind-runner` installed (`cargo install iai-callgrind-runner`).
+iai-callgrind = "0.16.1"
 
 [[bench]]
 name = "markdown"
+harness = false
+
+[[bench]]
+name = "markdown_iai"
 harness = false

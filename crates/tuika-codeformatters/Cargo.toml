@@ -45,7 +45,13 @@ crossterm = "0.29"
 criterion = { version = "0.5", default-features = false, features = [
     "cargo_bench_support",
 ] }
+# See tuika/Cargo.toml — instruction-count harness for the CI regression gate.
+iai-callgrind = "0.16.1"
 
 [[bench]]
 name = "highlight"
+harness = false
+
+[[bench]]
+name = "highlight_iai"
 harness = false
