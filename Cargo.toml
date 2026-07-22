@@ -90,20 +90,20 @@ tree-sitter-zig = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-everruns-anthropic = { git = "https://github.com/everruns/everruns", branch = "main" }
-everruns-core = { git = "https://github.com/everruns/everruns", branch = "main" }
-everruns-openai = { git = "https://github.com/everruns/everruns", branch = "main" }
+everruns-anthropic = "0.17.16"
+everruns-core = "0.17.16"
+everruns-openai = "0.17.16"
 # OpenRouter's first-class driver was split out of everruns-openai into its own
 # crate in 0.13.0; register it alongside openai to keep DriverId::OpenRouter.
-everruns-openrouter = { git = "https://github.com/everruns/everruns", branch = "main" }
-everruns-local = { git = "https://github.com/everruns/everruns", branch = "main" }
-everruns-mcp = { git = "https://github.com/everruns/everruns", branch = "main" }
+everruns-openrouter = "0.17.16"
+everruns-local = "0.17.16"
+everruns-mcp = "0.17.16"
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
 # everruns server/worker never enable it (specs/mcp.md, upstream runtime-mcp.md D2).
-everruns-runtime = { git = "https://github.com/everruns/everruns", branch = "main", features = ["mcp-stdio"] }
-everruns-integrations-duckduckgo = { git = "https://github.com/everruns/everruns", branch = "main" }
-everruns-integrations-parallel = { git = "https://github.com/everruns/everruns", branch = "main" }
-everruns-integrations-daytona = { git = "https://github.com/everruns/everruns", branch = "main" }
+everruns-runtime = { version = "0.17.16", features = ["mcp-stdio"] }
+everruns-integrations-duckduckgo = "0.17.16"
+everruns-integrations-parallel = "0.17.16"
+everruns-integrations-daytona = "0.17.16"
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
 html-escape = "0.2"
