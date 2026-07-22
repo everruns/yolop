@@ -1662,10 +1662,7 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
 fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
     let mut tui = spawn_tui_llmsim_with_settings(
         &yolop_binary(),
-        TuiSpawnOptions {
-            no_sandbox: true,
-            ..TuiSpawnOptions::default()
-        },
+        TuiSpawnOptions::default(),
         "provider = \"llmsim\"\napproval_policy = \"untrusted\"\n",
     );
     assert!(
