@@ -551,6 +551,27 @@ impl SetConfigTool {
                     )))
                 }
             }
+            KeyTarget::Theme => {
+                if clearing {
+                    self.settings.set_theme(None).map_err(map_err)?;
+                    return Ok(saved(
+                        "cleared theme (default: yolop's own palette)".to_string(),
+                    ));
+                }
+                // Validate against the same names `--theme` accepts (yolop + tuika presets).
+                if crate::tui::fullscreen::resolve_theme(value).is_none() {
+                    return Err(format!(
+                        "unknown theme `{value}`; expected one of: {}",
+                        crate::tui::fullscreen::theme_names().join(", ")
+                    ));
+                }
+                self.settings
+                    .set_theme(Some(value.to_string()))
+                    .map_err(map_err)?;
+                Ok(saved(format!(
+                    "theme = {value}; applies to new interactive sessions"
+                )))
+            }
             KeyTarget::Model(provider) => {
                 if clearing {
                     let existed = self.settings.clear_model(provider).map_err(map_err)?;
