@@ -11,6 +11,8 @@
 //! cargo run -p tuika --example screenshot -- out.svg # custom path
 //! cargo run -p tuika --example screenshot -- --dump  # print one frame as text
 //! cargo run -p tuika --example screenshot -- run     # animate it in a real terminal
+//! cargo run -p tuika --example screenshot -- run gruvbox-dark  # …in a bundled theme
+//! cargo run -p tuika --example screenshot -- bg gruvbox-dark   # print its background hex
 //! ```
 //!
 //! Vector text stays sharp at any zoom, and — because an externally referenced
@@ -23,7 +25,9 @@
 //! The `run` subcommand animates the same `scene()` in the alternate screen so a
 //! terminal recorder (VHS) can capture it as a GIF — that is how `docs/hero.gif`
 //! is produced (see `scripts/gen-tuika-hero.sh`). SVG and GIF therefore share one
-//! source of truth.
+//! source of truth. `run <theme>` animates a bundled palette instead of the
+//! default, which is how the per-theme demos in `docs/themes.md` are recorded
+//! (see `scripts/gen-tuika-theme-demos.sh`).
 
 use std::io;
 use std::path::PathBuf;
@@ -63,14 +67,25 @@ fn main() -> io::Result<()> {
 
     if args.first().map(String::as_str) == Some("run") {
         // Animate the scene in a real terminal so a recorder can capture it.
-        return run_interactive(&theme);
+        // An optional theme name (`run gruvbox-dark`) animates that palette; the
+        // per-theme GIFs are recorded this way.
+        let scene_theme = args
+            .get(1)
+            .and_then(|name| tuika::themes::by_name(name))
+            .unwrap_or(theme);
+        return run_interactive(&scene_theme);
     }
 
-    if args.first().map(String::as_str) == Some("themes") {
-        // One static screenshot per bundled theme, into docs/demos/theme-<name>.svg.
-        // Same scene, same serializer — only the palette changes, so the images
-        // are an honest side-by-side of what each theme does to real components.
-        return render_theme_gallery();
+    if args.first().map(String::as_str) == Some("bg") {
+        // Print a theme's background as `#rrggbb` so the GIF recorder can blend
+        // VHS's window padding into the app background. Defaults to the toolkit
+        // theme when the name is unknown.
+        let t = args
+            .get(1)
+            .and_then(|n| tuika::themes::by_name(n))
+            .unwrap_or(theme);
+        println!("{}", hex(t.background));
+        return Ok(());
     }
 
     let out = args
@@ -86,7 +101,7 @@ fn main() -> io::Result<()> {
     let frames: Vec<Buffer> = (0..FRAMES)
         .map(|i| render_frame(i as u64, &theme))
         .collect();
-    let svg = render_svg(&frames, &theme, "tuika · component gallery");
+    let svg = render_svg(&frames, &theme);
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -99,27 +114,6 @@ fn main() -> io::Result<()> {
         ROWS,
         svg.len()
     );
-    Ok(())
-}
-
-/// Render one static screenshot per bundled theme into `docs/demos/`.
-///
-/// A theme is static, so a single frame is enough — no animation, just the
-/// palette applied to the shared [`scene`]. `frame = 6` is the same
-/// representative frame `--dump` uses (spinners mid-cycle, bars partly filled).
-fn render_theme_gallery() -> io::Result<()> {
-    let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("docs")
-        .join("demos");
-    std::fs::create_dir_all(&out_dir)?;
-    for preset in tuika::themes::PRESETS {
-        let frame = render_frame(6, &preset.theme);
-        let title = format!("tuika · {}", preset.label);
-        let svg = render_svg(&[frame], &preset.theme, &title);
-        let out = out_dir.join(format!("theme-{}.svg", preset.name));
-        std::fs::write(&out, svg.as_bytes())?;
-        println!("wrote {} ({} bytes)", out.display(), svg.len());
-    }
     Ok(())
 }
 
@@ -353,7 +347,7 @@ fn paint_of(buffer: &Buffer, x: u16, y: u16, theme: &Theme) -> Paint {
     }
 }
 
-fn render_svg(frames: &[Buffer], theme: &Theme, title: &str) -> String {
+fn render_svg(frames: &[Buffer], theme: &Theme) -> String {
     let cols = COLS as usize;
     let rows = ROWS as usize;
 
@@ -455,11 +449,10 @@ fill=\"{chrome}\" stroke=\"{stroke}\" stroke-width=\"1\" filter=\"url(#sh)\"/>\n
     }
     s.push_str(&format!(
         "<text x=\"{cx:.1}\" y=\"{cy:.1}\" text-anchor=\"middle\" font-size=\"13\" \
-fill=\"{muted}\">{title}</text>\n",
+fill=\"{muted}\">tuika · component gallery</text>\n",
         cx = width / 2.0,
         cy = ty + 4.5,
         muted = hex(theme.muted),
-        title = xml_escape(title),
     ));
 
     // The terminal "screen".

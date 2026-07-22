@@ -24,13 +24,14 @@ Iterate [`themes::PRESETS`](https://docs.rs/tuika/latest/tuika/themes/constant.P
 to build a picker or validate a `--theme` value — each entry carries a stable
 `name`, a human `label`, and the `theme` itself.
 
-Each screenshot below is the **same** scene (the component gallery from
-[`examples/screenshot.rs`](../examples/screenshot.rs)) rendered through that one
-palette — an honest side-by-side of what a theme does to real components. They
-are generated hermetically from the live `Theme`, no external tools:
+Each demo below is the **same** animated scene (the component gallery from
+[`examples/screenshot.rs`](../examples/screenshot.rs)) driven through that one
+palette — an honest side-by-side of what a theme does to real components,
+recorded the same way as the [component gallery](components.md):
 
 ```text
-cargo run -p tuika --example screenshot -- themes   # writes docs/demos/theme-*.svg
+crates/tuika/scripts/gen-tuika-theme-demos.sh          # all themes
+crates/tuika/scripts/gen-tuika-theme-demos.sh dracula  # just one
 ```
 
 ## `solarized-dark`
@@ -38,21 +39,21 @@ cargo run -p tuika --example screenshot -- themes   # writes docs/demos/theme-*.
 Ethan Schoonover's precision palette on the dark base tones.
 [struct](https://docs.rs/tuika/latest/tuika/themes/constant.SOLARIZED_DARK.html)
 
-<img src="demos/theme-solarized-dark.svg" width="880" alt="Solarized Dark theme">
+<img src="demos/theme-solarized-dark.gif" width="880" alt="Solarized Dark theme">
 
 ## `solarized-light`
 
 The same accents on Solarized's light base tones — the light half of the pair.
 [struct](https://docs.rs/tuika/latest/tuika/themes/constant.SOLARIZED_LIGHT.html)
 
-<img src="demos/theme-solarized-light.svg" width="880" alt="Solarized Light theme">
+<img src="demos/theme-solarized-light.gif" width="880" alt="Solarized Light theme">
 
 ## `gruvbox-dark`
 
 morhetz's warm, retro-tinted dark palette (medium contrast).
 [struct](https://docs.rs/tuika/latest/tuika/themes/constant.GRUVBOX_DARK.html)
 
-<img src="demos/theme-gruvbox-dark.svg" width="880" alt="Gruvbox Dark theme">
+<img src="demos/theme-gruvbox-dark.gif" width="880" alt="Gruvbox Dark theme">
 
 ## `light`
 
@@ -60,14 +61,14 @@ A neutral, near-monochrome palette for light terminals — the understated light
 default, not a brand.
 [struct](https://docs.rs/tuika/latest/tuika/themes/constant.LIGHT.html)
 
-<img src="demos/theme-light.svg" width="880" alt="Light theme">
+<img src="demos/theme-light.gif" width="880" alt="Light theme">
 
 ## `dracula`
 
 The widely-ported dark theme — purple/pink accents on a slate background.
 [struct](https://docs.rs/tuika/latest/tuika/themes/constant.DRACULA.html)
 
-<img src="demos/theme-dracula.svg" width="880" alt="Dracula theme">
+<img src="demos/theme-dracula.gif" width="880" alt="Dracula theme">
 
 ## Rolling your own
 
