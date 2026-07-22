@@ -74,3 +74,26 @@ impl View for Loader {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Surface;
+    use crate::style::Theme;
+    use crate::test_support::{buffer, row};
+    use crate::view::{RenderCtx, View};
+
+    #[test]
+    fn loader_renders_spinner_and_message() {
+        let loader = Loader::new(0, "thinking").hint("esc to cancel");
+        let mut buf = buffer(30, 1);
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        loader.render(area, &mut surface, &ctx);
+        let line = row(&buf, 0);
+        assert!(line.contains("thinking"), "{line}");
+        assert!(line.contains("esc to cancel"), "{line}");
+    }
+}

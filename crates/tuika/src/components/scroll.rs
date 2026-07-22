@@ -212,3 +212,88 @@ impl Scroll {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Surface;
+    use crate::event::{Event, EventFlow, Key, KeyCode, Mouse, MouseKind};
+    use crate::style::Theme;
+    use crate::test_support::{buffer, rainbow_theme, row};
+    use crate::view::{RenderCtx, View};
+    use ratatui::style::Color;
+    use ratatui::text::Line;
+
+    #[test]
+    fn scroll_sticks_to_bottom_until_scrolled_up() {
+        let mut s = ScrollState::new();
+        // content 100 rows, viewport 10 => bottom offset 90.
+        s.clamp(100, 10);
+        assert_eq!(s.offset(), 90);
+        assert!(s.is_stuck_to_bottom());
+
+        // Wheel up unsticks and moves up by 3.
+        let up = Event::Mouse(Mouse::at(MouseKind::ScrollUp, 0, 0));
+        assert_eq!(s.handle(&up, 100, 10), EventFlow::Consumed);
+        assert!(!s.is_stuck_to_bottom());
+        assert_eq!(s.offset(), 87);
+
+        // Growing content no longer drags the view down while unstuck.
+        s.clamp(200, 10);
+        assert_eq!(s.offset(), 87);
+    }
+
+    #[test]
+    fn scroll_end_key_rearms_bottom_stick() {
+        let mut s = ScrollState::new();
+        s.clamp(100, 10);
+        s.jump_to_top();
+        assert_eq!(s.offset(), 0);
+        assert!(!s.is_stuck_to_bottom());
+        let end = Event::Key(Key::new(KeyCode::End));
+        assert_eq!(s.handle(&end, 100, 10), EventFlow::Consumed);
+        assert_eq!(s.offset(), 90);
+        assert!(s.is_stuck_to_bottom());
+    }
+
+    #[test]
+    fn scroll_view_windows_content_and_draws_scrollbar() {
+        let lines: Vec<Line<'static>> = (0..20).map(|i| Line::from(format!("line{i}"))).collect();
+        let mut state = ScrollState::new();
+        state.clamp(20, 5); // stuck to bottom => offset 15
+        let scroll = Scroll::new(lines, &state);
+        let mut buf = buffer(10, 5);
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        scroll.render(area, &mut surface, &ctx);
+        // Bottom-stuck: shows the last five lines (15..20).
+        assert!(row(&buf, 0).starts_with("line15"));
+        assert!(row(&buf, 4).starts_with("line19"));
+        // Scrollbar drawn in the last column somewhere.
+        let has_bar = (0..5).any(|y| {
+            let c = buf[(9, y)].symbol().to_string();
+            c == "█" || c == "│"
+        });
+        assert!(has_bar, "expected a scrollbar in the right column");
+    }
+
+    #[test]
+    fn scrollbar_thumb_and_track_use_theme() {
+        let t = rainbow_theme();
+        let lines: Vec<Line<'static>> = (0..30).map(|i| Line::from(format!("l{i}"))).collect();
+        let mut state = ScrollState::new();
+        state.clamp(30, 5);
+        let scroll = Scroll::new(lines, &state);
+        let mut buf = buffer(10, 5);
+        let area = buf.area;
+        let ctx = RenderCtx::new(&t);
+        let mut surface = Surface::new(&mut buf, area);
+        scroll.render(area, &mut surface, &ctx);
+        let col = 9; // scrollbar column
+        let fgs: Vec<Color> = (0..5).map(|y| buf[(col, y)].fg).collect();
+        assert!(fgs.contains(&t.muted), "thumb uses theme.muted: {fgs:?}");
+        assert!(fgs.contains(&t.dim), "track uses theme.dim: {fgs:?}");
+    }
+}

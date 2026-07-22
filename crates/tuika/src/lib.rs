@@ -85,8 +85,10 @@ pub use view::{Element, RenderCtx, View, element};
 pub use width::{grapheme_cols, str_cols};
 
 #[cfg(test)]
+mod integration;
+#[cfg(test)]
 mod proptests;
 #[cfg(test)]
 mod snapshots;
 #[cfg(test)]
-mod tests;
+mod test_support;

@@ -95,3 +95,25 @@ impl View for StatusBar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Surface;
+    use crate::test_support::{buffer, rainbow_theme};
+    use crate::view::{RenderCtx, View};
+    use ratatui::text::Span;
+
+    #[test]
+    fn status_bar_background_is_theme_surface() {
+        let t = rainbow_theme();
+        let bar = StatusBar::new().left(vec![Span::raw("hi")]);
+        let mut buf = buffer(10, 1);
+        let area = buf.area;
+        let ctx = RenderCtx::new(&t);
+        let mut surface = Surface::new(&mut buf, area);
+        bar.render(area, &mut surface, &ctx);
+        // The whole row is filled with the surface background.
+        assert_eq!(buf[(9, 0)].bg, t.surface);
+    }
+}

@@ -635,3 +635,339 @@ impl View for TextInput {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{Event, Key, KeyCode};
+    use crate::test_support::{render_el, render_view_rows};
+    use crate::view::element;
+    use ratatui::layout::Rect;
+
+    fn press(state: &mut TextInputState, code: KeyCode) -> bool {
+        state.handle(&Event::Key(Key::new(code)))
+    }
+
+    fn press_ctrl(state: &mut TextInputState, code: KeyCode) -> bool {
+        state.handle(&Event::Key(Key {
+            code,
+            ctrl: true,
+            alt: false,
+            shift: false,
+        }))
+    }
+
+    fn press_alt(state: &mut TextInputState, code: KeyCode) -> bool {
+        state.handle(&Event::Key(Key {
+            code,
+            ctrl: false,
+            alt: true,
+            shift: false,
+        }))
+    }
+
+    fn type_str(state: &mut TextInputState, s: &str) {
+        for ch in s.chars() {
+            assert!(press(state, KeyCode::Char(ch)));
+        }
+    }
+
+    #[test]
+    fn text_input_starts_empty() {
+        let state = TextInputState::new();
+        assert!(state.is_empty());
+        assert_eq!(state.text(), "");
+        assert_eq!(state.cursor(), (0, 0));
+        assert_eq!(state.line_count(), 1);
+    }
+
+    #[test]
+    fn text_input_types_and_edits() {
+        let mut state = TextInputState::new();
+        type_str(&mut state, "helo");
+        assert_eq!(state.text(), "helo");
+        assert_eq!(state.cursor(), (0, 4));
+
+        // Move back and insert the missing 'l' → "hello".
+        press(&mut state, KeyCode::Left);
+        press(&mut state, KeyCode::Left);
+        assert_eq!(state.cursor(), (0, 2));
+        assert!(press(&mut state, KeyCode::Char('l')));
+        assert_eq!(state.text(), "hello");
+        assert_eq!(state.cursor(), (0, 3));
+    }
+
+    #[test]
+    fn text_input_backspace_and_delete() {
+        let mut state = TextInputState::from_text("abc");
+        assert_eq!(state.cursor(), (0, 3));
+        press(&mut state, KeyCode::Backspace);
+        assert_eq!(state.text(), "ab");
+        press(&mut state, KeyCode::Home);
+        press(&mut state, KeyCode::Delete);
+        assert_eq!(state.text(), "b");
+        assert_eq!(state.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn text_input_newline_splits_and_backspace_joins() {
+        let mut state = TextInputState::from_text("abcd");
+        press(&mut state, KeyCode::Home);
+        press(&mut state, KeyCode::Right);
+        press(&mut state, KeyCode::Right);
+        assert_eq!(state.cursor(), (0, 2));
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(state.text(), "ab\ncd");
+        assert_eq!(state.line_count(), 2);
+        assert_eq!(state.cursor(), (1, 0));
+
+        // Backspace at column 0 rejoins the two logical lines.
+        press(&mut state, KeyCode::Backspace);
+        assert_eq!(state.text(), "abcd");
+        assert_eq!(state.cursor(), (0, 2));
+        assert_eq!(state.line_count(), 1);
+    }
+
+    #[test]
+    fn text_input_vertical_movement_clamps_column() {
+        let mut state = TextInputState::from_text("longline\nhi");
+        // Cursor is at end of "hi" (row 1, col 2). Move up onto the longer line:
+        // column is preserved (2), not clamped, because "longline" is longer.
+        press(&mut state, KeyCode::Up);
+        assert_eq!(state.cursor(), (0, 2));
+        // From end of "longline" move down — clamps onto the shorter "hi".
+        press(&mut state, KeyCode::End);
+        assert_eq!(state.cursor(), (0, 8));
+        press(&mut state, KeyCode::Down);
+        assert_eq!(state.cursor(), (1, 2));
+    }
+
+    #[test]
+    fn text_input_paste_inserts_multiline() {
+        let mut state = TextInputState::new();
+        assert!(state.handle(&Event::Paste("one\ntwo".to_string())));
+        assert_eq!(state.text(), "one\ntwo");
+        assert_eq!(state.line_count(), 2);
+        assert_eq!(state.cursor(), (1, 3));
+    }
+
+    #[test]
+    fn text_input_unbound_ctrl_keys_ignored() {
+        // A ctrl combo with no binding (C-z) is a no-op the host can repurpose.
+        let mut state = TextInputState::from_text("x");
+        assert!(!press_ctrl(&mut state, KeyCode::Char('z')));
+        assert_eq!(state.text(), "x");
+    }
+
+    #[test]
+    fn text_input_emacs_cursor_bindings() {
+        let mut state = TextInputState::from_text("hello");
+        // C-a → line start, C-e → line end, C-f/C-b → char right/left.
+        assert!(press_ctrl(&mut state, KeyCode::Char('a')));
+        assert_eq!(state.cursor(), (0, 0));
+        assert!(press_ctrl(&mut state, KeyCode::Char('f')));
+        assert_eq!(state.cursor(), (0, 1));
+        assert!(press_ctrl(&mut state, KeyCode::Char('e')));
+        assert_eq!(state.cursor(), (0, 5));
+        assert!(press_ctrl(&mut state, KeyCode::Char('b')));
+        assert_eq!(state.cursor(), (0, 4));
+
+        // C-p / C-n move between logical lines.
+        state = TextInputState::from_text("ab\ncd");
+        press(&mut state, KeyCode::Home);
+        assert!(press_ctrl(&mut state, KeyCode::Char('p')));
+        assert_eq!(state.cursor(), (0, 0));
+        assert!(press_ctrl(&mut state, KeyCode::Char('n')));
+        assert_eq!(state.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn text_input_emacs_delete_bindings() {
+        // C-h backspaces, C-d deletes forward.
+        let mut state = TextInputState::from_text("abc");
+        assert!(press_ctrl(&mut state, KeyCode::Char('h')));
+        assert_eq!(state.text(), "ab");
+        press(&mut state, KeyCode::Home);
+        assert!(press_ctrl(&mut state, KeyCode::Char('d')));
+        assert_eq!(state.text(), "b");
+    }
+
+    #[test]
+    fn text_input_kill_to_line_end_and_start() {
+        // C-k kills from the cursor to end of line.
+        let mut state = TextInputState::from_text("hello world");
+        press(&mut state, KeyCode::Home);
+        press(&mut state, KeyCode::Right);
+        press(&mut state, KeyCode::Right);
+        press(&mut state, KeyCode::Right);
+        press(&mut state, KeyCode::Right);
+        press(&mut state, KeyCode::Right); // cursor after "hello"
+        assert!(press_ctrl(&mut state, KeyCode::Char('k')));
+        assert_eq!(state.text(), "hello");
+        assert_eq!(state.cursor(), (0, 5));
+
+        // C-k at line end joins the next line.
+        let mut state = TextInputState::from_text("ab\ncd");
+        press(&mut state, KeyCode::Home);
+        press(&mut state, KeyCode::Up);
+        press(&mut state, KeyCode::End);
+        assert!(press_ctrl(&mut state, KeyCode::Char('k')));
+        assert_eq!(state.text(), "abcd");
+
+        // C-u kills from line start to the cursor.
+        let mut state = TextInputState::from_text("hello world");
+        assert!(press_ctrl(&mut state, KeyCode::Char('u')));
+        assert_eq!(state.text(), "");
+        assert_eq!(state.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn text_input_word_move_and_delete() {
+        // M-b / M-f jump by word; C-w / M-d delete a word back / forward.
+        let mut state = TextInputState::from_text("foo bar baz");
+        assert!(press_alt(&mut state, KeyCode::Char('b')));
+        assert_eq!(state.cursor(), (0, 8)); // start of "baz"
+        assert!(press_alt(&mut state, KeyCode::Char('b')));
+        assert_eq!(state.cursor(), (0, 4)); // start of "bar"
+
+        // C-w at the start of "bar" deletes the previous word "foo ".
+        assert!(press_ctrl(&mut state, KeyCode::Char('w')));
+        assert_eq!(state.text(), "bar baz");
+        assert_eq!(state.cursor(), (0, 0));
+
+        // M-f to the end of "bar", then M-d deletes the next word " baz".
+        assert!(press_alt(&mut state, KeyCode::Char('f')));
+        assert_eq!(state.cursor(), (0, 3)); // end of "bar"
+        assert!(press_alt(&mut state, KeyCode::Char('d')));
+        assert_eq!(state.text(), "bar");
+
+        // M-Backspace deletes the previous word too.
+        let mut state = TextInputState::from_text("alpha beta");
+        assert!(press_alt(&mut state, KeyCode::Backspace));
+        assert_eq!(state.text(), "alpha ");
+    }
+
+    #[test]
+    fn text_input_scrolls_to_cursor_when_taller_than_area() {
+        // 10 single-row lines; cursor at the end (line 9).
+        let mut state = TextInputState::new();
+        for i in 0..10 {
+            type_str(&mut state, &format!("line{i}"));
+            if i < 9 {
+                state.newline();
+            }
+        }
+        // A 3-row viewport shows the last three rows (containing the cursor), not the
+        // top — the composer scrolls to the caret.
+        let out = render_view_rows(&TextInput::new(&state), 10, 3);
+        assert_eq!(out, vec!["line7", "line8", "line9"]);
+        // The placed cursor sits on the last visible row, consistent with the scroll.
+        let (_, y) = state.cursor_screen(Rect::new(0, 0, 10, 3));
+        assert_eq!(y, 2);
+        // Move to the top: the viewport follows the cursor back up.
+        for _ in 0..9 {
+            state.move_up();
+        }
+        let out = render_view_rows(&TextInput::new(&state), 10, 3);
+        assert_eq!(out, vec!["line0", "line1", "line2"]);
+        assert_eq!(state.cursor_screen(Rect::new(0, 0, 10, 3)).1, 0);
+    }
+
+    #[test]
+    fn text_input_renders_wrapped_rows() {
+        let mut state = TextInputState::new();
+        type_str(&mut state, "abcdef");
+        // Width 4 wraps "abcdef" onto two visual rows: "abcd" / "ef".
+        assert_eq!(state.visual_height(4), 2);
+        let out = render_view_rows(&TextInput::new(&state), 4, 2);
+        assert_eq!(out[0], "abcd");
+        assert_eq!(out[1], "ef");
+    }
+
+    #[test]
+    fn text_input_word_wraps_at_spaces() {
+        let mut state = TextInputState::new();
+        type_str(&mut state, "hello world foo");
+        // Width 8 breaks at the last space that fits, not mid-word: "hello " then
+        // "world " then "foo".
+        assert_eq!(state.visual_height(8), 3);
+        let out = render_view_rows(&TextInput::new(&state), 8, 3);
+        assert_eq!(out[0], "hello");
+        assert_eq!(out[1], "world");
+        assert_eq!(out[2], "foo");
+    }
+
+    #[test]
+    fn text_input_hard_breaks_overlong_word() {
+        let mut state = TextInputState::new();
+        type_str(&mut state, "abcdefghij");
+        // A single word longer than the width still hard-breaks so it fits.
+        assert_eq!(state.visual_height(4), 3);
+        let out = render_view_rows(&TextInput::new(&state), 4, 3);
+        assert_eq!(out[0], "abcd");
+        assert_eq!(out[1], "efgh");
+        assert_eq!(out[2], "ij");
+    }
+
+    #[test]
+    fn text_input_cursor_tracks_word_wrap() {
+        let mut state = TextInputState::from_text("hello world");
+        // Cursor at end (col 11). Width 8 → "hello " / "world"; cursor sits after
+        // "world" on the second visual row at col 5.
+        let area = Rect::new(0, 0, 8, 3);
+        assert_eq!(state.cursor_screen(area), (5, 1));
+        // Move to just after the space (col 6, start of "world") → row 1, col 0.
+        state.move_home();
+        for _ in 0..6 {
+            state.move_right();
+        }
+        assert_eq!(state.cursor_screen(area), (0, 1));
+    }
+
+    #[test]
+    fn text_input_cursor_screen_follows_wrap() {
+        let mut state = TextInputState::new();
+        type_str(&mut state, "abcd");
+        // At width 4 the line fills exactly, so the cursor rests on a fresh row.
+        assert_eq!(state.visual_height(4), 2);
+        let area = Rect::new(2, 1, 4, 3);
+        // Cursor after "abcd" → visual row 1, col 0, offset by area origin.
+        assert_eq!(state.cursor_screen(area), (2, 2));
+        // Move home → back to the first visual row.
+        press(&mut state, KeyCode::Home);
+        assert_eq!(state.cursor_screen(area), (2, 1));
+    }
+
+    #[test]
+    fn text_input_set_and_clear() {
+        let mut state = TextInputState::new();
+        state.set_text("hello\nworld");
+        assert_eq!(state.cursor(), (1, 5));
+        assert_eq!(state.line_count(), 2);
+        state.clear();
+        assert!(state.is_empty());
+        assert_eq!(state.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn text_input_set_cursor_clamps() {
+        let mut state = TextInputState::from_text("hi\nthere");
+        state.set_cursor(0, 1);
+        assert_eq!(state.cursor(), (0, 1));
+        // Row past the end clamps to the last line; col past its end clamps too.
+        state.set_cursor(9, 9);
+        assert_eq!(state.cursor(), (1, 5));
+    }
+
+    #[test]
+    fn text_input_composes_into_view_tree() {
+        // Owning its snapshot makes TextInput `'static`, so it splices into a
+        // `view!` tree via `element(...)` — the property the fullscreen composer
+        // relies on.
+        let mut state = TextInputState::new();
+        type_str(&mut state, "hi");
+        let tree = element(TextInput::new(&state));
+        let out = render_el(&tree, 4, 1);
+        assert_eq!(out[0], "hi");
+    }
+}

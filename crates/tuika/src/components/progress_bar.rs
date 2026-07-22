@@ -161,3 +161,103 @@ impl View for ProgressBar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Surface;
+    use crate::style::Theme;
+    use crate::test_support::{buffer, rainbow_theme, row};
+    use crate::view::{RenderCtx, View};
+    use ratatui::style::Color;
+
+    #[test]
+    fn progress_bar_determinate_fills_by_fraction() {
+        let bar = ProgressBar::determinate(0.5);
+        assert_eq!(bar.percent_value(), Some(50));
+        let mut buf = buffer(10, 1);
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        bar.render(area, &mut surface, &ctx);
+        // Half of 10 cells fully filled.
+        let full = (0..10).filter(|&x| buf[(x, 0)].symbol() == "█").count();
+        assert_eq!(full, 5);
+    }
+
+    #[test]
+    fn progress_bar_full_and_percent_label() {
+        let bar = ProgressBar::determinate(1.0).percent(true);
+        let mut buf = buffer(20, 1);
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        bar.render(area, &mut surface, &ctx);
+        assert!(row(&buf, 0).contains("100%"));
+        // Bar area (minus the " 100%" suffix = 5 cols) is fully filled.
+        let full = (0..15).filter(|&x| buf[(x, 0)].symbol() == "█").count();
+        assert_eq!(full, 15);
+    }
+
+    #[test]
+    fn progress_bar_indeterminate_has_segment_and_track() {
+        let bar = ProgressBar::indeterminate(0);
+        let mut buf = buffer(12, 1);
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        bar.render(area, &mut surface, &ctx);
+        let seg = (0..12).filter(|&x| buf[(x, 0)].symbol() == "█").count();
+        let track = (0..12).filter(|&x| buf[(x, 0)].symbol() == "░").count();
+        assert!(seg > 0, "expected a bright segment");
+        assert!(track > 0, "expected a dim track");
+        assert_eq!(seg + track, 12);
+    }
+
+    #[test]
+    fn progress_bar_is_responsive_to_width() {
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        let filled = |w: u16| {
+            let mut buf = buffer(w, 1);
+            let area = buf.area;
+            let mut surface = Surface::new(&mut buf, area);
+            ProgressBar::determinate(0.5).render(area, &mut surface, &ctx);
+            (0..w).filter(|&x| buf[(x, 0)].symbol() == "█").count()
+        };
+        assert_eq!(filled(4), 2, "half of 4");
+        assert_eq!(filled(40), 20, "half of 40");
+        assert!(filled(4) < filled(40), "wider bar fills more cells");
+        // Degenerate widths must not panic.
+        let _ = filled(0);
+        let _ = filled(1);
+    }
+
+    #[test]
+    fn progress_bar_default_colors_come_from_theme() {
+        let t = rainbow_theme();
+        let ctx = RenderCtx::new(&t);
+
+        // Determinate: filled fg = accent, empty bg = dim.
+        let bar = ProgressBar::determinate(0.5);
+        let mut buf = buffer(10, 1);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        bar.render(area, &mut surface, &ctx);
+        assert_eq!(buf[(0, 0)].fg, t.accent, "filled cell fg");
+        assert_eq!(buf[(9, 0)].bg, t.dim, "empty cell bg");
+
+        // Indeterminate: bright segment fg = accent, track fg = dim.
+        let bar = ProgressBar::indeterminate(0);
+        let mut buf = buffer(12, 1);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        bar.render(area, &mut surface, &ctx);
+        let fgs: Vec<Color> = (0..12).map(|x| buf[(x, 0)].fg).collect();
+        assert!(fgs.contains(&t.accent), "segment fg accent: {fgs:?}");
+        assert!(fgs.contains(&t.dim), "track fg dim: {fgs:?}");
+    }
+}

@@ -59,3 +59,31 @@ pub fn sawtooth(frame: u64, period: u64) -> Phase {
     }
     (frame % period) as f32 / period as f32
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn easing_endpoints_and_midpoints() {
+        for f in [linear, ease_in, ease_out, ease_in_out] {
+            assert!((f(0.0) - 0.0).abs() < 1e-6);
+            assert!((f(1.0) - 1.0).abs() < 1e-6);
+        }
+        // Cubic ease-in-out is symmetric about 0.5.
+        assert!((ease_in_out(0.5) - 0.5).abs() < 1e-6);
+        // Clamps out-of-range input.
+        assert_eq!(linear(2.0), 1.0);
+        assert_eq!(ease_out(-1.0), 0.0);
+    }
+
+    #[test]
+    fn ping_pong_and_sawtooth_shapes() {
+        assert!((ping_pong(0, 60) - 0.0).abs() < 1e-6);
+        assert!((ping_pong(30, 60) - 1.0).abs() < 1e-6); // peak at half period
+        assert!((ping_pong(60, 60) - 0.0).abs() < 1e-6); // back to start
+        assert!((sawtooth(0, 10) - 0.0).abs() < 1e-6);
+        assert!((sawtooth(5, 10) - 0.5).abs() < 1e-6);
+        assert!((sawtooth(10, 10) - 0.0).abs() < 1e-6); // wraps
+    }
+}

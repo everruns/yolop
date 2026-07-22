@@ -43,3 +43,26 @@ impl View for Responsive {
         self.select(area.width).render(area, surface, ctx);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::Text;
+    use crate::style::Theme;
+    use crate::test_support::row;
+    use crate::view::element;
+
+    #[test]
+    fn responsive_selects_layout_from_render_width() {
+        let view = Responsive::new(
+            10,
+            element(Text::raw("compact")),
+            element(Text::raw("wide")),
+        );
+        let theme = Theme::default();
+        let compact = crate::testing::render(&view, 8, 1, &theme);
+        let wide = crate::testing::render(&view, 12, 1, &theme);
+        assert_eq!(row(&compact, 0), "compact");
+        assert_eq!(row(&wide, 0), "wide");
+    }
+}

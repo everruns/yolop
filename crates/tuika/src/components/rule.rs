@@ -90,3 +90,25 @@ impl View for Rule {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::Theme;
+    use crate::test_support::row;
+    use ratatui::style::{Color, Style};
+    use ratatui::text::{Line, Span};
+
+    #[test]
+    fn rule_renders_title_then_fills_to_width() {
+        let theme = Theme::default();
+        let rule = Rule::new()
+            .title(Line::from(Span::raw("─ hi ")))
+            .style(Style::default().fg(Color::Blue));
+        let buf = crate::testing::render(&rule, 10, 1, &theme);
+        assert_eq!(row(&buf, 0), "─ hi ─────");
+        // The fill run carries the rule's style.
+        assert_eq!(buf[(9, 0)].symbol(), "─");
+        assert_eq!(buf[(9, 0)].fg, Color::Blue);
+    }
+}

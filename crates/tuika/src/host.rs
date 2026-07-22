@@ -221,3 +221,141 @@ fn button(b: CtMouseButton) -> MouseButton {
         CtMouseButton::Middle => MouseButton::Middle,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::{Boxed, Flex, ProgressBar, Scroll, ScrollState, StatusBar, Text};
+    use crate::event::{Event, MouseButton, MouseKind};
+    use crate::style::Theme;
+    use crate::test_support::{buffer, rainbow_theme, row};
+    use crate::view::{Element, element};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::text::{Line, Span};
+
+    /// A representative tree: a scrollable bordered body, a progress bar, and a
+    /// status bar — the shapes the full-screen renderer actually composes.
+    fn demo_tree(frame: u64) -> Element {
+        let lines: Vec<Line<'static>> = (0..40).map(|i| Line::from(format!("row {i}"))).collect();
+        let mut st = ScrollState::new();
+        st.clamp(40, 8);
+        element(
+            Flex::column()
+                .grow(
+                    1,
+                    element(Boxed::new(element(Scroll::new(lines, &st))).title(" body ")),
+                )
+                .fixed(1, element(ProgressBar::indeterminate(frame)))
+                .fixed(1, element(StatusBar::new().left(vec![Span::raw("status")]))),
+        )
+    }
+
+    #[test]
+    fn translate_maps_button_modifiers_and_drag() {
+        use crossterm::event::{
+            Event as CtEvent, KeyModifiers, MouseButton as CtButton, MouseEvent, MouseEventKind,
+        };
+        let ct = CtEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(CtButton::Right),
+            column: 7,
+            row: 3,
+            modifiers: KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+        });
+        let Some(Event::Mouse(m)) = translate_event(ct) else {
+            panic!("expected a mouse event");
+        };
+        assert_eq!(m.kind, MouseKind::Down(MouseButton::Right));
+        assert_eq!((m.column, m.row), (7, 3));
+        assert!(m.shift && m.ctrl && !m.alt);
+        assert!(!m.plain());
+    }
+
+    #[test]
+    fn paint_composites_background_root_and_overlay() {
+        let theme = Theme::default();
+        let mut buf = buffer(20, 5);
+        let area = buf.area;
+        let root = Text::new(vec![Line::from(Span::raw("base layer"))]);
+        let dialog = Text::new(vec![Line::from("MODAL")]);
+        let overlay_area = Rect::new(5, 2, 7, 1);
+        let overlays = [Overlay {
+            area: overlay_area,
+            view: &dialog,
+            clear: true,
+        }];
+        paint(&mut buf, area, &theme, &root, &overlays);
+        // Root text on the top row.
+        assert!(row(&buf, 0).starts_with("base layer"));
+        // Background fill applied everywhere.
+        assert_eq!(buf[(0, 0)].bg, theme.background);
+        // Overlay painted last on its row with a surface background.
+        assert!(row(&buf, 2).contains("MODAL"));
+        assert_eq!(buf[(5, 2)].bg, theme.surface);
+    }
+
+    #[test]
+    fn paint_survives_degenerate_and_swept_sizes() {
+        let theme = Theme::default();
+        // The test passing (no panic, no out-of-bounds index) is the assertion.
+        for &w in &[0u16, 1, 2, 3, 5, 10, 17, 40, 200] {
+            for &h in &[0u16, 1, 2, 3, 5, 8, 40] {
+                let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+                let area = buf.area;
+                paint(&mut buf, area, &theme, demo_tree(w as u64).as_ref(), &[]);
+                assert_eq!(buf.area, Rect::new(0, 0, w, h));
+            }
+        }
+    }
+
+    #[test]
+    fn resize_reflows_body_and_status() {
+        let theme = Theme::default();
+
+        // Wide + tall: the body box title is visible on the top border.
+        let mut big = buffer(80, 24);
+        let a = big.area;
+        paint(&mut big, a, &theme, demo_tree(0).as_ref(), &[]);
+        assert!(
+            row(&big, 0).contains("body"),
+            "title at 80x24: {:?}",
+            row(&big, 0)
+        );
+
+        // Then a small resize: must still render the status row at the bottom and
+        // must not panic or leave the previous size's content behind (fresh buffer).
+        let mut small = buffer(20, 6);
+        let a2 = small.area;
+        paint(&mut small, a2, &theme, demo_tree(0).as_ref(), &[]);
+        assert!(
+            row(&small, 5).contains("status"),
+            "status row at 20x6: {:?}",
+            row(&small, 5)
+        );
+    }
+
+    #[test]
+    fn compositor_uses_theme_background_and_overlay_surface() {
+        let t = rainbow_theme();
+        let mut buf = buffer(12, 4);
+        let area = buf.area;
+        let root = Text::raw("base");
+        let dialog = Text::raw("hi");
+        let overlays = [Overlay {
+            area: Rect::new(4, 1, 4, 1),
+            view: &dialog,
+            clear: true,
+        }];
+        paint(&mut buf, area, &t, &root, &overlays);
+        assert_eq!(
+            buf[(0, 3)].bg,
+            t.background,
+            "base fill uses theme.background"
+        );
+        assert_eq!(
+            buf[(4, 1)].bg,
+            t.surface,
+            "overlay clear uses theme.surface"
+        );
+    }
+}

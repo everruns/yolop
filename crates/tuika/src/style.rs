@@ -132,3 +132,38 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::rainbow_theme;
+    use ratatui::style::Modifier;
+
+    #[test]
+    fn theme_helper_styles_map_to_slots() {
+        let t = rainbow_theme();
+        assert_eq!(t.text_style().fg, Some(t.text));
+        assert_eq!(t.muted_style().fg, Some(t.muted));
+        assert_eq!(t.accent_style().fg, Some(t.accent));
+        assert!(t.accent_style().add_modifier.contains(Modifier::BOLD));
+        assert_eq!(t.border_color(false), t.border);
+        assert_eq!(t.border_color(true), t.border_focused);
+        let sel = t.selection_style();
+        assert_eq!(sel.bg, Some(t.selection_bg));
+        assert_eq!(sel.fg, Some(t.selection_fg));
+        assert!(sel.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn default_theme_is_the_toolkit_identity_not_a_host_brand() {
+        use ratatui::style::Color;
+        // tuika's own look is warm red-on-dark. It is deliberately a neutral toolkit
+        // identity, not any host's brand — a host with its own palette builds its own
+        // `Theme` (e.g. yolop's `fullscreen::yolop_theme`) instead of inheriting this.
+        let t = Theme::default();
+        assert_eq!(t.accent, Color::Rgb(200, 60, 70));
+        assert_eq!(t.selection_bg, Color::Rgb(120, 30, 40));
+        // Not yolop's accent blue.
+        assert_ne!(t.accent, Color::Rgb(45, 91, 158));
+    }
+}
