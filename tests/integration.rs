@@ -1715,6 +1715,7 @@ fn shell_commands_have_full_host_access_by_default() {
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("create workspace");
     let outside = root.path().join("outside.txt");
+    let command = format!("!shell touch '{}'\r", outside.display());
     let mut tui = spawn_tui_llmsim_with(
         &yolop_binary(),
         TuiSpawnOptions {
@@ -1733,7 +1734,7 @@ fn shell_commands_have_full_host_access_by_default() {
         tui.output_text()
     );
 
-    tui.write_input(b"!shell touch ../outside.txt\r");
+    tui.write_input(command.as_bytes());
     assert!(
         tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
         "full-access shell did not complete: {}",
@@ -1764,6 +1765,7 @@ fn sandbox_flag_restricts_shell_writes_for_one_run() {
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("create workspace");
     let outside = root.path().join("outside.txt");
+    let command = format!("!shell touch '{}'\r", outside.display());
     let mut tui = spawn_tui_llmsim_with(
         &yolop_binary(),
         TuiSpawnOptions {
@@ -1778,7 +1780,7 @@ fn sandbox_flag_restricts_shell_writes_for_one_run() {
         tui.output_text()
     );
 
-    tui.write_input(b"!shell touch ../outside.txt\r");
+    tui.write_input(command.as_bytes());
     assert!(
         tui.wait_for_output("shell exited with code", Duration::from_secs(5)),
         "sandboxed shell did not complete: {}",
