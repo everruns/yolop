@@ -20,8 +20,39 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # Classify the diff once, up front, so the rest of the pipeline can scope
+  # itself to what actually changed. A docs-only PR (e.g. a README badge tweak)
+  # must not spin up the whole Rust toolchain, burn a live-provider API budget,
+  # or occupy the scarce macOS/Windows runners. GitHub treats a job skipped by
+  # `if:` as a passing required check, so skipped legs never block merge.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '**/build.rs'
+              - '.github/workflows/ci.yml'
+            docs:
+              - '**/*.md'
+
   tuika-msrv:
     name: Tuika MSRV
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -41,8 +72,30 @@ jobs:
       - name: Verify component gallery assets
         run: cargo run --locked -p tuika --example demo -- check
 
+  # Cheap guard for the documentation boundary (README/docs must not link into
+  # internal specs/ or .agents/). Runs whenever Markdown changes — including
+  # docs-only PRs, where the Rust `lint` job below is skipped — and needs no
+  # Rust toolchain, so it stays fast.
+  docs-boundary:
+    name: Docs boundary
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Public docs boundary
+        run: |
+          if grep -R -n -E --include='*.md' '\]\([^)]*(specs/|\.agents/)' README.md docs; then
+            echo "::error::Public documentation must not link to internal specs/ or .agents/ files."
+            exit 1
+          fi
+
   lint:
     name: Format + Clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -61,18 +114,13 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: Public docs boundary
-        run: |
-          if grep -R -n -E --include='*.md' '\]\([^)]*(specs/|\.agents/)' README.md docs; then
-            echo "::error::Public documentation must not link to internal specs/ or .agents/ files."
-            exit 1
-          fi
-
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
     name: Build + Tests + Offline Smoke
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -162,6 +210,8 @@ jobs:
 
   sandbox-contract:
     name: Sandbox Contract (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -182,30 +232,8 @@ jobs:
       - name: Run sandbox contract suite
         run: cargo test sandbox -- --nocapture
 
-  # Detect whether this change touches anything that could affect the Windows
-  # build, so the (comparatively scarce) Windows runner only spins up when it's
-  # actually relevant — not on doc- or eval-only changes.
-  changes:
-    name: Detect Rust changes
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            rust:
-              - '**/*.rs'
-              - '**/Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-              - 'build.rs'
-              - '.github/workflows/ci.yml'
-
+  # The (comparatively scarce) Windows runner only spins up when the change
+  # actually touches Rust — not on doc- or eval-only changes.
   windows:
     name: Windows Build + Shell Smoke
     needs: changes
