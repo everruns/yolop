@@ -400,10 +400,15 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_warns_unsandboxed_for_every_mode() {
-        // Windows has no sandbox, so even the `native` default must warn that
-        // commands run with full host access.
-        assert!(danger_warning(SandboxMode::Native).is_some());
-        assert!(danger_warning(SandboxMode::Off).is_some());
+        // Windows has no sandbox, so even the workspace-write default must
+        // warn that commands run with full host access.
+        for mode in [
+            SandboxMode::ReadOnly,
+            SandboxMode::WorkspaceWrite,
+            SandboxMode::DangerFullAccess,
+        ] {
+            assert!(danger_warning(mode).is_some());
+        }
     }
 
     #[test]
