@@ -434,7 +434,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_warns_unsandboxed_for_every_mode() {
-        // Windows has no sandbox, so even the workspace-write default must
+        // Windows has no sandbox, so even workspace-write must
         // warn that commands run with full host access.
         for mode in [
             SandboxMode::ReadOnly,

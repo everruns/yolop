@@ -1,8 +1,8 @@
 # Shell sandboxing
 
-Yolop runs shell commands inside native operating-system containment by
-default. The sandbox limits the damage an incorrect or compromised model can
-cause even after a command has been selected for execution.
+Yolop can run shell commands inside native operating-system containment. The
+sandbox limits the damage an incorrect or compromised model can cause after a
+command has been selected for execution, but it is opt-in.
 
 Sandbox mode and [approval policy](../approvals.md) form a matrix. The sandbox
 sets the technical boundary; hard approval controls when Yolop may ask to cross
@@ -24,10 +24,10 @@ The modes are:
 | Mode | Shell access |
 |---|---|
 | `read-only` | Host reads and temporary writes; workspace writes and network denied. |
-| `workspace-write` | Host reads plus writes in the active workspace and temporary directories; network denied. This is the default. |
-| `danger-full-access` | Unrestricted host execution. Yolop marks this `UNSAFE HOST`. |
+| `workspace-write` | Host reads plus writes in the active workspace and temporary directories; network denied. |
+| `danger-full-access` | Unrestricted host execution. This is the default, and Yolop marks this `UNSAFE HOST`. |
 
-With the default `workspace-write` mode:
+With `workspace-write` mode:
 
 - the active workspace, `/tmp`, and a private temporary directory are writable;
 - writes outside those locations are denied;
@@ -101,7 +101,7 @@ worktrees; do not treat `/tmp` as session isolation.
 
 ## Modes × approvals
 
-The default **Auto** preset is `workspace-write × on-request`. `untrusted` asks
+The default policy is `danger-full-access × on-request`. `untrusted` asks
 before commands outside a conservative read-only allowlist. `on-failure` tries
 inside the sandbox, then asks before a full-access retry after a likely sandbox
 denial. `on-request` asks only when the agent explicitly requests escalation.
@@ -113,36 +113,29 @@ still works with compatible editor clients. Direct, model-facing, and
 background shell calls use the same policy.
 
 ```toml
-sandbox_mode = "workspace-write" # implicit default
+sandbox_mode = "workspace-write" # opt into containment
 approval_policy = "on-request"   # implicit default
 ```
 
-## Disabling the sandbox
+## Enabling the sandbox
 
-Disable native containment only when Yolop already runs inside a trusted VM,
-container, or remote sandbox:
-
-```toml
-sandbox_mode = "danger-full-access"
-```
-
-For a single invocation, pass `--no-sandbox` instead. It selects the same
-dangerous full-host-access mode without changing `settings.toml`:
+Enable native containment for one invocation with:
 
 ```bash
-yolop --no-sandbox
+yolop --sandbox
 ```
 
-Add the setting to Yolop's `settings.toml`, or ask Yolop to set the
-`sandbox_mode` configuration key. The change applies on the next run.
+To persist containment, add `sandbox_mode = "workspace-write"` to Yolop's
+`settings.toml`, or ask Yolop to set the `sandbox_mode` configuration key. The
+change applies on the next run. Clearing the key restores the default.
 
-> **Danger:** `danger-full-access` gives shell commands unrestricted access to
-> host files, processes, credentials present in the environment, and the
-> network. A jailbroken or confused model can damage the host.
+> **Danger:** The default `danger-full-access` mode gives shell commands
+> unrestricted access to host files, processes, credentials present in the
+> environment, and the network. A jailbroken or confused model can damage the
+> host.
 
 Yolop marks this state as `UNSAFE HOST` in configuration output, startup
-warnings, the TUI transcript, and the status bar. Remove the setting or set it
-back to `workspace-write` to restore containment.
+warnings, the TUI transcript, and the status bar.
 
 ## Troubleshooting
 

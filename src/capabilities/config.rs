@@ -530,10 +530,10 @@ impl SetConfigTool {
             KeyTarget::Sandbox => {
                 if clearing {
                     self.settings
-                        .set_sandbox_mode(crate::config::SandboxMode::WorkspaceWrite)
+                        .set_sandbox_mode(crate::config::SandboxMode::DangerFullAccess)
                         .map_err(map_err)?;
                     return Ok(saved(
-                        "cleared sandbox_mode (default workspace-write); applies next run"
+                        "cleared sandbox_mode (default danger-full-access); applies next run"
                             .to_string(),
                     ));
                 }
@@ -852,7 +852,7 @@ mod tests {
             .await;
         assert_eq!(
             settings.snapshot().sandbox_mode(),
-            crate::config::SandboxMode::WorkspaceWrite
+            crate::config::SandboxMode::DangerFullAccess
         );
     }
 

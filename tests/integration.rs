@@ -302,8 +302,8 @@ fn help_flag_succeeds() {
     assert!(stdout.contains("--print"), "help output missing --print");
     assert!(stdout.contains("--image"), "help output missing --image");
     assert!(
-        stdout.contains("--no-sandbox"),
-        "help output missing --no-sandbox"
+        stdout.contains("--sandbox"),
+        "help output missing --sandbox"
     );
 }
 
@@ -1698,10 +1698,7 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
 fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
     let mut tui = spawn_tui_llmsim_with_settings(
         &yolop_binary(),
-        TuiSpawnOptions {
-            no_sandbox: true,
-            ..TuiSpawnOptions::default()
-        },
+        TuiSpawnOptions::default(),
         "provider = \"llmsim\"\napproval_policy = \"untrusted\"\n",
     );
     assert!(
@@ -1749,16 +1746,19 @@ fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
 
 #[cfg(not(windows))]
 #[test]
-fn no_sandbox_flag_gives_shell_commands_full_host_access_for_one_run() {
-    let root = tempfile::tempdir().expect("tempdir");
+fn shell_commands_have_full_host_access_by_default() {
+    let root = tempfile::Builder::new()
+        .prefix("yolop-default-host-access-test-")
+        .tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("tempdir outside shared temp");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("create workspace");
     let outside = root.path().join("outside.txt");
+    let command = format!("!shell touch '{}'\r", outside.display());
     let mut tui = spawn_tui_llmsim_with(
         &yolop_binary(),
         TuiSpawnOptions {
             workspace: Some(workspace),
-            no_sandbox: true,
             ..TuiSpawnOptions::default()
         },
     );
@@ -1773,7 +1773,7 @@ fn no_sandbox_flag_gives_shell_commands_full_host_access_for_one_run() {
         tui.output_text()
     );
 
-    tui.write_input(b"!shell touch ../outside.txt\r");
+    tui.write_input(command.as_bytes());
     assert!(
         tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
         "full-access shell did not complete: {}",
@@ -1781,7 +1781,7 @@ fn no_sandbox_flag_gives_shell_commands_full_host_access_for_one_run() {
     );
     assert!(
         outside.exists(),
-        "--no-sandbox shell could not write outside cwd"
+        "default shell could not write outside cwd"
     );
     assert!(
         !std::fs::read_to_string(tui.settings_path())
@@ -1789,6 +1789,46 @@ fn no_sandbox_flag_gives_shell_commands_full_host_access_for_one_run() {
             .contains("danger-full-access"),
         "one-run override must not persist to settings"
     );
+
+    tui.write_input(b"\x03\x03");
+    assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
+}
+
+#[cfg(not(windows))]
+#[test]
+fn sandbox_flag_restricts_shell_writes_for_one_run() {
+    if !require_native_sandbox("sandbox_flag_restricts_shell_writes_for_one_run") {
+        return;
+    }
+    let root = tempfile::Builder::new()
+        .prefix("yolop-sandbox-flag-test-")
+        .tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("tempdir outside shared temp");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("create workspace");
+    let outside = root.path().join("outside.txt");
+    let command = format!("!shell touch '{}'\r", outside.display());
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            workspace: Some(workspace),
+            sandbox: true,
+            ..TuiSpawnOptions::default()
+        },
+    );
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not finish startup: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(command.as_bytes());
+    assert!(
+        tui.wait_for_output("shell exited with code", Duration::from_secs(5)),
+        "sandboxed shell did not complete: {}",
+        tui.output_text()
+    );
+    assert!(!outside.exists(), "--sandbox allowed a write outside cwd");
 
     tui.write_input(b"\x03\x03");
     assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
@@ -1867,6 +1907,7 @@ fn tui_agents_context_cannot_bypass_native_shell_sandbox() {
         &yolop_binary(),
         TuiSpawnOptions {
             workspace: Some(workspace),
+            sandbox: true,
             ..TuiSpawnOptions::default()
         },
     );
