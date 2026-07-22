@@ -1688,6 +1688,56 @@ fn no_sandbox_flag_gives_shell_commands_full_host_access_for_one_run() {
     assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn tui_bang_shell_can_create_toolchain_home() {
+    if !require_native_sandbox("tui_bang_shell_can_create_toolchain_home") {
+        return;
+    }
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"!shell mkdir -p \"$HOME/.rustup\" && test -d \"$HOME/.rustup\"\r");
+    assert!(
+        tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
+        "sandbox should permit creating directories under its synthetic home: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"\x03\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(status.success(), "TUI did not exit cleanly: {status:?}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn tui_bang_shell_can_redirect_to_dev_null() {
+    if !require_native_sandbox("tui_bang_shell_can_redirect_to_dev_null") {
+        return;
+    }
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"!shell printf discarded >/dev/null\r");
+    assert!(
+        tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
+        "sandbox should permit writing /dev/null: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"\x03\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(status.success(), "TUI did not exit cleanly: {status:?}");
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn tui_agents_context_cannot_bypass_native_shell_sandbox() {
