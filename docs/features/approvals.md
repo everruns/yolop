@@ -16,7 +16,10 @@ including destructive or outward-facing structured tools.
 | `on-request` | Run sandboxed by default; ask only when the agent explicitly requests `danger-full-access`. This is the default. |
 | `never` | Never prompt and never grant a full-access escalation. |
 
-The TUI renders shell approvals as a yes/no prompt with the command and reason.
+The TUI renders shell approvals with the command and reason. Press `y` to
+approve once, `a` to approve requests with the displayed sandbox scope for the
+rest of the session, or `n`/Escape to deny. Session approval is not persisted to
+later yolop sessions, and sandbox-only approval never grants `danger-full-access`.
 One-shot print and ACP sessions do not service this shell-escalation gate, so
 those requests fail closed. ACP's separate general tool-permission gate remains
 available to compatible editor clients. The default **Auto** preset is

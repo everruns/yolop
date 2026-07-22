@@ -45,9 +45,11 @@ from inheriting a broader writable ancestor.
 Approval policies are independent: `untrusted` gates commands outside a
 conservative read-only allowlist; `on-failure` gates a full-access retry after a
 likely sandbox denial; `on-request` gates explicit `require_escalated` calls;
-and `never` refuses escalation without prompting. The TUI owns the shell yes/no
-gate. Print and ACP shell escalation requests fail closed; ACP's separate
-general tool-permission gate is unchanged.
+and `never` refuses escalation without prompting. The TUI owns the shell gate:
+users can deny, approve one command, or approve the displayed sandbox scope for
+the rest of the session. A sandbox-only session grant does not grant later
+`danger-full-access` requests. Print and ACP shell escalation requests fail
+closed; ACP's separate general tool-permission gate is unchanged.
 
 On macOS and Linux, native execution is fail closed: if the required OS
 primitive is unavailable, the command returns a sandbox-setup error and is not

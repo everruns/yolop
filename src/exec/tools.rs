@@ -716,7 +716,9 @@ mod tests {
             let (request, reply) = approvals.recv().await.unwrap();
             assert!(request.full_access);
             assert_eq!(request.reason, "write the requested result");
-            reply.send(true).unwrap();
+            reply
+                .send(crate::sandbox_approval::ApprovalDecision::ApproveOnce)
+                .unwrap();
         };
         let (result, ()) = tokio::join!(execute, approve);
         let ToolExecutionResult::Success(result) = result else {
