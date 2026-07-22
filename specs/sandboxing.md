@@ -29,12 +29,11 @@ backend can implement the same seam without changing tool schemas.
 
 ## Modes × approvals
 
-The implicit **Auto** preset is `sandbox_mode = "workspace-write"` plus
-`approval_policy = "on-request"`. It provides a live writable
-workspace, writable shared `/tmp`, a private temporary directory exposed as
-`$TMPDIR` and `$HOME`, no network, and restrictions inherited by descendant
-processes. The provider is selected once when a runtime is built; each command
-resolves the current workspace again, so worktree activation is reflected on
+The implicit default is `sandbox_mode = "danger-full-access"` plus
+`approval_policy = "on-request"`. Shell commands run directly on the host and
+are surfaced as `UNSAFE HOST`. The provider is selected once when a runtime is
+built; each command resolves the current workspace again, so worktree
+activation is reflected on
 the next command.
 
 `read-only` removes both the workspace and shared `/tmp` grants while retaining
@@ -92,7 +91,7 @@ a known limit.
 ### Windows
 
 There is no native sandbox on Windows yet, so the platform is fail *open*, not
-fail closed: every mode — including the `workspace-write` default — runs the
+fail closed: every mode — including `workspace-write` — runs the
 shell with full host access. The shell is PowerShell (`powershell.exe -NoProfile
 -NonInteractive -Command`) rather than bash, since it ships in-box on every
 supported Windows. Because nothing is contained, the startup warning fires for
@@ -101,28 +100,27 @@ emits the right syntax. A native provider built on
 Windows primitives (restricted tokens, ACLs, a firewall-isolated user) is the
 path to fail-closed parity and is tracked as future work.
 
-## Unsafe opt-out
+## Sandbox opt-in
 
-Users already running Yolop inside a trusted VM/container may set:
+The `--sandbox` CLI flag applies `workspace-write` to one process, including
+its print, TUI, or ACP runtime, without modifying persistent configuration.
+Users may persist the same mode with:
 
 ```toml
-sandbox_mode = "danger-full-access"
+sandbox_mode = "workspace-write"
 ```
 
-The `--no-sandbox` CLI flag applies the same mode to one process, including
-its print, TUI, or ACP runtime, without modifying persistent configuration.
-
 The same change is available through
-`set_config key=sandbox_mode value=danger-full-access`.
-Disabling applies on the next run. Yolop communicates the risk in three places:
+`set_config key=sandbox_mode value=workspace-write`. Enabling applies on the
+next run. Yolop communicates the risk of the unsandboxed default in three
+places:
 
 - `set_config` returns an explicit `DANGER` / `UNSAFE HOST` message;
 - startup writes the warning to stderr and the TUI transcript; and
 - the status bar appends `UNSAFE HOST` to its persistent approval indicator.
 
-Clearing the setting restores `workspace-write`. Yolop never writes the safe
-default to the file, so a `danger-full-access` entry is conspicuous during
-review.
+Clearing the setting restores `danger-full-access`. An explicit
+`workspace-write` entry remains visible in the file.
 
 ## Provider contract and future composition
 
@@ -167,7 +165,7 @@ host executable or silently widen mounts/network.
 
 ## Containment providers
 
-- **Workspace write** is the default kernel-enforced local provider.
+- **Workspace write** is the opt-in kernel-enforced local provider.
 - **Bashkit** is a containment provider in its own right: it interprets a bash
   subset against a virtual filesystem and does not spawn arbitrary OS
   processes. It would advertise different capabilities from native execution,
@@ -217,8 +215,8 @@ isolation.
 
 The automated suite exercises the real `BashTool` launch path and asserts:
 
-- the safe default and sparse settings serialization;
-- explicit unsafe opt-out persistence and danger messaging;
+- the full-access default and sparse settings serialization;
+- explicit sandbox opt-in persistence and danger messaging;
 - writes inside the workspace succeed;
 - writes in shared `/tmp` succeed;
 - writes outside the workspace and `/tmp` fail;

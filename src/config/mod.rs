@@ -84,9 +84,9 @@ pub enum SandboxMode {
     /// Host reads plus private-temp writes; workspace writes and network denied.
     ReadOnly,
     /// Host reads plus workspace/private-temp writes; network denied.
-    #[default]
     WorkspaceWrite,
     /// Explicitly run commands directly on the host. Dangerous.
+    #[default]
     DangerFullAccess,
 }
 
@@ -383,7 +383,7 @@ impl Settings {
                 Value::String(self.worktrees.as_str().to_string()),
             );
         }
-        if self.sandbox != SandboxMode::WorkspaceWrite {
+        if self.sandbox != SandboxMode::DangerFullAccess {
             table.insert(
                 "sandbox_mode".to_string(),
                 Value::String(self.sandbox.as_str().to_string()),
@@ -886,25 +886,25 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_defaults_to_workspace_write_and_full_access_round_trips() {
+    fn sandbox_defaults_to_full_access_and_workspace_write_round_trips() {
         let settings = Settings::from_table(&Table::new());
-        assert_eq!(settings.sandbox_mode(), SandboxMode::WorkspaceWrite);
+        assert_eq!(settings.sandbox_mode(), SandboxMode::DangerFullAccess);
         assert!(!settings.to_table().contains_key("sandbox_mode"));
 
         let tmp = tempfile::tempdir().expect("tmp");
         let path = tmp.path().join("settings.toml");
         let store = SettingsStore::open(path.clone());
         store
-            .set_sandbox_mode(SandboxMode::DangerFullAccess)
+            .set_sandbox_mode(SandboxMode::WorkspaceWrite)
             .expect("save");
         assert!(
             std::fs::read_to_string(&path)
                 .expect("read")
-                .contains("sandbox_mode = \"danger-full-access\"")
+                .contains("sandbox_mode = \"workspace-write\"")
         );
         assert_eq!(
             SettingsStore::open(path).snapshot().sandbox_mode(),
-            SandboxMode::DangerFullAccess
+            SandboxMode::WorkspaceWrite
         );
     }
 

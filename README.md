@@ -56,18 +56,18 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 
 ### Agent core
 
-- **Automatic by default** — Yolop uses `workspace-write` shell containment
-  with `on-request` approvals: routine work inside the workspace runs without
-  prompting, while a command that needs full host access must ask first. A standing **write blocklist** rejects writes
+- **Unrestricted by default** — Yolop gives shell commands full host access
+  unless you opt into `workspace-write` containment with `--sandbox` or the
+  `sandbox_mode` setting. A standing **write blocklist** rejects writes
   into `.git/`, `node_modules/`, `target/`, `dist/`, `build/`, `.next/`,
   `.venv/`, `venv/`, `.tox/`, `.gradle/` at any depth; reads are unrestricted
   inside the workspace.
-- **Shell sandbox modes × approval policies** — every foreground, background, slash,
-  and direct shell command runs under Seatbelt on macOS or Landlock + seccomp
-  on Linux. Choose `read-only`, `workspace-write` (default), or
-  `danger-full-access` independently from `untrusted`, `on-failure`,
-  `on-request` (default), or `never` approvals. The default pair is the
-  low-friction **Auto** preset. Yolop marks full access `UNSAFE HOST`. See
+- **Shell sandbox modes × approval policies** — sandboxed foreground, background, slash,
+  and direct shell commands run under Seatbelt on macOS or Landlock + seccomp
+  on Linux. Choose `read-only`, `workspace-write`, or
+  `danger-full-access` (default) independently from `untrusted`, `on-failure`,
+  `on-request` (default), or `never` approvals. Yolop marks full access
+  `UNSAFE HOST`. See
   [Shell sandboxing](./docs/features/sandboxing/sandboxing.md).
 - **Soft approval** — an optional spoken-consent layer for critical actions.
   yolop batches the safe work and pauses to ask, in plain chat, only before
@@ -400,7 +400,7 @@ tools.
 A small TOML settings file persists the preferred provider, per-provider
 model picks, custom endpoint base URLs, the soft-approval level
 (`approval_mode`), shell sandbox mode (`sandbox_mode`, default
-`workspace-write`), hard shell approval policy (`approval_policy`, default
+`danger-full-access`), hard shell approval policy (`approval_policy`, default
 `on-request`), Codex
 subscription login metadata, and (optionally) provider API tokens across runs:
 `<config_dir>/yolop/settings.toml` —
@@ -416,11 +416,10 @@ jumps straight to model selection, and `c` opens key/base-URL configuration
 for any provider. Provider, model, and custom base URL choices are written
 to this file.
 
-To disable kernel containment for an already isolated environment, add
-`sandbox_mode = "danger-full-access"` or ask Yolop to set that config key. This is dangerous on a
-normal host: commands then have unrestricted host file, process, and network
-access. For a one-run override that does not change settings, pass
-`--no-sandbox`. Clearing the key restores `workspace-write`.
+Shell commands have unrestricted host file, process, and network access by
+default. For a one-run sandbox that does not change settings, pass `--sandbox`.
+To persist containment, add `sandbox_mode = "workspace-write"` or ask Yolop to
+set that config key. Clearing the key restores `danger-full-access`.
 
 The model picker queries the provider's models API live (OpenAI, Anthropic,
 and OpenRouter via the everruns drivers; Ollama, Gemini, and other

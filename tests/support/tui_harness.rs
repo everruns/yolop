@@ -39,8 +39,8 @@ pub struct TuiSpawnOptions {
     pub fullscreen: bool,
     /// Workspace passed through `-C`; useful for real-binary containment tests.
     pub workspace: Option<PathBuf>,
-    /// Disable shell sandboxing for this process.
-    pub no_sandbox: bool,
+    /// Enable shell sandboxing for this process.
+    pub sandbox: bool,
 }
 
 impl Default for TuiSpawnOptions {
@@ -53,7 +53,7 @@ impl Default for TuiSpawnOptions {
             path_prefix: None,
             fullscreen: false,
             workspace: None,
-            no_sandbox: false,
+            sandbox: false,
         }
     }
 }
@@ -203,8 +203,8 @@ pub fn spawn_tui_llmsim_with_settings(
     if options.fullscreen {
         cmd.arg("--fullscreen");
     }
-    if options.no_sandbox {
-        cmd.arg("--no-sandbox");
+    if options.sandbox {
+        cmd.arg("--sandbox");
     }
     if let Some(workspace) = options.workspace {
         cmd.arg("-C");

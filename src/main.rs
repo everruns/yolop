@@ -123,10 +123,10 @@ struct Cli {
     #[arg(long)]
     fullscreen: bool,
 
-    /// Disable shell sandboxing for this run. DANGER: commands receive
-    /// unrestricted access to host files, processes, and the network.
+    /// Enable shell sandboxing for this run. Commands may write only in the
+    /// workspace and temporary directories, and network access is blocked.
     #[arg(long)]
-    no_sandbox: bool,
+    sandbox: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -514,9 +514,7 @@ async fn async_main() -> Result<()> {
         std::path::PathBuf::from("/dev/null/yolop/settings.toml")
     });
     let settings = Arc::new(SettingsStore::open(settings_path));
-    let sandbox_mode_override = cli
-        .no_sandbox
-        .then_some(config::SandboxMode::DangerFullAccess);
+    let sandbox_mode_override = cli.sandbox.then_some(config::SandboxMode::WorkspaceWrite);
     let effective_sandbox_mode =
         sandbox_mode_override.unwrap_or_else(|| settings.snapshot().sandbox_mode());
     let (mut provider, mut notes) = pick_provider(&cli, &settings);
@@ -1566,7 +1564,7 @@ mod tests {
         let args = [
             "yolop",
             "--fullscreen",
-            "--no-sandbox",
+            "--sandbox",
             "--model",
             "gpt test",
             "--print",
@@ -1581,7 +1579,7 @@ mod tests {
 
         assert_eq!(
             continuation_command(args, "new-session"),
-            "yolop --fullscreen --no-sandbox --model 'gpt test' --session new-session"
+            "yolop --fullscreen --sandbox --model 'gpt test' --session new-session"
         );
     }
 
@@ -1599,7 +1597,7 @@ mod tests {
             session_dir: None,
             trajectory_out: None,
             fullscreen: false,
-            no_sandbox: false,
+            sandbox: false,
         }
     }
 
@@ -1657,7 +1655,7 @@ mod tests {
             session_dir: None,
             trajectory_out: None,
             fullscreen: false,
-            no_sandbox: false,
+            sandbox: false,
         };
 
         let (provider, _notes) = pick_provider(&cli, &settings);

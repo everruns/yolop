@@ -203,7 +203,7 @@ pub fn schema() -> &'static [ConfigField] {
             title: "Shell sandbox",
             description: "Containment for every shell command: `read-only`, `workspace-write`, or `danger-full-access`. Full access is dangerous; use it only when Yolop already runs inside an isolated VM or container.",
             kind: ValueKind::Text,
-            default: Some("workspace-write"),
+            default: Some("danger-full-access"),
             examples: &["read-only", "workspace-write", "danger-full-access"],
             provider_scoped: false,
         },
