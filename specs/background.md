@@ -34,9 +34,11 @@ spawn_background { tool: "bash", args: { command: "gh pr checks 42 --watch" } }
 ```
 
 The run executes on a detached task, streams to a session-file log
-(`/.background/<run_id>/output.log`), writes a `result.json`, and mirrors its
-lifecycle onto a `background_tool` session task (`Running` → `Succeeded` /
-`Failed` / `Canceled`). `signal_on_completion` defaults to `true`.
+(`/.background/<run_id>/output.log` in the VFS, backed by
+`<session_dir>/.background/<run_id>/output.log`), writes a `result.json`, and
+mirrors its lifecycle onto a `background_tool` session task (`Running` →
+`Succeeded` / `Failed` / `Canceled`). It never creates `.background` in the
+workspace. `signal_on_completion` defaults to `true`.
 Foreground shell calls retain the short interactive deadline; detached shell
 runs use a separate 24-hour wall-clock limit so CI watches can outlive a turn
 without becoming unbounded host processes.

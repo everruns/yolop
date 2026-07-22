@@ -1355,7 +1355,7 @@ mod tests {
         ]);
 
         let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
-        let (mut client_w, mut reader, _server) = start_raw_server(config, sessions);
+        let (mut client_w, mut reader, _server) = start_raw_server(config, sessions.clone());
 
         send_json(
             &mut client_w,
@@ -1416,6 +1416,14 @@ mod tests {
         assert!(
             woke.unwrap_or(false),
             "expected a proactive wake turn after spawn_background finished (via the wake seam)"
+        );
+        assert!(
+            sessions.join(&session_id).join(".background").is_dir(),
+            "background artifacts should live in the session directory"
+        );
+        assert!(
+            !cwd.join(".background").exists(),
+            "background execution must not create .background in the workspace"
         );
     }
 

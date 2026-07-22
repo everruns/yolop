@@ -556,14 +556,18 @@ impl CodingCliSessionFileStore {
         {
             return Some((store, rest));
         }
-        Self::session_output_path(path).map(|path| (&self.session, path))
+        Self::session_artifact_path(path).map(|path| (&self.session, path))
     }
 
     // Keep project files rooted at the user's workspace, but route generated
     // tool artifacts into yolop's durable per-session folder.
-    fn session_output_path(path: &str) -> Option<String> {
+    fn session_artifact_path(path: &str) -> Option<String> {
         let normalized = everruns_core::session_path::to_session_path(path);
-        if normalized == "/outputs" || normalized.starts_with("/outputs/") {
+        if normalized == "/outputs"
+            || normalized.starts_with("/outputs/")
+            || normalized == "/.background"
+            || normalized.starts_with("/.background/")
+        {
             Some(normalized)
         } else {
             None
@@ -576,11 +580,14 @@ impl CodingCliSessionFileStore {
 
         let absolute = self.session_dir.join(path.trim_start_matches('/'));
 
-        // For arbitrarily nested paths under `/outputs`, harden every
-        // ancestor from the artifact's immediate parent up to and including
-        // `<session_dir>/outputs`. Stopping at the outputs root keeps the
-        // session root and unrelated sibling directories untouched.
-        let outputs_root = self.session_dir.join("outputs");
+        // Harden every artifact ancestor without crossing above the routed
+        // top-level directory into the session root or its parents.
+        let artifact_root = self.session_dir.join(
+            path.trim_start_matches('/')
+                .split('/')
+                .next()
+                .expect("routed artifact path has a top-level directory"),
+        );
         let mut current = absolute.parent();
         while let Some(dir) = current {
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
@@ -589,7 +596,7 @@ impl CodingCliSessionFileStore {
                     dir.display()
                 ))
             })?;
-            if dir == outputs_root {
+            if dir == artifact_root {
                 break;
             }
             current = dir.parent();
@@ -656,7 +663,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
             let file = store
                 .write_file(session_id, &path, content, encoding)
                 .await?;
-            if Self::session_output_path(&path).is_some() {
+            if Self::session_artifact_path(&path).is_some() {
                 self.secure_session_artifact_path(&path)?;
             }
             return Ok(file);
@@ -750,7 +757,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         {
             return store.grep_files(session_id, pattern, Some(&path)).await;
         }
-        match path_pattern.and_then(Self::session_output_path) {
+        match path_pattern.and_then(Self::session_artifact_path) {
             Some(path) => {
                 self.session
                     .grep_files(session_id, pattern, Some(path.trim_start_matches('/')))
@@ -5520,6 +5527,31 @@ mod tests {
             .expect("grep workspace via host display path");
         assert_eq!(host_path_grep.len(), 1);
         assert_eq!(host_path_grep[0].path, "/src/lib.rs");
+    }
+
+    #[tokio::test]
+    async fn yolop_file_store_routes_background_artifacts_to_session_dir() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let store = test_file_store(workspace.path(), session.path());
+        let session_id = SessionId::from_seed(3);
+
+        store
+            .write_file(
+                session_id,
+                "/.background/run_1/output.log",
+                "background output",
+                "text",
+            )
+            .await
+            .expect("write background artifact");
+
+        assert_eq!(
+            std::fs::read_to_string(session.path().join(".background/run_1/output.log"))
+                .expect("session background artifact"),
+            "background output"
+        );
+        assert!(!workspace.path().join(".background").exists());
     }
 
     #[tokio::test]
