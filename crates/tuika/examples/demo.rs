@@ -262,6 +262,20 @@ const DEMOS: &[Demo] = &[
         true,
         scene_textinput,
     ),
+    demo(
+        "hyperlink",
+        "OSC 8 links — clickable URLs in the transcript",
+        11,
+        false,
+        scene_hyperlink,
+    ),
+    demo(
+        "mouse",
+        "drag-to-select, highlight, and clickable regions",
+        11,
+        true,
+        scene_mouse,
+    ),
 ];
 
 fn main() -> io::Result<()> {
@@ -379,8 +393,10 @@ fn check() -> io::Result<()> {
         }
     }
 
-    // Every demo GIF referenced by a component doc or components.md maps to a scene.
-    let mut sources: Vec<PathBuf> = vec![dir.join("docs/components.md")];
+    // Every demo GIF referenced by a component doc, components.md, or features.md
+    // maps to a scene.
+    let mut sources: Vec<PathBuf> =
+        vec![dir.join("docs/components.md"), dir.join("docs/features.md")];
     for entry in fs::read_dir(dir.join("src/components"))?.filter_map(Result::ok) {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("rs") {
@@ -388,7 +404,11 @@ fn check() -> io::Result<()> {
         }
     }
     for path in sources {
-        let text = fs::read_to_string(&path)?;
+        // A doc source may not exist yet (e.g. features.md before it lands);
+        // skip a missing one rather than failing the whole check.
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
         for referenced in referenced_gifs(&text) {
             if !names.contains(referenced.as_str()) {
                 errors.push(format!(
@@ -794,4 +814,95 @@ fn scene_textinput(frame: u64, theme: &Theme) -> Element {
             }
         }
     }
+}
+
+/// Bare `http(s)` URLs the host wraps in OSC 8, and a markdown link whose label
+/// carries the target. Rendered with the theme's link color + underline — the
+/// look a supporting terminal makes clickable; others show the text unchanged.
+/// The normal paint path draws styled cells; real OSC 8 emission is the job of
+/// `HyperlinkBackend` / `write_line`, so this scene shows the *appearance*.
+fn scene_hyperlink(frame: u64, theme: &Theme) -> Element {
+    let _ = frame;
+    let link = Style::default()
+        .fg(theme.code.link)
+        .add_modifier(Modifier::UNDERLINED);
+    let body = Text::new(vec![
+        Line::from(Span::styled(
+            "A bare URL is wrapped in place — clickable, text unchanged:",
+            theme.muted_style(),
+        )),
+        Line::from(vec![
+            Span::styled("  see ", theme.text_style()),
+            Span::styled("https://docs.rs/tuika", link),
+            Span::styled(" for the API.", theme.text_style()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "A markdown link shows its label, hiding the target:",
+            theme.muted_style(),
+        )),
+        Line::from(vec![
+            Span::styled("  the ", theme.text_style()),
+            Span::styled("tuika component gallery", link),
+            Span::styled(" demos every widget.", theme.text_style()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Only http(s) links are emitted; anything else stays plain text.",
+            theme.muted_style(),
+        )),
+    ]);
+    element(body)
+}
+
+/// A left-drag selection growing over a phrase (real, copyable text), plus a
+/// row of clickable regions a `HitMap` would resolve to actions.
+fn scene_mouse(frame: u64, theme: &Theme) -> Element {
+    let phrase = "the quick brown fox jumps over the lazy dog";
+    let count = phrase.chars().count();
+    let reach = tuika::anim::ping_pong(frame, 200);
+    let selected = (reach * count as f32).round() as usize;
+    let sel: String = phrase.chars().take(selected).collect();
+    let rest: String = phrase.chars().skip(selected).collect();
+
+    let button = |label: &str, active: bool| -> Span<'static> {
+        if active {
+            Span::styled(
+                format!(" {label} "),
+                Style::default()
+                    .fg(theme.background)
+                    .bg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(format!(" {label} "), theme.muted_style())
+        }
+    };
+    let hot = (frame / 24) % 3;
+
+    let body = Text::new(vec![
+        Line::from(Span::styled(
+            "Left-drag selects real text — copy it over SSH via OSC 52:",
+            theme.muted_style(),
+        )),
+        Line::from(vec![
+            Span::styled("  ", theme.text_style()),
+            Span::styled(sel, theme.selection_style()),
+            Span::styled(rest, theme.text_style()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "A HitMap maps screen regions to values — clicks become actions:",
+            theme.muted_style(),
+        )),
+        Line::from(vec![
+            Span::styled("  ", theme.text_style()),
+            button("Run", hot == 0),
+            Span::styled("  ", theme.text_style()),
+            button("Diff", hot == 1),
+            Span::styled("  ", theme.text_style()),
+            button("Cancel", hot == 2),
+        ]),
+    ]);
+    element(body)
 }
