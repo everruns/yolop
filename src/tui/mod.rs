@@ -96,6 +96,8 @@ pub struct App {
     model: ModelState,
     pub lines: Vec<ChatLine>,
     printed_lines: usize,
+    /// Number of leading system lines that belong to the startup banner.
+    startup_banner_len: usize,
     /// The single composer model, shared by **both** renderers: a tuika
     /// [`TextInputState`](tuika::TextInputState) that owns the draft text and
     /// cursor and applies its own edits (emacs bindings, word movement, wrapping).
@@ -468,6 +470,7 @@ impl App {
             model: runtime.model,
             lines: Vec::new(),
             printed_lines: 0,
+            startup_banner_len: 0,
             composer: tuika::TextInputState::new(),
             busy: false,
             should_quit: false,
@@ -533,6 +536,7 @@ impl App {
             context_used_tokens: None,
         };
         app.emit_system_banner();
+        app.startup_banner_len = app.lines.len();
         if should_setup {
             app.start_first_run_setup();
         } else if app.goal_store.is_paused(session_id)
@@ -1877,6 +1881,7 @@ impl App {
                 self.goal_store.clear_active(self.session.session_id());
                 self.user_ask_store.clear_active(self.session.session_id());
                 self.emit_system_banner();
+                self.startup_banner_len = self.lines.len();
             }
             UiCommand::RunShell { command } => self.start_shell_command(command),
             UiCommand::Quit => self.should_quit = true,
@@ -4147,29 +4152,29 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn recent_transcript_mirror_excludes_startup_banner_system_lines() {
-        let lines = vec![
-            ChatLine {
-                author: Author::System,
-                text: "workspace: /tmp".into(),
-            },
-            ChatLine {
-                author: Author::User,
-                text: "hello".into(),
-            },
-        ];
-        assert!(!include_line_in_recent_transcript_mirror(
-            &lines[0], 0, &lines
-        ));
-        assert!(include_line_in_recent_transcript_mirror(
-            &lines[1], 1, &lines
-        ));
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recent_transcript_mirror_excludes_startup_banner_system_lines() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines = vec![ChatLine {
+            author: Author::System,
+            text: "workspace: /tmp".into(),
+        }];
+        app.startup_banner_len = app.lines.len();
+        app.lines.push(ChatLine {
+            author: Author::User,
+            text: "hello".into(),
+        });
+
+        let visible = recent_transcript_lines(app, 80, 10);
+        let visible = visible.iter().map(line_text).collect::<Vec<_>>();
+        assert!(!visible.iter().any(|line| line.contains("workspace: /tmp")));
+        assert!(visible.iter().any(|line| line.contains("hello")));
     }
 
     #[test]
     fn recent_transcript_mirror_includes_session_system_notices_after_chat() {
-        let lines = vec![
+        let lines = [
             ChatLine {
                 author: Author::System,
                 text: "workspace: /tmp".into(),
@@ -4187,12 +4192,29 @@ mod tests {
                 text: "attached clipboard image #1 (640x480 PNG)".into(),
             },
         ];
-        assert!(!include_line_in_recent_transcript_mirror(
-            &lines[0], 0, &lines
-        ));
-        assert!(include_line_in_recent_transcript_mirror(
-            &lines[3], 3, &lines
-        ));
+        assert!(!include_line_in_recent_transcript_mirror(&lines[0], 0, 1));
+        assert!(include_line_in_recent_transcript_mirror(&lines[3], 3, 1));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recent_transcript_mirror_includes_image_notice_before_first_chat() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines = vec![ChatLine {
+            author: Author::System,
+            text: "workspace: /tmp".into(),
+        }];
+        app.startup_banner_len = app.lines.len();
+        app.push_system("attached clipboard image #1 (640x480 PNG)".into());
+
+        let visible = recent_transcript_lines(app, 80, 10);
+        let visible = visible.iter().map(line_text).collect::<Vec<_>>();
+        assert!(!visible.iter().any(|line| line.contains("workspace: /tmp")));
+        assert!(
+            visible
+                .iter()
+                .any(|line| line.contains("attached clipboard image #1 (640x480 PNG)"))
+        );
     }
 
     // ====================================================================
@@ -5544,6 +5566,7 @@ mod tests {
         let app = &mut fixture.app;
         app.setup = None;
         app.lines.clear();
+        app.startup_banner_len = 0;
         app.push_user("first question".into());
         app.lines.push(ChatLine {
             author: Author::Assistant,
@@ -5570,6 +5593,7 @@ mod tests {
         let app = &mut fixture.app;
         app.setup = None;
         app.lines.clear();
+        app.startup_banner_len = 0;
         app.push_user("first question".into());
         app.lines.push(ChatLine {
             author: Author::Assistant,
@@ -5602,6 +5626,7 @@ mod tests {
         let app = &mut fixture.app;
         app.setup = None;
         app.lines.clear();
+        app.startup_banner_len = 0;
         app.push_user("run it".into());
         app.lines.push(ChatLine {
             author: Author::Assistant,
