@@ -34,6 +34,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       tuika: ${{ steps.filter.outputs.tuika }}
       docs: ${{ steps.filter.outputs.docs }}
+      eval-analyzers: ${{ steps.filter.outputs.eval-analyzers }}
     steps:
       - uses: actions/checkout@v7
 
@@ -63,6 +64,14 @@ jobs:
               - '.github/workflows/ci.yml'
             docs:
               - '**/*.md'
+            # The regression-gate analyzers under harness_basic are pure Python
+            # and decide whether the nightly Search Efficiency Eval passes. They
+            # never touch the Rust toolchain, so give them their own fast leg that
+            # runs whenever an analyzer or its tests change.
+            eval-analyzers:
+              - 'evals/harness_basic/*.py'
+              - 'evals/harness_basic/tests/**'
+              - '.github/workflows/ci.yml'
 
   tuika-msrv:
     name: Tuika MSRV
@@ -106,6 +115,20 @@ jobs:
             echo "::error::Public documentation must not link to internal specs/ or .agents/ files."
             exit 1
           fi
+
+  eval-analyzers:
+    name: Eval analyzers (Python)
+    needs: changes
+    if: needs.changes.outputs.eval-analyzers == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run analyzer unit tests
+        # Standard library only — no third-party deps, so the system python is
+        # enough and there's nothing to install.
+        run: python3 -m unittest discover -s evals/harness_basic/tests -v
 
   lint:
     name: Format + Clippy

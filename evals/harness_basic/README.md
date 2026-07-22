@@ -253,6 +253,14 @@ the focused and control presets, gates both reports, and uploads the complete
 Mira run archives. It is intentionally excluded from pull-request CI because
 it is a live-model regression monitor, not a deterministic unit test.
 
+Trials that fail because the provider or infrastructure was unavailable (quota
+exhaustion, rate limits, 5xx, network) carry no signal and are dropped from the
+gate like skipped trials; harness timeouts stay real failures. When an outage
+wipes out a majority of a sample's trials the sample is reported *inconclusive*
+rather than a regression, and a run with nothing left to compare exits green so
+a throttled account never pages as a fleet-wide regression. The gate logic is
+covered by pure-Python unit tests (`tests/`) that do run in pull-request CI.
+
 For progress-efficiency, the distribution gate additionally requires fewer
 workspace-state revisits in the dependency case and fewer redundant validation
 calls in both focused cases. Ordinary-task token and cost regressions are gated
