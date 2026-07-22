@@ -91,6 +91,43 @@ view! {
 }
 ```
 
+## Markdown & code
+
+### `Markdown` + `MarkdownState`
+
+Renders CommonMark to styled lines — word-wrapping prose, drawing code and
+tables verbatim. `MarkdownState` is the streaming form: fed deltas as a message
+arrives, it re-parses only the in-flight tail and caches everything before the
+last stable block boundary, so long transcripts don't re-tokenize.
+[API](https://docs.rs/tuika/latest/tuika/struct.Markdown.html)
+
+<img src="demos/markdown.gif" width="880" alt="Markdown streaming demo">
+
+```rust
+use tuika::{CodeHighlighter, MarkdownState, Theme, view};
+let theme = Theme::default();
+let mut md = MarkdownState::new();
+md.push_str(delta);                                  // forward each stream delta
+let lines = md.lines(width, &theme, CodeHighlighter::Plain);
+view! { node(tuika::Text::new(lines)) }
+```
+
+### `CodeBlock`
+
+A themed, syntax-highlighted fenced block: a language label, a left rail, and a
+code background. Highlighting comes from a pluggable `Highlighter` (none → plain,
+theme-colored text); the `tuika-codeformatters` crate ships a tree-sitter one.
+[API](https://docs.rs/tuika/latest/tuika/struct.CodeBlock.html)
+
+<img src="demos/code_block.gif" width="880" alt="CodeBlock demo">
+
+```rust
+use tuika::{CodeBlock, view};
+view! {
+    node(CodeBlock::new("rust", "fn main() {}").highlighter(&highlighter))
+}
+```
+
 ## Layout
 
 ### `Flex`

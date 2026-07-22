@@ -82,14 +82,31 @@ pub(crate) fn code_block_lines(
     out
 }
 
-/// A themed, syntax-highlighted code block.
+/// A themed, syntax-highlighted code block — a language label, a left rail, a
+/// code background, and verbatim (never-reflowed) body lines.
+///
+/// ![code_block demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/code_block.gif)
+///
+/// Colors come entirely from [`Theme::code`](crate::CodeTheme); token classes are
+/// resolved by whatever [`Highlighter`](crate::Highlighter) you plug in (none →
+/// plain, theme-colored text).
+///
+/// # Options
+///
+/// | Builder | Default | Effect |
+/// | --- | --- | --- |
+/// | [`new(lang, source)`](Self::new) | — | language tag + source (split on `\n`) |
+/// | [`highlighter(&h)`](Self::highlighter) | plain | plug in syntax highlighting |
+/// | [`label(bool)`](Self::label) | `true` | show/hide the language-label row |
 ///
 /// ```no_run
 /// use tuika::{CodeBlock, Theme};
 /// let theme = Theme::default();
-/// let block = CodeBlock::new("rust", "fn main() {}").label(true);
-/// // `block` is a `View`; render it through `tuika::paint`, or embed it in a
-/// // `Flex`. Supply a highlighter with `.highlighter(&my_highlighter)`.
+/// // No highlighter → plain, theme-colored code; hide the label row.
+/// let block = CodeBlock::new("rust", "fn main() {}").label(false);
+/// // `block` is a `View`; render it through `tuika::paint` or embed it in a
+/// // `Flex`. Supply a highlighter with `.highlighter(&my_highlighter)` — see
+/// // the `tuika-codeformatters` crate for a tree-sitter one.
 /// # let _ = (theme, block);
 /// ```
 pub struct CodeBlock<'a> {

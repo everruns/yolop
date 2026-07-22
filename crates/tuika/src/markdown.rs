@@ -629,12 +629,30 @@ fn stable_boundary(source: &str, from: usize) -> usize {
     boundary
 }
 
-/// Incremental markdown renderer for streamed text.
+/// Incremental markdown renderer for streamed text — the state to hold across
+/// frames for a live transcript.
 ///
 /// Feed it deltas with [`push_str`](Self::push_str) (or replace the whole buffer
-/// with [`set`](Self::set)); call [`lines`](Self::lines) each frame to get the
-/// current width-fitted rendering. Settled blocks are parsed and highlighted
-/// once and cached; only the in-flight tail re-parses.
+/// with [`set`](Self::set)); call [`lines`](Self::lines) each frame for the
+/// current width-fitted rendering. Settled blocks — everything before the last
+/// blank line outside an open code fence — are parsed and highlighted **once**
+/// and cached; only the in-flight tail re-parses. That is what keeps a long
+/// transcript from re-tokenizing, and tree-sitter from re-highlighting settled
+/// code, on every delta.
+///
+/// The cache is width-independent (wrapping happens at [`lines`](Self::lines)
+/// time), so a resize is cheap; it is invalidated only when [`set`](Self::set)
+/// replaces the buffer or the [`Theme`] passed to [`lines`](Self::lines) changes.
+///
+/// ```
+/// use tuika::{MarkdownState, CodeHighlighter, Theme};
+/// let theme = Theme::default();
+/// let mut md = MarkdownState::new();
+/// for delta in ["# Title\n\n", "Some **bo", "ld** text.\n"] {
+///     md.push_str(delta);                                  // forward each stream delta
+///     let _lines = md.lines(80, &theme, CodeHighlighter::Plain); // render this frame
+/// }
+/// ```
 #[derive(Default)]
 pub struct MarkdownState {
     source: String,
@@ -644,16 +662,18 @@ pub struct MarkdownState {
 }
 
 impl MarkdownState {
+    /// An empty renderer.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Append streamed text.
+    /// Append a streamed delta to the buffer (the settled-prefix cache is kept).
     pub fn push_str(&mut self, delta: &str) {
         self.source.push_str(delta);
     }
 
-    /// Replace the whole buffer, resetting the cache.
+    /// Replace the whole buffer, discarding the cache. Use for a non-streaming
+    /// re-render, or to reset between messages.
     pub fn set(&mut self, source: impl Into<String>) {
         self.source = source.into();
         self.reset_cache();
@@ -669,8 +689,13 @@ impl MarkdownState {
         self.stable.clear();
     }
 
-    /// Render the current buffer to width-fitted lines, advancing the settled
-    /// prefix cache.
+    /// Render the current buffer to final, width-fitted styled lines, advancing
+    /// the settled-prefix cache.
+    ///
+    /// `width` word-wraps prose (code and tables stay verbatim); `theme` supplies
+    /// every color via [`Theme::code`](crate::CodeTheme); `highlighter` colors
+    /// fenced code ([`CodeHighlighter::Plain`] for none). Draw the result
+    /// **without** further wrapping (e.g. ratatui `Paragraph` with no `.wrap`).
     pub fn lines(
         &mut self,
         width: u16,
@@ -720,12 +745,28 @@ fn is_blank_line(line: &Line) -> bool {
     line.spans.iter().all(|s| s.content.trim().is_empty())
 }
 
-/// A view that renders markdown to its area, word-wrapping prose to the width
-/// and drawing code verbatim.
+/// A view that renders a static markdown string to its area — word-wrapping
+/// prose to the width and drawing code and tables verbatim.
 ///
-/// For a streaming transcript, hold a [`MarkdownState`] and draw its
-/// [`lines`](MarkdownState::lines) directly; this view is the one-shot
-/// convenience for static markdown placed in a layout.
+/// ![markdown demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/markdown.gif)
+///
+/// For a *streaming* transcript, hold a [`MarkdownState`] and draw its
+/// [`lines`](MarkdownState::lines) directly (that is what the demo above does);
+/// this view is the one-shot convenience for static markdown placed in a layout.
+///
+/// # Options
+///
+/// | Builder | Default | Effect |
+/// | --- | --- | --- |
+/// | [`new(source)`](Self::new) | — | the markdown source to render |
+/// | [`highlighter(&h)`](Self::highlighter) | plain | syntax-highlight fenced code |
+///
+/// ```no_run
+/// use tuika::Markdown;
+/// let doc = Markdown::new("# Title\n\nSome **bold** prose.");
+/// // `doc` is a `View`: render it via `tuika::paint` or embed it in a `Flex`.
+/// # let _ = doc;
+/// ```
 pub struct Markdown<'a> {
     source: String,
     highlighter: CodeHighlighter<'a>,

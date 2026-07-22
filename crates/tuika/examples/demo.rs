@@ -28,10 +28,116 @@ use ratatui::text::{Line, Span};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use tuika::{
-    BorderStyle, Element, Event, Key, KeyCode, Loader, Mouse, MouseKind, Padding, ProgressBar,
-    Rule, Scroll, ScrollState, SelectList, SelectState, Spinner, SpinnerStyle, StatusBar, Tabs,
-    TabsState, Text, TextInput, TextInputState, Theme, element, paint, view,
+    BorderStyle, CodeBlock, CodeTheme, Element, Event, Highlighter, Key, KeyCode, Loader,
+    MarkdownState, Mouse, MouseKind, Padding, ProgressBar, Rule, Scroll, ScrollState, SelectList,
+    SelectState, Spinner, SpinnerStyle, StatusBar, Tabs, TabsState, Text, TextInput,
+    TextInputState, Theme, element, paint, view,
 };
+
+/// A tiny self-contained Rust highlighter for the `markdown`/`code_block` scenes.
+///
+/// The examples deliberately avoid a grammar dependency (that would drag
+/// tree-sitter into tuika's dev/MSRV builds); this shows how little it takes to
+/// satisfy the [`Highlighter`] seam. For production-grade highlighting across
+/// many languages, use the `tuika-codeformatters` crate.
+struct DemoHighlighter;
+
+/// A `'static` instance so `Markdown`/`CodeBlock` views (which borrow one) can be
+/// boxed into `Element` in the scene builders.
+static HL: DemoHighlighter = DemoHighlighter;
+
+impl Highlighter for DemoHighlighter {
+    fn highlight(
+        &self,
+        lang: &str,
+        lines: &[&str],
+        theme: &Theme,
+    ) -> Option<Vec<Vec<Span<'static>>>> {
+        if lang != "rust" {
+            return None;
+        }
+        Some(
+            lines
+                .iter()
+                .map(|l| highlight_rust(l, &theme.code))
+                .collect(),
+        )
+    }
+}
+
+/// Split one line of Rust into styled spans, reconstructing it exactly.
+fn highlight_rust(line: &str, code: &CodeTheme) -> Vec<Span<'static>> {
+    const KW: &[&str] = &[
+        "fn", "let", "mut", "pub", "use", "struct", "enum", "impl", "match", "return", "for", "in",
+        "if", "else", "while", "loop", "const", "as", "mod", "trait", "self", "true", "false",
+    ];
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '/' && chars.get(i + 1) == Some(&'/') {
+            let rest: String = chars[i..].iter().collect();
+            out.push(Span::styled(
+                rest,
+                Style::default()
+                    .fg(code.comment)
+                    .add_modifier(Modifier::ITALIC),
+            ));
+            break;
+        }
+        if c == '"' {
+            let start = i;
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                i += if chars[i] == '\\' { 2 } else { 1 };
+            }
+            i = (i + 1).min(chars.len());
+            let s: String = chars[start..i].iter().collect();
+            out.push(Span::styled(s, Style::default().fg(code.string)));
+            continue;
+        }
+        if c.is_alphanumeric() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            let style = if KW.contains(&word.as_str()) {
+                Style::default()
+                    .fg(code.keyword)
+                    .add_modifier(Modifier::BOLD)
+            } else if word.chars().all(|d| d.is_ascii_digit()) {
+                Style::default().fg(code.constant)
+            } else {
+                Style::default().fg(code.text)
+            };
+            out.push(Span::styled(word, style));
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < chars.len() {
+            let d = chars[i];
+            if d.is_alphanumeric()
+                || d == '_'
+                || d == '"'
+                || (d == '/' && chars.get(i + 1) == Some(&'/'))
+            {
+                break;
+            }
+            i += 1;
+        }
+        let s: String = chars[start..i].iter().collect();
+        let style = if s.trim().is_empty() {
+            Style::default().fg(code.text)
+        } else {
+            Style::default().fg(code.punctuation)
+        };
+        out.push(Span::styled(s, style));
+    }
+    out
+}
 
 type Build = fn(u64, &Theme) -> Element;
 
@@ -91,6 +197,20 @@ const DEMOS: &[Demo] = &[
         11,
         false,
         scene_text,
+    ),
+    demo(
+        "markdown",
+        "CommonMark streamed in, only the tail re-parses",
+        18,
+        true,
+        scene_markdown,
+    ),
+    demo(
+        "code_block",
+        "themed, syntax-highlighted fenced code",
+        12,
+        false,
+        scene_code_block,
     ),
     demo(
         "rule",
@@ -465,6 +585,49 @@ fn scene_text(frame: u64, theme: &Theme) -> Element {
             grow(1) { node(prose) }
         }
     }
+}
+
+/// The document the `markdown` scene streams in, one glyph at a time.
+const MARKDOWN_DOC: &str = "\
+# Streaming Markdown
+
+Renders **CommonMark** as it *streams* — only the in-flight tail
+re-parses, so settled blocks and `code` never re-tokenize.
+
+- headings, **bold**, *italic*, `inline code`
+- nested lists and tables
+
+```rust
+fn greet(name: &str) {
+    println!(\"hello, {name}!\");
+}
+```
+";
+
+/// Animated: reveal `MARKDOWN_DOC` progressively through a `MarkdownState`, the
+/// same way a host feeds an assistant message as it streams. Holds on the full
+/// document, then restarts.
+fn scene_markdown(frame: u64, theme: &Theme) -> Element {
+    let _ = theme;
+    let total = MARKDOWN_DOC.chars().count();
+    // Reveal briskly so the whole document — including the highlighted code
+    // block — lands within a short recording, then hold before the cycle repeats.
+    let pos = (frame as usize * 6) % (total + 120);
+    let revealed: String = MARKDOWN_DOC.chars().take(pos.min(total)).collect();
+
+    let mut state = MarkdownState::new();
+    state.set(revealed);
+    // Rendered at a fixed width for the demo frame; a real host passes the live
+    // viewport width so prose re-wraps on resize.
+    let lines = state.lines(64, theme, tuika::CodeHighlighter::With(&HL));
+    element(Text::new(lines))
+}
+
+/// A single themed, syntax-highlighted fenced block via `CodeBlock`.
+fn scene_code_block(frame: u64, theme: &Theme) -> Element {
+    let _ = (frame, theme);
+    let source = "pub fn fib(n: u64) -> u64 {\n    match n {\n        0 | 1 => n,\n        _ => fib(n - 1) + fib(n - 2),\n    }\n}";
+    element(CodeBlock::new("rust", source).highlighter(&HL))
 }
 
 fn scene_rule(frame: u64, theme: &Theme) -> Element {

@@ -140,6 +140,7 @@ Each enters the alternate screen; press `q` (or `esc`) to quit.
 | Example    | Command                                   | Shows                                              |
 | ---------- | ----------------------------------------- | -------------------------------------------------- |
 | [`gallery`](examples/gallery.rs)  | `cargo run -p tuika --example gallery`    | motion components + native OSC 9;4 progress        |
+| [`markdown`](examples/markdown.rs) | `cargo run -p tuika --example markdown`   | streaming `MarkdownState` + highlighted `CodeBlock` |
 | [`select`](examples/select.rs)   | `cargo run -p tuika --example select`     | `SelectState` + `SelectList` (stateful-widget idiom) |
 | [`overlay`](examples/overlay.rs)  | `cargo run -p tuika --example overlay`    | `OverlaySpec` centered dialog + input routing      |
 | [`ratatui_dashboard`](examples/ratatui_dashboard.rs) | `cargo run -p tuika --example ratatui_dashboard` | mixed Ratatui widgets + responsive live data |
