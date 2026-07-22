@@ -892,6 +892,42 @@ fn tui_alt_enter_sequence_submits_like_enter() {
 }
 
 #[test]
+fn tui_ghostty_shift_enter_sequence_inserts_newline() {
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    // Ghostty emits CSI 13;2u for Shift-Enter after Yolop enables enhanced
+    // keyboard reporting. It must edit the composer rather than submit it.
+    tui.write_input(b"one\x1b[13;2utwo");
+    std::thread::sleep(Duration::from_millis(200));
+    let before_submit = strip_ansi(&tui.output_text());
+    assert!(
+        !before_submit.contains("offline mode"),
+        "Shift-Enter submitted instead of inserting a newline: {before_submit}"
+    );
+
+    tui.write_input(b"\r");
+    assert!(
+        tui.wait_for_output("offline mode", Duration::from_secs(3)),
+        "plain Enter did not submit multiline input: {}",
+        tui.output_text()
+    );
+    let after_submit = strip_ansi(&tui.output_text());
+    assert!(
+        after_submit.contains("one") && after_submit.contains("two"),
+        "multiline input should render after submission: {after_submit}"
+    );
+
+    tui.write_input(b"\x03\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(status.success(), "TUI did not exit cleanly: {status:?}");
+}
+
+#[test]
 fn tui_survives_slow_cursor_position_reply_after_resize() {
     // Regression test for the TUI dying right around turn completion under
     // xterm.js-backed terminals (ttyd / vhs recordings). Those emulators

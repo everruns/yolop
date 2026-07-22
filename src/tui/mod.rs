@@ -472,7 +472,11 @@ impl App {
             lines: Vec::new(),
             printed_lines: 0,
             startup_banner_len: 0,
-            composer: tuika::TextInputState::new(),
+            composer: {
+                let mut composer = tuika::TextInputState::new();
+                composer.set_mode(tuika::TextInputMode::SubmitOnEnter);
+                composer
+            },
             busy: false,
             should_quit: false,
             ctrl_c_exit: false,
@@ -1325,12 +1329,13 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Enter if key.modifiers == KeyModifiers::SHIFT => {
-                self.composer_insert_newline();
-            }
-            KeyCode::Enter => {
-                self.submit_input().await;
-            }
+            KeyCode::Enter => match self
+                .composer
+                .handle_enter(key.modifiers == KeyModifiers::SHIFT)
+            {
+                tuika::TextInputEvent::Changed => {}
+                tuika::TextInputEvent::Submit => self.submit_input().await,
+            },
             KeyCode::Tab => {
                 if let Some(suggestion) = self.suggestions().first() {
                     self.set_input_text(suggestion.completion.clone());
@@ -1344,11 +1349,6 @@ impl App {
                 self.composer_edit_key(normalize_printable_key(key));
             }
         }
-    }
-
-    /// Insert a newline in the composer.
-    fn composer_insert_newline(&mut self) {
-        self.composer.newline();
     }
 
     /// Feed one editing key to the composer. The tuika `TextInputState` handles
@@ -6844,6 +6844,27 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
             .await;
         assert!(app.history_search.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shift_enter_inserts_newline_instead_of_submitting() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::empty()))
+            .await;
+
+        assert_eq!(app.input_text(), "a\nb");
+        assert!(
+            !app.lines
+                .iter()
+                .any(|line| matches!(line.author, Author::User))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

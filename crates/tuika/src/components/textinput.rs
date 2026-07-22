@@ -11,9 +11,8 @@
 //!
 //! It is a *rendering + edit model*, not a terminal: the host reads
 //! [`TextInputState::cursor_screen`] after layout and calls the backend's
-//! `set_cursor_position`, and decides what a submit means (this widget treats
-//! Enter as a newline; a chat composer maps its own submit key before feeding
-//! events here).
+//! `set_cursor_position`. Hosts can configure whether Enter or Shift+Enter
+//! submits via [`TextInputMode`]; the other chord inserts a newline.
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -33,6 +32,24 @@ pub struct TextInputState {
     row: usize,
     /// Cursor column (char index within `lines[row]`).
     col: usize,
+    mode: TextInputMode,
+}
+
+/// Controls which Enter chord submits a text input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextInputMode {
+    /// Enter submits; Shift+Enter inserts a newline.
+    #[default]
+    SubmitOnEnter,
+    /// Shift+Enter submits; Enter inserts a newline.
+    SubmitOnShiftEnter,
+}
+
+/// Result of applying an Enter chord to a text input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextInputEvent {
+    Changed,
+    Submit,
 }
 
 impl Default for TextInputState {
@@ -47,6 +64,31 @@ impl TextInputState {
             lines: vec![String::new()],
             row: 0,
             col: 0,
+            mode: TextInputMode::default(),
+        }
+    }
+
+    /// Set how Enter and Shift+Enter submit or insert newlines.
+    pub fn set_mode(&mut self, mode: TextInputMode) {
+        self.mode = mode;
+    }
+
+    /// Return the current Enter behavior.
+    pub fn mode(&self) -> TextInputMode {
+        self.mode
+    }
+
+    /// Apply an Enter chord according to the configured mode.
+    pub fn handle_enter(&mut self, shift: bool) -> TextInputEvent {
+        let submit = match self.mode {
+            TextInputMode::SubmitOnEnter => !shift,
+            TextInputMode::SubmitOnShiftEnter => shift,
+        };
+        if submit {
+            TextInputEvent::Submit
+        } else {
+            self.newline();
+            TextInputEvent::Changed
         }
     }
 
@@ -969,5 +1011,23 @@ mod tests {
         let tree = element(TextInput::new(&state));
         let out = render_el(&tree, 4, 1);
         assert_eq!(out[0], "hi");
+    }
+
+    #[test]
+    fn submit_on_enter_mode_uses_shift_enter_for_newline() {
+        let mut state = TextInputState::new();
+        assert_eq!(state.mode(), TextInputMode::SubmitOnEnter);
+        assert_eq!(state.handle_enter(false), TextInputEvent::Submit);
+        assert_eq!(state.handle_enter(true), TextInputEvent::Changed);
+        assert_eq!(state.text(), "\n");
+    }
+
+    #[test]
+    fn submit_on_shift_enter_mode_reverses_enter_chords() {
+        let mut state = TextInputState::new();
+        state.set_mode(TextInputMode::SubmitOnShiftEnter);
+        assert_eq!(state.handle_enter(false), TextInputEvent::Changed);
+        assert_eq!(state.handle_enter(true), TextInputEvent::Submit);
+        assert_eq!(state.text(), "\n");
     }
 }
