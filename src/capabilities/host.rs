@@ -18,6 +18,7 @@ use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use everruns_runtime::RuntimeProviderStore;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
@@ -26,10 +27,44 @@ use std::sync::{Arc, RwLock};
 
 pub(crate) const ENVIRONMENT_CONTEXT_CAPABILITY_ID: &str = "code_environment_context";
 
+/// Mutable per-turn context rendered by the final prompt capability.
+///
+/// Contributors update named entries before this capability runs. Keeping
+/// dynamic data in one trailing prompt segment avoids invalidating the stable
+/// capability prefix in provider prompt caches.
+#[derive(Clone, Default)]
+pub(crate) struct EnvironmentContextRegistry {
+    entries: Arc<RwLock<BTreeMap<String, String>>>,
+}
+
+impl EnvironmentContextRegistry {
+    pub(crate) fn set(&self, key: impl Into<String>, value: impl Into<String>) {
+        self.entries
+            .write()
+            .expect("environment context registry poisoned")
+            .insert(key.into(), value.into());
+    }
+
+    pub(crate) fn remove(&self, key: &str) {
+        self.entries
+            .write()
+            .expect("environment context registry poisoned")
+            .remove(key);
+    }
+
+    pub(crate) fn snapshot(&self) -> BTreeMap<String, String> {
+        self.entries
+            .read()
+            .expect("environment context registry poisoned")
+            .clone()
+    }
+}
+
 pub(crate) struct CodingCliEnvironmentCapability {
     repo_root: PathBuf,
     active_root: Arc<RwLock<PathBuf>>,
     client_ui: ClientUiContext,
+    registry: EnvironmentContextRegistry,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,11 +91,13 @@ impl CodingCliEnvironmentCapability {
         repo_root: PathBuf,
         active_root: Arc<RwLock<PathBuf>>,
         client_ui: ClientUiContext,
+        registry: EnvironmentContextRegistry,
     ) -> Self {
         Self {
             repo_root,
             active_root,
             client_ui,
+            registry,
         }
     }
 
@@ -91,6 +128,7 @@ impl CodingCliEnvironmentCapability {
             } else {
                 None
             },
+            contributions: self.registry.snapshot(),
         }
     }
 }
@@ -147,6 +185,7 @@ struct EnvironmentContext {
     repo_root: String,
     git_current_branch: Option<String>,
     worktree_path: Option<String>,
+    contributions: BTreeMap<String, String>,
 }
 
 fn render_environment_context(context: &EnvironmentContext) -> String {
@@ -179,6 +218,13 @@ fn render_environment_context(context: &EnvironmentContext) -> String {
         && let Some(value) = &context.git_current_branch
     {
         push_xml_field(&mut out, "git_current_branch", value);
+    }
+    for (key, value) in &context.contributions {
+        out.push_str("  <contribution name=\"");
+        out.push_str(&xml_escape(key));
+        out.push_str("\">");
+        out.push_str(&xml_escape(value));
+        out.push_str("</contribution>\n");
     }
     out.push_str("</environment_context>");
     out
@@ -1601,6 +1647,10 @@ mod tests {
             repo_root: "/repo".to_string(),
             git_current_branch: Some("feature<context>".to_string()),
             worktree_path: None,
+            contributions: BTreeMap::from([
+                ("sandbox_mode".to_string(), "workspace-write".to_string()),
+                ("unsafe<name>".to_string(), "value & more".to_string()),
+            ]),
         });
 
         assert!(rendered.starts_with("<environment_context>\n"));
@@ -1618,6 +1668,13 @@ mod tests {
             rendered
                 .contains("  <git_current_branch>feature&lt;context&gt;</git_current_branch>\n")
         );
+        assert!(
+            rendered
+                .contains("  <contribution name=\"sandbox_mode\">workspace-write</contribution>\n")
+        );
+        assert!(rendered.contains(
+            "  <contribution name=\"unsafe&lt;name&gt;\">value &amp; more</contribution>\n"
+        ));
         assert!(rendered.ends_with("</environment_context>"));
     }
 

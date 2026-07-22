@@ -42,6 +42,7 @@ mod spawn_tests {
 
     use super::capability::ExtensionCapability;
     use super::package::{ExtensionPackage, parse_manifest};
+    use crate::capabilities::EnvironmentContextRegistry;
     use everruns_core::capabilities::Capability;
     use everruns_core::tools::ToolExecutionResult;
     use serde_json::json;
@@ -229,21 +230,26 @@ mod spawn_tests {
     }
 
     #[tokio::test]
-    async fn prompt_contribution_comes_from_handshake_clamped_by_manifest() {
+    async fn prompt_contribution_updates_trailing_environment_context() {
         let Some(python) = python3() else {
             eprintln!("skipping: python3 not available");
             return;
         };
-        let capability = ExtensionCapability::new(fixture_package(&python), std::env::temp_dir());
+        let registry = EnvironmentContextRegistry::default();
+        let capability = ExtensionCapability::new(fixture_package(&python), std::env::temp_dir())
+            .with_environment_context(registry.clone());
         let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
             everruns_core::typed_id::SessionId::new(),
         );
-        let contribution = capability
-            .system_prompt_contribution(&ctx)
-            .await
-            .expect("prompt facet");
-        assert!(contribution.contains("<capability id=\"ext:echo\">"));
-        assert!(contribution.contains("echo fixture prompt"));
+        let contribution = capability.system_prompt_contribution(&ctx).await;
+        assert_eq!(contribution, None);
+        assert_eq!(
+            registry
+                .snapshot()
+                .get("extension_echo")
+                .map(String::as_str),
+            Some("echo fixture prompt")
+        );
     }
 
     /// A hook + dynamic-prompt manifest whose server is the same fixture.
