@@ -123,6 +123,13 @@ struct Cli {
     #[arg(long)]
     fullscreen: bool,
 
+    /// Color theme for the interactive TUI. `yolop` (default) is yolop's own
+    /// palette; other values select a bundled `tuika` preset (e.g.
+    /// `solarized-dark`, `gruvbox-dark`, `dracula`, `light`). Persisted default
+    /// comes from settings when unset.
+    #[arg(long, value_name = "NAME")]
+    theme: Option<String>,
+
     /// Enable shell sandboxing for this run. Commands may write only in the
     /// workspace and temporary directories, and network access is blocked.
     #[arg(long)]
@@ -584,6 +591,19 @@ async fn async_main() -> Result<()> {
         },
     )
     .await?;
+
+    // Resolve `--theme` before the print-mode branch so an invalid name is
+    // rejected in every mode, not silently dropped. The override only affects the
+    // interactive TUI (print/ACP never read it), so setting it here is harmless.
+    if let Some(name) = cli.theme.as_deref() {
+        let theme = tui::fullscreen::resolve_theme(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown --theme `{name}`; expected one of: {}",
+                tui::fullscreen::theme_names().join(", ")
+            )
+        })?;
+        tui::fullscreen::set_theme_override(theme);
+    }
 
     if let Some(prompt) = cli.print {
         let image_parts = tui::input::image_input::load_image_parts(&cli.images)?;
@@ -1613,6 +1633,7 @@ mod tests {
             session_dir: None,
             trajectory_out: None,
             fullscreen: false,
+            theme: None,
             sandbox: false,
         }
     }
@@ -1671,6 +1692,7 @@ mod tests {
             session_dir: None,
             trajectory_out: None,
             fullscreen: false,
+            theme: None,
             sandbox: false,
         };
 

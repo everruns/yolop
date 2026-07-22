@@ -66,6 +66,13 @@ fn main() -> io::Result<()> {
         return run_interactive(&theme);
     }
 
+    if args.first().map(String::as_str) == Some("themes") {
+        // One static screenshot per bundled theme, into docs/demos/theme-<name>.svg.
+        // Same scene, same serializer — only the palette changes, so the images
+        // are an honest side-by-side of what each theme does to real components.
+        return render_theme_gallery();
+    }
+
     let out = args
         .iter()
         .find(|a| !a.starts_with("--"))
@@ -79,7 +86,7 @@ fn main() -> io::Result<()> {
     let frames: Vec<Buffer> = (0..FRAMES)
         .map(|i| render_frame(i as u64, &theme))
         .collect();
-    let svg = render_svg(&frames, &theme);
+    let svg = render_svg(&frames, &theme, "tuika · component gallery");
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -92,6 +99,27 @@ fn main() -> io::Result<()> {
         ROWS,
         svg.len()
     );
+    Ok(())
+}
+
+/// Render one static screenshot per bundled theme into `docs/demos/`.
+///
+/// A theme is static, so a single frame is enough — no animation, just the
+/// palette applied to the shared [`scene`]. `frame = 6` is the same
+/// representative frame `--dump` uses (spinners mid-cycle, bars partly filled).
+fn render_theme_gallery() -> io::Result<()> {
+    let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("docs")
+        .join("demos");
+    std::fs::create_dir_all(&out_dir)?;
+    for preset in tuika::themes::PRESETS {
+        let frame = render_frame(6, &preset.theme);
+        let title = format!("tuika · {}", preset.label);
+        let svg = render_svg(&[frame], &preset.theme, &title);
+        let out = out_dir.join(format!("theme-{}.svg", preset.name));
+        std::fs::write(&out, svg.as_bytes())?;
+        println!("wrote {} ({} bytes)", out.display(), svg.len());
+    }
     Ok(())
 }
 
@@ -325,7 +353,7 @@ fn paint_of(buffer: &Buffer, x: u16, y: u16, theme: &Theme) -> Paint {
     }
 }
 
-fn render_svg(frames: &[Buffer], theme: &Theme) -> String {
+fn render_svg(frames: &[Buffer], theme: &Theme, title: &str) -> String {
     let cols = COLS as usize;
     let rows = ROWS as usize;
 
@@ -427,10 +455,11 @@ fill=\"{chrome}\" stroke=\"{stroke}\" stroke-width=\"1\" filter=\"url(#sh)\"/>\n
     }
     s.push_str(&format!(
         "<text x=\"{cx:.1}\" y=\"{cy:.1}\" text-anchor=\"middle\" font-size=\"13\" \
-fill=\"{muted}\">tuika · component gallery</text>\n",
+fill=\"{muted}\">{title}</text>\n",
         cx = width / 2.0,
         cy = ty + 4.5,
         muted = hex(theme.muted),
+        title = xml_escape(title),
     ));
 
     // The terminal "screen".

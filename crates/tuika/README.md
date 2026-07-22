@@ -133,6 +133,26 @@ let _doc = Markdown::new("# Title\n\n```rust\nfn main() {}\n```").highlighter(&h
 let _code = CodeBlock::new("rust", "fn main() {}").highlighter(&hl);
 ```
 
+## Theming
+
+Every component styles itself from a `Theme` passed through the render context —
+no color is hard-coded, so swapping the theme handed to `paint` restyles the
+whole tree at once. A `Theme` is a plain `Copy` struct of colors, and tuika
+bundles a few standard palettes as full `const Theme` structures in the
+[`themes`](https://docs.rs/tuika/latest/tuika/themes/index.html) module —
+reachable directly, by constructor, or by name:
+
+```rust
+use tuika::themes;
+
+let a = themes::GRUVBOX_DARK;                          // the struct
+let b = tuika::Theme::gruvbox_dark();                  // named constructor
+let c = tuika::theme_by_name("gruvbox-dark").unwrap(); // config / --theme
+```
+
+See the [theme gallery](docs/themes.md) for a screenshot of each bundled
+palette, or `themes::PRESETS` to enumerate them for a picker.
+
 ### Runnable examples
 
 Each enters the alternate screen; press `q` (or `esc`) to quit.
