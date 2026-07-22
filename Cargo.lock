@@ -7665,6 +7665,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yolop-extension-computer-use"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "yolop-yep",
+]
+
+[[package]]
 name = "yolop-yep"
 version = "0.2.0"
 dependencies = [

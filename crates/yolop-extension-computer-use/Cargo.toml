@@ -1,0 +1,23 @@
+[package]
+name = "yolop-extension-computer-use"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+authors = ["Everruns <support@everruns.com>"]
+license = "MIT"
+description = "yolop extension: Apple's official signed macOS Computer Use as direct YEP tools, via the ChatGPT.app codex app-server."
+homepage = "https://github.com/everruns/yolop"
+repository = "https://github.com/everruns/yolop"
+readme = "README.md"
+keywords = ["yolop", "yolop-extension", "computer-use", "macos", "agent"]
+categories = ["development-tools", "api-bindings"]
+
+# The extension name is `computer-use`; the binary named in plugin.json's
+# `yolop.capabilityServer.command` is this crate's binary.
+[[bin]]
+name = "yolop-extension-computer-use"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1.0"
+yolop-yep = { version = "0.2.0", path = "../yolop-yep" }

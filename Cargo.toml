@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tuika", "crates/yolop-yep"]
+members = ["crates/tuika", "crates/yolop-yep", "crates/yolop-extension-computer-use"]
 
 [package]
 name = "yolop"

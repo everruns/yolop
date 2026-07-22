@@ -1,0 +1,155 @@
+{
+  "name": "computer-use",
+  "description": "Apple's official signed macOS Computer Use as direct tools, via the ChatGPT.app codex app-server. macOS only.",
+  "version": "0.1.0",
+  "engines": { "yolop": ">=0.10" },
+  "yolop": {
+    "protocol_version": "1.0",
+    "capabilityServer": { "command": "yolop-extension-computer-use" },
+    "prompt": true,
+    "tools": [
+      {
+        "name": "computer_use_list_apps",
+        "description": "List the apps on this computer. Returns the set of apps that are currently running, as well as any that have been used in the last 14 days, including details on usage frequency",
+        "never_defer": true,
+        "schema": { "type": "object", "properties": {}, "additionalProperties": false }
+      },
+      {
+        "name": "computer_use_get_app_state",
+        "description": "Start an app use session if needed, then get the state of the app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app",
+        "never_defer": true,
+        "schema": {
+          "type": "object",
+          "properties": { "app": { "description": "App name, full app path, or unambiguous bundle identifier", "type": "string" } },
+          "required": ["app"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "computer_use_click",
+        "description": "Click an element by index or pixel coordinates from screenshot",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "app": { "description": "App name, full app path, or unambiguous bundle identifier", "type": "string" },
+            "click_count": { "description": "Number of clicks. Defaults to 1", "type": "integer" },
+            "element_index": { "description": "Element index to click", "type": "string" },
+            "mouse_button": { "description": "Mouse button to click. Defaults to left.", "enum": ["left", "right", "middle"], "type": "string" },
+            "x": { "description": "X coordinate in screenshot pixel coordinates", "type": "number" },
+            "y": { "description": "Y coordinate in screenshot pixel coordinates", "type": "number" }
+          },
+          "required": ["app"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "computer_use_perform_secondary_action",
+        "description": "Invoke a secondary accessibility action exposed by an element",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "action": { "description": "Secondary accessibility action name", "type": "string" },
+            "app": { "description": "App name, full app path, or unambiguous bundle identifier", "type": "string" },
+            "element_index": { "description": "Element identifier", "type": "string" }
+          },
+          "required": ["app", "element_index", "action"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "computer_use_set_value",
+        "description": "Set the value of a settable accessibility element",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "app": { "description": "App name, full app path, or unambiguous bundle identifier", "type": "string" },
+            "element_index": { "description": "Element identifier", "type": "string" },
+            "value": { "description": "Value to assign", "type": "string" }
+          },
+          "required": ["app", "element_index", "value"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "computer_use_select_text",
+        "description": "Select text inside a text element, or place the text cursor before or after it. Provide text exactly as it appears in the accessibility tree, including any Markdown formatting. If the text is not unique, provide surrounding prefix or suffix text to disambiguate it.",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "app": { "description": "App name or bundle identifier", "type": "string" },
+            "element_index": { "description": "Text element identifier", "type": "string" },
+            "prefix": { "description": "Optional text immediately before the target, used to disambiguate repeated matches", "type": "string" },
+            "selection": { "description": "Whether to select the text or place the cursor before or after it. Defaults to text.", "enum": ["text", "cursor_before", "cursor_after"], "type": "string" },
+            "suffix": { "description": "Optional text immediately after the target, used to disambiguate repeated matches", "type": "string" },
+            "text": { "description": "Target text as shown in the accessibility tree", "type": "string" }
+          },
+          "required": ["app", "element_index", "text"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "computer_use_scroll",
+        "description": "Scroll an element in a direction by a number of pages",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "app": { "description": "App name, full app path, or unambiguous bundle identifier", "type": "string" },
+            "direction": { "description": "Scroll direction: up, down, left, or right", "type": "string" },
+            "element_index": { "description": "Element identifier", "type": "string" },
+            "pages": { "description": "Number of pages to scroll. Fractional values are supported. Defaults to 1", "type": "number" }
+          },
+          "required": ["app", "element_index", "direction"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "computer_use_drag",
+        "description": "Drag from one point to another using pixel coordinates",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "app": { "description": "App name, full app path, or unambiguous bundle identifier", "type": "string" },
+            "from_x": { "description": "Start X coordinate", "type": "number" },
+            "from_y": { "description": "Start Y coordinate", "type": "number" },
+            "to_x": { "description": "End X coordinate", "type": "number" },
+            "to_y": { "description": "End Y coordinate", "type": "number" }
+          },
+          "required": ["app", "from_x", "from_y", "to_x", "to_y"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "computer_use_press_key",
+        "description": "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0 key).",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "app": { "description": "App name, full app path, or unambiguous bundle identifier", "type": "string" },
+            "key": { "description": "Key or key combination to press", "type": "string" }
+          },
+          "required": ["app", "key"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "computer_use_type_text",
+        "description": "Type literal text using keyboard input",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "app": { "description": "App name, full app path, or unambiguous bundle identifier", "type": "string" },
+            "text": { "description": "Literal text to type", "type": "string" }
+          },
+          "required": ["app", "text"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "computer_use_status",
+        "description": "Show the direct-call architecture, durable no-permissions policy, and whether the signed Computer Use broker verifies on this machine.",
+        "never_defer": true,
+        "schema": { "type": "object", "properties": {}, "additionalProperties": false }
+      }
+    ]
+  }
+}
