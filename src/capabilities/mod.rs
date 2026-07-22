@@ -53,8 +53,8 @@ pub(crate) use herdr::{HERDR_CAPABILITY_ID, HerdrCapability};
 pub(crate) use hooks::{HOOKS_CAPABILITY_ID, HooksCapability};
 pub(crate) use host::{
     CODING_BASH_CAPABILITY_ID, ClientUiContext, CodingBashCapability,
-    CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, SETUP_CAPABILITY_ID,
-    SetupCapability,
+    CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry,
+    SETUP_CAPABILITY_ID, SetupCapability,
 };
 pub(crate) use lsp::LspCapability;
 pub(crate) use progress_guard::{PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability};

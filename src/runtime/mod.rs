@@ -18,9 +18,9 @@ use crate::capabilities::{
     CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID, CONTEXT_COST_CONTROL_CAPABILITY_ID,
     CheckpointCapability, ClientCommandsCapability, ClientUiContext, CodingBashCapability,
     CodingCliEnvironmentCapability, ConfigCapability, ContextCostControlCapability,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, GOAL_CAPABILITY_ID, GoalCapability, HERDR_CAPABILITY_ID,
-    HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability, LspCapability,
-    PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
+    ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry, GOAL_CAPABILITY_ID,
+    GoalCapability, HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability,
+    LspCapability, PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
     RepoMapCapability, SESSION_HISTORY_CAPABILITY_ID, SETUP_CAPABILITY_ID,
     SessionHistoryCapability, SetupCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
     WorktreeCapability,
@@ -2696,6 +2696,8 @@ pub async fn build_with_options(
     //   * user_hooks           — executes user-authored hook specs loaded from
     //                            global/workspace hook config
     let mut capabilities = CapabilityRegistry::new();
+    let environment_context = EnvironmentContextRegistry::default();
+    environment_context.set("sandbox_mode", sandbox_mode.as_str());
     capabilities.register(AgentInstructionsCapability);
     // TODO(EVE-620): revert to `capabilities.register(FileSystemCapability)` once
     // everruns ships an edits[]-only edit_file. This wrapper drops the ambiguous
@@ -2822,7 +2824,8 @@ pub async fn build_with_options(
                 crate::extensions::ExtensionCapability::new(package, effective_root.clone())
                     .with_status_sink(status_sink.clone())
                     .with_ask_sink(ask_sink.clone())
-                    .with_process_registry(live_processes.clone());
+                    .with_process_registry(live_processes.clone())
+                    .with_environment_context(environment_context.clone());
             if enabled {
                 let contributed = capability.contributed_mcp_servers();
                 if !contributed.is_empty() {
@@ -2893,6 +2896,7 @@ pub async fn build_with_options(
         repo_root.clone().unwrap_or_else(|| canonical_root.clone()),
         shared_workspace_root.clone(),
         options.client_ui.clone(),
+        environment_context,
     ));
     // Read-only consumer of the shared config service. `SettingsStore`
     // implements `ConfigService`, so the same handle that backs writes also

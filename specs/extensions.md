@@ -17,7 +17,10 @@ Phase 4: hook subscriptions (`yolop.hooks` — `pre_tool_use`/`post_tool_use`
 with a tool-name glob, `timeout_ms`, and `on_error`) fired on the warm
 server via `hook/fire`, and a `dynamic_prompt` facet recomputing the
 system-prompt contribution per turn via `prompt/contribution` (falling back
-to the static handshake prompt). Pre-hooks can block; per-hook timeout +
+to the static handshake prompt). Extension prompt contributions are collected
+in the trailing environment-context segment so per-turn changes preserve the
+stable system-prompt prefix for provider prompt caches. Pre-hooks can block;
+per-hook timeout +
 `on_error` (warn/block) bound the cost; the whole-bash-per-event
 `user_hooks` precedent makes a warm-process RPC strictly cheaper.
 Phase 5 (foundation): the **`yolop-yep`** crate (`crates/yolop-yep/`) — the

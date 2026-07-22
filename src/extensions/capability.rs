@@ -9,6 +9,7 @@ use super::manager::{
     DEFAULT_REQUEST_TIMEOUT_MS, ExtensionProcess, ExtensionProcessSpec, LiveProcessRegistry,
 };
 use super::package::{ExtensionPackage, ToolDefinition, extension_capability_id};
+use crate::capabilities::EnvironmentContextRegistry;
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, SystemPromptContext};
 use everruns_core::command::{
@@ -38,6 +39,7 @@ pub struct ExtensionCapability {
     /// Shared live-process registry so `reload_extension` can restart this
     /// extension's server mid-session; `None` outside the runtime (tests).
     live_processes: Option<LiveProcessRegistry>,
+    environment_context: Option<EnvironmentContextRegistry>,
     /// Process shared by all tool instances so the server persists across
     /// turns; rebuilt (killing the old server) when the config changes —
     /// the same cache-by-config pattern as `LspCapability::manager_for`.
@@ -53,6 +55,7 @@ impl ExtensionCapability {
             status_sink: None,
             ask_sink: None,
             live_processes: None,
+            environment_context: None,
             process: Mutex::new(None),
         }
     }
@@ -61,6 +64,11 @@ impl ExtensionCapability {
     /// reloaded mid-session via `reload_extension`.
     pub fn with_process_registry(mut self, registry: LiveProcessRegistry) -> Self {
         self.live_processes = Some(registry);
+        self
+    }
+
+    pub(crate) fn with_environment_context(mut self, registry: EnvironmentContextRegistry) -> Self {
+        self.environment_context = Some(registry);
         self
     }
 
@@ -227,11 +235,18 @@ impl Capability for ExtensionCapability {
             }
         } else {
             process.prompt_contribution().await
-        }?;
-        Some(format!(
-            "<capability id=\"{}\">\n{}\n</capability>",
-            self.id, text
-        ))
+        };
+        if let Some(registry) = &self.environment_context {
+            let key = format!("extension_{}", manifest.name);
+            if let Some(text) = text {
+                registry.set(key, text);
+            } else {
+                registry.remove(&key);
+            }
+            None
+        } else {
+            text.map(|text| format!("<capability id=\"{}\">\n{}\n</capability>", self.id, text))
+        }
     }
 
     fn pre_tool_use_hooks_with_config(
