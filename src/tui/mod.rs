@@ -4127,7 +4127,7 @@ mod tests {
             text: "hello".into(),
         });
 
-        let visible = recent_transcript_lines(&app, 80, 10);
+        let visible = recent_transcript_lines(app, 80, 10);
         let visible = visible.iter().map(line_text).collect::<Vec<_>>();
         assert!(!visible.iter().any(|line| line.contains("workspace: /tmp")));
         assert!(visible.iter().any(|line| line.contains("hello")));
@@ -4135,7 +4135,7 @@ mod tests {
 
     #[test]
     fn recent_transcript_mirror_includes_session_system_notices_after_chat() {
-        let lines = vec![
+        let lines = [
             ChatLine {
                 author: Author::System,
                 text: "workspace: /tmp".into(),
@@ -4168,7 +4168,7 @@ mod tests {
         app.startup_banner_len = app.lines.len();
         app.push_system("attached clipboard image #1 (640x480 PNG)".into());
 
-        let visible = recent_transcript_lines(&app, 80, 10);
+        let visible = recent_transcript_lines(app, 80, 10);
         let visible = visible.iter().map(line_text).collect::<Vec<_>>();
         assert!(!visible.iter().any(|line| line.contains("workspace: /tmp")));
         assert!(
