@@ -1098,7 +1098,8 @@ async fn run_tui(
     }
     let result = app.run(&mut terminal).await;
     let show_resume_hint = app.should_show_resume_hint();
-    let session_id = app.session_id();
+    let session_id = app.session_id().to_string();
+    let last_assistant_message = app.last_assistant_message().map(str::to_owned);
 
     // Cosmetic cleanup must not turn a successful session into an error
     // exit: since ratatui 0.30.1 `Terminal::clear` issues the same blocking
@@ -1131,12 +1132,67 @@ async fn run_tui(
 
     if show_resume_hint {
         println!();
+        if fullscreen && let Some(message) = last_assistant_message {
+            println!("{message}\n");
+        }
         print_resume_divider();
-        println!("Resume with yolop --session {session_id}");
+        println!(
+            "Continue with {}",
+            continuation_command(std::env::args_os(), &session_id)
+        );
         println!();
         print_centered_ukraine_banner();
     }
     result
+}
+
+fn continuation_command(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+    session_id: &str,
+) -> String {
+    let mut args = args.into_iter();
+    let _executable = args.next();
+    let mut preserved = Vec::new();
+    let mut skip_value = false;
+
+    for arg in args {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        let value = arg.to_string_lossy();
+        if matches!(
+            value.as_ref(),
+            "-p" | "--print" | "-i" | "--image" | "--session" | "--trajectory-out"
+        ) {
+            skip_value = true;
+            continue;
+        }
+        if value.starts_with("--print=")
+            || value.starts_with("--image=")
+            || value.starts_with("--session=")
+            || value.starts_with("--trajectory-out=")
+        {
+            continue;
+        }
+        preserved.push(shell_quote(&value));
+    }
+
+    preserved.push("--session".to_string());
+    preserved.push(shell_quote(session_id));
+    format!("yolop {}", preserved.join(" "))
+}
+
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
 }
 
 struct RawModeGuard {
@@ -1503,6 +1559,31 @@ fn paint(enabled: bool, code: &str, text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn continuation_preserves_reusable_arguments_and_replaces_turn_arguments() {
+        let args = [
+            "yolop",
+            "--fullscreen",
+            "--no-sandbox",
+            "--model",
+            "gpt test",
+            "--print",
+            "do not repeat",
+            "--image=initial.png",
+            "--trajectory-out",
+            "old.json",
+            "--session=old-session",
+        ]
+        .into_iter()
+        .map(OsString::from);
+
+        assert_eq!(
+            continuation_command(args, "new-session"),
+            "yolop --fullscreen --no-sandbox --model 'gpt test' --session new-session"
+        );
+    }
 
     fn cli_with_reasoning_effort(reasoning_effort: Option<&str>) -> Cli {
         Cli {
