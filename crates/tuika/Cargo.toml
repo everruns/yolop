@@ -31,6 +31,10 @@ pulldown-cmark = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 proptest = "1"
+# Benches build `Vec<Line>` corpora and paint into a `Buffer` directly, so they
+# name ratatui types the library only re-exports selectively. Same version as the
+# normal dependency above.
+ratatui = "0.30.2"
 # Benchmark harness. default-features off drops the plotters/rayon HTML-report
 # stack (heavy, and an MSRV liability) while keeping `cargo bench` working;
 # Criterion still writes machine-readable `estimates.json` for archiving.
@@ -48,4 +52,12 @@ harness = false
 
 [[bench]]
 name = "markdown_iai"
+harness = false
+
+[[bench]]
+name = "scroll"
+harness = false
+
+[[bench]]
+name = "scroll_iai"
 harness = false

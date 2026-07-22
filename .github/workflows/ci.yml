@@ -339,7 +339,7 @@ jobs:
       - name: Run instruction-count benchmarks
         run: |
           rm -rf target/iai
-          cargo bench --locked -p tuika --bench markdown_iai \
+          cargo bench --locked -p tuika --bench markdown_iai --bench scroll_iai \
             -p tuika-codeformatters --bench highlight_iai -- --save-summary=json
 
       - name: Check against committed baseline
