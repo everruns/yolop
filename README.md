@@ -181,6 +181,10 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   tools stay loaded, long-tail tools are hidden until the model pulls them in
   on demand, saving input tokens on every provider.
 - **Prompt caching** — Anthropic prompt-caching markers out of the box.
+- **Durable context compaction** — at 85% of the model's reported context
+  window, supported providers replace old model input with a native compact
+  checkpoint plus the new suffix. Raw session history remains lossless and
+  searchable, and ineffective no-op compactions are ignored.
 
 ### Extensibility
 
@@ -480,10 +484,13 @@ data directory:
 | macOS   | `~/Library/Application Support/yolop/sessions/<session_id>/` |
 | Windows | `%APPDATA%\yolop\sessions\<session_id>\`                   |
 
-The event log lives at `<session_folder>/events.jsonl`; the workspace root is
-stored in `<session_folder>/workspace.json`; large tool output is spilled under
-`<session_folder>/outputs/`. On Unix the session folder is `0o700` and the log
-and workspace metadata are `0o600` (owner-only). The log keeps everything
+The event log lives at `<session_folder>/events.jsonl`; native model-context
+checkpoints live in `<session_folder>/compaction-checkpoints.jsonl`; the
+workspace root is stored in `<session_folder>/workspace.json`; large tool output
+is spilled under `<session_folder>/outputs/`. On Unix the session folder is
+`0o700` and these metadata files are `0o600` (owner-only). The compaction file
+may contain retained message text and provider-encrypted opaque context, so it
+must remain private. The log keeps everything
 needed to restore the transcript and provider continuation state on resume —
 including prompts, tool arguments and output, reasoning artifacts, and semantic
 session-title updates. The latest title is also projected into `workspace.json`

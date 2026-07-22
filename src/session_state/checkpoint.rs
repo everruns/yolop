@@ -282,6 +282,18 @@ impl CheckpointManager {
         filter_active_events(&state, events)
     }
 
+    /// Whether an event boundary belongs to the currently selected timeline.
+    ///
+    /// Durable model-context checkpoints use this to ignore replacements made
+    /// on an abandoned conversation branch without deleting append-only data.
+    pub fn is_event_sequence_active(&self, sequence: i64) -> bool {
+        let Ok(sequence) = i32::try_from(sequence) else {
+            return false;
+        };
+        let state = self.state.lock().expect("checkpoint state lock");
+        event_sequence_is_active(&state, sequence)
+    }
+
     pub fn begin_turn(&self, prompt: &str) -> Result<String> {
         self.close_interrupted_turn()?;
         if let Some(prepared) = self.prepared.lock().expect("prepared restore lock").take() {
@@ -872,24 +884,26 @@ impl CheckpointManager {
 }
 
 fn filter_active_events(state: &TimelineState, events: Vec<Event>) -> Vec<Event> {
-    let mut ranges = vec![(i32::MIN, state.baseline_end)];
-    for id in active_path(state) {
-        if let Some(node) = state.nodes.get(&id)
-            && let Some(end) = node.event_end
-        {
-            ranges.push((node.event_start, end));
-        }
-    }
     events
         .into_iter()
         .filter(|event| {
-            event.sequence.is_none_or(|sequence| {
-                ranges
-                    .iter()
-                    .any(|(start, end)| sequence >= *start && sequence <= *end)
-            })
+            event
+                .sequence
+                .is_none_or(|sequence| event_sequence_is_active(state, sequence))
         })
         .collect()
+}
+
+fn event_sequence_is_active(state: &TimelineState, sequence: i32) -> bool {
+    if sequence <= state.baseline_end {
+        return true;
+    }
+    active_path(state).into_iter().any(|id| {
+        state.nodes.get(&id).is_some_and(|node| {
+            node.event_end
+                .is_some_and(|end| sequence >= node.event_start && sequence <= end)
+        })
+    })
 }
 
 fn active_path(state: &TimelineState) -> Vec<String> {
@@ -1272,6 +1286,15 @@ mod tests {
         std::fs::write(root.path().join("tracked.txt"), "second\n").expect("second edit");
         emit_user(&manager, "second prompt").await;
         manager.finish_turn(&second, true).expect("finish second");
+        let second_sequence = manager
+            .events
+            .collected_events()
+            .await
+            .into_iter()
+            .filter_map(|event| event.sequence)
+            .max()
+            .expect("second turn event sequence");
+        assert!(manager.is_event_sequence_active(i64::from(second_sequence)));
 
         let preview = manager
             .prepare_rewind(&second, RestoreMode::Both)
@@ -1293,6 +1316,7 @@ mod tests {
             .filter_map(|message| message.text().map(str::to_string))
             .collect::<Vec<_>>();
         assert_eq!(texts, vec!["first prompt"]);
+        assert!(!manager.is_event_sequence_active(i64::from(second_sequence)));
 
         let redo = manager
             .prepare_redo(RestoreMode::Both)
@@ -1308,6 +1332,7 @@ mod tests {
             .filter_map(|message| message.text().map(str::to_string))
             .collect::<Vec<_>>();
         assert_eq!(texts, vec!["first prompt", "second prompt"]);
+        assert!(manager.is_event_sequence_active(i64::from(second_sequence)));
         assert!(manager.prepare_redo(RestoreMode::Both).is_err());
     }
 

@@ -5,6 +5,7 @@
 // configured containment provider instead of running against the VFS.
 
 pub mod background_wake;
+mod compaction_checkpoint;
 pub mod session;
 pub mod session_log;
 
@@ -42,13 +43,13 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
-    BtwCapability, CompactionCapability, INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability,
-    LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability, MessageMetadataCapability,
-    PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability, SESSION_CAPABILITY_ID,
-    SESSION_FILE_SYSTEM_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SESSION_TASKS_CAPABILITY_ID,
-    SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability,
-    SessionCapability, SessionStorageCapability, StatelessTodoListCapability,
-    TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID,
+    BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, INFINITY_CONTEXT_CAPABILITY_ID,
+    InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability,
+    MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability,
+    SESSION_CAPABILITY_ID, SESSION_FILE_SYSTEM_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID,
+    SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID,
+    ScopedSkillsCapability, SessionCapability, SessionStorageCapability,
+    StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID,
     ToolOutputPersistenceCapability, ToolSearchCapability, USER_HOOKS_CAPABILITY_ID,
     UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
 };
@@ -1957,6 +1958,7 @@ fn reasoning_effort_value(value: &everruns_core::ReasoningEffort) -> Option<Stri
 // instead of scattering string literals.
 pub(crate) const DUCKDUCKGO_CAPABILITY_ID: &str = "duckduckgo";
 pub(crate) const DAYTONA_CAPABILITY_ID: &str = "daytona";
+pub(crate) const COMPACTION_BUDGET_PERCENT: u8 = 85;
 
 fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabilityConfig> {
     let mut caps = Vec::new();
@@ -1979,12 +1981,18 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new(SESSION_HISTORY_CAPABILITY_ID),
         AgentCapabilityConfig::new(CHECKPOINT_CAPABILITY_ID),
         AgentCapabilityConfig::new(AST_GREP_CAPABILITY_ID),
-        // The runtime's compaction cascade currently rewrites only one outbound
-        // model view. The next turn reconstructs the full stored transcript and
-        // compacts the same messages again, sometimes without reducing them at
-        // all. Keep a bounded recent window with searchable cold history until
-        // compaction can persist a canonical replacement-history checkpoint.
+        // Raw history stays searchable while the runtime persists a canonical
+        // provider-native replacement plus the uncompacted suffix. Auto keeps
+        // provider-neutral fallbacks for drivers without native compaction.
         AgentCapabilityConfig::new(INFINITY_CONTEXT_CAPABILITY_ID),
+        AgentCapabilityConfig::with_config(
+            COMPACTION_CAPABILITY_ID,
+            serde_json::json!({
+                "strategy": "auto",
+                "proactive": true,
+                "budget_percent": 0.85,
+            }),
+        ),
         AgentCapabilityConfig::new(CONTEXT_COST_CONTROL_CAPABILITY_ID),
         AgentCapabilityConfig::new(STATELESS_TODO_LIST_CAPABILITY_ID),
         AgentCapabilityConfig::new(LOOP_DETECTION_CAPABILITY_ID),
@@ -2625,6 +2633,12 @@ pub async fn build_with_options(
         message_store.clone(),
         replayed.max_sequence.unwrap_or(0),
     )?);
+    let compaction_checkpoints =
+        Arc::new(compaction_checkpoint::JsonlCompactionCheckpointStore::open(
+            &session_dir,
+            session_id,
+            checkpoints.clone(),
+        )?);
     let active_events = checkpoints.filter_active_events(replayed.events);
     let replayed_events_count = active_events.len();
     let active_messages = crate::runtime::session_log::messages_from_events(&active_events);
@@ -2646,6 +2660,7 @@ pub async fn build_with_options(
     let base_backends = RuntimeBackends::in_memory()
         .with_event_bus(event_bus)
         .with_message_store(message_store)
+        .with_compaction_checkpoint_store(compaction_checkpoints)
         .with_connection_resolver(connection_resolver);
     let local_profile = LocalProfile::new(sessions_dir.join("everruns-local"))
         .with_workspace_root(effective_root.clone());
@@ -2693,7 +2708,7 @@ pub async fn build_with_options(
     //   * ast_grep            - read-only structural code search
     //   * ast_edit            - previewed ast-grep rewrites (opt-in)
     //   * infinity_context     — bounds the live context and adds query_history
-    //   * compaction           — registered for opt-in use, not enabled by default
+    //   * compaction           — durable native replacement with safe fallbacks
     //   * stateless_todo_list  — write_todos tool for multi-step tasks
     //   * loop_detection       — safety net against repeated identical tool calls
     //   * prompt_caching       — Anthropic prompt caching; free token savings
@@ -6318,7 +6333,7 @@ mod tests {
     }
 
     #[test]
-    fn coding_harness_uses_searchable_bounded_history_without_ephemeral_compaction() {
+    fn coding_harness_enables_durable_compaction_with_searchable_history() {
         let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
@@ -6329,7 +6344,13 @@ mod tests {
             ids.iter()
                 .any(|cap| cap.capability_id() == CONTEXT_COST_CONTROL_CAPABILITY_ID)
         );
-        assert!(!ids.iter().any(|cap| cap.capability_id() == "compaction"));
+        let compaction = ids
+            .iter()
+            .find(|cap| cap.capability_id() == COMPACTION_CAPABILITY_ID)
+            .expect("durable compaction must be enabled");
+        assert_eq!(compaction.config["strategy"], "auto");
+        assert_eq!(compaction.config["proactive"], true);
+        assert_eq!(compaction.config["budget_percent"], serde_json::json!(0.85));
     }
 
     #[test]
