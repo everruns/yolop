@@ -55,6 +55,23 @@ impl SelectState {
         }
     }
 
+    /// Move the highlight up one row, clamping at the top (no wrap). The
+    /// non-wrapping stepping primitive; use it when a picker holds at the ends
+    /// rather than wrapping the way [`handle`](Self::handle) does.
+    pub fn move_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+    }
+
+    /// Move the highlight down one row, clamping at the last of `len` rows (no
+    /// wrap). The non-wrapping counterpart to [`move_up`](Self::move_up).
+    pub fn move_down(&mut self, len: usize) {
+        if len == 0 {
+            self.selected = 0;
+        } else {
+            self.selected = (self.selected + 1).min(len - 1);
+        }
+    }
+
     /// Navigate with arrow keys (wrapping), confirm with Enter, cancel on Esc.
     pub fn handle(&mut self, event: &Event, len: usize) -> SelectOutcome {
         if len == 0 {

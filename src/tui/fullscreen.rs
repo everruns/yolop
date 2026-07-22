@@ -322,9 +322,9 @@ fn draw_setup_overlay(f: &mut Frame, area: Rect, app: &App) {
 
 /// Render a bounded setup step as `header · SelectList · footer` inside the
 /// panel. The `SelectState`'s index is driven from the step's own `selected`
-/// field (navigation still flows through `App::handle_setup_key`); promoting
-/// `SelectState` to the navigation source is the same deferred unification as the
-/// composer's.
+/// field for rendering; the arrow-key transitions in `App::handle_setup_key`
+/// step that field through `SelectState`'s (clamping) `move_up`/`move_down`, so
+/// the pickers share one tested navigation source.
 fn draw_setup_picker(f: &mut Frame, area: Rect, picker: render::SetupPicker) {
     let render::SetupPicker {
         header,

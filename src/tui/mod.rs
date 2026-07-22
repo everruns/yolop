@@ -4844,6 +4844,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_picker_navigation_clamps_at_ends() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.setup = Some(SetupStep::Provider { selected: 0 });
+
+        fn provider_selected(app: &App) -> usize {
+            match app.setup {
+                Some(SetupStep::Provider { selected }) => selected,
+                _ => panic!("expected the provider step"),
+            }
+        }
+
+        // Up at the top holds at 0 — navigation clamps, it does not wrap.
+        app.handle_setup_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()))
+            .await;
+        assert_eq!(provider_selected(app), 0);
+
+        // Down walks forward one row at a time and clamps at the last option
+        // even when pressed past the end.
+        let last = PROVIDER_OPTIONS.len() - 1;
+        for _ in 0..last + 3 {
+            app.handle_setup_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()))
+                .await;
+        }
+        assert_eq!(provider_selected(app), last);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn proactive_wake_disabled_by_setting_does_not_start_turn() {
         let mut test = app_with_llmsim().await;
         let app = &mut test.app;
