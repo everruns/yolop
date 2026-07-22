@@ -773,6 +773,8 @@ pub struct Markdown<'a> {
 }
 
 impl<'a> Markdown<'a> {
+    /// A markdown view over `source`, rendering fenced code as plain text until
+    /// a highlighter is attached with [`highlighter`](Self::highlighter).
     pub fn new(source: impl Into<String>) -> Self {
         Self {
             source: source.into(),
@@ -780,6 +782,7 @@ impl<'a> Markdown<'a> {
         }
     }
 
+    /// Use `highlighter` to syntax-highlight fenced code blocks.
     pub fn highlighter(mut self, highlighter: &'a dyn Highlighter) -> Self {
         self.highlighter = CodeHighlighter::With(highlighter);
         self

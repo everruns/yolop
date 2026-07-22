@@ -129,12 +129,19 @@ pub struct CodeTheme {
     /// Language-tag label above a fenced block.
     pub label: Color,
     // Syntax roles a highlighter maps token classes onto.
+    /// Keywords and language reserved words.
     pub keyword: Color,
+    /// Function and method names.
     pub function: Color,
+    /// Type names, traits, and other type-level identifiers.
     pub type_name: Color,
+    /// Constants, literals, and enum-like values.
     pub constant: Color,
+    /// String and character literals.
     pub string: Color,
+    /// Comments.
     pub comment: Color,
+    /// Punctuation, operators, and delimiters.
     pub punctuation: Color,
 }
 
