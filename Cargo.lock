@@ -944,16 +944,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "comfy-table"
-version = "7.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "958c5d6ecf1f214b4c2bbbbf6ab9523a864bd136dcf71a7e8904799acfe1ad47"
-dependencies = [
- "unicode-segmentation",
- "unicode-width 0.2.2",
-]
-
-[[package]]
 name = "compact_str"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6615,10 +6605,35 @@ version = "0.2.0"
 dependencies = [
  "crossterm",
  "proptest",
+ "pulldown-cmark",
  "ratatui",
  "textwrap",
  "unicode-segmentation",
  "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "tuika-codeformatters"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "tree-sitter",
+ "tree-sitter-c-sharp",
+ "tree-sitter-css",
+ "tree-sitter-go",
+ "tree-sitter-highlight",
+ "tree-sitter-html",
+ "tree-sitter-java",
+ "tree-sitter-php",
+ "tree-sitter-python",
+ "tree-sitter-ruby",
+ "tree-sitter-rust",
+ "tree-sitter-scala",
+ "tree-sitter-sequel",
+ "tree-sitter-typescript",
+ "tree-sitter-zig",
+ "tuika",
 ]
 
 [[package]]
@@ -7596,7 +7611,6 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
- "comfy-table",
  "crossterm",
  "dirs",
  "eventsource-stream",
@@ -7645,7 +7659,6 @@ dependencies = [
  "tree-sitter-cpp",
  "tree-sitter-css",
  "tree-sitter-go",
- "tree-sitter-highlight",
  "tree-sitter-html",
  "tree-sitter-java",
  "tree-sitter-javascript",
@@ -7659,6 +7672,7 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-zig",
  "tuika",
+ "tuika-codeformatters",
  "urlencoding",
  "vt100",
  "yolop-yep",

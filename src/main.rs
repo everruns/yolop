@@ -984,7 +984,7 @@ fn run_tuika_gallery() -> Result<()> {
 fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
     use ratatui::style::Modifier;
     use ratatui::text::{Line, Span};
-    use tuika::{Loader, ProgressBar, Spinner, SpinnerStyle, Text};
+    use tuika::{CodeHighlighter, Loader, MarkdownState, ProgressBar, Spinner, SpinnerStyle, Text};
 
     // The whole demo is expressed with the declarative `view!` DSL. Leaf and
     // third-party components (Spinner, ProgressBar, Loader, Text) enter through
@@ -999,6 +999,15 @@ fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
     };
 
     let animated = tuika::anim::ping_pong(frame, 120);
+
+    // Markdown + syntax-highlighted code — the same renderer that formats
+    // assistant replies. (Rendered whole here; `MarkdownState` also streams
+    // deltas incrementally — see the `markdown` example in the tuika crate.)
+    let md_doc = "Highlighted `code` in **markdown**:\n\n```rust\nfn fib(n: u64) -> u64 { n }\n```";
+    let highlighter = tuika_codeformatters::TreeSitterHighlighter::new();
+    let mut markdown = MarkdownState::new();
+    markdown.set(md_doc);
+    let markdown_lines = markdown.lines(46, theme, CodeHighlighter::With(&highlighter));
 
     tuika::view! {
         col(
@@ -1030,7 +1039,14 @@ fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
                     node(Loader::new(frame, "working…").hint("esc to quit"))
                 }
             }
-            grow(1) { spacer() }
+            // Takes the leftover space (replacing the old spacer) so the footer
+            // below always renders; on a short viewport it simply shows fewer
+            // lines rather than pushing the footer off-screen.
+            grow(1) {
+                boxed(title = Line::from(Span::styled(" markdown + code ", theme.accent_style()))) {
+                    node(Text::new(markdown_lines))
+                }
+            }
             fixed(1) {
                 node(Text::new(vec![Line::from(vec![
                     Span::styled("docs ", theme.muted_style()),

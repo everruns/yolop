@@ -35,10 +35,8 @@ use tokio::sync::{mpsc, oneshot};
 
 mod fullscreen;
 mod hyperlink;
-mod markdown_table;
 mod render;
 mod setup;
-mod syntax;
 mod viewport;
 
 pub mod host_ui;
@@ -2927,28 +2925,6 @@ mod tests {
     }
 
     #[test]
-    fn linkify_styles_urls_and_trims_trailing_punctuation() {
-        let spans = linkify("see https://example.com/docs, then stop");
-        let url = spans
-            .iter()
-            .find(|s| s.content.as_ref() == "https://example.com/docs")
-            .expect("url span present");
-        assert_eq!(url.style.fg, Some(ACCENT_BLUE));
-        assert!(url.style.add_modifier.contains(Modifier::UNDERLINED));
-        // The trailing comma stays as plain text, not part of the link.
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "see https://example.com/docs, then stop");
-    }
-
-    #[test]
-    fn linkify_leaves_plain_text_untouched() {
-        let spans = linkify("no links here");
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].style.fg, None);
-        assert_eq!(spans[0].content.as_ref(), "no links here");
-    }
-
-    #[test]
     fn transcript_paragraph_links_urls() {
         let mut lines: Vec<Line> = Vec::new();
         append_markdown_lines(
@@ -2959,12 +2935,47 @@ mod tests {
             120,
         );
         let has_link = lines.iter().flat_map(|line| line.spans.iter()).any(|span| {
-            span.content.as_ref() == "https://rust-lang.org"
+            span.content.contains("https://rust-lang.org")
                 && span.style.add_modifier.contains(Modifier::UNDERLINED)
         });
         assert!(
             has_link,
             "paragraph URL should be styled as a link: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn transcript_markdown_renders_commonmark_emphasis() {
+        // Assistant transcript now flows through tuika's CommonMark renderer, so
+        // inline **bold** / *italic* are resolved — the previous line-oriented
+        // formatter could not. Drive the real transcript entry point
+        // (`append_chat_lines` for an assistant line) and assert on the
+        // presentation model (styled spans), not the terminal buffer.
+        let mut lines: Vec<Line> = Vec::new();
+        append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::Assistant,
+                text: "a **bold** and *italic* word".to_string(),
+            },
+            80,
+        );
+        let spans: Vec<&Span> = lines.iter().flat_map(|line| line.spans.iter()).collect();
+        let bold = spans
+            .iter()
+            .find(|s| s.content.contains("bold"))
+            .expect("a span carrying the bold word");
+        assert!(
+            bold.style.add_modifier.contains(Modifier::BOLD),
+            "**bold** should render bold: {lines:?}"
+        );
+        let italic = spans
+            .iter()
+            .find(|s| s.content.contains("italic"))
+            .expect("a span carrying the italic word");
+        assert!(
+            italic.style.add_modifier.contains(Modifier::ITALIC),
+            "*italic* should render italic: {lines:?}"
         );
     }
 

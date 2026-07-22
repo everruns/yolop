@@ -1,0 +1,38 @@
+[package]
+name = "tuika-codeformatters"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["Everruns <support@everruns.com>"]
+license = "MIT"
+description = "Tree-sitter syntax highlighting for tuika's CodeBlock and Markdown components — a ready-made Highlighter implementation."
+homepage = "https://github.com/everruns/yolop"
+repository = "https://github.com/everruns/yolop"
+readme = "README.md"
+keywords = ["tui", "syntax-highlighting", "tree-sitter", "ratatui", "markdown"]
+categories = ["command-line-interface", "text-processing"]
+
+[dependencies]
+tuika = { version = "0.2.0", path = "../tuika" }
+ratatui = "0.30.2"
+tree-sitter = "0.26"
+tree-sitter-highlight = "0.26"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-css = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-html = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-php = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-ruby = "0.23"
+tree-sitter-rust = "0.24"
+tree-sitter-scala = "0.26"
+tree-sitter-sequel = "0.3"
+tree-sitter-typescript = "0.23"
+tree-sitter-zig = "1"
+
+[dev-dependencies]
+# The runnable examples drive a full-screen loop; tuika owns the rendering,
+# crossterm just supplies the raw event source (the same pair tuika's own
+# examples use).
+crossterm = "0.29"

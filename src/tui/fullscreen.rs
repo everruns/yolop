@@ -36,7 +36,8 @@ use tuika::{
 
 use super::render;
 use super::{
-    ACCENT_BLUE, ACCENT_GOLD, App, DIFF_META, PANEL_BG, TEXT_DIM, TEXT_MUTED, TEXT_PRIMARY,
+    ACCENT_BLUE, ACCENT_GOLD, App, CODE_BG, DIFF_ADD, DIFF_META, PANEL_BG, TEXT_DIM, TEXT_MUTED,
+    TEXT_PRIMARY,
 };
 
 /// The full-screen renderer's tuika [`Theme`](tuika::Theme), built from yolop's
@@ -61,6 +62,23 @@ pub(crate) fn yolop_theme() -> tuika::Theme {
         border_focused: ACCENT_BLUE,
         selection_bg: ACCENT_BLUE,
         selection_fg: TEXT_PRIMARY,
+        // Markdown prose + syntax palette for tuika's Markdown/CodeBlock. These
+        // mirror yolop's former hand-rolled highlighter so rendered code and
+        // prose keep the same look now that both flow through tuika.
+        code: tuika::CodeTheme {
+            heading: TEXT_PRIMARY,
+            link: ACCENT_BLUE,
+            background: CODE_BG,
+            text: TEXT_PRIMARY,
+            label: TEXT_DIM,
+            keyword: ACCENT_GOLD,
+            function: ACCENT_BLUE,
+            type_name: Color::Rgb(126, 170, 176),
+            constant: Color::Rgb(184, 152, 120),
+            string: DIFF_ADD,
+            comment: TEXT_MUTED,
+            punctuation: TEXT_DIM,
+        },
     }
 }
 

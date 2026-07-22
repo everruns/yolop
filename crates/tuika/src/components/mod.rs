@@ -8,6 +8,7 @@
 //! a new module here and implement `View`; nothing else needs to change.
 
 mod boxed;
+pub(crate) mod code_block;
 mod constrained;
 mod flex;
 mod key_hints;
@@ -24,7 +25,9 @@ mod tabs;
 mod text;
 mod textinput;
 
+pub use crate::markdown::{Markdown, MarkdownState, markdown_to_lines};
 pub use boxed::Boxed;
+pub use code_block::CodeBlock;
 pub use constrained::Constrained;
 pub use flex::Flex;
 pub use key_hints::KeyHints;

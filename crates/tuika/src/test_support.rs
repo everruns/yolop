@@ -44,6 +44,20 @@ pub fn rainbow_theme() -> Theme {
         border_focused: Color::Indexed(9),
         selection_bg: Color::Indexed(10),
         selection_fg: Color::Indexed(11),
+        code: crate::style::CodeTheme {
+            heading: Color::Indexed(12),
+            link: Color::Indexed(13),
+            background: Color::Indexed(14),
+            text: Color::Indexed(15),
+            label: Color::Indexed(16),
+            keyword: Color::Indexed(17),
+            function: Color::Indexed(18),
+            type_name: Color::Indexed(19),
+            constant: Color::Indexed(20),
+            string: Color::Indexed(21),
+            comment: Color::Indexed(22),
+            punctuation: Color::Indexed(23),
+        },
     }
 }
 

@@ -40,10 +40,12 @@ pub mod event;
 mod macros;
 pub mod focus;
 pub mod geometry;
+pub mod highlight;
 pub mod host;
 pub mod hyperlink;
 pub mod layout;
 pub mod live;
+pub mod markdown;
 pub mod mouse;
 pub mod native;
 pub mod overlay;
@@ -60,14 +62,15 @@ pub mod width;
 // etc. for the common surface without deep paths.
 pub use clipboard::{osc52, write_clipboard};
 pub use components::{
-    Boxed, Constrained, Flex, KeyHints, Loader, Paragraph, ProgressBar, Responsive, Rule, Scroll,
-    ScrollState, SelectList, SelectOutcome, SelectState, Spacer, Spinner, SpinnerStyle, StatusBar,
-    Tabs, TabsState, Text, TextInput, TextInputEvent, TextInputMode, TextInputState, Wrap,
-    wrap_lines,
+    Boxed, CodeBlock, Constrained, Flex, KeyHints, Loader, Markdown, MarkdownState, Paragraph,
+    ProgressBar, Responsive, Rule, Scroll, ScrollState, SelectList, SelectOutcome, SelectState,
+    Spacer, Spinner, SpinnerStyle, StatusBar, Tabs, TabsState, Text, TextInput, TextInputEvent,
+    TextInputMode, TextInputState, Wrap, markdown_to_lines, wrap_lines,
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 pub use focus::FocusRegistry;
 pub use geometry::{Padding, Size};
+pub use highlight::{CodeHighlighter, Highlighter, PlainHighlighter};
 pub use host::{AltScreen, Overlay, TerminalSession, paint, translate_event};
 pub use hyperlink::{HyperlinkBackend, is_web_url, osc8, write_line};
 pub use layout::{Align, Dimension, Direction, Justify, LayoutStyle};
@@ -80,7 +83,7 @@ pub use overlay::{Anchor, Extent, OverlaySpec};
 pub use probe::{Probe, RectProbe};
 pub use ratatui_view::RatatuiView;
 pub use runner::{Runner, RunnerConfig};
-pub use style::{BorderStyle, Theme};
+pub use style::{BorderStyle, CodeTheme, Theme};
 pub use surface::Surface;
 pub use view::{Element, RenderCtx, View, element};
 pub use width::{grapheme_cols, str_cols};

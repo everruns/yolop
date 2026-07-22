@@ -3,9 +3,7 @@
 //! line formatting helpers. Pure rendering over `&App` / `&ViewState`; state
 //! mutation lives elsewhere.
 
-use super::hyperlink::{next_url_start, url_end};
 use super::*;
-use std::collections::HashMap;
 
 // Color presentation for the transcript view-model types defined in
 // `crate::tui::transcript`. Labels and status semantics live in `crate::tui::presentation`
@@ -1527,48 +1525,14 @@ pub(crate) fn diff_line_style(line: &str) -> Style {
     Style::default().fg(color)
 }
 
-/// Parse each fenced code block as a whole and return per-source-line highlight
-/// spans, keyed by line index. Only lines inside a block whose language we
-/// support get an entry; everything else is absent and rendered by the
-/// lightweight fallback highlighter. The stored spans are over each line's
-/// `trim_end`ed text so they line up with the render loop's `trimmed`.
-fn precompute_code_highlights(source_lines: &[&str]) -> HashMap<usize, Vec<Span<'static>>> {
-    let mut map = HashMap::new();
-    let mut index = 0;
-    while index < source_lines.len() {
-        let trimmed = source_lines[index].trim_end();
-        let Some(info) = trimmed.trim_start().strip_prefix("```") else {
-            index += 1;
-            continue;
-        };
-        // Opening fence: collect the block body up to the closing fence (or EOF).
-        let lang = info.trim();
-        let body_start = index + 1;
-        let mut body_end = body_start;
-        while body_end < source_lines.len()
-            && !source_lines[body_end].trim_start().starts_with("```")
-        {
-            body_end += 1;
-        }
-        let body: Vec<&str> = source_lines[body_start..body_end]
-            .iter()
-            .map(|line| line.trim_end())
-            .collect();
-        if let Some(highlighted) = super::syntax::highlight_lines(lang, &body) {
-            for (offset, spans) in highlighted.into_iter().enumerate() {
-                map.insert(body_start + offset, spans);
-            }
-        }
-        // Resume after the closing fence (or at EOF when unterminated).
-        index = if body_end < source_lines.len() {
-            body_end + 1
-        } else {
-            body_end
-        };
-    }
-    map
-}
-
+/// Render assistant markdown to transcript lines via tuika's streaming markdown
+/// renderer + tree-sitter code highlighting (see `crates/tuika` and
+/// `crates/tuika-codeformatters`).
+///
+/// The tuika renderer word-wraps prose and lays code/tables out to a width; we
+/// render at `inner_width` minus the header prefix, then prepend the header to
+/// the first row and matching indentation to the continuation rows so the
+/// author label (`agent › `) still owns the left gutter.
 pub(crate) fn append_markdown_lines<'a>(
     lines: &mut Vec<Line<'a>>,
     first_prefix: &str,
@@ -1576,109 +1540,40 @@ pub(crate) fn append_markdown_lines<'a>(
     text: &str,
     inner_width: usize,
 ) {
-    let continuation = " ".repeat(first_prefix.chars().count());
-    let wrap_width = inner_width
-        .saturating_sub(first_prefix.chars().count())
-        .max(1);
+    let prefix_cols = first_prefix.chars().count();
+    let width = inner_width.saturating_sub(prefix_cols).max(1) as u16;
+    let theme = super::fullscreen::yolop_theme();
+    let highlighter = tuika_codeformatters::TreeSitterHighlighter::new();
+    let rendered = tuika::markdown_to_lines(
+        text,
+        width,
+        &theme,
+        tuika::CodeHighlighter::With(&highlighter),
+    );
+
+    let continuation = " ".repeat(prefix_cols);
     let mut first = true;
-    let mut in_code = false;
-    let source_lines = text.lines().collect::<Vec<_>>();
-    // Language-aware highlights for fenced blocks, keyed by source-line index.
-    // Whole blocks are parsed at once (tree-sitter needs full context); lines
-    // without an entry fall back to the lightweight keyword highlighter.
-    let code_highlights = precompute_code_highlights(&source_lines);
-    let mut index = 0;
-
-    while index < source_lines.len() {
-        let raw = source_lines[index];
-        let trimmed = raw.trim_end();
-
-        if let Some(lang) = trimmed.trim_start().strip_prefix("```") {
-            in_code = !in_code;
-            let code_lang = lang.trim();
-            let label = if in_code {
-                if code_lang.is_empty() {
-                    "code".to_string()
-                } else {
-                    format!("code: {code_lang}")
-                }
-            } else {
-                String::new()
-            };
-            push_markdown_line(
-                lines,
-                first_prefix,
-                &continuation,
-                prefix_style,
-                &mut first,
-                vec![Span::styled(
-                    label,
-                    Style::default().fg(TEXT_DIM).add_modifier(Modifier::ITALIC),
-                )],
-            );
-            index += 1;
-            continue;
-        }
-
-        if !in_code
-            && let Some((table, next)) =
-                super::markdown_table::try_parse_table_at(&source_lines, index)
-            && super::markdown_table::append_markdown_table_lines(
-                lines,
-                first_prefix,
-                prefix_style,
-                &table,
-                inner_width,
-                &mut first,
-            )
-        {
-            index = next;
-            continue;
-        }
-
-        let content_spans = if in_code {
-            code_highlights
-                .get(&index)
-                .cloned()
-                .unwrap_or_else(|| markdown_code_spans(trimmed))
-        } else {
-            markdown_text_spans(trimmed)
-        };
-        let plain = spans_plain_text(&content_spans);
-        let wrapped = textwrap::wrap(
-            &plain,
-            textwrap::Options::new(wrap_width)
-                .break_words(true)
-                .word_separator(textwrap::WordSeparator::AsciiSpace),
+    if rendered.is_empty() {
+        // Preserve the header row even when the message body is empty.
+        push_markdown_line(
+            lines,
+            first_prefix,
+            &continuation,
+            prefix_style,
+            &mut first,
+            vec![],
         );
-        if wrapped.is_empty() {
-            push_markdown_line(
-                lines,
-                first_prefix,
-                &continuation,
-                prefix_style,
-                &mut first,
-                vec![],
-            );
-            index += 1;
-            continue;
-        }
-        let mut search_from = 0;
-        for piece in wrapped {
-            let piece = piece.into_owned();
-            let piece_spans =
-                styled_piece_for_wrapped_text(&plain, &content_spans, &piece, &mut search_from)
-                    .unwrap_or_else(|| vec![Span::raw(piece)]);
-            push_markdown_line(
-                lines,
-                first_prefix,
-                &continuation,
-                prefix_style,
-                &mut first,
-                piece_spans,
-            );
-        }
-        index += 1;
+        return;
+    }
+    for line in rendered {
+        push_markdown_line(
+            lines,
+            first_prefix,
+            &continuation,
+            prefix_style,
+            &mut first,
+            line.spans,
+        );
     }
 }
 
@@ -1697,214 +1592,10 @@ pub(crate) fn push_markdown_line<'a>(
     *first = false;
 }
 
-pub(crate) fn markdown_text_spans(text: &str) -> Vec<Span<'static>> {
-    let trimmed = text.trim_start();
-    if trimmed.starts_with('#') {
-        let heading = trimmed.trim_start_matches('#').trim_start();
-        return vec![Span::styled(
-            heading.to_string(),
-            Style::default()
-                .fg(TEXT_PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        )];
-    }
-    if let Some(rest) = trimmed.strip_prefix("> ") {
-        return vec![
-            Span::styled("| ", Style::default().fg(ACCENT_BLUE)),
-            Span::styled(rest.to_string(), Style::default().fg(TEXT_MUTED)),
-        ];
-    }
-    if let Some(rest) = trimmed
-        .strip_prefix("- ")
-        .or_else(|| trimmed.strip_prefix("* "))
-    {
-        let mut spans = vec![Span::styled("- ", Style::default().fg(ACCENT_GOLD))];
-        spans.extend(linkify(rest));
-        return spans;
-    }
-    if let Some((marker, rest)) = numbered_marker(trimmed) {
-        let mut spans = vec![Span::styled(marker, Style::default().fg(ACCENT_GOLD))];
-        spans.extend(linkify(rest));
-        return spans;
-    }
-    inline_code_spans(text)
-}
-
-pub(crate) fn markdown_code_spans(text: &str) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::styled("    ", Style::default().fg(TEXT_DIM))];
-    spans.extend(simple_code_highlight(text));
-    spans
-}
-
-pub(crate) fn inline_code_spans(text: &str) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let mut rest = text;
-    while let Some((before, after_tick)) = rest.split_once('`') {
-        if !before.is_empty() {
-            spans.extend(linkify(before));
-        }
-        if let Some((inside, after)) = after_tick.split_once('`') {
-            spans.push(Span::styled(
-                inside.to_string(),
-                Style::default().fg(TEXT_PRIMARY).bg(CODE_BG),
-            ));
-            rest = after;
-        } else {
-            spans.push(Span::raw("`".to_string()));
-            rest = after_tick;
-            break;
-        }
-    }
-    if !rest.is_empty() {
-        spans.extend(linkify(rest));
-    }
-    if spans.is_empty() {
-        vec![Span::raw(text.to_string())]
-    } else {
-        spans
-    }
-}
-
-/// Split plain text into spans, styling any `http(s)://` URL as a link
-/// (accent + underline). The styling is only the *visual* cue; clickability
-/// comes from [`hyperlink::linkify_buffer`](super::hyperlink::linkify_buffer),
-/// which wraps the same URL runs in OSC 8 escapes after the buffer is rendered.
-pub(crate) fn linkify(text: &str) -> Vec<Span<'static>> {
-    if text.is_empty() {
-        return Vec::new();
-    }
-    let mut spans = Vec::new();
-    let mut rest = text;
-    while let Some(start) = next_url_start(rest) {
-        let (before, from) = rest.split_at(start);
-        if !before.is_empty() {
-            spans.push(Span::raw(before.to_string()));
-        }
-        let end = url_end(from);
-        let (url, after) = from.split_at(end);
-        spans.push(Span::styled(
-            url.to_string(),
-            Style::default()
-                .fg(ACCENT_BLUE)
-                .add_modifier(Modifier::UNDERLINED),
-        ));
-        rest = after;
-    }
-    if !rest.is_empty() {
-        spans.push(Span::raw(rest.to_string()));
-    }
-    if spans.is_empty() {
-        spans.push(Span::raw(text.to_string()));
-    }
-    spans
-}
-
-pub(crate) fn simple_code_highlight(text: &str) -> Vec<Span<'static>> {
-    let keywords = [
-        "async", "await", "const", "enum", "fn", "impl", "let", "match", "pub", "return", "struct",
-        "use",
-    ];
-    let mut spans = Vec::new();
-    let mut token = String::new();
-    for ch in text.chars() {
-        if ch.is_alphanumeric() || ch == '_' {
-            token.push(ch);
-            continue;
-        }
-        if !token.is_empty() {
-            let style = if keywords.contains(&token.as_str()) {
-                Style::default()
-                    .fg(ACCENT_GOLD)
-                    .add_modifier(Modifier::BOLD)
-            } else if token.chars().all(|c| c.is_ascii_digit()) {
-                Style::default().fg(TEXT_MUTED)
-            } else {
-                Style::default().fg(ACCENT_BLUE)
-            };
-            spans.push(Span::styled(std::mem::take(&mut token), style));
-        }
-        spans.push(Span::styled(ch.to_string(), Style::default().fg(TEXT_DIM)));
-    }
-    if !token.is_empty() {
-        let style = if keywords.contains(&token.as_str()) {
-            Style::default()
-                .fg(ACCENT_GOLD)
-                .add_modifier(Modifier::BOLD)
-        } else if token.chars().all(|c| c.is_ascii_digit()) {
-            Style::default().fg(TEXT_MUTED)
-        } else {
-            Style::default().fg(ACCENT_BLUE)
-        };
-        spans.push(Span::styled(token, style));
-    }
-    spans
-}
-
-pub(crate) fn numbered_marker(text: &str) -> Option<(String, &str)> {
-    let dot = text.find(". ")?;
-    if dot == 0 || !text[..dot].chars().all(|ch| ch.is_ascii_digit()) {
-        return None;
-    }
-    Some((text[..dot + 2].to_string(), &text[dot + 2..]))
-}
-
+/// Concatenate spans' plain text. Only used by rendering tests.
+#[cfg(test)]
 pub(crate) fn spans_plain_text(spans: &[Span]) -> String {
     spans.iter().map(|span| span.content.as_ref()).collect()
-}
-
-pub(crate) fn styled_piece_for_wrapped_text(
-    plain: &str,
-    spans: &[Span],
-    piece: &str,
-    search_from: &mut usize,
-) -> Option<Vec<Span<'static>>> {
-    let offset = plain.get(*search_from..)?.find(piece)?;
-    let start_byte = search_from.saturating_add(offset);
-    let start_char = plain.get(..start_byte)?.chars().count();
-    *search_from = start_byte.saturating_add(piece.len());
-    Some(spans_for_char_range(
-        spans,
-        start_char,
-        piece.chars().count(),
-    ))
-}
-
-pub(crate) fn spans_for_char_range(
-    spans: &[Span],
-    start_char: usize,
-    len_chars: usize,
-) -> Vec<Span<'static>> {
-    if len_chars == 0 {
-        return Vec::new();
-    }
-
-    let end_char = start_char.saturating_add(len_chars);
-    let mut span_start = 0usize;
-    let mut out = Vec::new();
-    for span in spans {
-        let content = span.content.as_ref();
-        let span_len = content.chars().count();
-        let span_end = span_start.saturating_add(span_len);
-        let overlap_start = start_char.max(span_start);
-        let overlap_end = end_char.min(span_end);
-        if overlap_start < overlap_end {
-            let local_start = overlap_start.saturating_sub(span_start);
-            let local_len = overlap_end.saturating_sub(overlap_start);
-            out.push(Span::styled(
-                content
-                    .chars()
-                    .skip(local_start)
-                    .take(local_len)
-                    .collect::<String>(),
-                span.style,
-            ));
-        }
-        span_start = span_end;
-        if span_start >= end_char {
-            break;
-        }
-    }
-    out
 }
 
 pub(crate) fn digit_index(ch: char, len: usize) -> Option<usize> {

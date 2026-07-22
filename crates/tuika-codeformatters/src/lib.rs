@@ -1,25 +1,35 @@
-//! Language-aware syntax highlighting for fenced code blocks, using the
-//! tree-sitter grammars yolop already bundles (the same ones `repo_map` and
-//! `ast_grep` parse with) plus `tree-sitter-highlight`.
+//! Tree-sitter syntax highlighting for [`tuika`]'s
+//! [`CodeBlock`](tuika::CodeBlock) and [`Markdown`](tuika::Markdown) components.
 //!
-//! [`highlight_lines`] takes a fence's language tag and its body lines and
-//! returns per-line styled spans, or `None` when the language is unsupported or
-//! the source fails to parse — in which case the caller falls back to the
-//! lightweight keyword highlighter. Highlight configurations are built once per
-//! language and cached on the rendering thread.
+//! tuika owns the *presentation* of code (framing, background, language label,
+//! wrapping) but deliberately depends on no grammar. This crate fills the gap: a
+//! ready-made [`Highlighter`](tuika::Highlighter) backed by the same tree-sitter
+//! grammars a coding tool already carries, mapping token classes onto the host's
+//! [`Theme`]'s [`code`](tuika::CodeTheme) palette so highlighted code follows the
+//! theme.
+//!
+//! ```
+//! use tuika::{CodeBlock, Theme};
+//! use tuika_codeformatters::TreeSitterHighlighter;
+//!
+//! let hl = TreeSitterHighlighter::new();
+//! let _block = CodeBlock::new("rust", "fn main() {}").highlighter(&hl);
+//! let _ = Theme::default();
+//! ```
+//!
+//! Supported languages (with common aliases): Rust, Python, TypeScript/
+//! JavaScript, TSX/JSX, Go, Java, Ruby, CSS, HTML, C#, PHP, Zig, Scala, and SQL.
+//! Anything else — or source that fails to parse — returns [`None`], and the
+//! caller renders it as plain code.
 
-use super::{ACCENT_BLUE, ACCENT_GOLD, DIFF_ADD, TEXT_DIM, TEXT_MUTED, TEXT_PRIMARY};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use tree_sitter_highlight::{Highlight, HighlightConfiguration, HighlightEvent, Highlighter};
 
-/// Muted teal for type names; amber for numbers/constants. Chosen to sit
-/// alongside the existing accent palette without shouting.
-const SYNTAX_TYPE: Color = Color::Rgb(126, 170, 176);
-const SYNTAX_CONST: Color = Color::Rgb(184, 152, 120);
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Span;
+use tree_sitter_highlight::{Highlight, HighlightConfiguration, HighlightEvent, Highlighter};
+use tuika::{CodeTheme, Theme};
 
 /// Highlight capture names we recognize, longest-specific first so
 /// tree-sitter-highlight resolves the most precise style. Kept in sync with
@@ -54,31 +64,28 @@ const HIGHLIGHT_NAMES: &[&str] = &[
     "variable",
 ];
 
-fn style_for_name(name: &str) -> Style {
+/// Map a tree-sitter capture name to a themed [`Style`] using the host palette.
+fn style_for_name(name: &str, code: &CodeTheme) -> Style {
     let base = Style::default();
     match name {
-        "keyword" => base.fg(ACCENT_GOLD).add_modifier(Modifier::BOLD),
+        "keyword" => base.fg(code.keyword).add_modifier(Modifier::BOLD),
         "function" | "function.builtin" | "function.method" | "constructor" | "label" => {
-            base.fg(ACCENT_BLUE)
+            base.fg(code.function)
         }
-        "type" | "type.builtin" => base.fg(SYNTAX_TYPE),
+        "type" | "type.builtin" => base.fg(code.type_name),
         "constant" | "constant.builtin" | "constant.numeric" | "number" | "variable.builtin" => {
-            base.fg(SYNTAX_CONST)
+            base.fg(code.constant)
         }
-        "string" | "string.special" | "escape" => base.fg(DIFF_ADD),
-        "comment" => base.fg(TEXT_MUTED).add_modifier(Modifier::ITALIC),
+        "string" | "string.special" | "escape" => base.fg(code.string),
+        "comment" => base.fg(code.comment).add_modifier(Modifier::ITALIC),
         "operator"
         | "punctuation"
         | "punctuation.bracket"
         | "punctuation.delimiter"
-        | "punctuation.special" => base.fg(TEXT_DIM),
-        "attribute" | "tag" => base.fg(ACCENT_GOLD),
-        _ => base.fg(TEXT_PRIMARY),
+        | "punctuation.special" => base.fg(code.punctuation),
+        "attribute" | "tag" => base.fg(code.keyword),
+        _ => base.fg(code.text),
     }
-}
-
-fn default_style() -> Style {
-    Style::default().fg(TEXT_PRIMARY)
 }
 
 /// Map a fence info string (e.g. `rust`, `py`, `ts`, `c#`) to the canonical
@@ -189,10 +196,38 @@ fn config_for(key: &'static str) -> Option<Rc<HighlightConfiguration>> {
     })
 }
 
-/// Highlight a fenced code block, returning one span vector per input line.
-/// Returns `None` for unsupported languages or on any parse failure so callers
-/// can fall back to the lightweight highlighter.
-pub(crate) fn highlight_lines(lang: &str, lines: &[&str]) -> Option<Vec<Vec<Span<'static>>>> {
+/// A tree-sitter-backed [`Highlighter`](tuika::Highlighter).
+///
+/// Zero-sized and cheap to construct; the per-language parser configurations are
+/// built lazily and cached thread-locally on first use, so keeping one around is
+/// no better than making one per frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TreeSitterHighlighter;
+
+impl TreeSitterHighlighter {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl tuika::Highlighter for TreeSitterHighlighter {
+    fn highlight(
+        &self,
+        lang: &str,
+        lines: &[&str],
+        theme: &Theme,
+    ) -> Option<Vec<Vec<Span<'static>>>> {
+        highlight_lines(lang, lines, &theme.code)
+    }
+}
+
+/// Highlight a fenced code block, returning one span vector per input line, or
+/// `None` for unsupported languages / parse failures (see the crate docs).
+fn highlight_lines(
+    lang: &str,
+    lines: &[&str],
+    code: &CodeTheme,
+) -> Option<Vec<Vec<Span<'static>>>> {
     if lines.is_empty() {
         return None;
     }
@@ -205,6 +240,7 @@ pub(crate) fn highlight_lines(lang: &str, lines: &[&str]) -> Option<Vec<Vec<Span
         .highlight(&config, source.as_bytes(), None, |_| None)
         .ok()?;
 
+    let default_style = Style::default().fg(code.text);
     let mut style_stack: Vec<Style> = Vec::new();
     let mut out: Vec<Vec<Span<'static>>> = vec![Vec::new()];
     for event in events {
@@ -212,15 +248,15 @@ pub(crate) fn highlight_lines(lang: &str, lines: &[&str]) -> Option<Vec<Vec<Span
             HighlightEvent::HighlightStart(Highlight(index)) => {
                 let style = HIGHLIGHT_NAMES
                     .get(index)
-                    .map(|name| style_for_name(name))
-                    .unwrap_or_else(default_style);
+                    .map(|name| style_for_name(name, code))
+                    .unwrap_or(default_style);
                 style_stack.push(style);
             }
             HighlightEvent::HighlightEnd => {
                 style_stack.pop();
             }
             HighlightEvent::Source { start, end } => {
-                let style = style_stack.last().copied().unwrap_or_else(default_style);
+                let style = style_stack.last().copied().unwrap_or(default_style);
                 let text = source.get(start..end)?;
                 let mut segments = text.split('\n');
                 if let Some(first) = segments.next()
@@ -251,6 +287,7 @@ pub(crate) fn highlight_lines(lang: &str, lines: &[&str]) -> Option<Vec<Vec<Span
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tuika::Highlighter as _;
 
     fn plain(spans: &[Span<'static>]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()
@@ -258,39 +295,65 @@ mod tests {
 
     #[test]
     fn highlights_rust_keywords_distinctly() {
+        let theme = Theme::default();
+        let hl = TreeSitterHighlighter::new();
         let lines = vec!["fn main() {", "    let x = 1;", "}"];
-        let out = highlight_lines("rust", &lines).expect("rust highlights");
+        let out = hl
+            .highlight("rust", &lines, &theme)
+            .expect("rust highlights");
         assert_eq!(out.len(), 3);
-        // Each output line reconstructs its source exactly.
         for (rendered, source) in out.iter().zip(lines.iter()) {
             assert_eq!(&plain(rendered), source);
         }
-        // `fn` is a keyword and must carry the keyword color, not the default.
         let fn_span = out[0]
             .iter()
             .find(|s| s.content.as_ref() == "fn")
             .expect("fn span present");
-        assert_eq!(fn_span.style.fg, Some(ACCENT_GOLD));
+        assert_eq!(fn_span.style.fg, Some(theme.code.keyword));
+    }
+
+    #[test]
+    fn follows_the_host_theme() {
+        // A different palette restyles the same token.
+        let mut theme = Theme::default();
+        theme.code.keyword = ratatui::style::Color::Indexed(200);
+        let hl = TreeSitterHighlighter::new();
+        let out = hl
+            .highlight("rust", &["fn f() {}"], &theme)
+            .expect("rust highlights");
+        let fn_span = out[0]
+            .iter()
+            .find(|s| s.content.as_ref() == "fn")
+            .expect("fn span");
+        assert_eq!(fn_span.style.fg, Some(ratatui::style::Color::Indexed(200)));
     }
 
     #[test]
     fn aliases_resolve_and_js_uses_typescript_grammar() {
+        let theme = Theme::default();
+        let hl = TreeSitterHighlighter::new();
         assert_eq!(canonical_language("py"), Some("python"));
         assert_eq!(canonical_language("js"), Some("typescript"));
         assert_eq!(canonical_language("c#"), Some("csharp"));
-        assert!(highlight_lines("js", &["const x = 1;"]).is_some());
+        assert!(hl.highlight("js", &["const x = 1;"], &theme).is_some());
     }
 
     #[test]
     fn unsupported_language_returns_none() {
-        assert!(highlight_lines("brainfuck", &["+++"]).is_none());
+        let theme = Theme::default();
+        let hl = TreeSitterHighlighter::new();
+        assert!(hl.highlight("brainfuck", &["+++"], &theme).is_none());
         assert_eq!(canonical_language("whatever"), None);
     }
 
     #[test]
     fn blank_lines_inside_a_block_are_preserved() {
+        let theme = Theme::default();
+        let hl = TreeSitterHighlighter::new();
         let lines = vec!["x = 1", "", "y = 2"];
-        let out = highlight_lines("python", &lines).expect("python highlights");
+        let out = hl
+            .highlight("python", &lines, &theme)
+            .expect("python highlights");
         assert_eq!(out.len(), 3);
         assert_eq!(plain(&out[1]), "");
     }
