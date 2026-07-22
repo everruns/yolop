@@ -237,7 +237,7 @@ differ in maturity:
 
 | Leg | Runner | Capture | Status |
 |-----|--------|---------|--------|
-| tmux | Linux | `capture-pane` text | **Asserted** — `scripts/nightly_terminal/assert_gallery.sh` gates the job on the box chrome, a real Braille glyph, and the footer URL. |
+| tmux | Linux | `capture-pane` text | **Asserted** — `crates/tuika/scripts/nightly-assert-gallery.sh` gates the job on the box chrome, a real Braille glyph, and the footer URL. |
 | kitty | Linux (Xvfb, software GL) | remote-control text + screenshot | Best-effort — captured as an artifact; assertion is a warning, not a failure. |
 | iTerm2 | macOS | AppleScript session text + `screencapture` | Best-effort — artifact for inspection. |
 | Windows Terminal | Windows | screenshot | Best-effort — artifact for inspection. |

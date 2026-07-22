@@ -4,7 +4,7 @@
 # human inspection. Meant to be wrapped in `xvfb-run` so kitty has a display:
 #
 #   xvfb-run -a --server-args="-screen 0 1200x800x24" \
-#     bash scripts/nightly_terminal/kitty_capture.sh "$PWD/target/debug/yolop"
+#     bash crates/tuika/scripts/nightly-kitty-capture.sh "$PWD/target/debug/yolop"
 #
 # Writes capture.txt (screen text) and kitty.png (screenshot) to the cwd. Never
 # hard-fails on capture problems — the nightly leg is `continue-on-error` and
