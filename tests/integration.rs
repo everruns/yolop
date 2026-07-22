@@ -1711,7 +1711,10 @@ fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
 #[cfg(not(windows))]
 #[test]
 fn shell_commands_have_full_host_access_by_default() {
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = tempfile::Builder::new()
+        .prefix("yolop-default-host-access-test-")
+        .tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("tempdir outside shared temp");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("create workspace");
     let outside = root.path().join("outside.txt");
@@ -1761,7 +1764,10 @@ fn sandbox_flag_restricts_shell_writes_for_one_run() {
     if !require_native_sandbox("sandbox_flag_restricts_shell_writes_for_one_run") {
         return;
     }
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = tempfile::Builder::new()
+        .prefix("yolop-sandbox-flag-test-")
+        .tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("tempdir outside shared temp");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("create workspace");
     let outside = root.path().join("outside.txt");
