@@ -4,9 +4,10 @@
 //! Like the rest of tuika's interactive widgets, state and view are split:
 //! [`TextInputState`] owns the text and cursor and applies edits (via
 //! [`TextInputState::handle`] or the explicit methods); [`TextInput`] borrows it
-//! and renders. The view is char-soft-wrapped to the render width — a logical
-//! line longer than the area wraps onto extra visual rows, and a line that fills
-//! the width exactly wraps the cursor onto a fresh row, like a real editor.
+//! and renders. The view is word-soft-wrapped to the render width — a logical
+//! line longer than the area breaks at the last space that fits (hard-breaking a
+//! word longer than the width), and a line that fills the width exactly wraps the
+//! cursor onto a fresh row, like a real editor.
 //!
 //! It is a *rendering + edit model*, not a terminal: the host reads
 //! [`TextInputState::cursor_screen`] after layout and calls the backend's
@@ -438,16 +439,9 @@ impl TextInputState {
         }
     }
 
-    /// Char-soft-wrap every logical line to `width`, returning the visual rows as
-    /// `(logical_row, chars)`. A line that fills the width exactly emits a
-    /// trailing empty row so the cursor can rest on a fresh line.
-    fn visual_rows(&self, width: u16) -> Vec<(usize, Vec<char>)> {
-        wrap_visual_rows(&self.lines, width)
-    }
-
     /// Number of visual rows the text occupies at `width`.
     pub fn visual_height(&self, width: u16) -> u16 {
-        self.visual_rows(width).len().max(1) as u16
+        wrap_visual_rows(&self.lines, width).len().max(1) as u16
     }
 
     /// The cursor's visual `(row, col)` in wrapped coordinates at `width`.
@@ -480,43 +474,89 @@ impl TextInputState {
     }
 }
 
-/// The cursor's visual `(row, col)` for `lines` with the logical cursor at
-/// `(row, col)`, char-soft-wrapped to `width`. Shared by [`TextInputState`] and
-/// [`TextInput`] so the rendered scroll offset and the placed cursor agree.
-fn visual_cursor_at(lines: &[String], row: usize, col: usize, width: u16) -> (u16, u16) {
-    let width = width.max(1) as usize;
-    let mut vrow: usize = 0;
-    for (r, line) in lines.iter().enumerate() {
-        let len = line.chars().count();
-        if r == row {
-            return ((vrow + col / width) as u16, (col % width) as u16);
-        }
-        vrow += (len / width) + 1; // rows for this line (incl. trailing/empty)
-    }
-    (vrow as u16, 0)
+/// One wrapped visual row: which logical line it came from, the char index in
+/// that line where it starts, and its chars.
+struct VisualRow {
+    logical: usize,
+    start: usize,
+    chars: Vec<char>,
 }
 
-/// Char-soft-wrap `lines` to `width`, returning visual rows as
-/// `(logical_row, chars)`. A line that fills the width exactly emits a trailing
-/// empty row so the cursor can rest on a fresh line. Shared by [`TextInputState`]
-/// (cursor math) and [`TextInput`] (rendering).
-fn wrap_visual_rows(lines: &[String], width: u16) -> Vec<(usize, Vec<char>)> {
+/// The cursor's visual `(row, col)` for `lines` with the logical cursor at
+/// `(row, col)`, word-soft-wrapped to `width`. Reuses [`wrap_visual_rows`] so the
+/// rendered scroll offset and the placed cursor always agree with what's drawn.
+fn visual_cursor_at(lines: &[String], row: usize, col: usize, width: u16) -> (u16, u16) {
+    let rows = wrap_visual_rows(lines, width);
+    let mut last_on_line: Option<(usize, usize)> = None; // (visual index, start col)
+    for (vi, vr) in rows.iter().enumerate() {
+        if vr.logical > row {
+            break;
+        }
+        if vr.logical != row {
+            continue;
+        }
+        let end = vr.start + vr.chars.len();
+        last_on_line = Some((vi, vr.start));
+        // A col at this row's end belongs to the next row's start, so only claim
+        // it here when it falls strictly inside — except the line's last row,
+        // handled below.
+        if col >= vr.start && col < end {
+            return (vi as u16, (col - vr.start) as u16);
+        }
+    }
+    // Cursor at the end of the logical line: rest at the end of its last row
+    // (which is an empty trailing row when the text filled the width exactly).
+    if let Some((vi, start)) = last_on_line {
+        return (vi as u16, col.saturating_sub(start) as u16);
+    }
+    (rows.len().saturating_sub(1) as u16, 0)
+}
+
+/// Word-soft-wrap `lines` to `width`: each logical line breaks at the last space
+/// that fits, falling back to a hard char-break for a word longer than `width`.
+/// A line whose final row fills the width exactly emits a trailing empty row so
+/// the cursor can rest on a fresh line. Shared by [`visual_cursor_at`] (cursor
+/// math) and [`TextInput`] (rendering) so both wrap identically.
+fn wrap_visual_rows(lines: &[String], width: u16) -> Vec<VisualRow> {
     let width = width.max(1) as usize;
     let mut rows = Vec::new();
     for (r, line) in lines.iter().enumerate() {
         let chars: Vec<char> = line.chars().collect();
         if chars.is_empty() {
-            rows.push((r, Vec::new()));
+            rows.push(VisualRow {
+                logical: r,
+                start: 0,
+                chars: Vec::new(),
+            });
             continue;
         }
         let mut start = 0;
+        let mut last_filled = false;
         while start < chars.len() {
-            let end = (start + width).min(chars.len());
-            rows.push((r, chars[start..end].to_vec()));
+            let remaining = chars.len() - start;
+            let end = if remaining <= width {
+                chars.len()
+            } else {
+                // Break after the last space within the width window; if the
+                // window holds no space, hard-break at the width boundary.
+                let hard = start + width;
+                let brk = (start + 1..hard).rev().find(|&i| chars[i] == ' ');
+                brk.map(|i| i + 1).unwrap_or(hard)
+            };
+            last_filled = end - start == width;
+            rows.push(VisualRow {
+                logical: r,
+                start,
+                chars: chars[start..end].to_vec(),
+            });
             start = end;
         }
-        if chars.len().is_multiple_of(width) {
-            rows.push((r, Vec::new()));
+        if last_filled {
+            rows.push(VisualRow {
+                logical: r,
+                start: chars.len(),
+                chars: Vec::new(),
+            });
         }
     }
     rows
@@ -574,7 +614,7 @@ impl View for TextInput {
             return;
         }
         let offset = self.scroll_offset(area.width, area.height) as usize;
-        for (i, (_logical, chars)) in wrap_visual_rows(&self.lines, area.width)
+        for (i, vr) in wrap_visual_rows(&self.lines, area.width)
             .into_iter()
             .enumerate()
             .skip(offset)
@@ -584,7 +624,7 @@ impl View for TextInput {
                 break;
             }
             let mut x = area.x;
-            for ch in chars {
+            for ch in vr.chars {
                 let w = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
                 if w == 0 || x >= area.right() {
                     continue;
