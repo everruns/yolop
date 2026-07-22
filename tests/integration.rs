@@ -79,7 +79,7 @@ fn native_sandbox_available() -> bool {
             let tmp = dir.path().join("tmp");
             std::fs::create_dir_all(&ws).expect("probe workspace");
             std::fs::create_dir_all(&tmp).expect("probe temp");
-            let out = run_linux_sandbox_worker(&ws, &tmp, "true");
+            let out = run_linux_sandbox_worker(&ws, &tmp, "workspace-write", "true");
             if out.status.success() {
                 return true;
             }
