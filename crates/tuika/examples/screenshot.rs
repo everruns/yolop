@@ -10,6 +10,7 @@
 //! cargo run -p tuika --example screenshot            # writes docs/hero.svg
 //! cargo run -p tuika --example screenshot -- out.svg # custom path
 //! cargo run -p tuika --example screenshot -- --dump  # print one frame as text
+//! cargo run -p tuika --example screenshot -- run     # animate it in a real terminal
 //! ```
 //!
 //! Vector text stays sharp at any zoom, and — because an externally referenced
@@ -18,18 +19,26 @@
 //! are captured (spinners cycling, progress filling, the palette and tabs moving,
 //! a commit message typing); cells that never change are emitted once in a static
 //! base layer, so only the moving region is duplicated per frame.
+//!
+//! The `run` subcommand animates the same `scene()` in the alternate screen so a
+//! terminal recorder (VHS) can capture it as a GIF — that is how `docs/hero.gif`
+//! is produced (see `scripts/gen-tuika-hero.sh`). SVG and GIF therefore share one
+//! source of truth.
 
 use std::io;
 use std::path::PathBuf;
+use std::time::Duration;
 
+use crossterm::event::{self, Event as CtEvent, KeyCode as CtKeyCode, KeyEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
 use ratatui::text::{Line, Span};
+use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use tuika::{
     BorderStyle, Element, Event, Key, KeyCode, Loader, Padding, ProgressBar, Rule, SelectList,
     SelectState, Spinner, SpinnerStyle, StatusBar, Tabs, TabsState, Text, TextInput,
-    TextInputState, Theme, element, view,
+    TextInputState, Theme, element, paint, view,
 };
 
 /// Grid size (character cells). Chosen to give the gallery room to breathe while
@@ -50,6 +59,11 @@ fn main() -> io::Result<()> {
         let buffer = render_frame(6, &theme);
         println!("{}", tuika::testing::grid(&buffer));
         return Ok(());
+    }
+
+    if args.first().map(String::as_str) == Some("run") {
+        // Animate the scene in a real terminal so a recorder can capture it.
+        return run_interactive(&theme);
     }
 
     let out = args
@@ -91,6 +105,37 @@ fn main() -> io::Result<()> {
 fn render_frame(frame: u64, theme: &Theme) -> Buffer {
     let root = scene(frame, theme);
     tuika::testing::render(root.as_ref(), COLS, ROWS, theme)
+}
+
+/// Animate `scene()` full-screen until `q`/`Esc`. Used only for recording; the
+/// same builder feeds the SVG, so a GIF capture matches the vector image.
+fn run_interactive(theme: &Theme) -> io::Result<()> {
+    let _session = tuika::TerminalSession::enter()?;
+    let mut terminal = Terminal::with_options(
+        ratatui::backend::CrosstermBackend::new(io::stdout()),
+        TerminalOptions {
+            viewport: Viewport::Fullscreen,
+        },
+    )?;
+    let mut frame = 0u64;
+    loop {
+        terminal.draw(|f| {
+            let area = f.area();
+            let root = scene(frame, theme);
+            paint(f.buffer_mut(), area, theme, root.as_ref(), &[]);
+        })?;
+        if event::poll(Duration::from_millis(90))?
+            && let CtEvent::Key(key) = event::read()?
+            && key.kind != KeyEventKind::Release
+            && matches!(key.code, CtKeyCode::Char('q') | CtKeyCode::Esc)
+        {
+            break;
+        }
+        frame = frame.wrapping_add(1);
+    }
+    let _ = terminal.clear();
+    drop(terminal);
+    Ok(())
 }
 
 fn scene(frame: u64, theme: &Theme) -> Element {
