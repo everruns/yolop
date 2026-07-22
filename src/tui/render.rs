@@ -251,24 +251,15 @@ pub(crate) fn draw_recent_transcript(f: &mut ratatui::Frame, area: Rect, app: &A
 
 /// Whether a transcript line belongs in the inline viewport mirror.
 ///
-/// Startup banner system lines stay scrollback-only. Once the session has user
-/// or assistant content, later system notices (image paste, turn status, etc.)
-/// should appear above the composer instead of only in the flushed band.
+/// Startup banner system lines stay scrollback-only. Runtime system notices
+/// (image paste, turn status, etc.) should appear above the composer even when
+/// they arrive before the first user message.
 pub(crate) fn include_line_in_recent_transcript_mirror(
     line: &ChatLine,
     index: usize,
-    lines: &[ChatLine],
+    startup_banner_len: usize,
 ) -> bool {
-    if !matches!(line.author, Author::System) {
-        return true;
-    }
-    let Some(first_chat) = lines
-        .iter()
-        .position(|entry| !matches!(entry.author, Author::System))
-    else {
-        return false;
-    };
-    index >= first_chat
+    !matches!(line.author, Author::System) || index >= startup_banner_len
 }
 
 pub(crate) fn recent_transcript_lines(
@@ -291,7 +282,9 @@ pub(crate) fn recent_transcript_lines(
         .iter()
         .enumerate()
         .rev()
-        .filter(|(index, line)| include_line_in_recent_transcript_mirror(line, *index, &app.lines))
+        .filter(|(index, line)| {
+            include_line_in_recent_transcript_mirror(line, *index, app.startup_banner_len)
+        })
         .take(RECENT_TRANSCRIPT_SOURCE_LINES)
         .map(|(_, line)| line)
         .collect();
@@ -337,7 +330,7 @@ pub(crate) fn full_transcript_lines(app: &App, width: usize) -> Vec<Line<'static
     let mut lines = Vec::new();
     let mut prev_author: Option<Author> = None;
     for (index, chat) in app.lines.iter().enumerate() {
-        if !include_line_in_recent_transcript_mirror(chat, index, &app.lines) {
+        if !include_line_in_recent_transcript_mirror(chat, index, app.startup_banner_len) {
             continue;
         }
         if let Some(prev) = &prev_author
