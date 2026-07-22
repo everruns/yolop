@@ -332,7 +332,7 @@ pub(crate) struct PendingAsk {
 }
 
 struct PendingSandboxApproval {
-    reply: oneshot::Sender<bool>,
+    reply: oneshot::Sender<crate::sandbox_approval::ApprovalDecision>,
 }
 
 enum CodexLoginEvent {
@@ -1042,7 +1042,9 @@ impl App {
             } else {
                 "this command inside the active sandbox"
             };
-            self.push_system(format!("press y to approve {scope}, n or Esc to deny"));
+            self.push_system(format!(
+                "press y to approve {scope} once, a to approve {scope} for this session, n or Esc to deny"
+            ));
             self.pending_sandbox_approval = Some(PendingSandboxApproval { reply });
             return Ok(());
         }
@@ -1277,8 +1279,18 @@ impl App {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     if let Some(pending) = self.pending_sandbox_approval.take() {
-                        let _ = pending.reply.send(true);
+                        let _ = pending
+                            .reply
+                            .send(crate::sandbox_approval::ApprovalDecision::ApproveOnce);
                         self.push_system("approved".into());
+                    }
+                }
+                KeyCode::Char('a') | KeyCode::Char('A') => {
+                    if let Some(pending) = self.pending_sandbox_approval.take() {
+                        let _ = pending
+                            .reply
+                            .send(crate::sandbox_approval::ApprovalDecision::ApproveForSession);
+                        self.push_system("approved for this session".into());
                     }
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -1714,7 +1726,9 @@ impl App {
 
     fn deny_pending_sandbox_approval(&mut self) {
         if let Some(pending) = self.pending_sandbox_approval.take() {
-            let _ = pending.reply.send(false);
+            let _ = pending
+                .reply
+                .send(crate::sandbox_approval::ApprovalDecision::Deny);
             self.push_system("denied".into());
         }
     }
@@ -4951,6 +4965,26 @@ mod tests {
             _workspace: workspace,
             _sessions: sessions,
         }
+    }
+
+    #[tokio::test]
+    async fn sandbox_approval_can_be_granted_for_the_session() {
+        let mut test = app_with_llmsim().await;
+        let (reply, answer) = oneshot::channel();
+        test.app.pending_sandbox_approval = Some(PendingSandboxApproval { reply });
+
+        test.app
+            .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()))
+            .await;
+
+        assert_eq!(
+            answer.await.unwrap(),
+            crate::sandbox_approval::ApprovalDecision::ApproveForSession
+        );
+        assert!(test.app.pending_sandbox_approval.is_none());
+        assert!(test.app.lines.iter().any(|line| {
+            line.author == Author::System && line.text == "approved for this session"
+        }));
     }
 
     /// Seed a synthetic everruns completion signal onto the app's wake channel,

@@ -1658,6 +1658,59 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
     );
 }
 
+#[test]
+fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
+    let mut tui = spawn_tui_llmsim_with_settings(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            no_sandbox: true,
+            ..TuiSpawnOptions::default()
+        },
+        "provider = \"llmsim\"\napproval_policy = \"untrusted\"\n",
+    );
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"!shell printf first-session-command\r");
+    assert!(
+        tui.wait_for_output("approval needed", Duration::from_secs(5)),
+        "shell approval prompt did not render: {}",
+        tui.output_text()
+    );
+    tui.write_input(b"a");
+    assert!(
+        tui.wait_for_output("first-session-command", Duration::from_secs(5))
+            && tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
+        "approved shell command did not finish: {}",
+        tui.output_text()
+    );
+
+    tui.clear_output();
+    tui.write_input(b"!shell printf second-session-command\r");
+    assert!(
+        tui.wait_for_output("second-session-command", Duration::from_secs(5))
+            && tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
+        "second shell command did not inherit session approval: {}",
+        tui.output_text()
+    );
+    let second = strip_ansi(&tui.output_text());
+    assert!(
+        !second.contains("approval needed"),
+        "same-scope session approval prompted again: {second}"
+    );
+
+    tui.write_input(b"\x03\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(
+        status.success(),
+        "double Ctrl-C should exit cleanly, got {status:?}: {}",
+        tui.output_text()
+    );
+}
+
 #[cfg(not(windows))]
 #[test]
 fn no_sandbox_flag_gives_shell_commands_full_host_access_for_one_run() {
