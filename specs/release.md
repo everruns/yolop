@@ -226,6 +226,29 @@ and wrapping are undamaged. In yolop it is opt-in (`YOLOP_HYPERLINKS=1`),
 default-off until this matrix is walked — that is what the checkbox above
 verifies.
 
+### Nightly cross-terminal job
+
+`.github/workflows/nightly-terminals.yml` runs `yolop tuika-gallery` inside real
+terminal emulators on a nightly schedule (and on `workflow_dispatch`), narrowing
+how much of the matrix a human has to walk. In-repo tests already prove yolop
+emits the right bytes (`tests/tuika_pty.rs` asserts the protocol and the parsed
+vt100 grid); the nightly checks how emulators *interpret* those bytes. Legs
+differ in maturity:
+
+| Leg | Runner | Capture | Status |
+|-----|--------|---------|--------|
+| tmux | Linux | `capture-pane` text | **Asserted** — `scripts/nightly_terminal/assert_gallery.sh` gates the job on the box chrome, a real Braille glyph, and the footer URL. |
+| kitty | Linux (Xvfb, software GL) | remote-control text + screenshot | Best-effort — captured as an artifact; assertion is a warning, not a failure. |
+| iTerm2 | macOS | AppleScript session text + `screencapture` | Best-effort — artifact for inspection. |
+| Windows Terminal | Windows | screenshot | Best-effort — artifact for inspection. |
+
+A green **tmux** leg means the "alt-screen / Braille / layout / footer" rows are
+already verified in a real emulator, so the manual walk reduces to the
+per-emulator painting the best-effort legs only screenshot. Promote a best-effort
+leg to asserting once its capture is proven stable on the runner. The best-effort
+legs are `continue-on-error`, so a flaky GUI runner never reports the nightly red
+on its own.
+
 ## Post-Release Verification
 
 Run after both publish workflows finish. This is a required post-merge gate;
