@@ -16,6 +16,24 @@ use super::text::line_width;
 
 /// A bordered, padded container wrapping one child.
 ///
+/// # Example
+///
+/// ```
+/// use tuika::{Boxed, Text, Theme, element};
+/// use tuika::testing::{grid, render};
+///
+/// // Default rounded border with symmetric horizontal padding.
+/// let view = Boxed::new(element(Text::raw("hi")));
+///
+/// let buffer = render(&view, 6, 3, &Theme::default());
+/// assert_eq!(
+///     grid(&buffer),
+///     "╭────╮\n\
+///      │ hi │\n\
+///      ╰────╯",
+/// );
+/// ```
+///
 /// ![boxed demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/boxed.gif)
 pub struct Boxed {
     child: Element,

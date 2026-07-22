@@ -111,6 +111,22 @@ impl SelectState {
 ///
 /// [`viewport`]: SelectList::viewport
 ///
+/// # Example
+///
+/// ```
+/// use ratatui::text::Line;
+/// use tuika::{SelectList, SelectState, Theme};
+/// use tuika::testing::{grid, render};
+///
+/// // A fresh state highlights the first row; the caret `›` marks it.
+/// let state = SelectState::new();
+/// let items = vec![Line::from("one"), Line::from("two")];
+/// let view = SelectList::new(items, &state);
+///
+/// let buffer = render(&view, 5, 2, &Theme::default());
+/// assert_eq!(grid(&buffer), "› one\n  two");
+/// ```
+///
 /// ![select demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/select.gif)
 pub struct SelectList {
     items: Vec<Line<'static>>,
