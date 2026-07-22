@@ -4,7 +4,7 @@
   "benchmarks": {
     "one_shot.large": 4066518,
     "one_shot.small": 172394,
-    "reflow.mixed": 7942062,
-    "streaming.mixed": 80249636
+    "reflow.mixed": 7935987,
+    "streaming.mixed": 8565881
   }
 }

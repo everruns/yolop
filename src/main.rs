@@ -1007,7 +1007,9 @@ fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
     let highlighter = tuika_codeformatters::TreeSitterHighlighter::new();
     let mut markdown = MarkdownState::new();
     markdown.set(md_doc);
-    let markdown_lines = markdown.lines(46, theme, CodeHighlighter::With(&highlighter));
+    let markdown_lines = markdown
+        .lines(46, theme, CodeHighlighter::With(&highlighter))
+        .to_vec();
 
     tuika::view! {
         col(

@@ -635,14 +635,15 @@ fn stable_boundary(source: &str, from: usize) -> usize {
 /// Feed it deltas with [`push_str`](Self::push_str) (or replace the whole buffer
 /// with [`set`](Self::set)); call [`lines`](Self::lines) each frame for the
 /// current width-fitted rendering. Settled blocks — everything before the last
-/// blank line outside an open code fence — are parsed and highlighted **once**
-/// and cached; only the in-flight tail re-parses. That is what keeps a long
-/// transcript from re-tokenizing, and tree-sitter from re-highlighting settled
-/// code, on every delta.
+/// blank line outside an open code fence — are parsed, highlighted, **and
+/// flattened once** and cached; each delta re-does only the in-flight tail. That
+/// keeps a streamed render linear in the transcript length, instead of
+/// re-tokenizing and re-laying-out the whole settled prefix on every delta.
 ///
-/// The cache is width-independent (wrapping happens at [`lines`](Self::lines)
-/// time), so a resize is cheap; it is invalidated only when [`set`](Self::set)
-/// replaces the buffer or the [`Theme`] passed to [`lines`](Self::lines) changes.
+/// The parse/highlight cache is width-independent. The flattened-line cache is
+/// per-width: a resize re-wraps the settled prefix once (then reuses it), and a
+/// [`set`](Self::set) or [`Theme`] change discards everything. [`lines`](Self::lines)
+/// returns a borrow of the cached line buffer — clone it with `.to_vec()` to own it.
 ///
 /// ```
 /// use tuika::{MarkdownState, CodeHighlighter, Theme};
@@ -659,6 +660,20 @@ pub struct MarkdownState {
     stable_len: usize,
     stable: Vec<MdItem>,
     cached_theme: Option<Theme>,
+    // Settled lines are flattened *once*, as blocks settle, and kept here across
+    // frames — never re-flattened while streaming. Without this, `lines` would
+    // re-flatten (re-wrap, re-lay-out, re-clone) the whole settled prefix every
+    // delta, making a streamed render O(n²) in the transcript length. Returning a
+    // borrow of this buffer also avoids re-materializing the prefix per frame.
+    /// Flattened settled lines followed by the current in-flight tail.
+    rendered: Vec<Line<'static>>,
+    /// Count of leading `rendered` entries that are settled (cached) lines; the
+    /// rest is the per-frame tail, dropped and rebuilt on the next call.
+    settled_lines: usize,
+    /// Count of `stable` items already flattened into the settled prefix.
+    flattened_items: usize,
+    /// Width `rendered` was flattened at; a change re-wraps the whole prefix.
+    rendered_width: Option<u16>,
 }
 
 impl MarkdownState {
@@ -687,6 +702,10 @@ impl MarkdownState {
     fn reset_cache(&mut self) {
         self.stable_len = 0;
         self.stable.clear();
+        self.rendered.clear();
+        self.settled_lines = 0;
+        self.flattened_items = 0;
+        self.rendered_width = None;
     }
 
     /// Render the current buffer to final, width-fitted styled lines, advancing
@@ -696,16 +715,30 @@ impl MarkdownState {
     /// every color via [`Theme::code`](crate::CodeTheme); `highlighter` colors
     /// fenced code ([`CodeHighlighter::Plain`] for none). Draw the result
     /// **without** further wrapping (e.g. ratatui `Paragraph` with no `.wrap`).
+    ///
+    /// Returns a borrow of an internally-cached line buffer: settled blocks are
+    /// flattened once and only the in-flight tail is recomputed per call, so a
+    /// streamed render stays linear in the transcript length. The borrow is valid
+    /// until the next mutation of `self`; clone with `.to_vec()` if you need to
+    /// own it (e.g. to move into a ratatui `Text`).
     pub fn lines(
         &mut self,
         width: u16,
         theme: &Theme,
         highlighter: CodeHighlighter,
-    ) -> Vec<Line<'static>> {
-        // A theme change restyles everything, so the cache is invalid.
+    ) -> &[Line<'static>] {
+        // A theme change restyles everything, so every cache is invalid.
         if self.cached_theme != Some(*theme) {
             self.cached_theme = Some(*theme);
             self.reset_cache();
+        }
+        // A width change re-wraps every settled line, but the width-independent
+        // parse cache survives; drop only the flattened lines.
+        if self.rendered_width != Some(width) {
+            self.rendered_width = Some(width);
+            self.rendered.clear();
+            self.settled_lines = 0;
+            self.flattened_items = 0;
         }
 
         let boundary = stable_boundary(&self.source, self.stable_len);
@@ -724,19 +757,30 @@ impl MarkdownState {
             self.stable_len = boundary;
         }
 
+        // Drop the previous frame's tail (and settled/tail gap), then extend the
+        // settled prefix with any blocks that settled since — flattened once.
+        // `flatten` maps each item independently, so appending the new items'
+        // lines equals re-flattening the whole prefix.
+        self.rendered.truncate(self.settled_lines);
+        if self.flattened_items < self.stable.len() {
+            let settled = flatten(&self.stable[self.flattened_items..], width, theme);
+            self.rendered.extend(settled);
+            self.flattened_items = self.stable.len();
+            self.settled_lines = self.rendered.len();
+        }
+
         let tail = parse(&self.source[self.stable_len..], theme, highlighter);
-        let mut all = flatten(&self.stable, width, theme);
         let tail_lines = flatten(&tail, width, theme);
         // The tail begins just past the boundary's blank line; keep that gap.
-        if !all.is_empty()
+        if !self.rendered.is_empty()
             && !tail_lines.is_empty()
-            && !is_blank_line(all.last().unwrap())
+            && !is_blank_line(self.rendered.last().unwrap())
             && !is_blank_line(&tail_lines[0])
         {
-            all.push(Line::default());
+            self.rendered.push(Line::default());
         }
-        all.extend(tail_lines);
-        all
+        self.rendered.extend(tail_lines);
+        &self.rendered
     }
 }
 
@@ -1020,6 +1064,40 @@ mod tests {
                 .collect();
         }
         assert_eq!(streamed, one_shot);
+    }
+
+    #[test]
+    fn streaming_then_resize_matches_one_shot_at_new_width() {
+        // The settled-prefix line cache is width-specific: a width change must
+        // re-wrap the whole prefix, not serve stale lines flattened at the old
+        // width. Settle several blocks at a wide width, then render narrower.
+        let theme = Theme::default();
+        let chunks = [
+            "# A wide head",
+            "ing that wraps when narrow\n\nA para",
+            "graph long enough to wrap differently at 24 columns than at 60.\n\n",
+            "- a bullet that also wraps\n\nDone.",
+        ];
+        let full: String = chunks.concat();
+
+        let mut state = MarkdownState::new();
+        for chunk in chunks {
+            state.push_str(chunk);
+            let _ = state.lines(60, &theme, CodeHighlighter::Plain);
+        }
+        let resized: Vec<String> = state
+            .lines(24, &theme, CodeHighlighter::Plain)
+            .iter()
+            .map(text)
+            .collect();
+        let one_shot: Vec<String> = markdown_to_lines(&full, 24, &theme, CodeHighlighter::Plain)
+            .iter()
+            .map(text)
+            .collect();
+        assert_eq!(
+            resized, one_shot,
+            "resized stream must equal a one-shot render at the new width"
+        );
     }
 
     #[test]
