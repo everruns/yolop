@@ -172,11 +172,6 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let theme = yolop_theme();
     tuika::paint(f.buffer_mut(), area, &theme, root.as_ref(), &[]);
 
-    // Make transcript URLs clickable via OSC 8 (scoped to the transcript so a
-    // URL being typed in the composer isn't wrapped mid-edit).
-    let transcript_rect = transcript_probe.rect();
-    super::hyperlink::linkify_buffer(f.buffer_mut(), transcript_rect);
-
     // Mouse text selection over the transcript. Its selectable inner rect is the
     // transcript region inset one column (matching `transcript_view`'s padding).
     let t = transcript_probe.rect();
