@@ -95,10 +95,14 @@ view! {
 
 ### `Markdown` + `MarkdownState`
 
-Renders CommonMark to styled lines — word-wrapping prose, drawing code and
-tables verbatim. `MarkdownState` is the streaming form: fed deltas as a message
-arrives, it re-parses only the in-flight tail and caches everything before the
-last stable block boundary, so long transcripts don't re-tokenize.
+Renders CommonMark (plus GFM tables and strikethrough) to styled lines —
+word-wrapping prose and re-laying-out code and tables to the render width.
+`MarkdownState` is the streaming form: fed deltas as a message arrives, it
+re-parses only the in-flight tail and caches everything before the last stable
+block boundary, so long transcripts don't re-tokenize. The cache holds
+width-independent parsed blocks, so layout (including table column fitting) is
+recomputed each frame — pass the current width and the output tracks the view
+as it resizes.
 [API](https://docs.rs/tuika/latest/tuika/struct.Markdown.html)
 
 <img src="demos/markdown.gif" width="880" alt="Markdown streaming demo">
@@ -110,6 +114,31 @@ let mut md = MarkdownState::new();
 md.push_str(delta);                                  // forward each stream delta
 let lines = md.lines(width, &theme, CodeHighlighter::Plain);
 view! { node(tuika::Text::new(lines)) }
+```
+
+#### GFM tables
+
+Pipe tables render with box-drawing borders, a bold header, and per-column
+alignment from the `:---:` markers. Columns size to their content, then shrink
+the widest column (wrapping its cells) to fit the available width; when even
+that won't fit — below `4 * cols + 1` columns — the box is dropped for
+` | `-joined rows that word-wrap. Because layout is width-driven, the same
+source reflows as the view resizes.
+
+```rust
+use tuika::Markdown;
+let doc = Markdown::new("\
+| Component | Kind        | Resizes |
+| :-------- | :---------: | ------: |
+| Markdown  | streaming   |     yes |
+| CodeBlock | static      |     yes |
+");
+// Wide area: full boxed grid.        Narrow area: same source, boxless fallback.
+// ╭───────────┬───────────┬─────────╮   Component | Kind | Resizes
+// │ Component │    Kind   │ Resizes │   Markdown | streaming | yes
+// │ Markdown  │ streaming │     yes │   CodeBlock | static | yes
+// ╰───────────┴───────────┴─────────╯
+# let _ = doc;
 ```
 
 ### `CodeBlock`

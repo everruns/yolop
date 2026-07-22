@@ -8,11 +8,13 @@
 //! re-highlight settled code blocks, on every delta. This mirrors the split
 //! Hermes' TUI uses for its streaming markdown.
 //!
-//! Output is width-aware and correct for both prose and code: prose is
-//! word-wrapped (via [`wrap_lines`]) while code and tables are emitted verbatim,
-//! because indentation and column alignment are meaningful there. Callers draw
-//! the returned lines **without** further wrapping (e.g. ratatui's `Paragraph`
-//! with no `.wrap`, or tuika's [`Text`](crate::components::Text)).
+//! Output is width-aware and correct for prose, code, and tables: prose is
+//! word-wrapped (via [`wrap_lines`]); code is emitted verbatim, because its
+//! indentation is meaningful; and GFM tables are re-laid-out to the width each
+//! frame, with per-column fitting and styled cells (bold headers, links, inline
+//! code, emoji). Callers draw the returned lines **without** further wrapping
+//! (e.g. ratatui's `Paragraph` with no `.wrap`, or tuika's
+//! [`Text`](crate::components::Text)).
 //!
 //! For one-shot (non-streaming) text, [`markdown_to_lines`] renders a whole
 //! string in one call. The [`Markdown`] view wraps either for direct placement
@@ -50,13 +52,18 @@ enum MdItem {
     Blank,
 }
 
-/// Plain-text table contents captured during parsing; styled and boxed at
+/// Table contents captured during parsing: each cell is a run of pre-styled
+/// inline spans (bold, links, inline code, emoji), boxed and width-fitted at
 /// render time by [`render_table`].
 struct TableData {
     aligns: Vec<Alignment>,
-    header: Vec<String>,
-    rows: Vec<Vec<String>>,
+    header: Vec<Cell>,
+    rows: Vec<Vec<Cell>>,
 }
+
+/// One table cell's inline content, already styled by the shared inline
+/// machinery so cells carry the same markup as prose.
+type Cell = Vec<Span<'static>>;
 
 /// Parse `source` into width-independent [`MdItem`]s. Fenced code blocks are
 /// highlighted here (once), via `highlighter`, using `theme`'s code palette.
@@ -90,11 +97,12 @@ struct Builder<'a> {
     // Fenced/indented code block being collected.
     code: Option<(String, String)>, // (language tag, body)
 
-    // Table being collected. Header vs body rows are routed by which End event
+    // Table being collected. Cells reuse the shared `inline` accumulator, so
+    // they pick up the same styling as prose; each cell drains `inline` on its
+    // `TableCell` end. Header vs body rows are routed by which End event
     // (`TableHead` / `TableRow`) closes the accumulated cells.
     table: Option<TableData>,
-    cur_row: Vec<String>,
-    cur_cell: String,
+    cur_row: Vec<Cell>,
 }
 
 impl<'a> Builder<'a> {
@@ -111,7 +119,6 @@ impl<'a> Builder<'a> {
             code: None,
             table: None,
             cur_row: Vec::new(),
-            cur_cell: String::new(),
         }
     }
 
@@ -158,10 +165,6 @@ impl<'a> Builder<'a> {
             body.push_str(text);
             return;
         }
-        if self.table.is_some() {
-            self.cur_cell.push_str(text);
-            return;
-        }
         let style = self.cur_style();
         // Only linkify bare URLs in plain body text, not inside links/headings.
         if style.add_modifier.contains(Modifier::UNDERLINED) {
@@ -179,22 +182,21 @@ impl<'a> Builder<'a> {
             Event::End(tag) => self.end(tag),
             Event::Text(t) => self.push_text(&t),
             Event::Code(t) => {
-                if self.table.is_some() {
-                    self.cur_cell.push_str(&t);
-                } else {
-                    self.inline.push(Span::styled(
-                        t.to_string(),
-                        Style::default()
-                            .fg(self.theme.code.text)
-                            .bg(self.theme.code.background),
-                    ));
-                }
+                self.inline.push(Span::styled(
+                    t.to_string(),
+                    Style::default()
+                        .fg(self.theme.code.text)
+                        .bg(self.theme.code.background),
+                ));
             }
             Event::SoftBreak => {
-                if self.table.is_none() && self.code.is_none() {
+                if self.code.is_none() {
                     self.inline.push(Span::raw(" "));
                 }
             }
+            // A hard break inside a cell can't split it into another block, so
+            // it collapses to a space; elsewhere it flushes the prose line.
+            Event::HardBreak if self.table.is_some() => self.inline.push(Span::raw(" ")),
             Event::HardBreak => self.flush(),
             Event::Rule => {
                 self.separate();
@@ -279,9 +281,19 @@ impl<'a> Builder<'a> {
                     rows: Vec::new(),
                 });
             }
-            Tag::TableHead => self.cur_row.clear(),
+            Tag::TableHead => {
+                self.cur_row.clear();
+                // Header cells render bold in the heading color; push it as the
+                // cell base so plain header text picks it up, while links and
+                // inline code inside a header keep their own styling on top.
+                self.style_stack.push(
+                    Style::default()
+                        .fg(self.theme.code.heading)
+                        .add_modifier(Modifier::BOLD),
+                );
+            }
             Tag::TableRow => self.cur_row.clear(),
-            Tag::TableCell => self.cur_cell.clear(),
+            Tag::TableCell => self.inline.clear(),
             _ => {}
         }
     }
@@ -316,10 +328,11 @@ impl<'a> Builder<'a> {
                 self.style_stack.pop();
             }
             TagEnd::TableCell => {
-                let cell = std::mem::take(&mut self.cur_cell);
-                self.cur_row.push(cell.trim().to_string());
+                let cell = trim_spans(std::mem::take(&mut self.inline));
+                self.cur_row.push(cell);
             }
             TagEnd::TableHead => {
+                self.style_stack.pop();
                 if let Some(t) = self.table.as_mut() {
                     t.header = std::mem::take(&mut self.cur_row);
                 }
@@ -345,6 +358,11 @@ impl<'a> Builder<'a> {
     }
 
     fn finish(&mut self) {
+        // A still-streaming table (open at end of input) never renders partially;
+        // drop its in-progress cell rather than flushing it as stray prose.
+        if self.table.is_some() {
+            self.inline.clear();
+        }
         // Close any dangling paragraph in truncated (still-streaming) input.
         self.flush();
         if let Some((lang, body)) = self.code.take() {
@@ -355,6 +373,27 @@ impl<'a> Builder<'a> {
             }
         }
     }
+}
+
+/// Trim surrounding whitespace from a cell's span run: the leading edge of the
+/// first span and the trailing edge of the last, dropping any span left empty.
+fn trim_spans(mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    if let Some(first) = spans.first_mut() {
+        first.content = first.content.trim_start().to_string().into();
+    }
+    if let Some(last) = spans.last_mut() {
+        last.content = last.content.trim_end().to_string().into();
+    }
+    spans.retain(|s| !s.content.is_empty());
+    spans
+}
+
+/// Display columns of a cell's span run, grapheme-aware.
+fn spans_cols(spans: &[Span]) -> usize {
+    spans
+        .iter()
+        .map(|s| crate::width::str_cols(s.content.as_ref()) as usize)
+        .sum()
 }
 
 /// Style bare `http(s)://` URLs in `text` as links, leaving the rest at `base`.
@@ -442,9 +481,9 @@ fn render_table(table: &TableData, width: u16, theme: &Theme) -> Vec<Line<'stati
     // Natural width per column = widest cell (header + body).
     let mut widths = vec![0usize; cols];
     for (c, w) in widths.iter_mut().enumerate() {
-        *w = crate::width::str_cols(cell_at(&table.header, c)) as usize;
+        *w = spans_cols(cell_at(&table.header, c));
         for row in &table.rows {
-            *w = (*w).max(crate::width::str_cols(cell_at(row, c)) as usize);
+            *w = (*w).max(spans_cols(cell_at(row, c)));
         }
         *w = (*w).max(1);
     }
@@ -461,11 +500,9 @@ fn render_table(table: &TableData, width: u16, theme: &Theme) -> Vec<Line<'stati
         widths[idx] -= 1;
     }
 
+    // Cells carry their own inline styling (header bold, links, code); only the
+    // borders need a style here.
     let border = Style::default().fg(theme.dim);
-    let head_style = Style::default()
-        .fg(theme.code.heading)
-        .add_modifier(Modifier::BOLD);
-    let body_style = Style::default().fg(theme.text);
 
     let mut out = Vec::new();
     out.push(rule_row('╭', '┬', '╮', &widths, border));
@@ -473,62 +510,49 @@ fn render_table(table: &TableData, width: u16, theme: &Theme) -> Vec<Line<'stati
         &table.header,
         &widths,
         &table.aligns,
-        head_style,
         border,
         cols,
     ));
     out.push(rule_row('├', '┼', '┤', &widths, border));
     for row in &table.rows {
-        out.extend(cell_rows(
-            row,
-            &widths,
-            &table.aligns,
-            body_style,
-            border,
-            cols,
-        ));
+        out.extend(cell_rows(row, &widths, &table.aligns, border, cols));
     }
     out.push(rule_row('╰', '┴', '╯', &widths, border));
     out
 }
 
 /// Boxless table fallback for widths too narrow to draw borders: each row's
-/// cells joined by ` | ` and word-wrapped to `width` (header bold). Guarantees
-/// every returned line fits `width`.
+/// styled cells joined by ` | ` and word-wrapped to `width` (cells keep their
+/// inline styling). Guarantees every returned line fits `width`.
 fn render_table_plain(
     table: &TableData,
     width: u16,
     cols: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let join = |row: &[String]| -> String {
-        (0..cols)
-            .map(|c| cell_at(row, c))
-            .collect::<Vec<_>>()
-            .join(" | ")
+    let sep = Style::default().fg(theme.dim);
+    let join = |row: &[Cell]| -> Line<'static> {
+        let mut spans = Vec::new();
+        for c in 0..cols {
+            if c > 0 {
+                spans.push(Span::styled(" | ".to_string(), sep));
+            }
+            spans.extend(cell_at(row, c).iter().cloned());
+        }
+        Line::from(spans)
     };
-    let head_style = Style::default()
-        .fg(theme.code.heading)
-        .add_modifier(Modifier::BOLD);
-    let body_style = Style::default().fg(theme.text);
 
     let mut out = Vec::new();
-    out.extend(wrap_lines(
-        &[Line::from(Span::styled(join(&table.header), head_style))],
-        width,
-    ));
+    out.extend(wrap_lines(&[join(&table.header)], width));
     for row in &table.rows {
-        out.extend(wrap_lines(
-            &[Line::from(Span::styled(join(row), body_style))],
-            width,
-        ));
+        out.extend(wrap_lines(&[join(row)], width));
     }
     out
 }
 
-/// The `c`th cell of `row`, or `""` when the row is short.
-fn cell_at(row: &[String], c: usize) -> &str {
-    row.get(c).map(String::as_str).unwrap_or("")
+/// The `c`th cell of `row`, or an empty span run when the row is short.
+fn cell_at(row: &[Cell], c: usize) -> &[Span<'static>] {
+    row.get(c).map(Vec::as_slice).unwrap_or(&[])
 }
 
 fn rule_row(left: char, mid: char, right: char, widths: &[usize], style: Style) -> Line<'static> {
@@ -541,58 +565,55 @@ fn rule_row(left: char, mid: char, right: char, widths: &[usize], style: Style) 
     Line::from(Span::styled(s, style))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn cell_rows(
-    row: &[String],
+    row: &[Cell],
     widths: &[usize],
     aligns: &[Alignment],
-    text_style: Style,
     border: Style,
     cols: usize,
 ) -> Vec<Line<'static>> {
-    // Wrap each cell to its column width; a table row is as tall as its tallest
-    // cell.
-    let wrapped: Vec<Vec<String>> = (0..cols)
+    // Wrap each cell's styled spans to its column width (grapheme-aware, so wide
+    // glyphs stay intact); a table row is as tall as its tallest wrapped cell.
+    let wrapped: Vec<Vec<Line<'static>>> = (0..cols)
         .map(|c| {
-            let text = cell_at(row, c);
-            if text.is_empty() {
-                vec![String::new()]
+            let cell = cell_at(row, c);
+            if cell.is_empty() {
+                vec![Line::default()]
             } else {
-                textwrap::wrap(text, widths[c].max(1))
-                    .into_iter()
-                    .map(|s| s.into_owned())
-                    .collect()
+                let lines = wrap_lines(&[Line::from(cell.to_vec())], widths[c].max(1) as u16);
+                if lines.is_empty() {
+                    vec![Line::default()]
+                } else {
+                    lines
+                }
             }
         })
         .collect();
     let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
 
+    let empty = Line::default();
     let mut lines = Vec::new();
     for r in 0..height {
         let mut spans = vec![Span::styled("│".to_string(), border)];
-        for c in 0..cols {
-            let content = wrapped[c].get(r).map(String::as_str).unwrap_or("");
+        for (c, width) in widths.iter().enumerate() {
+            let content = wrapped[c].get(r).unwrap_or(&empty);
+            let pad = width.saturating_sub(line_width(content) as usize);
             let align = aligns.get(c).copied().unwrap_or(Alignment::None);
-            let padded = pad_cell(content, widths[c], align);
-            spans.push(Span::styled(format!(" {padded} "), text_style));
+            let (left, right) = match align {
+                Alignment::Right => (pad, 0),
+                Alignment::Center => (pad / 2, pad - pad / 2),
+                _ => (0, pad),
+            };
+            // A one-space gutter each side, alignment padding, then the cell's
+            // own styled spans between.
+            spans.push(Span::raw(format!(" {}", " ".repeat(left))));
+            spans.extend(content.spans.iter().cloned());
+            spans.push(Span::raw(format!("{} ", " ".repeat(right))));
             spans.push(Span::styled("│".to_string(), border));
         }
         lines.push(Line::from(spans));
     }
     lines
-}
-
-fn pad_cell(text: &str, width: usize, align: Alignment) -> String {
-    let w = crate::width::str_cols(text) as usize;
-    let pad = width.saturating_sub(w);
-    match align {
-        Alignment::Right => format!("{}{}", " ".repeat(pad), text),
-        Alignment::Center => {
-            let l = pad / 2;
-            format!("{}{}{}", " ".repeat(l), text, " ".repeat(pad - l))
-        }
-        _ => format!("{}{}", text, " ".repeat(pad)),
-    }
 }
 
 /// Render a whole markdown string to width-fitted styled lines in one call.
@@ -998,6 +1019,70 @@ mod tests {
         assert!(
             out.iter().any(|l| l.contains('1') && l.contains('2')),
             "row: {out:?}"
+        );
+    }
+
+    #[test]
+    fn table_header_cells_are_bold_and_themed() {
+        let theme = Theme::default();
+        let src = "| Name | Kind |\n| --- | --- |\n| a | b |";
+        let lines = markdown_to_lines(src, 40, &theme, CodeHighlighter::Plain);
+        let head = lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .find(|s| s.content.contains("Name"))
+            .expect("header cell span");
+        assert!(head.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(head.style.fg, Some(theme.code.heading));
+    }
+
+    #[test]
+    fn table_cell_link_is_styled() {
+        let theme = Theme::default();
+        let src = "| Site |\n| --- |\n| [yolop](https://everruns.dev) |";
+        let lines = markdown_to_lines(src, 40, &theme, CodeHighlighter::Plain);
+        let link = lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .find(|s| s.content.contains("yolop"))
+            .expect("link cell span");
+        assert_eq!(link.style.fg, Some(theme.code.link));
+        assert!(link.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn table_cell_bold_and_inline_code_survive() {
+        let theme = Theme::default();
+        let src = "| Col |\n| --- |\n| **hi** and `cargo` |";
+        let lines = markdown_to_lines(src, 40, &theme, CodeHighlighter::Plain);
+        let spans: Vec<&Span> = lines.iter().flat_map(|l| &l.spans).collect();
+        let bold = spans
+            .iter()
+            .find(|s| s.content.contains("hi"))
+            .expect("bold span");
+        assert!(bold.style.add_modifier.contains(Modifier::BOLD));
+        let code = spans
+            .iter()
+            .find(|s| s.content.contains("cargo"))
+            .expect("code span");
+        assert_eq!(code.style.bg, Some(theme.code.background));
+    }
+
+    #[test]
+    fn table_cell_emoji_keeps_borders_aligned() {
+        // A wide emoji is measured grapheme-aware, so every boxed row stays the
+        // same rendered width and the borders line up.
+        let src = "| Status |\n| --- |\n| ok ✅ |\n| bad |";
+        let lines = markdown_to_lines(src, 40, &Theme::default(), CodeHighlighter::Plain);
+        let box_rows: Vec<u16> = lines
+            .iter()
+            .filter(|l| text(l).contains('│'))
+            .map(line_width)
+            .collect();
+        assert!(box_rows.len() >= 2, "expected boxed rows: {box_rows:?}");
+        assert!(
+            box_rows.windows(2).all(|w| w[0] == w[1]),
+            "boxed rows must share one width: {box_rows:?}"
         );
     }
 
