@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 mod fullscreen;
+mod hyperlink;
 mod markdown_table;
 mod render;
 mod setup;
@@ -1222,6 +1223,10 @@ impl App {
         for chunk in rendered.chunks(u16::MAX as usize) {
             terminal.insert_before(chunk.len() as u16, |buf| {
                 Paragraph::new(chunk.to_vec()).render(buf.area, buf);
+                // Make any URL clickable via OSC 8 before it commits to
+                // scrollback — styling alone isn't enough on terminals that
+                // don't auto-detect links.
+                hyperlink::linkify_buffer(buf, buf.area);
             })?;
         }
         self.printed_lines = self.lines.len();
@@ -4312,6 +4317,37 @@ mod tests {
             scrollback_height: terminal.backend().scrollback().area.height,
             viewport_bottom: viewport.y.saturating_add(viewport.height),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_transcript_urls_commit_osc8_hyperlinks() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.setup = None;
+        app.push_system("see https://github.com/everruns/yolop/pull/510 for CI".into());
+
+        let backend = TestBackend::new(80, 6);
+        let mut terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(COMPOSER_VIEWPORT_HEIGHT),
+            },
+        )
+        .expect("terminal");
+        app.flush_transcript(&mut terminal).expect("flush");
+
+        // The committed scrollback row carries a real OSC 8 hyperlink around the
+        // URL, not just styled text — so it is clickable regardless of whether
+        // the terminal auto-detects links.
+        let scrollback = terminal.backend().scrollback();
+        let opener = "\x1b]8;;https://github.com/everruns/yolop/pull/510\x1b\\";
+        let found = (0..scrollback.area.height).any(|y| {
+            (0..scrollback.area.width).any(|x| scrollback[(x, y)].symbol().contains(opener))
+        });
+        assert!(
+            found,
+            "flushed transcript should wrap the URL in an OSC 8 hyperlink"
+        );
     }
 
     fn presentation_state_idle() -> PresentationState {
