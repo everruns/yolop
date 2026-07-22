@@ -9,7 +9,7 @@
 //!
 //! This covers the *protocol* a terminal receives; genuinely terminal-specific
 //! rendering (does Ghostty draw the Braille, does the taskbar light up) is the
-//! manual matrix documented in `src/tuika/README.md`.
+//! manual matrix documented in `specs/release.md`.
 #![cfg(unix)]
 
 use std::io::{Read, Write};
@@ -127,6 +127,12 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// Whether `text` contains a codepoint from the U+2800 Braille block — what the
+/// gallery's default (Braille) spinner draws.
+fn has_braille(text: &str) -> bool {
+    text.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+}
+
 /// Strip CSI sequences so we can look for rendered text.
 fn visible_text(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
@@ -205,6 +211,31 @@ fn gallery_drives_altscreen_and_native_progress() {
     assert!(
         text.contains("spinners") && text.contains("progress"),
         "gallery chrome should render: {text:?}"
+    );
+}
+
+#[test]
+fn gallery_paints_truecolor_and_braille() {
+    let run = run_gallery(24, 80, None, false);
+    let out = &run.output;
+    assert!(
+        run.exited_ok,
+        "gallery should exit cleanly: {}",
+        visible_text(out)
+    );
+    // Truecolor: the default theme is 24-bit RGB, so the renderer must emit
+    // SGR 38;2 (fg) / 48;2 (bg). This proves the "truecolor" matrix row at the
+    // protocol level instead of by eye.
+    assert!(
+        contains(out, b"\x1b[38;2;") || contains(out, b"\x1b[48;2;"),
+        "expected 24-bit truecolor SGR from the RGB theme"
+    );
+    // Braille: the default spinner draws from the U+2800 block, so a Braille
+    // codepoint must reach the terminal — the "Braille glyphs" matrix row.
+    let text = visible_text(out);
+    assert!(
+        has_braille(&text),
+        "expected Braille spinner glyphs in the rendered output: {text:?}"
     );
 }
 
