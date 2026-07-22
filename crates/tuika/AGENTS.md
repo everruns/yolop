@@ -13,6 +13,8 @@ hermetically.
 - `docs/demos/*.gif` — the committed demo recordings referenced by
   `components.md` and, via `raw.githubusercontent.com` URLs, inline on each
   component's `struct` doc so they render on docs.rs.
+- `docs/hero.gif` — the README hero: a recording of a composite gallery screen.
+  See [Hero screenshot](#hero-screenshot).
 
 ## Component demos
 
@@ -53,6 +55,34 @@ Recordings are captured at 2× pixel density and displayed at half width
 4. Reference `demos/<name>.gif` in `docs/components.md` and inline on the
    component's `struct` doc (via the `raw.githubusercontent.com/.../main/...`
    URL, so docs.rs resolves it).
+
+## Hero screenshot
+
+The README hero (`docs/hero.gif`) is a VHS recording of a composite "app" scene
+that exercises most of the toolkit at once. The scene lives in
+[`examples/screenshot.rs`](examples/screenshot.rs) as one `scene()` builder, and
+[`scripts/gen-tuika-hero.sh`](scripts/gen-tuika-hero.sh) records it: it builds
+the example, runs its `run` subcommand full-screen under VHS (window bar for
+chrome, theme background matched to tuika's), and writes the GIF. Requires the
+same toolchain as the demos — VHS with `ttyd` and `ffmpeg`.
+
+```bash
+scripts/gen-tuika-hero.sh
+```
+
+Regenerate it whenever the components' look changes so the hero stays truthful.
+
+The example doubles as an **offline, recorder-free** path: the same `scene()`
+also serializes to a crisp animated SVG (block glyphs painted as rects; static
+cells shared across frames, only the moving region duplicated). Handy when VHS
+isn't available, or for a vector asset.
+
+```bash
+cargo run -p tuika --example screenshot            # write an SVG (default path)
+cargo run -p tuika --example screenshot -- out.svg # custom path
+cargo run -p tuika --example screenshot -- --dump  # print one frame as text
+cargo run -p tuika --example screenshot -- run     # animate it (what VHS records)
+```
 
 ### The check invariant
 
