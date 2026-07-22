@@ -313,34 +313,43 @@ pub(crate) fn recent_transcript_lines(
     chunks.into_iter().flatten().collect()
 }
 
-/// The **full** transcript as styled lines, oldest-first, for the full-screen
-/// `tuika::Scroll` viewport (which owns the alternate screen and can scroll the
-/// entire history, unlike the inline recent-tail mirror above).
+/// Wrap the **full**-screen transcript for `lines[start..]` onto `out`,
+/// oldest-first, for the full-screen `tuika::Scroll` viewport (which owns the
+/// alternate screen and can scroll the entire history, unlike the inline
+/// recent-tail mirror above). Uses the same [`append_chat_lines`] formatting and
+/// [`should_insert_chat_gap`] spacing as [`recent_transcript_lines`], but
+/// assembles history forward with no tail bound and no `bounded_recent_chat_line`
+/// truncation, because the full-screen viewport scrolls rather than clipping to a
+/// fixed window — the traversal differs by design, so they are not worth
+/// collapsing into one function.
 ///
-/// NOTE: this deliberately duplicates the per-line assembly of
-/// [`recent_transcript_lines`] — same [`append_chat_lines`] formatting and
-/// [`should_insert_chat_gap`] spacing — but assembles the *whole* history
-/// forward with no tail bound and no `bounded_recent_chat_line` truncation,
-/// because the full-screen viewport scrolls rather than clipping to a fixed
-/// window. The shared piece is `append_chat_lines`; the traversal differs by
-/// design (reverse+bounded for inline, forward+unbounded here), so they are not
-/// worth collapsing into one function.
-pub(crate) fn full_transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    let mut prev_author: Option<Author> = None;
-    for (index, chat) in app.lines.iter().enumerate() {
-        if !include_line_in_recent_transcript_mirror(chat, index, app.startup_banner_len) {
+/// `prev_author` is threaded across the `start` boundary and the author of the
+/// last emitted chat is returned, so a later call can resume where this one
+/// stopped. That resume is what lets the full-screen renderer memoize wrapping:
+/// because `App::lines` only grows at the tail between resets, the wrap cache
+/// re-runs this over just the newly-appended lines instead of the whole history
+/// every frame. Pass `start = 0`, `prev_author = None` to wrap everything.
+pub(crate) fn append_transcript_range(
+    out: &mut Vec<Line<'static>>,
+    lines: &[ChatLine],
+    start: usize,
+    startup_banner_len: usize,
+    width: usize,
+    mut prev_author: Option<Author>,
+) -> Option<Author> {
+    for (index, chat) in lines.iter().enumerate().skip(start) {
+        if !include_line_in_recent_transcript_mirror(chat, index, startup_banner_len) {
             continue;
         }
         if let Some(prev) = &prev_author
             && should_insert_chat_gap(prev, Some(&chat.author))
         {
-            lines.push(Line::from(""));
+            out.push(Line::from(""));
         }
-        append_chat_lines(&mut lines, chat, width);
+        append_chat_lines(out, chat, width);
         prev_author = Some(chat.author.clone());
     }
-    lines
+    prev_author
 }
 
 pub(crate) fn bounded_recent_chat_line(chat: &ChatLine) -> ChatLine {
