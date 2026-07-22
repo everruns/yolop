@@ -58,6 +58,7 @@ impl ProgressBar {
         self
     }
 
+    /// Override the filled and track colors (default to theme accent and dim).
     pub fn colors(mut self, filled: ratatui::style::Color, track: ratatui::style::Color) -> Self {
         self.filled = Some(filled);
         self.track = Some(track);

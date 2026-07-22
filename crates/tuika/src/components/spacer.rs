@@ -7,6 +7,7 @@ use crate::geometry::Size;
 use crate::surface::Surface;
 use crate::view::{RenderCtx, View};
 
+/// An empty filler view that paints nothing; used as a flex or fixed gap.
 pub struct Spacer;
 
 impl View for Spacer {

@@ -11,16 +11,20 @@ use ratatui::layout::Rect;
 /// An intrinsic size in terminal cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Size {
+    /// Width in terminal cells.
     pub width: u16,
+    /// Height in terminal cells.
     pub height: u16,
 }
 
 impl Size {
+    /// A zero-by-zero size.
     pub const ZERO: Size = Size {
         width: 0,
         height: 0,
     };
 
+    /// A size of `width` by `height` cells.
     pub fn new(width: u16, height: u16) -> Self {
         Self { width, height }
     }
@@ -46,7 +50,9 @@ impl From<Rect> for Size {
 /// The layout axis a flex container distributes children along.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
+    /// Main axis runs left-to-right; children stack in a row.
     Horizontal,
+    /// Main axis runs top-to-bottom; children stack in a column.
     Vertical,
 }
 
@@ -98,13 +104,18 @@ impl Axis {
 /// Symmetric-per-edge padding, in cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Padding {
+    /// Cells inset from the left edge.
     pub left: u16,
+    /// Cells inset from the right edge.
     pub right: u16,
+    /// Cells inset from the top edge.
     pub top: u16,
+    /// Cells inset from the bottom edge.
     pub bottom: u16,
 }
 
 impl Padding {
+    /// No padding on any edge.
     pub const ZERO: Padding = Padding {
         left: 0,
         right: 0,
@@ -132,10 +143,12 @@ impl Padding {
         }
     }
 
+    /// Combined left + right padding, in cells.
     pub fn horizontal(self) -> u16 {
         self.left.saturating_add(self.right)
     }
 
+    /// Combined top + bottom padding, in cells.
     pub fn vertical(self) -> u16 {
         self.top.saturating_add(self.bottom)
     }

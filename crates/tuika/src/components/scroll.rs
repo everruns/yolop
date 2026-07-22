@@ -26,6 +26,7 @@ pub struct ScrollState {
 }
 
 impl ScrollState {
+    /// A fresh state at the top with bottom-stick armed.
     pub fn new() -> Self {
         Self {
             offset: 0,
@@ -33,10 +34,12 @@ impl ScrollState {
         }
     }
 
+    /// Top visible content row (0-based).
     pub fn offset(&self) -> u16 {
         self.offset
     }
 
+    /// Whether the view is pinned to the newest content.
     pub fn is_stuck_to_bottom(&self) -> bool {
         self.stick_to_bottom
     }
@@ -130,6 +133,7 @@ pub struct Scroll {
 }
 
 impl Scroll {
+    /// Build a viewport over `lines`, windowed at `state`'s offset.
     pub fn new(lines: Vec<Line<'static>>, state: &ScrollState) -> Self {
         Self {
             lines,
@@ -138,11 +142,13 @@ impl Scroll {
         }
     }
 
+    /// Toggle the scrollbar (shown by default when content overflows).
     pub fn scrollbar(mut self, show: bool) -> Self {
         self.scrollbar = show;
         self
     }
 
+    /// Total content height in rows (one per line).
     pub fn content_height(&self) -> u16 {
         self.lines.len() as u16
     }

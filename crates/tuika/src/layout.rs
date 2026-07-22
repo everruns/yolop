@@ -31,8 +31,11 @@ pub enum Dimension {
 /// where a column's children should fill its width (and a row's its height).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Align {
+    /// Pack children against the cross-axis start edge.
     Start,
+    /// Center children on the cross axis.
     Center,
+    /// Pack children against the cross-axis end edge.
     End,
     /// Fill the full cross extent.
     #[default]
@@ -42,9 +45,12 @@ pub enum Align {
 /// Main-axis distribution of leftover space when no child is [`Dimension::Flex`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Justify {
+    /// Pack children against the main-axis start; leftover space trails them.
     #[default]
     Start,
+    /// Center children on the main axis, splitting leftover space at both ends.
     Center,
+    /// Pack children against the main-axis end; leftover space leads them.
     End,
     /// Even gaps between children, none at the ends.
     SpaceBetween,
@@ -53,12 +59,15 @@ pub enum Justify {
 /// Direction a flex container stacks its children.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Direction {
+    /// Stack children left-to-right (main axis horizontal).
     Row,
+    /// Stack children top-to-bottom (main axis vertical).
     #[default]
     Column,
 }
 
 impl Direction {
+    /// The main [`Axis`] this direction stacks children along.
     pub fn axis(self) -> Axis {
         match self {
             Direction::Row => Axis::Horizontal,
@@ -70,14 +79,20 @@ impl Direction {
 /// Declarative layout properties for a flex container.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LayoutStyle {
+    /// Which axis children stack along.
     pub direction: Direction,
+    /// Padding inset applied inside the container before children are placed.
     pub padding: Padding,
+    /// Cells of empty space inserted between adjacent children.
     pub gap: u16,
+    /// Cross-axis alignment applied to every child.
     pub align_items: Align,
+    /// Main-axis distribution of leftover space.
     pub justify: Justify,
 }
 
 impl LayoutStyle {
+    /// A row-direction style; all other properties default.
     pub fn row() -> Self {
         Self {
             direction: Direction::Row,
@@ -85,6 +100,7 @@ impl LayoutStyle {
         }
     }
 
+    /// A column-direction style; all other properties default.
     pub fn column() -> Self {
         Self {
             direction: Direction::Column,
@@ -92,21 +108,25 @@ impl LayoutStyle {
         }
     }
 
+    /// Set the between-children gap, in cells.
     pub fn gap(mut self, gap: u16) -> Self {
         self.gap = gap;
         self
     }
 
+    /// Set the container padding.
     pub fn padding(mut self, padding: Padding) -> Self {
         self.padding = padding;
         self
     }
 
+    /// Set the cross-axis alignment of children.
     pub fn align(mut self, align: Align) -> Self {
         self.align_items = align;
         self
     }
 
+    /// Set the main-axis distribution of leftover space.
     pub fn justify(mut self, justify: Justify) -> Self {
         self.justify = justify;
         self
@@ -120,11 +140,14 @@ impl LayoutStyle {
 /// cross alignment.
 #[derive(Clone, Copy, Debug)]
 pub struct Item {
+    /// The child's main-axis sizing rule.
     pub dimension: Dimension,
+    /// The child's measured intrinsic content size.
     pub intrinsic: Size,
 }
 
 impl Item {
+    /// An item with the given main-axis sizing rule and intrinsic size.
     pub fn new(dimension: Dimension, intrinsic: Size) -> Self {
         Self {
             dimension,

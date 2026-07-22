@@ -34,6 +34,16 @@
 //! `MyWidget { … }` syntax for external components; the `node(expr)` escape
 //! hatch covers that case today.
 
+/// Build a tuika [`Element`](crate::view::Element) tree from a declarative,
+/// top-down layout description.
+///
+/// Each keyword consumes exactly one node: `col`/`row` open flex containers
+/// (with optional `gap`/`padding`/`align`/`justify`/`background` attrs and a
+/// `{ children }` block), `boxed` wraps a single child in a border (with
+/// `title`/`border`/`padding`/`background` attrs), `text(expr)` and `spacer()`
+/// emit leaves, `grow(n)`/`fixed(n)` set a child's main-axis size, and
+/// `node(expr)` splices any `impl View`. Expands to plain builder calls with no
+/// runtime cost.
 #[macro_export]
 macro_rules! view {
     // ---- public entry: a single node -> Element -----------------------------
