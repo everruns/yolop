@@ -753,8 +753,9 @@ fn tui_escape_does_not_exit_and_ctrl_c_exits() {
         tui.output_text()
     );
     assert!(
-        tui.output_text().contains("Resume with yolop --session"),
-        "Ctrl-C cleanup should print resume hint: {}",
+        tui.output_text()
+            .contains("Continue with yolop --provider llmsim"),
+        "Ctrl-C cleanup should print continuation hint: {}",
         tui.output_text()
     );
 }
@@ -831,6 +832,21 @@ fn tui_smoke(fullscreen: bool) {
         "{mode}: second Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
     );
+    let output = strip_ansi(&tui.output_text());
+    assert!(
+        output.contains("Continue with yolop --provider llmsim"),
+        "{mode}: continuation command should preserve reusable arguments: {output}"
+    );
+    if fullscreen {
+        assert!(
+            output.matches("real responses").count() >= 2,
+            "fullscreen: final assistant message should be reprinted after exit: {output}"
+        );
+        assert!(
+            output.contains("--fullscreen --session"),
+            "fullscreen: continuation command should preserve --fullscreen: {output}"
+        );
+    }
 }
 
 #[test]
@@ -1138,8 +1154,9 @@ fn tui_exits_cleanly_when_emulator_stops_answering_cursor_queries() {
         tui.output_text()
     );
     assert!(
-        tui.output_text().contains("Resume with yolop --session"),
-        "cleanup should still print resume hint: {}",
+        tui.output_text()
+            .contains("Continue with yolop --provider llmsim"),
+        "cleanup should still print continuation hint: {}",
         tui.output_text()
     );
 }

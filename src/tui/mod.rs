@@ -639,6 +639,15 @@ impl App {
         self.ctrl_c_exit
     }
 
+    /// Final assistant text to leave visible after the full-screen UI closes.
+    pub fn last_assistant_message(&self) -> Option<&str> {
+        self.lines
+            .iter()
+            .rev()
+            .find(|line| line.author == Author::Assistant)
+            .map(|line| line.text.as_str())
+    }
+
     pub fn session_id(&self) -> SessionId {
         self.session.session_id()
     }
@@ -2753,6 +2762,31 @@ mod tests {
     use everruns_core::{MessageId, SessionId, TurnId};
 
     use everruns_core::command::{CommandArg, CommandDescriptor, CommandSource};
+
+    #[tokio::test]
+    async fn last_assistant_message_ignores_later_non_assistant_lines() {
+        let mut test = app_with_llmsim().await;
+        test.app.lines.extend([
+            ChatLine {
+                author: Author::Assistant,
+                text: "first".into(),
+            },
+            ChatLine {
+                author: Author::Tool,
+                text: "tool output".into(),
+            },
+            ChatLine {
+                author: Author::Assistant,
+                text: "last answer".into(),
+            },
+            ChatLine {
+                author: Author::System,
+                text: "done".into(),
+            },
+        ]);
+
+        assert_eq!(test.app.last_assistant_message(), Some("last answer"));
+    }
 
     fn setup_capability_command() -> CommandDescriptor {
         CommandDescriptor {
