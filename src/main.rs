@@ -11,6 +11,7 @@ mod editor;
 mod exec;
 mod extensions;
 mod runtime;
+mod sandbox_approval;
 mod session_state;
 mod tui;
 mod version;
@@ -145,6 +146,8 @@ enum Commands {
         cwd: PathBuf,
         #[arg(long)]
         temp: PathBuf,
+        #[arg(long)]
+        mode: config::SandboxMode,
         #[arg(long, allow_hyphen_values = true)]
         script: String,
     },
@@ -843,9 +846,12 @@ fn run_command(command: Commands) -> Result<()> {
         Commands::Mcp(args) => run_mcp_command(args.command),
         Commands::TuikaGallery => run_tuika_gallery(),
         #[cfg(target_os = "linux")]
-        Commands::SandboxExec { cwd, temp, script } => {
-            exec::sandbox::run_linux_worker(&cwd, &temp, &script)
-        }
+        Commands::SandboxExec {
+            cwd,
+            temp,
+            mode,
+            script,
+        } => exec::sandbox::run_linux_worker(&cwd, &temp, mode, &script),
         Commands::Into(into) => match into.target {
             IntoTarget::Paseo(args) => {
                 let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));

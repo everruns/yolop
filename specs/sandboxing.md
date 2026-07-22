@@ -1,13 +1,14 @@
 # Sandboxed execution
 
-Status: implemented for arbitrary shell execution on macOS and Linux.
+Status: modes × approvals implemented for arbitrary shell execution on macOS and Linux.
 Windows runs the shell unsandboxed (no native containment yet) and warns.
 
 ## Purpose and boundary
 
-Yolop treats soft approval and sandboxing as separate controls. Approval asks
-whether an action is intended. The sandbox limits what arbitrary child
-processes can do even when the model is jailbroken, confused, or simply wrong.
+Yolop composes a hard shell approval policy with the sandbox boundary. Soft
+approval remains separate prompt guidance for critical actions. The sandbox
+limits what arbitrary child processes can do even when the model is
+jailbroken, confused, or simply wrong.
 
 Every shell entry point uses one shared `SandboxProvider` boundary:
 
@@ -26,14 +27,27 @@ the tool. A provider receives the canonical active workspace and script and
 returns the process to launch. Bashkit, agentOS, Daytona, Monty, or another
 backend can implement the same seam without changing tool schemas.
 
-## Default policy
+## Modes × approvals
 
-`sandbox = "native"` is the implicit default. It provides a live writable
+The implicit **Auto** preset is `sandbox_mode = "workspace-write"` plus
+`approval_policy = "on-request"`. It provides a live writable
 workspace, writable shared `/tmp`, a private temporary directory exposed as
 `$TMPDIR` and `$HOME`, no network, and restrictions inherited by descendant
 processes. The provider is selected once when a runtime is built; each command
 resolves the current workspace again, so worktree activation is reflected on
 the next command.
+
+`read-only` removes both the workspace and shared `/tmp` grants while retaining
+the private Yolop temporary directory. This prevents a workspace below `/tmp`
+from inheriting a broader writable ancestor.
+`danger-full-access` runs directly on the host and is surfaced as `UNSAFE HOST`.
+
+Approval policies are independent: `untrusted` gates commands outside a
+conservative read-only allowlist; `on-failure` gates a full-access retry after a
+likely sandbox denial; `on-request` gates explicit `require_escalated` calls;
+and `never` refuses escalation without prompting. The TUI owns the shell yes/no
+gate. Print and ACP shell escalation requests fail closed; ACP's separate
+general tool-permission gate is unchanged.
 
 On macOS and Linux, native execution is fail closed: if the required OS
 primitive is unavailable, the command returns a sandbox-setup error and is not
@@ -76,12 +90,12 @@ a known limit.
 ### Windows
 
 There is no native sandbox on Windows yet, so the platform is fail *open*, not
-fail closed: every mode — including the `native` default — runs the shell with
-full host access. The shell is PowerShell (`powershell.exe -NoProfile
+fail closed: every mode — including the `workspace-write` default — runs the
+shell with full host access. The shell is PowerShell (`powershell.exe -NoProfile
 -NonInteractive -Command`) rather than bash, since it ships in-box on every
 supported Windows. Because nothing is contained, the startup warning fires for
-every mode on Windows (not only `off`), and the `bash` tool advertises
-PowerShell so the model emits the right syntax. A native provider built on
+every mode on Windows, and the `bash` tool advertises PowerShell so the model
+emits the right syntax. A native provider built on
 Windows primitives (restricted tokens, ACLs, a firewall-isolated user) is the
 path to fail-closed parity and is tracked as future work.
 
@@ -90,18 +104,20 @@ path to fail-closed parity and is tracked as future work.
 Users already running Yolop inside a trusted VM/container may set:
 
 ```toml
-sandbox = "off"
+sandbox_mode = "danger-full-access"
 ```
 
-The same change is available through `set_config key=sandbox value=off`.
+The same change is available through
+`set_config key=sandbox_mode value=danger-full-access`.
 Disabling applies on the next run. Yolop communicates the risk in three places:
 
 - `set_config` returns an explicit `DANGER` / `UNSAFE HOST` message;
 - startup writes the warning to stderr and the TUI transcript; and
 - the status bar appends `UNSAFE HOST` to its persistent approval indicator.
 
-Clearing the setting restores `native`. Yolop never writes the safe default to
-the file, so an `off` entry is conspicuous during review.
+Clearing the setting restores `workspace-write`. Yolop never writes the safe
+default to the file, so a `danger-full-access` entry is conspicuous during
+review.
 
 ## Provider contract and future composition
 
@@ -114,7 +130,7 @@ trait SandboxProvider: Send + Sync {
 }
 ```
 
-The current registry contains `native` and the explicit `off` provider. A
+The registry contains read-only, workspace-write, and full-access providers. A
 provider owns policy compilation and launch but not output collection,
 timeouts, cancellation, or background event streaming; those remain in the
 shared `BashTool` executor. That separation guarantees every entry point keeps
@@ -146,7 +162,7 @@ host executable or silently widen mounts/network.
 
 ## Containment providers
 
-- **Native** is the default kernel-enforced local provider.
+- **Workspace write** is the default kernel-enforced local provider.
 - **Bashkit** is a containment provider in its own right: it interprets a bash
   subset against a virtual filesystem and does not spawn arbitrary OS
   processes. It would advertise different capabilities from native execution,

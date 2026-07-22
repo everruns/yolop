@@ -281,6 +281,8 @@ pub(crate) struct CodingBashCapability {
     pub(crate) workspace: Workspace,
     pub(crate) sandbox: Arc<dyn crate::exec::sandbox::SandboxProvider>,
     pub(crate) expose_command: bool,
+    pub(crate) approval_policy: crate::config::ApprovalPolicy,
+    pub(crate) approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
 }
 
 #[async_trait]
@@ -307,9 +309,11 @@ impl Capability for CodingBashCapability {
         None
     }
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![Box::new(BashTool::with_sandbox(
+        vec![Box::new(BashTool::with_policy(
             self.workspace.clone(),
             self.sandbox.clone(),
+            self.approval_policy,
+            self.approval_gate.clone(),
         ))]
     }
     fn commands(&self) -> Vec<CommandDescriptor> {
@@ -346,9 +350,14 @@ impl Capability for CodingBashCapability {
             .map(str::trim)
             .filter(|command| !command.is_empty())
             .ok_or_else(|| everruns_core::AgentLoopError::config("/shell requires: command"))?;
-        let result = BashTool::with_sandbox(self.workspace.clone(), self.sandbox.clone())
-            .execute(json!({ "command": command, "output": "normal" }))
-            .await;
+        let result = BashTool::with_policy(
+            self.workspace.clone(),
+            self.sandbox.clone(),
+            self.approval_policy,
+            self.approval_gate.clone(),
+        )
+        .execute(json!({ "command": command, "output": "normal" }))
+        .await;
         Ok(shell_command_result(result))
     }
 }

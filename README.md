@@ -19,10 +19,10 @@ integration over the Agent Client Protocol.
 
 `yolop` comes from the Ukrainian `Йолоп`: a dummy, fool, or not-too-bright
 person. The name was meant to sound clever and funny in Ukrainian while also
-describing the agent's starting point: yolop does not believe in per-tool
-approval pop-ups. It uses an AI-judgement approach instead — autonomous by
-default, with [soft approval](./docs/features/approvals.md) for critical
-moments when you want spoken consent and an audit trail.
+describing the agent's starting point: Yolop avoids per-tool approval pop-ups.
+Routine workspace work runs automatically; hard prompts are reserved for the
+configured shell boundary, with [soft approval](./docs/features/approvals.md)
+for critical moments that need spoken consent and an audit trail.
 
 ## Install
 
@@ -56,19 +56,18 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
 
 ### Agent core
 
-- **Autonomous by default** — yolop runs writes, edits, deletes, and bash
-  commands without prompting. A standing **write blocklist** rejects writes
+- **Automatic by default** — Yolop uses `workspace-write` shell containment
+  with `on-request` approvals: routine work inside the workspace runs without
+  prompting, while a command that needs full host access must ask first. A standing **write blocklist** rejects writes
   into `.git/`, `node_modules/`, `target/`, `dist/`, `build/`, `.next/`,
   `.venv/`, `venv/`, `.tox/`, `.gradle/` at any depth; reads are unrestricted
   inside the workspace.
-- **Native shell sandbox by default** — every foreground, background, slash,
+- **Shell sandbox modes × approval policies** — every foreground, background, slash,
   and direct shell command runs under Seatbelt on macOS or Landlock + seccomp
-  on Linux. The active workspace and `/tmp` are writable, other writes and
-  network access are denied, and macOS also makes workspace `.git` metadata
-  read-only.
-  You can set `sandbox = "off"` only when yolop already runs inside a trusted
-  VM/container; Yolop marks that mode `UNSAFE HOST` and warns that it exposes
-  host files, processes, and network. See
+  on Linux. Choose `read-only`, `workspace-write` (default), or
+  `danger-full-access` independently from `untrusted`, `on-failure`,
+  `on-request` (default), or `never` approvals. The default pair is the
+  low-friction **Auto** preset. Yolop marks full access `UNSAFE HOST`. See
   [Shell sandboxing](./docs/features/sandboxing/sandboxing.md).
 - **Soft approval** — an optional spoken-consent layer for critical actions.
   yolop batches the safe work and pauses to ask, in plain chat, only before
@@ -402,7 +401,9 @@ tools.
 
 A small TOML settings file persists the preferred provider, per-provider
 model picks, custom endpoint base URLs, the soft-approval level
-(`approval_mode`), shell sandbox mode (`sandbox`, default `native`), Codex
+(`approval_mode`), shell sandbox mode (`sandbox_mode`, default
+`workspace-write`), hard shell approval policy (`approval_policy`, default
+`on-request`), Codex
 subscription login metadata, and (optionally) provider API tokens across runs:
 `<config_dir>/yolop/settings.toml` —
 `~/.config/yolop/settings.toml` on Linux,
@@ -418,9 +419,9 @@ for any provider. Provider, model, and custom base URL choices are written
 to this file.
 
 To disable kernel containment for an already isolated environment, add
-`sandbox = "off"` or ask yolop to set that config key. This is dangerous on a
+`sandbox_mode = "danger-full-access"` or ask Yolop to set that config key. This is dangerous on a
 normal host: commands then have unrestricted host file, process, and network
-access. Clearing the key restores the native default.
+access. Clearing the key restores `workspace-write`.
 
 The model picker queries the provider's models API live (OpenAI, Anthropic,
 and OpenRouter via the everruns drivers; Ollama, Gemini, and other

@@ -44,13 +44,20 @@ fn yolop_binary() -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux_sandbox_worker(cwd: &Path, temp: &Path, script: &str) -> std::process::Output {
+fn run_linux_sandbox_worker(
+    cwd: &Path,
+    temp: &Path,
+    mode: &str,
+    script: &str,
+) -> std::process::Output {
     Command::new(yolop_binary())
         .arg("__sandbox-exec")
         .arg("--cwd")
         .arg(cwd)
         .arg("--temp")
         .arg(temp)
+        .arg("--mode")
+        .arg(mode)
         .arg("--script")
         .arg(script)
         .output()
@@ -72,7 +79,7 @@ fn native_sandbox_available() -> bool {
             let tmp = dir.path().join("tmp");
             std::fs::create_dir_all(&ws).expect("probe workspace");
             std::fs::create_dir_all(&tmp).expect("probe temp");
-            let out = run_linux_sandbox_worker(&ws, &tmp, "true");
+            let out = run_linux_sandbox_worker(&ws, &tmp, "workspace-write", "true");
             if out.status.success() {
                 return true;
             }
@@ -144,7 +151,7 @@ fn linux_sandbox_worker_enforces_filesystem_and_network_contract() {
         outside.display(),
         shared_temp.path().display(),
     );
-    let output = run_linux_sandbox_worker(&workspace, &private_temp, &script);
+    let output = run_linux_sandbox_worker(&workspace, &private_temp, "workspace-write", &script);
     assert!(
         output.status.success(),
         "filesystem policy failed: stdout={} stderr={}",
@@ -163,6 +170,7 @@ fn linux_sandbox_worker_enforces_filesystem_and_network_contract() {
     let output = run_linux_sandbox_worker(
         &workspace,
         &private_temp,
+        "workspace-write",
         &format!(": > /dev/tcp/127.0.0.1/{port}"),
     );
     assert!(
@@ -189,7 +197,12 @@ fn linux_sandbox_worker_tracks_each_active_worktree() {
     }
 
     for workspace in [&first, &second] {
-        let output = run_linux_sandbox_worker(workspace, &private_temp, "pwd > active.txt");
+        let output = run_linux_sandbox_worker(
+            workspace,
+            &private_temp,
+            "workspace-write",
+            "pwd > active.txt",
+        );
         assert!(
             output.status.success(),
             "worker failed for {}",
@@ -203,6 +216,7 @@ fn linux_sandbox_worker_tracks_each_active_worktree() {
     let output = run_linux_sandbox_worker(
         &second,
         &private_temp,
+        "workspace-write",
         &format!("printf stale > '{}'", stale.display()),
     );
     assert!(
@@ -210,6 +224,25 @@ fn linux_sandbox_worker_tracks_each_active_worktree() {
         "inactive worktree stayed writable"
     );
     assert!(!stale.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_read_only_sandbox_denies_workspace_writes() {
+    let root = tempfile::tempdir().expect("sandbox root");
+    let workspace = root.path().join("workspace");
+    let private_temp = root.path().join("private-temp");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&private_temp).unwrap();
+
+    let output = run_linux_sandbox_worker(
+        &workspace,
+        &private_temp,
+        "read-only",
+        "printf blocked > workspace.txt",
+    );
+    assert!(!output.status.success());
+    assert!(!workspace.join("workspace.txt").exists());
 }
 
 fn session_ids(sessions_dir: &Path) -> Vec<String> {
