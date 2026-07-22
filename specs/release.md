@@ -184,6 +184,70 @@ The agent verifies before opening the release PR:
 - [ ] `Cargo.toml` and `Cargo.lock` both read `X.Y.Z`.
 - [ ] `cargo publish --dry-run -p yolop` succeeds.
 - [ ] `X.Y.Z` is greater than the latest crates.io version.
+- [ ] Manual terminal matrix walked (see below) if the TUI renderer changed.
+
+## Manual Terminal Matrix
+
+The automated tests cover the *protocol* the terminal renderer emits — the
+`tests/tuika_pty.rs` PTY smoke drives the real binary and asserts alternate-screen
+enter/exit, OSC 9;4 progress, OSC 8 hyperlinks, 24-bit truecolor SGR, and Braille
+glyphs. What they cannot verify is how a specific emulator actually *paints* those
+bytes. This is a manual checklist to walk before a release when the TUI renderer
+changed, not a record of verified results — tick a box only after confirming it
+yourself.
+
+Run `cargo run -- tuika-gallery` in each terminal and check alt-screen
+enter/exit, Braille/wide glyphs, truecolor, mouse-wheel scroll, and — with
+`YOLOP_HYPERLINKS=1` — that the footer URL is a clickable OSC 8 link:
+
+- [ ] Ghostty
+- [ ] iTerm2
+- [ ] WezTerm
+- [ ] Kitty
+- [ ] Windows Terminal
+- [ ] Konsole
+- [ ] tmux (truecolor needs `Tc`/`RGB` in `terminal-overrides`)
+
+**Native OSC 9;4 progress** support is a fixed property of each terminal (not
+something to re-verify per release). Terminals that render it: **Ghostty** (bar
+at the top of the window), **Windows Terminal** and **ConEmu** (taskbar),
+**WezTerm**, **Konsole**, **mintty**. Others (e.g. **iTerm2**, **Kitty**)
+silently ignore the unknown OSC, so emitting it is safe everywhere — the
+in-terminal UI is unaffected.
+
+**OSC 8 hyperlinks** (`HyperlinkBackend` in `crates/tuika/src/hyperlink.rs`)
+wrap `http(s)` URL runs so a supporting terminal makes them clickable:
+**Ghostty**, **iTerm2**, **WezTerm**, **Kitty**, **Konsole**, recent **GNOME
+Terminal / VTE**. Others ignore the escape and render the URL as plain (usually
+still auto-linkified) text, so emitting it is safe everywhere. Unlike OSC 9;4,
+this one *is* worth re-checking, because it writes styled spans straight to the
+terminal: confirm the link is clickable **and** that surrounding text, colors,
+and wrapping are undamaged. In yolop it is opt-in (`YOLOP_HYPERLINKS=1`),
+default-off until this matrix is walked — that is what the checkbox above
+verifies.
+
+### Nightly cross-terminal job
+
+`.github/workflows/nightly-terminals.yml` runs `yolop tuika-gallery` inside real
+terminal emulators on a nightly schedule (and on `workflow_dispatch`), narrowing
+how much of the matrix a human has to walk. In-repo tests already prove yolop
+emits the right bytes (`tests/tuika_pty.rs` asserts the protocol and the parsed
+vt100 grid); the nightly checks how emulators *interpret* those bytes. Legs
+differ in maturity:
+
+| Leg | Runner | Capture | Status |
+|-----|--------|---------|--------|
+| tmux | Linux | `capture-pane` text | **Asserted** — `crates/tuika/scripts/nightly-assert-gallery.sh` gates the job on the box chrome, a real Braille glyph, and the footer URL. |
+| kitty | Linux (Xvfb, software GL) | remote-control text + screenshot | Best-effort — captured as an artifact; assertion is a warning, not a failure. |
+| iTerm2 | macOS | AppleScript session text + `screencapture` | Best-effort — artifact for inspection. |
+| Windows Terminal | Windows | screenshot | Best-effort — artifact for inspection. |
+
+A green **tmux** leg means the "alt-screen / Braille / layout / footer" rows are
+already verified in a real emulator, so the manual walk reduces to the
+per-emulator painting the best-effort legs only screenshot. Promote a best-effort
+leg to asserting once its capture is proven stable on the runner. The best-effort
+legs are `continue-on-error`, so a flaky GUI runner never reports the nightly red
+on its own.
 
 ## Post-Release Verification
 

@@ -1,0 +1,236 @@
+name: Nightly Terminals
+
+# Cross-terminal integration for the `tuika` full-screen renderer. The in-repo
+# tests (buffer, vt100 grid, PTY protocol) prove yolop emits the right bytes;
+# this runs `yolop tuika-gallery` inside *real* terminal emulators nightly to
+# check how they actually interpret those bytes.
+#
+# Maturity differs by leg (see specs/release.md § Manual Terminal Matrix):
+#   - tmux (Linux): text-capture via `capture-pane`, asserted — a regression
+#     here fails the nightly.
+#   - kitty / iTerm2 / Windows Terminal: GPU- or OS-locked GUI terminals driven
+#     best-effort. They capture text and/or a screenshot as build artifacts for
+#     human inspection and do not fail the nightly yet (`continue-on-error`).
+#     Promote a leg to asserting once its capture is proven stable on the runner.
+
+on:
+  schedule:
+    # 06:00 UTC daily.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ---- Asserting leg -------------------------------------------------------
+  tmux:
+    name: tmux (Linux, asserted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "debug"
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Build yolop
+        run: cargo build --locked --bin yolop
+
+      - name: Run gallery under tmux and capture the screen
+        env:
+          TERM: tmux-256color
+          YOLOP_HYPERLINKS: "1"
+        run: |
+          set -euo pipefail
+          BIN="$PWD/target/debug/yolop"
+          tmux -f /dev/null new-session -d -x 120 -y 40 -s gallery "$BIN tuika-gallery"
+          sleep 4
+          tmux capture-pane -t gallery -p > capture.txt || true
+          tmux send-keys -t gallery q || true
+          sleep 1
+          tmux kill-server 2>/dev/null || true
+          echo "----- capture -----"
+          cat capture.txt
+
+      - name: Assert the gallery rendered
+        run: bash crates/tuika/scripts/nightly-assert-gallery.sh capture.txt
+
+      - name: Upload capture
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tmux-capture
+          path: capture.txt
+          if-no-files-found: warn
+
+  # ---- Best-effort legs (capture-for-inspection) ---------------------------
+  kitty:
+    name: kitty (Linux GPU, best-effort)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "debug"
+
+      - name: Install kitty, Xvfb, ImageMagick
+        run: sudo apt-get update && sudo apt-get install -y kitty xvfb imagemagick
+
+      - name: Build yolop
+        run: cargo build --locked --bin yolop
+
+      - name: Run gallery under kitty (Xvfb) and capture
+        run: |
+          xvfb-run -a --server-args="-screen 0 1200x800x24" \
+            bash crates/tuika/scripts/nightly-kitty-capture.sh "$PWD/target/debug/yolop"
+
+      - name: Assert (non-fatal)
+        run: |
+          bash crates/tuika/scripts/nightly-assert-gallery.sh capture.txt \
+            || echo "::warning::kitty capture did not pass assertions (best-effort leg)"
+
+      - name: Upload capture + screenshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kitty-capture
+          path: |
+            capture.txt
+            kitty.png
+          if-no-files-found: warn
+
+  iterm2:
+    name: iTerm2 (macOS, best-effort)
+    runs-on: macos-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "sandbox-macOS"
+
+      - name: Install iTerm2
+        run: brew install --cask iterm2
+
+      - name: Build yolop
+        run: cargo build --locked --bin yolop
+
+      - name: Run gallery in iTerm2 and capture
+        run: |
+          set -x
+          BIN="$PWD/target/debug/yolop"
+          # Launch the gallery in a fresh iTerm2 window.
+          osascript <<OSA || true
+          tell application "iTerm"
+            activate
+            set w to (create window with default profile)
+            tell current session of w to write text "YOLOP_HYPERLINKS=1 " & "$BIN" & " tuika-gallery"
+          end tell
+          OSA
+          sleep 6
+          # Screenshot for human inspection; read the session's on-screen text.
+          screencapture -x iterm2.png || true
+          osascript -e 'tell application "iTerm" to text of current session of current window' > capture.txt 2>/dev/null || true
+          # Quit the gallery, then iTerm2.
+          osascript -e 'tell application "iTerm" to tell current session of current window to write text "q"' 2>/dev/null || true
+          sleep 1
+          osascript -e 'tell application "iTerm" to quit' 2>/dev/null || true
+          echo "----- capture -----"
+          cat capture.txt 2>/dev/null || echo "(no capture)"
+
+      - name: Assert (non-fatal)
+        run: |
+          bash crates/tuika/scripts/nightly-assert-gallery.sh capture.txt \
+            || echo "::warning::iTerm2 capture did not pass assertions (best-effort leg)"
+
+      - name: Upload capture + screenshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: iterm2-capture
+          path: |
+            capture.txt
+            iterm2.png
+          if-no-files-found: warn
+
+  windows-terminal:
+    name: Windows Terminal (best-effort)
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "windows"
+
+      - name: Build yolop
+        run: cargo build --locked --bin yolop
+
+      - name: Run gallery in Windows Terminal and screenshot
+        shell: pwsh
+        run: |
+          $bin = "$PWD\target\debug\yolop.exe"
+          $env:YOLOP_HYPERLINKS = "1"
+          # wt.exe is a Store app and may be absent on the runner image; fall
+          # back to launching the binary in its own console window.
+          $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
+          if ($wt) {
+            Start-Process wt.exe -ArgumentList "$bin tuika-gallery"
+          } else {
+            Write-Host "::warning::wt.exe not found; launching in the default console"
+            Start-Process $bin -ArgumentList "tuika-gallery"
+          }
+          Start-Sleep -Seconds 6
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
+          $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+          $gfx.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD\windows-terminal.png")
+          [System.Windows.Forms.SendKeys]::SendWait("q")
+          Start-Sleep -Seconds 1
+          Get-Process yolop -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-terminal-screenshot
+          path: windows-terminal.png
+          if-no-files-found: warn
