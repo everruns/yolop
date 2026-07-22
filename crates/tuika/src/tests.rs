@@ -767,6 +767,27 @@ fn select_navigation_wraps_and_confirms() {
 }
 
 #[test]
+fn select_move_up_down_clamp_at_ends() {
+    let mut s = SelectState::new();
+    // Down steps forward, clamping at the last of `len` rows (no wrap).
+    s.move_down(3);
+    assert_eq!(s.selected(), 1);
+    s.move_down(3);
+    assert_eq!(s.selected(), 2);
+    s.move_down(3);
+    assert_eq!(s.selected(), 2); // held at the bottom, not wrapped
+    // Up steps back, clamping at the top.
+    s.move_up();
+    assert_eq!(s.selected(), 1);
+    s.move_up();
+    s.move_up();
+    assert_eq!(s.selected(), 0); // held at the top, not wrapped
+    // Degenerate: an empty list stays at 0.
+    s.move_down(0);
+    assert_eq!(s.selected(), 0);
+}
+
+#[test]
 fn select_state_select_sets_index_directly() {
     // A host can drive the highlight from its own state.
     let mut s = SelectState::new();

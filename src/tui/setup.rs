@@ -10,6 +10,25 @@
 
 use super::*;
 
+/// Step a picker selection up one row, clamping at the top. Routes the
+/// transition through tuika's [`SelectState`](tuika::SelectState) so every setup
+/// picker shares one tested navigation source instead of open-coding the clamp
+/// (see the `draw_setup_picker` note in `fullscreen.rs`).
+fn select_up(selected: usize) -> usize {
+    let mut state = tuika::SelectState::new();
+    state.select(selected);
+    state.move_up();
+    state.selected()
+}
+
+/// Step a picker selection down one row, clamping at the last of `len` rows.
+fn select_down(selected: usize, len: usize) -> usize {
+    let mut state = tuika::SelectState::new();
+    state.select(selected);
+    state.move_down(len);
+    state.selected()
+}
+
 impl App {
     pub(crate) fn start_setup(&mut self) {
         self.setup = Some(SetupStep::Provider {
@@ -630,12 +649,12 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.setup = Some(SetupStep::Provider {
-                    selected: selected.saturating_sub(1),
+                    selected: select_up(selected),
                 });
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.setup = Some(SetupStep::Provider {
-                    selected: (selected + 1).min(PROVIDER_OPTIONS.len().saturating_sub(1)),
+                    selected: select_down(selected, PROVIDER_OPTIONS.len()),
                 });
             }
             KeyCode::Char('c') => {
@@ -834,14 +853,14 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.setup = Some(SetupStep::Credential {
                     provider,
-                    selected: selected.saturating_sub(1),
+                    selected: select_up(selected),
                     error: None,
                 });
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.setup = Some(SetupStep::Credential {
                     provider,
-                    selected: (selected + 1).min(options.len().saturating_sub(1)),
+                    selected: select_down(selected, options.len()),
                     error: None,
                 });
             }
@@ -1234,7 +1253,7 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.setup = Some(SetupStep::PickModel {
                     provider,
-                    selected: selected.saturating_sub(1),
+                    selected: select_up(selected),
                     custom: None,
                     error: None,
                 });
@@ -1242,7 +1261,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.setup = Some(SetupStep::PickModel {
                     provider,
-                    selected: (selected + 1).min(options.len().saturating_sub(1)),
+                    selected: select_down(selected, options.len()),
                     custom: None,
                     error: None,
                 });
@@ -1329,13 +1348,13 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.setup = Some(SetupStep::PickEffort {
-                    selected: selected.saturating_sub(1),
+                    selected: select_up(selected),
                     error: None,
                 });
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.setup = Some(SetupStep::PickEffort {
-                    selected: (selected + 1).min(options_len.saturating_sub(1)),
+                    selected: select_down(selected, options_len),
                     error: None,
                 });
             }
