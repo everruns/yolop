@@ -332,9 +332,16 @@ impl Session {
         let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
         let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
         let sandbox = self.handles.sandbox.clone();
+        let approval_gate = self.handles.sandbox_approval_gate.clone();
+        let approval_policy = self.handles.approval_policy;
 
         tokio::spawn(async move {
-            let tool = BashTool::with_sandbox(Workspace::new(workspace), sandbox);
+            let tool = BashTool::with_policy(
+                Workspace::new(workspace),
+                sandbox,
+                approval_policy,
+                approval_gate,
+            );
             let run = tool.execute(serde_json::json!({
                 "command": command,
                 // Direct shell output is not persisted through a tool-call

@@ -4,9 +4,9 @@ Yolop runs shell commands inside native operating-system containment by
 default. The sandbox limits the damage an incorrect or compromised model can
 cause even after a command has been selected for execution.
 
-Sandboxing and [soft approval](../approvals.md) solve different problems.
-Approval asks whether an action is intended; sandboxing limits what the command
-can reach.
+Sandbox mode and [approval policy](../approvals.md) form a matrix. The sandbox
+sets the technical boundary; hard approval controls when Yolop may ask to cross
+it. Soft approval remains a separate judgement layer for critical actions.
 
 ![Yolop denying an out-of-workspace write and identifying the native sandbox](./sandbox-denial.gif)
 
@@ -19,7 +19,15 @@ The same policy covers every Yolop shell entry point:
 - the `/shell` command; and
 - the TUI `!shell` shortcut.
 
-With the default `native` mode:
+The modes are:
+
+| Mode | Shell access |
+|---|---|
+| `read-only` | Host reads and temporary writes; workspace writes and network denied. |
+| `workspace-write` | Host reads plus writes in the active workspace and temporary directories; network denied. This is the default. |
+| `danger-full-access` | Unrestricted host execution. Yolop marks this `UNSAFE HOST`. |
+
+With the default `workspace-write` mode:
 
 - the active workspace, `/tmp`, and a private temporary directory are writable;
 - writes outside those locations are denied;
@@ -28,11 +36,11 @@ With the default `native` mode:
 - provider credentials and local agent socket paths are removed from the shell
   environment.
 
-`/tmp` is shared with other host processes. This matches common development
-tool expectations, but it is not a private security boundary: commands can
-create, replace, and communicate through files there. Yolop still points
-`$TMPDIR` and `$HOME` at its private per-process directory for tools that honor
-those variables.
+In `workspace-write`, `/tmp` is shared with other host processes. This matches
+common development tool expectations, but it is not a private security
+boundary: commands can create, replace, and communicate through files there.
+Yolop still points `$TMPDIR` and `$HOME` at its private per-process directory
+for tools that honor those variables.
 
 Host files remain readable so compilers, SDKs, package caches, and installed
 skills continue to work. Structured file tools use Yolop's separate rooted
@@ -71,7 +79,8 @@ process permissions are outside this policy.
 |---|---|---|
 | macOS | Seatbelt | `/usr/bin/sandbox-exec`, included with supported macOS versions |
 | Linux | Landlock filesystem rules and seccomp-BPF network filtering | Full Landlock ABI v3 support: Linux 6.2 or a vendor backport |
-| Other platforms | Native mode fails closed | Run Yolop inside trusted containment before disabling the sandbox |
+| Windows | No native containment yet; every mode warns and runs unsandboxed | Run Yolop inside trusted containment |
+| Other platforms | Sandboxed modes fail closed | Run Yolop inside trusted containment before choosing full access |
 
 If the required operating-system primitive is unavailable, Yolop returns a
 sandbox setup error. It never silently retries the command on the host.
@@ -90,25 +99,43 @@ The active worktree is writable wherever it is stored. When worktrees live
 below shared `/tmp`, that broader writable root also covers sibling temporary
 worktrees; do not treat `/tmp` as session isolation.
 
+## Modes × approvals
+
+The default **Auto** preset is `workspace-write × on-request`. `untrusted` asks
+before commands outside a conservative read-only allowlist. `on-failure` tries
+inside the sandbox, then asks before a full-access retry after a likely sandbox
+denial. `on-request` asks only when the agent explicitly requests escalation.
+`never` refuses escalation without prompting.
+
+Shell approvals are available in the interactive TUI. Print and ACP shell
+escalation requests fail closed; ACP's separate general tool-permission gate
+still works with compatible editor clients. Direct, model-facing, and
+background shell calls use the same policy.
+
+```toml
+sandbox_mode = "workspace-write" # implicit default
+approval_policy = "on-request"   # implicit default
+```
+
 ## Disabling the sandbox
 
 Disable native containment only when Yolop already runs inside a trusted VM,
 container, or remote sandbox:
 
 ```toml
-sandbox = "off"
+sandbox_mode = "danger-full-access"
 ```
 
-Add the setting to Yolop's `settings.toml`, or ask Yolop to set the `sandbox`
-configuration key to `off`. The change applies on the next run.
+Add the setting to Yolop's `settings.toml`, or ask Yolop to set the
+`sandbox_mode` configuration key. The change applies on the next run.
 
-> **Danger:** `sandbox = "off"` gives shell commands unrestricted access to
+> **Danger:** `danger-full-access` gives shell commands unrestricted access to
 > host files, processes, credentials present in the environment, and the
 > network. A jailbroken or confused model can damage the host.
 
 Yolop marks this state as `UNSAFE HOST` in configuration output, startup
 warnings, the TUI transcript, and the status bar. Remove the setting or set it
-back to `native` to restore containment.
+back to `workspace-write` to restore containment.
 
 ## Troubleshooting
 
@@ -120,23 +147,27 @@ filesystem operation needed by the write boundary.
 
 ### A build cannot download dependencies
 
-Native mode intentionally denies network access. Populate dependency caches
+Sandboxed modes intentionally deny network access. With `on-request`, the agent
+can request a justified full-access retry. Otherwise populate dependency caches
 before starting Yolop, use structured integrations outside the shell boundary,
-or run Yolop inside separate trusted containment before choosing `off`.
+or run Yolop inside separate trusted containment before choosing full access.
 
 ### A command cannot write a file
 
-Confirm the target is below the currently active workspace or `/tmp`. Absolute
-paths, symlink targets, and linked-worktree metadata outside those writable
-roots remain read-only.
+In `workspace-write`, confirm the target is below the currently active
+workspace or `/tmp`. In `read-only`, workspace writes are intentionally denied.
+Absolute paths, symlink targets, and linked-worktree metadata outside those
+writable roots remain read-only.
 
 ## Current limitations
 
 - Host reads are allowed for toolchain compatibility.
-- Shared `/tmp` is writable and can be used to communicate with other host
-  processes.
+- Shared `/tmp` is writable in `workspace-write` and can be used to communicate
+  with other host processes.
 - Worktrees stored below shared `/tmp` do not have write isolation from other
   sandboxed commands that can address their paths.
+- The trusted-command classifier for `untrusted` is intentionally conservative;
+  unfamiliar commands prompt even when harmless.
 - There is no per-command mount policy or network allowlist.
 - Linux permits `.git` writes when the metadata is physically inside the
   writable workspace.

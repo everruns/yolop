@@ -1,6 +1,11 @@
 # `approval` — soft approval
 
-Status: v1 implemented.
+Status: v2 implemented.
+
+Yolop also has a hard shell `approval_policy`. It composes with
+`sandbox_mode`, gates untrusted commands or full-access escalation in the TUI,
+and fails closed in non-interactive hosts. This specification remains focused
+on the separate soft-approval layer.
 
 ## Why
 
@@ -77,7 +82,8 @@ The paranoia level can be changed three ways, all writing the same setting:
 ## Non-goals
 
 - **Not a hard sandbox.** Soft approval cannot *prevent* a tool call; it asks
-  the model to. Deterministic hooks can reject known operations, while the
+  the model to. The hard shell approval policy and deterministic hooks can
+  reject known operations, while the
   implemented [`sandboxing`](./sandboxing.md) boundary contains arbitrary shell
   execution. These controls compose with soft approval; they do not replace it.
 - **No bespoke approval UI.** Consent is spoken in chat; there is deliberately
