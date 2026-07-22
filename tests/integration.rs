@@ -301,6 +301,10 @@ fn help_flag_succeeds() {
     );
     assert!(stdout.contains("--print"), "help output missing --print");
     assert!(stdout.contains("--image"), "help output missing --image");
+    assert!(
+        stdout.contains("--no-sandbox"),
+        "help output missing --no-sandbox"
+    );
 }
 
 #[test]
@@ -1635,6 +1639,53 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
         "double Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
     );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn no_sandbox_flag_gives_shell_commands_full_host_access_for_one_run() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("create workspace");
+    let outside = root.path().join("outside.txt");
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            workspace: Some(workspace),
+            no_sandbox: true,
+            ..TuiSpawnOptions::default()
+        },
+    );
+    assert!(
+        tui.wait_for_output("UNSAFE HOST", Duration::from_secs(3)),
+        "TUI did not show the effective unsafe mode: {}",
+        tui.output_text()
+    );
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        "TUI did not finish startup: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"!shell touch ../outside.txt\r");
+    assert!(
+        tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
+        "full-access shell did not complete: {}",
+        tui.output_text()
+    );
+    assert!(
+        outside.exists(),
+        "--no-sandbox shell could not write outside cwd"
+    );
+    assert!(
+        !std::fs::read_to_string(tui.settings_path())
+            .expect("read settings")
+            .contains("danger-full-access"),
+        "one-run override must not persist to settings"
+    );
+
+    tui.write_input(b"\x03\x03");
+    assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

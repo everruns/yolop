@@ -126,6 +126,13 @@ container, or remote sandbox:
 sandbox_mode = "danger-full-access"
 ```
 
+For a single invocation, pass `--no-sandbox` instead. It selects the same
+dangerous full-host-access mode without changing `settings.toml`:
+
+```bash
+yolop --no-sandbox
+```
+
 Add the setting to Yolop's `settings.toml`, or ask Yolop to set the
 `sandbox_mode` configuration key. The change applies on the next run.
 

@@ -107,6 +107,9 @@ Users already running Yolop inside a trusted VM/container may set:
 sandbox_mode = "danger-full-access"
 ```
 
+The `--no-sandbox` CLI flag applies the same mode to one process, including
+its print, TUI, or ACP runtime, without modifying persistent configuration.
+
 The same change is available through
 `set_config key=sandbox_mode value=danger-full-access`.
 Disabling applies on the next run. Yolop communicates the risk in three places:

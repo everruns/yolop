@@ -2169,6 +2169,9 @@ pub struct BuiltRuntime {
     /// to resolve credentials when querying provider models APIs and to show
     /// per-provider connection status in the setup overlay.
     pub settings: Arc<SettingsStore>,
+    /// CLI-only sandbox override for this process, if present. Hosts use this
+    /// to display the runtime's effective mode without persisting it.
+    pub sandbox_mode_override: Option<crate::config::SandboxMode>,
     /// Receiver for terminal-side commands emitted by
     /// [`ClientCommandsCapability`]. The TUI drains it in its event loop;
     /// other hosts ignore it. Empty/never-written when
@@ -2458,6 +2461,9 @@ pub struct BuildOptions {
     pub(crate) provider_model: Option<ProviderChoice>,
     pub session_kind: SessionKind,
     pub initial_prompt: Option<String>,
+    /// Per-process sandbox override. CLI flags use this instead of persisting
+    /// a settings change, so the next invocation returns to configured mode.
+    pub sandbox_mode_override: Option<crate::config::SandboxMode>,
     /// Register [`ClientCommandsCapability`], which contributes the
     /// terminal-side commands (help/tools/mcp/cwd/model/effort/clear/shell/quit)
     /// and drives them through the host UI channel. Only a host that can apply
@@ -2484,6 +2490,7 @@ impl Default for BuildOptions {
             provider_model: None,
             session_kind: SessionKind::Interactive,
             initial_prompt: None,
+            sandbox_mode_override: None,
             client_commands: false,
             client_ui: ClientUiContext::None,
             client_mcp_servers: ScopedMcpServers::new(),
@@ -2506,9 +2513,13 @@ pub async fn build_with_options(
     // Unit-test binaries are libtest harnesses and cannot service the Linux
     // worker subcommand. Real-binary coverage lives in tests/integration.rs.
     #[cfg(all(test, target_os = "linux"))]
-    let sandbox_mode = crate::config::SandboxMode::DangerFullAccess;
+    let sandbox_mode = options
+        .sandbox_mode_override
+        .unwrap_or(crate::config::SandboxMode::DangerFullAccess);
     #[cfg(not(all(test, target_os = "linux")))]
-    let sandbox_mode = settings.snapshot().sandbox_mode();
+    let sandbox_mode = options
+        .sandbox_mode_override
+        .unwrap_or_else(|| settings.snapshot().sandbox_mode());
     let sandbox = crate::exec::sandbox::provider(sandbox_mode);
     let approval_policy = settings.snapshot().approval_policy();
     let (sandbox_approval_gate, sandbox_approval_rx) = if options.client_ui == ClientUiContext::Tui
@@ -3231,6 +3242,7 @@ pub async fn build_with_options(
         },
         model: ModelState::new(provider_state),
         settings,
+        sandbox_mode_override: options.sandbox_mode_override,
         ui_rx,
         ask_rx,
         sandbox_approval_rx,
