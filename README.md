@@ -14,6 +14,15 @@ integration over the Agent Client Protocol.
 
 ![yolop upgrading a project's dependencies](https://raw.githubusercontent.com/everruns/yolop/main/docs/demo.gif)
 
+## Origin of the name
+
+`yolop` comes from the Ukrainian `Йолоп`: a dummy, fool, or not-too-bright
+person. The name was meant to sound clever and funny in Ukrainian while also
+describing the agent's starting point: Yolop avoids per-tool approval pop-ups.
+Routine workspace work runs automatically; hard prompts are reserved for the
+configured shell boundary, with [soft approval](#soft-approval) for critical
+moments that need spoken consent and an audit trail.
+
 ## Install
 
 ```bash
@@ -389,15 +398,6 @@ Yolop-owned worktree and never changes the branch, `HEAD`, commits, or index.
 > reasoning artifacts — deliberately unredacted, with no retention policy. If a
 > session should not be persisted, point `--session-dir` at a wipeable path (e.g.
 > a `tmpfs`) or delete the JSONL after the run.
-
-## Origin of the name
-
-`yolop` comes from the Ukrainian `Йолоп`: a dummy, fool, or not-too-bright
-person. The name was meant to sound clever and funny in Ukrainian while also
-describing the agent's starting point: Yolop avoids per-tool approval pop-ups.
-Routine workspace work runs automatically; hard prompts are reserved for the
-configured shell boundary, with [soft approval](#soft-approval) for critical
-moments that need spoken consent and an audit trail.
 
 ## Contributing
 
