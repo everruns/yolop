@@ -6,6 +6,12 @@
 [![license](https://img.shields.io/crates/l/tuika.svg)](https://github.com/everruns/yolop/blob/main/LICENSE)
 ![msrv](https://img.shields.io/badge/rust-1.88%2B-blue.svg)
 
+<p align="center">
+  <img src="docs/hero.svg" width="880" alt="Animated tuika gallery: a terminal window with tabs, an activity panel of spinners, progress bars and a loader, a command palette, a commit-message input, and a status bar — all animating.">
+</p>
+
+<p align="center"><sub>An animated <a href="docs/hero.svg">SVG</a> — crisp vector text, rendered from the real component tree. Regenerate with <code>cargo run -p tuika --example screenshot</code>.</sub></p>
+
 A small composable terminal UI toolkit. `tuika` provides the layout,
 overlay, focus, and component primitives that `ratatui` leaves to you, while
 letting `ratatui` keep ownership of the cell buffer and its diff against the
