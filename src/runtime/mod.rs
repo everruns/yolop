@@ -44,10 +44,11 @@ use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
     BtwCapability, CompactionCapability, INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability,
     LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability, MessageMetadataCapability,
-    PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID,
-    SESSION_STORAGE_CAPABILITY_ID, SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID,
-    STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability, SessionStorageCapability,
-    StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID,
+    PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability, SESSION_CAPABILITY_ID,
+    SESSION_FILE_SYSTEM_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SESSION_TASKS_CAPABILITY_ID,
+    SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability,
+    SessionCapability, SessionStorageCapability, StatelessTodoListCapability,
+    TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID,
     ToolOutputPersistenceCapability, ToolSearchCapability, USER_HOOKS_CAPABILITY_ID,
     UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
 };
@@ -84,9 +85,9 @@ use everruns_runtime::{
 use crate::exec::workspace_host::WorkspaceHost;
 use crate::exec::worktree::{WorktreeManager, detect_repo_root, restore_worktree_from_metadata};
 use crate::runtime::session_log::{
-    JsonlEventEmitter, SessionKind, SessionWorkspaceMetadata, migrate_legacy_session_log,
-    read_session_workspace_metadata, replay, session_dir_path, session_log_path,
-    write_session_workspace,
+    JsonlEventEmitter, SessionKind, SessionWorkspaceMetadata, latest_session_title,
+    migrate_legacy_session_log, read_session_workspace_metadata, replay, session_dir_path,
+    session_log_path, update_session_workspace_title, write_session_workspace,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, RwLock};
@@ -841,6 +842,7 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "bash",
     "spawn_background",
     "write_todos",
+    "write_session_title",
     // Skill activation is a routing tool with required arguments; hiding its
     // tiny schema makes malformed calls like activate_skill({}) more likely.
     "activate_skill",
@@ -1966,6 +1968,10 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         caps.push(AgentCapabilityConfig::new(CLIENT_COMMANDS_CAPABILITY_ID));
     }
     caps.extend([
+        AgentCapabilityConfig::with_config(
+            SESSION_CAPABILITY_ID,
+            serde_json::json!({ "auto_title": true }),
+        ),
         AgentCapabilityConfig::new(SESSION_FILE_SYSTEM_CAPABILITY_ID),
         AgentCapabilityConfig::new(SKILLS_CAPABILITY_ID),
         AgentCapabilityConfig::new(HERDR_CAPABILITY_ID),
@@ -2622,6 +2628,9 @@ pub async fn build_with_options(
     let active_events = checkpoints.filter_active_events(replayed.events);
     let replayed_events_count = active_events.len();
     let active_messages = crate::runtime::session_log::messages_from_events(&active_events);
+    if let Some(title) = latest_session_title(&active_events) {
+        update_session_workspace_title(&session_dir, &title)?;
+    }
 
     // Only the selected timeline branch enters the live stores. Abandoned
     // suffixes remain in events.jsonl for redo and local history inspection.
@@ -2698,6 +2707,7 @@ pub async fn build_with_options(
     let mut capabilities = CapabilityRegistry::new();
     let environment_context = EnvironmentContextRegistry::default();
     environment_context.set("sandbox_mode", sandbox_mode.as_str());
+    capabilities.register(SessionCapability);
     capabilities.register(AgentInstructionsCapability);
     // TODO(EVE-620): revert to `capabilities.register(FileSystemCapability)` once
     // everruns ships an edits[]-only edit_file. This wrapper drops the ambiguous
@@ -3080,7 +3090,9 @@ pub async fn build_with_options(
 
     // Seed harness/agent/session explicitly so Yolop can attach harness
     // metadata that Everruns forwards to LLM calls and observability.
-    let session_title = format!("yolop @ {}", effective_root.display());
+    let session_title = read_session_workspace_metadata(&session_dir)?
+        .and_then(|metadata| metadata.title)
+        .unwrap_or_else(|| format!("yolop @ {}", effective_root.display()));
     let mut harness_capabilities = coding_harness_capabilities(
         options.client_commands,
         hook_capability_config,
@@ -3414,7 +3426,19 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_leaves_project_files_framing_to_the_capability() {
+    fn session_capability_enables_automatic_titles_by_default() {
+        let caps = default_coding_harness_capabilities(false);
+        let session = caps
+            .iter()
+            .find(|capability| capability.capability_id() == SESSION_CAPABILITY_ID)
+            .expect("session capability must be enabled");
+
+        assert_eq!(session.config, serde_json::json!({ "auto_title": true }));
+        assert!(YOLOP_NEVER_DEFER_TOOLS.contains(&"write_session_title"));
+    }
+
+    #[test]
+    fn harness_prompt_leaves_project_files_framing_to_the_capability() {
         // The agent_instructions capability owns the <agent-instructions>
         // framing, so the base prompt must not hardcode project-file rules.
         assert!(!SYSTEM_PROMPT.contains("CLAUDE.md"));
@@ -3602,6 +3626,75 @@ mod tests {
                 .is_none(),
             "no credential configured yet"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scripted_title_tool_updates_runtime_event_log_and_metadata() {
+        use everruns_core::events::EventData;
+        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "write_session_title".to_string(),
+                    arguments: serde_json::json!({ "title": "Automatic session titles" }),
+                    id: None,
+                }]),
+                SimTurn::Assistant("Title set.".to_string()),
+            ])),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+        let session_id = built.handles.session_id;
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "Implement automatic session titles",
+                built
+                    .model
+                    .input_message("Implement automatic session titles"),
+            )
+            .await
+            .expect("run turn");
+
+        assert!(result.success, "scripted title turn: {result:?}");
+        assert_eq!(result.tool_calls_count, 1);
+        let session = built
+            .handles
+            .session_store
+            .get_session(session_id)
+            .await
+            .expect("get runtime session")
+            .expect("runtime session present");
+        assert_eq!(session.title.as_deref(), Some("Automatic session titles"));
+        let events = built
+            .handles
+            .runtime
+            .events()
+            .await
+            .expect("runtime events");
+        assert!(events.iter().any(|event| matches!(
+            &event.data,
+            EventData::SessionTitleUpdated(data)
+                if data.title == "Automatic session titles"
+        )));
+        let metadata =
+            read_session_workspace_metadata(&session_dir_path(sessions.path(), session_id))
+                .expect("read workspace metadata")
+                .expect("workspace metadata present");
+        assert_eq!(metadata.title.as_deref(), Some("Automatic session titles"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6011,6 +6104,7 @@ mod tests {
                 hints: ToolHints::default(),
                 full_parameters: None,
             }),
+            fake_tool("write_session_title"),
         ];
         tools
             .extend((0..DEFAULT_TOOL_SEARCH_THRESHOLD).map(|idx| fake_tool(format!("fake_{idx}"))));
@@ -6039,6 +6133,15 @@ mod tests {
         assert!(
             activate_skill.parameters().get("properties").is_some(),
             "activate_skill must keep its full schema so models pass the required name field"
+        );
+
+        let write_session_title = transformed
+            .iter()
+            .find(|tool| tool.name() == "write_session_title")
+            .expect("write_session_title definition");
+        assert!(
+            write_session_title.parameters().get("properties").is_some(),
+            "write_session_title must be callable on the first substantive turn"
         );
 
         let fake = transformed
