@@ -1324,6 +1324,7 @@ pub(crate) fn should_insert_chat_gap(current: &Author, next: Option<&Author>) ->
             | (&Author::Stderr, &Author::ToolDetail)
             | (&Author::Stderr, &Author::Stderr)
             | (&Author::Stderr, &Author::Sandbox)
+            | (&Author::Diff, &Author::Diff)
     )
 }
 
