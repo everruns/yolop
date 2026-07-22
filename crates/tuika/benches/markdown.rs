@@ -42,10 +42,10 @@ const WIDTH: u16 = 80;
 /// [`Throughput::Bytes`].
 const SIZES: &[(&str, usize)] = &[("small", 1), ("medium", 8), ("large", 40)];
 
-/// Smaller sizes for the streaming benches. A streamed render re-flattens the
-/// settled prefix on every delta, so its cost grows quadratically with document
-/// length; the `large` scale here is capped so a run finishes quickly. (That
-/// quadratic is a known optimization target, not a property to bench to death.)
+/// Smaller sizes for the streaming benches. `MarkdownState` flattens settled
+/// blocks once and re-does only the in-flight tail per delta, so streaming is
+/// linear in the transcript length; these scales are kept modest simply so the
+/// per-delta loops (which still render every frame) finish quickly.
 const STREAM_SIZES: &[(&str, usize)] = &[("small", 1), ("medium", 4), ("large", 12)];
 
 /// Scale for the cached-vs-naive comparison — large enough that the naive

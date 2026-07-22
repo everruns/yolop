@@ -177,7 +177,9 @@ fn main() -> io::Result<()> {
         terminal.draw(|f| {
             let area = f.area();
             let width = area.width.saturating_sub(4);
-            let lines = state.lines(width, &theme, CodeHighlighter::With(&highlighter));
+            let lines = state
+                .lines(width, &theme, CodeHighlighter::With(&highlighter))
+                .to_vec();
             let status = if cursor < doc.len() {
                 format!("streaming… {}/{} glyphs", cursor, doc.len())
             } else {

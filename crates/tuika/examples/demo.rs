@@ -639,7 +639,9 @@ fn scene_markdown(frame: u64, theme: &Theme) -> Element {
     state.set(revealed);
     // Rendered at a fixed width for the demo frame; a real host passes the live
     // viewport width so prose re-wraps on resize.
-    let lines = state.lines(64, theme, tuika::CodeHighlighter::With(&HL));
+    let lines = state
+        .lines(64, theme, tuika::CodeHighlighter::With(&HL))
+        .to_vec();
     element(Text::new(lines))
 }
 
