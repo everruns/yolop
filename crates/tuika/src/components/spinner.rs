@@ -24,6 +24,7 @@ pub enum SpinnerStyle {
 }
 
 impl SpinnerStyle {
+    /// The ordered glyph set the host cycles through for this style.
     pub fn frames(self) -> &'static [&'static str] {
         match self {
             SpinnerStyle::Braille => &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
@@ -52,11 +53,13 @@ impl Spinner {
         }
     }
 
+    /// Set the glyph set.
     pub fn style(mut self, style: SpinnerStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Override the glyph color (defaults to the theme accent).
     pub fn color(mut self, color: ratatui::style::Color) -> Self {
         self.color = Some(color);
         self

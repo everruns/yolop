@@ -93,10 +93,13 @@ pub struct SelectionState {
 }
 
 impl SelectionState {
+    /// A state with no selection in progress.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Feed a mouse event; returns `true` when the selection changed and a
+    /// redraw is warranted.
     pub fn handle(&mut self, m: &Mouse) -> bool {
         match m.kind {
             MouseKind::Down(MouseButton::Left) => {
@@ -134,6 +137,7 @@ impl SelectionState {
             .then(|| SelectionRange::between(self.anchor, self.cursor))
     }
 
+    /// Whether a non-empty selection currently exists.
     pub fn is_active(&self) -> bool {
         self.selecting
     }
@@ -196,6 +200,7 @@ impl<T> Default for HitMap<T> {
 }
 
 impl<T> HitMap<T> {
+    /// An empty map with no registered regions.
     pub fn new() -> Self {
         Self::default()
     }
@@ -205,6 +210,7 @@ impl<T> HitMap<T> {
         self.regions.push((area, value));
     }
 
+    /// Drop all registered regions, ready for the next frame.
     pub fn clear(&mut self) {
         self.regions.clear();
     }
@@ -231,8 +237,11 @@ fn in_rect(r: Rect, col: u16, row: u16) -> bool {
 /// A completed click: the cell and button of a `Down`/`Up` pair on one cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Click {
+    /// Clicked cell column (0-based).
     pub column: u16,
+    /// Clicked cell row (0-based).
     pub row: u16,
+    /// The mouse button that was pressed and released.
     pub button: MouseButton,
 }
 
@@ -246,10 +255,13 @@ pub struct ClickTracker {
 }
 
 impl ClickTracker {
+    /// A tracker with no press pending.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Feed a mouse event; returns `Some(Click)` on the `Up` that completes a
+    /// press/release on the same cell with the same button.
     pub fn handle(&mut self, m: &Mouse) -> Option<Click> {
         match m.kind {
             MouseKind::Down(button) => {

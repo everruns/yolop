@@ -48,7 +48,9 @@ pub enum TextInputMode {
 /// Result of applying an Enter chord to a text input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextInputEvent {
+    /// The chord inserted a newline; text changed.
     Changed,
+    /// The chord requested submission.
     Submit,
 }
 
@@ -59,6 +61,7 @@ impl Default for TextInputState {
 }
 
 impl TextInputState {
+    /// An empty single-line buffer with cursor at the start.
     pub fn new() -> Self {
         Self {
             lines: vec![String::new()],
@@ -212,6 +215,7 @@ impl TextInputState {
         self.col = self.col.min(self.lines[self.row].chars().count());
     }
 
+    /// Move one char left, wrapping to the end of the previous line.
     pub fn move_left(&mut self) {
         if self.col > 0 {
             self.col -= 1;
@@ -221,6 +225,7 @@ impl TextInputState {
         }
     }
 
+    /// Move one char right, wrapping to the start of the next line.
     pub fn move_right(&mut self) {
         let len = self.lines[self.row].chars().count();
         if self.col < len {
@@ -231,6 +236,7 @@ impl TextInputState {
         }
     }
 
+    /// Move to the previous line (clamping column), or to line start at the top.
     pub fn move_up(&mut self) {
         if self.row > 0 {
             self.row -= 1;
@@ -240,6 +246,7 @@ impl TextInputState {
         }
     }
 
+    /// Move to the next line (clamping column), or to line end at the bottom.
     pub fn move_down(&mut self) {
         if self.row + 1 < self.lines.len() {
             self.row += 1;
@@ -249,10 +256,12 @@ impl TextInputState {
         }
     }
 
+    /// Move the cursor to the start of the current line.
     pub fn move_home(&mut self) {
         self.col = 0;
     }
 
+    /// Move the cursor to the end of the current line.
     pub fn move_end(&mut self) {
         self.col = self.lines[self.row].chars().count();
     }
@@ -624,6 +633,7 @@ pub struct TextInput {
 }
 
 impl TextInput {
+    /// Snapshot `state`'s text and cursor for rendering.
     pub fn new(state: &TextInputState) -> Self {
         Self {
             lines: state.lines.clone(),
@@ -632,6 +642,7 @@ impl TextInput {
         }
     }
 
+    /// Set the text style applied to rendered glyphs.
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self

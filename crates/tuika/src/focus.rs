@@ -19,6 +19,7 @@ pub struct FocusRegistry {
 }
 
 impl FocusRegistry {
+    /// Create an empty registry with no registered or focused regions.
     pub fn new() -> Self {
         Self::default()
     }

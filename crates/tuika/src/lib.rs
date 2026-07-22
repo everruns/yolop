@@ -32,6 +32,8 @@
 //! which preserves Tuika clipping without exposing the frame buffer.
 //! [`TerminalSession`] and [`Runner`] are optional host-side lifecycle helpers.
 
+#![warn(missing_docs)]
+
 pub mod anim;
 pub mod clipboard;
 pub mod components;

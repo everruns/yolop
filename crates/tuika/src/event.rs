@@ -8,25 +8,36 @@
 /// A translated input event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
+    /// A key press.
     Key(Key),
+    /// A mouse action.
     Mouse(Mouse),
     /// Bracketed-paste payload.
     Paste(String),
+    /// Terminal resized to the given cell dimensions.
     Resize {
+        /// New width in cells.
         width: u16,
+        /// New height in cells.
         height: u16,
     },
 }
 
+/// A key press with its modifier state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Key {
+    /// The key that was pressed.
     pub code: KeyCode,
+    /// Ctrl held during the press.
     pub ctrl: bool,
+    /// Alt held during the press.
     pub alt: bool,
+    /// Shift held during the press.
     pub shift: bool,
 }
 
 impl Key {
+    /// A key with the given code and no modifiers held.
     pub fn new(code: KeyCode) -> Self {
         Self {
             code,
@@ -36,39 +47,62 @@ impl Key {
         }
     }
 
+    /// True when neither Ctrl nor Alt is held (Shift is ignored, as it is
+    /// already folded into the character for text input).
     pub fn plain(&self) -> bool {
         !self.ctrl && !self.alt
     }
 }
 
+/// A physical/logical key, independent of modifier state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyCode {
+    /// A printable character.
     Char(char),
+    /// Enter/Return.
     Enter,
+    /// Escape.
     Esc,
+    /// Backspace (delete before cursor).
     Backspace,
+    /// Delete (delete under/after cursor).
     Delete,
+    /// Tab.
     Tab,
+    /// Back-tab (Shift-Tab).
     BackTab,
+    /// Up arrow.
     Up,
+    /// Down arrow.
     Down,
+    /// Left arrow.
     Left,
+    /// Right arrow.
     Right,
+    /// Home.
     Home,
+    /// End.
     End,
+    /// Page Up.
     PageUp,
+    /// Page Down.
     PageDown,
 }
 
+/// A mouse event at a terminal cell, with modifier state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mouse {
+    /// What the pointer did (button press/release/drag, move, or scroll).
     pub kind: MouseKind,
     /// Cell column (0-based, terminal coordinates).
     pub column: u16,
     /// Cell row (0-based, terminal coordinates).
     pub row: u16,
+    /// Shift held during the event.
     pub shift: bool,
+    /// Ctrl held during the event.
     pub ctrl: bool,
+    /// Alt held during the event.
     pub alt: bool,
 }
 
@@ -98,11 +132,15 @@ impl Mouse {
 /// Which mouse button an event refers to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseButton {
+    /// Left (primary) button.
     Left,
+    /// Right (secondary) button.
     Right,
+    /// Middle button.
     Middle,
 }
 
+/// The kind of mouse interaction an event represents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseKind {
     /// Button pressed.
@@ -113,9 +151,13 @@ pub enum MouseKind {
     Drag(MouseButton),
     /// Pointer moved with no button held.
     Moved,
+    /// Wheel scrolled up.
     ScrollUp,
+    /// Wheel scrolled down.
     ScrollDown,
+    /// Wheel scrolled left.
     ScrollLeft,
+    /// Wheel scrolled right.
     ScrollRight,
 }
 
@@ -129,6 +171,7 @@ pub enum EventFlow {
 }
 
 impl EventFlow {
+    /// True for [`EventFlow::Consumed`].
     pub fn consumed(self) -> bool {
         matches!(self, EventFlow::Consumed)
     }

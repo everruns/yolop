@@ -32,10 +32,12 @@ pub struct SelectState {
 }
 
 impl SelectState {
+    /// A fresh state with the first row highlighted.
     pub fn new() -> Self {
         Self { selected: 0 }
     }
 
+    /// The currently highlighted index.
     pub fn selected(&self) -> usize {
         self.selected
     }
@@ -119,6 +121,7 @@ pub struct SelectList {
 }
 
 impl SelectList {
+    /// A list of `items` with the row from `state` highlighted.
     pub fn new(items: Vec<Line<'static>>, state: &SelectState) -> Self {
         Self {
             items,

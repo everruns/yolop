@@ -50,6 +50,7 @@ pub struct Text {
 }
 
 impl Text {
+    /// A text block from pre-styled lines.
     pub fn new(lines: Vec<Line<'static>>) -> Self {
         Self { lines }
     }
@@ -78,6 +79,7 @@ pub struct Paragraph {
 }
 
 impl Paragraph {
+    /// A paragraph that wraps `text` in a single `style`.
     pub fn new(text: impl Into<String>, style: Style) -> Self {
         Self {
             text: text.into(),
@@ -263,6 +265,7 @@ pub struct Wrap {
 }
 
 impl Wrap {
+    /// A wrapping view over pre-styled lines.
     pub fn new(lines: Vec<Line<'static>>) -> Self {
         Self { lines }
     }

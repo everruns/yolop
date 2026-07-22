@@ -37,6 +37,8 @@ use crate::view::{Element, RenderCtx, View, element};
 pub struct RectProbe(Rc<Cell<Rect>>);
 
 impl RectProbe {
+    /// Create a fresh handle reading back [`Rect::ZERO`] until its probed view
+    /// is painted.
     pub fn new() -> Self {
         Self::default()
     }
@@ -67,6 +69,7 @@ pub struct Probe {
 }
 
 impl Probe {
+    /// Wrap `inner` so its painted rect is reported to `probe`.
     pub fn new(inner: Element, probe: &RectProbe) -> Self {
         Self {
             inner,

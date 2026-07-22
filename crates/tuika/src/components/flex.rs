@@ -29,6 +29,7 @@ pub struct Flex {
 }
 
 impl Flex {
+    /// An empty flex container with the given layout style.
     pub fn new(style: LayoutStyle) -> Self {
         Self {
             style,
@@ -37,10 +38,12 @@ impl Flex {
         }
     }
 
+    /// An empty container laying children left-to-right along the horizontal axis.
     pub fn row() -> Self {
         Self::new(LayoutStyle::row())
     }
 
+    /// An empty container stacking children top-to-bottom along the vertical axis.
     pub fn column() -> Self {
         Self::new(LayoutStyle::column())
     }

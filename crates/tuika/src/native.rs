@@ -53,6 +53,7 @@ pub struct TerminalProgress {
 }
 
 impl TerminalProgress {
+    /// Create a driver with no indicator shown yet.
     pub fn new() -> Self {
         Self { active: false }
     }

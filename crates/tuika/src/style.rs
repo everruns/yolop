@@ -11,15 +11,19 @@ use ratatui::style::{Color, Modifier, Style};
 /// Line-drawing style for bordered components.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BorderStyle {
+    /// Rounded corners (`╭╮╰╯`) with light edges.
     #[default]
     Rounded,
+    /// Square corners (`┌┐└┘`) with light edges.
     Plain,
+    /// Heavy corners and edges (`┏┓┗┛━┃`).
     Thick,
+    /// No border; drawn as blank spaces.
     None,
 }
 
 impl BorderStyle {
-    /// (top_left, top_right, bottom_left, bottom_right, horizontal, vertical)
+    /// The six line-drawing glyphs (corners, horizontal, vertical) for this style.
     pub fn glyphs(self) -> BorderGlyphs {
         match self {
             BorderStyle::Rounded => BorderGlyphs::new('╭', '╮', '╰', '╯', '─', '│'),
@@ -30,13 +34,20 @@ impl BorderStyle {
     }
 }
 
+/// The resolved corner and edge glyphs for a [`BorderStyle`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BorderGlyphs {
+    /// Top-left corner glyph.
     pub top_left: char,
+    /// Top-right corner glyph.
     pub top_right: char,
+    /// Bottom-left corner glyph.
     pub bottom_left: char,
+    /// Bottom-right corner glyph.
     pub bottom_right: char,
+    /// Horizontal edge glyph (top and bottom sides).
     pub horizontal: char,
+    /// Vertical edge glyph (left and right sides).
     pub vertical: char,
 }
 
@@ -67,16 +78,27 @@ impl BorderGlyphs {
 /// own `Theme` and the whole component tree follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
+    /// Base fill behind the whole screen.
     pub background: Color,
+    /// Raised fill for panels and overlays that sit above the background.
     pub surface: Color,
+    /// Primary foreground for body text.
     pub text: Color,
+    /// De-emphasized foreground for secondary text, hints, and scrollbar thumbs.
     pub muted: Color,
+    /// Faintest foreground, dimmer than `muted`, for inactive tracks and rules.
     pub dim: Color,
+    /// Primary highlight for active/emphasized elements (progress fill, spinner).
     pub accent: Color,
+    /// Secondary accent for complementary highlights distinct from `accent`.
     pub accent_alt: Color,
+    /// Border color for unfocused bordered components.
     pub border: Color,
+    /// Border color for the focused component.
     pub border_focused: Color,
+    /// Background of the selected item in lists and menus.
     pub selection_bg: Color,
+    /// Foreground of the selected item in lists and menus.
     pub selection_fg: Color,
     /// Markdown and code-block role colors, consumed by [`Markdown`] and
     /// [`CodeBlock`] (and any [`Highlighter`] the host plugs in).
@@ -162,20 +184,24 @@ impl Default for CodeTheme {
 }
 
 impl Theme {
+    /// Style for primary body text (`text` foreground).
     pub fn text_style(&self) -> Style {
         Style::default().fg(self.text)
     }
 
+    /// Style for de-emphasized text (`muted` foreground).
     pub fn muted_style(&self) -> Style {
         Style::default().fg(self.muted)
     }
 
+    /// Bold style in the primary `accent` color.
     pub fn accent_style(&self) -> Style {
         Style::default()
             .fg(self.accent)
             .add_modifier(Modifier::BOLD)
     }
 
+    /// Border color for a component, `border_focused` when `focused` else `border`.
     pub fn border_color(&self, focused: bool) -> Color {
         if focused {
             self.border_focused
@@ -184,6 +210,7 @@ impl Theme {
         }
     }
 
+    /// Bold style for a selected item (`selection_fg` on `selection_bg`).
     pub fn selection_style(&self) -> Style {
         Style::default()
             .bg(self.selection_bg)

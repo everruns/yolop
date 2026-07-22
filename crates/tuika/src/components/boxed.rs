@@ -26,6 +26,7 @@ pub struct Boxed {
 }
 
 impl Boxed {
+    /// Wrap `child` with default rounded border and symmetric horizontal padding.
     pub fn new(child: Element) -> Self {
         Self {
             child,
@@ -36,21 +37,25 @@ impl Boxed {
         }
     }
 
+    /// Set the border style (`BorderStyle::None` removes the border).
     pub fn border(mut self, border: BorderStyle) -> Self {
         self.border = border;
         self
     }
 
+    /// Set the padding between the border and the child.
     pub fn padding(mut self, padding: Padding) -> Self {
         self.padding = padding;
         self
     }
 
+    /// Set a title drawn on the top border, clipped between the corners.
     pub fn title(mut self, title: impl Into<Line<'static>>) -> Self {
         self.title = Some(title.into());
         self
     }
 
+    /// Fill the box interior with `style` before drawing the child.
     pub fn background(mut self, style: Style) -> Self {
         self.background = Some(style);
         self

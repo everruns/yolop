@@ -18,6 +18,7 @@ use super::surface::Surface;
 
 /// Context threaded to every `View::render`.
 pub struct RenderCtx<'a> {
+    /// The active theme supplying colors and styles for this frame.
     pub theme: &'a Theme,
     /// Whether the focused component of the frame is this one. Containers pass
     /// this down unchanged; focus-aware leaves use it to highlight borders.
@@ -25,6 +26,7 @@ pub struct RenderCtx<'a> {
 }
 
 impl<'a> RenderCtx<'a> {
+    /// A root context for `theme`, unfocused.
     pub fn new(theme: &'a Theme) -> Self {
         Self {
             theme,
@@ -48,7 +50,9 @@ impl<'a> RenderCtx<'a> {
 /// `render` paints into the `area` the layout assigned, through the clipped
 /// `surface`.
 pub trait View {
+    /// Report the intrinsic content size wanted given `available`.
     fn measure(&self, available: Size) -> Size;
+    /// Paint the view into the assigned `area` through `surface`.
     fn render(&self, area: Rect, surface: &mut Surface, ctx: &RenderCtx);
 }
 

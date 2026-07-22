@@ -14,15 +14,24 @@ use super::geometry::Size;
 /// Where an overlay sits relative to the screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Anchor {
+    /// Centered horizontally and vertically.
     #[default]
     Center,
+    /// Centered horizontally, flush to the top edge.
     Top,
+    /// Centered horizontally, flush to the bottom edge.
     Bottom,
+    /// Centered vertically, flush to the left edge.
     Left,
+    /// Centered vertically, flush to the right edge.
     Right,
+    /// Flush to the top-left corner.
     TopLeft,
+    /// Flush to the top-right corner.
     TopRight,
+    /// Flush to the bottom-left corner.
     BottomLeft,
+    /// Flush to the bottom-right corner.
     BottomRight,
 }
 
@@ -30,7 +39,9 @@ pub enum Anchor {
 /// with optional min/max clamps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Extent {
+    /// An absolute size in terminal cells.
     Cells(u16),
+    /// A percentage (0–100) of the available screen extent.
     Percent(u16),
 }
 
@@ -46,13 +57,21 @@ impl Extent {
 /// Anchored, sized overlay placement relative to a screen rect.
 #[derive(Clone, Copy, Debug)]
 pub struct OverlaySpec {
+    /// Where the resolved rect sits within the screen.
     pub anchor: Anchor,
+    /// Requested width, absolute or a percentage of the screen width.
     pub width: Extent,
+    /// Requested height, absolute or a percentage of the screen height.
     pub height: Extent,
+    /// Lower clamp on the resolved width, in cells.
     pub min_width: u16,
+    /// Lower clamp on the resolved height, in cells.
     pub min_height: u16,
+    /// Upper clamp on the resolved width, in cells.
     pub max_width: u16,
+    /// Upper clamp on the resolved height, in cells.
     pub max_height: u16,
+    /// Gap in cells kept between the overlay and every screen edge.
     pub margin: u16,
 }
 
@@ -71,23 +90,27 @@ impl OverlaySpec {
         }
     }
 
+    /// Set the anchor that positions the overlay within the screen.
     pub fn anchor(mut self, anchor: Anchor) -> Self {
         self.anchor = anchor;
         self
     }
 
+    /// Set the minimum resolved size in cells.
     pub fn min_size(mut self, width: u16, height: u16) -> Self {
         self.min_width = width;
         self.min_height = height;
         self
     }
 
+    /// Set the maximum resolved size in cells.
     pub fn max_size(mut self, width: u16, height: u16) -> Self {
         self.max_width = width;
         self.max_height = height;
         self
     }
 
+    /// Set the gap in cells kept between the overlay and every screen edge.
     pub fn margin(mut self, margin: u16) -> Self {
         self.margin = margin;
         self

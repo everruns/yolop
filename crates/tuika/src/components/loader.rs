@@ -23,6 +23,7 @@ pub struct Loader {
 }
 
 impl Loader {
+    /// A loader for the given frame counter showing `message` next to the spinner.
     pub fn new(frame: u64, message: impl Into<String>) -> Self {
         Self {
             frame,
@@ -38,6 +39,7 @@ impl Loader {
         self
     }
 
+    /// Set the spinner glyph set.
     pub fn spinner_style(mut self, style: SpinnerStyle) -> Self {
         self.spinner_style = style;
         self

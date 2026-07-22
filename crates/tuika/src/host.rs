@@ -119,7 +119,9 @@ impl Drop for TerminalSession {
 
 /// An overlay to composite over the base tree at a resolved rect.
 pub struct Overlay<'a> {
+    /// Rect the overlay is composited into.
     pub area: Rect,
+    /// View painted within `area`.
     pub view: &'a dyn View,
     /// Clear the rect (fill with the theme background) before painting.
     pub clear: bool,

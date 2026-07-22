@@ -20,6 +20,7 @@ pub struct StatusBar {
 }
 
 impl StatusBar {
+    /// An empty status bar with no segments and the default surface background.
     pub fn new() -> Self {
         Self {
             left: Vec::new(),
@@ -28,16 +29,19 @@ impl StatusBar {
         }
     }
 
+    /// Set the left-anchored segment group.
     pub fn left(mut self, spans: Vec<Span<'static>>) -> Self {
         self.left = spans;
         self
     }
 
+    /// Set the right-anchored segment group.
     pub fn right(mut self, spans: Vec<Span<'static>>) -> Self {
         self.right = spans;
         self
     }
 
+    /// Override the row background (defaults to the theme surface color).
     pub fn background(mut self, style: Style) -> Self {
         self.background = Some(style);
         self
