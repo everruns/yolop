@@ -11,6 +11,8 @@
 //! cargo run -p tuika --example screenshot -- out.svg # custom path
 //! cargo run -p tuika --example screenshot -- --dump  # print one frame as text
 //! cargo run -p tuika --example screenshot -- run     # animate it in a real terminal
+//! cargo run -p tuika --example screenshot -- run gruvbox-dark  # …in a bundled theme
+//! cargo run -p tuika --example screenshot -- bg gruvbox-dark   # print its background hex
 //! ```
 //!
 //! Vector text stays sharp at any zoom, and — because an externally referenced
@@ -23,7 +25,9 @@
 //! The `run` subcommand animates the same `scene()` in the alternate screen so a
 //! terminal recorder (VHS) can capture it as a GIF — that is how `docs/hero.gif`
 //! is produced (see `scripts/gen-tuika-hero.sh`). SVG and GIF therefore share one
-//! source of truth.
+//! source of truth. `run <theme>` animates a bundled palette instead of the
+//! default, which is how the per-theme demos in `docs/themes.md` are recorded
+//! (see `scripts/gen-tuika-theme-demos.sh`).
 
 use std::io;
 use std::path::PathBuf;
@@ -63,7 +67,25 @@ fn main() -> io::Result<()> {
 
     if args.first().map(String::as_str) == Some("run") {
         // Animate the scene in a real terminal so a recorder can capture it.
-        return run_interactive(&theme);
+        // An optional theme name (`run gruvbox-dark`) animates that palette; the
+        // per-theme GIFs are recorded this way.
+        let scene_theme = args
+            .get(1)
+            .and_then(|name| tuika::themes::by_name(name))
+            .unwrap_or(theme);
+        return run_interactive(&scene_theme);
+    }
+
+    if args.first().map(String::as_str) == Some("bg") {
+        // Print a theme's background as `#rrggbb` so the GIF recorder can blend
+        // VHS's window padding into the app background. Defaults to the toolkit
+        // theme when the name is unknown.
+        let t = args
+            .get(1)
+            .and_then(|n| tuika::themes::by_name(n))
+            .unwrap_or(theme);
+        println!("{}", hex(t.background));
+        return Ok(());
     }
 
     let out = args
