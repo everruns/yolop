@@ -30,3 +30,9 @@ tree-sitter-scala = "0.26"
 tree-sitter-sequel = "0.3"
 tree-sitter-typescript = "0.23"
 tree-sitter-zig = "1"
+
+[dev-dependencies]
+# The runnable examples drive a full-screen loop; tuika owns the rendering,
+# crossterm just supplies the raw event source (the same pair tuika's own
+# examples use).
+crossterm = "0.29"

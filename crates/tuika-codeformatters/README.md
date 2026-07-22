@@ -23,6 +23,17 @@ let block = CodeBlock::new("rust", "fn main() {}").highlighter(&hl);
 # let _ = (theme, block);
 ```
 
+## Example
+
+A runnable, interactive gallery of highlighted snippets across languages
+(←/→ or Tab to switch, `q` to quit):
+
+```bash
+cargo run -p tuika-codeformatters --example languages
+```
+
+<img src="https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika-codeformatters/docs/languages.gif" width="880" alt="Syntax highlighting across languages">
+
 ## Supported languages
 
 Rust, Python, TypeScript/JavaScript, TSX/JSX, Go, Java, Ruby, CSS, HTML, C#,
