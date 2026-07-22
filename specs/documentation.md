@@ -93,6 +93,29 @@ Run tapes from the repository root
 (`vhs docs/features/<feature>/<capture>.tape`) so their relative output paths
 resolve consistently.
 
+## Capture toolchain
+
+Reproducing any VHS capture — the feature guides above, the tuika component
+demos (`crates/tuika/scripts/gen-tuika-demos.sh`), and the tuika README hero
+(`crates/tuika/scripts/gen-tuika-hero.sh`) — needs the same tools on `PATH`:
+
+- **VHS**, which drives **ttyd** and **ffmpeg** (both must be installed
+  separately) and renders frames through a headless Chromium it fetches via
+  `go-rod` on first run into `~/.cache/rod`.
+
+Install:
+
+- `ttyd` and `ffmpeg` come from the system package manager (e.g.
+  `apt-get install ttyd ffmpeg`).
+- VHS ships prebuilt binaries; when a release download is unavailable, build it
+  from source with `go install github.com/charmbracelet/vhs@latest` (this needs
+  a Go toolchain new enough for VHS — `GOTOOLCHAIN=auto` lets Go fetch one).
+
+In a container or as root, set `VHS_NO_SANDBOX=true`; to reuse an already
+installed browser instead of the `go-rod` download, point `ROD_BROWSER_BIN` at
+its `chrome` binary. These environment knobs belong in the shell around a
+recording, not in committed tapes, so tapes stay portable.
+
 ## Enforcement
 
 CI rejects Markdown links from `README.md` and `docs/` into `specs/` or
