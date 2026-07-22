@@ -75,7 +75,9 @@ pub use focus::FocusRegistry;
 pub use geometry::{Padding, Size};
 pub use highlight::{CodeHighlighter, Highlighter, PlainHighlighter};
 pub use host::{AltScreen, Overlay, TerminalSession, paint, translate_event};
-pub use hyperlink::{HyperlinkBackend, is_web_url, osc8, write_line};
+pub use hyperlink::{
+    HyperlinkBackend, LinkPolicy, is_web_url, osc8, osc8_with, write_line, write_line_with,
+};
 pub use layout::{Align, Dimension, Direction, Justify, LayoutStyle};
 pub use live::{Live, LiveView, RedrawHandle};
 pub use mouse::{

@@ -33,6 +33,11 @@ There are two entry points:
   for URLs and wraps just those in OSC 8, so links work inside the normal render
   path too. When disabled it's a zero-cost pass-through.
 
+Each has a policy-aware sibling — `osc8_with`, `write_line_with`, and
+`HyperlinkBackend::with_policy` — taking a `LinkPolicy` so the host chooses which
+schemes are linked. The default (`LinkPolicy::WEB`) is `http(s)`-only;
+`LinkPolicy::WEB.with_mailto()` also links `mailto:` addresses.
+
 ```rust
 use tuika::{osc8, is_web_url};
 
@@ -52,10 +57,13 @@ ESC ] 8 ; ; https://docs.rs/tuika ST   the tuika docs   ESC ] 8 ; ; ST
 **Supported terminals:** Ghostty, iTerm2, WezTerm, Kitty, recent VTE-based
 terminals. Others render the visible text unchanged.
 
-**Limits & safety.** Only `http://` and `https://` URLs are accepted; control
-characters (including the `ESC`/`BEL` that could break out of the sequence) are
-stripped, so a crafted URL can't escape the OSC. Under tmux, passthrough must be
-enabled: `set -g allow-passthrough on`.
+**Limits & safety.** The scheme allowlist is the safety boundary: by default
+only `http://` and `https://` are accepted, and a host that opts into `mailto:`
+gets it sanitized separately — the query (`?cc=`, `?body=`, …) is dropped so a
+click can't be steered into pre-filled headers. Every accepted target has its
+control characters stripped (including the `ESC`/`BEL` that could break out of
+the sequence), so a crafted URL can't escape the OSC. Under tmux, passthrough
+must be enabled: `set -g allow-passthrough on`.
 
 ## Mouse: selection, highlight & clicks
 

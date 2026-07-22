@@ -37,13 +37,73 @@ use ratatui::text::{Line, Span};
 /// String terminator for an OSC sequence: `ESC \`.
 const ST: &str = "\x1b\\";
 
-/// Wrap `text` in an OSC 8 hyperlink to `url`, or return `text` unchanged when
-/// `url` is not a valid, safe web URL. Pure and allocation-only — no I/O.
-pub fn osc8(url: &str, text: &str) -> String {
-    match sanitize_web_url(url) {
+/// Which URL schemes tuika turns into OSC 8 hyperlinks.
+///
+/// The default ([`LinkPolicy::WEB`]) is deliberately conservative — only
+/// `http(s)` — because an OSC 8 target a terminal will act on is a capability
+/// surface: `file:`, `tel:`, and custom app schemes can do more than open a web
+/// page, and mapping arbitrary schemes to handlers is where the real risk
+/// lives. Hosts opt into anything beyond `http(s)` explicitly, so the safe set
+/// is the one you get by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinkPolicy {
+    web: bool,
+    mailto: bool,
+}
+
+impl LinkPolicy {
+    /// Link nothing — makes [`HyperlinkBackend`] a pure pass-through.
+    pub const NONE: Self = Self {
+        web: false,
+        mailto: false,
+    };
+    /// The conservative default: `http://` and `https://` only.
+    pub const WEB: Self = Self {
+        web: true,
+        mailto: false,
+    };
+
+    /// Also treat `mailto:` addresses as links. The target is still stripped of
+    /// control characters (the same ESC/BEL breakout defense as web URLs), and
+    /// its query component (`?subject=`, `?cc=`, `?bcc=`, `?body=`, …) is
+    /// dropped so a click can't be steered into pre-filled headers — a clickable
+    /// `mailto:` only ever opens a compose window to the bare address.
+    pub const fn with_mailto(mut self) -> Self {
+        self.mailto = true;
+        self
+    }
+
+    /// Whether the policy links anything at all (`false` ⇒ pass-through).
+    pub const fn links_any(self) -> bool {
+        self.web || self.mailto
+    }
+}
+
+impl Default for LinkPolicy {
+    fn default() -> Self {
+        Self::WEB
+    }
+}
+
+/// Web scheme prefixes, longest first so `https://` wins over `http://`.
+const WEB_PREFIXES: [&str; 2] = ["https://", "http://"];
+/// The `mailto:` scheme prefix.
+const MAILTO_PREFIX: &str = "mailto:";
+
+/// Wrap `text` in an OSC 8 hyperlink to `url` under `policy`, or return `text`
+/// unchanged when `url` is not a valid, safe target for that policy. Pure and
+/// allocation-only — no I/O.
+pub fn osc8_with(url: &str, text: &str, policy: LinkPolicy) -> String {
+    match sanitize_url(url, policy) {
         Some(url) => format!("\x1b]8;;{url}{ST}{text}\x1b]8;;{ST}"),
         None => text.to_string(),
     }
+}
+
+/// [`osc8_with`] under the default ([`LinkPolicy::WEB`]) policy: wrap `text` in a
+/// link to `url` when `url` is a safe `http(s)` URL, else return `text`.
+pub fn osc8(url: &str, text: &str) -> String {
+    osc8_with(url, text, LinkPolicy::default())
 }
 
 /// Whether `s` is a bare `http(s)://` URL with no interior whitespace — the
@@ -52,43 +112,90 @@ pub fn is_web_url(s: &str) -> bool {
     (s.starts_with("http://") || s.starts_with("https://")) && !s.chars().any(char::is_whitespace)
 }
 
-/// Accept only `http(s)` URLs, and strip control characters (including the
-/// `ESC`/`BEL` that could terminate the OSC early and let a crafted URL break
-/// out of the sequence). Returns `None` for anything else.
-fn sanitize_web_url(url: &str) -> Option<String> {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return None;
+/// Whether `s` is a bare URL (no interior whitespace) whose scheme `policy`
+/// links. Generalizes [`is_web_url`] to the enabled scheme set — the shape a
+/// span must have for [`write_line_with`] to wrap it.
+fn is_linkable(s: &str, policy: LinkPolicy) -> bool {
+    if s.chars().any(char::is_whitespace) {
+        return false;
     }
-    let cleaned: String = url
-        .chars()
-        .filter(|&c| !c.is_control() && c != '\u{7f}')
-        .collect();
-    (!cleaned.is_empty() && cleaned.len() >= "http://".len()).then_some(cleaned)
+    (policy.web && WEB_PREFIXES.iter().any(|p| s.starts_with(p)))
+        || (policy.mailto && s.starts_with(MAILTO_PREFIX))
 }
 
-/// Byte ranges of every `http(s)` URL in `s`, left to right, non-overlapping.
-/// Each URL runs to the next whitespace with trailing sentence punctuation
-/// trimmed, matching how the host styles links.
-fn find_web_urls(s: &str) -> Vec<(usize, usize)> {
+/// Strip control characters — including the `ESC`/`BEL` that could terminate the
+/// OSC early and let a crafted target break out of the sequence — plus `DEL`.
+fn strip_controls(s: &str) -> String {
+    s.chars()
+        .filter(|&c| !c.is_control() && c != '\u{7f}')
+        .collect()
+}
+
+/// Validate `url` against `policy` and neutralize anything that could break out
+/// of the OSC 8 sequence, returning the safe target or `None`.
+///
+/// Every accepted scheme has its control characters removed. `mailto:`
+/// additionally has its query (`?…`) dropped before cleaning, so header
+/// parameters can't ride along — see [`LinkPolicy::with_mailto`].
+fn sanitize_url(url: &str, policy: LinkPolicy) -> Option<String> {
+    if policy.web && WEB_PREFIXES.iter().any(|p| url.starts_with(p)) {
+        let cleaned = strip_controls(url);
+        return (cleaned.len() >= "http://".len()).then_some(cleaned);
+    }
+    if policy.mailto && url.starts_with(MAILTO_PREFIX) {
+        // Drop the query before cleaning so `?cc=…`/`?body=…` never reach the
+        // terminal, then strip control chars like any other target.
+        let addr = url.split('?').next().unwrap_or(url);
+        let cleaned = strip_controls(addr);
+        return (cleaned.len() > MAILTO_PREFIX.len()).then_some(cleaned);
+    }
+    None
+}
+
+/// Byte ranges of every linkable URL in `s` under `policy`, left to right,
+/// non-overlapping. Each match runs to the next whitespace with trailing
+/// sentence punctuation trimmed, matching how the host styles links; a
+/// `mailto:` match also stops at its query `?` so the pre-fill params are
+/// neither shown nor linked.
+fn find_links(s: &str, policy: LinkPolicy) -> Vec<(usize, usize)> {
     const TRAILING: &[char] = &['.', ',', ';', ':', '!', '?', ')', ']', '}', '\'', '"'];
     let mut ranges = Vec::new();
+    if !policy.links_any() {
+        return ranges;
+    }
+    // (prefix, is_mailto) for each enabled scheme; web prefixes longest-first so
+    // ties at the same offset resolve to `https://` over `http://`.
+    let mut prefixes: Vec<(&str, bool)> = Vec::new();
+    if policy.web {
+        prefixes.extend(WEB_PREFIXES.iter().map(|&p| (p, false)));
+    }
+    if policy.mailto {
+        prefixes.push((MAILTO_PREFIX, true));
+    }
+
     let mut offset = 0;
     while offset < s.len() {
         let rest = &s[offset..];
-        let Some(rel) = rest
-            .find("https://")
-            .into_iter()
-            .chain(rest.find("http://"))
-            .min()
+        // Leftmost occurrence of any enabled prefix.
+        let Some((rel, prefix, is_mailto)) = prefixes
+            .iter()
+            .filter_map(|&(p, m)| rest.find(p).map(|i| (i, p, m)))
+            .min_by_key(|&(i, ..)| i)
         else {
             break;
         };
         let start = offset + rel;
         let tail = &s[start..];
-        let raw_end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+        let mut raw_end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+        if is_mailto && let Some(q) = tail[..raw_end].find('?') {
+            raw_end = q;
+        }
         let len = tail[..raw_end].trim_end_matches(TRAILING).len();
-        if len == 0 {
-            break;
+        if len <= prefix.len() {
+            // Scheme with no target (e.g. a bare "http://"). Skip past just the
+            // prefix so a later scheme in the same string is still found.
+            offset = start + prefix.len();
+            continue;
         }
         ranges.push((start, start + len));
         offset = start + len;
@@ -102,19 +209,30 @@ fn find_web_urls(s: &str) -> Vec<(usize, usize)> {
 /// printed as plain styled text. Does not emit a trailing newline — the caller
 /// controls line breaks.
 pub fn write_line(out: &mut impl Write, line: &Line<'_>) -> io::Result<()> {
+    write_line_with(out, line, LinkPolicy::default())
+}
+
+/// [`write_line`] with an explicit [`LinkPolicy`], so a host can decide which
+/// schemes (e.g. `mailto:`) become hyperlinks when it pushes a line to
+/// scrollback.
+pub fn write_line_with(
+    out: &mut impl Write,
+    line: &Line<'_>,
+    policy: LinkPolicy,
+) -> io::Result<()> {
     for span in &line.spans {
-        write_span(out, span)?;
+        write_span(out, span, policy)?;
     }
     queue!(out, ResetColor, SetAttribute(Attribute::Reset))?;
     Ok(())
 }
 
-fn write_span(out: &mut impl Write, span: &Span<'_>) -> io::Result<()> {
+fn write_span(out: &mut impl Write, span: &Span<'_>, policy: LinkPolicy) -> io::Result<()> {
     apply_style(out, span)?;
     let content = span.content.as_ref();
-    let is_link = is_web_url(content.trim()) && content.trim() == content;
+    let is_link = content.trim() == content && is_linkable(content, policy);
     if is_link {
-        queue!(out, Print(osc8(content, content)))?;
+        queue!(out, Print(osc8_with(content, content, policy)))?;
     } else {
         queue!(out, Print(content))?;
     }
@@ -181,20 +299,33 @@ fn to_ct_color(color: Color) -> CtColor {
 /// scroll-region, and `insert_before` bookkeeping stay consistent — except
 /// [`draw`](Backend::draw), which scans each contiguous run of cells for URLs
 /// and wraps just those cells in the OSC 8 sequence. Non-URL text is forwarded
-/// untouched. When `enabled` is false it is a pure pass-through with no scanning,
-/// so a host can gate the feature at zero cost.
+/// untouched. When the policy links nothing ([`LinkPolicy::NONE`]) it is a pure
+/// pass-through with no scanning, so a host can gate the feature at zero cost.
 pub struct HyperlinkBackend<W: Write> {
     inner: CrosstermBackend<W>,
-    enabled: bool,
+    policy: LinkPolicy,
 }
 
 impl<W: Write> HyperlinkBackend<W> {
-    /// Wrap `writer`. `enabled` turns OSC 8 emission on; when false, `draw`
-    /// forwards straight to the inner backend.
+    /// Wrap `writer`. `enabled` turns OSC 8 emission on under the default
+    /// ([`LinkPolicy::WEB`]) policy; when false, `draw` forwards straight to the
+    /// inner backend. Use [`with_policy`](Self::with_policy) to link other
+    /// schemes (e.g. `mailto:`).
     pub fn new(writer: W, enabled: bool) -> Self {
+        let policy = if enabled {
+            LinkPolicy::default()
+        } else {
+            LinkPolicy::NONE
+        };
+        Self::with_policy(writer, policy)
+    }
+
+    /// Wrap `writer` with an explicit [`LinkPolicy`], so the host decides which
+    /// schemes become hyperlinks. [`LinkPolicy::NONE`] is a pure pass-through.
+    pub fn with_policy(writer: W, policy: LinkPolicy) -> Self {
         Self {
             inner: CrosstermBackend::new(writer),
-            enabled,
+            policy,
         }
     }
 
@@ -211,7 +342,7 @@ impl<W: Write> HyperlinkBackend<W> {
             text.push_str(cell.symbol());
         }
 
-        let urls = find_web_urls(&text);
+        let urls = find_links(&text, self.policy);
         if urls.is_empty() {
             return self.inner.draw(run.iter().copied());
         }
@@ -227,7 +358,7 @@ impl<W: Write> HyperlinkBackend<W> {
                 self.inner.draw(run[cursor..start_cell].iter().copied())?;
             }
             if start_cell < end_cell {
-                match sanitize_web_url(&text[byte_start..byte_end]) {
+                match sanitize_url(&text[byte_start..byte_end], self.policy) {
                     Some(url) => {
                         // CrosstermBackend implements Write, so raw OSC 8 bytes go
                         // straight through to its inner writer.
@@ -263,7 +394,7 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
-        if !self.enabled {
+        if !self.policy.links_any() {
             return self.inner.draw(content);
         }
         let cells: Vec<(u16, u16, &Cell)> = content.collect();
@@ -405,12 +536,72 @@ mod tests {
 
     #[test]
     fn find_web_urls_locates_and_trims() {
-        assert_eq!(find_web_urls("see https://a.dev/x, ok"), vec![(4, 19)]);
+        let web = LinkPolicy::default();
+        assert_eq!(find_links("see https://a.dev/x, ok", web), vec![(4, 19)]);
         assert_eq!(
-            find_web_urls("a http://x.io b https://y.io"),
+            find_links("a http://x.io b https://y.io", web),
             vec![(2, 13), (16, 28)]
         );
-        assert!(find_web_urls("no links").is_empty());
+        assert!(find_links("no links", web).is_empty());
+    }
+
+    #[test]
+    fn mailto_is_off_under_default_policy() {
+        // Default (web-only) policy neither encodes nor finds `mailto:`.
+        assert_eq!(osc8("mailto:a@b.com", "mail"), "mail");
+        assert!(find_links("write mailto:a@b.com now", LinkPolicy::default()).is_empty());
+    }
+
+    #[test]
+    fn mailto_links_when_opted_in() {
+        let policy = LinkPolicy::WEB.with_mailto();
+        assert_eq!(
+            osc8_with("mailto:a@b.com", "mail", policy),
+            "\x1b]8;;mailto:a@b.com\x1b\\mail\x1b]8;;\x1b\\"
+        );
+        // Found in running text, trailing punctuation trimmed.
+        assert_eq!(find_links("write mailto:a@b.com.", policy), vec![(6, 20)]);
+        // Web still works alongside mailto.
+        assert_eq!(
+            find_links("mailto:a@b.com then https://x.io", policy),
+            vec![(0, 14), (20, 32)]
+        );
+    }
+
+    #[test]
+    fn mailto_drops_query_to_block_header_injection() {
+        let policy = LinkPolicy::WEB.with_mailto();
+        // The `?cc=…&body=…` header params are dropped from both the linked
+        // range and the sanitized target.
+        assert_eq!(
+            find_links("mailto:a@b.com?cc=evil@x.com&body=hi", policy),
+            vec![(0, 14)]
+        );
+        let encoded = osc8_with("mailto:a@b.com?cc=evil@x.com&body=hi", "m", policy);
+        assert_eq!(encoded, "\x1b]8;;mailto:a@b.com\x1b\\m\x1b]8;;\x1b\\");
+        assert!(
+            !encoded.contains("cc="),
+            "query must not reach the OSC target"
+        );
+    }
+
+    #[test]
+    fn mailto_strips_control_bytes_from_target() {
+        let policy = LinkPolicy::WEB.with_mailto();
+        let sneaky = "mailto:a\x1b\\@b.com";
+        let encoded = osc8_with(sneaky, "m", policy);
+        assert!(
+            !encoded.contains("a\x1b"),
+            "raw escape must be stripped: {encoded:?}"
+        );
+        assert!(encoded.starts_with("\x1b]8;;mailto:a"));
+    }
+
+    #[test]
+    fn mailto_without_address_is_not_a_link() {
+        let policy = LinkPolicy::WEB.with_mailto();
+        assert_eq!(osc8_with("mailto:", "m", policy), "m");
+        assert!(find_links("bare mailto: here", policy).is_empty());
     }
 
     /// A `Write` whose buffer we can inspect after the backend consumes it.
@@ -427,9 +618,9 @@ mod tests {
         }
     }
 
-    /// Render a row of single-char cells into a `HyperlinkBackend` and return the
-    /// emitted bytes.
-    fn draw_row(text: &str, enabled: bool) -> String {
+    /// Render a row of single-char cells through a backend built with `policy`
+    /// and return the emitted bytes.
+    fn draw_row_with(text: &str, policy: LinkPolicy) -> String {
         use ratatui::buffer::Cell;
         let cells: Vec<(u16, u16, Cell)> = text
             .chars()
@@ -441,12 +632,23 @@ mod tests {
             })
             .collect();
         let buf = SharedBuf(std::rc::Rc::new(std::cell::RefCell::new(Vec::new())));
-        let mut backend = HyperlinkBackend::new(buf.clone(), enabled);
+        let mut backend = HyperlinkBackend::with_policy(buf.clone(), policy);
         backend
             .draw(cells.iter().map(|(x, y, c)| (*x, *y, c)))
             .expect("draw");
         let bytes = buf.0.borrow().clone();
         String::from_utf8(bytes).expect("utf8")
+    }
+
+    /// Render a row through the `enabled`→default-policy mapping of
+    /// [`HyperlinkBackend::new`].
+    fn draw_row(text: &str, enabled: bool) -> String {
+        let policy = if enabled {
+            LinkPolicy::default()
+        } else {
+            LinkPolicy::NONE
+        };
+        draw_row_with(text, policy)
     }
 
     #[test]
@@ -477,5 +679,22 @@ mod tests {
     fn backend_plain_row_has_no_osc8() {
         let out = draw_row("just some text", true);
         assert!(!out.contains("\x1b]8;;"));
+    }
+
+    #[test]
+    fn backend_links_mailto_only_when_policy_allows() {
+        let row = "mail me at mailto:a@b.com today";
+        // Default (web) policy leaves the mailto as plain text.
+        assert!(!draw_row_with(row, LinkPolicy::default()).contains("\x1b]8;;"));
+        // With mailto opted in, the address run is wrapped in OSC 8.
+        let out = draw_row_with(row, LinkPolicy::WEB.with_mailto());
+        assert!(
+            out.contains("\x1b]8;;mailto:a@b.com\x1b\\"),
+            "mailto run should open OSC 8: {out:?}"
+        );
+        assert!(
+            out.contains("\x1b]8;;\x1b\\"),
+            "mailto run should close OSC 8"
+        );
     }
 }
