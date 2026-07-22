@@ -1110,13 +1110,14 @@ fn tui_combined_resize_reconstructs_composer_at_screen_bottom() {
     tui.clear_output();
     tui.resize(60, 40);
     tui.write_input(b" ");
-    assert!(
-        tui.wait_for_output("[expand", Duration::from_secs(3)),
-        "TUI did not redraw after combined resize: {}",
-        tui.output_text()
-    );
 
-    let screen = tui.screen_lines();
+    // The resize redraws over several frames; wait for the one where the
+    // composer has re-anchored to the new bottom (status row at row 40) before
+    // snapshotting, otherwise we race a mid-transition frame (see
+    // `wait_for_screen`).
+    let screen = tui.wait_for_screen(Duration::from_secs(3), |screen| {
+        screen.len() == 40 && screen.last().is_some_and(|row| row.contains("llmsim"))
+    });
     assert_eq!(
         screen.len(),
         40,

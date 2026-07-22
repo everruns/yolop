@@ -143,6 +143,29 @@ impl TuiHarness {
             .collect()
     }
 
+    /// Poll the reconstructed screen grid until `predicate` holds or `timeout`
+    /// elapses, returning the final grid either way.
+    ///
+    /// A PTY resize makes the app emit several intermediate frames before it
+    /// settles (the composer re-anchors to the new bottom row over more than one
+    /// redraw). `wait_for_output` returns the instant a needle's bytes appear —
+    /// which can be a mid-transition frame — so snapshotting `screen_lines`
+    /// right after it races the final layout. Poll on the settled grid instead.
+    pub fn wait_for_screen(
+        &mut self,
+        timeout: Duration,
+        mut predicate: impl FnMut(&[String]) -> bool,
+    ) -> Vec<String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let screen = self.screen_lines();
+            if predicate(&screen) || Instant::now() >= deadline {
+                return screen;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     pub fn clear_output(&mut self) {
         while self.output_rx.try_recv().is_ok() {}
         self.output.clear();
