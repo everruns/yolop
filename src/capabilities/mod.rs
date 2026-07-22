@@ -10,6 +10,7 @@ pub(crate) mod background;
 pub(crate) mod checkpoint;
 pub(crate) mod client_commands;
 pub(crate) mod config;
+pub(crate) mod context_cost_control;
 pub(crate) mod edit_file_override;
 pub(crate) mod free_search;
 pub(crate) mod goal;
@@ -43,6 +44,9 @@ pub(crate) use background::{
 pub(crate) use checkpoint::{CHECKPOINT_CAPABILITY_ID, CheckpointCapability};
 pub(crate) use client_commands::{CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCapability};
 pub(crate) use config::{CONFIG_CAPABILITY_ID, ConfigCapability};
+pub(crate) use context_cost_control::{
+    CONTEXT_COST_CONTROL_CAPABILITY_ID, ContextCostControlCapability,
+};
 pub(crate) use free_search::FreeSearchCapability;
 pub(crate) use goal::GoalCapability;
 pub(crate) use herdr::{HERDR_CAPABILITY_ID, HerdrCapability};

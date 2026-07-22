@@ -15,12 +15,13 @@ use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability,
     AstEditCapability, AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID,
     BackgroundCapability, CHECKPOINT_CAPABILITY_ID, CLIENT_COMMANDS_CAPABILITY_ID,
-    CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID, CheckpointCapability,
-    ClientCommandsCapability, ClientUiContext, CodingBashCapability,
-    CodingCliEnvironmentCapability, ConfigCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
-    GOAL_CAPABILITY_ID, GoalCapability, HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability,
-    HooksCapability, LspCapability, PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability,
-    REPO_MAP_CAPABILITY_ID, RepoMapCapability, SESSION_HISTORY_CAPABILITY_ID, SETUP_CAPABILITY_ID,
+    CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID, CONTEXT_COST_CONTROL_CAPABILITY_ID,
+    CheckpointCapability, ClientCommandsCapability, ClientUiContext, CodingBashCapability,
+    CodingCliEnvironmentCapability, ConfigCapability, ContextCostControlCapability,
+    ENVIRONMENT_CONTEXT_CAPABILITY_ID, GOAL_CAPABILITY_ID, GoalCapability, HERDR_CAPABILITY_ID,
+    HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability, LspCapability,
+    PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
+    RepoMapCapability, SESSION_HISTORY_CAPABILITY_ID, SETUP_CAPABILITY_ID,
     SessionHistoryCapability, SetupCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
     WorktreeCapability,
 };
@@ -41,14 +42,14 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use everruns_core::capabilities::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
-    BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, INFINITY_CONTEXT_CAPABILITY_ID,
-    InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability,
-    MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability,
-    SESSION_FILE_SYSTEM_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SESSION_TASKS_CAPABILITY_ID,
-    SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability,
-    SessionStorageCapability, StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID,
-    TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
-    USER_HOOKS_CAPABILITY_ID, UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
+    BtwCapability, CompactionCapability, INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability,
+    LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability, MessageMetadataCapability,
+    PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID,
+    SESSION_STORAGE_CAPABILITY_ID, SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID,
+    STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability, SessionStorageCapability,
+    StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID,
+    ToolOutputPersistenceCapability, ToolSearchCapability, USER_HOOKS_CAPABILITY_ID,
+    UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::driver_registry::{DriverRegistry, ProviderMetadata};
@@ -889,15 +890,6 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "lsp_symbols",
     "lsp_code_actions",
 ];
-const YOLOP_KEEP_RECENT_TOOL_OUTPUTS: u64 = 3;
-
-/// Fraction of the model context window at which proactive compaction triggers.
-/// Kept low: yolop favors a tight, cheap context and lets the compaction cascade
-/// (observation masking → aggressive trim) keep older tool output from
-/// accumulating. Surfaced to the TUI so the context gauge can mark this point —
-/// see `crate::tui::presentation::context_label`.
-pub(crate) const YOLOP_COMPACTION_BUDGET_PERCENT: f32 = 0.20;
-
 #[derive(Clone, Debug)]
 pub enum ProviderChoice {
     Anthropic {
@@ -2013,19 +2005,13 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new(SESSION_HISTORY_CAPABILITY_ID),
         AgentCapabilityConfig::new(CHECKPOINT_CAPABILITY_ID),
         AgentCapabilityConfig::new(AST_GREP_CAPABILITY_ID),
+        // The runtime's compaction cascade currently rewrites only one outbound
+        // model view. The next turn reconstructs the full stored transcript and
+        // compacts the same messages again, sometimes without reducing them at
+        // all. Keep a bounded recent window with searchable cold history until
+        // compaction can persist a canonical replacement-history checkpoint.
         AgentCapabilityConfig::new(INFINITY_CONTEXT_CAPABILITY_ID),
-        AgentCapabilityConfig::with_config(
-            COMPACTION_CAPABILITY_ID,
-            serde_json::json!({
-                "strategy": "auto",
-                "proactive": true,
-                "budget_percent": YOLOP_COMPACTION_BUDGET_PERCENT,
-                "observation_masking": {
-                    "keep_recent_tool_outputs": YOLOP_KEEP_RECENT_TOOL_OUTPUTS,
-                    "summary_format": "one_line"
-                }
-            }),
-        ),
+        AgentCapabilityConfig::new(CONTEXT_COST_CONTROL_CAPABILITY_ID),
         AgentCapabilityConfig::new(STATELESS_TODO_LIST_CAPABILITY_ID),
         AgentCapabilityConfig::new(LOOP_DETECTION_CAPABILITY_ID),
         AgentCapabilityConfig::new(PROGRESS_GUARD_CAPABILITY_ID),
@@ -2729,8 +2715,8 @@ pub async fn build_with_options(
     //   * repo_map            - on-demand multi-language symbol map for broad codebase orientation
     //   * ast_grep            - read-only structural code search
     //   * ast_edit            - previewed ast-grep rewrites (opt-in)
-    //   * infinity_context     — keeps long sessions usable; adds query_history
-    //   * compaction           — proactively masks older large tool outputs
+    //   * infinity_context     — bounds the live context and adds query_history
+    //   * compaction           — registered for opt-in use, not enabled by default
     //   * stateless_todo_list  — write_todos tool for multi-step tasks
     //   * loop_detection       — safety net against repeated identical tool calls
     //   * prompt_caching       — Anthropic prompt caching; free token savings
@@ -2899,6 +2885,7 @@ pub async fn build_with_options(
     mcp_server_names.sort();
     capabilities.register(InfinityContextCapability);
     capabilities.register(CompactionCapability);
+    capabilities.register(ContextCostControlCapability);
     capabilities.register(StatelessTodoListCapability);
     capabilities.register(LoopDetectionCapability);
     capabilities.register(PromptCachingCapability::new());
@@ -6256,20 +6243,18 @@ mod tests {
     }
 
     #[test]
-    fn coding_harness_keeps_small_recent_tool_output_window() {
+    fn coding_harness_uses_searchable_bounded_history_without_ephemeral_compaction() {
         let ids = coding_harness_capabilities(false, None, &Settings::default());
-        let compaction = ids
-            .iter()
-            .find(|cap| cap.capability_id() == COMPACTION_CAPABILITY_ID)
-            .expect("compaction capability");
 
-        assert_eq!(
-            compaction
-                .config
-                .pointer("/observation_masking/keep_recent_tool_outputs")
-                .and_then(|value| value.as_u64()),
-            Some(3)
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == INFINITY_CONTEXT_CAPABILITY_ID)
         );
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == CONTEXT_COST_CONTROL_CAPABILITY_ID)
+        );
+        assert!(!ids.iter().any(|cap| cap.capability_id() == "compaction"));
     }
 
     #[test]
