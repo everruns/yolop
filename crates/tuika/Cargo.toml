@@ -12,6 +12,12 @@ readme = "README.md"
 keywords = ["tui", "terminal", "ratatui", "widgets", "layout"]
 categories = ["command-line-interface"]
 
+# No `#[bench]` fns in the lib, and the default libtest bench harness rejects
+# Criterion's CLI flags — disable it so `cargo bench` runs only the Criterion
+# targets below.
+[lib]
+bench = false
+
 [dependencies]
 ratatui = "0.30.2"
 crossterm = "0.29"
@@ -25,3 +31,21 @@ pulldown-cmark = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 proptest = "1"
+# Benchmark harness. default-features off drops the plotters/rayon HTML-report
+# stack (heavy, and an MSRV liability) while keeping `cargo bench` working;
+# Criterion still writes machine-readable `estimates.json` for archiving.
+criterion = { version = "0.5", default-features = false, features = [
+    "cargo_bench_support",
+] }
+# Instruction-count benchmark harness (deterministic, machine-independent) for
+# the committed baseline / CI regression gate. Needs Valgrind + a version-matched
+# `iai-callgrind-runner` installed (`cargo install iai-callgrind-runner`).
+iai-callgrind = "0.16.1"
+
+[[bench]]
+name = "markdown"
+harness = false
+
+[[bench]]
+name = "markdown_iai"
+harness = false

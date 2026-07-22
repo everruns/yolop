@@ -12,6 +12,11 @@ readme = "README.md"
 keywords = ["tui", "syntax-highlighting", "tree-sitter", "ratatui", "markdown"]
 categories = ["command-line-interface", "text-processing"]
 
+# See tuika/Cargo.toml: disable the default lib bench harness so `cargo bench`
+# runs only the Criterion target below.
+[lib]
+bench = false
+
 [dependencies]
 tuika = { version = "0.2.0", path = "../tuika" }
 ratatui = "0.30.2"
@@ -36,3 +41,17 @@ tree-sitter-zig = "1"
 # crossterm just supplies the raw event source (the same pair tuika's own
 # examples use).
 crossterm = "0.29"
+# Benchmark harness — same lean configuration as tuika (see its Cargo.toml).
+criterion = { version = "0.5", default-features = false, features = [
+    "cargo_bench_support",
+] }
+# See tuika/Cargo.toml — instruction-count harness for the CI regression gate.
+iai-callgrind = "0.16.1"
+
+[[bench]]
+name = "highlight"
+harness = false
+
+[[bench]]
+name = "highlight_iai"
+harness = false
