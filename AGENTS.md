@@ -80,6 +80,22 @@ doppler run -- cargo run -- --provider openai -p "hi"
 
 `RUST_LOG` is honored for the tracing layer (stderr).
 
+Component render benchmarks live under `crates/*/benches/` (Criterion). Run a
+crate's suite and, when checking a change for a regression, save a baseline
+first and compare against it:
+
+```bash
+cargo bench -p tuika --bench markdown -- --save-baseline before
+# ...make the change...
+cargo bench -p tuika --bench markdown -- --baseline before
+```
+
+Wall-clock numbers are too noisy on shared CI runners to gate on, so CI runs the
+benches only on `main` (and via manual dispatch) and uploads the Criterion
+output as an artifact; regression-checking is a local, baseline-to-baseline
+comparison. New component benches go in the owning crate's `benches/` as another
+`[[bench]]` with `harness = false`.
+
 The `evals/` directory holds [Mira](https://github.com/everruns/mira) eval
 studies for benchmarking yolop and other agents. `evals/swebench_verified/` is
 the SWE-bench Verified study — a single self-contained `swebench_verified.py`

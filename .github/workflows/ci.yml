@@ -6,6 +6,7 @@ on:
   pull_request:
     branches: [main]
     types: [opened, reopened, synchronize]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -243,6 +244,43 @@ jobs:
 
       - name: Run sandbox contract suite
         run: cargo test sandbox -- --nocapture
+
+  benchmarks:
+    name: Benchmarks (archive)
+    needs: changes
+    # Trend archive, not a gate: wall-clock numbers on shared runners are too
+    # noisy to fail a build on, so this only runs on main pushes that touch Rust
+    # (and on demand) and uploads the Criterion output as an artifact. The
+    # benches still *compile* on every PR via the `test` job's --all-targets
+    # build, so they can't rot. Compare runs locally with --save-baseline.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.changes.outputs.rust == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "debug"
+
+      - name: Run benchmarks
+        run: |
+          cargo bench --locked -p tuika -p tuika-codeformatters -- \
+            --warm-up-time 2 --measurement-time 5 --noplot | tee bench-output.txt
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: criterion-benchmarks
+          path: |
+            target/criterion/**
+            bench-output.txt
+          if-no-files-found: warn
 
   # The (comparatively scarce) Windows runner only spins up when the change
   # actually touches Rust — not on doc- or eval-only changes.
