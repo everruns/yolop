@@ -31,6 +31,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      tuika: ${{ steps.filter.outputs.tuika }}
       docs: ${{ steps.filter.outputs.docs }}
     steps:
       - uses: actions/checkout@v7
@@ -46,13 +47,24 @@ jobs:
               - 'rust-toolchain.toml'
               - '**/build.rs'
               - '.github/workflows/ci.yml'
+            # The dedicated MSRV check only compiles `-p tuika`, which depends on
+            # neither yolop, yolop-yep, nor tuika-codeformatters. Scope it to
+            # tuika's own sources plus the workspace-wide inputs that reach it
+            # (root manifest, lockfile, this workflow). A yolop-only change still
+            # compiles tuika via the workspace `test` job — it just skips this
+            # extra 1.88 + gallery-asset leg.
+            tuika:
+              - 'crates/tuika/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
             docs:
               - '**/*.md'
 
   tuika-msrv:
     name: Tuika MSRV
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.tuika == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
