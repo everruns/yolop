@@ -51,10 +51,13 @@ doppler run -- bash -lc 'GH_TOKEN="$GITHUB_TOKEN" <command>'
 Yolop is a small Cargo **workspace**: the root package is the `yolop` binary,
 `crates/yolop-yep/` is the extension-protocol library + server SDK (published
 separately for extension authors; the host depends on it for the wire types),
-and `crates/tuika/` is a standalone terminal-UI toolkit (layout, overlays,
-focus, components over ratatui) with its own version, powering the
-experimental `--fullscreen` renderer — see `crates/tuika/README.md`.
-`cargo test`/`clippy` at the root cover all three. For touched code:
+`crates/tuika/` is a standalone terminal-UI toolkit (layout, overlays, focus,
+components over ratatui — including the streaming `Markdown` renderer and
+`CodeBlock`) with its own version, powering the experimental `--fullscreen`
+renderer — see `crates/tuika/README.md`, and `crates/tuika-codeformatters/` is
+tuika's tree-sitter `Highlighter` implementation (kept separate so tuika core
+stays grammar-free; yolop's markdown/code rendering flows through both).
+`cargo test`/`clippy` at the root cover all four. For touched code:
 
 ```bash
 cargo fmt --check

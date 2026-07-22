@@ -59,6 +59,8 @@ component. Linked names below jump straight to their demo.
 | --- | --- |
 | [`Text`](docs/components.md#text) / `Paragraph` | Styled lines / word-wrapped plain text |
 | `Wrap` | Word-wraps pre-styled lines, preserving per-span styles |
+| [`Markdown`](docs/components.md#markdown--markdownstate) (+ `MarkdownState`) | CommonMark → styled lines; `MarkdownState` streams incrementally |
+| [`CodeBlock`](docs/components.md#codeblock) | Themed, framed code block with a pluggable `Highlighter` |
 | [`Rule`](docs/components.md#rule) | Horizontal separator: optional title + fill glyph to width |
 | [`Flex`](docs/components.md#flex) | Flexbox container (the composition primitive) |
 | `Responsive` / `Constrained` | Breakpoint selection and min/max measurement |
@@ -105,6 +107,30 @@ let root = Flex::column()
     .fixed(1, element(Spinner::new(frame)))
     .fixed(1, element(ProgressBar::determinate(0.6).percent(true)))
     .grow(1, element(Text::raw("body")));
+```
+
+## Markdown and syntax highlighting
+
+`Markdown` renders CommonMark to styled lines, word-wrapping prose while drawing
+code and tables verbatim. `MarkdownState` is its streaming form: fed deltas as a
+message arrives, it re-parses only the in-flight tail and caches everything
+before the last stable block boundary, so long transcripts don't re-tokenize and
+settled code blocks aren't re-highlighted every frame.
+
+Highlighting is a seam, not a dependency: `tuika` owns the *presentation* of code
+(framing, background, language label, wrapping) via `CodeBlock`, and takes token
+colors from any `Highlighter` you supply — keeping the toolkit free of grammar
+crates. The companion crate
+[`tuika-codeformatters`](https://crates.io/crates/tuika-codeformatters) ships a
+ready-made tree-sitter `Highlighter`.
+
+```rust
+use tuika::{CodeBlock, Markdown};
+use tuika_codeformatters::TreeSitterHighlighter;
+
+let hl = TreeSitterHighlighter::new();
+let _doc = Markdown::new("# Title\n\n```rust\nfn main() {}\n```").highlighter(&hl);
+let _code = CodeBlock::new("rust", "fn main() {}").highlighter(&hl);
 ```
 
 ### Runnable examples

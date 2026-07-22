@@ -18,6 +18,10 @@ crossterm = "0.29"
 textwrap = "0.16"
 unicode-segmentation = "1"
 unicode-width = "0.2"
+# CommonMark parsing for the streaming `Markdown` component. `default-features
+# = false` drops the bundled HTML renderer and SIMD scanner we don't use, so
+# this stays a small, pure-Rust addition to tuika's dependency set.
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 proptest = "1"
