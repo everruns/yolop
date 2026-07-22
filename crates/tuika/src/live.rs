@@ -120,3 +120,32 @@ where
         self.current().render(area, surface, ctx);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::Text;
+    use crate::style::Theme;
+    use crate::test_support::row;
+    use crate::view::element;
+
+    #[test]
+    fn live_view_reads_updated_data_without_reconstruction() {
+        let redraw = RedrawHandle::default();
+        let value = Live::with_redraw(1u32, redraw.clone());
+        let view = LiveView::new(value.clone(), |value| {
+            element(Text::raw(format!("count: {value}")))
+        });
+        let theme = Theme::default();
+        assert_eq!(
+            row(&crate::testing::render(&view, 12, 1, &theme), 0),
+            "count: 1"
+        );
+        value.set(2);
+        assert!(redraw.take());
+        assert_eq!(
+            row(&crate::testing::render(&view, 12, 1, &theme), 0),
+            "count: 2"
+        );
+    }
+}

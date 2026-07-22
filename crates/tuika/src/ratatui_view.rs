@@ -73,3 +73,23 @@ where
         surface.render_ratatui(area, &self.render);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::Theme;
+    use crate::test_support::row;
+
+    #[test]
+    fn ratatui_view_renders_borrowing_widget_data() {
+        use ratatui::widgets::{Sparkline, Widget};
+
+        let data = vec![1, 2, 4, 8];
+        let view = RatatuiView::fill(move |area, buffer| {
+            Sparkline::default().data(&data).render(area, buffer);
+        });
+        let theme = Theme::default();
+        let rendered = crate::testing::render(&view, 4, 1, &theme);
+        assert_ne!(row(&rendered, 0), "");
+    }
+}

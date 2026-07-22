@@ -245,3 +245,122 @@ pub fn solve(area: Rect, style: &LayoutStyle, items: &[Item]) -> Vec<Rect> {
     }
     rects
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{Padding, Size};
+    use ratatui::layout::Rect;
+
+    fn item(dim: Dimension, w: u16, h: u16) -> Item {
+        Item::new(dim, Size::new(w, h))
+    }
+
+    #[test]
+    fn flex_distributes_leftover_to_grow_children() {
+        let area = Rect::new(0, 0, 30, 1);
+        let style = LayoutStyle::row();
+        let items = [
+            item(Dimension::Fixed(10), 10, 1),
+            item(Dimension::Flex(1), 0, 1),
+            item(Dimension::Flex(1), 0, 1),
+        ];
+        let rects = solve(area, &style, &items);
+        assert_eq!(rects[0].width, 10);
+        // 20 leftover split evenly.
+        assert_eq!(rects[1].width, 10);
+        assert_eq!(rects[2].width, 10);
+        // Contiguous placement.
+        assert_eq!(rects[1].x, 10);
+        assert_eq!(rects[2].x, 20);
+    }
+
+    #[test]
+    fn flex_grow_weights_and_remainder_fill_exactly() {
+        let area = Rect::new(0, 0, 10, 1);
+        let style = LayoutStyle::row();
+        let items = [
+            item(Dimension::Flex(1), 0, 1),
+            item(Dimension::Flex(2), 0, 1),
+        ];
+        let rects = solve(area, &style, &items);
+        // Weighted 1:2 across 10 cells; the last flex child absorbs the remainder.
+        assert_eq!(rects[0].width + rects[1].width, 10);
+        assert_eq!(rects[0].width, 3);
+        assert_eq!(rects[1].width, 7);
+    }
+
+    #[test]
+    fn flex_percent_and_gap() {
+        let area = Rect::new(0, 0, 20, 1);
+        let style = LayoutStyle::row().gap(2);
+        let items = [
+            item(Dimension::Percent(50), 0, 1),
+            item(Dimension::Auto, 4, 1),
+        ];
+        let rects = solve(area, &style, &items);
+        // space_for_children = 20 - gap(2) = 18; 50% = 9.
+        assert_eq!(rects[0].width, 9);
+        assert_eq!(rects[1].x, rects[0].x + 9 + 2);
+    }
+
+    #[test]
+    fn column_stretch_fills_cross_axis() {
+        let area = Rect::new(0, 0, 12, 6);
+        let style = LayoutStyle::column().align(Align::Stretch);
+        let items = [
+            item(Dimension::Fixed(2), 3, 2),
+            item(Dimension::Fixed(2), 5, 2),
+        ];
+        let rects = solve(area, &style, &items);
+        assert_eq!(rects[0].width, 12);
+        assert_eq!(rects[1].width, 12);
+        assert_eq!(rects[0].height, 2);
+        assert_eq!(rects[1].y, 2);
+    }
+
+    #[test]
+    fn justify_center_and_end_offset_main_axis() {
+        let area = Rect::new(0, 0, 20, 1);
+        let items = [item(Dimension::Fixed(4), 4, 1)];
+        let center = solve(area, &LayoutStyle::row().justify(Justify::Center), &items);
+        assert_eq!(center[0].x, 8); // (20-4)/2
+        let end = solve(area, &LayoutStyle::row().justify(Justify::End), &items);
+        assert_eq!(end[0].x, 16);
+    }
+
+    #[test]
+    fn padding_shrinks_layout_area() {
+        let area = Rect::new(0, 0, 20, 5);
+        let style = LayoutStyle::column().padding(Padding::all(1));
+        let items = [item(Dimension::Flex(1), 0, 0)];
+        let rects = solve(area, &style, &items);
+        assert_eq!(rects[0].x, 1);
+        assert_eq!(rects[0].y, 1);
+        assert_eq!(rects[0].width, 18);
+        assert_eq!(rects[0].height, 3);
+    }
+
+    #[test]
+    fn flex_solver_survives_degenerate_areas() {
+        let items = [
+            item(Dimension::Flex(1), 0, 0),
+            item(Dimension::Fixed(5), 5, 1),
+            item(Dimension::Percent(50), 0, 0),
+        ];
+        for (w, h) in [(0u16, 0u16), (1, 1), (2, 2), (3, 10), (4, 1), (60, 3)] {
+            let area = Rect::new(0, 0, w, h);
+            // A gap larger than the width exercises the saturating arithmetic.
+            let style = LayoutStyle::row().gap(10);
+            let rects = solve(area, &style, &items);
+            assert_eq!(rects.len(), items.len());
+            for r in &rects {
+                assert!(r.right() <= area.right(), "{r:?} exceeds width of {area:?}");
+                assert!(
+                    r.bottom() <= area.bottom(),
+                    "{r:?} exceeds height of {area:?}"
+                );
+            }
+        }
+    }
+}

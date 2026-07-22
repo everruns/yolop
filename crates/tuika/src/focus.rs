@@ -98,3 +98,43 @@ impl FocusRegistry {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{Event, EventFlow, Key, KeyCode};
+
+    #[test]
+    fn focus_tab_cycles_registered_regions() {
+        let mut f = FocusRegistry::new();
+        f.begin_frame();
+        f.register("a");
+        f.register("b");
+        f.register("c");
+        assert!(f.is_focused("a"));
+        let tab = Event::Key(Key::new(KeyCode::Tab));
+        assert_eq!(f.handle(&tab), EventFlow::Consumed);
+        assert!(f.is_focused("b"));
+        let back = Event::Key(Key::new(KeyCode::BackTab));
+        f.handle(&back);
+        assert!(f.is_focused("a"));
+        // Wrap backwards.
+        f.handle(&back);
+        assert!(f.is_focused("c"));
+    }
+
+    #[test]
+    fn overlay_owner_takes_input_and_blocks_tab() {
+        let mut f = FocusRegistry::new();
+        f.begin_frame();
+        f.register("composer");
+        f.set_owner("dialog");
+        assert!(f.is_active("dialog"));
+        assert!(!f.is_active("composer"));
+        // Tab is swallowed while an overlay owns input.
+        let tab = Event::Key(Key::new(KeyCode::Tab));
+        assert_eq!(f.handle(&tab), EventFlow::Ignored);
+        f.clear_owner();
+        assert!(f.is_active("composer"));
+    }
+}

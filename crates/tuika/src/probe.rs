@@ -85,3 +85,25 @@ impl View for Probe {
         self.inner.render(area, surface, ctx);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::{Flex, Text};
+    use crate::style::Theme;
+    use crate::view::element;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn probe_reports_the_rect_a_view_was_painted_into() {
+        let probe = RectProbe::new();
+        assert_eq!(probe.rect(), Rect::ZERO, "an unpainted probe reads ZERO");
+        let root = Flex::column()
+            .fixed(1, element(Text::raw("header")))
+            .grow(1, probe.wrap(element(Text::raw("body"))));
+        let theme = Theme::default();
+        let _ = crate::testing::render(&root, 10, 5, &theme);
+        // The grown body lands below the 1-row header and fills the rest.
+        assert_eq!(probe.rect(), Rect::new(0, 1, 10, 4));
+    }
+}

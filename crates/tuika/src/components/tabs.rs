@@ -110,3 +110,35 @@ impl View for Tabs {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{Event, EventFlow, Key, KeyCode};
+    use crate::style::Theme;
+    use crate::test_support::row;
+    use ratatui::text::Line;
+
+    #[test]
+    fn tabs_state_wraps_and_tabs_render_selection() {
+        let mut state = TabsState::default();
+        assert_eq!(
+            state.handle(&Event::Key(Key::new(KeyCode::Left)), 3),
+            EventFlow::Consumed
+        );
+        assert_eq!(state.selected(), 2);
+
+        let tabs = Tabs::new(
+            vec![Line::from("one"), Line::from("two"), Line::from("three")],
+            &state,
+        );
+        let theme = Theme::default();
+        let rendered = crate::testing::render(&tabs, 20, 1, &theme);
+        assert!(row(&rendered, 0).contains("one  two  three"));
+        assert!(
+            rendered[(10, 0)]
+                .modifier
+                .contains(ratatui::style::Modifier::UNDERLINED)
+        );
+    }
+}

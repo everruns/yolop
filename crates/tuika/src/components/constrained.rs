@@ -55,3 +55,20 @@ impl View for Constrained {
         self.child.render(area, surface, ctx);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Size;
+    use crate::components::Text;
+    use crate::view::{View, element};
+
+    #[test]
+    fn constrained_clamps_intrinsic_measurement() {
+        let constrained = Constrained::new(element(Text::raw("long content")))
+            .min_size(4, 1)
+            .max_size(6, 2);
+        assert_eq!(constrained.measure(Size::new(20, 10)), Size::new(6, 1));
+        assert_eq!(constrained.measure(Size::new(3, 1)), Size::new(3, 1));
+    }
+}

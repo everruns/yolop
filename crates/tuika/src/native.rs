@@ -105,3 +105,19 @@ impl Drop for TerminalProgress {
         self.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osc_progress_encoding() {
+        // ESC ] 9 ; 4 ; state ; percent BEL
+        assert_eq!(encode(ProgressState::Indeterminate, 0), "\x1b]9;4;3;0\x07");
+        assert_eq!(encode(ProgressState::Normal, 50), "\x1b]9;4;1;50\x07");
+        assert_eq!(encode(ProgressState::Clear, 0), "\x1b]9;4;0;0\x07");
+        assert_eq!(encode(ProgressState::Error, 12), "\x1b]9;4;2;12\x07");
+        // Percent is clamped to 100.
+        assert_eq!(encode(ProgressState::Normal, 200), "\x1b]9;4;1;100\x07");
+    }
+}

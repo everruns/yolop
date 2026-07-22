@@ -61,3 +61,16 @@ impl View for KeyHints {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Size;
+    use crate::view::View;
+
+    #[test]
+    fn key_hints_measure_unicode_by_terminal_width() {
+        let hints = KeyHints::new([("⌘", "開く")]);
+        assert_eq!(hints.measure(Size::new(20, 1)), Size::new(8, 1));
+    }
+}

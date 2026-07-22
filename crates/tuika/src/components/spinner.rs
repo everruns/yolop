@@ -82,3 +82,31 @@ impl View for Spinner {
         surface.set_string(area.x, area.y, self.glyph(), Style::default().fg(color));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Surface;
+    use crate::test_support::{buffer, rainbow_theme};
+    use crate::view::{RenderCtx, View};
+
+    #[test]
+    fn spinner_cycles_frames() {
+        let frames = SpinnerStyle::Braille.frames();
+        assert_eq!(Spinner::new(0).glyph(), frames[0]);
+        assert_eq!(Spinner::new(1).glyph(), frames[1]);
+        // Wraps at the end of the frame set.
+        assert_eq!(Spinner::new(frames.len() as u64).glyph(), frames[0]);
+    }
+
+    #[test]
+    fn spinner_default_color_is_theme_accent() {
+        let t = rainbow_theme();
+        let ctx = RenderCtx::new(&t);
+        let mut buf = buffer(3, 1);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        Spinner::new(0).render(area, &mut surface, &ctx);
+        assert_eq!(buf[(0, 0)].fg, t.accent);
+    }
+}

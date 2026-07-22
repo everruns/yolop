@@ -145,3 +145,50 @@ impl OverlaySpec {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn overlay_centered_percentage() {
+        let screen = Rect::new(0, 0, 100, 40);
+        let spec = OverlaySpec::centered(50, 50);
+        let rect = spec.resolve(screen);
+        assert_eq!(rect.width, 50);
+        assert_eq!(rect.height, 20);
+        assert_eq!(rect.x, 25);
+        assert_eq!(rect.y, 10);
+    }
+
+    #[test]
+    fn overlay_anchors_to_corner_with_margin() {
+        let screen = Rect::new(0, 0, 100, 40);
+        let spec = OverlaySpec {
+            anchor: Anchor::BottomRight,
+            width: Extent::Cells(20),
+            height: Extent::Cells(10),
+            min_width: 0,
+            min_height: 0,
+            max_width: u16::MAX,
+            max_height: u16::MAX,
+            margin: 2,
+        };
+        let rect = spec.resolve(screen);
+        assert_eq!(rect.width, 20);
+        assert_eq!(rect.height, 10);
+        // Bottom-right inside a 2-cell margin: right edge at 98, bottom at 38.
+        assert_eq!(rect.right(), 98);
+        assert_eq!(rect.bottom(), 38);
+    }
+
+    #[test]
+    fn overlay_clamps_to_max() {
+        let screen = Rect::new(0, 0, 100, 40);
+        let spec = OverlaySpec::centered(90, 90).max_size(40, 20);
+        let rect = spec.resolve(screen);
+        assert_eq!(rect.width, 40);
+        assert_eq!(rect.height, 20);
+    }
+}

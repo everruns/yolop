@@ -38,3 +38,17 @@ pub fn render_sizes(
         .map(|(width, height)| render(view, width, height, theme))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::Text;
+    use crate::style::Theme;
+
+    #[test]
+    fn public_testing_grid_is_stable_and_rectangular() {
+        let theme = Theme::default();
+        let rendered = render(&Text::raw("hi"), 3, 2, &theme);
+        assert_eq!(grid(&rendered), "hi \n   ");
+    }
+}

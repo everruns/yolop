@@ -179,3 +179,131 @@ impl<'a> Surface<'a> {
         self.set(right, bottom, glyphs.bottom_right, style);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::{Boxed, Text};
+    use crate::style::Theme;
+    use crate::test_support::{buffer, row};
+    use crate::view::{RenderCtx, View, element};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Style;
+
+    #[test]
+    fn ratatui_rendering_preserves_clip_even_if_buffer_expands() {
+        let mut buf = Buffer::filled(Rect::new(0, 0, 12, 3), ratatui::buffer::Cell::new("#"));
+        let clip = Rect::new(4, 1, 4, 1);
+        {
+            let mut surface = Surface::new(&mut buf, clip);
+            surface.render_ratatui(Rect::new(2, 0, 8, 3), |_area, scratch| {
+                let expanded =
+                    Buffer::filled(Rect::new(0, 0, 12, 3), ratatui::buffer::Cell::new("x"));
+                scratch.merge(&expanded);
+            });
+        }
+
+        for y in 0..3 {
+            for x in 0..12 {
+                let expected = if y == 1 && (4..8).contains(&x) {
+                    "x"
+                } else {
+                    "#"
+                };
+                assert_eq!(buf[(x, y)].symbol(), expected, "cell ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn ratatui_rendering_starts_with_existing_cells() {
+        use ratatui::style::Color;
+
+        let mut cell = ratatui::buffer::Cell::new(".");
+        cell.set_bg(Color::Blue);
+        let mut buf = Buffer::filled(Rect::new(0, 0, 4, 1), cell);
+        let area = buf.area;
+        {
+            let mut surface = Surface::new(&mut buf, area);
+            surface.render_ratatui(area, |_area, scratch| {
+                scratch[(1, 0)].set_char('x');
+            });
+        }
+        assert_eq!(buf[(1, 0)].symbol(), "x");
+        assert_eq!(buf[(1, 0)].bg, Color::Blue);
+    }
+
+    #[test]
+    fn ratatui_rendering_limits_scratch_to_the_frame() {
+        let mut buf = buffer(3, 2);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        surface.render_ratatui(Rect::new(0, 0, u16::MAX, u16::MAX), |actual, _| {
+            assert_eq!(actual, Rect::new(0, 0, 3, 2));
+        });
+    }
+
+    #[test]
+    fn ratatui_rendering_tolerates_a_callback_that_resizes_its_buffer() {
+        let mut buf = Buffer::filled(Rect::new(0, 0, 4, 1), ratatui::buffer::Cell::new("#"));
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        surface.render_ratatui(area, |_area, scratch| {
+            scratch.resize(Rect::new(0, 0, 1, 1));
+            scratch[(0, 0)].set_char('x');
+        });
+        assert_eq!(row(&buf, 0), "x###");
+    }
+
+    #[test]
+    fn set_string_places_multi_scalar_emoji_in_one_wide_cell() {
+        // A ZWJ family (multiple scalars) is a single grapheme: it must occupy one
+        // cell and advance the cursor by 2, not scatter one component per cell.
+        const FAMILY: &str = "👨\u{200D}👩\u{200D}👧";
+        let mut buf = Buffer::filled(Rect::new(0, 0, 6, 1), ratatui::buffer::Cell::new("."));
+        let end = {
+            let mut surface = Surface::new(&mut buf, Rect::new(0, 0, 6, 1));
+            surface.set_string(0, 0, &format!("{FAMILY}x"), Style::default())
+        };
+        assert_eq!(
+            buf[(0, 0)].symbol(),
+            FAMILY,
+            "whole cluster lands in one cell"
+        );
+        assert_eq!(buf[(1, 0)].symbol(), " ", "trailing half of the wide glyph");
+        assert_eq!(buf[(2, 0)].symbol(), "x", "next glyph starts at column 2");
+        assert_eq!(end, 3, "cursor advanced 2 (emoji) + 1 (x)");
+    }
+
+    #[test]
+    fn surface_never_writes_outside_its_clip() {
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+
+        let mut buf = buffer(16, 8);
+        for y in 0..8u16 {
+            for x in 0..16u16 {
+                buf[(x, y)].set_char('#');
+            }
+        }
+        // Clip is a small window, but we hand the component a much larger area so
+        // it *tries* to draw past the clip.
+        let clip = Rect::new(3, 1, 6, 3);
+        {
+            let mut surface = Surface::new(&mut buf, clip);
+            Boxed::new(element(Text::raw(
+                "content far wider and taller than the clip window",
+            )))
+            .render(Rect::new(3, 1, 40, 20), &mut surface, &ctx);
+        }
+        for y in 0..8u16 {
+            for x in 0..16u16 {
+                let inside = x >= clip.x && x < clip.right() && y >= clip.y && y < clip.bottom();
+                if !inside {
+                    assert_eq!(buf[(x, y)].symbol(), "#", "clip leaked at ({x},{y})");
+                }
+            }
+        }
+    }
+}

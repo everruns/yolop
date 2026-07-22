@@ -126,3 +126,83 @@ impl View for Boxed {
         self.child.render(inner, &mut inner_surface, ctx);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Surface;
+    use crate::components::Text;
+    use crate::style::Theme;
+    use crate::test_support::{buffer, rainbow_theme};
+    use crate::view::{RenderCtx, View, element};
+    use ratatui::style::Color;
+
+    #[test]
+    fn boxed_border_closed_across_sizes() {
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        for w in 2..=12u16 {
+            for h in 2..=8u16 {
+                let mut buf = buffer(w, h);
+                let area = buf.area;
+                let mut surface = Surface::new(&mut buf, area);
+                Boxed::new(element(Text::raw("x"))).render(area, &mut surface, &ctx);
+                assert_eq!(buf[(0, 0)].symbol(), "╭", "top-left at {w}x{h}");
+                assert_eq!(buf[(w - 1, 0)].symbol(), "╮", "top-right at {w}x{h}");
+                assert_eq!(buf[(0, h - 1)].symbol(), "╰", "bottom-left at {w}x{h}");
+                assert_eq!(buf[(w - 1, h - 1)].symbol(), "╯", "bottom-right at {w}x{h}");
+            }
+        }
+    }
+
+    #[test]
+    fn boxed_border_follows_theme_focus_color() {
+        let t = rainbow_theme();
+
+        let make = |focused: bool| {
+            let mut buf = buffer(8, 3);
+            let area = buf.area;
+            let ctx = RenderCtx::new(&t).with_focus(focused);
+            let boxed = Boxed::new(element(Text::raw("x")));
+            let mut surface = Surface::new(&mut buf, area);
+            boxed.render(area, &mut surface, &ctx);
+            buf[(0, 0)].fg // the '╭' corner
+        };
+
+        assert_eq!(make(false), t.border, "unfocused border uses theme.border");
+        assert_eq!(
+            make(true),
+            t.border_focused,
+            "focused border uses theme.border_focused"
+        );
+    }
+
+    #[test]
+    fn swapping_theme_restyles_the_same_tree() {
+        let tree = || Boxed::new(element(Text::raw("x")));
+        let render_border = |theme: &Theme| {
+            let mut buf = buffer(8, 3);
+            let area = buf.area;
+            let ctx = RenderCtx::new(theme);
+            let mut surface = Surface::new(&mut buf, area);
+            tree().render(area, &mut surface, &ctx);
+            buf[(0, 0)].fg
+        };
+
+        let a = Theme {
+            border: Color::Indexed(21),
+            ..rainbow_theme()
+        };
+        let b = Theme {
+            border: Color::Indexed(99),
+            ..rainbow_theme()
+        };
+        assert_eq!(render_border(&a), Color::Indexed(21));
+        assert_eq!(render_border(&b), Color::Indexed(99));
+        assert_ne!(
+            render_border(&a),
+            render_border(&b),
+            "theme swap must restyle"
+        );
+    }
+}

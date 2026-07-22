@@ -128,3 +128,61 @@ macro_rules! view {
         $crate::view!(@boxattrs $b.background($e); $($($rest)*)?)
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::components::{Boxed, Flex, Spacer, Text};
+    use crate::test_support::render_el;
+    use crate::view::{Element, RenderCtx, View, element};
+    use crate::{Size, Surface};
+    use ratatui::layout::Rect;
+    use ratatui::style::Style;
+
+    #[test]
+    fn view_macro_matches_builder() {
+        // Hand-written builder tree.
+        let built: Element = element(
+            Flex::column()
+                .gap(1)
+                .auto(element(Boxed::new(element(Text::raw("hi"))).title(" t ")))
+                .grow(1, element(Spacer)),
+        );
+
+        // The same tree via the declarative macro.
+        let macroed: Element = crate::view! {
+            col(gap = 1) {
+                boxed(title = " t ") { text("hi") }
+                grow(1) { spacer() }
+            }
+        };
+
+        let a = render_el(&built, 20, 5);
+        let b = render_el(&macroed, 20, 5);
+        assert_eq!(a, b, "view! must render identically to the builder form");
+        assert!(b.iter().any(|l| l.contains('t')), "{b:?}");
+    }
+
+    /// A `View` standing in for a component defined in some other crate.
+    struct Star;
+    impl View for Star {
+        fn measure(&self, _available: Size) -> Size {
+            Size::new(1, 1)
+        }
+        fn render(&self, area: Rect, surface: &mut Surface, _ctx: &RenderCtx) {
+            surface.set(area.x, area.y, '★', Style::default());
+        }
+    }
+
+    #[test]
+    fn view_macro_accepts_foreign_view_via_node() {
+        // `node(expr)` splices any `impl View` — this is how a component from
+        // another crate participates in the DSL.
+        let tree: Element = crate::view! {
+            col {
+                node(Star)
+            }
+        };
+        let out = render_el(&tree, 5, 2);
+        assert!(out[0].contains('★'), "foreign view should render: {out:?}");
+    }
+}

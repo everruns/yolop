@@ -277,3 +277,180 @@ impl ClickTracker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::Text;
+    use crate::event::{Mouse, MouseButton, MouseKind};
+    use crate::style::Theme;
+    use ratatui::layout::Rect;
+    use ratatui::style::{Color, Style};
+
+    fn down(col: u16, row: u16) -> Mouse {
+        Mouse::at(MouseKind::Down(MouseButton::Left), col, row)
+    }
+    fn drag(col: u16, row: u16) -> Mouse {
+        Mouse::at(MouseKind::Drag(MouseButton::Left), col, row)
+    }
+    fn up(col: u16, row: u16) -> Mouse {
+        Mouse::at(MouseKind::Up(MouseButton::Left), col, row)
+    }
+
+    #[test]
+    fn selection_tracks_a_left_drag() {
+        let mut sel = SelectionState::new();
+        assert!(!sel.handle(&down(1, 0))); // fresh press: nothing to redraw yet
+        assert!(sel.handle(&drag(4, 0)));
+        assert!(sel.handle(&up(4, 0)));
+        let range = sel.range().expect("a drag selects");
+        assert_eq!(range.start, (1, 0));
+        assert_eq!(range.end, (4, 0));
+        assert!(sel.is_active());
+    }
+
+    #[test]
+    fn selection_normalizes_a_backwards_drag() {
+        let mut sel = SelectionState::new();
+        sel.handle(&down(5, 1));
+        sel.handle(&drag(2, 0));
+        sel.handle(&up(2, 0));
+        let range = sel.range().expect("selection");
+        // Reading order: (col=2,row=0) comes before (col=5,row=1).
+        assert_eq!(range.start, (2, 0));
+        assert_eq!(range.end, (5, 1));
+    }
+
+    #[test]
+    fn a_plain_click_leaves_no_selection() {
+        let mut sel = SelectionState::new();
+        sel.handle(&down(3, 0));
+        sel.handle(&up(3, 0)); // released on the same cell, no drag
+        assert!(sel.range().is_none());
+        assert!(!sel.is_active());
+    }
+
+    #[test]
+    fn a_new_press_clears_the_previous_selection() {
+        let mut sel = SelectionState::new();
+        sel.handle(&down(0, 0));
+        sel.handle(&drag(3, 0));
+        sel.handle(&up(3, 0));
+        assert!(sel.range().is_some());
+        // Pressing again to start a new gesture must drop the old selection.
+        assert!(sel.handle(&down(1, 1)));
+        assert!(sel.range().is_none());
+    }
+
+    #[test]
+    fn selected_text_reads_one_row() {
+        let theme = Theme::default();
+        let buf = crate::testing::render(&Text::raw("hello world"), 11, 1, &theme);
+        let mut sel = SelectionState::new();
+        sel.handle(&down(0, 0));
+        sel.handle(&drag(4, 0));
+        sel.handle(&up(4, 0));
+        let text = selected_text(&buf, buf.area, sel.range().unwrap());
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn selected_text_spans_rows_linearly() {
+        use ratatui::text::Line;
+        let theme = Theme::default();
+        let lines = vec![Line::from("hello"), Line::from("world")];
+        let buf = crate::testing::render(&Text::new(lines), 5, 2, &theme);
+        let mut sel = SelectionState::new();
+        // From the "llo" of row 0 through the "wo" of row 1.
+        sel.handle(&down(2, 0));
+        sel.handle(&drag(1, 1));
+        sel.handle(&up(1, 1));
+        let text = selected_text(&buf, buf.area, sel.range().unwrap());
+        assert_eq!(text, "llo\nwo");
+    }
+
+    #[test]
+    fn selected_text_trims_trailing_blanks() {
+        let theme = Theme::default();
+        let buf = crate::testing::render(&Text::raw("hi"), 10, 1, &theme);
+        let mut sel = SelectionState::new();
+        sel.handle(&down(0, 0));
+        sel.handle(&drag(9, 0)); // drag well past the text into blank cells
+        sel.handle(&up(9, 0));
+        let text = selected_text(&buf, buf.area, sel.range().unwrap());
+        assert_eq!(text, "hi");
+    }
+
+    #[test]
+    fn highlight_patches_selected_cells_only() {
+        let theme = Theme::default();
+        let mut buf = crate::testing::render(&Text::raw("hello"), 5, 1, &theme);
+        let area = buf.area;
+        let mut sel = SelectionState::new();
+        sel.handle(&down(0, 0));
+        sel.handle(&drag(2, 0));
+        sel.handle(&up(2, 0));
+        highlight(
+            &mut buf,
+            area,
+            sel.range().unwrap(),
+            Style::default().bg(Color::Blue),
+        );
+        // Selected cells (0..=2) get the highlight bg; the glyph survives.
+        for col in 0..=2 {
+            assert_eq!(
+                buf[(col, 0)].bg,
+                Color::Blue,
+                "cell {col} should be highlighted"
+            );
+        }
+        assert_eq!(
+            buf[(0, 0)].symbol(),
+            "h",
+            "highlight must not clobber the glyph"
+        );
+        // An unselected cell is untouched.
+        assert_ne!(buf[(4, 0)].bg, Color::Blue);
+    }
+
+    #[test]
+    fn hit_map_last_region_wins_and_misses_return_none() {
+        let mut hits: HitMap<&str> = HitMap::new();
+        hits.push(Rect::new(0, 0, 10, 10), "background");
+        hits.push(Rect::new(2, 2, 3, 3), "panel"); // pushed later -> wins on overlap
+        hits.push(Rect::new(0, 0, 0, 0), "zero"); // zero-area never matches
+        assert_eq!(hits.hit(3, 3), Some(&"panel"));
+        assert_eq!(hits.hit(8, 8), Some(&"background"));
+        assert_eq!(hits.hit(50, 50), None);
+        // hit_event resolves an event's coordinates.
+        assert_eq!(hits.hit_event(&down(3, 3)), Some(&"panel"));
+    }
+
+    #[test]
+    fn click_tracker_detects_a_click() {
+        let mut clicks = ClickTracker::new();
+        assert!(clicks.handle(&down(4, 2)).is_none()); // press alone is not a click
+        let click = clicks
+            .handle(&up(4, 2))
+            .expect("down+up on one cell is a click");
+        assert_eq!(
+            (click.column, click.row, click.button),
+            (4, 2, MouseButton::Left)
+        );
+    }
+
+    #[test]
+    fn click_tracker_drag_cancels_the_click() {
+        let mut clicks = ClickTracker::new();
+        clicks.handle(&down(4, 2));
+        clicks.handle(&drag(6, 2)); // moved -> this is a selection, not a click
+        assert!(clicks.handle(&up(6, 2)).is_none());
+    }
+
+    #[test]
+    fn click_tracker_release_on_another_cell_is_not_a_click() {
+        let mut clicks = ClickTracker::new();
+        clicks.handle(&down(4, 2));
+        assert!(clicks.handle(&up(9, 9)).is_none());
+    }
+}
