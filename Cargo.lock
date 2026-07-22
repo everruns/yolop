@@ -1672,7 +1672,7 @@ dependencies = [
 [[package]]
 name = "everruns-anthropic"
 version = "0.17.15"
-source = "git+https://github.com/everruns/everruns?branch=main#8586f79c5bd3ca6cac04c05a663144f8e034fa96"
+source = "git+https://github.com/everruns/everruns?branch=main#adcb933ccae591b22d646297c0cd0343601f9b9e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1689,7 +1689,7 @@ dependencies = [
 [[package]]
 name = "everruns-core"
 version = "0.17.15"
-source = "git+https://github.com/everruns/everruns?branch=main#8586f79c5bd3ca6cac04c05a663144f8e034fa96"
+source = "git+https://github.com/everruns/everruns?branch=main#adcb933ccae591b22d646297c0cd0343601f9b9e"
 dependencies = [
  "a2a-client-lf",
  "a2a-lf",
@@ -1735,7 +1735,7 @@ dependencies = [
 [[package]]
 name = "everruns-integrations-daytona"
 version = "0.17.15"
-source = "git+https://github.com/everruns/everruns?branch=main#8586f79c5bd3ca6cac04c05a663144f8e034fa96"
+source = "git+https://github.com/everruns/everruns?branch=main#adcb933ccae591b22d646297c0cd0343601f9b9e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1751,7 +1751,7 @@ dependencies = [
 [[package]]
 name = "everruns-integrations-duckduckgo"
 version = "0.17.15"
-source = "git+https://github.com/everruns/everruns?branch=main#8586f79c5bd3ca6cac04c05a663144f8e034fa96"
+source = "git+https://github.com/everruns/everruns?branch=main#adcb933ccae591b22d646297c0cd0343601f9b9e"
 dependencies = [
  "async-trait",
  "everruns-core",
@@ -1766,7 +1766,7 @@ dependencies = [
 [[package]]
 name = "everruns-integrations-parallel"
 version = "0.17.15"
-source = "git+https://github.com/everruns/everruns?branch=main#8586f79c5bd3ca6cac04c05a663144f8e034fa96"
+source = "git+https://github.com/everruns/everruns?branch=main#adcb933ccae591b22d646297c0cd0343601f9b9e"
 dependencies = [
  "async-trait",
  "everruns-core",
@@ -1779,7 +1779,7 @@ dependencies = [
 [[package]]
 name = "everruns-local"
 version = "0.17.15"
-source = "git+https://github.com/everruns/everruns?branch=main#8586f79c5bd3ca6cac04c05a663144f8e034fa96"
+source = "git+https://github.com/everruns/everruns?branch=main#adcb933ccae591b22d646297c0cd0343601f9b9e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1802,7 +1802,7 @@ dependencies = [
 [[package]]
 name = "everruns-mcp"
 version = "0.17.15"
-source = "git+https://github.com/everruns/everruns?branch=main#8586f79c5bd3ca6cac04c05a663144f8e034fa96"
+source = "git+https://github.com/everruns/everruns?branch=main#adcb933ccae591b22d646297c0cd0343601f9b9e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1816,7 +1816,7 @@ dependencies = [
 [[package]]
 name = "everruns-openai"
 version = "0.17.15"
-source = "git+https://github.com/everruns/everruns?branch=main#8586f79c5bd3ca6cac04c05a663144f8e034fa96"
+source = "git+https://github.com/everruns/everruns?branch=main#adcb933ccae591b22d646297c0cd0343601f9b9e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1831,7 +1831,7 @@ dependencies = [
 [[package]]
 name = "everruns-openrouter"
 version = "0.17.15"
-source = "git+https://github.com/everruns/everruns?branch=main#8586f79c5bd3ca6cac04c05a663144f8e034fa96"
+source = "git+https://github.com/everruns/everruns?branch=main#adcb933ccae591b22d646297c0cd0343601f9b9e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1844,7 +1844,7 @@ dependencies = [
 [[package]]
 name = "everruns-provider"
 version = "0.17.15"
-source = "git+https://github.com/everruns/everruns?branch=main#8586f79c5bd3ca6cac04c05a663144f8e034fa96"
+source = "git+https://github.com/everruns/everruns?branch=main#adcb933ccae591b22d646297c0cd0343601f9b9e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1871,7 +1871,7 @@ dependencies = [
 [[package]]
 name = "everruns-runtime"
 version = "0.17.15"
-source = "git+https://github.com/everruns/everruns?branch=main#8586f79c5bd3ca6cac04c05a663144f8e034fa96"
+source = "git+https://github.com/everruns/everruns?branch=main#adcb933ccae591b22d646297c0cd0343601f9b9e"
 dependencies = [
  "async-trait",
  "chrono",

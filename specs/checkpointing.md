@@ -87,6 +87,7 @@ The existing per-session directory gains:
 <session>/
   events.jsonl                 # immutable event payloads, as today
   timeline.jsonl               # append-only checkpoint/head/restore records
+  compaction-checkpoints.jsonl # append-only model-context replacements
   workspace.json               # existing session/worktree metadata
 ```
 
@@ -116,6 +117,23 @@ Each timeline record is JSONL and owner-only. Relevant record types are:
 The journal is append-only and flushed before the turn begins or a restore is
 reported successful. A compact derived index may be added later, but it is never
 the source of truth.
+
+### Model-context checkpoints
+
+Model-context compaction is a separate, derived projection over the lossless
+event log. A successful native compaction appends the provider/model, source
+event sequence, format version, and provider-opaque replacement to
+`compaction-checkpoints.jsonl`. Subsequent calls reconstruct model input as the
+latest compatible checkpoint on the active timeline plus raw messages after its
+source boundary. The raw events are never rewritten or deleted.
+
+Rewind and redo select checkpoints by the active timeline. A checkpoint on an
+abandoned suffix remains append-only data but cannot shadow the latest surviving
+ancestor. Installation is monotonic for each provider/model/version, and a
+failed or ineffective compact call leaves the prior checkpoint unchanged. On
+Unix the file is owner-only (`0o600`) because provider-native replacements may
+contain retained message text and encrypted opaque context; those payloads must
+not enter public events or logs.
 
 ## Conversation replay
 

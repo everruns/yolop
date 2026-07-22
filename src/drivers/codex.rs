@@ -5,12 +5,15 @@ use eventsource_stream::Eventsource;
 use everruns_core::driver_registry::{
     ChatDriver, DriverConfig, LlmCallConfig, LlmCompletionMetadata, LlmContentPart, LlmMessage,
     LlmMessageContent, LlmMessageRole, LlmResponseStream, LlmStreamError, LlmStreamEvent,
-    ProviderMetadata,
+    ProviderMetadata, ProviderOpaqueContext,
 };
 use everruns_core::driver_registry::{DiscoveredModel, DriverRegistry};
 use everruns_core::error::{AgentLoopError, Result as EverrunsResult};
 use everruns_core::tool_types::{ToolCall, ToolDefinition};
-use everruns_core::{DriverId, ModelProfile, get_model_profile};
+use everruns_core::{
+    CompactContent, CompactContentPart, CompactOutputItem, CompactRequest, CompactResponse,
+    DriverId, ModelProfile, get_model_profile,
+};
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Serialize;
@@ -58,6 +61,7 @@ struct CodexTokens {
 #[derive(Clone)]
 pub struct CodexChatDriver {
     client: reqwest::Client,
+    responses_url: String,
     tokens: Arc<tokio::sync::Mutex<CodexTokens>>,
     auth_store: Option<Arc<dyn CodexAuthStore>>,
 }
@@ -97,6 +101,7 @@ impl CodexChatDriver {
             .and_then(|auth| auth.email);
         Self {
             client: reqwest::Client::new(),
+            responses_url: CODEX_RESPONSES_URL.to_string(),
             tokens: Arc::new(tokio::sync::Mutex::new(CodexTokens {
                 access_token,
                 refresh_token,
@@ -274,7 +279,8 @@ impl ChatDriver for CodexChatDriver {
         config: &LlmCallConfig,
     ) -> EverrunsResult<LlmResponseStream> {
         let tokens = self.token_snapshot().await?;
-        let (instructions, input) = build_input(&messages);
+        let (instructions, transcript_input) = build_input(&messages);
+        let input = compose_input(config.provider_opaque_context.as_ref(), transcript_input);
         let request = CodexResponsesRequest {
             model: config.model.clone(),
             store: false,
@@ -293,24 +299,11 @@ impl ChatDriver for CodexChatDriver {
                 }),
         };
 
-        let mut headers = HeaderMap::new();
-        headers.insert("OpenAI-Beta", HeaderValue::from_static(CODEX_BETA_HEADER));
-        headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
-        if let Some(account_id) = &tokens.account_id
-            && let Ok(value) = HeaderValue::from_str(account_id)
-        {
-            headers.insert("chatgpt-account-id", value.clone());
-            headers.insert("ChatGPT-Account-Id", value);
-        }
-        if let Some(session_id) = config.metadata.get("session_id")
-            && let Ok(value) = HeaderValue::from_str(session_id)
-        {
-            headers.insert("session_id", value);
-        }
+        let headers = codex_headers(&tokens, config.metadata.get("session_id"));
 
         let response = self
             .client
-            .post(CODEX_RESPONSES_URL)
+            .post(&self.responses_url)
             .bearer_auth(&tokens.access_token)
             .headers(headers)
             .json(&request)
@@ -365,6 +358,69 @@ impl ChatDriver for CodexChatDriver {
     async fn list_models(&self) -> EverrunsResult<Option<Vec<DiscoveredModel>>> {
         Ok(None)
     }
+
+    fn supports_compact(&self) -> bool {
+        true
+    }
+
+    fn effective_context_window(&self, model: &str) -> Option<usize> {
+        model_profile(model).and_then(|profile| {
+            profile
+                .limits
+                .map(|limits| usize::try_from(limits.context).unwrap_or(usize::MAX))
+        })
+    }
+
+    async fn compact(&self, request: CompactRequest) -> EverrunsResult<Option<CompactResponse>> {
+        let tokens = self.token_snapshot().await?;
+        let response = self
+            .client
+            .post(format!(
+                "{}/compact",
+                self.responses_url.trim_end_matches('/')
+            ))
+            .bearer_auth(&tokens.access_token)
+            .headers(codex_headers(&tokens, None))
+            .json(&request)
+            .send()
+            .await
+            .map_err(|err| {
+                AgentLoopError::llm(format!("Failed to send Codex compact request: {err}"))
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AgentLoopError::llm_kind(
+                everruns_core::error::LlmErrorKind::from_provider_status(status.as_u16(), &body),
+                format!("Codex compact API error ({status}): {body}"),
+            ));
+        }
+
+        let compact = response
+            .json::<CompactResponse>()
+            .await
+            .map_err(|err| AgentLoopError::llm(format!("Invalid Codex compact response: {err}")))?;
+        Ok(Some(compact))
+    }
+}
+
+fn codex_headers(tokens: &CodexTokens, session_id: Option<&String>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("OpenAI-Beta", HeaderValue::from_static(CODEX_BETA_HEADER));
+    headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
+    if let Some(account_id) = &tokens.account_id
+        && let Ok(value) = HeaderValue::from_str(account_id)
+    {
+        headers.insert("chatgpt-account-id", value.clone());
+        headers.insert("ChatGPT-Account-Id", value);
+    }
+    if let Some(session_id) = session_id
+        && let Ok(value) = HeaderValue::from_str(session_id)
+    {
+        headers.insert("session_id", value);
+    }
+    headers
 }
 
 #[derive(Debug, Serialize)]
@@ -413,6 +469,10 @@ enum CodexInputItem {
     Reasoning {
         r#type: String,
         id: String,
+        encrypted_content: String,
+    },
+    Compaction {
+        r#type: String,
         encrypted_content: String,
     },
 }
@@ -508,6 +568,54 @@ fn build_input(messages: &[LlmMessage]) -> (Option<String>, Vec<CodexInputItem>)
     }
     let instructions = (!instructions.is_empty()).then(|| instructions.join("\n\n"));
     (instructions, repair_unpaired_function_items(input))
+}
+
+fn compose_input(
+    compacted_context: Option<&ProviderOpaqueContext>,
+    transcript_input: Vec<CodexInputItem>,
+) -> Vec<CodexInputItem> {
+    let Some(ProviderOpaqueContext::OpenResponsesCompact { output }) = compacted_context else {
+        return transcript_input;
+    };
+
+    output
+        .iter()
+        .map(compact_output_item)
+        .chain(transcript_input)
+        .collect()
+}
+
+fn compact_output_item(item: &CompactOutputItem) -> CodexInputItem {
+    match item {
+        CompactOutputItem::Message { role, content } => CodexInputItem::Message {
+            r#type: "message".to_string(),
+            role: role.clone(),
+            content: match content {
+                CompactContent::Text(text) => CodexContent::Text(text.clone()),
+                CompactContent::Parts(parts) => CodexContent::Parts(
+                    parts
+                        .iter()
+                        .map(|part| match part {
+                            CompactContentPart::InputText { text } => CodexContentPart::InputText {
+                                r#type: "input_text".to_string(),
+                                text: text.clone(),
+                            },
+                            CompactContentPart::InputImage { image_url } => {
+                                CodexContentPart::InputImage {
+                                    r#type: "input_image".to_string(),
+                                    image_url: image_url.clone(),
+                                }
+                            }
+                        })
+                        .collect(),
+                ),
+            },
+        },
+        CompactOutputItem::Compaction { encrypted_content } => CodexInputItem::Compaction {
+            r#type: "compaction".to_string(),
+            encrypted_content: encrypted_content.clone(),
+        },
+    }
 }
 
 fn convert_message(message: &LlmMessage) -> CodexInputItem {
@@ -910,7 +1018,11 @@ fn metadata_extra_i64(metadata: &ProviderMetadata, key: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use everruns_core::driver_registry::{LlmMessage, LlmMessageRole};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::sync::Mutex as StdMutex;
+    use std::sync::mpsc;
+    use std::thread;
 
     #[derive(Default)]
     struct MemoryAuthStore {
@@ -945,6 +1057,153 @@ mod tests {
             account_id: Some("acc".to_string()),
             email: Some("user@example.com".to_string()),
         }
+    }
+
+    fn test_driver(responses_url: String) -> CodexChatDriver {
+        CodexChatDriver {
+            client: reqwest::Client::new(),
+            responses_url,
+            tokens: Arc::new(tokio::sync::Mutex::new(CodexTokens {
+                access_token: "test-access-token".to_string(),
+                refresh_token: None,
+                expires_at: Some(crate::auth::codex::now_epoch_millis() + 3_600_000),
+                account_id: Some("account-test".to_string()),
+                email: None,
+            })),
+            auth_store: None,
+        }
+    }
+
+    fn serve_one_json_response(response_body: &'static str) -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock Codex server");
+        let address = listener.local_addr().expect("mock server address");
+        let (request_tx, request_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept Codex request");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            let header_end = loop {
+                let count = stream.read(&mut buffer).expect("read Codex request");
+                assert!(count > 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(index) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    break index + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().expect("content length"))
+                })
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let count = stream.read(&mut buffer).expect("read Codex request body");
+                assert!(count > 0, "request body ended early");
+                request.extend_from_slice(&buffer[..count]);
+            }
+            request_tx
+                .send(String::from_utf8(request).expect("UTF-8 request"))
+                .expect("capture request");
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write compact response");
+        });
+        (format!("http://{address}/responses"), request_rx)
+    }
+
+    #[test]
+    fn compacted_context_is_preserved_in_order_before_raw_suffix() {
+        let context = ProviderOpaqueContext::OpenResponsesCompact {
+            output: vec![
+                CompactOutputItem::Message {
+                    role: "user".to_string(),
+                    content: CompactContent::Text("retained".to_string()),
+                },
+                CompactOutputItem::Compaction {
+                    encrypted_content: "opaque-checkpoint".to_string(),
+                },
+            ],
+        };
+        let suffix = vec![CodexInputItem::Message {
+            r#type: "message".to_string(),
+            role: "user".to_string(),
+            content: CodexContent::Text("fresh suffix".to_string()),
+        }];
+
+        assert_eq!(
+            serde_json::to_value(compose_input(Some(&context), suffix)).unwrap(),
+            json!([
+                { "type": "message", "role": "user", "content": "retained" },
+                { "type": "compaction", "encrypted_content": "opaque-checkpoint" },
+                { "type": "message", "role": "user", "content": "fresh suffix" }
+            ])
+        );
+    }
+
+    #[test]
+    fn reports_the_codex_model_context_window_to_runtime_policy() {
+        let driver = test_driver("http://127.0.0.1:1/responses".to_string());
+
+        assert_eq!(
+            ChatDriver::effective_context_window(&driver, "gpt-5.6-sol"),
+            Some(1_050_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_calls_codex_endpoint_with_native_request_and_auth_headers() {
+        let (responses_url, request_rx) = serve_one_json_response(
+            r#"{"output":[{"type":"compaction","encrypted_content":"opaque-result"}],"usage":{"input_tokens":100,"output_tokens":12,"total_tokens":112}}"#,
+        );
+        let driver = test_driver(responses_url);
+
+        let response = ChatDriver::compact(
+            &driver,
+            CompactRequest {
+                model: "gpt-5.6".to_string(),
+                input: vec![everruns_core::CompactInputItem::Message {
+                    role: "user".to_string(),
+                    content: CompactContent::Text("compact me".to_string()),
+                }],
+                previous_response_id: None,
+                instructions: Some("instructions".to_string()),
+            },
+        )
+        .await
+        .expect("compact request")
+        .expect("native compact response");
+
+        assert!(matches!(
+            response.output.as_slice(),
+            [CompactOutputItem::Compaction { encrypted_content }]
+                if encrypted_content == "opaque-result"
+        ));
+        let request = request_rx.recv().expect("captured request");
+        assert!(request.starts_with("POST /responses/compact HTTP/1.1\r\n"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-access-token")
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("chatgpt-account-id: account-test")
+        );
+        let body = request.split_once("\r\n\r\n").expect("request body").1;
+        let body: Value = serde_json::from_str(body).expect("compact JSON body");
+        assert_eq!(body["model"], "gpt-5.6");
+        assert_eq!(body["input"][0]["type"], "message");
+        assert!(body.get("previous_response_id").is_none());
     }
 
     #[tokio::test]

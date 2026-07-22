@@ -907,6 +907,10 @@ mod tests {
             strategy_used: "observation_masking+aggressive_trim".into(),
             messages_before: 142,
             messages_after: 38,
+            tokens_before: Some(100_000),
+            tokens_after: Some(25_000),
+            bytes_before: None,
+            bytes_after: None,
             duration_ms: 120,
             steps: vec![CompactionStepData {
                 strategy: "observation_masking".into(),
@@ -934,10 +938,14 @@ mod tests {
         use everruns_core::events::ContextCompactedData;
 
         let event = event(ContextCompactedData {
-            checkpoint_id: None,
+            checkpoint_id: Some("checkpoint-test".into()),
             strategy_used: "native".into(),
             messages_before: 50,
             messages_after: 12,
+            tokens_before: Some(40_000),
+            tokens_after: Some(8_000),
+            bytes_before: None,
+            bytes_after: None,
             duration_ms: 2_400,
             steps: Vec::new(),
         });
@@ -957,6 +965,8 @@ mod tests {
             reason: CompactionReason::ProactiveBudget,
             strategy: "auto".into(),
             messages_before: 142,
+            tokens_before: Some(100_000),
+            bytes_before: None,
         });
 
         let status = status_for_event(&event).expect("compacting should set activity");
