@@ -50,7 +50,12 @@ OPENAI_API_KEY=sk-… yolop
 yolop -C /path/to/repo        # work in a different workspace
 yolop -p "summarize the build setup"   # one-shot, no TUI, prints to stdout
 yolop --provider llmsim -p "hi"        # offline demo, no API key required
+yolop --fullscreen            # experimental full-screen (alternate-screen) TUI
 ```
+
+The default TUI renders inline in your shell scrollback; `--fullscreen` runs it
+on the alternate screen instead. See the [full-screen mode
+guide](docs/features/fullscreen/fullscreen.md).
 
 ## Features
 
@@ -368,6 +373,7 @@ tools.
 | `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
 | `--session <ID>`           | Resume a previous session by id                                      |
 | `--session-dir <PATH>`     | Override the parent directory for session folders                    |
+| `--fullscreen`             | EXPERIMENTAL: render the interactive TUI full-screen on the alternate screen ([guide](docs/features/fullscreen/fullscreen.md)) |
 | `--reasoning-effort <E>`   | Reasoning effort override when the selected model profile supports it |
 | `--trajectory-out <PATH>`  | Write the session as an [ATIF](https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md) v1.7 trajectory JSON file at end of run (interactive and `--print`) |
 
