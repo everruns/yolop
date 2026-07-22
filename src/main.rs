@@ -122,6 +122,11 @@ struct Cli {
     /// terminal scrollback is unavailable in this mode.
     #[arg(long)]
     fullscreen: bool,
+
+    /// Disable shell sandboxing for this run. DANGER: commands receive
+    /// unrestricted access to host files, processes, and the network.
+    #[arg(long)]
+    no_sandbox: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -509,6 +514,11 @@ async fn async_main() -> Result<()> {
         std::path::PathBuf::from("/dev/null/yolop/settings.toml")
     });
     let settings = Arc::new(SettingsStore::open(settings_path));
+    let sandbox_mode_override = cli
+        .no_sandbox
+        .then_some(config::SandboxMode::DangerFullAccess);
+    let effective_sandbox_mode =
+        sandbox_mode_override.unwrap_or_else(|| settings.snapshot().sandbox_mode());
     let (mut provider, mut notes) = pick_provider(&cli, &settings);
     let snapshot = settings.snapshot();
     let (reconciled, catalog_notes) =
@@ -535,20 +545,21 @@ async fn async_main() -> Result<()> {
     // ACP mode builds runtimes per session (cwd arrives via `session/new`), so
     // it bypasses the up-front runtime build and the TUI.
     if cli.acp {
-        if let Some(warning) = exec::sandbox::danger_warning(settings.snapshot().sandbox_mode()) {
+        if let Some(warning) = exec::sandbox::danger_warning(effective_sandbox_mode) {
             eprintln!("yolop: {warning}");
         }
         if cli.trajectory_out.is_some() {
             eprintln!("yolop: --trajectory-out is ignored in --acp mode");
         }
-        return editor::acp::run_stdio(provider, settings, sessions_dir).await;
+        return editor::acp::run_stdio(provider, settings, sessions_dir, sandbox_mode_override)
+            .await;
     }
 
     // Only the interactive TUI can apply terminal-side commands (overlays,
     // transcript clear, quit), so only it enables `ClientCommandsCapability`.
     // `--print` is one-shot and never dispatches them.
     let interactive = cli.print.is_none();
-    if let Some(warning) = exec::sandbox::danger_warning(settings.snapshot().sandbox_mode()) {
+    if let Some(warning) = exec::sandbox::danger_warning(effective_sandbox_mode) {
         eprintln!("yolop: {warning}");
     }
     let runtime = runtime::build_with_options(
@@ -570,6 +581,7 @@ async fn async_main() -> Result<()> {
                 runtime::session_log::SessionKind::Print
             },
             initial_prompt: cli.print.clone(),
+            sandbox_mode_override,
             ..Default::default()
         },
     )
@@ -1506,6 +1518,7 @@ mod tests {
             session_dir: None,
             trajectory_out: None,
             fullscreen: false,
+            no_sandbox: false,
         }
     }
 
@@ -1563,6 +1576,7 @@ mod tests {
             session_dir: None,
             trajectory_out: None,
             fullscreen: false,
+            no_sandbox: false,
         };
 
         let (provider, _notes) = pick_provider(&cli, &settings);

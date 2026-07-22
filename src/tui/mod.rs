@@ -151,6 +151,8 @@ pub struct App {
     /// provider models APIs and to show per-provider connection status in
     /// the setup overlay.
     settings: Arc<crate::config::SettingsStore>,
+    /// Per-process override, when one differs from persisted settings.
+    sandbox_mode_override: Option<crate::config::SandboxMode>,
     /// Models discovered from each provider's models API, keyed by provider
     /// name. Once populated, replaces the curated fallback list in the
     /// model picker.
@@ -491,6 +493,7 @@ impl App {
             sandbox_approval_rx: runtime.sandbox_approval_rx,
             pending_sandbox_approval: None,
             settings: runtime.settings,
+            sandbox_mode_override: runtime.sandbox_mode_override,
             model_catalog: HashMap::new(),
             model_fetches_in_flight: HashSet::new(),
             model_discovery_enabled: true,
@@ -674,7 +677,9 @@ impl App {
 
     pub(crate) fn presentation_state(&self) -> PresentationState {
         let settings = self.settings.snapshot();
-        let sandbox = settings.sandbox_mode();
+        let sandbox = self
+            .sandbox_mode_override
+            .unwrap_or_else(|| settings.sandbox_mode());
         let approval_mode = if sandbox == crate::config::SandboxMode::DangerFullAccess {
             format!(
                 "{} · {} · UNSAFE HOST",
@@ -803,7 +808,9 @@ impl App {
             self.startup.workspace_root.display()
         ));
         self.push_system(format!("model: {}", self.model.provider_label()));
-        let sandbox_mode = self.settings.snapshot().sandbox_mode();
+        let sandbox_mode = self
+            .sandbox_mode_override
+            .unwrap_or_else(|| self.settings.snapshot().sandbox_mode());
         self.push_system(format!("sandbox: {}", sandbox_mode.as_str()));
         self.push_system(format!(
             "approval policy: {}",

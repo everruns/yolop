@@ -25,7 +25,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::capabilities::ClientUiContext;
-use crate::config::SettingsStore;
+use crate::config::{SandboxMode, SettingsStore};
 use crate::runtime::session_log::{legacy_session_log_path, session_dir_path, session_log_path};
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
 use everruns_core::ScopedMcpServers;
@@ -41,6 +41,7 @@ struct ConfigRuntimeFactory {
     provider: ProviderChoice,
     settings: Arc<SettingsStore>,
     sessions_dir: PathBuf,
+    sandbox_mode_override: Option<SandboxMode>,
 }
 
 #[async_trait]
@@ -70,6 +71,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
                 provider_model: model_selection,
                 client_mcp_servers,
                 tool_approver,
+                sandbox_mode_override: self.sandbox_mode_override,
                 ..BuildOptions::default()
             },
         )
@@ -84,11 +86,13 @@ pub async fn run_stdio(
     provider: ProviderChoice,
     settings: Arc<SettingsStore>,
     sessions_dir: PathBuf,
+    sandbox_mode_override: Option<SandboxMode>,
 ) -> Result<()> {
     let factory = Arc::new(ConfigRuntimeFactory {
         provider,
         settings,
         sessions_dir,
+        sandbox_mode_override,
     });
     serve(tokio::io::stdin(), tokio::io::stdout(), factory).await
 }

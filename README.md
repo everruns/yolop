@@ -421,7 +421,8 @@ to this file.
 To disable kernel containment for an already isolated environment, add
 `sandbox_mode = "danger-full-access"` or ask Yolop to set that config key. This is dangerous on a
 normal host: commands then have unrestricted host file, process, and network
-access. Clearing the key restores `workspace-write`.
+access. For a one-run override that does not change settings, pass
+`--no-sandbox`. Clearing the key restores `workspace-write`.
 
 The model picker queries the provider's models API live (OpenAI, Anthropic,
 and OpenRouter via the everruns drivers; Ollama, Gemini, and other
