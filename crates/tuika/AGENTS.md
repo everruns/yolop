@@ -2,8 +2,7 @@
 
 `tuika` is a standalone, published terminal-UI toolkit (layout, overlays, focus,
 components over ratatui). It knows nothing about yolop. See `README.md` for the
-model and `crates/tuika/README.md`'s test section for how rendering is tested
-hermetically.
+model, and [Testing](#testing) below for how rendering is tested hermetically.
 
 ## Docs layout
 
@@ -91,3 +90,23 @@ lingers, and every `demos/<name>.gif` referenced by a component doc or
 `components.md` maps to a real scene. It runs in the `tuika-msrv` CI job and at
 the end of the generator, so gallery drift fails CI instead of shipping a broken
 image to docs.rs.
+
+## Testing
+
+Layout and rendering are tested hermetically by rendering into an in-memory
+ratatui `Buffer` and reading cells back — no real terminal. The consumer-facing
+subset (`testing::{render, render_sizes, grid}`) is documented in the README;
+tuika's own suite covers more:
+
+- **Unit tests** (`src/tests.rs`) — layout math, component rendering,
+  interactive state (scroll/select/focus), compositor, easing, OSC encoder, and
+  palette (every themed cell pinned to its `Theme` slot).
+- **Property tests** (`src/proptests.rs`, `proptest`) — solver and overlay
+  invariants for *any* input (children stay in bounds, flex fills exactly).
+- **Golden snapshots** (`src/snapshots.rs`) — whole screens diffed against
+  checked-in glyph grids; refresh with `UPDATE_SNAPSHOTS=1`.
+- **Resize / degenerate sizes** — a size sweep from `0×0` up asserts no panic and
+  no out-of-clip writes.
+- **PTY smoke** (`tests/tuika_pty.rs`) — drives the real binary under a
+  pseudo-terminal and asserts the terminal-facing protocol: alternate-screen
+  enter/leave, OSC 9;4 progress, resize survival, clean exit.

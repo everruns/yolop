@@ -10,16 +10,14 @@
   <img src="docs/hero.gif" width="880" alt="Animated tuika gallery: a terminal window with tabs, an activity panel of spinners, progress bars and a loader, a command palette, a commit-message input, and a status bar — all animating.">
 </p>
 
-<p align="center"><sub>A live gallery recorded from the real component tree. Regenerate with <code>crates/tuika/scripts/gen-tuika-hero.sh</code>.</sub></p>
-
 A small composable terminal UI toolkit. `tuika` provides the layout,
 overlay, focus, and component primitives that `ratatui` leaves to you, while
 letting `ratatui` keep ownership of the cell buffer and its diff against the
 terminal.
 
 It is a published, self-contained crate that depends only on `ratatui`,
-`crossterm`, `textwrap`, `unicode-segmentation`, and `unicode-width`. It knows
-nothing about yolop; yolop is one production consumer.
+`crossterm`, `textwrap`, `unicode-segmentation`, and `unicode-width`, and is
+host-agnostic — it knows nothing about the application embedding it.
 
 ## Install
 
@@ -55,40 +53,58 @@ deduplicate them (see [Compatibility](#compatibility)).
 ## Components
 
 See the [component gallery](docs/components.md) for an animated demo of each
-component (the same GIFs are embedded inline in the [docs.rs](https://docs.rs/tuika)
-API docs).
+component. Linked names below jump straight to their demo.
 
 | Component | Purpose |
 | --- | --- |
-| `Text` / `Paragraph` | Styled lines / word-wrapped plain text |
+| [`Text`](docs/components.md#text) / `Paragraph` | Styled lines / word-wrapped plain text |
 | `Wrap` | Word-wraps pre-styled lines, preserving per-span styles |
-| `Rule` | Horizontal separator: optional title + fill glyph to width |
-| `Flex` | Flexbox container (the composition primitive) |
+| [`Rule`](docs/components.md#rule) | Horizontal separator: optional title + fill glyph to width |
+| [`Flex`](docs/components.md#flex) | Flexbox container (the composition primitive) |
 | `Responsive` / `Constrained` | Breakpoint selection and min/max measurement |
-| `Boxed` | Border + padding + title, focus-aware |
+| [`Boxed`](docs/components.md#boxed) | Border + padding + title, focus-aware |
 | `Spacer` | Flexible filler |
-| `Scroll` (+ `ScrollState`) | Vertical scroll viewport + scrollbar |
-| `SelectList` (+ `SelectState`) | Selectable list |
-| `StatusBar` | One-row left/right status segments |
-| `Tabs` / `KeyHints` | Host-state tab navigation and command hints |
-| `Spinner` | Frame-cycled activity glyph |
-| `ProgressBar` | Determinate (sub-cell) / indeterminate bar |
-| `Loader` | Spinner + message + hint row |
+| [`Scroll`](docs/components.md#scroll--scrollstate) (+ `ScrollState`) | Vertical scroll viewport + scrollbar |
+| [`SelectList`](docs/components.md#selectlist--selectstate) (+ `SelectState`) | Selectable list |
+| [`StatusBar`](docs/components.md#statusbar) | One-row left/right status segments |
+| [`Tabs`](docs/components.md#tabs--tabsstate) / `KeyHints` | Host-state tab navigation and command hints |
+| [`Spinner`](docs/components.md#spinner) | Frame-cycled activity glyph |
+| [`ProgressBar`](docs/components.md#progressbar) | Determinate (sub-cell) / indeterminate bar |
+| [`Loader`](docs/components.md#loader) | Spinner + message + hint row |
 
 ## Example
 
+Layout reads top-down with the [`view!`](#declarative-dsl-view) DSL:
+
 ```rust
-use tuika::{Flex, ProgressBar, Spinner, Text, Theme, element, paint};
+use tuika::{ProgressBar, Spinner, Theme, paint, view};
 
 let theme = Theme::default();
+let root = view! {
+    col(gap = 1) {
+        fixed(1) { node(Spinner::new(frame)) }
+        fixed(1) { node(ProgressBar::determinate(0.6).percent(true)) }
+        grow(1) { text("body") }
+    }
+};
+
+// In a `terminal.draw(|f| ...)` closure:
+paint(f.buffer_mut(), f.area(), &theme, root.as_ref(), &[]);
+```
+
+### Builder syntax (alternative)
+
+`view!` expands to plain builder calls, so the same tree can be written without
+the macro:
+
+```rust
+use tuika::{Flex, ProgressBar, Spinner, Text, element};
+
 let root = Flex::column()
     .gap(1)
     .fixed(1, element(Spinner::new(frame)))
     .fixed(1, element(ProgressBar::determinate(0.6).percent(true)))
     .grow(1, element(Text::raw("body")));
-
-// In a `terminal.draw(|f| ...)` closure:
-paint(f.buffer_mut(), f.area(), &theme, root.as_ref(), &[]);
 ```
 
 ### Runnable examples
@@ -97,11 +113,11 @@ Each enters the alternate screen; press `q` (or `esc`) to quit.
 
 | Example    | Command                                   | Shows                                              |
 | ---------- | ----------------------------------------- | -------------------------------------------------- |
-| `gallery`  | `cargo run -p tuika --example gallery`    | motion components + native OSC 9;4 progress        |
-| `select`   | `cargo run -p tuika --example select`     | `SelectState` + `SelectList` (stateful-widget idiom) |
-| `overlay`  | `cargo run -p tuika --example overlay`    | `OverlaySpec` centered dialog + input routing      |
-| `ratatui_dashboard` | `cargo run -p tuika --example ratatui_dashboard` | mixed Ratatui widgets + responsive live data |
-| `mouse`     | `cargo run -p tuika --example mouse`      | drag-to-select + highlight + OSC 52 copy, clickable buttons |
+| [`gallery`](examples/gallery.rs)  | `cargo run -p tuika --example gallery`    | motion components + native OSC 9;4 progress        |
+| [`select`](examples/select.rs)   | `cargo run -p tuika --example select`     | `SelectState` + `SelectList` (stateful-widget idiom) |
+| [`overlay`](examples/overlay.rs)  | `cargo run -p tuika --example overlay`    | `OverlaySpec` centered dialog + input routing      |
+| [`ratatui_dashboard`](examples/ratatui_dashboard.rs) | `cargo run -p tuika --example ratatui_dashboard` | mixed Ratatui widgets + responsive live data |
+| [`mouse`](examples/mouse.rs)     | `cargo run -p tuika --example mouse`      | drag-to-select + highlight + OSC 52 copy, clickable buttons |
 
 (Embedded in yolop, the gallery is also reachable as `yolop tuika-gallery`.)
 
@@ -230,27 +246,32 @@ selection — so a host should act on `plain()` left-drags.
 `Down`+`Up` and a swipe to scroll or a drag, so touch flows through this same
 path — there is no separate touch event to handle.
 
-## Testing
+## Testing your UI
 
-Layout and rendering are tested hermetically by rendering into an in-memory
-ratatui `Buffer` and reading cells back — no real terminal:
+Rendering is deterministic, so UI built on tuika can be tested without a real
+terminal or `TestBackend` setup. The [`testing`](https://docs.rs/tuika/latest/tuika/testing/index.html)
+module draws a `View` into an in-memory ratatui `Buffer` and reads it back:
 
-- **Unit tests** (`src/tuika/tests.rs`) — layout math, component rendering,
-  interactive state (scroll/select/focus), compositor, easing, OSC encoder,
-  and palette (every themed cell pinned to its `Theme` slot).
-- **Property tests** (`src/tuika/proptests.rs`, `proptest`) — solver and overlay
-  invariants for *any* input (children stay in bounds, flex fills exactly).
-- **Golden snapshots** (`src/tuika/snapshots.rs`) — whole screens diffed against
-  checked-in glyph grids; refresh with `UPDATE_SNAPSHOTS=1`.
-- **Resize / degenerate sizes** — a size sweep from `0×0` up asserts no panic
-  and no out-of-clip writes.
-- **PTY smoke** (`tests/tuika_pty.rs`) — drives the real binary under a
-  pseudo-terminal and asserts the terminal-facing protocol: alternate-screen
-  enter/leave, OSC 9;4 progress, resize survival, clean exit.
+- `render(view, width, height, &theme) -> Buffer` — draw once at a fixed size.
+- `grid(&buffer) -> String` — the buffer as a plain glyph grid, ready for a
+  snapshot assertion.
+- `render_sizes(view, sizes, &theme) -> Vec<Buffer>` — the same view across a set
+  of sizes, for resize and degenerate-size sweeps.
 
-Downstream crates can use `tuika::testing::{render, render_sizes, grid}` for
-buffer assertions, resize sweeps, and stable glyph snapshots without a real
-terminal or `TestBackend` setup.
+```rust
+use tuika::testing::{grid, render};
+use tuika::Theme;
+
+let buffer = render(my_view.as_ref(), 20, 3, &Theme::default());
+assert!(grid(&buffer).contains("expected text"));
+```
+
+## Used in
+
+- [**yolop**](https://github.com/everruns/yolop) — a terminal coding agent whose
+  experimental full-screen renderer is built on tuika.
+
+Building something on tuika? Open a PR adding it here.
 
 ## Compatibility
 
@@ -264,6 +285,15 @@ terminal or `TestBackend` setup.
 
 ## Extending
 
-Add a component by implementing `view::View` in a new module under
-`components/`. There is no registration step — containers accept any boxed
-`View`.
+tuika is extended from your own crate — no fork, no registration step, no trait
+the built-ins get that yours don't:
+
+- **Custom components.** Implement [`View`](https://docs.rs/tuika/latest/tuika/trait.View.html)
+  on your own type and splice it anywhere with `node(your_view)`, or hand it to
+  any container — they accept any `impl View`. The built-in components are on
+  equal footing with yours; nothing special-cases them.
+- **Existing Ratatui widgets.** Wrap one in `RatatuiView` rather than
+  reimplementing it — see [Ratatui interoperability](#ratatui-interoperability).
+
+The [`view!`](#declarative-dsl-view) DSL reaches your components through the same
+`node(...)` escape hatch, so they compose exactly like the built-ins.
