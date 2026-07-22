@@ -1,0 +1,171 @@
+# tuika terminal features
+
+Cross-cutting terminal capabilities that sit outside the [component
+gallery](components.md): the *out-of-band* escape sequences tuika speaks to the
+terminal itself — clickable links, native progress, the system clipboard — and
+the mouse model that turns pointer input into selections and clicks.
+
+These are terminal features, not widgets. Where a component paints cells,
+several of these emit an OSC (Operating System Command) sequence the terminal
+interprets directly. That has one consequence worth stating up front: a
+terminal that understands the sequence acts on it; one that does not silently
+ignores the unknown OSC, so the feature degrades to plain text or a no-op
+rather than leaking escape codes onto the screen.
+
+## Hyperlinks (OSC 8)
+
+Turn a bare `http(s)` URL into a real clickable link, in place, without changing
+the visible text. A cell buffer can't carry a link target — a `ratatui::Cell`
+is one grapheme plus a style — so tuika emits the link by writing the OSC 8
+sequence around the run instead of through the buffer.
+[API](https://docs.rs/tuika/latest/tuika/hyperlink/index.html)
+
+<img src="demos/hyperlink.gif" width="880" alt="Hyperlink demo: a transcript line with 'https://docs.rs/tuika' and a markdown link label both shown in an underlined link color; unsupported terminals would render the same text without the link.">
+
+There are two entry points:
+
+- `osc8(url, text)` — the pure encoder. Returns `text` wrapped in the OSC 8
+  sequence, or `text` unchanged when `url` isn't a safe web URL. No I/O.
+- `write_line(out, line)` — serialize a `ratatui::Line` (colors, modifiers, and
+  OSC 8 links) straight to a writer, so a host can push a transcript line to
+  scrollback with live links instead of routing it through the cell buffer.
+- `HyperlinkBackend` — a `ratatui::Backend` wrapper that scans drawn cell runs
+  for URLs and wraps just those in OSC 8, so links work inside the normal render
+  path too. When disabled it's a zero-cost pass-through.
+
+```rust
+use tuika::{osc8, is_web_url};
+
+// Pure encoder — safe to unit-test, no terminal needed.
+let link = osc8("https://docs.rs/tuika", "the tuika docs");
+
+// A bare URL a host would style and hand to `write_line` as a link run.
+assert!(is_web_url("https://docs.rs/tuika"));
+```
+
+The emitted bytes (`ST` is the string terminator `ESC \`):
+
+```text
+ESC ] 8 ; ; https://docs.rs/tuika ST   the tuika docs   ESC ] 8 ; ; ST
+```
+
+**Supported terminals:** Ghostty, iTerm2, WezTerm, Kitty, recent VTE-based
+terminals. Others render the visible text unchanged.
+
+**Limits & safety.** Only `http://` and `https://` URLs are accepted; control
+characters (including the `ESC`/`BEL` that could break out of the sequence) are
+stripped, so a crafted URL can't escape the OSC. Under tmux, passthrough must be
+enabled: `set -g allow-passthrough on`.
+
+## Mouse: selection, highlight & clicks
+
+Once an app captures the mouse, the terminal stops doing its own click-drag text
+selection. The `mouse` module rebuilds those affordances over the grid you
+already rendered — selection, copy, and hit-testing — from tuika's enriched
+event model (`MouseKind` carries `Down`/`Up`/`Drag`, `Moved`, and scroll, with
+`shift`/`ctrl`/`alt`).
+[API](https://docs.rs/tuika/latest/tuika/mouse/index.html)
+
+<img src="demos/mouse.gif" width="880" alt="Mouse demo: a left-drag selection highlight growing across the phrase 'the quick brown fox jumps over the lazy dog', and a row of clickable Run / Diff / Cancel regions with one highlighted as active.">
+
+- `SelectionState` turns a left-button `Down → Drag → Up` gesture into a
+  `SelectionRange`; `selected_text(buffer, area, range)` reads the selected text
+  back out of the rendered buffer (wide glyphs intact) and `highlight(buffer,
+  area, range, style)` paints it in.
+- `HitMap<T>` maps screen rects to values (a button, a link, a row); the
+  last-pushed match wins, so children and overlays registered after their
+  parents take precedence. `ClickTracker` turns a same-cell `Down`/`Up` into a
+  `Click` and lets an intervening drag cancel it.
+
+```rust
+use tuika::mouse::{SelectionState, selected_text};
+
+let mut sel = SelectionState::new();   // held by the host across frames
+sel.handle(&mouse);                    // feed each mouse event
+if let Some(range) = sel.range() {
+    let text = selected_text(&buffer, area, range);
+    // …copy `text` to the clipboard (see below)
+}
+```
+
+Selection integrates with the clipboard feature below: the text a drag selects
+is exactly what `write_clipboard` copies. **Shift-drag** is deliberately left to
+the terminal so its native selection still works as an escape hatch.
+
+## System clipboard (OSC 52)
+
+Copy text to the system clipboard by writing an OSC 52 sequence — the *terminal*
+does the copy, so there's no platform clipboard library and it works over SSH.
+That makes it the natural partner to a mouse selection.
+[API](https://docs.rs/tuika/latest/tuika/clipboard/index.html)
+
+- `osc52(text)` — pure encoder; returns the sequence, or `None` when `text` is
+  empty or exceeds `MAX_LEN`.
+- `write_clipboard(out, text)` — encode and write in one step, returning whether
+  a sequence was emitted.
+
+```rust
+use tuika::write_clipboard;
+
+let mut out = std::io::stdout();
+let copied = write_clipboard(&mut out, "selected text")?;   // Ok(true) when emitted
+```
+
+The emitted bytes are the base64-encoded payload, terminated by `ST` (`ESC \`):
+
+```text
+ESC ] 52 ; c ; <base64-of-text> ST
+```
+
+**Supported terminals:** Ghostty, iTerm2 (with clipboard writes enabled),
+WezTerm, Kitty, recent VTE, xterm.
+
+**Limits.** Terminals cap the sequence near 100 000 bytes, so a single copy is
+bounded at `MAX_LEN` (74 994 bytes); longer text is refused rather than sent
+truncated — a truncated clipboard is worse than a failed copy. Under tmux it
+needs `set -g allow-passthrough on` (or tmux's own `set-clipboard`), the same
+passthrough caveat as OSC 8.
+
+## Native progress (OSC 9;4)
+
+Drive the terminal's *own* progress indicator — a bar across the window in
+Ghostty, the taskbar in Windows Terminal and ConEmu. It's fully out-of-band: it
+moves no cursor and paints no cells, so it works in both the inline and
+full-screen renderers and composes with an in-grid
+[`ProgressBar`](components.md#progressbar).
+[API](https://docs.rs/tuika/latest/tuika/struct.TerminalProgress.html)
+
+`TerminalProgress` owns the indicator and clears it on drop, so a dropped or
+panicking session never leaves a stuck bar in the taskbar. Its methods map to
+the indicator states: `percent` (normal), `error`, `indeterminate`, and
+`clear`.
+
+```rust
+use tuika::TerminalProgress;
+
+let mut progress = TerminalProgress::new();
+progress.percent(60);        // 60% on the terminal's own bar
+// progress.indeterminate(); // busy, percent ignored
+// progress.error(60);       // error state at 60%
+// …dropping `progress` clears the indicator.
+```
+
+The emitted bytes (`state` is 0–4, `percent` is 0–100; terminated by `BEL`):
+
+```text
+ESC ] 9 ; 4 ; <state> ; <percent> BEL
+```
+
+**Supported terminals:** Ghostty (bar across the top of the window), Windows
+Terminal and ConEmu (taskbar), WezTerm, Konsole, mintty. Others swallow the
+unknown OSC. Writes are best-effort — a failed progress write never disrupts the
+session.
+
+## See also
+
+- [Component gallery](components.md) — the widgets that paint the grid.
+- [API documentation](https://docs.rs/tuika) — the complete reference for the
+  `hyperlink`, `mouse`, `clipboard`, and `native` modules.
+- [Runnable examples](../examples/) — `mouse` records the selection/clipboard
+  workflow live; quit with `q`/`esc`.
+- [README](../README.md) — the model behind the toolkit.

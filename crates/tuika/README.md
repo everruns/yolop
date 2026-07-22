@@ -273,6 +273,11 @@ selection — so a host should act on `plain()` left-drags.
 `Down`+`Up` and a swipe to scroll or a drag, so touch flows through this same
 path — there is no separate touch event to handle.
 
+> See the [terminal features guide](docs/features.md) for these
+> terminal-integration capabilities — OSC 8 hyperlinks, mouse selection and
+> clicks, OSC 52 clipboard, and OSC 9;4 progress — with animated demos and
+> runnable examples.
+
 ## Testing your UI
 
 Rendering is deterministic, so UI built on tuika can be tested without a real
