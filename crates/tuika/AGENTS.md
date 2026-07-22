@@ -7,12 +7,15 @@ hermetically.
 
 ## Docs layout
 
+- `docs/features.md` — the public feature guide (progress, hyperlinks, overlays,
+  mouse, live data, …). Presentational only; demos reuse or extend the gallery
+  recordings below. Linked from the crate root docs so it surfaces on docs.rs.
 - `docs/components.md` — the public component gallery (name, description, demo
   per component). Keep it **presentational only**: no build or regeneration
   instructions belong here (they live in this file).
 - `docs/demos/*.gif` — the committed demo recordings referenced by
-  `components.md` and, via `raw.githubusercontent.com` URLs, inline on each
-  component's `struct` doc so they render on docs.rs.
+  `features.md` / `components.md` and, via `raw.githubusercontent.com` URLs,
+  inline on each type's rustdoc so they render on docs.rs.
 
 ## Component demos
 
@@ -50,14 +53,14 @@ Recordings are captured at 2× pixel density and displayed at half width
    `rows` to the content height and `animated` for motion scenes).
 2. Confirm it renders: `cargo run -p tuika --example demo -- <name> --dump`.
 3. Record it: `scripts/gen-tuika-demos.sh <name>`.
-4. Reference `demos/<name>.gif` in `docs/components.md` and inline on the
-   component's `struct` doc (via the `raw.githubusercontent.com/.../main/...`
-   URL, so docs.rs resolves it).
+4. Reference `demos/<name>.gif` in `docs/components.md` and/or
+   `docs/features.md`, and inline on the type's rustdoc (via the
+   `raw.githubusercontent.com/.../main/...` URL, so docs.rs resolves it).
 
 ### The check invariant
 
 `demo -- check` asserts every scene has a non-empty recording, no orphan GIF
-lingers, and every `demos/<name>.gif` referenced by a component doc or
-`components.md` maps to a real scene. It runs in the `tuika-msrv` CI job and at
+lingers, and every `demos/<name>.gif` referenced by a component/feature doc or
+gallery markdown maps to a real scene. It runs in the `tuika-msrv` CI job and at
 the end of the generator, so gallery drift fails CI instead of shipping a broken
 image to docs.rs.

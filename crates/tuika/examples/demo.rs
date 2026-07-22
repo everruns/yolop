@@ -142,6 +142,20 @@ const DEMOS: &[Demo] = &[
         true,
         scene_textinput,
     ),
+    demo(
+        "hyperlinks",
+        "OSC 8 clickable http(s) URLs",
+        10,
+        false,
+        scene_hyperlinks,
+    ),
+    demo(
+        "overlay",
+        "anchored dialog over the base tree",
+        16,
+        false,
+        scene_overlay,
+    ),
 ];
 
 fn main() -> io::Result<()> {
@@ -226,7 +240,7 @@ fn emit_tapes(dir: &Path) -> io::Result<()> {
 // ---------------------------------------------------------------------------
 // `check` — the gallery integrity guard. The scene registry is the source of
 // truth: every scene needs a non-empty recording, no orphan GIF may linger, and
-// every `demos/<name>.gif` referenced by a component doc or `components.md` must
+// every `demos/<name>.gif` referenced by a component/feature doc must
 // map to a real scene. Runs in CI (tuika-msrv) and at the end of the generator,
 // so drift fails loudly instead of shipping a broken image to docs.rs.
 // ---------------------------------------------------------------------------
@@ -259,11 +273,21 @@ fn check() -> io::Result<()> {
         }
     }
 
-    // Every demo GIF referenced by a component doc or components.md maps to a scene.
-    let mut sources: Vec<PathBuf> = vec![dir.join("docs/components.md")];
+    // Every demo GIF referenced by a component/feature doc maps to a scene.
+    let mut sources: Vec<PathBuf> = vec![
+        dir.join("docs/components.md"),
+        dir.join("docs/features.md"),
+    ];
     for entry in fs::read_dir(dir.join("src/components"))?.filter_map(Result::ok) {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+            sources.push(path);
+        }
+    }
+    // Module-level docs outside `components/` (e.g. hyperlink, overlay) may embed demos too.
+    for module in ["hyperlink.rs", "overlay.rs", "native.rs", "mouse.rs"] {
+        let path = dir.join("src").join(module);
+        if path.exists() {
             sources.push(path);
         }
     }
@@ -309,8 +333,8 @@ fn stems(dir: &Path, ext: &str) -> BTreeSet<String> {
 }
 
 /// Every `demos/<name>.gif` reference in `text` — matches both the relative
-/// `demos/x.gif` in `components.md` and the absolute `.../docs/demos/x.gif`
-/// URLs embedded in component docs.
+/// `demos/x.gif` in gallery markdown and the absolute `.../docs/demos/x.gif`
+/// URLs embedded in rustdoc.
 fn referenced_gifs(text: &str) -> BTreeSet<String> {
     const MARKER: &str = "demos/";
     let mut found = BTreeSet::new();
@@ -628,6 +652,83 @@ fn scene_textinput(frame: u64, theme: &Theme) -> Element {
                 boxed(title = Line::from(Span::styled(" commit message ", theme.accent_style()))) {
                     node(TextInput::new(&state))
                 }
+            }
+        }
+    }
+}
+
+fn scene_hyperlinks(frame: u64, theme: &Theme) -> Element {
+    let _ = frame;
+    let link = |url: &str| {
+        Span::styled(
+            url.to_string(),
+            theme.accent_style().add_modifier(Modifier::UNDERLINED),
+        )
+    };
+    let body = Text::new(vec![
+        Line::from(vec![
+            Span::styled("See the docs at ", theme.text_style()),
+            link("https://docs.rs/tuika"),
+        ]),
+        Line::from(vec![
+            Span::styled("Source: ", theme.muted_style()),
+            link("https://github.com/everruns/yolop"),
+        ]),
+        Line::from(Span::styled(
+            "HyperlinkBackend wraps URL runs in OSC 8 so supporting",
+            theme.muted_style(),
+        )),
+        Line::from(Span::styled(
+            "terminals make them clickable (others render plain text).",
+            theme.muted_style(),
+        )),
+    ]);
+    view! {
+        col(gap = 1) {
+            grow(1) { node(body) }
+        }
+    }
+}
+
+fn scene_overlay(frame: u64, theme: &Theme) -> Element {
+    let _ = frame;
+    // Visual stand-in for OverlaySpec::centered: base content with a dialog
+    // panel stacked on top. The live `overlay` example drives real OverlaySpec
+    // compositing; this scene shows the resulting look for the docs gallery.
+    let base = Text::new(vec![
+        Line::from(Span::styled(
+            "base layer stays visible around the panel",
+            theme.text_style(),
+        )),
+        Line::from(Span::styled(
+            "confirmed 2 time(s)",
+            theme.muted_style(),
+        )),
+    ]);
+    let dialog = view! {
+        boxed(
+            title = Line::from(Span::styled(" confirm ", theme.accent_style())),
+            border = BorderStyle::Rounded,
+            padding = Padding::all(1)
+        ) {
+            col(gap = 1) {
+                node(Text::raw("Proceed with the action?"))
+                node(Text::new(vec![Line::from(Span::styled(
+                    "enter = yes · esc = no",
+                    theme.muted_style(),
+                ))]))
+            }
+        }
+    };
+    view! {
+        col(gap = 1) {
+            fixed(2) { node(base) }
+            fixed(7) { node(dialog) }
+            fixed(1) {
+                node(Text::new(vec![Line::from(Span::styled(
+                    "OverlaySpec::centered(50, 40).min_size(34, 7)",
+                    theme.muted_style(),
+                ))]))
             }
         }
     }

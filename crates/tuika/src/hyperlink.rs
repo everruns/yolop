@@ -183,6 +183,8 @@ fn to_ct_color(color: Color) -> CtColor {
 /// and wraps just those cells in the OSC 8 sequence. Non-URL text is forwarded
 /// untouched. When `enabled` is false it is a pure pass-through with no scanning,
 /// so a host can gate the feature at zero cost.
+///
+/// ![hyperlinks demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/hyperlinks.gif)
 pub struct HyperlinkBackend<W: Write> {
     inner: CrosstermBackend<W>,
     enabled: bool,

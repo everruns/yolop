@@ -44,6 +44,8 @@ impl Extent {
 }
 
 /// Anchored, sized overlay placement relative to a screen rect.
+///
+/// ![overlay demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/overlay.gif)
 #[derive(Clone, Copy, Debug)]
 pub struct OverlaySpec {
     pub anchor: Anchor,

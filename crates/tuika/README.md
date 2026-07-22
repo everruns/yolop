@@ -46,6 +46,13 @@ deduplicate them (see [Compatibility](#compatibility)).
   `native::TerminalProgress`) animates from a host-supplied frame counter and
   can drive the terminal's own OSC 9;4 progress indicator.
 
+## Features
+
+See the [feature guide](docs/features.md) for a tour of progress bars, OSC 8
+hyperlinks, overlays, mouse/clipboard, live data, and more — with animated
+demos. The same guide is linked from the [docs.rs](https://docs.rs/tuika) crate
+docs.
+
 ## Components
 
 See the [component gallery](docs/components.md) for an animated demo of each

@@ -12,6 +12,16 @@
 //! agent, whose full-screen renderer is built on it, but it knows nothing about
 //! any host application.
 //!
+//! # Features
+//!
+//! A guided tour with animated demos lives in the
+//! [feature guide](https://github.com/everruns/yolop/blob/main/crates/tuika/docs/features.md)
+//! (progress bars, OSC 8 hyperlinks, overlays, mouse/clipboard, live data, and
+//! more). The
+//! [component gallery](https://github.com/everruns/yolop/blob/main/crates/tuika/docs/components.md)
+//! catalogs each widget. On docs.rs, demos are also embedded on the relevant
+//! types (for example [`ProgressBar`], [`Spinner`], [`HyperlinkBackend`]).
+//!
 //! # Model
 //!
 //! - **Views** ([`view::View`]) are ephemeral, rebuilt from application state

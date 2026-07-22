@@ -213,6 +213,7 @@ view! {
 
 ## See also
 
+- [Feature guide](features.md) — progress, hyperlinks, overlays, mouse, and more.
 - [API documentation](https://docs.rs/tuika) — the complete component reference,
   including helpers without a standalone demo (`Spacer`, `Responsive`,
   `Constrained`, `Wrap`, `KeyHints`).
