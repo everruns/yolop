@@ -4,7 +4,10 @@
   "benchmarks": {
     "one_shot.large": 4066518,
     "one_shot.small": 172394,
+    "paging.large": 130441,
     "reflow.mixed": 7935987,
+    "render.large": 707868,
+    "render.small": 707805,
     "streaming.mixed": 8565881
   }
 }
