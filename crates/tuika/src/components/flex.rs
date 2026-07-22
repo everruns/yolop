@@ -21,6 +21,21 @@ struct Child {
 
 /// A flexbox container of child views.
 ///
+/// # Example
+///
+/// ```
+/// use tuika::{Flex, Text, Theme, element};
+/// use tuika::testing::{grid, render};
+///
+/// // A row of two fixed-width cells, laid left to right.
+/// let view = Flex::row()
+///     .fixed(3, element(Text::raw("abc")))
+///     .fixed(3, element(Text::raw("xyz")));
+///
+/// let buffer = render(&view, 6, 1, &Theme::default());
+/// assert_eq!(grid(&buffer), "abcxyz");
+/// ```
+///
 /// ![flex demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/flex.gif)
 pub struct Flex {
     style: LayoutStyle,

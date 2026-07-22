@@ -27,6 +27,9 @@ use crate::style::Theme;
 /// source without re-deriving line boundaries; an implementation that cannot
 /// uphold it (event stream desynced from source lines) must return [`None`].
 pub trait Highlighter {
+    /// Highlight `lines` of `lang` source, returning one styled span vector per
+    /// input line (same length and order), or [`None`] if the language is
+    /// unknown or the source cannot be highlighted line-for-line.
     fn highlight(
         &self,
         lang: &str,
