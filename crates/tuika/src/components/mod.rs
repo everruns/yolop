@@ -39,4 +39,4 @@ pub use spinner::{Spinner, SpinnerStyle};
 pub use status_bar::StatusBar;
 pub use tabs::{Tabs, TabsState};
 pub use text::{Paragraph, Text, Wrap, line_width, wrap_lines};
-pub use textinput::{TextInput, TextInputState};
+pub use textinput::{TextInput, TextInputEvent, TextInputMode, TextInputState};
