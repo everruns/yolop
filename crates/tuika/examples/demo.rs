@@ -707,8 +707,8 @@ fn scene_scroll(frame: u64, theme: &Theme) -> Element {
             ))
         })
         .collect();
-    let viewport_h = 8u16;
-    let content_h = lines.len() as u16;
+    let viewport_h = 8usize;
+    let content_h = lines.len();
     let mut state = ScrollState::new();
     let reach = tuika::anim::ping_pong(frame, 200);
     let steps = (reach * (content_h.saturating_sub(viewport_h) as f32 / 3.0 + 1.0)) as u32;

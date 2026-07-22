@@ -88,6 +88,37 @@ const DIFF_META: Color = Color::Rgb(108, 132, 188);
 const CODE_BG: Color = Color::Rgb(18, 18, 20);
 const PANEL_BG: Color = Color::Rgb(28, 28, 34);
 
+/// Upper bound on retained transcript `ChatLine`s. A session that never stops
+/// producing output would otherwise grow `App::lines` — and the full-screen
+/// wrap cache built from it — without bound. Past this watermark the oldest
+/// lines are dropped from the front (see [`App::trim_transcript`]): in inline
+/// mode they have already been flushed to native scrollback, and in full-screen
+/// mode this bounds how far back the in-app scrollback reaches. The window is
+/// generous so only pathologically long sessions ever reach it.
+const MAX_RETAINED_TRANSCRIPT_LINES: usize = 50_000;
+
+/// Memoized wrapping for the full-screen transcript.
+/// [`render::append_transcript_range`] markdown/syntax-highlights and word-wraps
+/// every `ChatLine`; doing that for the whole history on every frame is
+/// O(session) work to show O(viewport).
+/// Because `App::lines` only grows at the tail (or is reset, which bumps
+/// `App::transcript_generation`), the wrapped output is stable except for the
+/// newly-appended lines, which is all this cache re-wraps per frame.
+#[derive(Default)]
+struct TranscriptWrapCache {
+    /// Wrap width the cached lines were built at; a change invalidates them.
+    width: usize,
+    /// Generation the cache was built against; a bump invalidates it.
+    generation: u64,
+    /// Number of `App::lines` already wrapped into `lines`.
+    source_len: usize,
+    /// Author of the last emitted chat, so an incremental pass reproduces the
+    /// inter-author gap exactly as a full pass would.
+    prev_author: Option<Author>,
+    /// The wrapped, gap-spaced transcript rows.
+    lines: Vec<Line<'static>>,
+}
+
 pub struct App {
     session: Session,
     startup: StartupInfo,
@@ -198,7 +229,13 @@ pub struct App {
     scroll: tuika::ScrollState,
     /// Last (content_height, viewport_height) the full-screen transcript drew,
     /// so mouse/paging handlers can clamp scrolling without re-laying out.
-    scroll_metrics: (u16, u16),
+    scroll_metrics: (usize, usize),
+    /// Memoized full-screen transcript wrapping (see
+    /// [`App::full_transcript_lines_cached`]). Bumped whenever `lines` is reset
+    /// out from under the cache (clear, checkpoint restore, or a front trim);
+    /// tail appends leave it untouched so only the new lines are re-wrapped.
+    transcript_generation: u64,
+    transcript_cache: TranscriptWrapCache,
     /// Full-screen mouse text selection over the transcript. `selection_area`
     /// is the transcript's inner rect recorded by the last draw (so the event
     /// handler can bound drags to it); `pending_copy` defers the OSC 52 copy to
@@ -521,6 +558,8 @@ impl App {
             render_mode: RenderMode::default(),
             scroll: tuika::ScrollState::new(),
             scroll_metrics: (0, 0),
+            transcript_generation: 0,
+            transcript_cache: TranscriptWrapCache::default(),
             selection: tuika::SelectionState::new(),
             selection_area: Rect::ZERO,
             pending_copy: false,
@@ -861,6 +900,69 @@ impl App {
         });
     }
 
+    /// The full-screen transcript as wrapped lines, memoized across frames.
+    ///
+    /// Re-wraps only the lines appended since the last call while the width and
+    /// [`transcript_generation`](Self::transcript_generation) are unchanged; a
+    /// width change or a generation bump (transcript reset) rebuilds from
+    /// scratch. Output is identical to a full
+    /// [`render::append_transcript_range`] pass over the whole history.
+    fn full_transcript_lines_cached(&mut self, width: usize) -> Vec<Line<'static>> {
+        // Move the cache out so we can borrow `self.lines` immutably alongside.
+        let mut cache = std::mem::take(&mut self.transcript_cache);
+        let stale = cache.width != width
+            || cache.generation != self.transcript_generation
+            || cache.source_len > self.lines.len();
+        if stale {
+            cache.lines.clear();
+            cache.width = width;
+            cache.generation = self.transcript_generation;
+            cache.source_len = 0;
+            cache.prev_author = None;
+        }
+        cache.prev_author = render::append_transcript_range(
+            &mut cache.lines,
+            &self.lines,
+            cache.source_len,
+            self.startup_banner_len,
+            width,
+            cache.prev_author.take(),
+        );
+        cache.source_len = self.lines.len();
+        let out = cache.lines.clone();
+        self.transcript_cache = cache;
+        out
+    }
+
+    /// Drop transcript history beyond [`MAX_RETAINED_TRANSCRIPT_LINES`] so a very
+    /// long session can't grow `lines` (and the wrap cache) without bound.
+    ///
+    /// Only lines already flushed to native scrollback are dropped in inline
+    /// mode — dropping an unflushed line would erase it from scrollback entirely
+    /// — so the cap is a soft target there. Full-screen mode has no native
+    /// flush, so the drop bounds how far back its in-app scrollback reaches.
+    /// Draining the front shifts the flush cursor and banner length and
+    /// invalidates the wrap cache.
+    fn trim_transcript(&mut self) {
+        let len = self.lines.len();
+        if len <= MAX_RETAINED_TRANSCRIPT_LINES {
+            return;
+        }
+        let want = len - MAX_RETAINED_TRANSCRIPT_LINES;
+        let drop = if self.render_mode.is_fullscreen() {
+            want
+        } else {
+            want.min(self.printed_lines)
+        };
+        if drop == 0 {
+            return;
+        }
+        self.lines.drain(0..drop);
+        self.printed_lines = self.printed_lines.saturating_sub(drop);
+        self.startup_banner_len = self.startup_banner_len.saturating_sub(drop);
+        self.transcript_generation = self.transcript_generation.wrapping_add(1);
+    }
+
     pub async fn run<B>(&mut self, terminal: &mut Terminal<B>) -> Result<()>
     where
         B: Backend,
@@ -943,6 +1045,9 @@ impl App {
         if !self.render_mode.is_fullscreen() {
             self.flush_transcript(terminal)?;
         }
+        // Bound retained history now that inline mode has flushed this frame's
+        // lines, so `trim_transcript` can drop the freshly-flushed prefix.
+        self.trim_transcript();
         self.refresh_session_tasks_if_due().await;
         terminal.autoresize()?;
         if !self.render_mode.is_fullscreen() {
@@ -1188,6 +1293,7 @@ impl App {
             Ok(lines) => {
                 self.lines = lines;
                 self.printed_lines = 0;
+                self.transcript_generation = self.transcript_generation.wrapping_add(1);
             }
             Err(error) => self.push_system(format!("refresh restored transcript: {error}")),
         }
@@ -1890,6 +1996,7 @@ impl App {
             UiCommand::ClearTranscript => {
                 self.lines.clear();
                 self.printed_lines = 0;
+                self.transcript_generation = self.transcript_generation.wrapping_add(1);
                 self.goal_store.clear_active(self.session.session_id());
                 self.user_ask_store.clear_active(self.session.session_id());
                 self.emit_system_banner();
@@ -4721,6 +4828,106 @@ mod tests {
             top.contains("line 0"),
             "oldest line should be reachable by scrolling to the top:\n{top}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_wrap_cache_matches_full_rebuild() {
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        let width = 40;
+
+        let text_of = |lines: &[Line<'static>]| -> Vec<String> {
+            lines
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+                .collect()
+        };
+        // A from-scratch reference: one full pass over the whole history.
+        let full_rebuild = |app: &App, w: usize| -> Vec<Line<'static>> {
+            let mut lines = Vec::new();
+            append_transcript_range(&mut lines, &app.lines, 0, app.startup_banner_len, w, None);
+            lines
+        };
+
+        // Prime the cache on an initial batch, then append more of a different
+        // author (which exercises the inter-author gap across the resume
+        // boundary) and read the cache again — the incrementally-built result
+        // must match a full from-scratch rebuild exactly.
+        for i in 0..30 {
+            test.app.push_user(format!(
+                "user message {i} long enough to wrap at width forty here"
+            ));
+        }
+        let _ = test.app.full_transcript_lines_cached(width);
+        for i in 0..30 {
+            test.app.push_system(format!("system note {i}"));
+        }
+        let incremental = test.app.full_transcript_lines_cached(width);
+        assert_eq!(
+            text_of(&incremental),
+            text_of(&full_rebuild(&test.app, width)),
+            "incremental wrap cache drifted from a full rebuild"
+        );
+
+        // A width change must invalidate and rebuild rather than reuse the old
+        // wrapping.
+        let narrower = test.app.full_transcript_lines_cached(24);
+        assert_eq!(
+            text_of(&narrower),
+            text_of(&full_rebuild(&test.app, 24)),
+            "width change did not rebuild the wrap cache"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trim_transcript_caps_fullscreen_history() {
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        for i in 0..(MAX_RETAINED_TRANSCRIPT_LINES + 100) {
+            test.app.push_user(format!("l{i}"));
+        }
+        let gen_before = test.app.transcript_generation;
+        test.app.trim_transcript();
+        assert_eq!(
+            test.app.lines.len(),
+            MAX_RETAINED_TRANSCRIPT_LINES,
+            "full-screen history should be capped at the retention window"
+        );
+        assert!(
+            test.app.transcript_generation > gen_before,
+            "trimming must invalidate the wrap cache"
+        );
+        assert_eq!(
+            test.app.startup_banner_len, 0,
+            "a banner dropped off the front clamps to zero"
+        );
+        // Newest lines survive; the oldest were dropped from the front.
+        assert_eq!(test.app.lines.last().unwrap().text, "l50099");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trim_transcript_keeps_unflushed_inline_lines() {
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        // Inline mode (the default): lines past `printed_lines` have not been
+        // flushed into native scrollback yet and must not be dropped.
+        for i in 0..(MAX_RETAINED_TRANSCRIPT_LINES + 100) {
+            test.app.push_user(format!("l{i}"));
+        }
+        let before = test.app.lines.len();
+        test.app.trim_transcript();
+        assert_eq!(
+            test.app.lines.len(),
+            before,
+            "inline mode must not drop lines still awaiting flush"
+        );
+        // Once flushed, the flushed prefix can be trimmed down to the cap.
+        test.app.printed_lines = test.app.lines.len();
+        test.app.trim_transcript();
+        assert_eq!(test.app.lines.len(), MAX_RETAINED_TRANSCRIPT_LINES);
+        assert_eq!(test.app.printed_lines, MAX_RETAINED_TRANSCRIPT_LINES);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

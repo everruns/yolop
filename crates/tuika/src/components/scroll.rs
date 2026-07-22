@@ -16,10 +16,15 @@ use crate::surface::Surface;
 use crate::view::{RenderCtx, View};
 
 /// Persisted scroll position for one scroll region.
+///
+/// Dimensions are `usize` on purpose: a transcript can wrap to far more than
+/// `u16::MAX` rows in a long session. Measuring the offset and content height in
+/// `u16` let a 65,536-row transcript wrap to ~0, which collapsed
+/// stick-to-bottom's `max_offset` to 0 and silently snapped the view to the top.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ScrollState {
     /// Top visible content row.
-    offset: u16,
+    offset: usize,
     /// When true, `clamp` snaps to the bottom on content growth so new
     /// transcript output stays visible.
     stick_to_bottom: bool,
@@ -35,7 +40,7 @@ impl ScrollState {
     }
 
     /// Top visible content row (0-based).
-    pub fn offset(&self) -> u16 {
+    pub fn offset(&self) -> usize {
         self.offset
     }
 
@@ -44,13 +49,13 @@ impl ScrollState {
         self.stick_to_bottom
     }
 
-    fn max_offset(content_h: u16, viewport_h: u16) -> u16 {
+    fn max_offset(content_h: usize, viewport_h: usize) -> usize {
         content_h.saturating_sub(viewport_h)
     }
 
     /// Reconcile the offset with current content/viewport dimensions, honoring
     /// the stick-to-bottom flag. Call once per frame before rendering.
-    pub fn clamp(&mut self, content_h: u16, viewport_h: u16) {
+    pub fn clamp(&mut self, content_h: usize, viewport_h: usize) {
         let max = Self::max_offset(content_h, viewport_h);
         if self.stick_to_bottom {
             self.offset = max;
@@ -59,12 +64,12 @@ impl ScrollState {
         }
     }
 
-    fn scroll_up(&mut self, lines: u16) {
+    fn scroll_up(&mut self, lines: usize) {
         self.offset = self.offset.saturating_sub(lines);
         self.stick_to_bottom = false;
     }
 
-    fn scroll_down(&mut self, lines: u16, content_h: u16, viewport_h: u16) {
+    fn scroll_down(&mut self, lines: usize, content_h: usize, viewport_h: usize) {
         let max = Self::max_offset(content_h, viewport_h);
         self.offset = self.offset.saturating_add(lines).min(max);
         // Re-arm bottom-stick once the user scrolls back to the end.
@@ -72,7 +77,7 @@ impl ScrollState {
     }
 
     /// Jump to the newest content and re-enable bottom-stick.
-    pub fn jump_to_bottom(&mut self, content_h: u16, viewport_h: u16) {
+    pub fn jump_to_bottom(&mut self, content_h: usize, viewport_h: usize) {
         self.offset = Self::max_offset(content_h, viewport_h);
         self.stick_to_bottom = true;
     }
@@ -84,7 +89,7 @@ impl ScrollState {
     }
 
     /// Handle a scroll/paging event against the given dimensions.
-    pub fn handle(&mut self, event: &Event, content_h: u16, viewport_h: u16) -> EventFlow {
+    pub fn handle(&mut self, event: &Event, content_h: usize, viewport_h: usize) -> EventFlow {
         let page = viewport_h.saturating_sub(1).max(1);
         match event {
             Event::Mouse(m) => match m.kind {
@@ -128,7 +133,7 @@ impl ScrollState {
 /// ![scroll demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/scroll.gif)
 pub struct Scroll {
     lines: Vec<Line<'static>>,
-    offset: u16,
+    offset: usize,
     scrollbar: bool,
 }
 
@@ -149,14 +154,18 @@ impl Scroll {
     }
 
     /// Total content height in rows (one per line).
-    pub fn content_height(&self) -> u16 {
-        self.lines.len() as u16
+    pub fn content_height(&self) -> usize {
+        self.lines.len()
     }
 }
 
 impl View for Scroll {
     fn measure(&self, available: Size) -> Size {
-        Size::new(available.width, self.content_height())
+        // `Size` is a terminal-cell extent (`u16`); a transcript can be taller
+        // than that. Saturate — the intrinsic hint only matters when the scroll
+        // is not a flex `grow` child, and a viewport is never `u16::MAX` tall.
+        let intrinsic_h = self.content_height().min(u16::MAX as usize) as u16;
+        Size::new(available.width, intrinsic_h)
     }
 
     fn render(&self, area: Rect, surface: &mut Surface, ctx: &RenderCtx) {
@@ -164,14 +173,14 @@ impl View for Scroll {
             return;
         }
         let content_h = self.content_height();
-        let overflow = content_h > area.height;
+        let overflow = content_h > area.height as usize;
         let text_width = if overflow && self.scrollbar {
             area.width.saturating_sub(1)
         } else {
             area.width
         };
 
-        let start = self.offset as usize;
+        let start = self.offset;
         for row in 0..area.height {
             let idx = start + row as usize;
             let Some(line) = self.lines.get(idx) else {
@@ -195,15 +204,18 @@ impl View for Scroll {
 }
 
 impl Scroll {
-    fn draw_scrollbar(&self, area: Rect, content_h: u16, surface: &mut Surface, ctx: &RenderCtx) {
+    fn draw_scrollbar(&self, area: Rect, content_h: usize, surface: &mut Surface, ctx: &RenderCtx) {
         let track_x = area.right() - 1;
         let track_h = area.height;
-        let max_offset = content_h.saturating_sub(area.height).max(1);
-        // Thumb size proportional to the visible fraction, at least one cell.
-        let thumb_h = ((track_h as u32 * track_h as u32) / content_h as u32).max(1) as u16;
-        let thumb_h = thumb_h.min(track_h);
+        let track_h_u = track_h as usize;
+        let content_h = content_h.max(1);
+        let max_offset = content_h.saturating_sub(area.height as usize).max(1);
+        // Thumb size proportional to the visible fraction, at least one cell. All
+        // math is `usize` so a > u16::MAX-row transcript can't wrap the ratios;
+        // the final screen positions are bounded by `track_h` and cast back down.
+        let thumb_h = ((track_h_u * track_h_u) / content_h).max(1).min(track_h_u) as u16;
         let travel = track_h.saturating_sub(thumb_h);
-        let thumb_y = area.y + ((self.offset as u32 * travel as u32) / max_offset as u32) as u16;
+        let thumb_y = area.y + ((self.offset * travel as usize) / max_offset) as u16;
         let track_style = Style::default().fg(ctx.theme.dim);
         let thumb_style = Style::default().fg(ctx.theme.muted);
         for row in 0..track_h {
@@ -247,6 +259,25 @@ mod tests {
         // Growing content no longer drags the view down while unstuck.
         s.clamp(200, 10);
         assert_eq!(s.offset(), 87);
+    }
+
+    #[test]
+    fn scroll_offset_survives_content_taller_than_u16() {
+        // Regression: a transcript taller than u16::MAX must not wrap the
+        // content height back near 0 and collapse stick-to-bottom to the top.
+        let content_h = u16::MAX as usize + 5_000; // 70,535 rows
+        let viewport_h = 40;
+        let mut s = ScrollState::new();
+        s.clamp(content_h, viewport_h);
+        assert_eq!(s.offset(), content_h - viewport_h);
+        assert!(s.is_stuck_to_bottom());
+
+        // Paging up from the bottom detaches and moves by a page, still far from
+        // the top rather than snapping there.
+        let up = Event::Key(Key::new(KeyCode::PageUp));
+        assert_eq!(s.handle(&up, content_h, viewport_h), EventFlow::Consumed);
+        assert!(!s.is_stuck_to_bottom());
+        assert_eq!(s.offset(), content_h - viewport_h - (viewport_h - 1));
     }
 
     #[test]

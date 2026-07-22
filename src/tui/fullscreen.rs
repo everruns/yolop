@@ -136,15 +136,14 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     // persisted ScrollState. Short content is top-padded so it rests at the
     // bottom (the inline scrollback feel); taller content scrolls, and
     // stick-to-bottom keeps the newest line visible as the turn streams.
-    let scroll_lines = pad_to_bottom(
-        render::full_transcript_lines(app, inner_w),
-        transcript_height,
-    );
-    let scroll_content_h = scroll_lines.len() as u16;
+    let scroll_lines = pad_to_bottom(app.full_transcript_lines_cached(inner_w), transcript_height);
+    let scroll_content_h = scroll_lines.len();
     // Record metrics + reconcile the offset before rendering, so the mouse-wheel
-    // / paging handlers (which reuse these metrics) clamp correctly.
-    app.scroll_metrics = (scroll_content_h, transcript_height);
-    app.scroll.clamp(scroll_content_h, transcript_height);
+    // / paging handlers (which reuse these metrics) clamp correctly. Metrics are
+    // `usize`: a long transcript wraps past u16::MAX rows (see `ScrollState`).
+    app.scroll_metrics = (scroll_content_h, transcript_height as usize);
+    app.scroll
+        .clamp(scroll_content_h, transcript_height as usize);
 
     // Probes recover the rects tuika assigns so the host can place the terminal
     // cursor inside the composer and bound mouse selection to the transcript.
