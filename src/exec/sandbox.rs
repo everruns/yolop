@@ -110,28 +110,12 @@ fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command
     // Seatbelt denies network and all writes by default. Reads stay available
     // so compilers, SDKs, package caches and system skills continue to work;
     // the active workspace, private temp, and conventional shared /tmp are
-    // writable for tool compatibility. The explicit /private/tmp spelling
+    // writable for tool compatibility. /dev/null is the sole writable device,
+    // matching Codex's default Seatbelt policy. The explicit /private/tmp spelling
     // covers macOS path canonicalization through the /tmp symlink.
     let temp = sandbox_temp_dir()?;
     let home = sandbox_home_dir(&temp)?;
-    let workspace_write = if mode == SandboxMode::WorkspaceWrite {
-        format!(" (subpath \"{}\")", seatbelt_escape(cwd))
-    } else {
-        String::new()
-    };
-    let shared_temp_write = if mode == SandboxMode::WorkspaceWrite {
-        " (subpath \"/tmp\") (subpath \"/private/tmp\")"
-    } else {
-        ""
-    };
-    let profile = format!(
-        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write*{} (subpath \"{}\"){})\n(deny network*)\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
-        workspace_write,
-        seatbelt_escape(&temp),
-        shared_temp_write,
-        seatbelt_escape(&cwd.join(".git")),
-        seatbelt_escape(&cwd.join(".git")),
-    );
+    let profile = macos_profile(cwd, &temp, mode);
     let mut command = Command::new(executable);
     command
         .arg("-p")
@@ -272,7 +256,8 @@ fn native_command(_cwd: &Path, _script: &str, _mode: SandboxMode) -> Result<Comm
 fn sandbox_temp_dir() -> Result<PathBuf> {
     let path = std::env::temp_dir().join(format!("yolop-sandbox-{}", std::process::id()));
     prepare_sandbox_temp(&path)?;
-    Ok(path)
+    std::fs::canonicalize(&path)
+        .with_context(|| format!("canonicalize sandbox temp directory: {}", path.display()))
 }
 
 fn prepare_sandbox_temp(path: &Path) -> Result<()> {
@@ -347,6 +332,28 @@ fn safe_environment_key(key: &str) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn macos_profile(cwd: &Path, temp: &Path, mode: SandboxMode) -> String {
+    let workspace_write = if mode == SandboxMode::WorkspaceWrite {
+        format!(" (subpath \"{}\")", seatbelt_escape(cwd))
+    } else {
+        String::new()
+    };
+    let shared_temp_write = if mode == SandboxMode::WorkspaceWrite {
+        " (subpath \"/tmp\") (subpath \"/private/tmp\")"
+    } else {
+        ""
+    };
+    format!(
+        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n(allow file-write*{} (subpath \"{}\"){})\n(deny network*)\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
+        workspace_write,
+        seatbelt_escape(temp),
+        shared_temp_write,
+        seatbelt_escape(&cwd.join(".git")),
+        seatbelt_escape(&cwd.join(".git")),
+    )
+}
+
+#[cfg(target_os = "macos")]
 fn seatbelt_escape(path: &Path) -> String {
     path.to_string_lossy()
         .replace('\\', "\\\\")
@@ -384,6 +391,33 @@ mod tests {
             seatbelt_escape(Path::new("/tmp/a \\\"b")),
             "/tmp/a \\\\\\\"b"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_policy_allows_only_dev_null_device_writes() {
+        let profile = macos_profile(
+            Path::new("/workspace"),
+            Path::new("/private/tmp/sandbox"),
+            SandboxMode::WorkspaceWrite,
+        );
+
+        assert!(profile.contains(
+            r#"(allow file-write-data (require-all (path "/dev/null") (vnode-type CHARACTER-DEVICE)))"#
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_sandbox_temp_is_canonical_and_allowed_by_the_policy() {
+        let temp = sandbox_temp_dir().expect("sandbox temp should be created");
+        assert_eq!(
+            temp,
+            std::fs::canonicalize(&temp).expect("sandbox temp should remain canonical")
+        );
+
+        let profile = macos_profile(Path::new("/workspace"), &temp, SandboxMode::WorkspaceWrite);
+        assert!(profile.contains(&format!(r#"(subpath "{}")"#, temp.display())));
     }
 
     #[cfg(not(windows))]
