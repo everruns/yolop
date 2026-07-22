@@ -6,7 +6,8 @@
 
 use crate::config::WorktreesMode;
 use crate::runtime::session_log::{
-    SessionWorkspaceMetadata, WorktreeMetadata, write_session_workspace,
+    SessionWorkspaceMetadata, WorktreeMetadata, read_session_workspace_metadata,
+    write_session_workspace,
 };
 use anyhow::{Context, Result, bail};
 use everruns_core::typed_id::SessionId;
@@ -295,7 +296,11 @@ impl WorktreeManager {
     }
 
     fn persist_metadata(&self, info: &WorktreeInfo) -> Result<()> {
-        let mut metadata = SessionWorkspaceMetadata::new(info.path.clone(), self.repo_root.clone());
+        let mut metadata =
+            read_session_workspace_metadata(&self.session_dir)?.unwrap_or_else(|| {
+                SessionWorkspaceMetadata::new(info.path.clone(), self.repo_root.clone())
+            });
+        metadata.active_root = info.path.clone();
         metadata.worktree = Some(WorktreeMetadata {
             path: info.path.clone(),
             branch: info.branch.clone(),
@@ -937,6 +942,56 @@ mod tests {
             Some(info),
         );
         assert!(manager.owned_worktree_info().is_none());
+    }
+
+    #[test]
+    fn persisting_worktree_preserves_session_metadata() {
+        let root = tempfile::tempdir().expect("root");
+        let session = tempfile::tempdir().expect("session");
+        let session_id = SessionId::from_seed(9842);
+        let mut metadata = SessionWorkspaceMetadata::new(
+            root.path().to_path_buf(),
+            Some(root.path().to_path_buf()),
+        );
+        metadata.title = Some("Automatic session titles".to_string());
+        metadata.summary = Some("Preserve projected session metadata".to_string());
+        metadata.session_kind = crate::runtime::session_log::SessionKind::Acp;
+        write_session_workspace(session.path(), &metadata).expect("seed metadata");
+
+        let manager = WorktreeManager::new(
+            WorktreesMode::Off,
+            Some(root.path().to_path_buf()),
+            root.path().to_path_buf(),
+            session_id,
+            session.path().to_path_buf(),
+            None,
+        );
+        let info = WorktreeInfo {
+            path: root.path().join("feature-worktree"),
+            branch: "codex/automatic-session-titles".to_string(),
+            base_ref: "origin/main".to_string(),
+            slug: "automatic-session-titles".to_string(),
+        };
+
+        manager.persist_metadata(&info).expect("persist worktree");
+
+        let written = read_session_workspace_metadata(session.path())
+            .expect("read metadata")
+            .expect("metadata present");
+        assert_eq!(written.title.as_deref(), Some("Automatic session titles"));
+        assert_eq!(
+            written.summary.as_deref(),
+            Some("Preserve projected session metadata")
+        );
+        assert_eq!(
+            written.session_kind,
+            crate::runtime::session_log::SessionKind::Acp
+        );
+        assert_eq!(written.active_root, info.path);
+        assert_eq!(
+            written.worktree.map(|worktree| worktree.branch),
+            Some("codex/automatic-session-titles".to_string())
+        );
     }
 
     #[test]

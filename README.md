@@ -202,9 +202,10 @@ yolop --provider llmsim -p "hi"        # offline demo, no API key required
   [Agent Client Protocol](https://agentclientprotocol.com) over stdio, so
   editors such as Zed can drive yolop as an external agent (see
   [Editor integration](#editor-integration-acp)).
-- **Sessions** — every run writes a durable per-session event log; resume any
-  conversation with `--session <id>` (see
-  [Session persistence](#session-persistence)).
+- **Sessions** — yolop assigns a concise title after the first substantive
+  request, updates it when the conversation's primary theme changes, and writes
+  a durable per-session event log. Resume any conversation with
+  `--session <id>` (see [Session persistence](#session-persistence)).
 - **Checkpoint rewind** — every turn gets a durable conversation checkpoint and,
   in Yolop-owned Git worktrees, an exact workspace snapshot. `/undo`, `/redo`,
   and `/rewind` preview and restore either axis without changing `HEAD` or the
@@ -484,7 +485,9 @@ stored in `<session_folder>/workspace.json`; large tool output is spilled under
 `<session_folder>/outputs/`. On Unix the session folder is `0o700` and the log
 and workspace metadata are `0o600` (owner-only). The log keeps everything
 needed to restore the transcript and provider continuation state on resume —
-including prompts, tool arguments and output, and reasoning artifacts.
+including prompts, tool arguments and output, reasoning artifacts, and semantic
+session-title updates. The latest title is also projected into `workspace.json`
+and restored from the event log on resume.
 
 To continue a previous conversation:
 

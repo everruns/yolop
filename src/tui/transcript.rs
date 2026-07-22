@@ -903,6 +903,7 @@ mod tests {
         use everruns_core::events::{CompactionStepData, ContextCompactedData};
 
         let event = event(ContextCompactedData {
+            checkpoint_id: None,
             strategy_used: "observation_masking+aggressive_trim".into(),
             messages_before: 142,
             messages_after: 38,
@@ -933,6 +934,7 @@ mod tests {
         use everruns_core::events::ContextCompactedData;
 
         let event = event(ContextCompactedData {
+            checkpoint_id: None,
             strategy_used: "native".into(),
             messages_before: 50,
             messages_after: 12,

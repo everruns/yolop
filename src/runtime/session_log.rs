@@ -25,6 +25,8 @@
 //   (`input.message`, `output.message.completed`, `tool.completed`) and
 //   (b) the agent needs to restore the live transcript view and provider
 //   continuation state on resume (`reason.completed`, `reason.item`).
+//   Semantic `session.title.updated` events are also retained so the latest
+//   title can repair the `workspace.json` projection after interruption.
 //   Streaming `*.delta` events have no replay value and would otherwise
 //   inflate the log O(n²) for long streamed responses.
 // * Assistant `thinking` / `thinking_signature` fields ARE persisted in
@@ -57,7 +59,8 @@ use chrono::{DateTime, Utc};
 use everruns_core::error::{AgentLoopError, Result};
 use everruns_core::events::{
     Event, EventData, EventRequest, INPUT_MESSAGE, OUTPUT_MESSAGE_COMPLETED,
-    OutputMessageCompletedData, REASON_COMPLETED, REASON_ITEM, TOOL_COMPLETED,
+    OutputMessageCompletedData, REASON_COMPLETED, REASON_ITEM, SESSION_TITLE_UPDATED,
+    TOOL_COMPLETED,
 };
 use everruns_core::message::{ContentPart, Message};
 use everruns_core::tools::ToolResultImage;
@@ -282,6 +285,21 @@ pub fn write_session_workspace(
     write_private_file(&path, &bytes)
 }
 
+pub fn update_session_workspace_title(session_dir: &Path, title: &str) -> Result<bool> {
+    let Some(mut metadata) = read_session_workspace_metadata(session_dir)? else {
+        return Err(AgentLoopError::config(format!(
+            "session workspace metadata not found: {}",
+            session_workspace_path(session_dir).display()
+        )));
+    };
+    if metadata.title.as_deref() == Some(title) {
+        return Ok(false);
+    }
+    metadata.title = Some(title.to_string());
+    write_session_workspace(session_dir, &metadata)?;
+    Ok(true)
+}
+
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut opts = OpenOptions::new();
     opts.create(true).write(true).truncate(true);
@@ -412,7 +430,8 @@ pub fn replay(path: &Path, expected: SessionId) -> Result<ReplayedSession> {
 /// restore the live transcript view and provider continuation state on
 /// resume (`reason.completed` carries the safe `text_preview` narration,
 /// `reason.item` carries opaque/encrypted reasoning context curated by the
-/// provider). Streaming `*.delta` events and pure lifecycle markers
+/// provider), plus semantic title updates used to repair workspace metadata.
+/// Streaming `*.delta` events and pure lifecycle markers
 /// (`reason.started`, `reason.thinking.*`, `output.message.started`) are
 /// dropped — they are live status signals only and the delta types would
 /// bloat the log O(n²) since each delta carries the accumulated text so
@@ -420,8 +439,20 @@ pub fn replay(path: &Path, expected: SessionId) -> Result<ReplayedSession> {
 fn is_replay_relevant(event_type: &str) -> bool {
     matches!(
         event_type,
-        INPUT_MESSAGE | OUTPUT_MESSAGE_COMPLETED | TOOL_COMPLETED | REASON_COMPLETED | REASON_ITEM
+        INPUT_MESSAGE
+            | OUTPUT_MESSAGE_COMPLETED
+            | TOOL_COMPLETED
+            | REASON_COMPLETED
+            | REASON_ITEM
+            | SESSION_TITLE_UPDATED
     )
+}
+
+pub(crate) fn latest_session_title(events: &[Event]) -> Option<String> {
+    events.iter().rev().find_map(|event| match &event.data {
+        EventData::SessionTitleUpdated(data) => Some(data.title.clone()),
+        _ => None,
+    })
 }
 
 /// EventEmitter that appends replay-relevant events as JSONL to a file
@@ -435,6 +466,7 @@ pub struct JsonlEventEmitter {
     sequence: Arc<AtomicI32>,
     persisted_sequence: Arc<AtomicI32>,
     file: Arc<Mutex<File>>,
+    session_dir: PathBuf,
     /// Live fan-out of every emitted event (including deltas) for in-process
     /// subscribers like the TUI's streaming renderer. Filesystem persistence
     /// still filters by `is_replay_relevant`; this channel does not.
@@ -559,6 +591,10 @@ impl JsonlEventEmitter {
             sequence: Arc::new(AtomicI32::new(start_sequence.saturating_sub(1))),
             persisted_sequence: Arc::new(AtomicI32::new(start_sequence.saturating_sub(1))),
             file: Arc::new(Mutex::new(file)),
+            session_dir: path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf(),
             live,
         })
     }
@@ -635,6 +671,16 @@ impl EventEmitter for JsonlEventEmitter {
             file.flush()
                 .map_err(|e| AgentLoopError::config(format!("flush session log: {e}")))?;
             self.persisted_sequence.fetch_max(seq_val, Ordering::AcqRel);
+        }
+
+        if let EventData::SessionTitleUpdated(data) = &event.data
+            && let Err(error) = update_session_workspace_title(&self.session_dir, &data.title)
+        {
+            tracing::warn!(
+                session_id = %event.session_id,
+                error = %error,
+                "failed to project session title into workspace metadata"
+            );
         }
 
         // Fan out to live subscribers. `send` errors only when there are
@@ -731,7 +777,8 @@ fn parse_structured_tool_result_text(text: &str) -> serde_json::Value {
 mod tests {
     use super::*;
     use everruns_core::events::{
-        EventContext, InputMessageData, OutputMessageCompletedData, ToolCompletedData,
+        EventContext, InputMessageData, OutputMessageCompletedData, SessionTitleUpdatedData,
+        ToolCompletedData,
     };
     use everruns_core::message::Message;
 
@@ -741,6 +788,67 @@ mod tests {
             EventContext::default(),
             InputMessageData::new(Message::user(text)),
         )
+    }
+
+    fn title_event(session_id: SessionId, previous_title: Option<&str>, title: &str) -> Event {
+        Event::new(
+            session_id,
+            EventContext::default(),
+            SessionTitleUpdatedData {
+                previous_title: previous_title.map(str::to_string),
+                title: title.to_string(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn title_event_is_persisted_and_projected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(483);
+        let session_dir = session_dir_path(dir.path(), session_id);
+        write_session_workspace(
+            &session_dir,
+            &SessionWorkspaceMetadata::new(dir.path().to_path_buf(), None),
+        )
+        .expect("seed workspace metadata");
+        let emitter = JsonlEventEmitter::open(&session_log_path(&session_dir), 1).expect("open");
+
+        emitter
+            .emit(EventRequest::new(
+                session_id,
+                EventContext::default(),
+                SessionTitleUpdatedData {
+                    previous_title: None,
+                    title: "Automatic session titles".to_string(),
+                },
+            ))
+            .await
+            .expect("emit title update");
+
+        let replayed = replay(&session_log_path(&session_dir), session_id).expect("replay");
+        assert_eq!(
+            latest_session_title(&replayed.events).as_deref(),
+            Some("Automatic session titles")
+        );
+        let metadata = read_session_workspace_metadata(&session_dir)
+            .expect("read metadata")
+            .expect("metadata present");
+        assert_eq!(metadata.title.as_deref(), Some("Automatic session titles"));
+    }
+
+    #[test]
+    fn latest_title_uses_last_semantic_update() {
+        let session_id = SessionId::from_seed(484);
+        let events = vec![
+            title_event(session_id, None, "First theme"),
+            input_event(session_id, "switch topics"),
+            title_event(session_id, Some("First theme"), "Second theme"),
+        ];
+
+        assert_eq!(
+            latest_session_title(&events).as_deref(),
+            Some("Second theme")
+        );
     }
 
     #[tokio::test]
