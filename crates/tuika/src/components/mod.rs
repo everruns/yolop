@@ -2,9 +2,10 @@
 //!
 //! Every component implements [`View`](crate::view::View). Layout
 //! containers ([`Flex`], [`Boxed`]) nest children; leaves ([`Text`],
-//! [`Paragraph`], [`SelectList`], [`Scroll`], [`StatusBar`], [`Spacer`]) paint
-//! content. Interactive leaves pair with a persisted `*State` (see
-//! [`ScrollState`], [`SelectState`]) held by the host. To add a component, drop
+//! [`Paragraph`], [`SelectList`], [`Table`], [`Scroll`], [`StatusBar`],
+//! [`Spacer`]) paint content. Interactive leaves pair with a persisted `*State`
+//! (see [`ScrollState`], [`SelectState`] — a [`Table`] reuses `SelectState`)
+//! held by the host. To add a component, drop
 //! a new module here and implement `View`; nothing else needs to change.
 
 mod boxed;
@@ -22,6 +23,7 @@ mod select;
 mod spacer;
 mod spinner;
 mod status_bar;
+mod table;
 mod tabs;
 mod text;
 mod textinput;
@@ -44,6 +46,7 @@ pub use select::{SelectList, SelectOutcome, SelectState};
 pub use spacer::Spacer;
 pub use spinner::{Spinner, SpinnerStyle};
 pub use status_bar::StatusBar;
+pub use table::{Column, Table};
 pub use tabs::{Tabs, TabsState};
 pub use text::{Paragraph, Text, Wrap, line_width, wrap_lines};
 pub use textinput::{TextInput, TextInputEvent, TextInputMode, TextInputState};
