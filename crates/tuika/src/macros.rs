@@ -20,7 +20,8 @@
 //!   Attrs: `gap = e`, `padding = e`, `align = e`, `justify = e` (comma-separated,
 //!   all optional; the whole `( … )` may be omitted).
 //! - `boxed( attrs ) { child }` — bordered container of one child.
-//!   Attrs: `title = e`, `border = e`, `padding = e`, `background = e`.
+//!   Attrs: `title = e`, `title_bottom = e`, `border = e`, `padding = e`,
+//!   `background = e`.
 //! - `text( expr )` — a `Text::raw` line. `spacer()` — a `Spacer`.
 //! - `grow(n) { node }` / `fixed(n) { node }` — set a child's main-axis size
 //!   (default is auto).
@@ -40,7 +41,7 @@
 /// Each keyword consumes exactly one node: `col`/`row` open flex containers
 /// (with optional `gap`/`padding`/`align`/`justify`/`background` attrs and a
 /// `{ children }` block), `boxed` wraps a single child in a border (with
-/// `title`/`border`/`padding`/`background` attrs), `text(expr)` and `spacer()`
+/// `title`/`title_bottom`/`border`/`padding`/`background` attrs), `text(expr)` and `spacer()`
 /// emit leaves, `grow(n)`/`fixed(n)` set a child's main-axis size, and
 /// `node(expr)` splices any `impl View`. Expands to plain builder calls with no
 /// runtime cost.
@@ -128,6 +129,9 @@ macro_rules! view {
     (@boxattrs $b:expr; title = $e:expr $(, $($rest:tt)*)?) => {
         $crate::view!(@boxattrs $b.title($e); $($($rest)*)?)
     };
+    (@boxattrs $b:expr; title_bottom = $e:expr $(, $($rest:tt)*)?) => {
+        $crate::view!(@boxattrs $b.title_bottom($e); $($($rest)*)?)
+    };
     (@boxattrs $b:expr; border = $e:expr $(, $($rest:tt)*)?) => {
         $crate::view!(@boxattrs $b.border($e); $($($rest)*)?)
     };
@@ -170,6 +174,27 @@ mod tests {
         let b = render_el(&macroed, 20, 5);
         assert_eq!(a, b, "view! must render identically to the builder form");
         assert!(b.iter().any(|l| l.contains('t')), "{b:?}");
+    }
+
+    #[test]
+    fn view_macro_forwards_title_bottom() {
+        // `title_bottom =` folds to `Boxed::title_bottom` and renders on the
+        // bottom border, flush-right by default.
+        let built: Element = element(
+            Boxed::new(element(Text::raw("hi")))
+                .title(" top ")
+                .title_bottom(" 1/3 "),
+        );
+        let macroed: Element = crate::view! {
+            boxed(title = " top ", title_bottom = " 1/3 ") { text("hi") }
+        };
+        let a = render_el(&built, 12, 3);
+        let b = render_el(&macroed, 12, 3);
+        assert_eq!(a, b, "title_bottom must render identically to the builder");
+        assert!(
+            b.last().is_some_and(|l| l.contains("1/3")),
+            "bottom border carries the secondary title: {b:?}"
+        );
     }
 
     /// A `View` standing in for a component defined in some other crate.

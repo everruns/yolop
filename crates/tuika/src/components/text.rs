@@ -5,8 +5,15 @@
 //! plus one style and word-wraps it to the available width. [`Wrap`] is the
 //! styled counterpart to `Paragraph`: it word-wraps pre-styled `Line`s while
 //! preserving each span's style across the reflow (see [`wrap_lines`]).
+//!
+//! Horizontal alignment is honored throughout. [`Text`] and [`Wrap`] read each
+//! [`Line::alignment`] (unset = flush-left), so centered titles, right-aligned
+//! totals, and centered empty-state messages built elsewhere render as intended
+//! rather than snapping to the left edge; `Wrap` carries a line's alignment onto
+//! every row it reflows to. [`Paragraph`] takes a single alignment for the whole
+//! block via [`Paragraph::alignment`].
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
@@ -16,7 +23,22 @@ use crate::surface::Surface;
 use crate::view::{RenderCtx, View};
 use crate::width::{grapheme_cols, str_cols};
 
+/// Starting column for `content_width` columns of content placed in `area`
+/// under `alignment`: flush-left, centered, or flush-right within the width.
+/// Content wider than the area pins to the left edge (slack saturates to 0).
+pub(crate) fn aligned_x(alignment: Alignment, content_width: u16, area: Rect) -> u16 {
+    let slack = area.width.saturating_sub(content_width);
+    match alignment {
+        Alignment::Left => area.x,
+        Alignment::Center => area.x.saturating_add(slack / 2),
+        Alignment::Right => area.x.saturating_add(slack),
+    }
+}
+
 /// Draw pre-styled `lines` top-down from `area`'s origin, clipping to `area`.
+/// Each line's horizontal start honors its [`Line::alignment`] — an unset
+/// alignment is flush-left, so pre-styled lines built elsewhere keep their
+/// centered/right-aligned intent instead of silently snapping to the left.
 /// Shared by [`Text`] and [`Wrap`].
 fn draw_lines(lines: &[Line<'static>], area: Rect, surface: &mut Surface) {
     for (row, line) in lines.iter().enumerate() {
@@ -24,7 +46,8 @@ fn draw_lines(lines: &[Line<'static>], area: Rect, surface: &mut Surface) {
         if y >= area.bottom() {
             break;
         }
-        let mut x = area.x;
+        let align = line.alignment.unwrap_or(Alignment::Left);
+        let mut x = aligned_x(align, line_width(line), area);
         for span in &line.spans {
             if x >= area.right() {
                 break;
@@ -43,6 +66,28 @@ pub fn line_width(line: &Line) -> u16 {
 }
 
 /// A block of pre-styled lines, drawn top-down and clipped.
+///
+/// Each line is placed horizontally by its own [`Line::alignment`]: an unset
+/// alignment (the default) is flush-left, while lines built with ratatui's
+/// `.centered()` / `.right_aligned()` render centered or flush-right within the
+/// render width. This lets a host feed in `Line`s produced by an existing
+/// formatting layer without losing their alignment.
+///
+/// ```
+/// use tuika::{Text, Theme};
+/// use ratatui::text::Line;
+/// # use tuika::testing::render;
+/// let view = Text::new(vec![
+///     Line::from("left"),
+///     Line::from("mid").centered(),
+///     Line::from("end").right_aligned(),
+/// ]);
+/// let buffer = render(&view, 7, 3, &Theme::default());
+/// # use tuika::testing::grid;
+/// // width 7: "left" flush-left, "mid" centered (slack 4 -> col 2),
+/// // "end" flush-right (slack 4 -> col 4). `grid` keeps trailing cells.
+/// assert_eq!(grid(&buffer), "left   \n  mid  \n    end");
+/// ```
 ///
 /// ![text demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/text.gif)
 pub struct Text {
@@ -76,15 +121,25 @@ impl View for Text {
 pub struct Paragraph {
     text: String,
     style: Style,
+    align: Alignment,
 }
 
 impl Paragraph {
-    /// A paragraph that wraps `text` in a single `style`.
+    /// A paragraph that wraps `text` in a single `style`, flush-left.
     pub fn new(text: impl Into<String>, style: Style) -> Self {
         Self {
             text: text.into(),
             style,
+            align: Alignment::Left,
         }
+    }
+
+    /// Horizontally align every wrapped line within the render width. Defaults
+    /// to [`Alignment::Left`]; pass [`Alignment::Center`] for a centered
+    /// empty-state message or [`Alignment::Right`] for a right-aligned block.
+    pub fn alignment(mut self, align: Alignment) -> Self {
+        self.align = align;
+        self
     }
 
     fn wrap(&self, width: u16) -> Vec<String> {
@@ -122,7 +177,8 @@ impl View for Paragraph {
             if y >= area.bottom() {
                 break;
             }
-            surface.set_string(area.x, y, &line, self.style);
+            let x = aligned_x(self.align, str_cols(line.as_str()), area);
+            surface.set_string(x, y, &line, self.style);
         }
     }
 }
@@ -226,6 +282,13 @@ fn wrap_one(line: &Line<'static>, width: u16, out: &mut Vec<Line<'static>>) {
     // Preserve a blank (empty or all-whitespace) input line as one blank row.
     if out.len() == before {
         out.push(Line::default());
+    }
+    // Carry the source line's alignment onto every row it reflowed to, so a
+    // centered/right-aligned line stays aligned after wrapping.
+    if let Some(align) = line.alignment {
+        for produced in &mut out[before..] {
+            produced.alignment = Some(align);
+        }
     }
 }
 
@@ -434,6 +497,51 @@ mod tests {
         let out = wrap_lines(&[Line::from("hello world")], 0);
         assert_eq!(out.len(), 1);
         assert_eq!(line_text(&out[0]), "hello world");
+    }
+
+    #[test]
+    fn text_honors_line_alignment() {
+        let mut buf = buffer(7, 3);
+        let text = Text::new(vec![
+            Line::from("ab"),
+            Line::from("cd").centered(),
+            Line::from("ef").right_aligned(),
+        ]);
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        text.render(area, &mut surface, &ctx);
+        assert_eq!(row(&buf, 0), "ab", "unset alignment is flush-left");
+        // width 7, content 2 -> slack 5, centered start = 5/2 = 2.
+        assert_eq!(row(&buf, 1), "  cd", "centered line offset by slack/2");
+        // right start = x + slack = 5.
+        assert_eq!(row(&buf, 2), "     ef", "right-aligned pins to right edge");
+    }
+
+    #[test]
+    fn paragraph_alignment_positions_each_wrapped_line() {
+        // "aa bb" at width 6 stays one line; center slack = 1, start col 0 (1/2).
+        let mut buf = buffer(6, 2);
+        let p = Paragraph::new("aa bb", Style::default()).alignment(Alignment::Right);
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        p.render(area, &mut surface, &ctx);
+        // width 6, content 5 -> slack 1, right start = 1.
+        assert_eq!(row(&buf, 0), " aa bb");
+    }
+
+    #[test]
+    fn wrap_carries_alignment_onto_reflowed_rows() {
+        // A right-aligned line wide enough to wrap keeps its alignment per row.
+        let out = wrap_lines(&[Line::from("aa bb cc").right_aligned()], 5);
+        assert!(out.len() >= 2, "expected a wrap: {out:?}");
+        assert!(
+            out.iter().all(|l| l.alignment == Some(Alignment::Right)),
+            "every reflowed row keeps the source alignment: {out:?}"
+        );
     }
 
     #[test]
