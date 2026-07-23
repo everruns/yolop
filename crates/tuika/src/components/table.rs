@@ -12,7 +12,14 @@
 //! (`handle` for arrows/Enter/Esc, `select` to drive it from a host model), so a
 //! single-column list and a table share one state type.
 //!
+//! Chrome follows the theme by default but is overridable, the same
+//! theme-by-default / explicit-override pattern as [`Boxed::border_color`]:
+//! [`Table::caret`] sets the gutter marker glyph, [`Table::header_style`]
+//! restyles the header row, and [`Table::preserve_selection_fg`] keeps each
+//! column's own color under the selection highlight.
+//!
 //! [`SelectList`]: crate::SelectList
+//! [`Boxed::border_color`]: crate::Boxed::border_color
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -27,6 +34,7 @@ use super::select::SelectState;
 use super::text::line_width;
 
 /// One table column: a header cell and a main-axis width policy.
+#[derive(Clone)]
 pub struct Column {
     header: Line<'static>,
     width: Dimension,
@@ -94,6 +102,9 @@ pub struct Table {
     gutter: bool,
     show_header: bool,
     gap: u16,
+    caret: char,
+    header_style: Option<Style>,
+    preserve_selection_fg: bool,
 }
 
 impl Table {
@@ -108,6 +119,9 @@ impl Table {
             gutter: true,
             show_header: true,
             gap: 2,
+            caret: '›',
+            header_style: None,
+            preserve_selection_fg: false,
         }
     }
 
@@ -139,6 +153,30 @@ impl Table {
     /// Columns of blank between adjacent columns (default 2).
     pub fn gap(mut self, gap: u16) -> Self {
         self.gap = gap;
+        self
+    }
+
+    /// The glyph marking the selected row in the gutter (default `›`). Let a
+    /// host keep an existing marker, e.g. `▶`.
+    pub fn caret(mut self, caret: char) -> Self {
+        self.caret = caret;
+        self
+    }
+
+    /// Style the header row explicitly, overriding the default
+    /// (`theme.accent_style()`) — the same theme-by-default, explicit-override
+    /// pattern as [`Boxed::border_color`](crate::Boxed::border_color).
+    pub fn header_style(mut self, style: Style) -> Self {
+        self.header_style = Some(style);
+        self
+    }
+
+    /// Keep each cell's own foreground on the selected row, applying only the
+    /// selection background (default off — the selected row is recolored to a
+    /// uniform `selection_style`). Turn this on for a table whose columns are
+    /// color-coded so those colors survive under the highlight.
+    pub fn preserve_selection_fg(mut self, preserve: bool) -> Self {
+        self.preserve_selection_fg = preserve;
         self
     }
 
@@ -264,17 +302,14 @@ impl View for Table {
         );
         let col_rects = self.solve_columns(cols_area);
 
-        // Header row.
+        // Header row — explicit `header_style` wins over the theme default.
         if self.show_header {
             let headers: Vec<Line<'static>> =
                 self.columns.iter().map(|c| c.header.clone()).collect();
-            self.draw_cells(
-                &headers,
-                &col_rects,
-                area.y,
-                Some(ctx.theme.accent_style()),
-                surface,
-            );
+            let header_style = self
+                .header_style
+                .unwrap_or_else(|| ctx.theme.accent_style());
+            self.draw_cells(&headers, &col_rects, area.y, Some(header_style), surface);
         }
 
         // Data rows, windowed around the selection.
@@ -295,12 +330,18 @@ impl View for Table {
                 // Highlight spans the whole row: gutter, columns, and gaps.
                 let mut band = surface.child(Rect::new(area.x, y, row_span_w, 1));
                 band.fill(sel);
-                Some(sel)
+                // Cells get the full selection style (uniform fg) by default, or
+                // just its background when preserving each column's own color.
+                Some(if self.preserve_selection_fg {
+                    Style::default().bg(ctx.theme.selection_bg)
+                } else {
+                    sel
+                })
             } else {
                 None
             };
             if self.gutter {
-                let caret = if selected { '›' } else { ' ' };
+                let caret = if selected { self.caret } else { ' ' };
                 let caret_style = if selected {
                     ctx.theme.selection_style()
                 } else {
@@ -363,7 +404,7 @@ mod tests {
     use crate::test_support::{buffer, rainbow_theme, row};
     use crate::view::{RenderCtx, View};
     use crate::{Size, Surface};
-    use ratatui::text::Line;
+    use ratatui::text::{Line, Span};
 
     fn sample() -> (Vec<Column>, Vec<Vec<Line<'static>>>) {
         let cols = vec![Column::auto("name"), Column::auto("kind")];
@@ -475,5 +516,84 @@ mod tests {
         let theme = Theme::default();
         let text = crate::testing::grid(&crate::testing::render(&table, 20, 2, &theme));
         assert!(text.contains("only"));
+    }
+
+    #[test]
+    fn table_custom_caret_marks_selection() {
+        let (cols, rows) = sample();
+        let mut state = SelectState::new();
+        state.select(0);
+        let table = Table::new(cols, rows, &state).caret('▶');
+        let mut buf = buffer(20, 3);
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        table.render(area, &mut surface, &ctx);
+        assert_eq!(
+            buf[(0, 1)].symbol(),
+            "▶",
+            "custom caret on the selected row"
+        );
+    }
+
+    #[test]
+    fn table_header_style_overrides_the_theme_default() {
+        use ratatui::style::{Color, Style};
+        let (cols, rows) = sample();
+        let t = rainbow_theme();
+        let state = SelectState::new();
+        let table =
+            Table::new(cols, rows, &state).header_style(Style::default().fg(Color::Indexed(200)));
+        let mut buf = buffer(20, 3);
+        let area = buf.area;
+        let ctx = RenderCtx::new(&t);
+        let mut surface = Surface::new(&mut buf, area);
+        table.render(area, &mut surface, &ctx);
+        // The header cell text uses the explicit color, not theme.accent.
+        assert_eq!(buf[(2, 0)].fg, Color::Indexed(200), "header 'name' fg");
+        assert_ne!(
+            Color::Indexed(200),
+            t.accent,
+            "and it differs from the default"
+        );
+    }
+
+    #[test]
+    fn table_preserve_selection_fg_keeps_cell_colors() {
+        use ratatui::style::{Color, Style};
+        let t = rainbow_theme();
+        let cols = vec![Column::auto("c")];
+        // A color-coded cell on the (only, selected) data row.
+        let rows = vec![vec![Line::from(Span::styled(
+            "ok",
+            Style::default().fg(Color::Indexed(46)),
+        ))]];
+        let state = SelectState::new(); // row 0 selected
+
+        let render = |preserve: bool| {
+            let table = Table::new(cols.clone(), rows.clone(), &state)
+                .preserve_selection_fg(preserve)
+                .gutter(false);
+            let mut buf = buffer(6, 2);
+            let area = buf.area;
+            let ctx = RenderCtx::new(&t);
+            let mut surface = Surface::new(&mut buf, area);
+            table.render(area, &mut surface, &ctx);
+            let cell = &buf[(0, 1)]; // first cell of the selected data row
+            (cell.fg, cell.bg)
+        };
+
+        // Preserve on: the cell keeps its own fg but gains the selection bg.
+        let (fg, bg) = render(true);
+        assert_eq!(
+            fg,
+            Color::Indexed(46),
+            "column color survives the highlight"
+        );
+        assert_eq!(bg, t.selection_bg, "selection background still applied");
+        // Default (off): the selected row is recolored to the uniform selection fg.
+        let (fg_off, _) = render(false);
+        assert_eq!(fg_off, t.selection_fg, "default overwrites cell fg");
     }
 }

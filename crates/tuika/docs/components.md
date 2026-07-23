@@ -317,7 +317,10 @@ per-column width policy, a full-row selection highlight, a caret gutter, and
 windowed scrolling. Column widths come from the same flexbox `solve` as every
 other container — a `Column` is `fixed`, `auto` (widest cell), or `flex`
 (shares leftover width). Selection reuses `SelectState`, so a list and a table
-share one state type.
+share one state type. Chrome follows the theme by default but is overridable
+(the `Boxed::border_color` pattern): `.caret(char)` sets the gutter marker,
+`.header_style(Style)` restyles the header, and `.preserve_selection_fg(true)`
+keeps color-coded columns' own colors under the selection highlight.
 [API](https://docs.rs/tuika/latest/tuika/struct.Table.html)
 
 ```rust
@@ -326,7 +329,7 @@ use tuika::{Column, Table, SelectState, view};
 let mut state = SelectState::new();
 state.handle(&event, rows.len());
 let columns = vec![Column::auto("branch"), Column::fixed("ahead", 5), Column::flex("subject", 1)];
-view! { node(Table::new(columns, rows, &state).viewport(20)) }
+view! { node(Table::new(columns, rows, &state).viewport(20).caret('▶')) }
 ```
 
 ### `Tabs` + `TabsState`
