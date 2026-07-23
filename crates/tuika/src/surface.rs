@@ -138,10 +138,37 @@ impl<'a> Surface<'a> {
     /// single cell with the correct width instead of being scattered across
     /// several — see [`crate::width`].
     pub fn set_string(&mut self, x: u16, y: u16, text: &str, style: Style) -> u16 {
+        let mut skip = 0;
+        self.set_string_skip(x, y, text, style, &mut skip)
+    }
+
+    /// Like [`set_string`](Self::set_string) but first skips `*skip` display
+    /// columns of `text`, decrementing `*skip` by the columns consumed; returns
+    /// the exclusive end column written. Draw a whole line span-by-span with one
+    /// shared `skip` to honor a horizontal pan offset — each span resumes where
+    /// the previous left off. A wide glyph straddling the skip boundary is
+    /// dropped (its full width consumed from `skip`) rather than shown half.
+    ///
+    /// [`set_string`](Self::set_string) is this with `skip = 0`; both go through
+    /// the same grapheme walk, so panning adds no second cluster-iteration site
+    /// to the crate's paint hot path (which under whole-program optimization
+    /// would de-inline the common flush-left path and regress it).
+    pub fn set_string_skip(
+        &mut self,
+        x: u16,
+        y: u16,
+        text: &str,
+        style: Style,
+        skip: &mut u16,
+    ) -> u16 {
         let mut col = x;
         for cluster in text.graphemes(true) {
             let w = grapheme_cols(cluster);
             if w == 0 {
+                continue;
+            }
+            if *skip > 0 {
+                *skip = skip.saturating_sub(w);
                 continue;
             }
             if col >= self.clip.right() {
@@ -274,6 +301,55 @@ mod tests {
         assert_eq!(buf[(1, 0)].symbol(), " ", "trailing half of the wide glyph");
         assert_eq!(buf[(2, 0)].symbol(), "x", "next glyph starts at column 2");
         assert_eq!(end, 3, "cursor advanced 2 (emoji) + 1 (x)");
+    }
+
+    #[test]
+    fn set_string_skip_pans_and_carries_across_calls() {
+        // "abcdef" drawn with a running skip of 2: "ab" dropped, "cdef" drawn
+        // from x=0. A second call keeps consuming from the same skip.
+        let mut buf = Buffer::filled(Rect::new(0, 0, 6, 1), ratatui::buffer::Cell::new("."));
+        let mut surface = Surface::new(&mut buf, Rect::new(0, 0, 6, 1));
+        let mut skip = 2u16;
+        let end = surface.set_string_skip(0, 0, "abcdef", Style::default(), &mut skip);
+        assert_eq!(skip, 0, "skip fully consumed by the drawn span");
+        assert_eq!(end, 4, "drew 4 cols (cdef) starting at x=0");
+        assert_eq!(buf[(0, 0)].symbol(), "c");
+        assert_eq!(buf[(3, 0)].symbol(), "f");
+
+        // With skip still set, a whole short span is consumed without drawing and
+        // the skip carries to the next call.
+        let mut buf2 = Buffer::filled(Rect::new(0, 0, 4, 1), ratatui::buffer::Cell::new("."));
+        let mut s2 = Surface::new(&mut buf2, Rect::new(0, 0, 4, 1));
+        let mut skip = 3u16;
+        let x = s2.set_string_skip(0, 0, "ab", Style::default(), &mut skip); // fully skipped
+        assert_eq!(skip, 1, "1 column of skip remains after the 2-col span");
+        assert_eq!(x, 0, "nothing drawn, cursor unmoved");
+        let x = s2.set_string_skip(x, 0, "cd", Style::default(), &mut skip); // skip 'c', draw 'd'
+        assert_eq!(skip, 0);
+        assert_eq!(buf2[(0, 0)].symbol(), "d", "resumes after the carried skip");
+        assert_eq!(x, 1);
+    }
+
+    #[test]
+    fn set_string_skip_zero_matches_set_string() {
+        // The flush-left fast path: skip == 0 must be identical to set_string.
+        let render = |use_skip: bool| {
+            let mut buf = Buffer::filled(Rect::new(0, 0, 8, 1), ratatui::buffer::Cell::new("."));
+            let end = {
+                let mut s = Surface::new(&mut buf, Rect::new(0, 0, 8, 1));
+                if use_skip {
+                    let mut skip = 0u16;
+                    s.set_string_skip(0, 0, "hi 世界", Style::default(), &mut skip)
+                } else {
+                    s.set_string(0, 0, "hi 世界", Style::default())
+                }
+            };
+            (buf, end)
+        };
+        let (a, ea) = render(false);
+        let (b, eb) = render(true);
+        assert_eq!(ea, eb);
+        assert_eq!(a.content, b.content, "skip=0 diverged from set_string");
     }
 
     #[test]
