@@ -174,10 +174,11 @@ Terminal and ConEmu (taskbar), WezTerm, Konsole, mintty. Others swallow the
 unknown OSC. Writes are best-effort — a failed progress write never disrupts the
 session.
 
-## Images (Kitty graphics protocol)
+## Images (Kitty & iTerm2 graphics protocols)
 
 Paint real pixels — an avatar, a chart, a rendered diagram — over the cells a
-view reserves for them, using the Kitty graphics protocol.
+view reserves for them, using the **Kitty graphics protocol** or the **iTerm2
+inline-image protocol**, whichever the terminal speaks.
 [API](https://docs.rs/tuika/latest/tuika/image/index.html)
 
 <img src="demos/image.svg" width="880" alt="Image demo, side by side: on a Kitty/Ghostty/WezTerm/Konsole terminal the Image view renders a red/green gradient in place; on every other terminal the same view shows a dimmed italic '[image: a red/green gradient]' placeholder.">
@@ -196,9 +197,11 @@ capability detection — `ImageSupport::detect()` reads the environment (`TERM`,
 graphics, where the same `Image` view falls back to an alt-text placeholder.
 
 Decoding stays in the host (it's a heavy dependency, kept out of tuika like
-syntax highlighting is): a host hands in raw RGBA via `ImageData::from_rgba`.
-Because a graphics escape paints at the cursor — unlike the cursor-neutral OSC
-sequences above — emission is a two-step draw:
+syntax highlighting is): a host hands in raw RGBA via `ImageData::from_rgba`,
+and tuika encodes it for whichever protocol the terminal wants — raw RGBA for
+Kitty, an in-tuika PNG for iTerm2 — with no image-codec dependency. Because a
+graphics escape paints at the cursor — unlike the cursor-neutral OSC sequences
+above — emission is a two-step draw:
 
 - `Image` reserves a `cols × rows` cell footprint and, on render, records its
   placement into a shared `ImageLayer` (the ownership shape of `RectProbe`).
@@ -218,16 +221,23 @@ let _image = Image::new(data, 20, 10)      // 20×10 cells on screen
     .alt("a 2×2 swatch");                  // shown where graphics aren't supported
 ```
 
-The emitted bytes (base64 payload, chunked; `q=2` suppresses the terminal's
-replies so they aren't read as input; `ST` is `ESC \`):
+The emitted bytes per protocol (base64 payload; `ST` is `ESC \`, `BEL` is
+`0x07`). Kitty carries raw RGBA (`f=32`), chunked, with `q=2` suppressing the
+terminal's replies so they aren't read as input:
 
 ```text
 ESC _ G f=32,s=<px_w>,v=<px_h>,a=T,c=<cols>,r=<rows>,q=2,m=<more> ; <base64> ST
 ```
 
-**Supported terminals:** Kitty, Ghostty, WezTerm, Konsole. Others show the
-alt-text fallback. See the `image` example (`cargo run -p tuika --example
-image`).
+iTerm2 carries a PNG file sized in cells:
+
+```text
+ESC ] 1337 ; File=inline=1;width=<cols>;height=<rows>;preserveAspectRatio=0;size=<bytes> : <base64> BEL
+```
+
+**Supported terminals:** Kitty, Ghostty, WezTerm, Konsole (Kitty protocol);
+iTerm2 (its own protocol). Others show the alt-text fallback. See the `image`
+example (`cargo run -p tuika --example image`).
 
 Markdown `![alt](url)` no longer drops the URL: the [`Markdown`](components.md)
 renderer shows a marked, link-styled placeholder (the alt text, or the URL when

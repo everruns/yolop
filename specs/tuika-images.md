@@ -29,8 +29,11 @@ Scope is deliberately phased:
   itself, reserves cells for it in the layout, and emits the graphics escapes
   after each frame. Capability detection gates the protocol; unsupported
   terminals get the alt-text fallback.
-- **Phase 2: more protocols** behind the same component — iTerm2 inline images
-  and Sixel — selected by capability detection.
+- **Phase 2: more protocols** behind the same component, selected by capability
+  detection. **iTerm2 inline images: done** — `ImageLayer::emit` dispatches per
+  the recorded protocol, and RGBA is PNG-encoded (in-tuika, dependency-free) for
+  iTerm2, which transmits an image file rather than raw pixels. **Sixel:**
+  remaining.
 - **Phase 3: markdown `![alt](url)`**, in two steps:
   - **3a (done): visible placeholder.** The markdown builder parses `Tag::Image`
     and renders a marked, link-styled placeholder (the alt text, or the URL when

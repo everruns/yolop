@@ -65,6 +65,7 @@ fn main() -> io::Result<()> {
                 .alt("a red/green gradient");
             let status = match support {
                 ImageSupport::Kitty => " graphics: Kitty protocol detected ",
+                ImageSupport::ITerm2 => " graphics: iTerm2 protocol detected ",
                 ImageSupport::None => " graphics: none — showing text fallback ",
             };
             let bar = StatusBar::new()

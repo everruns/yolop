@@ -1,4 +1,4 @@
-//! Terminal image rendering via the Kitty graphics protocol.
+//! Terminal image rendering via the Kitty and iTerm2 graphics protocols.
 //!
 //! A cell in ratatui's buffer carries one grapheme plus a style and nothing
 //! else, so a picture has no home there — the same wall [`crate::hyperlink`]
@@ -15,8 +15,9 @@
 //!    and paints the reserved cells blank (or the alt-text placeholder when the
 //!    terminal can't show the image) so ratatui's diff has stable content there.
 //! 3. **After** the frame is painted, the host calls [`ImageLayer::emit`], which
-//!    moves the cursor to each image's cell origin and writes its Kitty escape,
-//!    wrapped in a cursor save/restore so ratatui's cursor model is undisturbed.
+//!    moves the cursor to each image's cell origin and writes its protocol's
+//!    escape, wrapped in a cursor save/restore so ratatui's cursor model is
+//!    undisturbed.
 //!
 //! Decoding (PNG/JPEG → RGBA) is intentionally the host's job — it is a heavy
 //! dependency, kept out of tuika exactly like syntax highlighting is (see
@@ -95,14 +96,17 @@ impl ImageData {
 
 /// Which graphics protocol a terminal is believed to speak.
 ///
-/// Phase 1 recognizes only the Kitty graphics protocol; iTerm2 and Sixel are
-/// future variants selected by the same detection.
+/// Sixel is a future variant selected by the same detection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageSupport {
     /// No known graphics protocol — [`Image`] renders its text fallback.
     None,
-    /// The Kitty graphics protocol (Kitty, Ghostty, WezTerm, Konsole).
+    /// The Kitty graphics protocol (Kitty, Ghostty, WezTerm, Konsole). Transmits
+    /// raw RGBA.
     Kitty,
+    /// The iTerm2 inline-image protocol (iTerm2, WezTerm). Transmits an encoded
+    /// image file — tuika PNG-encodes the RGBA for it.
+    ITerm2,
 }
 
 impl ImageSupport {
@@ -111,8 +115,10 @@ impl ImageSupport {
     /// Conservative by design: it reads `TERM`, `TERM_PROGRAM`,
     /// `KITTY_WINDOW_ID`, and the Ghostty resources marker, and returns
     /// [`ImageSupport::None`] when nothing matches, so a terminal that would
-    /// paint the payload as garbage gets the text fallback instead. A host that
-    /// knows better can override with a literal variant.
+    /// paint the payload as garbage gets the text fallback instead. Kitty is
+    /// preferred over iTerm2 where a terminal (WezTerm) speaks both, since Kitty
+    /// carries raw RGBA and skips the PNG encode. A host that knows better can
+    /// override with a literal variant.
     pub fn detect() -> Self {
         Self::detect_from(
             std::env::var("TERM").ok().as_deref(),
@@ -131,28 +137,32 @@ impl ImageSupport {
         kitty_window_id: Option<&str>,
         ghostty_resources_dir: Option<&str>,
     ) -> Self {
+        let program = term_program.map(|p| p.to_ascii_lowercase());
         // Any of these is a positive signal for the Kitty graphics protocol.
         let kitty = kitty_window_id.is_some_and(|s| !s.is_empty())
             || ghostty_resources_dir.is_some_and(|s| !s.is_empty())
             || term.is_some_and(|t| t.contains("kitty"))
-            || term_program.is_some_and(|p| {
-                let p = p.to_ascii_lowercase();
-                p == "ghostty" || p == "wezterm"
-            });
+            || program
+                .as_deref()
+                .is_some_and(|p| p == "ghostty" || p == "wezterm");
         if kitty {
-            ImageSupport::Kitty
-        } else {
-            ImageSupport::None
+            return ImageSupport::Kitty;
         }
+        // iTerm2 speaks its own inline-image protocol (TERM_PROGRAM=iTerm.app).
+        if program.as_deref().is_some_and(|p| p.contains("iterm")) {
+            return ImageSupport::ITerm2;
+        }
+        ImageSupport::None
     }
 }
 
-/// One image queued for emission this frame: where it landed, in cells, and the
-/// pixels to paint there.
+/// One image queued for emission this frame: where it landed, in cells, the
+/// pixels to paint there, and which protocol to paint them with.
 #[derive(Clone, Debug)]
 struct Placement {
     rect: Rect,
     data: ImageData,
+    support: ImageSupport,
 }
 
 /// A shared collector of the images placed during a frame, and the emitter that
@@ -171,13 +181,17 @@ impl ImageLayer {
         Self::default()
     }
 
-    /// Record an image at its painted cell rect. Zero-area rects are dropped —
-    /// a clipped-away image has nothing to paint.
-    fn record(&self, rect: Rect, data: ImageData) {
+    /// Record an image at its painted cell rect, to be painted with `support`.
+    /// Zero-area rects are dropped — a clipped-away image has nothing to paint.
+    fn record(&self, rect: Rect, data: ImageData, support: ImageSupport) {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        self.0.borrow_mut().push(Placement { rect, data });
+        self.0.borrow_mut().push(Placement {
+            rect,
+            data,
+            support,
+        });
     }
 
     /// Drop all recorded placements. Call once per frame, after [`emit`](Self::emit),
@@ -196,8 +210,8 @@ impl ImageLayer {
         self.0.borrow().len()
     }
 
-    /// Write every recorded image to `out` as a Kitty graphics escape at its
-    /// cell origin.
+    /// Write every recorded image to `out` as its protocol's graphics escape at
+    /// its cell origin.
     ///
     /// Call this after `terminal.draw()` has flushed the frame, against the same
     /// sink as the terminal backend. The whole batch is wrapped in a cursor
@@ -211,11 +225,16 @@ impl ImageLayer {
         }
         // Save the cursor once, restore once, so nothing between shifts it.
         out.write_all(b"\x1b7")?;
-        for Placement { rect, data } in placements.iter() {
+        for p in placements.iter() {
             // CUP is 1-based; the reserved rect is 0-based screen coordinates.
-            let (row, col) = (rect.y + 1, rect.x + 1);
+            let (row, col) = (p.rect.y + 1, p.rect.x + 1);
             write!(out, "\x1b[{row};{col}H")?;
-            out.write_all(encode_kitty(data, rect.width, rect.height).as_bytes())?;
+            let escape = match p.support {
+                ImageSupport::ITerm2 => encode_iterm2(&p.data, p.rect.width, p.rect.height),
+                // None shouldn't record, but Kitty is the safe default encoding.
+                _ => encode_kitty(&p.data, p.rect.width, p.rect.height),
+            };
+            out.write_all(escape.as_bytes())?;
         }
         out.write_all(b"\x1b8")?;
         out.flush()
@@ -276,7 +295,7 @@ impl Image {
     /// Whether this image will be emitted through a graphics protocol (as
     /// opposed to falling back to text).
     fn will_paint(&self) -> bool {
-        self.support == ImageSupport::Kitty && self.layer.is_some()
+        matches!(self.support, ImageSupport::Kitty | ImageSupport::ITerm2) && self.layer.is_some()
     }
 }
 
@@ -295,7 +314,7 @@ impl View for Image {
             // ratatui diff over the region is stable.
             surface.fill(Style::default().bg(ctx.theme.background));
             if let Some(layer) = &self.layer {
-                layer.record(area, self.data.clone());
+                layer.record(area, self.data.clone(), self.support);
             }
         } else {
             self.render_fallback(area, surface, ctx);
@@ -400,6 +419,106 @@ fn base64_encode(bytes: &[u8]) -> String {
         });
     }
     out
+}
+
+/// Encode `data` as an iTerm2 inline-image escape displayed across `cols × rows`
+/// cells.
+///
+/// Pure and allocation-only, like [`encode_kitty`]. iTerm2 wants a full image
+/// *file* rather than raw RGBA, so the pixels are PNG-encoded first (see
+/// [`png_rgba`]); `width`/`height` are given in cells, `preserveAspectRatio=0`
+/// makes the image fill the reserved box, and `inline=1` displays it at the
+/// cursor. The sequence is `ESC ] 1337 ; File = <args> : <base64> BEL`.
+fn encode_iterm2(data: &ImageData, cols: u16, rows: u16) -> String {
+    let png = png_rgba(data.pixel_width, data.pixel_height, &data.rgba);
+    let payload = base64_encode(&png);
+    format!(
+        "\x1b]1337;File=inline=1;width={cols};height={rows};preserveAspectRatio=0;size={}:{payload}\x07",
+        png.len()
+    )
+}
+
+/// Encode `rgba` (`w × h`, 8-bit RGBA) as a PNG, using stored (uncompressed)
+/// DEFLATE blocks. Trivial and exact — and tuika stays dependency-free — at the
+/// cost of no compression, which is fine for the small images terminals inline.
+/// Used by the iTerm2 protocol, which transmits an image file rather than raw
+/// pixels.
+fn png_rgba(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let row = (w * 4) as usize;
+    let mut raw = Vec::with_capacity(rgba.len() + h as usize);
+    for y in 0..h as usize {
+        raw.push(0); // filter type 0 (none) per scanline
+        raw.extend_from_slice(&rgba[y * row..(y + 1) * row]);
+    }
+
+    let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit, RGBA, deflate, no filter/interlace
+    png_chunk(&mut png, b"IHDR", &ihdr);
+    png_chunk(&mut png, b"IDAT", &zlib_stored(&raw));
+    png_chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+/// Append a length-tagged, CRC-checked PNG chunk.
+fn png_chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(tag);
+    out.extend_from_slice(data);
+    let mut crc_in = Vec::with_capacity(4 + data.len());
+    crc_in.extend_from_slice(tag);
+    crc_in.extend_from_slice(data);
+    out.extend_from_slice(&crc32(&crc_in).to_be_bytes());
+}
+
+/// Wrap `data` in a zlib stream of DEFLATE stored blocks (BTYPE 00).
+fn zlib_stored(data: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x78, 0x01]; // zlib header: deflate, 32K window, no preset dict
+    let mut i = 0;
+    loop {
+        let end = (i + 0xffff).min(data.len());
+        let block = &data[i..end];
+        let last = end == data.len();
+        out.push(u8::from(last)); // BFINAL bit, BTYPE=00
+        let len = block.len() as u16;
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes());
+        out.extend_from_slice(block);
+        i = end;
+        if last {
+            break;
+        }
+    }
+    out.extend_from_slice(&adler32(data).to_be_bytes());
+    out
+}
+
+/// CRC-32 (IEEE polynomial), computed table-free for the PNG chunk checksum.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// Adler-32 checksum for the zlib stream trailer.
+fn adler32(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in data {
+        a = (a + x as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
 }
 
 #[cfg(test)]
@@ -559,8 +678,9 @@ mod tests {
     #[test]
     fn emit_positions_each_image_and_brackets_with_cursor_save_restore() {
         let layer = ImageLayer::new();
-        layer.record(Rect::new(2, 1, 4, 2), solid(1, 1, [1, 2, 3, 4]));
-        layer.record(Rect::new(0, 5, 3, 3), solid(1, 1, [5, 6, 7, 8]));
+        let k = ImageSupport::Kitty;
+        layer.record(Rect::new(2, 1, 4, 2), solid(1, 1, [1, 2, 3, 4]), k);
+        layer.record(Rect::new(0, 5, 3, 3), solid(1, 1, [5, 6, 7, 8]), k);
         let mut out: Vec<u8> = Vec::new();
         layer.emit(&mut out).expect("emit");
         let s = String::from_utf8(out).expect("utf8");
@@ -571,6 +691,31 @@ mod tests {
         assert!(s.contains("\x1b[2;3H\x1b_G"));
         assert!(s.contains("\x1b[6;1H\x1b_G"));
         assert_eq!(s.matches("\x1b_G").count(), 2, "one command per image");
+    }
+
+    #[test]
+    fn emit_dispatches_the_recorded_protocol() {
+        let layer = ImageLayer::new();
+        layer.record(
+            Rect::new(0, 0, 4, 2),
+            solid(1, 1, [1, 2, 3, 4]),
+            ImageSupport::Kitty,
+        );
+        layer.record(
+            Rect::new(0, 3, 4, 2),
+            solid(1, 1, [5, 6, 7, 8]),
+            ImageSupport::ITerm2,
+        );
+        let mut out: Vec<u8> = Vec::new();
+        layer.emit(&mut out).expect("emit");
+        let s = String::from_utf8(out).expect("utf8");
+        // Each image is emitted with its own protocol's escape.
+        assert_eq!(s.matches("\x1b_G").count(), 1, "one Kitty command");
+        assert_eq!(
+            s.matches("\x1b]1337;File=").count(),
+            1,
+            "one iTerm2 command"
+        );
     }
 
     #[test]
@@ -587,7 +732,11 @@ mod tests {
     #[test]
     fn clear_resets_between_frames() {
         let layer = ImageLayer::new();
-        layer.record(Rect::new(0, 0, 2, 2), solid(1, 1, [0, 0, 0, 0]));
+        layer.record(
+            Rect::new(0, 0, 2, 2),
+            solid(1, 1, [0, 0, 0, 0]),
+            ImageSupport::Kitty,
+        );
         assert_eq!(layer.len(), 1);
         layer.clear();
         assert!(layer.is_empty());
@@ -596,11 +745,93 @@ mod tests {
     #[test]
     fn zero_area_placements_are_dropped() {
         let layer = ImageLayer::new();
-        layer.record(Rect::new(0, 0, 0, 3), solid(1, 1, [0, 0, 0, 0]));
-        layer.record(Rect::new(0, 0, 3, 0), solid(1, 1, [0, 0, 0, 0]));
+        let k = ImageSupport::Kitty;
+        layer.record(Rect::new(0, 0, 0, 3), solid(1, 1, [0, 0, 0, 0]), k);
+        layer.record(Rect::new(0, 0, 3, 0), solid(1, 1, [0, 0, 0, 0]), k);
         assert!(
             layer.is_empty(),
             "clipped-away images have nothing to paint"
         );
+    }
+
+    #[test]
+    fn encode_iterm2_wraps_a_png_file() {
+        let img = solid(2, 2, [10, 20, 30, 255]);
+        let out = encode_iterm2(&img, 8, 4);
+        // iTerm2 File sequence with cell dims and a byte size, BEL-terminated.
+        assert!(
+            out.starts_with("\x1b]1337;File=inline=1;width=8;height=4;preserveAspectRatio=0;size=")
+        );
+        assert!(out.ends_with('\x07'));
+        // The payload after the colon base64-decodes to a PNG (signature bytes).
+        let payload = out
+            .trim_end_matches('\x07')
+            .rsplit(':')
+            .next()
+            .expect("payload");
+        let decoded = b64_decode(payload);
+        assert_eq!(
+            &decoded[..8],
+            &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
+        );
+        // The declared size matches the actual PNG length.
+        let size: usize = out
+            .split("size=")
+            .nth(1)
+            .and_then(|s| s.split(':').next())
+            .and_then(|n| n.parse().ok())
+            .expect("size field");
+        assert_eq!(size, decoded.len());
+    }
+
+    #[test]
+    fn png_rgba_is_well_formed() {
+        let img = solid(3, 2, [1, 2, 3, 4]);
+        let png = png_rgba(img.pixel_width, img.pixel_height, &img.rgba);
+        assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+        // IHDR carries the dimensions; IDAT and IEND are present.
+        let s = String::from_utf8_lossy(&png);
+        assert!(s.contains("IHDR") && s.contains("IDAT") && s.contains("IEND"));
+    }
+
+    #[test]
+    fn detect_recognizes_iterm2_and_prefers_kitty() {
+        // iTerm2 advertises itself via TERM_PROGRAM.
+        assert_eq!(
+            ImageSupport::detect_from(Some("xterm-256color"), Some("iTerm.app"), None, None),
+            ImageSupport::ITerm2
+        );
+        // WezTerm speaks both; Kitty wins (raw RGBA, no PNG encode).
+        assert_eq!(
+            ImageSupport::detect_from(None, Some("WezTerm"), None, None),
+            ImageSupport::Kitty
+        );
+    }
+
+    /// Minimal standard-base64 decoder for the iTerm2 round-trip test.
+    fn b64_decode(s: &str) -> Vec<u8> {
+        fn val(c: u8) -> Option<u32> {
+            match c {
+                b'A'..=b'Z' => Some((c - b'A') as u32),
+                b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+                b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+                b'+' => Some(62),
+                b'/' => Some(63),
+                _ => None,
+            }
+        }
+        let mut acc = 0u32;
+        let mut bits = 0;
+        let mut out = Vec::new();
+        for &c in s.as_bytes() {
+            let Some(v) = val(c) else { continue }; // skip '=' padding
+            acc = (acc << 6) | v;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((acc >> bits) as u8);
+            }
+        }
+        out
     }
 }
