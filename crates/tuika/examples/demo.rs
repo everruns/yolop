@@ -276,6 +276,13 @@ const DEMOS: &[Demo] = &[
         true,
         scene_mouse,
     ),
+    demo(
+        "overlay",
+        "anchored dialog composited over the base tree",
+        16,
+        false,
+        scene_overlay,
+    ),
 ];
 
 fn main() -> io::Result<()> {
@@ -403,6 +410,9 @@ fn check() -> io::Result<()> {
             sources.push(path);
         }
     }
+    // Module-level docs outside `components/` may embed a demo too (e.g. the
+    // `overlay` GIF on `OverlaySpec`).
+    sources.push(dir.join("src/overlay.rs"));
     for path in sources {
         // A doc source may not exist yet (e.g. features.md before it lands);
         // skip a missing one rather than failing the whole check.
@@ -907,4 +917,58 @@ fn scene_mouse(frame: u64, theme: &Theme) -> Element {
         ]),
     ]);
     element(body)
+}
+
+fn scene_overlay(frame: u64, theme: &Theme) -> Element {
+    let _ = frame;
+    // Overlays composite a view over the base tree at an anchored, sized rect
+    // (see `OverlaySpec`). The demo harness paints a single tree, so this scene
+    // arranges the same look — a centered dialog over the base content — that
+    // `OverlaySpec::centered(..).resolve(area)` plus `paint`'s overlay slice
+    // produce at runtime; the `overlay` example drives the real compositing.
+    let base = |s: &str| {
+        Text::new(vec![Line::from(Span::styled(
+            s.to_string(),
+            theme.muted_style(),
+        ))])
+    };
+    let dialog = view! {
+        boxed(
+            title = Line::from(Span::styled(" confirm ", theme.accent_style())),
+            border = BorderStyle::Rounded,
+            padding = Padding::all(1)
+        ) {
+            col(gap = 1) {
+                node(Text::new(vec![Line::from(Span::styled(
+                    "Proceed with the action?",
+                    theme.text_style(),
+                ))]))
+                node(Text::new(vec![Line::from(Span::styled(
+                    "enter = yes · esc = no",
+                    theme.muted_style(),
+                ))]))
+            }
+        }
+    };
+    view! {
+        col(gap = 0) {
+            fixed(1) { node(base("base layer stays visible around the panel")) }
+            fixed(1) { node(base("… app content continues behind …")) }
+            fixed(1) { spacer() }
+            fixed(7) {
+                row(gap = 0) {
+                    grow(1) { spacer() }
+                    fixed(46) { node(dialog) }
+                    grow(1) { spacer() }
+                }
+            }
+            grow(1) { spacer() }
+            fixed(1) {
+                node(Text::new(vec![Line::from(Span::styled(
+                    "OverlaySpec::centered(50, 40).min_size(34, 7)",
+                    theme.muted_style(),
+                ))]))
+            }
+        }
+    }
 }

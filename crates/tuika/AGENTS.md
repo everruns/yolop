@@ -10,8 +10,9 @@ model, and [Testing](#testing) below for how rendering is tested hermetically.
   per component). Keep it **presentational only**: no build or regeneration
   instructions belong here (they live in this file).
 - `docs/demos/*.gif` — the committed demo recordings referenced by
-  `components.md` and, via `raw.githubusercontent.com` URLs, inline on each
-  component's `struct` doc so they render on docs.rs.
+  `components.md` and, via `raw.githubusercontent.com` URLs, inline on the
+  relevant type's rustdoc so they render on docs.rs — each component's `struct`
+  doc, plus module-level types like `OverlaySpec`.
 - `docs/hero.gif` — the README hero: a recording of a composite gallery screen.
   See [Hero screenshot](#hero-screenshot).
 
@@ -86,10 +87,11 @@ cargo run -p tuika --example screenshot -- run     # animate it (what VHS record
 ### The check invariant
 
 `demo -- check` asserts every scene has a non-empty recording, no orphan GIF
-lingers, and every `demos/<name>.gif` referenced by a component doc or
-`components.md` maps to a real scene. It runs in the `tuika-msrv` CI job and at
-the end of the generator, so gallery drift fails CI instead of shipping a broken
-image to docs.rs.
+lingers, and every `demos/<name>.gif` referenced by the gallery markdown
+(`components.md`, `features.md`) or a rustdoc embed (component docs plus
+module-level docs like `overlay.rs`) maps to a real scene. It runs in the
+`tuika-msrv` CI job and at the end of the generator, so gallery drift fails CI
+instead of shipping a broken image to docs.rs.
 
 ## Testing
 

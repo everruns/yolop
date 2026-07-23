@@ -55,6 +55,24 @@ impl Extent {
 }
 
 /// Anchored, sized overlay placement relative to a screen rect.
+///
+/// Resolve a [`Rect`] for the current screen, then paint a view into it last
+/// (see [`paint`](crate::paint)); the host routes input to whichever layer owns
+/// focus.
+///
+/// # Examples
+///
+/// ```
+/// use tuika::OverlaySpec;
+/// use ratatui::layout::Rect;
+///
+/// // A centered dialog at 50% × 40% of a 100 × 40 screen, never smaller than 34 × 7.
+/// let rect = OverlaySpec::centered(50, 40).min_size(34, 7).resolve(Rect::new(0, 0, 100, 40));
+/// assert_eq!((rect.width, rect.height), (50, 16));
+/// assert_eq!((rect.x, rect.y), (25, 12));
+/// ```
+///
+/// ![overlay demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/overlay.gif)
 #[derive(Clone, Copy, Debug)]
 pub struct OverlaySpec {
     /// Where the resolved rect sits within the screen.
