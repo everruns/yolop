@@ -1,4 +1,4 @@
-//! Vertical scroll viewport with a scrollbar.
+//! Scroll viewport with a scrollbar.
 //!
 //! This is the primitive that replaces native terminal scrollback in the
 //! full-screen renderer: content taller than the viewport is windowed by a
@@ -10,6 +10,15 @@
 //! is **host-drivable**: an app that owns its scroll position in its own model
 //! mirrors it into the view with [`set_offset`](ScrollState::set_offset), the
 //! vertical peer of [`SelectState::select`](crate::SelectState::select).
+//!
+//! Content wider than the pane — logs, unified diffs, wide tables, deep paths —
+//! **pans horizontally**: [`set_x_offset`](ScrollState::set_x_offset) shifts the
+//! view left by a number of display columns (bind it to `h`/`l` or `←`/`→`), and
+//! [`clamp_x`](ScrollState::clamp_x) bounds it to the widest line. The pan is
+//! width-aware — it skips whole grapheme clusters, so wide/CJK glyphs never
+//! split. [`max_offset`](ScrollState::max_offset) and
+//! [`max_x_offset`](ScrollState::max_x_offset) expose the in-range bounds for a
+//! host that drives the offsets itself.
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -30,6 +39,9 @@ use crate::view::{RenderCtx, View};
 pub struct ScrollState {
     /// Top visible content row.
     offset: usize,
+    /// Leftmost visible display column (horizontal pan). Zero unless the host
+    /// pans; used by wide viewers — logs, diffs, wide tables, deep paths.
+    x_offset: usize,
     /// When true, `clamp` snaps to the bottom on content growth so new
     /// transcript output stays visible.
     stick_to_bottom: bool,
@@ -40,6 +52,7 @@ impl ScrollState {
     pub fn new() -> Self {
         Self {
             offset: 0,
+            x_offset: 0,
             stick_to_bottom: true,
         }
     }
@@ -62,13 +75,41 @@ impl ScrollState {
         self.stick_to_bottom = false;
     }
 
+    /// Leftmost visible display column (0-based). Zero unless the view is panned.
+    pub fn x_offset(&self) -> usize {
+        self.x_offset
+    }
+
+    /// Set the leftmost visible display column (horizontal pan) — the twin of
+    /// [`set_offset`](Self::set_offset). Panning is measured in display columns,
+    /// not bytes or `char`s, so wide/CJK glyphs stay whole. Bind it to `h`/`l`
+    /// or `←`/`→`, or mirror an app-owned column. Follow with
+    /// [`clamp_x`](Self::clamp_x) to keep it within the widest line.
+    pub fn set_x_offset(&mut self, cols: usize) {
+        self.x_offset = cols;
+    }
+
     /// Whether the view is pinned to the newest content.
     pub fn is_stuck_to_bottom(&self) -> bool {
         self.stick_to_bottom
     }
 
-    fn max_offset(content_h: usize, viewport_h: usize) -> usize {
+    /// The largest in-range vertical offset for the given content and viewport
+    /// heights (`content_h - viewport_h`, floored at 0).
+    ///
+    /// Exposed so a host driving the offset from its own model (see
+    /// [`set_offset`](Self::set_offset)) can bound its own key handling with the
+    /// same arithmetic the view uses, rather than reimplementing it.
+    pub fn max_offset(content_h: usize, viewport_h: usize) -> usize {
         content_h.saturating_sub(viewport_h)
+    }
+
+    /// The largest in-range horizontal pan for the given content and viewport
+    /// widths (`content_w - viewport_w`, floored at 0), where `content_w` is the
+    /// widest line's display width. The horizontal peer of
+    /// [`max_offset`](Self::max_offset).
+    pub fn max_x_offset(content_w: usize, viewport_w: usize) -> usize {
+        content_w.saturating_sub(viewport_w)
     }
 
     /// Reconcile the offset with current content/viewport dimensions, honoring
@@ -80,6 +121,14 @@ impl ScrollState {
         } else {
             self.offset = self.offset.min(max);
         }
+    }
+
+    /// Bound the horizontal pan to the widest line: `x_offset` is clamped to
+    /// `content_w - viewport_w`, so panning can't scroll past the end of the
+    /// longest line. `content_w` is that line's display width; `viewport_w` is
+    /// the visible column count. The horizontal peer of [`clamp`](Self::clamp).
+    pub fn clamp_x(&mut self, content_w: usize, viewport_w: usize) {
+        self.x_offset = self.x_offset.min(Self::max_x_offset(content_w, viewport_w));
     }
 
     fn scroll_up(&mut self, lines: usize) {
@@ -168,6 +217,9 @@ pub struct Scroll {
     content_height: usize,
     /// Top visible content row.
     offset: usize,
+    /// Leftmost visible display column; each line is drawn skipping this many
+    /// columns from its left. Zero (the default) is the flush-left fast path.
+    x_offset: usize,
     scrollbar: bool,
 }
 
@@ -181,6 +233,7 @@ impl Scroll {
             lines,
             window_start: 0,
             offset: state.offset(),
+            x_offset: state.x_offset(),
             scrollbar: true,
         }
     }
@@ -206,6 +259,7 @@ impl Scroll {
             window_start: offset,
             content_height,
             offset,
+            x_offset: state.x_offset(),
             scrollbar: true,
         }
     }
@@ -254,12 +308,16 @@ impl View for Scroll {
             };
             let y = area.y + row;
             let mut clip = surface.child(Rect::new(area.x, y, text_width, 1));
+            // Skip `x_offset` display columns from the left of each line (the
+            // horizontal pan), carried across the line's spans. A zero offset is
+            // exactly the flush-left `set_string` path.
+            let mut skip = self.x_offset.min(u16::MAX as usize) as u16;
             let mut x = area.x;
             for span in &line.spans {
                 if x >= area.x + text_width {
                     break;
                 }
-                x = clip.set_string(x, y, span.content.as_ref(), span.style);
+                x = clip.set_string_skip(x, y, span.content.as_ref(), span.style, &mut skip);
             }
         }
 
@@ -306,7 +364,7 @@ mod tests {
     use crate::test_support::{buffer, rainbow_theme, row};
     use crate::view::{RenderCtx, View};
     use ratatui::style::Color;
-    use ratatui::text::Line;
+    use ratatui::text::{Line, Span};
 
     #[test]
     fn scroll_sticks_to_bottom_until_scrolled_up() {
@@ -361,6 +419,74 @@ mod tests {
         s.set_offset(500);
         s.clamp(100, 10);
         assert_eq!(s.offset(), 90, "clamped to content height - viewport");
+    }
+
+    #[test]
+    fn horizontal_pan_offset_clamp_and_max() {
+        let mut s = ScrollState::new();
+        assert_eq!(s.x_offset(), 0, "no pan by default");
+        s.set_x_offset(34);
+        assert_eq!(s.x_offset(), 34);
+        // clamp_x bounds the pan to the widest line minus the viewport (30-10).
+        s.clamp_x(30, 10);
+        assert_eq!(s.x_offset(), 20);
+        // A pan already within bounds is untouched.
+        s.clamp_x(30, 10);
+        assert_eq!(s.x_offset(), 20);
+        // The static bounds helpers expose the arithmetic a host would otherwise
+        // reimplement.
+        assert_eq!(ScrollState::max_offset(100, 10), 90);
+        assert_eq!(ScrollState::max_offset(5, 10), 0, "floors at zero");
+        assert_eq!(ScrollState::max_x_offset(30, 10), 20);
+    }
+
+    #[test]
+    fn scroll_view_pans_long_lines_horizontally() {
+        // One line "0123456789" in a 5-wide viewport panned right by 3 shows the
+        // slice starting at display column 3: "34567".
+        let mut state = ScrollState::new();
+        state.set_x_offset(3);
+        let scroll = Scroll::new(vec![Line::from("0123456789")], &state);
+        let mut buf = buffer(5, 1);
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        scroll.render(area, &mut surface, &ctx);
+        assert_eq!(row(&buf, 0), "34567");
+    }
+
+    #[test]
+    fn horizontal_pan_is_width_aware_across_spans() {
+        // "aa你好bb" columns: a(0) a(1) 你(2-3) 好(4-5) b(6) b(7). Panning to
+        // column 3 straddles 你 (spans 2-3): it is dropped, and the pan carries
+        // across the two spans so 好 and the trailing b's still show.
+        let mut state = ScrollState::new();
+        state.set_x_offset(3);
+        let line = Line::from(vec![
+            Span::raw("aa你"), // first span ends mid-way through the pan
+            Span::raw("好bb"),
+        ]);
+        let scroll = Scroll::new(vec![line], &state);
+        let mut buf = buffer(6, 1);
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+        let area = buf.area;
+        let mut surface = Surface::new(&mut buf, area);
+        scroll.render(area, &mut surface, &ctx);
+        let rendered = row(&buf, 0);
+        assert!(
+            rendered.contains("好"),
+            "resumes at the next whole glyph: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("bb"),
+            "pan carried across spans: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("你"),
+            "straddling wide glyph dropped: {rendered:?}"
+        );
     }
 
     #[test]

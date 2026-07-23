@@ -275,7 +275,11 @@ A windowed view over long content with a scrollbar; `ScrollState` handles
 paging, wheel scroll, and stick-to-bottom. The offset is also **host-drivable**:
 `set_offset(n)` mirrors an app-owned scroll position into the view — the
 vertical peer of `SelectState::select` — for event-loop apps that track their
-own position.
+own position. Content wider than the pane (logs, diffs, wide tables, deep paths)
+**pans horizontally** with `set_x_offset(cols)` (bind to `h`/`l` or `←`/`→`),
+bounded by `clamp_x` — the pan is width-aware, so wide/CJK glyphs never split.
+`ScrollState::max_offset` / `max_x_offset` expose the in-range bounds for a host
+driving the offsets itself.
 [API](https://docs.rs/tuika/latest/tuika/struct.Scroll.html)
 
 <img src="demos/scroll.gif" width="880" alt="Scroll demo">
@@ -284,7 +288,9 @@ own position.
 use tuika::{Scroll, ScrollState, view};
 let mut state = ScrollState::new();          // held by the host across frames
 state.handle(&event, content_h, viewport_h); // built-in wheel/paging, or…
-state.set_offset(app.scroll_row);            // …mirror an app-owned position
+state.set_offset(app.scroll_row);            // …mirror an app-owned row, and
+state.set_x_offset(app.scroll_col);          // …pan wide lines left/right
+state.clamp_x(widest_line_w, viewport_w);    // keep the pan within the content
 view! { node(Scroll::new(lines, &state)) }
 ```
 
