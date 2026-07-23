@@ -2811,6 +2811,8 @@ pub async fn build_with_options(
                     let _ = ask_tx.send(crate::tui::host_ui::AskRequest {
                         prompt: params.prompt,
                         placeholder: params.placeholder,
+                        secret: params.secret,
+                        options: params.options,
                         reply,
                     });
                     match answer.await {

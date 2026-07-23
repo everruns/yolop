@@ -244,6 +244,31 @@ pub struct ConfigField {
     pub env: Option<String>,
     pub required: bool,
     pub description: String,
+    /// Allowed values (from the schema `enum`); when non-empty the setup prompt
+    /// presents a selector instead of a free-text field.
+    pub options: Vec<String>,
+}
+
+impl ConfigField {
+    /// The setup input kind, derived from the field's shape. Extensible: new
+    /// kinds slot in here as the schema vocabulary grows.
+    pub fn kind(&self) -> ConfigFieldKind {
+        if self.secret {
+            ConfigFieldKind::Secret
+        } else if !self.options.is_empty() {
+            ConfigFieldKind::Select
+        } else {
+            ConfigFieldKind::Text
+        }
+    }
+}
+
+/// How a config field is entered during setup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFieldKind {
+    Text,
+    Secret,
+    Select,
 }
 
 impl ExtensionManifest {
@@ -273,6 +298,15 @@ impl ExtensionManifest {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string(),
+                options: spec
+                    .get("enum")
+                    .and_then(Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
             .collect()
     }

@@ -19,12 +19,10 @@
         },
         "endpoint": {
           "type": "string",
-          "env": "LOGFIRE_ENDPOINT",
           "description": "OTLP traces endpoint (default: Logfire US; use logfire-eu for EU projects)"
         },
         "service_name": {
           "type": "string",
-          "env": "OTEL_SERVICE_NAME",
           "description": "Service name on the exported spans (default: yolop)"
         }
       }

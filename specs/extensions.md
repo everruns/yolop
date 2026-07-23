@@ -127,12 +127,23 @@ leak-protection is threefold: entry is out-of-band via `set_extension_secret`
 the agent triggers it but supplies no value and is refused if it passes one; all
 agent-facing reads (`list_extensions`) report a field's `set`/`unset` status,
 never its value; and a redacting `Secret` newtype keeps values out of logs. On
-`enable_extension`, any required `secret` that is unset is prompted for (best
-effort — headless stays inert until the env var is provided). The `logfire`
-extension dogfoods this: `token` (secret, `LOGFIRE_TOKEN`), `endpoint`, and
-`service_name`. Covered by `secret_config_field_is_injected_as_env`,
-`set_extension_secret_refuses_agent_value_and_needs_a_prompt`, and
-`list_reports_secret_status_never_values`.
+`enable_extension`, every required field that is unset is prompted for (setup on
+enable), dispatched by `ConfigField::kind`: `secret` → masked entry stored in the
+credential store; an `enum` field → a **selector**; otherwise free text — both
+persisted to capability config (`SettingsStore::set_capability_config`). The kind
+enum is the extension point: new input kinds slot in without touching callers.
+The prompts ride the one `ui/ask` reverse-request, now carrying `secret` (the
+host masks input and shows `(saved)`, never the value — both TUI overlays honor
+it via `ask_overlay_content`) and `options` (an arrow-key selector). Non-secret
+config reaches SDK servers through `Server::on_config`, a handler the SDK invokes
+once with `initialize.config` at handshake — so an author builds state (an
+exporter, a client) from config without hand-parsing the wire. The `logfire`
+extension dogfoods the whole path: `token` (secret → `LOGFIRE_TOKEN` env),
+`endpoint` and `service_name` (plain config consumed via `on_config`). Covered by
+`secret_config_field_is_injected_as_env`,
+`set_extension_secret_refuses_agent_value_and_needs_a_prompt`,
+`list_reports_secret_status_never_values`, `setup_on_enable_prompts_by_field_kind`,
+and the SDK's `on_config_receives_initialize_config`.
 Traces: an extension that declares `trace` in its manifest (the D4 opt-in)
 receives the session's agentic event stream — each lifecycle event (`turn.*`,
 `reason.*`, `act.*`, `tool.started/completed`, `llm.generation`) forwarded as a

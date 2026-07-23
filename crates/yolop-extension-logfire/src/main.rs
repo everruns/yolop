@@ -27,8 +27,10 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::trace::SdkTracerProvider;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::{Arc, Mutex};
 
 const DEFAULT_ENDPOINT: &str = "https://logfire-us.pydantic.dev/v1/traces";
 const DEFAULT_SERVICE: &str = "yolop";
@@ -39,13 +41,19 @@ fn env_any(keys: &[&str]) -> Option<String> {
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
 }
 
-fn main() -> std::io::Result<()> {
-    let token = env_any(&["LOGFIRE_TOKEN", "LOGFIRE_WRITE_TOKEN"]);
-    let endpoint = env_any(&["LOGFIRE_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"])
-        .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
-    let service = env_any(&["OTEL_SERVICE_NAME", "LOGFIRE_SERVICE_NAME"])
-        .unwrap_or_else(|| DEFAULT_SERVICE.to_string());
+fn config_str(config: &Value, key: &str, env_keys: &[&str], default: &str) -> String {
+    config
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| env_any(env_keys))
+        .unwrap_or_else(|| default.to_string())
+}
 
+fn main() -> std::io::Result<()> {
+    // The token is a `secret` config field, injected by the host as env; never
+    // delivered via `initialize.config`.
+    let token = env_any(&["LOGFIRE_TOKEN", "LOGFIRE_WRITE_TOKEN"]);
     if token.is_none() {
         // stderr is the server's free log channel (yolop drains it to tracing).
         let _ = writeln!(
@@ -55,12 +63,36 @@ fn main() -> std::io::Result<()> {
         );
     }
 
-    let provider = build_provider(token, endpoint, service);
-    let tracer = provider.tracer(TRACER_NAME);
-    let mut exporter = TraceExporter::new(tracer, provider);
+    // Built from `initialize.config` (endpoint/service_name), which arrives
+    // before any trace event; shared with the trace handler via a mutex (the
+    // serve loop is single-threaded, so it's uncontended).
+    let exporter: Arc<Mutex<Option<TraceExporter>>> = Arc::new(Mutex::new(None));
+    let on_config_exporter = exporter.clone();
+    let on_trace_exporter = exporter.clone();
 
     yolop_yep::Server::new("logfire")
-        .on_trace(move |event| exporter.handle(event))
+        .on_config(move |config| {
+            let endpoint = config_str(
+                config,
+                "endpoint",
+                &["LOGFIRE_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"],
+                DEFAULT_ENDPOINT,
+            );
+            let service = config_str(
+                config,
+                "service_name",
+                &["OTEL_SERVICE_NAME", "LOGFIRE_SERVICE_NAME"],
+                DEFAULT_SERVICE,
+            );
+            let provider = build_provider(token.clone(), endpoint, service);
+            let tracer = provider.tracer(TRACER_NAME);
+            *on_config_exporter.lock().unwrap() = Some(TraceExporter::new(tracer, provider));
+        })
+        .on_trace(move |event| {
+            if let Some(exp) = on_trace_exporter.lock().unwrap().as_mut() {
+                exp.handle(event);
+            }
+        })
         .serve()
 }
 

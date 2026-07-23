@@ -51,6 +51,7 @@ type ToolHandler = Box<dyn Fn(&Value) -> ToolResponse + Send>;
 type HookHandler = Box<dyn Fn(&HookFireParams) -> HookResponse + Send>;
 type PromptHandler = Box<dyn Fn() -> String + Send>;
 type TraceHandler = Box<dyn FnMut(&TraceEventParams) + Send>;
+type ConfigHandler = Box<dyn FnMut(&Value) + Send>;
 
 /// Builder for an extension capability server.
 pub struct Server {
@@ -60,6 +61,7 @@ pub struct Server {
     hook: Option<HookHandler>,
     dynamic_prompt: Option<PromptHandler>,
     trace: Option<TraceHandler>,
+    config: Option<ConfigHandler>,
 }
 
 impl Server {
@@ -71,6 +73,7 @@ impl Server {
             hook: None,
             dynamic_prompt: None,
             trace: None,
+            config: None,
         }
     }
 
@@ -124,6 +127,19 @@ impl Server {
         self
     }
 
+    /// Register a handler for the validated `initialize.config` (the host
+    /// delivers non-secret config here). Called once, at handshake, before any
+    /// tool/trace call — so an author can build state (an exporter, a client)
+    /// from config. `secret` config fields never arrive here; they are injected
+    /// as env by the host.
+    pub fn on_config<F>(mut self, handler: F) -> Self
+    where
+        F: FnMut(&Value) + Send + 'static,
+    {
+        self.config = Some(Box::new(handler));
+        self
+    }
+
     /// Run the stdio serve loop until EOF. Blocks the calling thread.
     pub fn serve(mut self) -> std::io::Result<()> {
         let stdin = std::io::stdin();
@@ -165,9 +181,17 @@ impl Server {
         }
     }
 
-    fn handle_request(&self, id: u64, method: &str, params: Value) -> String {
+    fn handle_request(&mut self, id: u64, method: &str, params: Value) -> String {
         match method {
-            "initialize" => self.initialize_result(id, &params),
+            "initialize" => {
+                // Deliver the validated config to the author's handler once,
+                // before serving any call.
+                if let Some(handler) = self.config.as_mut() {
+                    let config = params.get("config").cloned().unwrap_or(Value::Null);
+                    handler(&config);
+                }
+                self.initialize_result(id, &params)
+            }
             "tool/call" => self.tool_call_result(id, params),
             "hook/fire" => {
                 let params: HookFireParams = serde_json::from_value(params).unwrap_or_default();
@@ -356,6 +380,25 @@ mod tests {
         );
         assert!(none.is_none(), "notifications never get a response");
         assert_eq!(seen.lock().unwrap().as_slice(), &["tool.completed"]);
+    }
+
+    #[test]
+    fn on_config_receives_initialize_config() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Value>> = Arc::new(Mutex::new(Value::Null));
+        let sink = seen.clone();
+        let mut server = Server::new("cfg").on_config(move |config| {
+            *sink.lock().unwrap() = config.clone();
+        });
+        server.dispatch(
+            &json!({ "id": 1, "method": "initialize",
+                     "params": { "protocol_version": "1.0",
+                                 "config": { "endpoint": "https://x", "region": "eu" } } })
+            .to_string(),
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen["endpoint"], "https://x");
+        assert_eq!(seen["region"], "eu");
     }
 
     #[test]

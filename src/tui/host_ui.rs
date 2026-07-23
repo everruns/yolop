@@ -18,6 +18,10 @@ use tokio::sync::{mpsc, oneshot};
 pub struct AskRequest {
     pub prompt: String,
     pub placeholder: Option<String>,
+    /// Mask input and never echo the answer (credentials).
+    pub secret: bool,
+    /// When non-empty, present a selector over these options.
+    pub options: Vec<String>,
     pub reply: oneshot::Sender<AskAnswer>,
 }
 

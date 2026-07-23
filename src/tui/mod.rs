@@ -366,6 +366,12 @@ pub(crate) struct PendingAsk {
     prompt: String,
     placeholder: Option<String>,
     value: String,
+    /// Mask the input and never echo the answer (credentials).
+    secret: bool,
+    /// Selector options; when non-empty the overlay is a picker, not a field.
+    options: Vec<String>,
+    /// Highlighted option index (selector mode only).
+    selected: usize,
     reply: Option<oneshot::Sender<crate::tui::host_ui::AskAnswer>>,
 }
 
@@ -1206,6 +1212,9 @@ impl App {
                 prompt: request.prompt,
                 placeholder: request.placeholder,
                 value: String::new(),
+                secret: request.secret,
+                options: request.options,
+                selected: 0,
                 reply: Some(request.reply),
             });
             applied_ui_command = true;
@@ -1865,6 +1874,32 @@ impl App {
         let Some(ask) = self.pending_ask.as_mut() else {
             return;
         };
+        // Selector mode: arrow keys move, Enter picks the highlighted option.
+        if !ask.options.is_empty() {
+            match key.code {
+                KeyCode::Up => {
+                    ask.selected = ask.selected.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    ask.selected = (ask.selected + 1).min(ask.options.len() - 1);
+                }
+                KeyCode::Enter => {
+                    let answer = ask.options.get(ask.selected).cloned().unwrap_or_default();
+                    self.resolve_ask(crate::tui::host_ui::AskAnswer {
+                        answer,
+                        cancelled: false,
+                    });
+                }
+                KeyCode::Esc => {
+                    self.resolve_ask(crate::tui::host_ui::AskAnswer {
+                        answer: String::new(),
+                        cancelled: true,
+                    });
+                }
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Enter => {
                 let answer = ask.value.clone();
@@ -1894,6 +1929,9 @@ impl App {
         if let Some(mut ask) = self.pending_ask.take() {
             let shown = if answer.cancelled {
                 "(cancelled)".to_string()
+            } else if ask.secret {
+                // Never echo a secret answer into the transcript.
+                "(saved)".to_string()
             } else {
                 answer.answer.clone()
             };

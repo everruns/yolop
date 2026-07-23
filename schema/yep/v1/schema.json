@@ -296,6 +296,13 @@
     "UiAskParams": {
       "description": "Server → host `ui/ask` params: ask the user a question and wait for a typed\nanswer. The host prompts interactively (TUI); in headless/ACP hosts with no\nprompt surface the request is refused.",
       "properties": {
+        "options": {
+          "description": "When non-empty, the host presents a selector over these options instead\nof a free-text field; the answer is the chosen option. Extensible: future\ninput kinds add fields here without breaking older peers (unknown fields\nare ignored, missing ones default).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "placeholder": {
           "description": "Optional placeholder / hint for the input field.",
           "type": [
@@ -307,6 +314,10 @@
           "default": "",
           "description": "The question shown to the user.",
           "type": "string"
+        },
+        "secret": {
+          "description": "When true, the host masks the typed input and never echoes the answer\n(for credentials). The value still returns in `UiAskResult`.",
+          "type": "boolean"
         }
       },
       "type": "object"

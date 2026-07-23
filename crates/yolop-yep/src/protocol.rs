@@ -294,6 +294,16 @@ pub struct UiAskParams {
     /// Optional placeholder / hint for the input field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
+    /// When true, the host masks the typed input and never echoes the answer
+    /// (for credentials). The value still returns in `UiAskResult`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
+    /// When non-empty, the host presents a selector over these options instead
+    /// of a free-text field; the answer is the chosen option. Extensible: future
+    /// input kinds add fields here without breaking older peers (unknown fields
+    /// are ignored, missing ones default).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
 }
 
 /// Host → server `ui/ask` result: the user's answer (empty + `cancelled` when
