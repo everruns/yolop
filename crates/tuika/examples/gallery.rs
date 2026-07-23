@@ -14,7 +14,9 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
-use tuika::{HyperlinkBackend, Loader, ProgressBar, Spinner, SpinnerStyle, Text, Theme, view};
+use tuika::{
+    FocusScope, HyperlinkBackend, Loader, ProgressBar, Spinner, SpinnerStyle, Text, Theme, view,
+};
 
 fn build(frame: u64, theme: &Theme) -> tuika::Element {
     let labeled = |style: SpinnerStyle, label: &str| -> tuika::Element {
@@ -63,6 +65,28 @@ fn build(frame: u64, theme: &Theme) -> tuika::Element {
                         Line::from(Span::styled("centered", theme.accent_style())).centered(),
                         Line::from(Span::styled("right", theme.muted_style())).right_aligned(),
                     ]))
+                }
+            }
+            fixed(3) {
+                // FocusScope drives each pane's border independently of the root
+                // context; the right pane also takes an explicit accent color.
+                row(gap = 1) {
+                    grow(1) {
+                        node(FocusScope::focused(view! {
+                            boxed(title = " focused ") { text("theme.border_focused") }
+                        }))
+                    }
+                    grow(1) {
+                        node(FocusScope::unfocused(view! {
+                            boxed(title = " idle ") { text("theme.border") }
+                        }))
+                    }
+                    grow(1) {
+                        boxed(title = Line::from(Span::styled(" danger ", theme.accent_style())),
+                              border_color = ratatui::style::Color::Red) {
+                            text("explicit color")
+                        }
+                    }
                 }
             }
             grow(1) { spacer() }

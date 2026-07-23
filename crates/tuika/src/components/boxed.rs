@@ -1,10 +1,11 @@
 //! Bordered box — a single-child container with border, padding, background,
 //! and an optional title. Focus-aware: its border recolors when the render
-//! context reports focus. This is `tuika`'s framing primitive (Pi's
-//! `DynamicBorder` / `Box`).
+//! context reports focus, and [`Boxed::border_color`] overrides that with an
+//! explicit color for semantic frames (accent/danger modals, per-pane colors).
+//! This is `tuika`'s framing primitive (Pi's `DynamicBorder` / `Box`).
 
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 
 use crate::geometry::{Padding, Size};
@@ -58,6 +59,7 @@ use super::text::{aligned_x, line_width};
 pub struct Boxed {
     child: Element,
     border: BorderStyle,
+    border_color: Option<Color>,
     padding: Padding,
     title: Option<Line<'static>>,
     title_bottom: Option<Line<'static>>,
@@ -70,6 +72,7 @@ impl Boxed {
         Self {
             child,
             border: BorderStyle::Rounded,
+            border_color: None,
             padding: Padding::symmetric(1, 0),
             title: None,
             title_bottom: None,
@@ -80,6 +83,21 @@ impl Boxed {
     /// Set the border style (`BorderStyle::None` removes the border).
     pub fn border(mut self, border: BorderStyle) -> Self {
         self.border = border;
+        self
+    }
+
+    /// Paint the border in an explicit `color`, overriding the theme.
+    ///
+    /// By default the border follows the theme and the render context's focus
+    /// flag (`theme.border` / `theme.border_focused`) — right for panes that
+    /// take focus. Set this when the border encodes a *semantic* meaning the
+    /// theme's border role can't express: an accent or danger frame on a modal,
+    /// or a specific per-pane color a host resolves itself. The override wins
+    /// over both theme and focus. To drive focused/unfocused coloring for a
+    /// subtree instead, wrap it in a [`FocusScope`](crate::FocusScope) and leave
+    /// this unset.
+    pub fn border_color(mut self, color: Color) -> Self {
+        self.border_color = Some(color);
         self
     }
 
@@ -168,7 +186,12 @@ impl View for Boxed {
             fill.fill(bg);
         }
         if self.has_border() {
-            let border_style = Style::default().fg(ctx.theme.border_color(ctx.focused));
+            // An explicit `border_color` wins over the theme; otherwise the
+            // theme resolves it from the context's focus flag.
+            let color = self
+                .border_color
+                .unwrap_or_else(|| ctx.theme.border_color(ctx.focused));
+            let border_style = Style::default().fg(color);
             surface.draw_border(area, self.border.glyphs(), border_style);
             if let Some(title) = &self.title {
                 draw_title(surface, area, area.y, title, Alignment::Left);
@@ -322,6 +345,26 @@ mod tests {
             t.border_focused,
             "focused border uses theme.border_focused"
         );
+    }
+
+    #[test]
+    fn explicit_border_color_overrides_theme_and_focus() {
+        let t = rainbow_theme();
+        let make = |focused: bool| {
+            let mut buf = buffer(8, 3);
+            let area = buf.area;
+            let ctx = RenderCtx::new(&t).with_focus(focused);
+            let boxed = Boxed::new(element(Text::raw("x"))).border_color(Color::Indexed(201));
+            let mut surface = Surface::new(&mut buf, area);
+            boxed.render(area, &mut surface, &ctx);
+            buf[(0, 0)].fg
+        };
+        // The explicit color wins regardless of the context's focus flag and
+        // ignores both theme.border and theme.border_focused.
+        assert_eq!(make(false), Color::Indexed(201));
+        assert_eq!(make(true), Color::Indexed(201));
+        assert_ne!(Color::Indexed(201), t.border);
+        assert_ne!(Color::Indexed(201), t.border_focused);
     }
 
     #[test]
