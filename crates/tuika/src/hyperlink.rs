@@ -152,6 +152,41 @@ fn sanitize_url(url: &str, policy: LinkPolicy) -> Option<String> {
     None
 }
 
+/// Return the visible HTTP(S) URL under a Ctrl+left-button release.
+///
+/// The coordinates are resolved against the rendered buffer. Opening the URL
+/// remains the host's responsibility.
+pub fn ctrl_click_url(
+    event: &crate::Mouse,
+    buffer: &ratatui::buffer::Buffer,
+    area: ratatui::layout::Rect,
+) -> Option<String> {
+    if event.kind != crate::MouseKind::Up(crate::MouseButton::Left)
+        || !event.ctrl
+        || event.shift
+        || event.alt
+        || event.row < area.y
+        || event.row >= area.bottom()
+        || event.column < area.x
+        || event.column >= area.right()
+    {
+        return None;
+    }
+    let mut row = String::new();
+    let mut clicked_bytes = 0..0;
+    for column in area.x..area.right() {
+        let start = row.len();
+        row.push_str(buffer[(column, event.row)].symbol());
+        if column == event.column {
+            clicked_bytes = start..row.len();
+        }
+    }
+    find_links(&row, LinkPolicy::default())
+        .into_iter()
+        .find(|(start, end)| *start < clicked_bytes.end && clicked_bytes.start < *end)
+        .map(|(start, end)| row[start..end].to_string())
+}
+
 /// Byte ranges of every linkable URL in `s` under `policy`, left to right,
 /// non-overlapping. Each match runs to the next whitespace with trailing
 /// sentence punctuation trimmed, matching how the host styles links; a
@@ -532,6 +567,40 @@ mod tests {
         let out = bytes(&line);
         assert!(!out.contains("\x1b]8;;"));
         assert!(out.contains("no links here"));
+    }
+
+    #[test]
+    fn ctrl_click_returns_visible_url_under_pointer() {
+        use crate::{Mouse, MouseButton, MouseKind};
+        use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+        let area = Rect::new(3, 2, 40, 1);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 50, 5));
+        buffer.set_string(
+            area.x,
+            area.y,
+            "see https://example.com/docs now",
+            Style::default(),
+        );
+        let mut event = Mouse::at(MouseKind::Up(MouseButton::Left), 15, area.y);
+        event.ctrl = true;
+        assert_eq!(
+            ctrl_click_url(&event, &buffer, area).as_deref(),
+            Some("https://example.com/docs")
+        );
+    }
+
+    #[test]
+    fn ctrl_click_ignores_plain_clicks_and_non_url_text() {
+        use crate::{Mouse, MouseButton, MouseKind};
+        use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+        let area = Rect::new(0, 0, 30, 1);
+        let mut buffer = Buffer::empty(area);
+        buffer.set_string(0, 0, "https://example.com plain", Style::default());
+        let plain = Mouse::at(MouseKind::Up(MouseButton::Left), 10, 0);
+        let mut text = Mouse::at(MouseKind::Up(MouseButton::Left), 23, 0);
+        text.ctrl = true;
+        assert_eq!(ctrl_click_url(&plain, &buffer, area), None);
+        assert_eq!(ctrl_click_url(&text, &buffer, area), None);
     }
 
     #[test]

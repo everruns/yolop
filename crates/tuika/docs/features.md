@@ -77,9 +77,14 @@ event model (`MouseKind` carries `Down`/`Up`/`Drag`, `Moved`, and scroll, with
 <img src="demos/mouse.gif" width="880" alt="Mouse demo: a left-drag selection highlight growing across the phrase 'the quick brown fox jumps over the lazy dog', and a row of clickable Run / Diff / Cancel regions with one highlighted as active.">
 
 - `SelectionState` turns a left-button `Down → Drag → Up` gesture into a
-  `SelectionRange`; `selected_text(buffer, area, range)` reads the selected text
+  `SelectionRange`, and a same-cell double click selects the word under the
+  pointer. Call `resolve(buffer, area)` after rendering to resolve pending word
+  boundaries; `selected_text(buffer, area, range)` then reads the selected text
   back out of the rendered buffer (wide glyphs intact) and `highlight(buffer,
   area, range, style)` paints it in.
+- `ctrl_click_url(event, buffer, area)` returns the visible bare `http://` or
+  `https://` URL under a Ctrl+left-button release. The host remains responsible
+  for opening it; Yolop's fullscreen host opens it in the system browser.
 - `HitMap<T>` maps screen rects to values (a button, a link, a row); the
   last-pushed match wins, so children and overlays registered after their
   parents take precedence. `ClickTracker` turns a same-cell `Down`/`Up` into a

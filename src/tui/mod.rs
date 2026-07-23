@@ -245,6 +245,8 @@ pub struct App {
     selection: tuika::SelectionState,
     selection_area: Rect,
     pending_copy: bool,
+    pending_link_click: Option<tuika::Mouse>,
+    pending_open_url: Option<String>,
     /// Drives the terminal's native OSC 9;4 progress indicator (Ghostty top
     /// bar / taskbar) while a turn runs. Works in both renderers. Enabled only
     /// for real TUI sessions via [`App::enable_native_progress`] so tests and
@@ -571,6 +573,8 @@ impl App {
             selection: tuika::SelectionState::new(),
             selection_area: Rect::ZERO,
             pending_copy: false,
+            pending_link_click: None,
+            pending_open_url: None,
             term_progress: tuika::TerminalProgress::new(),
             native_progress: false,
             // Tests run in-memory so recall never reads or appends to the real
@@ -611,6 +615,23 @@ impl App {
 
     /// The active full-screen transcript selection, if any (read by the draw to
     /// highlight and copy it).
+    pub(crate) fn resolve_selection(&mut self, buffer: &ratatui::buffer::Buffer) {
+        if self.selection.resolve(buffer, self.selection_area) {
+            self.pending_copy = true;
+        }
+    }
+
+    pub(crate) fn resolve_link_click(&mut self, buffer: &ratatui::buffer::Buffer) {
+        let Some(event) = self.pending_link_click.take() else {
+            return;
+        };
+        self.pending_open_url = tuika::ctrl_click_url(&event, buffer, self.selection_area);
+    }
+
+    pub(crate) fn take_pending_open_url(&mut self) -> Option<String> {
+        self.pending_open_url.take()
+    }
+
     pub(crate) fn selection_range(&self) -> Option<tuika::SelectionRange> {
         self.selection.range()
     }
@@ -635,6 +656,12 @@ impl App {
         else {
             return false;
         };
+        if m.kind == tuika::MouseKind::Up(tuika::MouseButton::Left) && m.ctrl && !m.shift && !m.alt
+        {
+            self.selection.clear();
+            self.pending_link_click = Some(m);
+            return true;
+        }
         if !m.plain() {
             return false;
         }
@@ -1086,6 +1113,12 @@ impl App {
             maybe_reanchor_inline_viewport(terminal)?;
         }
         terminal.draw(|f| draw(f, self))?;
+
+        if let Some(url) = self.take_pending_open_url()
+            && let Err(error) = crate::auth::oauth_flow::open_browser(&url)
+        {
+            tracing::warn!(%error, %url, "failed to open ctrl-clicked link");
+        }
 
         // 1) drain background turn events
         if let Some(rx) = self.rx.as_mut() {
@@ -4961,6 +4994,34 @@ mod tests {
         test.app.trim_transcript();
         assert_eq!(test.app.lines.len(), MAX_RETAINED_TRANSCRIPT_LINES);
         assert_eq!(test.app.printed_lines, MAX_RETAINED_TRANSCRIPT_LINES);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_ctrl_click_resolves_visible_url() {
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        let area = Rect::new(2, 3, 40, 1);
+        test.app.set_selection_area(area);
+        let event = MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: area.x + 10,
+            row: area.y,
+            modifiers: KeyModifiers::CONTROL,
+        };
+        assert!(test.app.handle_fullscreen_selection(event));
+        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 50, 8));
+        buffer.set_string(
+            area.x,
+            area.y,
+            "see https://example.com/docs now",
+            Style::default(),
+        );
+        test.app.resolve_link_click(&buffer);
+        assert_eq!(
+            test.app.take_pending_open_url().as_deref(),
+            Some("https://example.com/docs")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

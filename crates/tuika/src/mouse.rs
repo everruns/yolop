@@ -26,6 +26,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use std::time::{Duration, Instant};
 
 use crate::event::{Mouse, MouseButton, MouseKind};
 
@@ -78,18 +79,20 @@ impl SelectionRange {
     }
 }
 
-/// Tracks a left-drag text selection across mouse events.
+/// Tracks click-drag and double-click text selection across mouse events.
 ///
 /// Left `Down` starts (and clears any previous selection); `Drag` extends;
-/// `Up` finishes. A press with no drag (a plain click) leaves no selection.
-/// Every other event is ignored. `handle` returns `true` when the selection
-/// changed, so a host knows to redraw.
+/// `Up` finishes. Two plain clicks on the same cell within the double-click
+/// interval queue a word selection. Call [`Self::resolve`] after rendering so
+/// word boundaries can be read from the current buffer.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SelectionState {
     anchor: (u16, u16),
     cursor: (u16, u16),
     pressed: bool,
     selecting: bool,
+    last_click: Option<((u16, u16), Instant)>,
+    pending_word: Option<(u16, u16)>,
 }
 
 impl SelectionState {
@@ -114,16 +117,46 @@ impl SelectionState {
             MouseKind::Drag(MouseButton::Left) if self.pressed => {
                 self.cursor = (m.column, m.row);
                 self.selecting = self.cursor != self.anchor;
+                self.last_click = None;
+                self.pending_word = None;
                 true
             }
             MouseKind::Up(MouseButton::Left) if self.pressed => {
                 self.cursor = (m.column, m.row);
                 self.pressed = false;
                 self.selecting = self.cursor != self.anchor;
+                if self.selecting {
+                    self.last_click = None;
+                } else {
+                    let position = self.cursor;
+                    let now = Instant::now();
+                    let is_double = self.last_click.is_some_and(|(previous, at)| {
+                        previous == position && now.duration_since(at) <= DOUBLE_CLICK_INTERVAL
+                    });
+                    self.last_click = Some((position, now));
+                    self.pending_word = is_double.then_some(position);
+                }
                 true
             }
             _ => false,
         }
+    }
+
+    /// Resolve a pending double-click against the freshly rendered buffer.
+    ///
+    /// Returns `true` when a word was selected. Word characters are Unicode
+    /// alphanumerics plus `_`; punctuation is selected as a contiguous run.
+    pub fn resolve(&mut self, buffer: &Buffer, area: Rect) -> bool {
+        let Some((column, row)) = self.pending_word.take() else {
+            return false;
+        };
+        let Some(range) = word_at(buffer, area, column, row) else {
+            return false;
+        };
+        self.anchor = range.start;
+        self.cursor = range.end;
+        self.selecting = true;
+        true
     }
 
     /// Clear the selection (e.g. on Esc or a new turn).
@@ -141,6 +174,48 @@ impl SelectionState {
     pub fn is_active(&self) -> bool {
         self.selecting
     }
+}
+
+const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CellClass {
+    Word,
+    Punctuation,
+    Blank,
+}
+
+fn cell_class(buffer: &Buffer, column: u16, row: u16) -> CellClass {
+    let symbol = buffer[(column, row)].symbol();
+    let Some(ch) = symbol.chars().next() else {
+        return CellClass::Blank;
+    };
+    if ch.is_whitespace() {
+        CellClass::Blank
+    } else if ch.is_alphanumeric() || ch == '_' {
+        CellClass::Word
+    } else {
+        CellClass::Punctuation
+    }
+}
+
+fn word_at(buffer: &Buffer, area: Rect, column: u16, row: u16) -> Option<SelectionRange> {
+    if !in_rect(area, column, row) {
+        return None;
+    }
+    let class = cell_class(buffer, column, row);
+    if class == CellClass::Blank {
+        return None;
+    }
+    let mut left = column;
+    while left > area.x && cell_class(buffer, left - 1, row) == class {
+        left -= 1;
+    }
+    let mut right = column;
+    while right + 1 < area.right() && cell_class(buffer, right + 1, row) == class {
+        right += 1;
+    }
+    Some(SelectionRange::between((left, row), (right, row)))
 }
 
 /// Extract the selected text from `buffer`, reading the grid the way a terminal
@@ -351,6 +426,37 @@ mod tests {
         assert!(sel.range().is_some());
         // Pressing again to start a new gesture must drop the old selection.
         assert!(sel.handle(&down(1, 1)));
+        assert!(sel.range().is_none());
+    }
+
+    #[test]
+    fn double_click_selects_the_word_under_the_pointer() {
+        let theme = Theme::default();
+        let buf = crate::testing::render(&Text::raw("hello, brave_world!"), 19, 1, &theme);
+        let mut sel = SelectionState::new();
+        sel.handle(&down(9, 0));
+        sel.handle(&up(9, 0));
+        sel.handle(&down(9, 0));
+        sel.handle(&up(9, 0));
+
+        assert!(sel.resolve(&buf, buf.area));
+        let range = sel.range().expect("double click selects a word");
+        assert_eq!(range.start, (7, 0));
+        assert_eq!(range.end, (17, 0));
+        assert_eq!(selected_text(&buf, buf.area, range), "brave_world");
+    }
+
+    #[test]
+    fn double_click_on_blank_space_does_not_select() {
+        let theme = Theme::default();
+        let buf = crate::testing::render(&Text::raw("hi"), 5, 1, &theme);
+        let mut sel = SelectionState::new();
+        sel.handle(&down(4, 0));
+        sel.handle(&up(4, 0));
+        sel.handle(&down(4, 0));
+        sel.handle(&up(4, 0));
+
+        assert!(!sel.resolve(&buf, buf.area));
         assert!(sel.range().is_none());
     }
 
