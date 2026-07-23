@@ -75,6 +75,10 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
         KeyTarget::ProactiveWake => Value::Bool(settings.proactive_wake_enabled()),
         KeyTarget::Worktrees => Value::String(settings.worktrees_mode().as_str().to_string()),
         KeyTarget::Sandbox => Value::String(settings.sandbox_mode().as_str().to_string()),
+        KeyTarget::Theme => settings
+            .theme()
+            .map(|t| Value::String(t.to_string()))
+            .unwrap_or(Value::Null),
         KeyTarget::Model(p) => settings
             .model_for(p)
             .map(|s| Value::String(s.to_string()))

@@ -247,6 +247,10 @@ pub struct Settings {
     pub worktrees: WorktreesMode,
     /// Sandbox boundary for arbitrary shell commands.
     pub sandbox: SandboxMode,
+    /// Interactive-TUI color theme: `yolop` (yolop's own palette) or a bundled
+    /// tuika preset name. `None` means the default (yolop's palette). The
+    /// `--theme` flag overrides this for a single run.
+    pub theme: Option<String>,
     /// Global MCP servers (`[mcp.servers.<name>]` in settings.toml). Repo `.mcp.json` entries override these by name.
     pub mcp: McpSettings,
     /// Ordered harness capability overrides (`[[capabilities]]` in settings.toml).
@@ -268,6 +272,7 @@ impl Default for Settings {
             proactive_wake: true,
             worktrees: WorktreesMode::Auto,
             sandbox: SandboxMode::WorkspaceWrite,
+            theme: None,
             mcp: McpSettings::default(),
             capabilities: Vec::new(),
         }
@@ -316,6 +321,10 @@ impl Settings {
             .and_then(Value::as_str)
             .and_then(SandboxMode::parse)
             .unwrap_or_default();
+        let theme = table
+            .get("theme")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let string_map = |key: &str| {
             let mut map = BTreeMap::new();
             if let Some(t) = table.get(key).and_then(Value::as_table) {
@@ -344,6 +353,7 @@ impl Settings {
             proactive_wake,
             worktrees,
             sandbox,
+            theme,
             mcp: parse_mcp_settings(table),
             capabilities: parse_capabilities_table(table),
         }
@@ -388,6 +398,14 @@ impl Settings {
                 "sandbox_mode".to_string(),
                 Value::String(self.sandbox.as_str().to_string()),
             );
+        }
+        // Only persist a real selection; `yolop`/unset both mean the default.
+        if let Some(theme) = self
+            .theme
+            .as_deref()
+            .filter(|t| !t.eq_ignore_ascii_case("yolop"))
+        {
+            table.insert("theme".to_string(), Value::String(theme.to_string()));
         }
         let mut insert_map = |key: &str, map: &BTreeMap<String, String>| {
             if !map.is_empty() {
@@ -474,6 +492,14 @@ impl Settings {
 
     pub fn sandbox_mode(&self) -> SandboxMode {
         self.sandbox
+    }
+
+    /// The persisted TUI theme name, if the user selected a non-default one.
+    /// `None` (and `yolop`) both mean yolop's own palette.
+    pub fn theme(&self) -> Option<&str> {
+        self.theme
+            .as_deref()
+            .filter(|t| !t.eq_ignore_ascii_case("yolop"))
     }
 
     pub fn capability_overrides_for(&self, id: &str) -> Vec<(usize, &CapabilityOverride)> {
@@ -646,6 +672,12 @@ impl SettingsStore {
     pub fn set_attribution(&self, enabled: bool) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         guard.attribution = enabled;
+        save_to(&self.path, &guard)
+    }
+
+    pub fn set_theme(&self, theme: Option<String>) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.theme = theme;
         save_to(&self.path, &guard)
     }
 
@@ -841,6 +873,36 @@ mod tests {
         assert_eq!(
             reloaded.snapshot().default_provider.as_deref(),
             Some("anthropic")
+        );
+    }
+
+    #[test]
+    fn theme_roundtrip_via_disk() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        assert_eq!(store.snapshot().theme(), None);
+
+        store
+            .set_theme(Some("gruvbox-dark".to_string()))
+            .expect("save");
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            on_disk.contains("theme = \"gruvbox-dark\""),
+            "expected TOML key/value, got: {on_disk}"
+        );
+        assert_eq!(
+            SettingsStore::open(path.clone()).snapshot().theme(),
+            Some("gruvbox-dark")
+        );
+
+        // `yolop` and clearing both mean the default and stay out of the file.
+        store.set_theme(Some("yolop".to_string())).expect("save");
+        assert_eq!(store.snapshot().theme(), None);
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            !on_disk.contains("theme ="),
+            "yolop should not be persisted, got: {on_disk}"
         );
     }
 

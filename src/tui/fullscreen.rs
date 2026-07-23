@@ -40,8 +40,43 @@ use super::{
     TEXT_PRIMARY,
 };
 
-/// The full-screen renderer's tuika [`Theme`](tuika::Theme), built from yolop's
-/// own palette.
+/// Startup-selected theme override. `None` (the default) renders yolop's own
+/// palette ([`native_theme`]); a `--theme <name>` / config selection sets it
+/// once to a bundled tuika preset before the TUI starts. Written a single time
+/// at startup, then only read, so a plain `OnceLock` is enough — no locking on
+/// the render path.
+static THEME_OVERRIDE: std::sync::OnceLock<tuika::Theme> = std::sync::OnceLock::new();
+
+/// Install the process-wide theme override. Call once, before the TUI runs;
+/// later calls are ignored (the first selection wins).
+pub(crate) fn set_theme_override(theme: tuika::Theme) {
+    let _ = THEME_OVERRIDE.set(theme);
+}
+
+/// Resolve a theme name to a palette: a bundled tuika preset by name, or
+/// `"yolop"` for yolop's own [`native_theme`]. Returns `None` for anything else
+/// so the caller can report the valid choices.
+pub(crate) fn resolve_theme(name: &str) -> Option<tuika::Theme> {
+    if name.eq_ignore_ascii_case("yolop") {
+        return Some(native_theme());
+    }
+    tuika::theme_by_name(name)
+}
+
+/// The names a `--theme` value may take: `yolop` plus every bundled preset.
+pub(crate) fn theme_names() -> Vec<&'static str> {
+    std::iter::once("yolop")
+        .chain(tuika::themes::PRESETS.iter().map(|p| p.name))
+        .collect()
+}
+
+/// The full-screen renderer's tuika [`Theme`](tuika::Theme): the startup
+/// override if one was selected, otherwise yolop's own [`native_theme`].
+pub(crate) fn yolop_theme() -> tuika::Theme {
+    THEME_OVERRIDE.get().copied().unwrap_or_else(native_theme)
+}
+
+/// yolop's own palette.
 ///
 /// NOTE (item 6): tuika's `Theme::default()` is the toolkit's neutral identity
 /// (a red-on-dark look), deliberately not any host's brand. yolop owns its
@@ -49,7 +84,7 @@ use super::{
 /// `Scroll` scrollbar, `Boxed` borders, `SelectList` selection — renders in
 /// yolop's palette instead of the toolkit default. `background: Reset` lets the
 /// terminal's own background own the alternate screen.
-pub(crate) fn yolop_theme() -> tuika::Theme {
+pub(crate) fn native_theme() -> tuika::Theme {
     tuika::Theme {
         background: Color::Reset,
         surface: PANEL_BG,
@@ -413,4 +448,30 @@ fn draw_background_overlay(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     draw_panel_overlay(f, area, lines, None);
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_theme_maps_yolop_and_presets() {
+        // `yolop` is yolop's own palette, not a tuika preset.
+        assert_eq!(resolve_theme("yolop"), Some(native_theme()));
+        assert_eq!(resolve_theme("YOLOP"), Some(native_theme()));
+        // Every bundled preset resolves to its tuika struct.
+        for p in tuika::themes::PRESETS {
+            assert_eq!(resolve_theme(p.name), Some(p.theme));
+        }
+        assert_eq!(resolve_theme("no-such-theme"), None);
+    }
+
+    #[test]
+    fn theme_names_lists_yolop_first_then_presets() {
+        let names = theme_names();
+        assert_eq!(names.first(), Some(&"yolop"));
+        for p in tuika::themes::PRESETS {
+            assert!(names.contains(&p.name), "missing {}", p.name);
+        }
+    }
 }
