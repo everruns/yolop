@@ -248,19 +248,6 @@ pub(crate) fn draw_recent_transcript(f: &mut ratatui::Frame, area: Rect, app: &A
     f.render_widget(Paragraph::new(rendered), render_area);
 }
 
-/// Whether a transcript line belongs in the inline viewport mirror.
-///
-/// Startup banner system lines stay scrollback-only. Runtime system notices
-/// (image paste, turn status, etc.) should appear above the composer even when
-/// they arrive before the first user message.
-pub(crate) fn include_line_in_recent_transcript_mirror(
-    line: &ChatLine,
-    index: usize,
-    startup_banner_len: usize,
-) -> bool {
-    !matches!(line.author, Author::System) || index >= startup_banner_len
-}
-
 pub(crate) fn recent_transcript_lines(
     app: &App,
     width: usize,
@@ -279,13 +266,8 @@ pub(crate) fn recent_transcript_lines(
     let mirror_lines: Vec<&ChatLine> = app
         .lines
         .iter()
-        .enumerate()
         .rev()
-        .filter(|(index, line)| {
-            include_line_in_recent_transcript_mirror(line, *index, app.startup_banner_len)
-        })
         .take(RECENT_TRANSCRIPT_SOURCE_LINES)
-        .map(|(_, line)| line)
         .collect();
 
     for chat in mirror_lines {
@@ -333,14 +315,10 @@ pub(crate) fn append_transcript_range(
     out: &mut Vec<Line<'static>>,
     lines: &[ChatLine],
     start: usize,
-    startup_banner_len: usize,
     width: usize,
     mut prev_author: Option<Author>,
 ) -> Option<Author> {
-    for (index, chat) in lines.iter().enumerate().skip(start) {
-        if !include_line_in_recent_transcript_mirror(chat, index, startup_banner_len) {
-            continue;
-        }
+    for chat in lines.iter().skip(start) {
         if let Some(prev) = &prev_author
             && should_insert_chat_gap(prev, Some(&chat.author))
         {
