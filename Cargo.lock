@@ -1210,6 +1210,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
+ "futures-core",
  "mio",
  "parking_lot",
  "rustix",
@@ -6793,6 +6794,8 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "textwrap",
+ "tokio",
+ "tokio-stream",
  "unicode-segmentation",
  "unicode-width",
 ]

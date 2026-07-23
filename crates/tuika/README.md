@@ -17,7 +17,9 @@ terminal.
 
 It is a published, self-contained crate that depends only on `ratatui`,
 `crossterm`, `textwrap`, `unicode-segmentation`, and `unicode-width`, and is
-host-agnostic — it knows nothing about the application embedding it.
+host-agnostic — it knows nothing about the application embedding it. (The
+optional `async` feature adds Tokio for [`AsyncRunner`](#terminal-lifecycle-and-runner);
+it is off by default.)
 
 ## Install
 
@@ -165,6 +167,7 @@ Each enters the alternate screen; press `q` (or `esc`) to quit.
 | [`select`](examples/select.rs)   | `cargo run -p tuika --example select`     | `SelectState` + `SelectList` (stateful-widget idiom) |
 | [`overlay`](examples/overlay.rs)  | `cargo run -p tuika --example overlay`    | `OverlaySpec` centered dialog + input routing      |
 | [`ratatui_dashboard`](examples/ratatui_dashboard.rs) | `cargo run -p tuika --example ratatui_dashboard` | mixed Ratatui widgets + responsive live data |
+| [`async_dashboard`](examples/async_dashboard.rs) | `cargo run -p tuika --example async_dashboard --features async` | `AsyncRunner` polling on a Tokio runtime, no shared state |
 | [`mouse`](examples/mouse.rs)     | `cargo run -p tuika --example mouse`      | drag-to-select + highlight + OSC 52 copy, clickable buttons |
 | [`image`](examples/image.rs)     | `cargo run -p tuika --example image`      | `Image` over reserved cells (Kitty/iTerm2/Sixel), alt-text fallback |
 
@@ -251,8 +254,42 @@ cursor visibility themselves.
 
 `Runner` is an optional synchronous event loop for dashboards and small tools.
 It owns `TerminalSession`, frame scheduling, Crossterm event translation, and
-data-driven redraw checks. Async applications can keep their existing loop and
-call `paint` directly.
+data-driven redraw checks.
+
+`AsyncRunner` (behind `features = ["async"]`) is the same loop for applications
+that already have a Tokio runtime — anything doing network or disk I/O. It ties
+`TerminalSession`, `paint`, and `translate_event` to crossterm's async
+`EventStream` and a tick timer in one `tokio::select!`, so the host keeps a
+single event loop instead of bolting `spawn_blocking` + a shared `Live` +
+`Notify` + a stop flag onto the synchronous `Runner` to feed it. The loop threads
+one owned `state` value through a `view` closure (`&state` → the frame) and an
+`async` `update` closure (`&mut state` on each `Signal` — a tick or an event —
+and it may `.await`):
+
+```rust,ignore
+use std::ops::ControlFlow;
+use std::time::Duration;
+use tuika::{AsyncRunner, Event, KeyCode, RunnerConfig, Signal, Text, Theme, element};
+
+let runner = AsyncRunner::new(RunnerConfig { tick_rate: Duration::from_secs(2) });
+let mut stats = Stats::default();
+runner.run(
+    &Theme::default(),
+    &mut stats,
+    |stats, _frame| element(Text::raw(stats.summary())),
+    async |stats, signal| match signal {
+        Signal::Tick => { stats.ingest(fetch(&url).await?); ControlFlow::Continue(()) }
+        Signal::Event(Event::Key(k)) if k.plain() && k.code == KeyCode::Char('q') =>
+            ControlFlow::Break(()),
+        _ => ControlFlow::Continue(()),
+    },
+).await?;
+```
+
+Enabling `async` adds Tokio (timer + `select!`) and crossterm's `event-stream`
+feature; it stays off by default so sync-only hosts pull in no runtime. The
+[`async_dashboard`](examples/async_dashboard.rs) example is the runnable
+counterpart to `ratatui_dashboard` with no shared state at all.
 
 ## Native terminal progress
 

@@ -31,10 +31,17 @@
 //! Existing ratatui widgets should normally be wrapped in [`RatatuiView`],
 //! which preserves Tuika clipping without exposing the frame buffer.
 //! [`TerminalSession`] and [`Runner`] are optional host-side lifecycle helpers.
+//! With `feature = "async"`, `AsyncRunner` (in the `async_runner` module) is the
+//! same loop for hosts that already run on Tokio.
 
 #![warn(missing_docs)]
+// On docs.rs (nightly, `--cfg docsrs`) annotate feature-gated items with the
+// feature that enables them. A no-op on stable builds.
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 pub mod anim;
+#[cfg(feature = "async")]
+pub mod async_runner;
 pub mod clipboard;
 pub mod components;
 pub mod event;
@@ -64,6 +71,8 @@ pub mod width;
 
 // Curated top-level re-exports so callers write `tuika::Flex`, `tuika::Theme`,
 // etc. for the common surface without deep paths.
+#[cfg(feature = "async")]
+pub use async_runner::{AsyncRunner, Signal};
 pub use clipboard::{osc52, write_clipboard};
 pub use components::{
     Boxed, CodeBlock, Column, Constrained, Flex, FocusScope, ImageResolver, KeyHints, Loader,
