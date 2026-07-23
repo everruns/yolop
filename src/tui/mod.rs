@@ -900,14 +900,18 @@ impl App {
         });
     }
 
-    /// The full-screen transcript as wrapped lines, memoized across frames.
+    /// Refresh the memoized full-screen transcript wrapping for `width` and
+    /// return the total wrapped-line count.
     ///
     /// Re-wraps only the lines appended since the last call while the width and
     /// [`transcript_generation`](Self::transcript_generation) are unchanged; a
     /// width change or a generation bump (transcript reset) rebuilds from
-    /// scratch. Output is identical to a full
-    /// [`render::append_transcript_range`] pass over the whole history.
-    fn full_transcript_lines_cached(&mut self, width: usize) -> Vec<Line<'static>> {
+    /// scratch. The cached rows match a full [`render::append_transcript_range`]
+    /// pass over the whole history. Read them back with [`transcript_window`] so
+    /// a caller can clone just the slice it paints instead of the whole cache.
+    ///
+    /// [`transcript_window`]: Self::transcript_window
+    fn refresh_transcript_cache(&mut self, width: usize) -> usize {
         // Move the cache out so we can borrow `self.lines` immutably alongside.
         let mut cache = std::mem::take(&mut self.transcript_cache);
         let stale = cache.width != width
@@ -929,9 +933,28 @@ impl App {
             cache.prev_author.take(),
         );
         cache.source_len = self.lines.len();
-        let out = cache.lines.clone();
+        let len = cache.lines.len();
         self.transcript_cache = cache;
-        out
+        len
+    }
+
+    /// Clone the cached wrapped rows in `start..end`. Call
+    /// [`refresh_transcript_cache`](Self::refresh_transcript_cache) first; `end`
+    /// must not exceed the count it returned. Cloning just the visible window
+    /// (rather than the whole cache) is what keeps a full-screen frame
+    /// O(viewport) for a long transcript.
+    fn transcript_window(&self, start: usize, end: usize) -> Vec<Line<'static>> {
+        self.transcript_cache.lines[start..end].to_vec()
+    }
+
+    /// The whole cached transcript, cloned. Convenience over
+    /// [`refresh_transcript_cache`](Self::refresh_transcript_cache) +
+    /// [`transcript_window`](Self::transcript_window) for callers that want every
+    /// row; the full-screen renderer takes only the visible window instead.
+    #[cfg(test)]
+    fn full_transcript_lines_cached(&mut self, width: usize) -> Vec<Line<'static>> {
+        let len = self.refresh_transcript_cache(width);
+        self.transcript_window(0, len)
     }
 
     /// Drop transcript history beyond [`MAX_RETAINED_TRANSCRIPT_LINES`] so a very
