@@ -57,6 +57,7 @@ pub mod runner;
 pub mod style;
 pub mod surface;
 pub mod testing;
+pub mod themes;
 pub mod view;
 pub mod width;
 
@@ -87,6 +88,7 @@ pub use ratatui_view::RatatuiView;
 pub use runner::{Runner, RunnerConfig};
 pub use style::{BorderStyle, CodeTheme, Theme};
 pub use surface::Surface;
+pub use themes::{NamedTheme, by_name as theme_by_name};
 pub use view::{Element, RenderCtx, View, element};
 pub use width::{grapheme_cols, str_cols};
 
