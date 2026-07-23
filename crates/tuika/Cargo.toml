@@ -12,15 +12,32 @@ readme = "README.md"
 keywords = ["tui", "terminal", "ratatui", "widgets", "layout"]
 categories = ["command-line-interface"]
 
+# Build docs with every feature so the optional `async` runner is documented,
+# and set the `docsrs` cfg that turns on per-item feature badges (see lib.rs).
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 # No `#[bench]` fns in the lib, and the default libtest bench harness rejects
 # Criterion's CLI flags — disable it so `cargo bench` runs only the Criterion
 # targets below.
 [lib]
 bench = false
 
+[features]
+# The async runner (`AsyncRunner`). Off by default so sync-only hosts don't pull
+# in a Tokio runtime. Enabling it adds Tokio (timer + `select!` macro), a
+# `StreamExt` for polling the event stream, and crossterm's async `EventStream`.
+async = ["dep:tokio", "dep:tokio-stream", "crossterm/event-stream"]
+
 [dependencies]
 ratatui = "0.30.2"
 crossterm = "0.29"
+# Async runner only (feature = "async"). `time` for the tick interval, `macros`
+# for `tokio::select!`; the host application brings its own runtime, so no `rt`.
+tokio = { version = "1", features = ["time", "macros"], optional = true }
+# `StreamExt::{next, filter_map}` for driving the crossterm `EventStream`.
+tokio-stream = { version = "0.1", optional = true }
 textwrap = "0.16"
 unicode-segmentation = "1"
 unicode-width = "0.2"
@@ -45,6 +62,11 @@ criterion = { version = "0.8", default-features = false, features = [
 # the committed baseline / CI regression gate. Needs Valgrind + a version-matched
 # `iai-callgrind-runner` installed (`cargo install iai-callgrind-runner`).
 iai-callgrind = "0.16.1"
+# The `async` runner's tests drive `AsyncRunner` on a Tokio runtime with a fake
+# event stream; `test-util` gives paused-clock control so ticks are deterministic
+# instead of wall-clock-timed. Reachable only when `--features async` is on.
+tokio = { version = "1", features = ["rt", "macros", "time", "test-util"] }
+tokio-stream = "0.1"
 
 [[bench]]
 name = "markdown"
@@ -61,3 +83,7 @@ harness = false
 [[bench]]
 name = "scroll_iai"
 harness = false
+
+[[example]]
+name = "async_dashboard"
+required-features = ["async"]
