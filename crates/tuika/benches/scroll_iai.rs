@@ -55,10 +55,9 @@ fn scroll_at_bottom(rows: usize) -> Scroll {
     Scroll::new(transcript(rows), &state)
 }
 
-#[library_benchmark]
-#[bench::small(scroll_at_bottom(100))]
-#[bench::large(scroll_at_bottom(100_000))]
-fn render(scroll: Scroll) -> usize {
+/// Paint `scroll` into a fresh viewport buffer and fold the painted cells so the
+/// render can't be optimized away.
+fn paint_count(scroll: &Scroll) -> usize {
     let theme = Theme::default();
     let ctx = RenderCtx::new(&theme);
     let area = Rect::new(0, 0, WIDTH, HEIGHT);
@@ -67,7 +66,6 @@ fn render(scroll: Scroll) -> usize {
         let mut surface = Surface::new(&mut buffer, area);
         scroll.render(black_box(area), &mut surface, &ctx);
     }
-    // Fold the painted cells so the render can't be optimized away.
     let mut painted = 0usize;
     for y in 0..HEIGHT {
         for x in 0..WIDTH {
@@ -76,6 +74,14 @@ fn render(scroll: Scroll) -> usize {
             }
         }
     }
+    painted
+}
+
+#[library_benchmark]
+#[bench::small(scroll_at_bottom(100))]
+#[bench::large(scroll_at_bottom(100_000))]
+fn render(scroll: Scroll) -> usize {
+    let painted = paint_count(&scroll);
     // Isolate the O(viewport) paint: dropping the `large` transcript here would
     // be an O(rows) free that swamps the render we're measuring (and would make
     // `render.large` scale with the transcript, defeating the whole point of the
@@ -83,6 +89,37 @@ fn render(scroll: Scroll) -> usize {
     // wall-clock `scroll` bench avoids this by building the `Scroll` once,
     // outside the measured closure.
     std::mem::forget(scroll);
+    black_box(painted)
+}
+
+// `frame_full`: the per-frame cost the renderer paid *before* windowing — clone
+// the whole transcript into a fresh `Scroll`, paint, drop the clone. O(rows).
+// The input `content` is leaked so only the frame's own clone+drop is measured,
+// not a second free of the kept-alive corpus. (Doc comments can't sit on a
+// `#[library_benchmark]` fn, so this is a plain comment.)
+#[library_benchmark]
+#[bench::large(transcript(100_000))]
+fn frame_full(content: Vec<Line<'static>>) -> usize {
+    let mut state = ScrollState::new();
+    state.clamp(content.len(), HEIGHT as usize);
+    let painted = paint_count(&Scroll::new(content.clone(), &state));
+    std::mem::forget(content);
+    black_box(painted)
+}
+
+// `frame_windowed`: the windowed per-frame cost — clone only the visible slice
+// into `Scroll::windowed`, paint, drop it. O(viewport), so it stays far below
+// `frame_full` at the same transcript size.
+#[library_benchmark]
+#[bench::large(transcript(100_000))]
+fn frame_windowed(content: Vec<Line<'static>>) -> usize {
+    let mut state = ScrollState::new();
+    state.clamp(content.len(), HEIGHT as usize);
+    let offset = state.offset();
+    let end = (offset + HEIGHT as usize).min(content.len());
+    let window = content[offset..end].to_vec();
+    let painted = paint_count(&Scroll::windowed(window, content.len(), &state));
+    std::mem::forget(content);
     black_box(painted)
 }
 
@@ -101,6 +138,6 @@ fn paging(rows: usize) -> usize {
 
 library_benchmark_group!(
     name = scroll_iai;
-    benchmarks = render, paging
+    benchmarks = render, frame_full, frame_windowed, paging
 );
 main!(library_benchmark_groups = scroll_iai);

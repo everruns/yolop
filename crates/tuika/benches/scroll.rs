@@ -9,7 +9,7 @@
 //! full-screen renderer: it holds the *whole* pre-wrapped transcript but paints
 //! only the `area.height` rows at the current offset. The defining property is
 //! that a frame costs O(viewport), not O(transcript) — these benches exist to
-//! keep it that way. Three groups:
+//! keep it that way. Four groups:
 //!
 //! - `render` — paint one frame at the bottom (stick-to-bottom) offset across a
 //!   sweep of transcript *sizes* at a fixed viewport. The times must stay flat
@@ -20,6 +20,12 @@
 //! - `paging` — drive [`ScrollState`] from top to bottom one page at a time.
 //!   Each event is O(1); the traversal is O(transcript / viewport), and this
 //!   guards the event path against sneaking in per-row work.
+//! - `frame` — the realistic per-frame cost of feeding [`Scroll`]: build the
+//!   rows, construct, paint, drop. `full` clones the whole transcript into
+//!   [`Scroll::new`] every frame (what the renderer paid before windowing);
+//!   `windowed` clones only the visible slice into [`Scroll::windowed`]. The gap
+//!   between them, widening with transcript size, is the win — `full` is
+//!   O(transcript), `windowed` is O(viewport).
 
 use std::hint::black_box;
 
@@ -128,5 +134,44 @@ fn paging(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, render, render_offset, paging);
+fn frame(c: &mut Criterion) {
+    let theme = Theme::default();
+    let ctx = RenderCtx::new(&theme);
+    let area = Rect::new(0, 0, WIDTH, HEIGHT);
+    let h = HEIGHT as usize;
+    let mut group = c.benchmark_group("scroll/frame");
+    for &(name, rows) in SIZES {
+        let content = transcript(rows);
+        let mut state = ScrollState::new();
+        state.clamp(rows, h); // bottom-stuck
+        let offset = state.offset();
+        let mut buffer = Buffer::empty(area);
+
+        // Pre-windowing: clone the whole transcript into a fresh Scroll, paint,
+        // drop it — every frame. O(transcript).
+        group.bench_with_input(BenchmarkId::new("full", name), &content, |b, content| {
+            b.iter(|| {
+                let scroll = Scroll::new(content.clone(), &state);
+                paint_frame(&scroll, &mut buffer, area, &ctx);
+            });
+        });
+
+        // Windowed: clone only the visible slice. O(viewport), flat across sizes.
+        group.bench_with_input(
+            BenchmarkId::new("windowed", name),
+            &content,
+            |b, content| {
+                b.iter(|| {
+                    let end = (offset + h).min(content.len());
+                    let window = content[offset..end].to_vec();
+                    let scroll = Scroll::windowed(window, content.len(), &state);
+                    paint_frame(&scroll, &mut buffer, area, &ctx);
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(benches, render, render_offset, paging, frame);
 criterion_main!(benches);

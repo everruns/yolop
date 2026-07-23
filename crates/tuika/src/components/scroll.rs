@@ -127,22 +127,67 @@ impl ScrollState {
     }
 }
 
-/// A windowed view of `lines`, showing the slice at `offset` and a scrollbar
+/// A windowed view of content, showing the slice at `offset` and a scrollbar
 /// when content overflows.
+///
+/// Two constructors trade off who holds the rows. [`new`](Scroll::new) owns the
+/// *whole* content and paints the visible slice out of it — simplest, and right
+/// for short lists. [`windowed`](Scroll::windowed) is handed *only* the visible
+/// slice plus the true content height; for very long content that turns a frame
+/// from O(content) (clone every row in, drop it out) into O(viewport). Both draw
+/// identically; only the ownership differs.
 ///
 /// ![scroll demo](https://raw.githubusercontent.com/everruns/yolop/main/crates/tuika/docs/demos/scroll.gif)
 pub struct Scroll {
+    /// The rows this view holds: the whole content in [`new`](Scroll::new), or
+    /// just `content[window_start..]` in [`windowed`](Scroll::windowed).
     lines: Vec<Line<'static>>,
+    /// Absolute content-row index of `lines[0]`. Zero for `new`; `offset` for
+    /// `windowed`, so `render` maps a content row to a `lines` index the same
+    /// way in both modes.
+    window_start: usize,
+    /// Total content height in rows, even when `lines` holds only a window.
+    content_height: usize,
+    /// Top visible content row.
     offset: usize,
     scrollbar: bool,
 }
 
 impl Scroll {
-    /// Build a viewport over `lines`, windowed at `state`'s offset.
+    /// Build a viewport over the whole `lines`, painting the slice at `state`'s
+    /// offset. The view owns every row; for content far taller than the viewport
+    /// prefer [`windowed`](Scroll::windowed).
     pub fn new(lines: Vec<Line<'static>>, state: &ScrollState) -> Self {
         Self {
+            content_height: lines.len(),
             lines,
+            window_start: 0,
             offset: state.offset(),
+            scrollbar: true,
+        }
+    }
+
+    /// Build a viewport that already holds only the visible window —
+    /// `content[offset .. offset + viewport_height]`, where `offset` is
+    /// `state`'s offset — instead of the whole content. `content_height` is the
+    /// full row count, so the scrollbar and [`measure`](View::measure) still
+    /// reflect the entire content.
+    ///
+    /// This is the O(viewport) path for very long content: the caller slices its
+    /// own cache once per frame rather than handing over — and dropping — every
+    /// row. The window may be shorter than the viewport near the bottom;
+    /// `render` simply stops at its end.
+    pub fn windowed(
+        window: Vec<Line<'static>>,
+        content_height: usize,
+        state: &ScrollState,
+    ) -> Self {
+        let offset = state.offset();
+        Self {
+            lines: window,
+            window_start: offset,
+            content_height,
+            offset,
             scrollbar: true,
         }
     }
@@ -153,9 +198,9 @@ impl Scroll {
         self
     }
 
-    /// Total content height in rows (one per line).
+    /// Total content height in rows (one per line), even in windowed mode.
     pub fn content_height(&self) -> usize {
-        self.lines.len()
+        self.content_height
     }
 }
 
@@ -180,9 +225,12 @@ impl View for Scroll {
             area.width
         };
 
-        let start = self.offset;
         for row in 0..area.height {
-            let idx = start + row as usize;
+            // Map the content row (offset + row) to an index into `lines`, which
+            // begins at `window_start` (0 in full mode, `offset` when windowed).
+            let Some(idx) = (self.offset + row as usize).checked_sub(self.window_start) else {
+                break;
+            };
             let Some(line) = self.lines.get(idx) else {
                 break;
             };
@@ -314,6 +362,44 @@ mod tests {
             c == "█" || c == "│"
         });
         assert!(has_bar, "expected a scrollbar in the right column");
+    }
+
+    #[test]
+    fn scroll_windowed_matches_full_render() {
+        // `windowed` holds only the visible slice but must paint byte-for-byte
+        // identically to `new` (which owns the whole content), scrollbar and all.
+        let content: Vec<Line<'static>> =
+            (0..1000).map(|i| Line::from(format!("line{i}"))).collect();
+        let (width, height) = (12u16, 6u16);
+        let theme = Theme::default();
+        let ctx = RenderCtx::new(&theme);
+
+        // A mid-content offset (not top, not bottom) exercises the window origin.
+        let mut state = ScrollState::new();
+        state.clamp(content.len(), height as usize);
+        state.jump_to_top();
+        let end = Event::Key(Key::new(KeyCode::PageDown));
+        state.handle(&end, content.len(), height as usize); // one page down
+        let offset = state.offset();
+        assert!(offset > 0 && offset < content.len() - height as usize);
+
+        let render = |scroll: Scroll| {
+            let mut buf = buffer(width, height);
+            let area = buf.area;
+            let mut surface = Surface::new(&mut buf, area);
+            scroll.render(area, &mut surface, &ctx);
+            buf
+        };
+
+        let full = render(Scroll::new(content.clone(), &state));
+        // The window is exactly what `windowed`'s caller would slice.
+        let window = content[offset..offset + height as usize].to_vec();
+        let windowed = render(Scroll::windowed(window, content.len(), &state));
+
+        assert_eq!(
+            full.content, windowed.content,
+            "windowed render diverged from the full render"
+        );
     }
 
     #[test]

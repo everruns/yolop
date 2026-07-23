@@ -133,24 +133,34 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let preview_line = render::preview_slot_line(&state, area.width);
 
     // The transcript is a real Scroll over the *full* history, bound to the
-    // persisted ScrollState. Short content is top-padded so it rests at the
-    // bottom (the inline scrollback feel); taller content scrolls, and
+    // persisted ScrollState. Metrics + offset are reconciled before rendering so
+    // the mouse-wheel / paging handlers (which reuse these metrics) clamp
+    // correctly. Content height is `usize`: a long transcript wraps past
+    // u16::MAX rows (see `ScrollState`).
+    let viewport_h = transcript_height as usize;
+    let content_h = app.refresh_transcript_cache(inner_w);
+    app.scroll_metrics = (content_h, viewport_h);
+    app.scroll.clamp(content_h, viewport_h);
+
+    // Hand `Scroll` only what it paints. Short content is top-padded so it rests
+    // at the bottom (the inline scrollback feel) and handed over whole — it's
+    // tiny. Taller content is *windowed*: we clone just `[offset .. offset+h]`
+    // out of the cache instead of the whole transcript, so a frame stays
+    // O(viewport) rather than cloning (and dropping) every retained row.
     // stick-to-bottom keeps the newest line visible as the turn streams.
-    let scroll_lines = pad_to_bottom(app.full_transcript_lines_cached(inner_w), transcript_height);
-    let scroll_content_h = scroll_lines.len();
-    // Record metrics + reconcile the offset before rendering, so the mouse-wheel
-    // / paging handlers (which reuse these metrics) clamp correctly. Metrics are
-    // `usize`: a long transcript wraps past u16::MAX rows (see `ScrollState`).
-    app.scroll_metrics = (scroll_content_h, transcript_height as usize);
-    app.scroll
-        .clamp(scroll_content_h, transcript_height as usize);
+    let transcript = if content_h <= viewport_h {
+        let all = pad_to_bottom(app.transcript_window(0, content_h), transcript_height);
+        Scroll::new(all, &app.scroll)
+    } else {
+        let offset = app.scroll.offset();
+        let window = app.transcript_window(offset, (offset + viewport_h).min(content_h));
+        Scroll::windowed(window, content_h, &app.scroll)
+    };
 
     // Probes recover the rects tuika assigns so the host can place the terminal
     // cursor inside the composer and bound mouse selection to the transcript.
     let transcript_probe = RectProbe::new();
     let input_probe = RectProbe::new();
-
-    let transcript = Scroll::new(scroll_lines, &app.scroll);
 
     // The composer is a real tuika TextInput reading full-screen's own composer
     // model of record (`app.composer`) — no per-frame mirror from a
