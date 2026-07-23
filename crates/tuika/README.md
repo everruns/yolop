@@ -165,6 +165,7 @@ Each enters the alternate screen; press `q` (or `esc`) to quit.
 | [`overlay`](examples/overlay.rs)  | `cargo run -p tuika --example overlay`    | `OverlaySpec` centered dialog + input routing      |
 | [`ratatui_dashboard`](examples/ratatui_dashboard.rs) | `cargo run -p tuika --example ratatui_dashboard` | mixed Ratatui widgets + responsive live data |
 | [`mouse`](examples/mouse.rs)     | `cargo run -p tuika --example mouse`      | drag-to-select + highlight + OSC 52 copy, clickable buttons |
+| [`image`](examples/image.rs)     | `cargo run -p tuika --example image`      | Kitty-protocol `Image` over reserved cells, alt-text fallback |
 
 (Embedded in yolop, the gallery is also reachable as `yolop tuika-gallery`.)
 

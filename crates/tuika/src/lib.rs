@@ -45,6 +45,7 @@ pub mod geometry;
 pub mod highlight;
 pub mod host;
 pub mod hyperlink;
+pub mod image;
 pub mod layout;
 pub mod live;
 pub mod markdown;
@@ -79,6 +80,7 @@ pub use hyperlink::{
     HyperlinkBackend, LinkPolicy, ctrl_click_url, is_web_url, osc8, osc8_with, write_line,
     write_line_with,
 };
+pub use image::{Image, ImageData, ImageLayer, ImageSupport};
 pub use layout::{Align, Dimension, Direction, Justify, LayoutStyle};
 pub use live::{Live, LiveView, RedrawHandle};
 pub use mouse::{

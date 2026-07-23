@@ -174,11 +174,59 @@ Terminal and ConEmu (taskbar), WezTerm, Konsole, mintty. Others swallow the
 unknown OSC. Writes are best-effort — a failed progress write never disrupts the
 session.
 
+## Images (Kitty graphics protocol)
+
+Paint real pixels — an avatar, a chart, a rendered diagram — over the cells a
+view reserves for them, using the Kitty graphics protocol.
+[API](https://docs.rs/tuika/latest/tuika/image/index.html)
+
+Images are the one out-of-band feature that does **not** degrade harmlessly on
+its own: a terminal that can't read the graphics escape may paint the payload as
+garbage rather than swallowing it. So this is the only feature gated on real
+capability detection — `ImageSupport::detect()` reads the environment (`TERM`,
+`TERM_PROGRAM`, `KITTY_WINDOW_ID`, the Ghostty marker) and defaults to *no*
+graphics, where the same `Image` view falls back to an alt-text placeholder.
+
+Decoding stays in the host (it's a heavy dependency, kept out of tuika like
+syntax highlighting is): a host hands in raw RGBA via `ImageData::from_rgba`.
+Because a graphics escape paints at the cursor — unlike the cursor-neutral OSC
+sequences above — emission is a two-step draw:
+
+- `Image` reserves a `cols × rows` cell footprint and, on render, records its
+  placement into a shared `ImageLayer` (the ownership shape of `RectProbe`).
+- **After** `terminal.draw()` flushes the frame, `ImageLayer::emit(out)` writes
+  each image's escape at its cell origin, bracketed by a cursor save/restore so
+  ratatui's cursor model is undisturbed. Then `ImageLayer::clear()` resets it
+  for the next frame.
+
+```rust
+use tuika::{Image, ImageData, ImageLayer, ImageSupport};
+
+let data = ImageData::from_rgba(2, 2, vec![0u8; 2 * 2 * 4]).unwrap();
+let layer = ImageLayer::new();
+let _image = Image::new(data, 20, 10)      // 20×10 cells on screen
+    .support(ImageSupport::detect())
+    .in_layer(&layer)
+    .alt("a 2×2 swatch");                  // shown where graphics aren't supported
+```
+
+The emitted bytes (base64 payload, chunked; `q=2` suppresses the terminal's
+replies so they aren't read as input; `ST` is `ESC \`):
+
+```text
+ESC _ G f=32,s=<px_w>,v=<px_h>,a=T,c=<cols>,r=<rows>,q=2,m=<more> ; <base64> ST
+```
+
+**Supported terminals:** Kitty, Ghostty, WezTerm, Konsole. Others show the
+alt-text fallback. See the `image` example (`cargo run -p tuika --example
+image`). This is the first phase — iTerm2/Sixel protocols and markdown
+`![alt](url)` are planned follow-ups.
+
 ## See also
 
 - [Component gallery](components.md) — the widgets that paint the grid.
 - [API documentation](https://docs.rs/tuika) — the complete reference for the
-  `hyperlink`, `mouse`, `clipboard`, and `native` modules.
+  `hyperlink`, `mouse`, `clipboard`, `native`, and `image` modules.
 - [Runnable examples](../examples/) — `mouse` records the selection/clipboard
   workflow live; quit with `q`/`esc`.
 - [README](../README.md) — the model behind the toolkit.
