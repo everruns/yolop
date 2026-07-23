@@ -21,6 +21,8 @@ pub(crate) struct PresentedTranscriptLine {
 pub(crate) struct PresentationState {
     pub stream_preview: Option<StreamPreview>,
     pub busy: bool,
+    /// Messages accepted by the composer while the active turn is running.
+    pub queued_messages: usize,
     pub turn_activity: Option<String>,
     pub model_id: String,
     pub provider_name: String,
@@ -394,6 +396,7 @@ mod tests {
         PresentationState {
             stream_preview: None,
             busy: false,
+            queued_messages: 0,
             turn_activity: None,
             model_id: "gpt-5.5".to_string(),
             provider_name: "openai".to_string(),
