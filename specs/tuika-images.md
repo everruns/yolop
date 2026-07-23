@@ -39,15 +39,17 @@ Scope is deliberately phased:
     and renders a marked, link-styled placeholder (the alt text, or the URL when
     there is no alt) instead of silently dropping the URL. No new API, no
     streaming-cache change — it flows through the existing inline machinery.
-  - **3b: pixels in markdown (done, one-shot view).** `Markdown::images`
-    resolves each image URL to `ImageData` via a host-supplied resolver (the
-    `Highlighter` pattern again — markdown has only a URL, never pixels), the
-    parser promotes a resolved `![alt](url)` to a block `MdItem::Image`, `flatten`
-    reserves its rows and reports where it landed, and the view overlays the
-    standalone `Image` component there — reusing its protocol emission and alt
-    fallback. **Remaining:** the same for the streaming `MarkdownState`, which
-    means threading image placements through the settled-prefix cache and
-    exposing them alongside `lines()` for the host to emit.
+  - **3b: pixels in markdown (done).** `Markdown::images` and
+    `MarkdownState::with_image_resolver` resolve each image URL to `ImageData`
+    via a host-supplied resolver (the `Highlighter` pattern again — markdown has
+    only a URL, never pixels), the parser promotes a resolved `![alt](url)` to a
+    block `MdItem::Image`, `flatten` reserves its rows and reports where it
+    landed, and the view overlays the standalone `Image` component there — reusing
+    its protocol emission and alt fallback. Streaming works too: block-image
+    placements are threaded through the settled-prefix cache (fixed rows for
+    settled blocks, re-derived each frame for the in-flight tail) and published
+    via `MarkdownState::images()` as `MarkdownImage`s, which a host paints at
+    `rect(area)` after drawing `lines()`.
 
 ## Design
 

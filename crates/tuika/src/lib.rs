@@ -66,10 +66,10 @@ pub mod width;
 // etc. for the common surface without deep paths.
 pub use clipboard::{osc52, write_clipboard};
 pub use components::{
-    Boxed, CodeBlock, Constrained, Flex, ImageResolver, KeyHints, Loader, Markdown, MarkdownState,
-    Paragraph, ProgressBar, Responsive, Rule, Scroll, ScrollState, SelectList, SelectOutcome,
-    SelectState, Spacer, Spinner, SpinnerStyle, StatusBar, Tabs, TabsState, Text, TextInput,
-    TextInputEvent, TextInputMode, TextInputState, Wrap, markdown_to_lines, wrap_lines,
+    Boxed, CodeBlock, Constrained, Flex, ImageResolver, KeyHints, Loader, Markdown, MarkdownImage,
+    MarkdownState, Paragraph, ProgressBar, Responsive, Rule, Scroll, ScrollState, SelectList,
+    SelectOutcome, SelectState, Spacer, Spinner, SpinnerStyle, StatusBar, Tabs, TabsState, Text,
+    TextInput, TextInputEvent, TextInputMode, TextInputState, Wrap, markdown_to_lines, wrap_lines,
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 pub use focus::FocusRegistry;
