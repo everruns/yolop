@@ -239,11 +239,14 @@ ESC ] 1337 ; File=inline=1;width=<cols>;height=<rows>;preserveAspectRatio=0;size
 iTerm2 (its own protocol). Others show the alt-text fallback. See the `image`
 example (`cargo run -p tuika --example image`).
 
-Markdown `![alt](url)` no longer drops the URL: the [`Markdown`](components.md)
-renderer shows a marked, link-styled placeholder (the alt text, or the URL when
-there is no alt). Painting the pixels inline in markdown — resolving the URL to
-`ImageData` and emitting through an `ImageLayer` — and the iTerm2/Sixel
-protocols are planned follow-ups.
+Markdown `![alt](url)` renders too. The [`Markdown`](components.md) view's
+`.images(resolver, support, layer)` takes a host `ImageResolver` (URL →
+`ImageData` — markdown carries only the URL, never pixels, exactly like the code
+`Highlighter` seam), reserves a block for each resolved image, and paints it with
+the same `Image` machinery — real pixels where supported, alt text otherwise.
+Unresolved images stay a marked, link-styled inline placeholder rather than
+dropping the URL. (Pixels in the *streaming* `MarkdownState`, and the Sixel
+protocol, are the remaining follow-ups.)
 
 ## See also
 
