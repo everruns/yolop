@@ -50,8 +50,19 @@ fn build(frame: u64, theme: &Theme) -> tuika::Element {
                 }
             }
             fixed(3) {
-                boxed(title = Line::from(Span::styled(" loader ", theme.accent_style()))) {
+                boxed(title = Line::from(Span::styled(" loader ", theme.accent_style())),
+                      title_bottom = Line::from(Span::styled(" 3 of 3 ", theme.muted_style()))) {
                     node(Loader::new(frame, "working…").hint("esc to quit"))
+                }
+            }
+            fixed(5) {
+                boxed(title = Line::from(Span::styled(" alignment ", theme.accent_style()))) {
+                    // Per-line alignment carried straight off each `Line`.
+                    node(Text::new(vec![
+                        Line::from(Span::styled("left", theme.muted_style())),
+                        Line::from(Span::styled("centered", theme.accent_style())).centered(),
+                        Line::from(Span::styled("right", theme.muted_style())).right_aligned(),
+                    ]))
                 }
             }
             grow(1) { spacer() }

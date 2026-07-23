@@ -65,14 +65,28 @@ clipped. `Paragraph` word-wraps plain text in one style; `Wrap` word-wraps
 pre-styled lines while preserving per-span styles.
 [API](https://docs.rs/tuika/latest/tuika/struct.Text.html)
 
+Horizontal alignment is honored. `Text` and `Wrap` read each `Line`'s
+`alignment` (unset = flush-left), so centered titles, right-aligned totals, and
+centered empty-state messages built by an existing formatting layer render as
+intended; `Wrap` carries a line's alignment onto every reflowed row.
+`Paragraph` takes one alignment for the whole block via `.alignment(..)`.
+
 <img src="demos/text.gif" width="880" alt="Text demo">
 
 ```rust
-use tuika::{Paragraph, view};
+use ratatui::layout::Alignment;
+use ratatui::text::Line;
+use tuika::{Paragraph, Text, view};
 view! {
     col(gap = 1) {
-        text("a plain line")
-        node(Paragraph::new("word-wrapped prose", style))
+        // Per-line alignment on pre-styled lines.
+        node(Text::new(vec![
+            Line::from("flush left"),
+            Line::from("centered").centered(),
+            Line::from("flush right").right_aligned(),
+        ]))
+        // One alignment for a wrapped plain-text block.
+        node(Paragraph::new("word-wrapped prose", style).alignment(Alignment::Center))
     }
 }
 ```
@@ -181,6 +195,9 @@ view! {
 ### `Boxed`
 
 A border + padding + title wrapping one child; the border color is focus-aware.
+An optional `title_bottom` rides the bottom border — the slot for a `1 of 3`
+position counter, a footer legend, or a hint. Both titles honor their `Line`
+alignment; unset, the top title is flush-left and the bottom title flush-right.
 [API](https://docs.rs/tuika/latest/tuika/struct.Boxed.html)
 
 <img src="demos/boxed.gif" width="880" alt="Boxed demo">
@@ -188,7 +205,7 @@ A border + padding + title wrapping one child; the border color is focus-aware.
 ```rust
 use tuika::{BorderStyle, view};
 view! {
-    boxed(title = " title ", border = BorderStyle::Rounded) {
+    boxed(title = " title ", title_bottom = " 1/3 ", border = BorderStyle::Rounded) {
         node(child)
     }
 }
