@@ -42,6 +42,7 @@
 pub mod anim;
 #[cfg(feature = "async")]
 pub mod async_runner;
+pub mod capabilities;
 pub mod clipboard;
 pub mod components;
 pub mod event;
@@ -73,6 +74,7 @@ pub mod width;
 // etc. for the common surface without deep paths.
 #[cfg(feature = "async")]
 pub use async_runner::{AsyncRunner, Signal};
+pub use capabilities::{Capabilities, DA1_REQUEST, DeviceAttributes};
 pub use clipboard::{osc52, write_clipboard};
 pub use components::{
     Boxed, CodeBlock, Column, Constrained, Flex, FocusScope, ImageResolver, KeyHints, Loader,

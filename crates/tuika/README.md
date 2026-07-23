@@ -335,6 +335,12 @@ streaming `MarkdownState`: attach a host `ImageResolver` (URL → `ImageData`, t
 same seam as the highlighter) and resolved images become real pixels — a
 link-styled placeholder for the rest, never a dropped URL.
 
+To check support across every terminal feature in one place — `graphics`,
+`hyperlinks`, `clipboard`, `progress`, `truecolor` — use `Capabilities`:
+`Capabilities::from_env()` is an instant advisory guess, and
+`Capabilities::query(timeout)` adds a Device Attributes probe that confirms Sixel
+(the one protocol the environment can't reliably reveal).
+
 ## Mouse, selection, and clipboard
 
 Enabling mouse capture (which `AltScreen` / `TerminalSession` do) means the
@@ -369,7 +375,7 @@ path — there is no separate touch event to handle.
 > See the [terminal features guide](docs/features.md) for these
 > terminal-integration capabilities — OSC 8 hyperlinks, mouse selection and
 > clicks, OSC 52 clipboard, OSC 9;4 progress, and Kitty/iTerm2/Sixel images —
-> with demos and runnable examples.
+> plus `Capabilities` detection, with demos and runnable examples.
 
 ## Testing your UI
 
