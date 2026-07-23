@@ -76,7 +76,7 @@ pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 pub use focus::FocusRegistry;
 pub use geometry::{Padding, Size};
 pub use highlight::{CodeHighlighter, Highlighter, PlainHighlighter};
-pub use host::{AltScreen, Overlay, TerminalSession, paint, translate_event};
+pub use host::{AltScreen, Overlay, TerminalSession, paint, paint_with_sheet, translate_event};
 pub use hyperlink::{
     HyperlinkBackend, LinkPolicy, ctrl_click_url, is_web_url, osc8, osc8_with, write_line,
     write_line_with,
@@ -92,7 +92,7 @@ pub use overlay::{Anchor, Extent, OverlaySpec};
 pub use probe::{Probe, RectProbe};
 pub use ratatui_view::RatatuiView;
 pub use runner::{Runner, RunnerConfig};
-pub use style::{BorderStyle, CodeTheme, Theme};
+pub use style::{BorderStyle, CodeTheme, Role, StyleBundle, StyleSheet, Theme};
 pub use surface::Surface;
 pub use themes::{NamedTheme, by_name as theme_by_name};
 pub use view::{Element, RenderCtx, View, element};

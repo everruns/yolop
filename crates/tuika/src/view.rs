@@ -13,31 +13,45 @@
 use ratatui::layout::Rect;
 
 use super::geometry::Size;
-use super::style::Theme;
+use super::style::{StyleSheet, Theme};
 use super::surface::Surface;
 
 /// Context threaded to every `View::render`.
 pub struct RenderCtx<'a> {
-    /// The active theme supplying colors and styles for this frame.
+    /// The active theme supplying colors for this frame.
     pub theme: &'a Theme,
+    /// The active stylesheet mapping semantic roles to styles. Defaults to
+    /// [`StyleSheet::from_theme`] (owned by value, so a plain
+    /// [`RenderCtx::new`] needs no separate sheet); a host centralizes styling
+    /// by installing its own with [`with_sheet`](Self::with_sheet) or
+    /// [`paint_with_sheet`](crate::host::paint_with_sheet).
+    pub sheet: StyleSheet,
     /// Whether the focused component of the frame is this one. Containers pass
     /// this down unchanged; focus-aware leaves use it to highlight borders.
     pub focused: bool,
 }
 
 impl<'a> RenderCtx<'a> {
-    /// A root context for `theme`, unfocused.
+    /// A root context for `theme`, unfocused, with the theme's default stylesheet.
     pub fn new(theme: &'a Theme) -> Self {
         Self {
             theme,
+            sheet: StyleSheet::from_theme(theme),
             focused: false,
         }
+    }
+
+    /// Replace the stylesheet, keeping the theme and focus.
+    pub fn with_sheet(mut self, sheet: StyleSheet) -> Self {
+        self.sheet = sheet;
+        self
     }
 
     /// A child context with an explicit focus flag.
     pub fn with_focus(&self, focused: bool) -> RenderCtx<'a> {
         RenderCtx {
             theme: self.theme,
+            sheet: self.sheet,
             focused,
         }
     }

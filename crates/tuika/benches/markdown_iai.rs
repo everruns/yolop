@@ -17,7 +17,7 @@
 use std::hint::black_box;
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
-use tuika::{CodeHighlighter, MarkdownState, Theme, markdown_to_lines};
+use tuika::{CodeHighlighter, MarkdownState, StyleSheet, Theme, markdown_to_lines};
 
 const WIDTH: u16 = 80;
 
@@ -53,10 +53,12 @@ fn deltas(source: &str) -> Vec<String> {
 #[bench::large(doc(24))]
 fn one_shot(source: String) -> usize {
     let theme = Theme::default();
+    let sheet = StyleSheet::from_theme(&theme);
     black_box(markdown_to_lines(
         black_box(&source),
         WIDTH,
         &theme,
+        &sheet,
         CodeHighlighter::Plain,
     ))
     .len()
@@ -66,11 +68,12 @@ fn one_shot(source: String) -> usize {
 #[bench::mixed(deltas(&doc(8)))]
 fn streaming(deltas: Vec<String>) -> usize {
     let theme = Theme::default();
+    let sheet = StyleSheet::from_theme(&theme);
     let mut md = MarkdownState::new();
     let mut last = 0;
     for delta in &deltas {
         md.push_str(delta);
-        last = black_box(md.lines(WIDTH, &theme, CodeHighlighter::Plain)).len();
+        last = black_box(md.lines(WIDTH, &theme, &sheet, CodeHighlighter::Plain)).len();
     }
     last
 }
@@ -79,13 +82,14 @@ fn streaming(deltas: Vec<String>) -> usize {
 #[bench::mixed(doc(12))]
 fn reflow(source: String) -> usize {
     let theme = Theme::default();
+    let sheet = StyleSheet::from_theme(&theme);
     let mut md = MarkdownState::new();
     md.set(source);
     let mut last = 0;
     // A resize: re-render the settled document across a width sweep. The parse
     // cache is width-independent, so this should re-flatten only.
     for width in [40u16, 60, 80, 100, 120] {
-        last = black_box(md.lines(width, &theme, CodeHighlighter::Plain)).len();
+        last = black_box(md.lines(width, &theme, &sheet, CodeHighlighter::Plain)).len();
     }
     last
 }

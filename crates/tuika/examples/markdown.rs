@@ -163,6 +163,7 @@ fn main() -> io::Result<()> {
         },
     )?;
     let theme = Theme::default();
+    let sheet = tuika::StyleSheet::from_theme(&theme);
 
     loop {
         // Advance the stream: a few glyphs per frame until the document is fully
@@ -178,7 +179,7 @@ fn main() -> io::Result<()> {
             let area = f.area();
             let width = area.width.saturating_sub(4);
             let lines = state
-                .lines(width, &theme, CodeHighlighter::With(&highlighter))
+                .lines(width, &theme, &sheet, CodeHighlighter::With(&highlighter))
                 .to_vec();
             let status = if cursor < doc.len() {
                 format!("streaming… {}/{} glyphs", cursor, doc.len())

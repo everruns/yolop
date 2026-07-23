@@ -25,7 +25,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 
 use super::event::{Event, Key, KeyCode, Mouse, MouseButton, MouseKind};
-use super::style::Theme;
+use super::style::{StyleSheet, Theme};
 use super::surface::Surface;
 use super::view::{RenderCtx, View};
 
@@ -127,11 +127,33 @@ pub struct Overlay<'a> {
     pub clear: bool,
 }
 
-/// Composite `root` and `overlays` into `buffer` over `area`.
+/// Composite `root` and `overlays` into `buffer` over `area`, using `theme`'s
+/// default [`StyleSheet`]. To centralize styling with a custom stylesheet, use
+/// [`paint_with_sheet`].
 pub fn paint(
     buffer: &mut Buffer,
     area: Rect,
     theme: &Theme,
+    root: &dyn View,
+    overlays: &[Overlay],
+) {
+    paint_with_sheet(
+        buffer,
+        area,
+        theme,
+        StyleSheet::from_theme(theme),
+        root,
+        overlays,
+    );
+}
+
+/// [`paint`] with an explicit [`StyleSheet`], so a host installs one styling
+/// policy that the whole component tree resolves against.
+pub fn paint_with_sheet(
+    buffer: &mut Buffer,
+    area: Rect,
+    theme: &Theme,
+    sheet: StyleSheet,
     root: &dyn View,
     overlays: &[Overlay],
 ) {
@@ -140,7 +162,7 @@ pub fn paint(
         let mut surface = Surface::new(buffer, area);
         surface.fill(Style::default().bg(theme.background));
     }
-    let ctx = RenderCtx::new(theme);
+    let ctx = RenderCtx::new(theme).with_sheet(sheet);
     {
         let mut surface = Surface::new(buffer, area);
         root.render(area, &mut surface, &ctx);

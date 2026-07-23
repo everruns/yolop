@@ -29,7 +29,7 @@
 use std::hint::black_box;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tuika::{CodeHighlighter, MarkdownState, Theme, markdown_to_lines};
+use tuika::{CodeHighlighter, MarkdownState, StyleSheet, Theme, markdown_to_lines};
 
 use corpus::Shape;
 
@@ -74,6 +74,7 @@ const REFLOW_WIDTHS: &[u16] = &[40, 60, 80, 100, 120];
 
 fn one_shot(c: &mut Criterion) {
     let theme = Theme::default();
+    let sheet = StyleSheet::from_theme(&theme);
     let mut group = c.benchmark_group("markdown/one_shot");
     for &(shape_name, shape) in SHAPES {
         for &(size_name, scale) in SIZES {
@@ -85,6 +86,7 @@ fn one_shot(c: &mut Criterion) {
                         black_box(src),
                         WIDTH,
                         &theme,
+                        &sheet,
                         CodeHighlighter::Plain,
                     ));
                 });
@@ -96,6 +98,7 @@ fn one_shot(c: &mut Criterion) {
 
 fn streaming(c: &mut Criterion) {
     let theme = Theme::default();
+    let sheet = StyleSheet::from_theme(&theme);
     let mut group = c.benchmark_group("markdown/streaming");
     group.sample_size(STREAM_SAMPLES);
     for &(shape_name, shape) in SHAPES {
@@ -111,7 +114,7 @@ fn streaming(c: &mut Criterion) {
                         let mut md = MarkdownState::new();
                         for delta in deltas {
                             md.push_str(delta);
-                            black_box(md.lines(WIDTH, &theme, CodeHighlighter::Plain));
+                            black_box(md.lines(WIDTH, &theme, &sheet, CodeHighlighter::Plain));
                         }
                     });
                 },
@@ -123,6 +126,7 @@ fn streaming(c: &mut Criterion) {
 
 fn streaming_model(c: &mut Criterion) {
     let theme = Theme::default();
+    let sheet = StyleSheet::from_theme(&theme);
     let mut group = c.benchmark_group("markdown/streaming_model");
     group.sample_size(STREAM_SAMPLES);
     // The cache pays off most on a large transcript, where the naive renderer
@@ -140,7 +144,7 @@ fn streaming_model(c: &mut Criterion) {
                     let mut md = MarkdownState::new();
                     for delta in deltas {
                         md.push_str(delta);
-                        black_box(md.lines(WIDTH, &theme, CodeHighlighter::Plain));
+                        black_box(md.lines(WIDTH, &theme, &sheet, CodeHighlighter::Plain));
                     }
                 });
             },
@@ -158,6 +162,7 @@ fn streaming_model(c: &mut Criterion) {
                             &acc,
                             WIDTH,
                             &theme,
+                            &sheet,
                             CodeHighlighter::Plain,
                         ));
                     }
@@ -170,6 +175,7 @@ fn streaming_model(c: &mut Criterion) {
 
 fn reflow(c: &mut Criterion) {
     let theme = Theme::default();
+    let sheet = StyleSheet::from_theme(&theme);
     let mut group = c.benchmark_group("markdown/reflow");
     group.sample_size(STREAM_SAMPLES);
     for &(shape_name, shape) in SHAPES {
@@ -185,7 +191,7 @@ fn reflow(c: &mut Criterion) {
                         // the whole document settles and the tail is empty.
                         let mut md = MarkdownState::new();
                         md.set(src.clone());
-                        md.lines(REFLOW_WIDTHS[0], &theme, CodeHighlighter::Plain);
+                        md.lines(REFLOW_WIDTHS[0], &theme, &sheet, CodeHighlighter::Plain);
                         md
                     },
                     |mut md| {
@@ -193,7 +199,7 @@ fn reflow(c: &mut Criterion) {
                         // sweep of widths. The parse cache is width-independent, so
                         // this must never re-parse — only re-flatten.
                         for &width in REFLOW_WIDTHS {
-                            black_box(md.lines(width, &theme, CodeHighlighter::Plain));
+                            black_box(md.lines(width, &theme, &sheet, CodeHighlighter::Plain));
                         }
                     },
                     BatchSize::SmallInput,

@@ -1049,10 +1049,11 @@ fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
     // deltas incrementally — see the `markdown` example in the tuika crate.)
     let md_doc = "Highlighted `code` in **markdown**:\n\n```rust\nfn fib(n: u64) -> u64 { n }\n```";
     let highlighter = tuika_codeformatters::TreeSitterHighlighter::new();
+    let sheet = tuika::StyleSheet::from_theme(theme);
     let mut markdown = MarkdownState::new();
     markdown.set(md_doc);
     let markdown_lines = markdown
-        .lines(46, theme, CodeHighlighter::With(&highlighter))
+        .lines(46, theme, &sheet, CodeHighlighter::With(&highlighter))
         .to_vec();
 
     tuika::view! {
