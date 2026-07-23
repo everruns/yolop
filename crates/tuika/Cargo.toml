@@ -38,7 +38,7 @@ ratatui = "0.30.2"
 # Benchmark harness. default-features off drops the plotters/rayon HTML-report
 # stack (heavy, and an MSRV liability) while keeping `cargo bench` working;
 # Criterion still writes machine-readable `estimates.json` for archiving.
-criterion = { version = "0.5", default-features = false, features = [
+criterion = { version = "0.8", default-features = false, features = [
     "cargo_bench_support",
 ] }
 # Instruction-count benchmark harness (deterministic, machine-independent) for
