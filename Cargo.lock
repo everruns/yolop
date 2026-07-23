@@ -6777,7 +6777,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tuika"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "crossterm",
@@ -7780,7 +7780,7 @@ dependencies = [
 
 [[package]]
 name = "yolop"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",

@@ -78,10 +78,13 @@ jobs:
             return 1
           }
 
-          # yolop depends on both library crates by version, so crates.io
-          # requires them live before yolop. Order: leaf deps first, binary last.
+          # yolop depends on all three library crates by version, so crates.io
+          # requires them live before yolop. tuika-codeformatters itself depends
+          # on tuika, so tuika must precede it. Order: leaf deps first, binary
+          # last (each skipped when its version is already published).
           publish_if_missing yolop-yep
           publish_if_missing tuika
+          publish_if_missing tuika-codeformatters
           publish_if_missing yolop
 
   verify-publish:

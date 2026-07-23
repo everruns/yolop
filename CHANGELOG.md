@@ -10,6 +10,108 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.11.0] - 2026-07-23
+
+### Highlights
+
+#### yolop
+
+- Rebuilt the full-screen TUI on the new `tuika` view tree: a richer multi-line composer, composited setup/ask/background overlays, a full-history transcript that scrolls, and windowed setup/model pickers.
+- A `--theme` selector, persisted in settings, with a live theme picker in the full-screen UI.
+- Initial Windows support via a PowerShell shell.
+- Sandbox modes with approval policies, opt-in shell containment, and session-wide shell approval.
+- A mid-turn steering queue, automatic session titles, and durable native context-compaction checkpoints.
+
+#### tuika
+
+- Streaming `Markdown` and syntax-highlighted `CodeBlock` rendering, powered by the new `tuika-codeformatters` tree-sitter highlighter.
+- A mouse subsystem — text selection, clicks, hit-testing, and OSC 52 clipboard copy.
+- Bundled standard themes and a neutral theme identity independent of yolop.
+- New components: windowing `SelectList`, multi-line `TextInput` (emacs keymap, word-wrap), and a `Rule` separator.
+- Emoji rendered as grapheme clusters and a configurable OSC 8 link-scheme policy.
+
+### What's Changed
+
+* feat(tuika): add mouse text interactions ([#442](https://github.com/everruns/yolop/pull/442)) by @chaliy
+* chore: clarify GitHub auth fallback ([#441](https://github.com/everruns/yolop/pull/441)) by @chaliy
+* fix(tui): render startup messages in all modes ([#440](https://github.com/everruns/yolop/pull/440)) by @chaliy
+* feat(tui): add mid-turn steering queue ([#439](https://github.com/everruns/yolop/pull/439)) by @chaliy
+* fix(tui): capitalize Codex Subscription label ([#438](https://github.com/everruns/yolop/pull/438)) by @chaliy
+* feat(tuika): configurable OSC 8 link scheme policy with mailto ([#437](https://github.com/everruns/yolop/pull/437)) by @chaliy
+* perf(tui): window the full-screen transcript to O(viewport) per frame ([#436](https://github.com/everruns/yolop/pull/436)) by @chaliy
+* feat: add a --theme selector and persist it in settings ([#431](https://github.com/everruns/yolop/pull/431)) by @chaliy
+* feat(tuika): bundle standard themes ([#430](https://github.com/everruns/yolop/pull/430)) by @chaliy
+* test(tuika): add Scroll render + paging benchmarks ([#429](https://github.com/everruns/yolop/pull/429)) by @chaliy
+* fix(evals): treat provider outages as inconclusive, not a regression ([#428](https://github.com/everruns/yolop/pull/428)) by @chaliy
+* fix(tuika): cache flattened settled lines so streaming stays linear ([#427](https://github.com/everruns/yolop/pull/427)) by @chaliy
+* feat(tuika): style inline markup in markdown table cells ([#426](https://github.com/everruns/yolop/pull/426)) by @chaliy
+* test: add render benchmarks + instruction-count regression gate ([#425](https://github.com/everruns/yolop/pull/425)) by @chaliy
+* test(tui): de-flake combined-resize composer test ([#424](https://github.com/everruns/yolop/pull/424)) by @chaliy
+* docs(readme): restore Origin of the name to the top ([#423](https://github.com/everruns/yolop/pull/423)) by @chaliy
+* docs(tuika): add terminal features guide with demos ([#422](https://github.com/everruns/yolop/pull/422)) by @chaliy
+* docs(readme): tighten and restructure for readability ([#421](https://github.com/everruns/yolop/pull/421)) by @chaliy
+* docs(tuika): fix missing_docs on main + add Flex/Boxed/Select doctests ([#420](https://github.com/everruns/yolop/pull/420)) by @chaliy
+* chore(ci): scope PR jobs to what the diff touches ([#419](https://github.com/everruns/yolop/pull/419)) by @chaliy
+* fix(tui): bound and correct the full-screen transcript scroll ([#418](https://github.com/everruns/yolop/pull/418)) by @chaliy
+* docs(tuika): document public API and enforce missing_docs lint ([#417](https://github.com/everruns/yolop/pull/417)) by @chaliy
+* docs: remove docs.rs badge from README ([#416](https://github.com/everruns/yolop/pull/416)) by @chaliy
+* refactor(tui): drop redundant OSC 8 buffer pass, keep HyperlinkBackend ([#415](https://github.com/everruns/yolop/pull/415)) by @chaliy
+* chore(deps): update everruns to 0.17.16 ([#414](https://github.com/everruns/yolop/pull/414)) by @chaliy
+* feat(tuika): streaming Markdown + CodeBlock, adopt in yolop ([#413](https://github.com/everruns/yolop/pull/413)) by @chaliy
+* test(tuika): automate terminal matrix, add nightly cross-terminal CI ([#412](https://github.com/everruns/yolop/pull/412)) by @chaliy
+* docs(tuika): restructure README from review feedback ([#411](https://github.com/everruns/yolop/pull/411)) by @chaliy
+* fix(background): store artifacts in session directory ([#410](https://github.com/everruns/yolop/pull/410)) by @chaliy
+* feat(context): persist native compaction checkpoints ([#409](https://github.com/everruns/yolop/pull/409)) by @chaliy
+* feat(session): add automatic session titles ([#408](https://github.com/everruns/yolop/pull/408)) by @chaliy
+* test(tuika): split monolithic tests.rs into per-module suites ([#407](https://github.com/everruns/yolop/pull/407)) by @chaliy
+* feat(sandbox): make shell containment opt-in ([#406](https://github.com/everruns/yolop/pull/406)) by @chaliy
+* docs(tuika): add a recorded gallery hero and capture toolchain ([#405](https://github.com/everruns/yolop/pull/405)) by @chaliy
+* feat(approval): allow session-wide shell approval ([#403](https://github.com/everruns/yolop/pull/403)) by @chaliy
+* feat(context): collect dynamic environment contributions ([#402](https://github.com/everruns/yolop/pull/402)) by @chaliy
+* fix(tui): emit OSC 8 hyperlinks so transcript URLs are clickable ([#401](https://github.com/everruns/yolop/pull/401)) by @chaliy
+* fix(tui): preserve context in exit message ([#400](https://github.com/everruns/yolop/pull/400)) by @chaliy
+* fix(tui): support configurable enter behavior ([#399](https://github.com/everruns/yolop/pull/399)) by @chaliy
+* fix(tui): show runtime system notices ([#398](https://github.com/everruns/yolop/pull/398)) by @chaliy
+* fix(tui): remove extra spacing from diffs ([#397](https://github.com/everruns/yolop/pull/397)) by @chaliy
+* fix(sandbox): allow standard macOS tool writes ([#396](https://github.com/everruns/yolop/pull/396)) by @chaliy
+* chore(deps): refresh locked dependencies ([#395](https://github.com/everruns/yolop/pull/395)) by @chaliy
+* fix(context): avoid ephemeral default compaction ([#394](https://github.com/everruns/yolop/pull/394)) by @chaliy
+* refactor(runtime): extract system prompt ([#393](https://github.com/everruns/yolop/pull/393)) by @chaliy
+* feat(cli): add no-sandbox override ([#392](https://github.com/everruns/yolop/pull/392)) by @chaliy
+* refactor(prompt): compact the coding-agent kernel ([#391](https://github.com/everruns/yolop/pull/391)) by @chaliy
+* test: skip native-sandbox tests when Landlock is unavailable ([#390](https://github.com/everruns/yolop/pull/390)) by @chaliy
+* refactor(tui): route setup pickers through SelectState navigation ([#389](https://github.com/everruns/yolop/pull/389)) by @chaliy
+* refactor(tui): unify both composers on one tuika TextInputState ([#388](https://github.com/everruns/yolop/pull/388)) by @chaliy
+* feat(tuika): word-wrap TextInput at space boundaries ([#387](https://github.com/everruns/yolop/pull/387)) by @chaliy
+* feat(tuika): emacs keymap for TextInputState (readline bindings) ([#386](https://github.com/everruns/yolop/pull/386)) by @chaliy
+* feat(acp): close v1 gaps — MCP pass-through, modes, permission gate ([#385](https://github.com/everruns/yolop/pull/385)) by @chaliy
+* feat(tuika): TextInput scrolls to its cursor within a bounded height ([#384](https://github.com/everruns/yolop/pull/384)) by @chaliy
+* docs(tuika): public docs folder + crisp 2x component demos ([#383](https://github.com/everruns/yolop/pull/383)) by @chaliy
+* feat(tui): full-screen model picker renders as a windowed SelectList ([#382](https://github.com/everruns/yolop/pull/382)) by @chaliy
+* feat(tuika): windowing SelectList (viewport + scrollbar) ([#381](https://github.com/everruns/yolop/pull/381)) by @chaliy
+* refactor(tuika): move gallery integrity check into the demo example ([#380](https://github.com/everruns/yolop/pull/380)) by @chaliy
+* feat(tui): full-screen setup pickers render as tuika SelectList ([#379](https://github.com/everruns/yolop/pull/379)) by @chaliy
+* feat(tuika): tuika owns a neutral theme identity; yolop builds its own ([#378](https://github.com/everruns/yolop/pull/378)) by @chaliy
+* feat(tui): full-screen composer owns its state + routes its own keys ([#377](https://github.com/everruns/yolop/pull/377)) by @chaliy
+* refactor: group src modules into domain folders ([#376](https://github.com/everruns/yolop/pull/376)) by @chaliy
+* feat(tui): full-screen transcript scrolls full history via tuika Scroll ([#375](https://github.com/everruns/yolop/pull/375)) by @chaliy
+* docs(tuika): component gallery with VHS demos ([#374](https://github.com/everruns/yolop/pull/374)) by @chaliy
+* feat(tui): surface context compaction in transcript and status gauge ([#373](https://github.com/everruns/yolop/pull/373)) by @chaliy
+* feat(tui): composite full-screen overlays (setup/ask/background) on tuika ([#372](https://github.com/everruns/yolop/pull/372)) by @chaliy
+* feat(tui): rebuild the full-screen composer and chrome on a tuika view tree ([#371](https://github.com/everruns/yolop/pull/371)) by @chaliy
+* feat(tuika): multi-line TextInput component ([#370](https://github.com/everruns/yolop/pull/370)) by @chaliy
+* feat(tuika): Rule component (titled horizontal separator) ([#369](https://github.com/everruns/yolop/pull/369)) by @chaliy
+* feat(tuika): render emoji as grapheme clusters ([#368](https://github.com/everruns/yolop/pull/368)) by @chaliy
+* chore(deps): update everruns to 0.17.15 ([#367](https://github.com/everruns/yolop/pull/367)) by @chaliy
+* feat(sandbox): add modes and approval policies ([#366](https://github.com/everruns/yolop/pull/366)) by @chaliy
+* feat: initial Windows support via PowerShell shell ([#365](https://github.com/everruns/yolop/pull/365)) by @chaliy
+* feat(tui): rebuild the full-screen renderer on the tuika view tree ([#364](https://github.com/everruns/yolop/pull/364)) by @chaliy
+* feat(tui): mouse text selection + copy in the full-screen transcript ([#363](https://github.com/everruns/yolop/pull/363)) by @chaliy
+* docs(tuika): runnable mouse example (drag-select + OSC 52 copy) ([#362](https://github.com/everruns/yolop/pull/362)) by @chaliy
+* feat(tuika): mouse subsystem — selection, clicks, hit-testing, OSC 52 copy ([#361](https://github.com/everruns/yolop/pull/361)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.10.0...v0.11.0
+
 ## [0.10.0] - 2026-07-20
 
 ### Highlights
