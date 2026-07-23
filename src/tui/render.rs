@@ -1530,11 +1530,13 @@ pub(crate) fn append_markdown_lines<'a>(
     let prefix_cols = first_prefix.chars().count();
     let width = inner_width.saturating_sub(prefix_cols).max(1) as u16;
     let theme = super::fullscreen::yolop_theme();
+    let sheet = tuika::StyleSheet::from_theme(&theme);
     let highlighter = tuika_codeformatters::TreeSitterHighlighter::new();
     let rendered = tuika::markdown_to_lines(
         text,
         width,
         &theme,
+        &sheet,
         tuika::CodeHighlighter::With(&highlighter),
     );
 

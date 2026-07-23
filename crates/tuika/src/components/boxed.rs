@@ -9,7 +9,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 
 use crate::geometry::{Padding, Size};
-use crate::style::BorderStyle;
+use crate::style::{BorderStyle, Role};
 use crate::surface::Surface;
 use crate::view::{Element, RenderCtx, View};
 
@@ -181,16 +181,31 @@ impl View for Boxed {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        if let Some(bg) = self.background {
+        let panel = ctx.sheet.resolve(Role::Panel);
+        // Background: an explicit `.background(..)` wins; otherwise the sheet's
+        // panel fill, which a host uses to opt every panel into a shared surface
+        // color without a per-call-site `.background(..)`.
+        let background = self
+            .background
+            .or_else(|| panel.bg.map(|c| Style::default().bg(c)));
+        if let Some(bg) = background {
             let mut fill = surface.child(area);
             fill.fill(bg);
         }
         if self.has_border() {
-            // An explicit `border_color` wins over the theme; otherwise the
-            // theme resolves it from the context's focus flag.
-            let color = self
-                .border_color
-                .unwrap_or_else(|| ctx.theme.border_color(ctx.focused));
+            // Precedence: an explicit `.border_color(..)` wins over everything;
+            // else a focused panel takes the theme's focus color; else the sheet's
+            // panel `fg` (when set) recolors every unfocused border, falling back
+            // to the theme border color. The border *glyphs* stay instance-level
+            // because their presence affects layout, which `measure` resolves
+            // without a stylesheet.
+            let color = self.border_color.unwrap_or_else(|| {
+                if ctx.focused {
+                    ctx.theme.border_focused
+                } else {
+                    panel.fg.unwrap_or(ctx.theme.border)
+                }
+            });
             let border_style = Style::default().fg(color);
             surface.draw_border(area, self.border.glyphs(), border_style);
             if let Some(title) = &self.title {
@@ -393,6 +408,59 @@ mod tests {
             render_border(&a),
             render_border(&b),
             "theme swap must restyle"
+        );
+    }
+
+    #[test]
+    fn stylesheet_panel_recolors_border_and_fills_background() {
+        use crate::style::{StyleBundle, StyleSheet};
+
+        let t = rainbow_theme();
+        // One central rule: every panel gets an accent-alt border and a surface
+        // fill — no per-`Boxed` `.background(..)` or border color needed.
+        let sheet = StyleSheet {
+            panel: StyleBundle::new().fg(t.accent_alt).bg(t.surface),
+            ..StyleSheet::from_theme(&t)
+        };
+
+        let mut buf = buffer(8, 3);
+        let area = buf.area;
+        let ctx = RenderCtx::new(&t).with_sheet(sheet);
+        let mut surface = Surface::new(&mut buf, area);
+        Boxed::new(element(Text::raw("x"))).render(area, &mut surface, &ctx);
+
+        // The border corner takes the sheet's panel color, not the theme border.
+        assert_eq!(buf[(0, 0)].fg, t.accent_alt, "sheet recolors the border");
+        assert_ne!(t.accent_alt, t.border, "guard: the sheet color is distinct");
+        // The interior is filled with the sheet's panel background.
+        assert_eq!(
+            buf[(1, 1)].bg,
+            t.surface,
+            "sheet fills the panel background"
+        );
+    }
+
+    #[test]
+    fn explicit_background_overrides_the_sheet_panel_fill() {
+        use crate::style::{StyleBundle, StyleSheet};
+
+        let t = rainbow_theme();
+        let sheet = StyleSheet {
+            panel: StyleBundle::new().bg(t.surface),
+            ..StyleSheet::from_theme(&t)
+        };
+        let mut buf = buffer(8, 3);
+        let area = buf.area;
+        let ctx = RenderCtx::new(&t).with_sheet(sheet);
+        let mut surface = Surface::new(&mut buf, area);
+        // An inline `.background(..)` still wins over the sheet default.
+        Boxed::new(element(Text::raw("x")))
+            .background(Style::default().bg(t.selection_bg))
+            .render(area, &mut surface, &ctx);
+        assert_eq!(
+            buf[(1, 1)].bg,
+            t.selection_bg,
+            "inline style beats the sheet"
         );
     }
 }

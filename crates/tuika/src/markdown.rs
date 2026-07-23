@@ -30,7 +30,7 @@ use crate::components::{line_width, wrap_lines};
 use crate::geometry::Size;
 use crate::highlight::{CodeHighlighter, Highlighter};
 use crate::image::{Image, ImageData, ImageLayer, ImageSupport};
-use crate::style::Theme;
+use crate::style::{StyleBundle, StyleSheet, Theme};
 use crate::surface::Surface;
 use crate::view::{RenderCtx, View};
 
@@ -138,9 +138,15 @@ struct TableData {
 type Cell = Vec<Span<'static>>;
 
 /// Parse `source` into width-independent [`MdItem`]s. Fenced code blocks are
-/// highlighted here (once), via `highlighter`, using `theme`'s code palette.
-fn parse(source: &str, theme: &Theme, highlighter: CodeHighlighter) -> Vec<MdItem> {
-    parse_with(source, theme, highlighter, None)
+/// highlighted here (once), via `highlighter`, using `theme`'s code palette;
+/// prose roles (headings, links, emphasis, …) are styled from `sheet`.
+fn parse(
+    source: &str,
+    theme: &Theme,
+    sheet: &StyleSheet,
+    highlighter: CodeHighlighter,
+) -> Vec<MdItem> {
+    parse_with(source, theme, sheet, highlighter, None)
 }
 
 /// [`parse`] with an optional [`ImageResolver`]: a resolved `![alt](url)` becomes
@@ -148,10 +154,11 @@ fn parse(source: &str, theme: &Theme, highlighter: CodeHighlighter) -> Vec<MdIte
 fn parse_with(
     source: &str,
     theme: &Theme,
+    sheet: &StyleSheet,
     highlighter: CodeHighlighter,
     resolver: Option<&dyn ImageResolver>,
 ) -> Vec<MdItem> {
-    let mut b = Builder::new(theme, highlighter, resolver);
+    let mut b = Builder::new(theme, sheet, highlighter, resolver);
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
@@ -165,6 +172,7 @@ fn parse_with(
 /// Walks the pulldown-cmark event stream, accumulating [`MdItem`]s.
 struct Builder<'a> {
     theme: &'a Theme,
+    sheet: &'a StyleSheet,
     highlighter: CodeHighlighter<'a>,
     items: Vec<MdItem>,
 
@@ -199,11 +207,13 @@ struct Builder<'a> {
 impl<'a> Builder<'a> {
     fn new(
         theme: &'a Theme,
+        sheet: &'a StyleSheet,
         highlighter: CodeHighlighter<'a>,
         resolver: Option<&'a dyn ImageResolver>,
     ) -> Self {
         Self {
             theme,
+            sheet,
             highlighter,
             items: Vec::new(),
             inline: Vec::new(),
@@ -273,7 +283,7 @@ impl<'a> Builder<'a> {
         if style.add_modifier.contains(Modifier::UNDERLINED) {
             self.inline.push(Span::styled(text.to_string(), style));
         } else {
-            for span in linkify(text, style, self.theme.code.link) {
+            for span in linkify(text, style, self.sheet.link) {
                 self.inline.push(span);
             }
         }
@@ -288,13 +298,9 @@ impl<'a> Builder<'a> {
     fn push_image_placeholder(&mut self, url: &str, alt: &str) {
         let label = if alt.trim().is_empty() { url } else { alt };
         self.inline
-            .push(Span::styled("🖼 ", Style::default().fg(self.theme.accent)));
-        self.inline.push(Span::styled(
-            label.to_string(),
-            Style::default()
-                .fg(self.theme.code.link)
-                .add_modifier(Modifier::UNDERLINED),
-        ));
+            .push(Span::styled("🖼 ", self.sheet.image_marker.to_style()));
+        self.inline
+            .push(Span::styled(label.to_string(), self.sheet.link.to_style()));
     }
 
     fn event(&mut self, event: Event<'a>) {
@@ -305,9 +311,7 @@ impl<'a> Builder<'a> {
             Event::Code(t) => {
                 self.inline.push(Span::styled(
                     t.to_string(),
-                    Style::default()
-                        .fg(self.theme.code.text)
-                        .bg(self.theme.code.background),
+                    self.sheet.inline_code.to_style(),
                 ));
             }
             Event::SoftBreak => {
@@ -322,10 +326,7 @@ impl<'a> Builder<'a> {
             Event::Rule => {
                 self.separate();
                 self.items.push(MdItem::Prose {
-                    spans: vec![Span::styled(
-                        "─".repeat(24),
-                        Style::default().fg(self.theme.dim),
-                    )],
+                    spans: vec![Span::styled("─".repeat(24), self.sheet.rule.to_style())],
                     indent: self.indent(),
                 });
             }
@@ -333,7 +334,7 @@ impl<'a> Builder<'a> {
                 let glyph = if done { "[x] " } else { "[ ] " };
                 self.inline.push(Span::styled(
                     glyph.to_string(),
-                    Style::default().fg(self.theme.accent),
+                    self.sheet.task_marker.to_style(),
                 ));
             }
             _ => {}
@@ -345,9 +346,7 @@ impl<'a> Builder<'a> {
             Tag::Paragraph => self.separate(),
             Tag::Heading { level, .. } => {
                 self.separate();
-                let mut style = Style::default()
-                    .fg(self.theme.code.heading)
-                    .add_modifier(Modifier::BOLD);
+                let mut style = self.sheet.heading.to_style();
                 if level > HeadingLevel::H2 {
                     style = style.add_modifier(Modifier::ITALIC);
                 }
@@ -382,17 +381,14 @@ impl<'a> Builder<'a> {
                 };
                 self.pending_marker = Some(vec![Span::styled(
                     marker,
-                    Style::default().fg(self.theme.accent_alt),
+                    self.sheet.list_marker.to_style(),
                 )]);
             }
-            Tag::Emphasis => self.push_style(Modifier::ITALIC),
-            Tag::Strong => self.push_style(Modifier::BOLD),
-            Tag::Strikethrough => self.push_style(Modifier::CROSSED_OUT),
+            Tag::Emphasis => self.push_style_bundle(self.sheet.emphasis),
+            Tag::Strong => self.push_style_bundle(self.sheet.strong),
+            Tag::Strikethrough => self.push_style_bundle(self.sheet.strikethrough),
             Tag::Link { .. } => {
-                let s = Style::default()
-                    .fg(self.theme.code.link)
-                    .add_modifier(Modifier::UNDERLINED);
-                self.style_stack.push(s);
+                self.style_stack.push(self.sheet.link.to_style());
             }
             Tag::Image { dest_url, .. } => {
                 // Capture the target; alt text accrues via `push_text` until the
@@ -409,14 +405,10 @@ impl<'a> Builder<'a> {
             }
             Tag::TableHead => {
                 self.cur_row.clear();
-                // Header cells render bold in the heading color; push it as the
-                // cell base so plain header text picks it up, while links and
-                // inline code inside a header keep their own styling on top.
-                self.style_stack.push(
-                    Style::default()
-                        .fg(self.theme.code.heading)
-                        .add_modifier(Modifier::BOLD),
-                );
+                // Header cells render in the heading style; push it as the cell
+                // base so plain header text picks it up, while links and inline
+                // code inside a header keep their own styling on top.
+                self.style_stack.push(self.sheet.heading.to_style());
             }
             Tag::TableRow => self.cur_row.clear(),
             Tag::TableCell => self.inline.clear(),
@@ -493,8 +485,11 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn push_style(&mut self, m: Modifier) {
-        let s = self.cur_style().add_modifier(m);
+    /// Push a style derived by overlaying `bundle` onto the current style — used
+    /// for inline roles (emphasis, strong, strikethrough) that add a modifier
+    /// (and possibly a color) on top of the surrounding text.
+    fn push_style_bundle(&mut self, bundle: StyleBundle) {
+        let s = bundle.apply(self.cur_style());
         self.style_stack.push(s);
     }
 
@@ -537,8 +532,10 @@ fn spans_cols(spans: &[Span]) -> usize {
         .sum()
 }
 
-/// Style bare `http(s)://` URLs in `text` as links, leaving the rest at `base`.
-fn linkify(text: &str, base: Style, link: ratatui::style::Color) -> Vec<Span<'static>> {
+/// Style bare `http(s)://` URLs in `text` with the `link` role, leaving the rest
+/// at `base`. The link role is overlaid onto `base`, so a URL inside otherwise
+/// plain prose keeps that prose's context and gains the link color + underline.
+fn linkify(text: &str, base: Style, link: StyleBundle) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut rest = text;
     while let Some(start) = rest.find("http://").or_else(|| rest.find("https://")) {
@@ -551,10 +548,7 @@ fn linkify(text: &str, base: Style, link: ratatui::style::Color) -> Vec<Span<'st
             .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']'])
             .len();
         let (url, after) = from.split_at(end.max(1));
-        spans.push(Span::styled(
-            url.to_string(),
-            base.fg(link).add_modifier(Modifier::UNDERLINED),
-        ));
+        spans.push(Span::styled(url.to_string(), link.apply(base)));
         rest = after;
     }
     if !rest.is_empty() {
@@ -793,9 +787,10 @@ pub fn markdown_to_lines(
     source: &str,
     width: u16,
     theme: &Theme,
+    sheet: &StyleSheet,
     highlighter: CodeHighlighter,
 ) -> Vec<Line<'static>> {
-    let items = parse(source, theme, highlighter);
+    let items = parse(source, theme, sheet, highlighter);
     flatten(&items, width, theme)
 }
 
@@ -836,12 +831,13 @@ fn stable_boundary(source: &str, from: usize) -> usize {
 /// returns a borrow of the cached line buffer — clone it with `.to_vec()` to own it.
 ///
 /// ```
-/// use tuika::{MarkdownState, CodeHighlighter, Theme};
+/// use tuika::{MarkdownState, CodeHighlighter, StyleSheet, Theme};
 /// let theme = Theme::default();
+/// let sheet = StyleSheet::from_theme(&theme);
 /// let mut md = MarkdownState::new();
 /// for delta in ["# Title\n\n", "Some **bo", "ld** text.\n"] {
 ///     md.push_str(delta);                                  // forward each stream delta
-///     let _lines = md.lines(80, &theme, CodeHighlighter::Plain); // render this frame
+///     let _lines = md.lines(80, &theme, &sheet, CodeHighlighter::Plain); // render this frame
 /// }
 /// ```
 #[derive(Default)]
@@ -850,6 +846,7 @@ pub struct MarkdownState {
     stable_len: usize,
     stable: Vec<MdItem>,
     cached_theme: Option<Theme>,
+    cached_sheet: Option<StyleSheet>,
     // Settled lines are flattened *once*, as blocks settle, and kept here across
     // frames — never re-flattened while streaming. Without this, `lines` would
     // re-flatten (re-wrap, re-lay-out, re-clone) the whole settled prefix every
@@ -946,11 +943,14 @@ impl MarkdownState {
         &mut self,
         width: u16,
         theme: &Theme,
+        sheet: &StyleSheet,
         highlighter: CodeHighlighter,
     ) -> &[Line<'static>] {
-        // A theme change restyles everything, so every cache is invalid.
-        if self.cached_theme != Some(*theme) {
+        // A theme or stylesheet change restyles everything, so every cache is
+        // invalid (both feed the styles baked into the cached, parsed spans).
+        if self.cached_theme != Some(*theme) || self.cached_sheet != Some(*sheet) {
             self.cached_theme = Some(*theme);
+            self.cached_sheet = Some(*sheet);
             self.reset_cache();
         }
         // A width change re-wraps every settled line, but the width-independent
@@ -967,7 +967,8 @@ impl MarkdownState {
         let boundary = stable_boundary(&self.source, self.stable_len);
         if boundary > self.stable_len {
             let segment = &self.source[self.stable_len..boundary];
-            let mut items = parse_with(segment, theme, highlighter, self.resolver.as_deref());
+            let mut items =
+                parse_with(segment, theme, sheet, highlighter, self.resolver.as_deref());
             // Each segment parses in isolation, so the blank-line separation the
             // boundary sits on is lost — restore it between committed segments.
             if !items.is_empty()
@@ -1006,6 +1007,7 @@ impl MarkdownState {
         let tail = parse_with(
             &self.source[self.stable_len..],
             theme,
+            sheet,
             highlighter,
             self.resolver.as_deref(),
         );
@@ -1115,8 +1117,9 @@ impl<'a> Markdown<'a> {
         &self,
         width: u16,
         theme: &Theme,
+        sheet: &StyleSheet,
     ) -> (Vec<Line<'static>>, Vec<MarkdownImage>) {
-        let items = parse_with(&self.source, theme, self.highlighter, self.resolver);
+        let items = parse_with(&self.source, theme, sheet, self.highlighter, self.resolver);
         let mut images = Vec::new();
         let lines = flatten_into(&items, width, theme, &mut images);
         (lines, images)
@@ -1125,13 +1128,14 @@ impl<'a> Markdown<'a> {
 
 impl View for Markdown<'_> {
     fn measure(&self, available: Size) -> Size {
-        let (lines, _) = self.lines_and_images(available.width, &Theme::default());
+        let (lines, _) =
+            self.lines_and_images(available.width, &Theme::default(), &StyleSheet::default());
         let width = lines.iter().map(line_width).max().unwrap_or(0);
         Size::new(width.min(available.width), lines.len() as u16)
     }
 
     fn render(&self, area: Rect, surface: &mut Surface, ctx: &RenderCtx) {
-        let (lines, images) = self.lines_and_images(area.width, ctx.theme);
+        let (lines, images) = self.lines_and_images(area.width, ctx.theme, &ctx.sheet);
         for (row, line) in lines.iter().enumerate() {
             let y = area.y.saturating_add(row as u16);
             if y >= area.bottom() {
@@ -1181,16 +1185,28 @@ mod tests {
 
     /// The whole render as plain lines, for content assertions.
     fn plain(source: &str, width: u16) -> Vec<String> {
-        markdown_to_lines(source, width, &Theme::default(), CodeHighlighter::Plain)
-            .iter()
-            .map(text)
-            .collect()
+        markdown_to_lines(
+            source,
+            width,
+            &Theme::default(),
+            &StyleSheet::default(),
+            CodeHighlighter::Plain,
+        )
+        .iter()
+        .map(text)
+        .collect()
     }
 
     #[test]
     fn heading_is_bold_and_themed() {
         let theme = Theme::default();
-        let lines = markdown_to_lines("# Title", 40, &theme, CodeHighlighter::Plain);
+        let lines = markdown_to_lines(
+            "# Title",
+            40,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        );
         let span = &lines[0].spans[0];
         assert_eq!(span.content.as_ref(), "Title");
         assert!(span.style.add_modifier.contains(Modifier::BOLD));
@@ -1204,6 +1220,7 @@ mod tests {
             "plain *em* and **bold**",
             60,
             &theme,
+            &StyleSheet::from_theme(&theme),
             CodeHighlighter::Plain,
         );
         let em = lines[0]
@@ -1223,7 +1240,13 @@ mod tests {
     #[test]
     fn inline_code_gets_code_background() {
         let theme = Theme::default();
-        let lines = markdown_to_lines("use `cargo test` now", 60, &theme, CodeHighlighter::Plain);
+        let lines = markdown_to_lines(
+            "use `cargo test` now",
+            60,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        );
         let code = lines[0]
             .spans
             .iter()
@@ -1279,7 +1302,13 @@ mod tests {
         // row, never reflowed into multiple lines.
         let long = "x".repeat(60);
         let src = format!("```\n{long}\n```");
-        let lines = markdown_to_lines(&src, 20, &Theme::default(), CodeHighlighter::Plain);
+        let lines = markdown_to_lines(
+            &src,
+            20,
+            &Theme::default(),
+            &StyleSheet::default(),
+            CodeHighlighter::Plain,
+        );
         let code_rows = lines.iter().filter(|l| text(l).contains("xxxx")).count();
         assert_eq!(code_rows, 1, "code line must not wrap");
     }
@@ -1312,7 +1341,13 @@ mod tests {
     fn table_header_cells_are_bold_and_themed() {
         let theme = Theme::default();
         let src = "| Name | Kind |\n| --- | --- |\n| a | b |";
-        let lines = markdown_to_lines(src, 40, &theme, CodeHighlighter::Plain);
+        let lines = markdown_to_lines(
+            src,
+            40,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        );
         let head = lines
             .iter()
             .flat_map(|l| &l.spans)
@@ -1326,7 +1361,13 @@ mod tests {
     fn table_cell_link_is_styled() {
         let theme = Theme::default();
         let src = "| Site |\n| --- |\n| [yolop](https://everruns.dev) |";
-        let lines = markdown_to_lines(src, 40, &theme, CodeHighlighter::Plain);
+        let lines = markdown_to_lines(
+            src,
+            40,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        );
         let link = lines
             .iter()
             .flat_map(|l| &l.spans)
@@ -1340,7 +1381,13 @@ mod tests {
     fn table_cell_bold_and_inline_code_survive() {
         let theme = Theme::default();
         let src = "| Col |\n| --- |\n| **hi** and `cargo` |";
-        let lines = markdown_to_lines(src, 40, &theme, CodeHighlighter::Plain);
+        let lines = markdown_to_lines(
+            src,
+            40,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        );
         let spans: Vec<&Span> = lines.iter().flat_map(|l| &l.spans).collect();
         let bold = spans
             .iter()
@@ -1359,7 +1406,13 @@ mod tests {
         // A wide emoji is measured grapheme-aware, so every boxed row stays the
         // same rendered width and the borders line up.
         let src = "| Status |\n| --- |\n| ok ✅ |\n| bad |";
-        let lines = markdown_to_lines(src, 40, &Theme::default(), CodeHighlighter::Plain);
+        let lines = markdown_to_lines(
+            src,
+            40,
+            &Theme::default(),
+            &StyleSheet::default(),
+            CodeHighlighter::Plain,
+        );
         let box_rows: Vec<u16> = lines
             .iter()
             .filter(|l| text(l).contains('│'))
@@ -1376,7 +1429,13 @@ mod tests {
     fn table_falls_back_to_plain_when_too_narrow_and_always_fits() {
         let src = "| Col A | Col B |\n| --- | --- |\n| alpha | beta |";
         for width in [4u16, 8, 12, 20, 48] {
-            let lines = markdown_to_lines(src, width, &Theme::default(), CodeHighlighter::Plain);
+            let lines = markdown_to_lines(
+                src,
+                width,
+                &Theme::default(),
+                &StyleSheet::default(),
+                CodeHighlighter::Plain,
+            );
             for line in &lines {
                 assert!(
                     line_width(line) <= width,
@@ -1398,6 +1457,7 @@ mod tests {
             "see https://example.com now",
             60,
             &theme,
+            &StyleSheet::from_theme(&theme),
             CodeHighlighter::Plain,
         );
         let url = lines[0]
@@ -1410,13 +1470,105 @@ mod tests {
     }
 
     #[test]
+    fn custom_sheet_restyles_both_links_and_bare_urls() {
+        use ratatui::style::Color;
+        let theme = Theme::default();
+        // One central rule remaps the link role: green + bold, no underline.
+        let sheet = StyleSheet {
+            link: StyleBundle::new().fg(Color::Green).bold(),
+            ..StyleSheet::from_theme(&theme)
+        };
+        // A markdown link and a bare URL — both resolve the same `link` role.
+        let lines = markdown_to_lines(
+            "[docs](https://ex.com) and https://bare.example.com here",
+            80,
+            &theme,
+            &sheet,
+            CodeHighlighter::Plain,
+        );
+        let spans: Vec<&Span> = lines.iter().flat_map(|l| &l.spans).collect();
+        for needle in ["docs", "bare.example.com"] {
+            let span = spans
+                .iter()
+                .find(|s| s.content.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle:?} span"));
+            assert_eq!(span.style.fg, Some(Color::Green), "{needle}: recolored");
+            assert!(
+                span.style.add_modifier.contains(Modifier::BOLD),
+                "{needle}: bold"
+            );
+            assert!(
+                !span.style.add_modifier.contains(Modifier::UNDERLINED),
+                "{needle}: underline dropped by the custom rule"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_sheet_restyles_headings() {
+        use ratatui::style::Color;
+        let theme = Theme::default();
+        let sheet = StyleSheet {
+            heading: StyleBundle::new().fg(Color::Magenta).italic(),
+            ..StyleSheet::from_theme(&theme)
+        };
+        let lines = markdown_to_lines("# Title", 40, &theme, &sheet, CodeHighlighter::Plain);
+        let span = &lines[0].spans[0];
+        assert_eq!(span.content.as_ref(), "Title");
+        assert_eq!(span.style.fg, Some(Color::Magenta));
+        assert!(span.style.add_modifier.contains(Modifier::ITALIC));
+        // The default heading was bold; this rule doesn't set bold, so it's gone.
+        assert!(!span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn sheet_change_invalidates_stream_cache() {
+        use ratatui::style::Color;
+        let theme = Theme::default();
+        let mut state = MarkdownState::new();
+        state.set("A [link](https://ex.com) in prose.");
+
+        let default_sheet = StyleSheet::from_theme(&theme);
+        let link_fg = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .flat_map(|l| &l.spans)
+                .find(|s| s.content.contains("link"))
+                .expect("link span")
+                .style
+                .fg
+        };
+        assert_eq!(
+            link_fg(state.lines(60, &theme, &default_sheet, CodeHighlighter::Plain)),
+            Some(theme.code.link)
+        );
+
+        // Same theme, different stylesheet: the cached spans must be rebuilt.
+        let recolored = StyleSheet {
+            link: StyleBundle::new().fg(Color::Green),
+            ..default_sheet
+        };
+        assert_eq!(
+            link_fg(state.lines(60, &theme, &recolored, CodeHighlighter::Plain)),
+            Some(Color::Green),
+            "a stylesheet change must invalidate the stream cache"
+        );
+    }
+
+    #[test]
     fn streaming_matches_one_shot_render() {
         let full = "# Heading\n\nA paragraph of text.\n\n```rust\nfn main() {}\n```\n\nDone.";
         let theme = Theme::default();
-        let one_shot: Vec<String> = markdown_to_lines(full, 40, &theme, CodeHighlighter::Plain)
-            .iter()
-            .map(text)
-            .collect();
+        let one_shot: Vec<String> = markdown_to_lines(
+            full,
+            40,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        )
+        .iter()
+        .map(text)
+        .collect();
 
         // Feed the same content in awkward chunks.
         let mut state = MarkdownState::new();
@@ -1429,7 +1581,12 @@ mod tests {
         ] {
             state.push_str(chunk);
             streamed = state
-                .lines(40, &theme, CodeHighlighter::Plain)
+                .lines(
+                    40,
+                    &theme,
+                    &StyleSheet::from_theme(&theme),
+                    CodeHighlighter::Plain,
+                )
                 .iter()
                 .map(text)
                 .collect();
@@ -1454,17 +1611,33 @@ mod tests {
         let mut state = MarkdownState::new();
         for chunk in chunks {
             state.push_str(chunk);
-            let _ = state.lines(60, &theme, CodeHighlighter::Plain);
+            let _ = state.lines(
+                60,
+                &theme,
+                &StyleSheet::from_theme(&theme),
+                CodeHighlighter::Plain,
+            );
         }
         let resized: Vec<String> = state
-            .lines(24, &theme, CodeHighlighter::Plain)
+            .lines(
+                24,
+                &theme,
+                &StyleSheet::from_theme(&theme),
+                CodeHighlighter::Plain,
+            )
             .iter()
             .map(text)
             .collect();
-        let one_shot: Vec<String> = markdown_to_lines(&full, 24, &theme, CodeHighlighter::Plain)
-            .iter()
-            .map(text)
-            .collect();
+        let one_shot: Vec<String> = markdown_to_lines(
+            &full,
+            24,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        )
+        .iter()
+        .map(text)
+        .collect();
         assert_eq!(
             resized, one_shot,
             "resized stream must equal a one-shot render at the new width"
@@ -1476,7 +1649,12 @@ mod tests {
         let theme = Theme::default();
         let mut state = MarkdownState::new();
         state.push_str("First paragraph.\n\nSecond a");
-        let _ = state.lines(40, &theme, CodeHighlighter::Plain);
+        let _ = state.lines(
+            40,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        );
         // The blank line after the first paragraph is a stable boundary, so its
         // bytes are committed to the cache and won't be re-parsed.
         assert!(state.stable_len > 0, "expected a committed prefix");
@@ -1505,12 +1683,12 @@ mod tests {
         let mut state = MarkdownState::new();
         state.push_str("Para one.\n\nPara two.\n\ntail");
         let a = Theme::default();
-        let _ = state.lines(40, &a, CodeHighlighter::Plain);
+        let _ = state.lines(40, &a, &StyleSheet::from_theme(&a), CodeHighlighter::Plain);
         assert!(state.stable_len > 0);
 
         let mut b = Theme::default();
         b.code.heading = ratatui::style::Color::Indexed(200);
-        let _ = state.lines(40, &b, CodeHighlighter::Plain);
+        let _ = state.lines(40, &b, &StyleSheet::from_theme(&b), CodeHighlighter::Plain);
         // Cache was rebuilt under the new theme; still consistent, no stale panic.
         assert_eq!(state.cached_theme, Some(b));
     }
@@ -1522,6 +1700,7 @@ mod tests {
             "look: ![a cat](https://ex.com/cat.png) ok",
             60,
             &theme,
+            &StyleSheet::from_theme(&theme),
             CodeHighlighter::Plain,
         );
         let whole: String = lines.iter().map(text).collect::<Vec<_>>().join("\n");
@@ -1631,7 +1810,14 @@ mod tests {
         let theme = Theme::default();
         let mut md = MarkdownState::new().with_image_resolver(Box::new(StubResolver));
         md.set("intro line\n\n![a cat](ok.png)\n\ntail line");
-        let lines = md.lines(40, &theme, CodeHighlighter::Plain).to_vec();
+        let lines = md
+            .lines(
+                40,
+                &theme,
+                &StyleSheet::from_theme(&theme),
+                CodeHighlighter::Plain,
+            )
+            .to_vec();
         let imgs = md.images();
         assert_eq!(imgs.len(), 1, "one block image reported");
         let img = &imgs[0];
@@ -1655,7 +1841,12 @@ mod tests {
 
         let mut whole = MarkdownState::new().with_image_resolver(Box::new(StubResolver));
         whole.set(doc);
-        let _ = whole.lines(30, &theme, CodeHighlighter::Plain);
+        let _ = whole.lines(
+            30,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        );
         let whole_row = whole.images()[0].row;
 
         let mut streamed = MarkdownState::new().with_image_resolver(Box::new(StubResolver));
@@ -1666,7 +1857,12 @@ mod tests {
             "paragraph here",
         ] {
             streamed.push_str(chunk);
-            let _ = streamed.lines(30, &theme, CodeHighlighter::Plain);
+            let _ = streamed.lines(
+                30,
+                &theme,
+                &StyleSheet::from_theme(&theme),
+                CodeHighlighter::Plain,
+            );
         }
         assert_eq!(streamed.images().len(), 1);
         assert_eq!(
@@ -1681,7 +1877,12 @@ mod tests {
         let theme = Theme::default();
         let mut md = MarkdownState::new();
         md.set("![a cat](ok.png)");
-        let _ = md.lines(40, &theme, CodeHighlighter::Plain);
+        let _ = md.lines(
+            40,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        );
         assert!(md.images().is_empty(), "images() empty without a resolver");
     }
 
