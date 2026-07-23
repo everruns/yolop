@@ -14,11 +14,21 @@ tags the version and publishes to crates.io and the Homebrew tap.
 
 ### Highlights
 
-- Rebuilt the full-screen TUI on the new `tuika` view tree: a richer multi-line composer, composited setup/ask/background overlays, a full-history transcript that scrolls, and windowed pickers.
-- Streaming Markdown and syntax-highlighted code blocks in the transcript, rendered through `tuika` and the new `tuika-codeformatters` tree-sitter highlighter.
-- Mouse support throughout — text selection, clicks, hit-testing, and OSC 52 clipboard copy in the full-screen transcript.
-- A `--theme` selector with bundled standard themes, persisted in settings.
-- Initial Windows support via a PowerShell shell, sandbox modes with approval policies, opt-in shell containment, session-wide shell approval, and a mid-turn steering queue.
+#### yolop
+
+- Rebuilt the full-screen TUI on the new `tuika` view tree: a richer multi-line composer, composited setup/ask/background overlays, a full-history transcript that scrolls, and windowed setup/model pickers.
+- A `--theme` selector, persisted in settings, with a live theme picker in the full-screen UI.
+- Initial Windows support via a PowerShell shell.
+- Sandbox modes with approval policies, opt-in shell containment, and session-wide shell approval.
+- A mid-turn steering queue, automatic session titles, and durable native context-compaction checkpoints.
+
+#### tuika
+
+- Streaming `Markdown` and syntax-highlighted `CodeBlock` rendering, powered by the new `tuika-codeformatters` tree-sitter highlighter.
+- A mouse subsystem — text selection, clicks, hit-testing, and OSC 52 clipboard copy.
+- Bundled standard themes and a neutral theme identity independent of yolop.
+- New components: windowing `SelectList`, multi-line `TextInput` (emacs keymap, word-wrap), and a `Rule` separator.
+- Emoji rendered as grapheme clusters and a configurable OSC 8 link-scheme policy.
 
 ### What's Changed
 
