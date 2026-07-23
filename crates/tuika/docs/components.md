@@ -210,10 +210,13 @@ let rects = flex.solve(Rect::new(0, 0, 40, 10)); // [sidebar_rect, content_rect]
 
 ### `Boxed`
 
-A border + padding + title wrapping one child; the border color is focus-aware.
-An optional `title_bottom` rides the bottom border — the slot for a `1 of 3`
-position counter, a footer legend, or a hint. Both titles honor their `Line`
-alignment; unset, the top title is flush-left and the bottom title flush-right.
+A border + padding + title wrapping one child. The border color is focus-aware
+by default (theme `border` / `border_focused`); `border_color(Color)` overrides
+that with an explicit color for semantic frames — an accent or danger modal, or
+a per-pane color a host resolves itself. An optional `title_bottom` rides the
+bottom border — the slot for a `1 of 3` position counter, a footer legend, or a
+hint. Both titles honor their `Line` alignment; unset, the top title is
+flush-left and the bottom title flush-right.
 [API](https://docs.rs/tuika/latest/tuika/struct.Boxed.html)
 
 <img src="demos/boxed.gif" width="880" alt="Boxed demo">
@@ -223,6 +226,25 @@ use tuika::{BorderStyle, view};
 view! {
     boxed(title = " title ", title_bottom = " 1/3 ", border = BorderStyle::Rounded) {
         node(child)
+    }
+}
+```
+
+### `FocusScope`
+
+A layout-transparent wrapper that renders its subtree with an explicit focus
+flag. Focus lives on the render context and `paint` uses one root context, so a
+`Flex` can't hand a single child `focused = true`; wrap each pane in a
+`FocusScope` so the active one's `Boxed` border lights up while the others stay
+dim — independently of the frame's root focus.
+[API](https://docs.rs/tuika/latest/tuika/struct.FocusScope.html)
+
+```rust
+use tuika::{Boxed, FocusScope, Text, element, view};
+view! {
+    row(gap = 1) {
+        grow(1) { node(FocusScope::focused(element(Boxed::new(element(Text::raw("active")))))) }
+        grow(1) { node(FocusScope::unfocused(element(Boxed::new(element(Text::raw("idle")))))) }
     }
 }
 ```

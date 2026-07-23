@@ -20,8 +20,8 @@
 //!   Attrs: `gap = e`, `padding = e`, `align = e`, `justify = e` (comma-separated,
 //!   all optional; the whole `( … )` may be omitted).
 //! - `boxed( attrs ) { child }` — bordered container of one child.
-//!   Attrs: `title = e`, `title_bottom = e`, `border = e`, `padding = e`,
-//!   `background = e`.
+//!   Attrs: `title = e`, `title_bottom = e`, `border = e`, `border_color = e`,
+//!   `padding = e`, `background = e`.
 //! - `text( expr )` — a `Text::raw` line. `spacer()` — a `Spacer`.
 //! - `grow(n) { node }` / `fixed(n) { node }` — set a child's main-axis size
 //!   (default is auto).
@@ -41,7 +41,7 @@
 /// Each keyword consumes exactly one node: `col`/`row` open flex containers
 /// (with optional `gap`/`padding`/`align`/`justify`/`background` attrs and a
 /// `{ children }` block), `boxed` wraps a single child in a border (with
-/// `title`/`title_bottom`/`border`/`padding`/`background` attrs), `text(expr)` and `spacer()`
+/// `title`/`title_bottom`/`border`/`border_color`/`padding`/`background` attrs), `text(expr)` and `spacer()`
 /// emit leaves, `grow(n)`/`fixed(n)` set a child's main-axis size, and
 /// `node(expr)` splices any `impl View`. Expands to plain builder calls with no
 /// runtime cost.
@@ -135,6 +135,9 @@ macro_rules! view {
     (@boxattrs $b:expr; border = $e:expr $(, $($rest:tt)*)?) => {
         $crate::view!(@boxattrs $b.border($e); $($($rest)*)?)
     };
+    (@boxattrs $b:expr; border_color = $e:expr $(, $($rest:tt)*)?) => {
+        $crate::view!(@boxattrs $b.border_color($e); $($($rest)*)?)
+    };
     (@boxattrs $b:expr; padding = $e:expr $(, $($rest:tt)*)?) => {
         $crate::view!(@boxattrs $b.padding($e); $($($rest)*)?)
     };
@@ -194,6 +197,23 @@ mod tests {
         assert!(
             b.last().is_some_and(|l| l.contains("1/3")),
             "bottom border carries the secondary title: {b:?}"
+        );
+    }
+
+    #[test]
+    fn view_macro_forwards_border_color() {
+        use ratatui::style::Color;
+        // `border_color =` folds to `Boxed::border_color`, rendering identically
+        // to the builder form.
+        let built: Element =
+            element(Boxed::new(element(Text::raw("hi"))).border_color(Color::Indexed(201)));
+        let macroed: Element = crate::view! {
+            boxed(border_color = Color::Indexed(201)) { text("hi") }
+        };
+        assert_eq!(
+            render_el(&built, 10, 3),
+            render_el(&macroed, 10, 3),
+            "border_color must render identically to the builder"
         );
     }
 
