@@ -5,6 +5,11 @@
 //! persisted [`ScrollState`], and the state handles wheel/paging events. The
 //! offset is measured in content rows from the top; a "stick to bottom" flag
 //! keeps a live transcript pinned to the newest line until the user scrolls up.
+//!
+//! Beyond the built-in wheel/paging [`handle`](ScrollState::handle), the offset
+//! is **host-drivable**: an app that owns its scroll position in its own model
+//! mirrors it into the view with [`set_offset`](ScrollState::set_offset), the
+//! vertical peer of [`SelectState::select`](crate::SelectState::select).
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -42,6 +47,19 @@ impl ScrollState {
     /// Top visible content row (0-based).
     pub fn offset(&self) -> usize {
         self.offset
+    }
+
+    /// Set the top visible content row explicitly, detaching bottom-stick.
+    ///
+    /// The vertical counterpart to [`SelectState::select`](crate::SelectState::select):
+    /// an event-loop app that already owns a scroll position in its own model
+    /// mirrors it into the view each frame with this, instead of only nudging
+    /// via [`handle`](Self::handle). A following [`clamp`](Self::clamp) still
+    /// bounds it to the content, so an out-of-range value snaps into range
+    /// rather than scrolling past the end.
+    pub fn set_offset(&mut self, offset: usize) {
+        self.offset = offset;
+        self.stick_to_bottom = false;
     }
 
     /// Whether the view is pinned to the newest content.
@@ -326,6 +344,23 @@ mod tests {
         assert_eq!(s.handle(&up, content_h, viewport_h), EventFlow::Consumed);
         assert!(!s.is_stuck_to_bottom());
         assert_eq!(s.offset(), content_h - viewport_h - (viewport_h - 1));
+    }
+
+    #[test]
+    fn set_offset_positions_view_and_detaches_stick() {
+        let mut s = ScrollState::new();
+        s.clamp(100, 10);
+        assert!(s.is_stuck_to_bottom(), "starts stuck to bottom");
+        // Host mirrors its own scroll row in; stick detaches and clamp honors it.
+        s.set_offset(40);
+        assert!(!s.is_stuck_to_bottom());
+        s.clamp(100, 10);
+        assert_eq!(s.offset(), 40);
+        // An out-of-range value snaps into range on the next clamp rather than
+        // scrolling past the end.
+        s.set_offset(500);
+        s.clamp(100, 10);
+        assert_eq!(s.offset(), 90, "clamped to content height - viewport");
     }
 
     #[test]

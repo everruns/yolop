@@ -250,7 +250,10 @@ events, the view borrows it for a frame.
 ### `Scroll` + `ScrollState`
 
 A windowed view over long content with a scrollbar; `ScrollState` handles
-paging, wheel scroll, and stick-to-bottom.
+paging, wheel scroll, and stick-to-bottom. The offset is also **host-drivable**:
+`set_offset(n)` mirrors an app-owned scroll position into the view — the
+vertical peer of `SelectState::select` — for event-loop apps that track their
+own position.
 [API](https://docs.rs/tuika/latest/tuika/struct.Scroll.html)
 
 <img src="demos/scroll.gif" width="880" alt="Scroll demo">
@@ -258,7 +261,8 @@ paging, wheel scroll, and stick-to-bottom.
 ```rust
 use tuika::{Scroll, ScrollState, view};
 let mut state = ScrollState::new();          // held by the host across frames
-state.handle(&event, content_h, viewport_h);
+state.handle(&event, content_h, viewport_h); // built-in wheel/paging, or…
+state.set_offset(app.scroll_row);            // …mirror an app-owned position
 view! { node(Scroll::new(lines, &state)) }
 ```
 
