@@ -18,7 +18,7 @@ categories = ["command-line-interface", "text-processing"]
 bench = false
 
 [dependencies]
-tuika = { version = "0.2.0", path = "../tuika" }
+tuika = { version = "0.3.0", path = "../tuika" }
 ratatui = "0.30.2"
 tree-sitter = "0.26"
 tree-sitter-highlight = "0.26"
