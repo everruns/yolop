@@ -122,7 +122,8 @@ Highlighting is a seam, not a dependency: `tuika` owns the *presentation* of cod
 colors from any `Highlighter` you supply — keeping the toolkit free of grammar
 crates. The companion crate
 [`tuika-codeformatters`](https://crates.io/crates/tuika-codeformatters) ships a
-ready-made tree-sitter `Highlighter`.
+ready-made tree-sitter `Highlighter`. Images work the same way: supply an
+`ImageResolver` and `![alt](url)` renders as real pixels (see [Images](#images)).
 
 ```rust
 use tuika::{CodeBlock, Markdown};
@@ -165,7 +166,7 @@ Each enters the alternate screen; press `q` (or `esc`) to quit.
 | [`overlay`](examples/overlay.rs)  | `cargo run -p tuika --example overlay`    | `OverlaySpec` centered dialog + input routing      |
 | [`ratatui_dashboard`](examples/ratatui_dashboard.rs) | `cargo run -p tuika --example ratatui_dashboard` | mixed Ratatui widgets + responsive live data |
 | [`mouse`](examples/mouse.rs)     | `cargo run -p tuika --example mouse`      | drag-to-select + highlight + OSC 52 copy, clickable buttons |
-| [`image`](examples/image.rs)     | `cargo run -p tuika --example image`      | Kitty-protocol `Image` over reserved cells, alt-text fallback |
+| [`image`](examples/image.rs)     | `cargo run -p tuika --example image`      | `Image` over reserved cells (Kitty/iTerm2/Sixel), alt-text fallback |
 
 (Embedded in yolop, the gallery is also reachable as `yolop tuika-gallery`.)
 
@@ -263,6 +264,40 @@ so it works in both the inline and full-screen renderers; terminals that don't
 understand it ignore the sequence. yolop shows it (indeterminate) while a turn
 runs and clears it when idle.
 
+## Images
+
+`Image` paints real pixels — an avatar, a chart, a rendered diagram — over the
+cells it reserves, using whichever terminal graphics protocol
+`ImageSupport::detect()` finds: **Kitty** (Kitty, Ghostty, WezTerm, Konsole),
+**iTerm2**, or **Sixel** (foot, xterm +sixel, mlterm, contour). Terminals with
+none show the alt text, so the same view tree renders everywhere.
+
+<img src="docs/demos/image.svg" width="880" alt="Two terminal windows side by side: on a Kitty/Ghostty/WezTerm/Konsole terminal an Image view renders a red/green gradient in place; on every other terminal the same view shows a dimmed italic '[image: a red/green gradient]' placeholder.">
+
+Decoding stays in the host — a heavy dependency, kept out like the highlighter
+seam — so you hand in raw RGBA via `ImageData::from_rgba` and `tuika` owns the
+protocol encoding (base64, PNG, and Sixel encoders are inline, so no image-codec
+dependency). A graphics escape paints at the cursor, unlike the cursor-neutral
+OSC sequences, so emission is split from layout: `Image` reserves cells and
+records its placement into an `ImageLayer`, then the host calls
+`ImageLayer::emit` after `terminal.draw()` to paint the pixels over them.
+
+```rust
+use tuika::{Image, ImageData, ImageLayer, ImageSupport};
+
+let data = ImageData::from_rgba(2, 2, vec![0u8; 2 * 2 * 4]).unwrap();
+let layer = ImageLayer::new();
+let _image = Image::new(data, 20, 10)      // 20×10 cells on screen
+    .support(ImageSupport::detect())
+    .in_layer(&layer)
+    .alt("a 2×2 swatch");                  // shown where graphics aren't supported
+```
+
+Markdown `![alt](url)` renders too, in both the one-shot `Markdown` view and the
+streaming `MarkdownState`: attach a host `ImageResolver` (URL → `ImageData`, the
+same seam as the highlighter) and resolved images become real pixels — a
+link-styled placeholder for the rest, never a dropped URL.
+
 ## Mouse, selection, and clipboard
 
 Enabling mouse capture (which `AltScreen` / `TerminalSession` do) means the
@@ -296,8 +331,8 @@ path — there is no separate touch event to handle.
 
 > See the [terminal features guide](docs/features.md) for these
 > terminal-integration capabilities — OSC 8 hyperlinks, mouse selection and
-> clicks, OSC 52 clipboard, and OSC 9;4 progress — with animated demos and
-> runnable examples.
+> clicks, OSC 52 clipboard, OSC 9;4 progress, and Kitty/iTerm2/Sixel images —
+> with demos and runnable examples.
 
 ## Testing your UI
 
