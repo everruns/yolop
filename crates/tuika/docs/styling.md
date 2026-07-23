@@ -5,7 +5,7 @@ tuika splits how a UI looks into two layers:
 - a **`Theme`** — a flat set of named *colors* (`background`, `accent`, `border`,
   the markdown/code palette, …). Every component pulls from the theme; none
   hard-codes a color. This is the token layer, and it already existed — see
-  [themes](../crates/tuika/docs/themes.md).
+  [themes](themes.md).
 - a **`StyleSheet`** — a mapping from a semantic **role** (a heading, a link, an
   inline-code span, a list bullet, a panel's border and fill, …) onto a
   **`StyleBundle`**: the color and text attributes that role draws with. This is
@@ -144,7 +144,7 @@ The three sheets above, held still:
 | --- | --- | --- |
 | ![default](styling/styling-default.gif) | ![vivid](styling/styling-vivid.gif) | ![mono](styling/styling-mono.gif) |
 
-Each is the [`examples/styling.rs`](../crates/tuika/examples/styling.rs) scene under
+Each is the [`examples/styling.rs`](../examples/styling.rs) scene under
 a different `StyleSheet`; see its `variants()` for the exact rules.
 
 ## Regenerating the demos

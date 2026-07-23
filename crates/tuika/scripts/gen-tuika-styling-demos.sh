@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Regenerate the stylesheet demo GIFs under docs/styling/styling-*.gif.
+# Regenerate the stylesheet demo GIFs under crates/tuika/docs/styling/styling-*.gif.
 #
 # Each GIF is the shared scene from crates/tuika/examples/styling.rs — one
 # markdown block plus panels — painted under a different `tuika::StyleSheet`, so
@@ -27,7 +27,7 @@ fi
 echo "Building the styling example…"
 cargo build -q -p tuika --example styling
 bin="${repo_root}/target/debug/examples/styling"
-out_dir="${repo_root}/docs/styling"
+out_dir="${crate_dir}/docs/styling"
 mkdir -p "${out_dir}"
 
 bg="$("${bin}" bg)"

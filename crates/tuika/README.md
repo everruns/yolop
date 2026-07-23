@@ -154,6 +154,12 @@ let c = tuika::theme_by_name("gruvbox-dark").unwrap(); // config / --theme
 See the [theme gallery](docs/themes.md) for a screenshot of each bundled
 palette, or `themes::PRESETS` to enumerate them for a picker.
 
+Where a `Theme` is the color *tokens*, a `StyleSheet` is the *rules* — a mapping
+from a semantic role (heading, link, inline code, a panel's border and fill, …)
+onto the style it draws with. Override a role in one place and every element with
+that role restyles at once; markdown parts and bare URLs are role-driven too. See
+the [styling guide](docs/styling.md).
+
 ### Runnable examples
 
 Each enters the alternate screen; press `q` (or `esc`) to quit.
