@@ -72,6 +72,14 @@ struct RawFacet {
     /// answer). D4 opt-in — a non-declaring extension's `ui/ask` is refused.
     #[serde(default)]
     ui_ask: bool,
+    /// Subscribes the extension to the session's agentic event stream: the host
+    /// forwards each lifecycle event (`turn.*`, `reason.*`, `act.*`,
+    /// `tool.started/completed`, `llm.generation`) as a fire-and-forget
+    /// `trace/event` notification, for export to a tracing backend. D4 opt-in —
+    /// the event stream is only forwarded to a declaring, enabled extension, and
+    /// the facet triggers an eager server spawn so no early events are missed.
+    #[serde(default)]
+    trace: bool,
 }
 
 /// A manifest-declared hook subscription. Static (the approved upper bound):
@@ -215,6 +223,7 @@ pub struct ExtensionManifest {
     pub status: bool,
     pub skills: bool,
     pub ui_ask: bool,
+    pub trace: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -280,6 +289,7 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         && raw.yolop.commands.is_empty()
         && !raw.yolop.status
         && !raw.yolop.skills
+        && !raw.yolop.trace
     {
         return Err("extension declares no contributions; nothing to contribute".into());
     }
@@ -326,6 +336,7 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         status: raw.yolop.status,
         skills: raw.yolop.skills,
         ui_ask: raw.yolop.ui_ask,
+        trace: raw.yolop.trace,
     })
 }
 

@@ -4,7 +4,7 @@
 //! handshake, dispatch, and error shaping.
 
 use crate::protocol::{
-    ErrorObject, HookFireParams, PROTOCOL_VERSION, ToolCallParams, classify_line,
+    ErrorObject, HookFireParams, PROTOCOL_VERSION, ToolCallParams, TraceEventParams, classify_line,
     response_error_line, version_compatible,
 };
 use serde_json::{Value, json};
@@ -50,6 +50,7 @@ impl HookResponse {
 type ToolHandler = Box<dyn Fn(&Value) -> ToolResponse + Send>;
 type HookHandler = Box<dyn Fn(&HookFireParams) -> HookResponse + Send>;
 type PromptHandler = Box<dyn Fn() -> String + Send>;
+type TraceHandler = Box<dyn FnMut(&TraceEventParams) + Send>;
 
 /// Builder for an extension capability server.
 pub struct Server {
@@ -58,6 +59,7 @@ pub struct Server {
     tools: BTreeMap<String, ToolHandler>,
     hook: Option<HookHandler>,
     dynamic_prompt: Option<PromptHandler>,
+    trace: Option<TraceHandler>,
 }
 
 impl Server {
@@ -68,6 +70,7 @@ impl Server {
             tools: BTreeMap::new(),
             hook: None,
             dynamic_prompt: None,
+            trace: None,
         }
     }
 
@@ -107,8 +110,22 @@ impl Server {
         self
     }
 
+    /// Register a handler for `trace/event` notifications — one agentic
+    /// lifecycle event per call, forwarded observe-only when the manifest
+    /// declares the `trace` facet. The handler is `FnMut` so an exporter can
+    /// carry state (open spans keyed by correlation id) across events; the
+    /// serve loop is single-threaded, so no locking is needed. Registering it
+    /// advertises the `trace` capability in the handshake.
+    pub fn on_trace<F>(mut self, handler: F) -> Self
+    where
+        F: FnMut(&TraceEventParams) + Send + 'static,
+    {
+        self.trace = Some(Box::new(handler));
+        self
+    }
+
     /// Run the stdio serve loop until EOF. Blocks the calling thread.
-    pub fn serve(self) -> std::io::Result<()> {
+    pub fn serve(mut self) -> std::io::Result<()> {
         let stdin = std::io::stdin();
         let mut stdout = std::io::stdout();
         for line in stdin.lock().lines() {
@@ -126,14 +143,24 @@ impl Server {
     }
 
     /// Handle one wire line, returning the response line to write (if any).
-    fn dispatch(&self, line: &str) -> Option<String> {
+    fn dispatch(&mut self, line: &str) -> Option<String> {
         use crate::protocol::Incoming;
         let incoming = classify_line(line)?;
         match incoming {
             Incoming::Request { id, method, params } => {
                 Some(self.handle_request(id, &method, params))
             }
-            // Servers don't act on host notifications in this SDK; ignore.
+            // `trace/event` is the one host notification this SDK acts on; it
+            // never gets a response (fire-and-forget). All other notifications
+            // and stray responses are ignored.
+            Incoming::Notification { method, params } if method == "trace/event" => {
+                if let Some(handler) = self.trace.as_mut() {
+                    let params: TraceEventParams =
+                        serde_json::from_value(params).unwrap_or_default();
+                    handler(&params);
+                }
+                None
+            }
             Incoming::Notification { .. } | Incoming::Response { .. } => None,
         }
     }
@@ -192,6 +219,9 @@ impl Server {
         }
         if self.dynamic_prompt.is_some() {
             capabilities.push(Value::from("dynamic_prompt"));
+        }
+        if self.trace.is_some() {
+            capabilities.push(Value::from("trace"));
         }
         json!({ "id": id, "result": {
             "protocol_version": PROTOCOL_VERSION,
@@ -293,6 +323,39 @@ mod tests {
                 .unwrap()
                 .contains("no such tool")
         );
+    }
+
+    #[test]
+    fn trace_events_reach_the_handler_and_advertise_the_capability() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let mut server = Server::new("tracer").on_trace(move |ev| {
+            sink.lock().unwrap().push(ev.event_type.clone());
+        });
+
+        // The handshake advertises `trace`.
+        let out = server.dispatch(
+            &json!({ "id": 1, "method": "initialize",
+                     "params": { "protocol_version": "1.0" } })
+            .to_string(),
+        );
+        let v: Value = serde_json::from_str(&out.unwrap()).unwrap();
+        assert!(
+            v["result"]["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::from("trace"))
+        );
+
+        // A `trace/event` notification runs the handler and yields no response.
+        let none = server.dispatch(
+            &json!({ "method": "trace/event",
+                     "params": { "event_type": "tool.completed", "id": "e1" } })
+            .to_string(),
+        );
+        assert!(none.is_none(), "notifications never get a response");
+        assert_eq!(seen.lock().unwrap().as_slice(), &["tool.completed"]);
     }
 
     #[test]

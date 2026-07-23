@@ -1,0 +1,11 @@
+{
+  "name": "logfire",
+  "version": "0.1.0",
+  "description": "Export agentic traces (turns, reasoning, tool calls, LLM generations) to Pydantic Logfire over OTLP.",
+  "engines": { "yolop": ">=0.11" },
+  "yolop": {
+    "protocol_version": "1.0",
+    "capabilityServer": { "command": "yolop-extension-logfire", "args": [] },
+    "trace": true
+  }
+}

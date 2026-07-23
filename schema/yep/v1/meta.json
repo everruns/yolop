@@ -53,6 +53,11 @@
       "description": "Notify the server its config changed."
     },
     {
+      "name": "trace/event",
+      "direction": "host",
+      "description": "Notification: forward one agentic-lifecycle event (turn/reason/act/tool/llm) to an extension that declares `trace`, for export to a tracing backend."
+    },
+    {
       "name": "shutdown",
       "direction": "host",
       "description": "Request a graceful stop."
@@ -67,6 +72,7 @@
     "mcp_servers",
     "status",
     "commands",
-    "ui_ask"
+    "ui_ask",
+    "trace"
   ]
 }

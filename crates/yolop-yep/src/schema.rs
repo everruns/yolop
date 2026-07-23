@@ -11,7 +11,7 @@
 use crate::protocol::{
     CapabilityParams, CommandExecuteParams, CommandExecuteResult, ErrorObject, HookDecision,
     HookFireParams, InitializeParams, InitializeResult, PromptContribution, StatusChangedParams,
-    ToolCallParams, ToolUpdateParams, UiAskParams, UiAskResult,
+    ToolCallParams, ToolUpdateParams, TraceEventParams, UiAskParams, UiAskResult,
 };
 use schemars::generate::SchemaSettings;
 use serde_json::{Value, json};
@@ -36,6 +36,7 @@ fn schema_document() -> Value {
     let ui_ask_params = ref_for(generator.subschema_for::<UiAskParams>());
     let ui_ask_result = ref_for(generator.subschema_for::<UiAskResult>());
     let status_changed = ref_for(generator.subschema_for::<StatusChangedParams>());
+    let trace_event = ref_for(generator.subschema_for::<TraceEventParams>());
     let capability_params = ref_for(generator.subschema_for::<CapabilityParams>());
     let error = ref_for(generator.subschema_for::<ErrorObject>());
 
@@ -51,6 +52,7 @@ fn schema_document() -> Value {
         "prompt/contribution": { "result": prompt_contribution },
         "command/execute": { "params": command_params, "result": command_result },
         "ui/ask": { "params": ui_ask_params, "result": ui_ask_result },
+        "trace/event": { "params": trace_event },
     });
 
     let defs: Value = generator.take_definitions(true).into();

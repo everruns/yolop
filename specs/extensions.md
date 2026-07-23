@@ -111,6 +111,28 @@ mid-turn, then resolves the request's oneshot with the typed answer (or
 another is pending is answered `cancelled`. Refused (`cancelled`) with no sink,
 so `--print`/ACP never blocks on it. Covered by
 `ui_ask_reverse_request_is_answered_by_the_sink`.
+Traces: an extension that declares `trace` in its manifest (the D4 opt-in)
+receives the session's agentic event stream — each lifecycle event (`turn.*`,
+`reason.*`, `act.*`, `tool.started/completed`, `llm.generation`) forwarded as a
+fire-and-forget host→server `trace/event` notification, so it can export the run
+to a tracing backend (Logfire, an OTLP collector). This is the observe-only dual
+of `hook/fire`: `hook/fire` is a *request* that can block one tool call;
+`trace/event` is a *notification* the host never awaits, so a slow or crashed
+exporter can never stall the agent loop. The host taps the existing session
+event broadcast (`JsonlEventEmitter::subscribe`, the same fan-out
+`herdr.start_monitor` uses) and, for each enabled declaring extension, spawns one
+forwarder task (`src/extensions/trace.rs`) filtered to the session; the facet is
+eager-spawned so early events aren't missed, and high-frequency streaming deltas
+are dropped (the paired `*.started`/`*.completed` events already bound the work).
+The wire type is `TraceEventParams` (event type, ids, timestamp, and the event
+`context`/`data` carried verbatim); the SDK exposes it as `Server::on_trace`
+(a stateful `FnMut` so an exporter can pair spans across events). The reference
+consumer is the `yolop-extension-logfire` crate — a capability server on the SDK
+that folds the events into OpenTelemetry spans and POSTs OTLP/HTTP to Logfire,
+configured by the same environment variables Logfire's onboarding checklist uses
+(`LOGFIRE_TOKEN`, `LOGFIRE_ENDPOINT`, `OTEL_SERVICE_NAME`). Covered by
+`trace_events_are_forwarded_to_a_declaring_server`; a non-declaring extension
+gets no forwarder (`non_declaring_extension_has_no_trace_process`).
 Live reload: `reload_extension name=<name>` restarts an already-enabled
 extension's *server process* in place, so implementation edits take effect
 mid-session without a yolop restart — the self-writing inner loop. Each
@@ -410,7 +432,7 @@ both sides: **ignore unknown fields** (no deny-unknown-fields on the wire),
 version sniffing**. The handshake's contribution facets are capability
 tokens with structured `capability_params` (open vocabulary, carried
 verbatim when unrecognized): `tools`, `streaming`, `hooks`, `prompt`,
-`dynamic_prompt`, `mcp_servers`, `commands`, `ui_ask`, `cancel`,
+`dynamic_prompt`, `mcp_servers`, `commands`, `ui_ask`, `trace`, `cancel`,
 `provider` (future). A server advertising only `tools` is fully conforming.
 
 ### Methods
@@ -425,6 +447,7 @@ verbatim when unrecognized): `tools`, `streaming`, `hooks`, `prompt`,
 | →server | `cancel` | req | `{id}` — abort any in-flight request (mira semantics: best-effort, aborted call resolves with error `cancelled`) |
 | →server | `prompt/contribution` | req | dynamic system prompt (only if declared `dynamic`); timeout + last-known-good |
 | →server | `hook/fire` | req | `{event, toolName, payload}` → decision per subscription (`allow/block/mutate`) |
+| →server | `trace/event` | ntf | forward one agentic-lifecycle event (turn/reason/act/tool/llm) to a `trace`-declaring extension; observe-only, never awaited |
 | →server | `config/changed` | req | new validated config → `ok` \| `restart-required` |
 | →server | `workspace/changed` | ntf | active worktree/root repointed |
 | ←server | `ui/ask` | req | user question/form — bridged to the `user_ask` capability |

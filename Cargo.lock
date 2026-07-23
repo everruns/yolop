@@ -7851,6 +7851,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "yolop-extension-logfire"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "ureq",
+ "yolop-yep",
+]
+
+[[package]]
 name = "yolop-yep"
 version = "0.2.0"
 dependencies = [

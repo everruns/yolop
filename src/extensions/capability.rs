@@ -125,6 +125,19 @@ impl ExtensionCapability {
         process
     }
 
+    /// The live-server process to forward `trace/event` notifications to,
+    /// built with `config` (so it shares the per-config process cache with the
+    /// tool/hook/prompt facets), iff this extension declares the `trace` facet.
+    /// `None` otherwise — a non-declaring extension never sees the event stream
+    /// (D4). The runtime pairs this with a session event subscription to drive
+    /// forwarding (see `extensions::trace`).
+    pub fn trace_process(&self, config: &Value) -> Option<Arc<ExtensionProcess>> {
+        self.package
+            .manifest
+            .trace
+            .then(|| self.process_for(config))
+    }
+
     /// Tool names this extension asks to keep fully loaded (never deferred
     /// behind `tool_search`), bounded by the spec's per-extension budget.
     pub fn never_defer_tools(&self) -> Vec<String> {

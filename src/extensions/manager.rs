@@ -161,6 +161,25 @@ impl ExtensionProcess {
         }
     }
 
+    /// Forward one agentic-lifecycle event to the server as a fire-and-forget
+    /// `trace/event` notification (the `trace` facet). Spawns/handshakes the
+    /// server first if needed — the facet is eager, so the first event brings
+    /// it up. Observe-only: the server never replies, so this returns as soon
+    /// as the line is queued; a dead connection is dropped so the next event
+    /// respawns. `Err` is only a spawn/handshake failure the caller logs.
+    pub async fn send_trace_event(&self, params: Value) -> Result<()> {
+        let connection = {
+            let mut state = self.state.lock().await;
+            self.ensure_live(&mut state).await?;
+            state.as_ref().expect("ensured live").connection.clone()
+        };
+        connection.notify("trace/event", params);
+        if connection.is_closed() {
+            *self.state.lock().await = None;
+        }
+        Ok(())
+    }
+
     /// Fire one subscribed lifecycle hook (`hook/fire`) and return the
     /// server's decision. `Err` is a transport/server failure the caller
     /// resolves per the subscription's `on_error` policy.

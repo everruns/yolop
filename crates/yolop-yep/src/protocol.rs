@@ -339,6 +339,44 @@ fn default_true() -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// trace/event
+
+/// Host → server `trace/event` notification: one agentic-lifecycle event
+/// (a turn/reason/act/tool/llm event from the host's session event log),
+/// forwarded observe-only to an extension that declares the `trace` facet so
+/// it can export the run to an external tracing backend (Logfire, an OTLP
+/// collector, …). Fire-and-forget — the server never replies, so a slow or
+/// crashed exporter can never stall the agent loop.
+///
+/// The `data` field carries the event-type-specific payload verbatim (see the
+/// everruns event protocol, `specs/events.md`); the server maps it to spans.
+/// Lenient/defaulted per the forward-compat rules — a new event type parses
+/// with its `data` intact even if this struct predates it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct TraceEventParams {
+    /// Event type, e.g. `turn.started`, `tool.completed`, `llm.generation`.
+    #[serde(default)]
+    pub event_type: String,
+    /// Stable event id from the host's session event log.
+    #[serde(default)]
+    pub id: String,
+    /// RFC 3339 timestamp of the event.
+    #[serde(default)]
+    pub ts: String,
+    /// Session the event belongs to.
+    #[serde(default)]
+    pub session_id: String,
+    /// Correlation ids (turn/exec/message/model/…) carried verbatim, for
+    /// stitching point-in-time events into spans.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub context: Value,
+    /// Event-type-specific payload, carried verbatim.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub data: Value,
+}
+
+// ---------------------------------------------------------------------------
 // status/changed
 
 /// Severity of a `status/changed` update. Purely presentational; the host may

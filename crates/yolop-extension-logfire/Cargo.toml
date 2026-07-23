@@ -1,0 +1,21 @@
+[package]
+name = "yolop-extension-logfire"
+version = "0.1.0"
+edition = "2024"
+authors = ["Everruns <support@everruns.com>"]
+license = "MIT"
+description = "yolop extension: export agentic traces to Pydantic Logfire (OTLP)."
+homepage = "https://github.com/everruns/yolop"
+repository = "https://github.com/everruns/yolop"
+keywords = ["yolop", "yolop-extension", "logfire", "opentelemetry", "tracing"]
+categories = ["development-tools"]
+
+[[bin]]
+name = "yolop-extension-logfire"
+path = "src/main.rs"
+
+[dependencies]
+yolop-yep = { path = "../yolop-yep", version = "0.2" }
+serde_json = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+ureq = "2.12"

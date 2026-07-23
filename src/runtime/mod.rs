@@ -2839,6 +2839,9 @@ pub async fn build_with_options(
     // iteration) without a yolop restart.
     let live_processes = crate::extensions::LiveProcessRegistry::default();
     let mut extension_never_defer: Vec<String> = Vec::new();
+    // Trace-facet extensions, captured here and started once `session_id` and
+    // the event broadcast exist (below). Observe-only agentic-trace export.
+    let mut trace_forwarders: Vec<crate::extensions::trace::TraceForwarder> = Vec::new();
     if let Some(ext_dir) = crate::extensions::extensions_dir() {
         let settings_snapshot = settings.snapshot();
         for package in crate::extensions::discover_extensions(&ext_dir) {
@@ -2846,12 +2849,18 @@ pub async fn build_with_options(
             // extension is enabled in the harness — merged into scoped MCP
             // config so the runtime's own client discovers them, exactly like
             // `.mcp.json`. Workspace `.mcp.json` still overrides by name.
-            let enabled = settings_snapshot
-                .capability_overrides_for(&crate::extensions::extension_capability_id(
-                    &package.manifest.name,
-                ))
+            let overrides = settings_snapshot.capability_overrides_for(
+                &crate::extensions::extension_capability_id(&package.manifest.name),
+            );
+            let enabled = overrides.iter().any(|(_, entry)| !entry.is_remove());
+            // The effective harness config: the last non-remove override's
+            // inline config (empty when the extension is enabled without one).
+            let ext_config = overrides
                 .iter()
-                .any(|(_, entry)| !entry.is_remove());
+                .rev()
+                .find(|(_, entry)| !entry.is_remove())
+                .map(|(_, entry)| entry.config.clone())
+                .unwrap_or(serde_json::Value::Null);
             let capability =
                 crate::extensions::ExtensionCapability::new(package, effective_root.clone())
                     .with_status_sink(status_sink.clone())
@@ -2865,6 +2874,15 @@ pub async fn build_with_options(
                         &contributed,
                         &mcp_servers,
                     );
+                }
+                // Forward the session event stream to an enabled `trace`
+                // extension (the process is shared with its other facets via
+                // `ext_config`); started below once the session id exists.
+                if let Some(fwd) = crate::extensions::trace::TraceForwarder::for_capability(
+                    &capability,
+                    &ext_config,
+                ) {
+                    trace_forwarders.push(fwd);
                 }
             }
             extension_never_defer.extend(capability.never_defer_tools());
@@ -3204,6 +3222,13 @@ pub async fn build_with_options(
     let capability_commands = runtime.list_commands(session_id).await?;
 
     herdr.start_monitor(session_id, event_bus_typed.subscribe());
+
+    // Start agentic-trace forwarding for each enabled `trace` extension: one
+    // task per extension consuming its own subscription, filtered to this
+    // session. Observe-only — a slow exporter never stalls the run.
+    for forwarder in trace_forwarders {
+        forwarder.start(session_id, event_bus_typed.subscribe());
+    }
 
     Ok(BuiltRuntime {
         handles: RuntimeHandles {
