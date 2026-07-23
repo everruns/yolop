@@ -128,7 +128,7 @@ portable-pty = "0.9.0"
 proptest = "1"
 tempfile = "3"
 tiny_http = "0.12"
-vt100 = "0.15"
+vt100 = "0.16"
 
 [profile.release]
 lto = "thin"
