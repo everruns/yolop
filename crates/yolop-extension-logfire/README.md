@@ -7,9 +7,10 @@ trace with token usage, timing, and tool arguments.
 
 It uses yolop's `trace` extension facet: the host forwards each agentic
 lifecycle event as a fire-and-forget notification, and this server folds them
-into OpenTelemetry spans and POSTs them to Logfire's OTLP/HTTP endpoint. No
-Logfire client library is required — it speaks OTLP directly, the same wire
-Logfire's own SDKs use.
+into OpenTelemetry spans and ships them to Logfire through the official
+`opentelemetry-otlp` exporter (HTTP/protobuf, blocking client) — the approach
+Logfire's [alternative-clients guide](https://logfire.pydantic.dev/docs/how-to-guides/alternative-clients/)
+documents for Rust. No Logfire client library is required.
 
 ## Install
 
@@ -30,8 +31,8 @@ variables Logfire's onboarding checklist uses:
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `LOGFIRE_TOKEN` (or `LOGFIRE_WRITE_TOKEN`) | Logfire **write token**. Required — without it spans are dropped and the extension is inert. | — |
-| `LOGFIRE_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) | OTLP traces URL | `https://logfire-api.pydantic.dev/v1/traces` |
+| `LOGFIRE_TOKEN` (or `LOGFIRE_WRITE_TOKEN`) | Logfire **write token**, sent raw in the `Authorization` header (no `Bearer` prefix). Required — without it the extension runs but exports nowhere. | — |
+| `LOGFIRE_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) | OTLP traces URL. Use `logfire-eu` for an EU project. | `https://logfire-us.pydantic.dev/v1/traces` |
 | `OTEL_SERVICE_NAME` (or `LOGFIRE_SERVICE_NAME`) | Service name on the spans | `yolop` |
 
 ```bash
@@ -41,11 +42,12 @@ doppler run -- cargo run -- -p "say hi"   # this run is now traced to Logfire
 
 ## What gets exported
 
-One trace per session; each turn is a root span, with `reason`/`act`/`tool`
-spans nested under their turn. Event `data` scalars (token counts, model, tool
-name, …) become span attributes; `*.failed` events mark the span's status as
-error. High-frequency streaming deltas are not exported — the paired
-`*.started` / `*.completed` events already bound the work.
+One trace per turn: `turn.*` is the root span, with `reason`/`act`/`tool` spans
+nested under it and `llm.generation` as a point span. Event `data` scalars
+(token counts, model, tool name, exit code, …) become span attributes;
+`*.failed` events mark the span's status as error. High-frequency streaming
+deltas are not exported — the paired `*.started` / `*.completed` events already
+bound the work.
 
-Export is best-effort: a slow or unreachable Logfire never stalls the agent, and
-spans flush at each turn boundary.
+Export is best-effort: a slow or unreachable Logfire never stalls the agent (the
+host never awaits `trace/event`), and spans are exported as they end.

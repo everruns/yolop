@@ -7855,8 +7855,10 @@ name = "yolop-extension-logfire"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
  "serde_json",
- "ureq",
  "yolop-yep",
 ]
 
