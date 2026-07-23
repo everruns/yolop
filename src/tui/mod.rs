@@ -125,8 +125,6 @@ pub struct App {
     model: ModelState,
     pub lines: Vec<ChatLine>,
     printed_lines: usize,
-    /// Number of leading system lines that belong to the startup banner.
-    startup_banner_len: usize,
     /// The single composer model, shared by **both** renderers: a tuika
     /// [`TextInputState`](tuika::TextInputState) that owns the draft text and
     /// cursor and applies its own edits (emacs bindings, word movement, wrapping).
@@ -505,7 +503,6 @@ impl App {
             model: runtime.model,
             lines: Vec::new(),
             printed_lines: 0,
-            startup_banner_len: 0,
             composer: {
                 let mut composer = tuika::TextInputState::new();
                 composer.set_mode(tuika::TextInputMode::SubmitOnEnter);
@@ -577,7 +574,6 @@ impl App {
             context_used_tokens: None,
         };
         app.emit_system_banner();
-        app.startup_banner_len = app.lines.len();
         if should_setup {
             app.start_first_run_setup();
         } else if app.goal_store.is_paused(session_id)
@@ -928,7 +924,6 @@ impl App {
             &mut cache.lines,
             &self.lines,
             cache.source_len,
-            self.startup_banner_len,
             width,
             cache.prev_author.take(),
         );
@@ -964,7 +959,7 @@ impl App {
     /// mode — dropping an unflushed line would erase it from scrollback entirely
     /// — so the cap is a soft target there. Full-screen mode has no native
     /// flush, so the drop bounds how far back its in-app scrollback reaches.
-    /// Draining the front shifts the flush cursor and banner length and
+    /// Draining the front shifts the flush cursor and
     /// invalidates the wrap cache.
     fn trim_transcript(&mut self) {
         let len = self.lines.len();
@@ -982,7 +977,6 @@ impl App {
         }
         self.lines.drain(0..drop);
         self.printed_lines = self.printed_lines.saturating_sub(drop);
-        self.startup_banner_len = self.startup_banner_len.saturating_sub(drop);
         self.transcript_generation = self.transcript_generation.wrapping_add(1);
     }
 
@@ -2023,7 +2017,6 @@ impl App {
                 self.goal_store.clear_active(self.session.session_id());
                 self.user_ask_store.clear_active(self.session.session_id());
                 self.emit_system_banner();
-                self.startup_banner_len = self.lines.len();
             }
             UiCommand::RunShell { command } => self.start_shell_command(command),
             UiCommand::Quit => self.should_quit = true,
@@ -4308,50 +4301,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn recent_transcript_mirror_excludes_startup_banner_system_lines() {
-        let mut fixture = app_with_llmsim().await;
-        let app = &mut fixture.app;
-        app.lines = vec![ChatLine {
-            author: Author::System,
-            text: "workspace: /tmp".into(),
-        }];
-        app.startup_banner_len = app.lines.len();
-        app.lines.push(ChatLine {
-            author: Author::User,
-            text: "hello".into(),
-        });
-
-        let visible = recent_transcript_lines(app, 80, 10);
-        let visible = visible.iter().map(line_text).collect::<Vec<_>>();
-        assert!(!visible.iter().any(|line| line.contains("workspace: /tmp")));
-        assert!(visible.iter().any(|line| line.contains("hello")));
-    }
-
-    #[test]
-    fn recent_transcript_mirror_includes_session_system_notices_after_chat() {
-        let lines = [
-            ChatLine {
-                author: Author::System,
-                text: "workspace: /tmp".into(),
-            },
-            ChatLine {
-                author: Author::User,
-                text: "hello".into(),
-            },
-            ChatLine {
-                author: Author::Assistant,
-                text: "hi".into(),
-            },
-            ChatLine {
-                author: Author::System,
-                text: "attached clipboard image #1 (640x480 PNG)".into(),
-            },
-        ];
-        assert!(!include_line_in_recent_transcript_mirror(&lines[0], 0, 1));
-        assert!(include_line_in_recent_transcript_mirror(&lines[3], 3, 1));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn recent_transcript_mirror_includes_image_notice_before_first_chat() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
@@ -4359,12 +4308,11 @@ mod tests {
             author: Author::System,
             text: "workspace: /tmp".into(),
         }];
-        app.startup_banner_len = app.lines.len();
         app.push_system("attached clipboard image #1 (640x480 PNG)".into());
 
         let visible = recent_transcript_lines(app, 80, 10);
         let visible = visible.iter().map(line_text).collect::<Vec<_>>();
-        assert!(!visible.iter().any(|line| line.contains("workspace: /tmp")));
+        assert!(visible.iter().any(|line| line.contains("workspace: /tmp")));
         assert!(
             visible
                 .iter()
@@ -4844,12 +4792,21 @@ mod tests {
             "oldest line should be scrolled off:\n{bottom}"
         );
         // Scroll to the very top: the *full* history is reachable — the old
-        // recent-tail mirror could never render "line 0".
+        // recent-tail mirror could never render "line 0". Startup lines now
+        // precede it in the same transcript, so scan until chat begins.
         test.app.scroll.jump_to_top();
-        let top = render_app_lines(&mut test.app, 40, 12).join("\n");
+        let mut history = render_app_lines(&mut test.app, 40, 12).join("\n");
+        for _ in 0..100 {
+            if history.contains("line 0") {
+                break;
+            }
+            test.app
+                .handle_fullscreen_scroll(MouseEventKind::ScrollDown);
+            history.push_str(&render_app_lines(&mut test.app, 40, 12).join("\n"));
+        }
         assert!(
-            top.contains("line 0"),
-            "oldest line should be reachable by scrolling to the top:\n{top}"
+            history.contains("line 0"),
+            "oldest chat line should be reachable after the startup transcript:\n{history}"
         );
     }
 
@@ -4869,7 +4826,7 @@ mod tests {
         // A from-scratch reference: one full pass over the whole history.
         let full_rebuild = |app: &App, w: usize| -> Vec<Line<'static>> {
             let mut lines = Vec::new();
-            append_transcript_range(&mut lines, &app.lines, 0, app.startup_banner_len, w, None);
+            append_transcript_range(&mut lines, &app.lines, 0, w, None);
             lines
         };
 
@@ -4921,10 +4878,6 @@ mod tests {
         assert!(
             test.app.transcript_generation > gen_before,
             "trimming must invalidate the wrap cache"
-        );
-        assert_eq!(
-            test.app.startup_banner_len, 0,
-            "a banner dropped off the front clamps to zero"
         );
         // Newest lines survive; the oldest were dropped from the front.
         assert_eq!(test.app.lines.last().unwrap().text, "l50099");
@@ -5841,7 +5794,6 @@ mod tests {
         let app = &mut fixture.app;
         app.setup = None;
         app.lines.clear();
-        app.startup_banner_len = 0;
         app.push_user("first question".into());
         app.lines.push(ChatLine {
             author: Author::Assistant,
@@ -5856,10 +5808,6 @@ mod tests {
                 .any(|row| row.contains("attached clipboard image #1")),
             "session system notices should mirror above the composer: {rows:?}"
         );
-        assert!(
-            !rows.iter().any(|row| row.contains("workspace:")),
-            "startup banner should stay out of the inline viewport: {rows:?}"
-        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5868,7 +5816,6 @@ mod tests {
         let app = &mut fixture.app;
         app.setup = None;
         app.lines.clear();
-        app.startup_banner_len = 0;
         app.push_user("first question".into());
         app.lines.push(ChatLine {
             author: Author::Assistant,
@@ -5901,7 +5848,6 @@ mod tests {
         let app = &mut fixture.app;
         app.setup = None;
         app.lines.clear();
-        app.startup_banner_len = 0;
         app.push_user("run it".into());
         app.lines.push(ChatLine {
             author: Author::Assistant,
@@ -5978,17 +5924,28 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn startup_banner_is_kept_out_of_inline_viewport() {
+    async fn inline_viewport_shows_startup_banner() {
         let mut fixture = app_with_llmsim().await;
+        fixture.app.setup = None;
         let rows = render_app_lines(&mut fixture.app, 96, COMPOSER_VIEWPORT_HEIGHT);
 
         assert!(
-            !rows.iter().any(|row| row.contains("workspace:")),
-            "startup transcript should render through scrollback, not the inline viewport: {rows:?}"
+            rows.iter().any(|row| row.contains("type /help")),
+            "inline rendering should show the initial help message: {rows:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_viewport_shows_startup_banner() {
+        let mut fixture = app_with_llmsim().await;
+        fixture.app.setup = None;
+        fixture.app.set_render_mode(RenderMode::Fullscreen);
+
+        let rows = render_app_lines(&mut fixture.app, 96, COMPOSER_VIEWPORT_HEIGHT);
+
         assert!(
-            !rows.iter().any(|row| row.contains("type /help")),
-            "startup transcript should not be mirrored above the composer: {rows:?}"
+            rows.iter().any(|row| row.contains("type /help")),
+            "fullscreen should render the same initial help message: {rows:?}"
         );
     }
 
