@@ -107,7 +107,11 @@ fn build(frame: u64, theme: &Theme) -> tuika::Element {
                             vec![Line::from("wip"), Line::from("3"), Line::from("table component")],
                             vec![Line::from("fix"), Line::from("1"), Line::from("scrollbar math")],
                         ];
-                        Table::new(columns, rows, &sel).header(true)
+                        // Custom caret + preserve column colors under the highlight.
+                        Table::new(columns, rows, &sel)
+                            .header(true)
+                            .caret('▶')
+                            .preserve_selection_fg(true)
                     })
                 }
             }
