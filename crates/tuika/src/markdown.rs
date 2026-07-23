@@ -103,6 +103,11 @@ struct Builder<'a> {
     // (`TableHead` / `TableRow`) closes the accumulated cells.
     table: Option<TableData>,
     cur_row: Vec<Cell>,
+
+    // Inline image being collected: (dest URL, alt-text accumulator). Set on
+    // `Tag::Image`, drained on `TagEnd::Image` into a visible placeholder so the
+    // URL is never silently dropped.
+    image: Option<(String, String)>,
 }
 
 impl<'a> Builder<'a> {
@@ -119,6 +124,7 @@ impl<'a> Builder<'a> {
             code: None,
             table: None,
             cur_row: Vec::new(),
+            image: None,
         }
     }
 
@@ -165,6 +171,12 @@ impl<'a> Builder<'a> {
             body.push_str(text);
             return;
         }
+        // Inside an image, text is the alt description — collect it for the
+        // placeholder rather than emitting it as prose.
+        if let Some((_, alt)) = self.image.as_mut() {
+            alt.push_str(text);
+            return;
+        }
         let style = self.cur_style();
         // Only linkify bare URLs in plain body text, not inside links/headings.
         if style.add_modifier.contains(Modifier::UNDERLINED) {
@@ -174,6 +186,24 @@ impl<'a> Builder<'a> {
                 self.inline.push(span);
             }
         }
+    }
+
+    /// Render an inline image as a visible placeholder: a small marker glyph plus
+    /// the alt text — or the URL when there is no alt — link-styled, so an image
+    /// is never silently dropped. Actually painting the pixels in markdown
+    /// (resolving the URL to [`ImageData`](crate::image::ImageData) and emitting
+    /// through an [`ImageLayer`](crate::image::ImageLayer)) is a later phase; see
+    /// `specs/tuika-images.md`.
+    fn push_image_placeholder(&mut self, url: &str, alt: &str) {
+        let label = if alt.trim().is_empty() { url } else { alt };
+        self.inline
+            .push(Span::styled("🖼 ", Style::default().fg(self.theme.accent)));
+        self.inline.push(Span::styled(
+            label.to_string(),
+            Style::default()
+                .fg(self.theme.code.link)
+                .add_modifier(Modifier::UNDERLINED),
+        ));
     }
 
     fn event(&mut self, event: Event<'a>) {
@@ -273,6 +303,11 @@ impl<'a> Builder<'a> {
                     .add_modifier(Modifier::UNDERLINED);
                 self.style_stack.push(s);
             }
+            Tag::Image { dest_url, .. } => {
+                // Capture the target; alt text accrues via `push_text` until the
+                // matching `TagEnd::Image` renders the placeholder.
+                self.image = Some((dest_url.to_string(), String::new()));
+            }
             Tag::Table(aligns) => {
                 self.separate();
                 self.table = Some(TableData {
@@ -326,6 +361,11 @@ impl<'a> Builder<'a> {
             TagEnd::Item => self.flush(),
             TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
                 self.style_stack.pop();
+            }
+            TagEnd::Image => {
+                if let Some((url, alt)) = self.image.take() {
+                    self.push_image_placeholder(&url, &alt);
+                }
             }
             TagEnd::TableCell => {
                 let cell = trim_spans(std::mem::take(&mut self.inline));
@@ -1227,5 +1267,37 @@ mod tests {
         let _ = state.lines(40, &b, CodeHighlighter::Plain);
         // Cache was rebuilt under the new theme; still consistent, no stale panic.
         assert_eq!(state.cached_theme, Some(b));
+    }
+
+    #[test]
+    fn image_renders_alt_as_a_marked_placeholder() {
+        let theme = Theme::default();
+        let lines = markdown_to_lines(
+            "look: ![a cat](https://ex.com/cat.png) ok",
+            60,
+            &theme,
+            CodeHighlighter::Plain,
+        );
+        let whole: String = lines.iter().map(text).collect::<Vec<_>>().join("\n");
+        // The alt text shows behind an image marker; the surrounding prose stays.
+        assert!(whole.contains("🖼 a cat"), "expected marked alt: {whole:?}");
+        assert!(whole.contains("look:") && whole.contains("ok"));
+        // The alt label is link-styled, not plain body text.
+        let label = lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .find(|s| s.content.contains("a cat"))
+            .expect("alt span");
+        assert_eq!(label.style.fg, Some(theme.code.link));
+        assert!(label.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn image_without_alt_shows_the_url_so_it_is_never_dropped() {
+        // Before Tag::Image handling, an alt-less image vanished entirely — URL
+        // and all. Now the URL itself is the visible, link-styled label.
+        let out = plain("![](https://ex.com/x.png)", 60).join("\n");
+        assert!(out.contains("🖼 "), "marker present: {out:?}");
+        assert!(out.contains("https://ex.com/x.png"), "url shown: {out:?}");
     }
 }

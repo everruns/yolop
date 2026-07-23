@@ -31,8 +31,16 @@ Scope is deliberately phased:
   terminals get the alt-text fallback.
 - **Phase 2: more protocols** behind the same component — iTerm2 inline images
   and Sixel — selected by capability detection.
-- **Phase 3: markdown `![alt](url)`** wired to the component, including the
-  streaming-cache integration in `MarkdownState`.
+- **Phase 3: markdown `![alt](url)`**, in two steps:
+  - **3a (done): visible placeholder.** The markdown builder parses `Tag::Image`
+    and renders a marked, link-styled placeholder (the alt text, or the URL when
+    there is no alt) instead of silently dropping the URL. No new API, no
+    streaming-cache change — it flows through the existing inline machinery.
+  - **3b: pixels in markdown.** Resolve the image URL to `ImageData` via a
+    host-supplied resolver (the `Highlighter` pattern again — markdown has only a
+    URL, never pixels), reserve rows for it, and record placements into an
+    `ImageLayer`, integrating with the settled-prefix streaming cache in
+    `MarkdownState`.
 
 ## Design
 

@@ -227,8 +227,13 @@ ESC _ G f=32,s=<px_w>,v=<px_h>,a=T,c=<cols>,r=<rows>,q=2,m=<more> ; <base64> ST
 
 **Supported terminals:** Kitty, Ghostty, WezTerm, Konsole. Others show the
 alt-text fallback. See the `image` example (`cargo run -p tuika --example
-image`). This is the first phase — iTerm2/Sixel protocols and markdown
-`![alt](url)` are planned follow-ups.
+image`).
+
+Markdown `![alt](url)` no longer drops the URL: the [`Markdown`](components.md)
+renderer shows a marked, link-styled placeholder (the alt text, or the URL when
+there is no alt). Painting the pixels inline in markdown — resolving the URL to
+`ImageData` and emitting through an `ImageLayer` — and the iTerm2/Sixel
+protocols are planned follow-ups.
 
 ## See also
 
