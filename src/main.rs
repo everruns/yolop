@@ -968,13 +968,25 @@ fn run_command(command: Commands) -> Result<()> {
     }
 }
 
-/// Whether opt-in OSC 8 hyperlinks are enabled via `YOLOP_HYPERLINKS`
-/// (`1`/`true`/`on`). Default off until the rendering is verified across
-/// terminals; see `tuika::HyperlinkBackend` and the tuika README matrix.
-fn hyperlinks_enabled() -> bool {
-    std::env::var("YOLOP_HYPERLINKS")
-        .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
-        .unwrap_or(false)
+/// The OSC 8 hyperlink policy from the environment. `YOLOP_HYPERLINKS`
+/// (`1`/`true`/`on`) is the on/off gate — default off until the rendering is
+/// verified across terminals (see `tuika::HyperlinkBackend` and the tuika README
+/// matrix). When on, the conservative `http(s)`-only default applies unless
+/// `YOLOP_HYPERLINK_MAILTO` (`1`/`true`/`on`) also opts `mailto:` links in.
+fn hyperlink_policy() -> tuika::LinkPolicy {
+    let env_on = |name: &str| {
+        std::env::var(name)
+            .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
+            .unwrap_or(false)
+    };
+    if !env_on("YOLOP_HYPERLINKS") {
+        return tuika::LinkPolicy::NONE;
+    }
+    let mut policy = tuika::LinkPolicy::WEB;
+    if env_on("YOLOP_HYPERLINK_MAILTO") {
+        policy = policy.with_mailto();
+    }
+    policy
 }
 
 /// Live demo of the `tuika` motion components. Renders spinners, progress bars,
@@ -986,7 +998,7 @@ fn run_tuika_gallery() -> Result<()> {
 
     // Route through the same hyperlink-aware backend as the main TUI so the
     // demo's URL becomes a clickable OSC 8 link when YOLOP_HYPERLINKS is set.
-    let backend = tuika::HyperlinkBackend::new(io::stdout(), hyperlinks_enabled());
+    let backend = tuika::HyperlinkBackend::with_policy(io::stdout(), hyperlink_policy());
     let theme = tuika::Theme::default();
     let mut progress = tuika::TerminalProgress::new();
     progress.indeterminate();
@@ -1120,10 +1132,11 @@ async fn run_tui(
         None
     };
     let stdout = io::stdout();
-    // Opt-in OSC 8 hyperlinks: wrap the crossterm backend so http(s) URLs in
-    // rendered output become clickable. Default off (pure pass-through) until the
-    // rendering is verified across terminals; enable with YOLOP_HYPERLINKS=1.
-    let backend = tuika::HyperlinkBackend::new(stdout, hyperlinks_enabled());
+    // Opt-in OSC 8 hyperlinks: wrap the crossterm backend so http(s) (and, with
+    // YOLOP_HYPERLINK_MAILTO, mailto) URLs in rendered output become clickable.
+    // Default off (pure pass-through) until the rendering is verified across
+    // terminals; enable with YOLOP_HYPERLINKS=1.
+    let backend = tuika::HyperlinkBackend::with_policy(stdout, hyperlink_policy());
     let viewport = if fullscreen {
         Viewport::Fullscreen
     } else {
