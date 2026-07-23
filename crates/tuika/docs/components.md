@@ -192,6 +192,22 @@ view! {
 }
 ```
 
+Need the child rects *before* (or without) painting — to size a scroll region
+to a pane's real height, hit-test a click, or decide what fits? `Flex::solve`
+runs the same measure-then-solve pass render uses and returns one `Rect` per
+child, painting nothing. The underlying flexbox solver is also callable directly
+as `tuika::solve(area, &style, &items)` for layouts built without a `Flex`.
+
+```rust
+use tuika::{Flex, Text, element};
+use ratatui::layout::Rect;
+
+let flex = Flex::row()
+    .fixed(8, element(Text::raw("sidebar")))
+    .grow(1, element(Text::raw("content")));
+let rects = flex.solve(Rect::new(0, 0, 40, 10)); // [sidebar_rect, content_rect]
+```
+
 ### `Boxed`
 
 A border + padding + title wrapping one child; the border color is focus-aware.
