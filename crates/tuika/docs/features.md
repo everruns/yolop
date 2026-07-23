@@ -180,6 +180,14 @@ Paint real pixels — an avatar, a chart, a rendered diagram — over the cells 
 view reserves for them, using the Kitty graphics protocol.
 [API](https://docs.rs/tuika/latest/tuika/image/index.html)
 
+<img src="demos/image.svg" width="880" alt="Image demo, side by side: on a Kitty/Ghostty/WezTerm/Konsole terminal the Image view renders a red/green gradient in place; on every other terminal the same view shows a dimmed italic '[image: a red/green gradient]' placeholder.">
+
+Unlike the other demos, this one is generated from the real render rather than
+recorded — VHS captures through xterm.js, which doesn't implement the Kitty
+graphics protocol, so it can't show the pixels. The picture above is the actual
+RGBA the component transmits; the fallback panel is the exact placeholder string
+it paints.
+
 Images are the one out-of-band feature that does **not** degrade harmlessly on
 its own: a terminal that can't read the graphics escape may paint the payload as
 garbage rather than swallowing it. So this is the only feature gated on real
