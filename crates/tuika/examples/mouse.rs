@@ -105,6 +105,9 @@ fn main() -> io::Result<()> {
                 quit_btn,
             );
 
+            if sel.resolve(f.buffer_mut(), text_area) {
+                pending_copy = true;
+            }
             if let Some(range) = sel.range() {
                 // Read the selected text off the freshly rendered frame *before*
                 // highlighting (highlight only changes style, so order is cosmetic).
