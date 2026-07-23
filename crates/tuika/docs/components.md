@@ -303,6 +303,26 @@ state.handle(&event, items.len());
 view! { node(SelectList::new(items, &state)) }
 ```
 
+### `Table` + `SelectState`
+
+The multi-column peer of `SelectList` — the widget behind repo/branch/worktree
+browsers, process and container lists, and file explorers: a header row,
+per-column width policy, a full-row selection highlight, a caret gutter, and
+windowed scrolling. Column widths come from the same flexbox `solve` as every
+other container — a `Column` is `fixed`, `auto` (widest cell), or `flex`
+(shares leftover width). Selection reuses `SelectState`, so a list and a table
+share one state type.
+[API](https://docs.rs/tuika/latest/tuika/struct.Table.html)
+
+```rust
+use ratatui::text::Line;
+use tuika::{Column, Table, SelectState, view};
+let mut state = SelectState::new();
+state.handle(&event, rows.len());
+let columns = vec![Column::auto("branch"), Column::fixed("ahead", 5), Column::flex("subject", 1)];
+view! { node(Table::new(columns, rows, &state).viewport(20)) }
+```
+
 ### `Tabs` + `TabsState`
 
 A one-line tab strip; `TabsState` handles left/right and tab navigation.

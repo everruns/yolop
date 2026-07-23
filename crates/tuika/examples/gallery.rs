@@ -15,7 +15,8 @@ use ratatui::text::{Line, Span};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use tuika::{
-    FocusScope, HyperlinkBackend, Loader, ProgressBar, Spinner, SpinnerStyle, Text, Theme, view,
+    Column, FocusScope, HyperlinkBackend, Loader, ProgressBar, SelectState, Spinner, SpinnerStyle,
+    Table, Text, Theme, view,
 };
 
 fn build(frame: u64, theme: &Theme) -> tuika::Element {
@@ -87,6 +88,27 @@ fn build(frame: u64, theme: &Theme) -> tuika::Element {
                             text("explicit color")
                         }
                     }
+                }
+            }
+            fixed(5) {
+                boxed(title = Line::from(Span::styled(" table ", theme.accent_style()))) {
+                    // Columned selectable table: fixed + auto + flex columns,
+                    // full-row selection, caret gutter (flex solver owns widths).
+                    node({
+                        let mut sel = SelectState::new();
+                        sel.select(1);
+                        let columns = vec![
+                            Column::fixed(Span::styled("branch", theme.muted_style()), 8),
+                            Column::auto(Span::styled("ahead", theme.muted_style())),
+                            Column::flex(Span::styled("subject", theme.muted_style()), 1),
+                        ];
+                        let rows = vec![
+                            vec![Line::from("main"), Line::from("0"), Line::from("release cut")],
+                            vec![Line::from("wip"), Line::from("3"), Line::from("table component")],
+                            vec![Line::from("fix"), Line::from("1"), Line::from("scrollbar math")],
+                        ];
+                        Table::new(columns, rows, &sel).header(true)
+                    })
                 }
             }
             grow(1) { spacer() }
