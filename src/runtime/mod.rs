@@ -2838,6 +2838,10 @@ pub async fn build_with_options(
     // `reload_extension` can restart one in place mid-session (self-writing
     // iteration) without a yolop restart.
     let live_processes = crate::extensions::LiveProcessRegistry::default();
+    // Per-extension secrets ride the shared credential store (`connections.toml`,
+    // 0600), keyed `ext:<name>` — never `settings.toml`. Injected as env at
+    // spawn; never surfaced to the agent.
+    let extension_secrets = crate::extensions::ExtensionSecrets::new(connections.clone());
     let mut extension_never_defer: Vec<String> = Vec::new();
     // Trace-facet extensions, captured here and started once `session_id` and
     // the event broadcast exist (below). Observe-only agentic-trace export.
@@ -2866,6 +2870,7 @@ pub async fn build_with_options(
                     .with_status_sink(status_sink.clone())
                     .with_ask_sink(ask_sink.clone())
                     .with_process_registry(live_processes.clone())
+                    .with_secrets(extension_secrets.clone())
                     .with_environment_context(environment_context.clone());
             if enabled {
                 let contributed = capability.contributed_mcp_servers();
@@ -2892,13 +2897,19 @@ pub async fn build_with_options(
         // Hand it the UI-command sink so enable/disable can activate the
         // capability on the live session (TUI only); `None` elsewhere.
         let manage_ui_tx = matches!(options.client_ui, ClientUiContext::Tui).then(|| ui_tx.clone());
-        capabilities.register(crate::extensions::ExtensionsCapability::new(
-            ext_dir,
-            effective_root.clone(),
-            settings.clone(),
-            live_processes.clone(),
-            manage_ui_tx,
-        ));
+        capabilities.register(
+            crate::extensions::ExtensionsCapability::new(
+                ext_dir,
+                effective_root.clone(),
+                settings.clone(),
+                live_processes.clone(),
+                manage_ui_tx,
+            )
+            .with_secrets(extension_secrets.clone())
+            // The `set_extension_secret` prompt reuses the extension `ui/ask`
+            // surface (TUI only); `None` elsewhere refuses interactive setup.
+            .with_ask_sink(ask_sink.clone()),
+        );
     }
     // Server name list for `/mcp` and StartupInfo, computed after extension
     // contributions are merged so provider-provenance entries show up too.

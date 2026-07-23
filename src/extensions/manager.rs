@@ -27,6 +27,12 @@ pub struct ExtensionProcessSpec {
     pub package_dir: PathBuf,
     pub workspace_root: PathBuf,
     pub config: Value,
+    /// Env vars injected into the server process (name → value), built from the
+    /// extension's `config_schema` `env` mappings: `secret` fields sourced from
+    /// the credential store, plain fields from config. Delivered host→server
+    /// only and never logged — the leak guard for credentials like a Logfire
+    /// token.
+    pub env: std::collections::BTreeMap<String, String>,
     pub request_timeout: Duration,
     /// Where the server's `status/changed` notifications go (status bar).
     /// Only wired when the extension declares `status` and the host has a
@@ -250,6 +256,11 @@ impl ExtensionProcess {
             if let Ok(joined) = std::env::join_paths(paths) {
                 command.env("PATH", joined);
             }
+        }
+        // Inject the extension's configured env (secrets + env-mapped config).
+        // Set after PATH so a value can't clobber it; never logged.
+        for (name, value) in &self.spec.env {
+            command.env(name, value);
         }
         let mut child = command.spawn().with_context(|| {
             format!(

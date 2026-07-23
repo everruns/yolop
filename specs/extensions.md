@@ -111,6 +111,28 @@ mid-turn, then resolves the request's oneshot with the typed answer (or
 another is pending is answered `cancelled`. Refused (`cancelled`) with no sink,
 so `--print`/ACP never blocks on it. Covered by
 `ui_ask_reverse_request_is_answered_by_the_sink`.
+Config & secrets: an extension's `config_schema` is also its setup form. Two
+yolop keywords extend JSON Schema at the property level: `secret: true` marks a
+value as a credential, and `env: "NAME"` injects the value into the server's
+environment under that name (so servers read env, not the wire). Non-secret
+fields flow through `initialize.config` as before; a non-secret field that also
+declares `env` is additionally injected as env, sourced from config. `secret`
+fields are stored in the shared credential store (`connections.toml`, 0600,
+redacted — `ExtensionSecrets`, keyed `ext:<name>`), **never** in `settings.toml`,
+and reach the server as injected env only (`capability.rs` strips any `secret`
+key from `initialize.config`). The `secret` marker decouples the concept from the
+location: moving credentials to a keychain later changes only `secrets.rs`. Agent
+leak-protection is threefold: entry is out-of-band via `set_extension_secret`
+(and setup-on-enable), which prompts the *user* through the `ui/ask` surface —
+the agent triggers it but supplies no value and is refused if it passes one; all
+agent-facing reads (`list_extensions`) report a field's `set`/`unset` status,
+never its value; and a redacting `Secret` newtype keeps values out of logs. On
+`enable_extension`, any required `secret` that is unset is prompted for (best
+effort — headless stays inert until the env var is provided). The `logfire`
+extension dogfoods this: `token` (secret, `LOGFIRE_TOKEN`), `endpoint`, and
+`service_name`. Covered by `secret_config_field_is_injected_as_env`,
+`set_extension_secret_refuses_agent_value_and_needs_a_prompt`, and
+`list_reports_secret_status_never_values`.
 Traces: an extension that declares `trace` in its manifest (the D4 opt-in)
 receives the session's agentic event stream — each lifecycle event (`turn.*`,
 `reason.*`, `act.*`, `tool.started/completed`, `llm.generation`) forwarded as a

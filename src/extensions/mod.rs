@@ -23,6 +23,7 @@ pub(crate) mod manager;
 pub(crate) mod package;
 pub(crate) mod protocol;
 pub(crate) mod scaffold;
+pub(crate) mod secrets;
 pub(crate) mod store;
 pub(crate) mod trace;
 
@@ -33,6 +34,7 @@ pub(crate) use manager::LiveProcessRegistry;
 pub(crate) use package::{
     discover_extensions, extension_capability_id, extension_skill_scopes, extensions_dir,
 };
+pub(crate) use secrets::ExtensionSecrets;
 
 #[cfg(test)]
 mod spawn_tests {
@@ -295,6 +297,84 @@ mod spawn_tests {
         let types: Vec<&str> = recorded.lines().collect();
         assert!(types.contains(&"turn.started"), "recorded: {types:?}");
         assert!(types.contains(&"tool.completed"), "recorded: {types:?}");
+    }
+
+    /// A `secret` config field is injected into the server's environment (per
+    /// its `env` mapping) from the secret store — never via `initialize.config`.
+    #[tokio::test]
+    async fn secret_config_field_is_injected_as_env() {
+        let Some(python) = python3() else {
+            eprintln!("skipping: python3 not available");
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("trace.log");
+        let server = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/yep_echo_server.py");
+        let manifest = parse_manifest(
+            &json!({
+                "name": "sec", "description": "t",
+                "yolop": {
+                    "protocol_version": "1.0",
+                    "capabilityServer": { "command": python,
+                        "args": [server.display().to_string()] },
+                    "trace": true,
+                    "config_schema": {
+                        "type": "object",
+                        "required": ["probe"],
+                        "properties": {
+                            "probe": { "type": "string", "secret": true, "env": "YEP_ECHO_ENV" }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("secret manifest");
+
+        // Store the secret out-of-band (as the user prompt would).
+        let secrets = crate::extensions::secrets::ExtensionSecrets::open_at(
+            dir.path().join("connections.toml"),
+        );
+        secrets
+            .set(
+                "sec",
+                "probe",
+                crate::extensions::secrets::Secret::new("injected-value"),
+            )
+            .expect("store secret");
+
+        let capability = ExtensionCapability::new(
+            ExtensionPackage {
+                dir: std::env::temp_dir(),
+                manifest,
+            },
+            std::env::temp_dir(),
+        )
+        .with_secrets(secrets);
+        let process = capability
+            .trace_process(&json!({ "trace_log": log.display().to_string() }))
+            .expect("trace_process");
+        // Spawns the server (which echoes YEP_ECHO_ENV into the log on init).
+        process
+            .send_trace_event(json!({ "event_type": "turn.started", "session_id": "s" }))
+            .await
+            .expect("spawn + trace");
+
+        for _ in 0..50 {
+            if std::fs::read_to_string(&log)
+                .map(|c| c.contains("env:injected-value"))
+                .unwrap_or(false)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let recorded = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            recorded.contains("env:injected-value"),
+            "recorded: {recorded:?}"
+        );
     }
 
     /// A non-declaring extension gets no trace process — the event stream is

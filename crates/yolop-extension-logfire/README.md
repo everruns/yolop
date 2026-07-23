@@ -26,8 +26,15 @@ the package's `bin/`, per the usual extension rule.
 
 ## Configure
 
-Configuration is by environment, inherited from the yolop process — the same
-variables Logfire's onboarding checklist uses:
+The token is a `secret` config field, so on `enable_extension` (or via
+`set_extension_secret name=logfire field=token`) yolop prompts **you** for it
+directly — the agent never sees the value. It's stored in the credential store
+(`connections.toml`, 0600), not in settings, and injected into this server as
+`LOGFIRE_TOKEN`. `endpoint` and `service_name` are ordinary config fields.
+
+You can also set everything by environment, inherited from the yolop process —
+the same variables Logfire's onboarding checklist uses (env always overrides
+stored config):
 
 | Variable | Purpose | Default |
 | --- | --- | --- |

@@ -46,6 +46,13 @@ def main():
             if isinstance(config, dict) and config.get("trace_log"):
                 global TRACE_LOG
                 TRACE_LOG = config["trace_log"]
+            # Echo an injected env var (for the secret-injection spawn test):
+            # the host injects `secret`/`env`-mapped config fields into our
+            # environment. Record it so the test can assert it arrived.
+            import os
+            probe = os.environ.get("YEP_ECHO_ENV")
+            if probe:
+                record_trace("env:" + probe)
             send({
                 "id": msg_id,
                 "result": {

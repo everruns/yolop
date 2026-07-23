@@ -232,6 +232,61 @@ pub struct ExtensionPackage {
     pub manifest: ExtensionManifest,
 }
 
+/// One field declared in an extension's `config_schema`, with yolop's setup
+/// vocabulary folded in: `secret` (the value is a credential — stored in the
+/// secret store, redacted, never shown to the agent) and `env` (inject the
+/// value into the server's environment under this name). `required` comes from
+/// the schema's top-level `required` array and drives setup prompting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigField {
+    pub name: String,
+    pub secret: bool,
+    pub env: Option<String>,
+    pub required: bool,
+    pub description: String,
+}
+
+impl ExtensionManifest {
+    /// The setup fields declared in `config_schema.properties`. Empty when the
+    /// extension declares no schema. Lenient — unknown keywords are ignored.
+    pub fn config_fields(&self) -> Vec<ConfigField> {
+        let Some(schema) = &self.config_schema else {
+            return Vec::new();
+        };
+        let required: std::collections::HashSet<&str> = schema
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+            return Vec::new();
+        };
+        props
+            .iter()
+            .map(|(name, spec)| ConfigField {
+                name: name.clone(),
+                secret: spec.get("secret").and_then(Value::as_bool).unwrap_or(false),
+                env: spec.get("env").and_then(Value::as_str).map(str::to_string),
+                required: required.contains(name.as_str()),
+                description: spec
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            })
+            .collect()
+    }
+
+    /// The subset of `config_fields` marked `secret` — credentials that live in
+    /// the secret store, never in `settings.toml` config.
+    pub fn secret_fields(&self) -> Vec<ConfigField> {
+        self.config_fields()
+            .into_iter()
+            .filter(|f| f.secret)
+            .collect()
+    }
+}
+
 /// Capability ref for an extension: `ext:<name>`.
 pub fn extension_capability_id(name: &str) -> String {
     format!("ext:{name}")
