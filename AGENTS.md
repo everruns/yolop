@@ -30,7 +30,8 @@ doppler run -- cargo test --all-features
 doppler run -- cargo run -- -p "say hi"
 ```
 
-If GitHub auth fails, do not tell the user the token expired. Try:
+Use `gh` directly first. Only if `gh` reports that it is not authenticated, retry
+through Doppler; do not invoke Doppler preemptively for GitHub commands:
 
 ```bash
 doppler run -- bash -lc 'GH_TOKEN="$GITHUB_TOKEN" <command>'
