@@ -1810,7 +1810,14 @@ mod tests {
         let theme = Theme::default();
         let mut md = MarkdownState::new().with_image_resolver(Box::new(StubResolver));
         md.set("intro line\n\n![a cat](ok.png)\n\ntail line");
-        let lines = md.lines(40, &theme, &StyleSheet::from_theme(&theme), CodeHighlighter::Plain).to_vec();
+        let lines = md
+            .lines(
+                40,
+                &theme,
+                &StyleSheet::from_theme(&theme),
+                CodeHighlighter::Plain,
+            )
+            .to_vec();
         let imgs = md.images();
         assert_eq!(imgs.len(), 1, "one block image reported");
         let img = &imgs[0];
@@ -1834,7 +1841,12 @@ mod tests {
 
         let mut whole = MarkdownState::new().with_image_resolver(Box::new(StubResolver));
         whole.set(doc);
-        let _ = whole.lines(30, &theme, &StyleSheet::from_theme(&theme), CodeHighlighter::Plain);
+        let _ = whole.lines(
+            30,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        );
         let whole_row = whole.images()[0].row;
 
         let mut streamed = MarkdownState::new().with_image_resolver(Box::new(StubResolver));
@@ -1845,7 +1857,12 @@ mod tests {
             "paragraph here",
         ] {
             streamed.push_str(chunk);
-            let _ = streamed.lines(30, &theme, &StyleSheet::from_theme(&theme), CodeHighlighter::Plain);
+            let _ = streamed.lines(
+                30,
+                &theme,
+                &StyleSheet::from_theme(&theme),
+                CodeHighlighter::Plain,
+            );
         }
         assert_eq!(streamed.images().len(), 1);
         assert_eq!(
@@ -1860,7 +1877,12 @@ mod tests {
         let theme = Theme::default();
         let mut md = MarkdownState::new();
         md.set("![a cat](ok.png)");
-        let _ = md.lines(40, &theme, &StyleSheet::from_theme(&theme), CodeHighlighter::Plain);
+        let _ = md.lines(
+            40,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        );
         assert!(md.images().is_empty(), "images() empty without a resolver");
     }
 
