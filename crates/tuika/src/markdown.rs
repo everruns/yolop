@@ -54,17 +54,42 @@ pub trait ImageResolver {
     fn resolve(&self, url: &str) -> Option<ImageData>;
 }
 
-/// A block image discovered during [`flatten`]: the row it reserved in the
-/// output, its cell size, and the pixels to paint there. The [`Markdown`] view
-/// turns each into an [`Image`] overlay at the matching screen rect.
+/// A block image in a rendered markdown document: the row it reserved (0-based,
+/// within the returned lines), its cell footprint, the alt text, and the pixels.
+///
+/// The [`Markdown`] view overlays these itself. A host that draws
+/// [`MarkdownState::lines`] manually reads [`MarkdownState::images`] and paints
+/// each one — build an [`Image`] from `data`/`cols`/`rows`/`alt` and render it at
+/// [`rect`](Self::rect) against the area the lines were drawn into.
 #[derive(Clone, Debug)]
-struct BlockImage {
-    row: u16,
-    indent: u16,
-    cols: u16,
-    rows: u16,
-    data: ImageData,
-    alt: String,
+pub struct MarkdownImage {
+    /// Row the image reserved, 0-based within the rendered lines.
+    pub row: u16,
+    /// Left indent in cells (list / block-quote nesting).
+    pub indent: u16,
+    /// Width in cells.
+    pub cols: u16,
+    /// Height in cells.
+    pub rows: u16,
+    /// Decoded pixels to paint.
+    pub data: ImageData,
+    /// Alt text, shown as the fallback where graphics aren't supported.
+    pub alt: String,
+}
+
+impl MarkdownImage {
+    /// The absolute screen rect for this image, given the `area` the markdown
+    /// lines were drawn into — clamped so it never exceeds `area`.
+    pub fn rect(&self, area: Rect) -> Rect {
+        let x = area.x.saturating_add(self.indent).min(area.right());
+        let y = area.y.saturating_add(self.row).min(area.bottom());
+        Rect {
+            x,
+            y,
+            width: self.cols.min(area.right().saturating_sub(x)),
+            height: self.rows.min(area.bottom().saturating_sub(y)),
+        }
+    }
 }
 
 /// Cell footprint for a block image at `avail` columns: capped at
@@ -554,7 +579,7 @@ fn flatten_into(
     items: &[MdItem],
     width: u16,
     theme: &Theme,
-    images: &mut Vec<BlockImage>,
+    images: &mut Vec<MarkdownImage>,
 ) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for item in items {
@@ -578,7 +603,7 @@ fn flatten_into(
             MdItem::Image { data, alt, indent } => {
                 let avail = width.saturating_sub(*indent).max(1);
                 let (cols, rows) = image_cell_size(data, avail);
-                images.push(BlockImage {
+                images.push(MarkdownImage {
                     row: out.len().min(u16::MAX as usize) as u16,
                     indent: *indent,
                     cols,
@@ -839,12 +864,41 @@ pub struct MarkdownState {
     flattened_items: usize,
     /// Width `rendered` was flattened at; a change re-wraps the whole prefix.
     rendered_width: Option<u16>,
+    /// Optional host hook turning image URLs into pixels; off ⇒ text placeholders.
+    resolver: Option<Box<dyn ImageResolver>>,
+    /// Block images in the settled prefix, with their absolute `rendered` rows —
+    /// accumulated once as blocks settle, mirroring `settled_lines`.
+    settled_images: Vec<MarkdownImage>,
+    /// Settled + tail images with absolute rows, rebuilt each [`lines`](Self::lines)
+    /// call; returned by [`images`](Self::images).
+    frame_images: Vec<MarkdownImage>,
 }
 
 impl MarkdownState {
     /// An empty renderer.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Render `![alt](url)` images as real pixels, resolving each URL to
+    /// [`ImageData`] via `resolver` (markdown carries only the URL — see
+    /// [`ImageResolver`]). After each [`lines`](Self::lines) call, read the
+    /// reserved placements from [`images`](Self::images) and paint them.
+    ///
+    /// The resolver may be called repeatedly for an image still in the in-flight
+    /// tail (re-parsed each frame), so a host that decodes lazily should cache.
+    pub fn with_image_resolver(mut self, resolver: Box<dyn ImageResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self.reset_cache();
+        self
+    }
+
+    /// The block images reserved by the last [`lines`](Self::lines) call, with
+    /// rows relative to those lines. Empty unless a resolver is attached (see
+    /// [`with_image_resolver`](Self::with_image_resolver)). Paint each by
+    /// rendering an [`Image`] at [`MarkdownImage::rect`] against the same area.
+    pub fn images(&self) -> &[MarkdownImage] {
+        &self.frame_images
     }
 
     /// Append a streamed delta to the buffer (the settled-prefix cache is kept).
@@ -871,6 +925,8 @@ impl MarkdownState {
         self.settled_lines = 0;
         self.flattened_items = 0;
         self.rendered_width = None;
+        self.settled_images.clear();
+        self.frame_images.clear();
     }
 
     /// Render the current buffer to final, width-fitted styled lines, advancing
@@ -898,18 +954,20 @@ impl MarkdownState {
             self.reset_cache();
         }
         // A width change re-wraps every settled line, but the width-independent
-        // parse cache survives; drop only the flattened lines.
+        // parse cache survives; drop only the flattened lines (and their images,
+        // whose row offsets and sizes are width-dependent).
         if self.rendered_width != Some(width) {
             self.rendered_width = Some(width);
             self.rendered.clear();
             self.settled_lines = 0;
             self.flattened_items = 0;
+            self.settled_images.clear();
         }
 
         let boundary = stable_boundary(&self.source, self.stable_len);
         if boundary > self.stable_len {
             let segment = &self.source[self.stable_len..boundary];
-            let mut items = parse(segment, theme, highlighter);
+            let mut items = parse_with(segment, theme, highlighter, self.resolver.as_deref());
             // Each segment parses in isolation, so the blank-line separation the
             // boundary sits on is lost — restore it between committed segments.
             if !items.is_empty()
@@ -928,14 +986,31 @@ impl MarkdownState {
         // lines equals re-flattening the whole prefix.
         self.rendered.truncate(self.settled_lines);
         if self.flattened_items < self.stable.len() {
-            let settled = flatten(&self.stable[self.flattened_items..], width, theme);
+            let base = self.rendered.len() as u16;
+            let mut settled_imgs = Vec::new();
+            let settled = flatten_into(
+                &self.stable[self.flattened_items..],
+                width,
+                theme,
+                &mut settled_imgs,
+            );
+            for mut img in settled_imgs {
+                img.row = img.row.saturating_add(base);
+                self.settled_images.push(img);
+            }
             self.rendered.extend(settled);
             self.flattened_items = self.stable.len();
             self.settled_lines = self.rendered.len();
         }
 
-        let tail = parse(&self.source[self.stable_len..], theme, highlighter);
-        let tail_lines = flatten(&tail, width, theme);
+        let tail = parse_with(
+            &self.source[self.stable_len..],
+            theme,
+            highlighter,
+            self.resolver.as_deref(),
+        );
+        let mut tail_imgs = Vec::new();
+        let tail_lines = flatten_into(&tail, width, theme, &mut tail_imgs);
         // The tail begins just past the boundary's blank line; keep that gap.
         if !self.rendered.is_empty()
             && !tail_lines.is_empty()
@@ -944,7 +1019,18 @@ impl MarkdownState {
         {
             self.rendered.push(Line::default());
         }
+        let tail_base = self.rendered.len() as u16;
         self.rendered.extend(tail_lines);
+
+        // Republish this frame's placements: the settled prefix (fixed) plus the
+        // in-flight tail, each shifted to its absolute row in `rendered`.
+        self.frame_images.clear();
+        self.frame_images
+            .extend(self.settled_images.iter().cloned());
+        for mut img in tail_imgs {
+            img.row = img.row.saturating_add(tail_base);
+            self.frame_images.push(img);
+        }
         &self.rendered
     }
 }
@@ -1025,7 +1111,11 @@ impl<'a> Markdown<'a> {
     }
 
     /// Flatten the source to lines plus the block images it reserved.
-    fn lines_and_images(&self, width: u16, theme: &Theme) -> (Vec<Line<'static>>, Vec<BlockImage>) {
+    fn lines_and_images(
+        &self,
+        width: u16,
+        theme: &Theme,
+    ) -> (Vec<Line<'static>>, Vec<MarkdownImage>) {
         let items = parse_with(&self.source, theme, self.highlighter, self.resolver);
         let mut images = Vec::new();
         let lines = flatten_into(&items, width, theme, &mut images);
@@ -1534,5 +1624,81 @@ mod tests {
         let (_, tr) = image_cell_size(&tall, 40);
         assert!(wr < tr, "tall image reserves more rows: {wr} vs {tr}");
         assert!(wr >= 1 && tr <= 30, "rows are clamped: {wr}, {tr}");
+    }
+
+    #[test]
+    fn streaming_state_reports_a_block_image_placement() {
+        let theme = Theme::default();
+        let mut md = MarkdownState::new().with_image_resolver(Box::new(StubResolver));
+        md.set("intro line\n\n![a cat](ok.png)\n\ntail line");
+        let lines = md.lines(40, &theme, CodeHighlighter::Plain).to_vec();
+        let imgs = md.images();
+        assert_eq!(imgs.len(), 1, "one block image reported");
+        let img = &imgs[0];
+        assert_eq!(img.alt, "a cat");
+        // The reported row is inside the rendered lines and is a reserved blank.
+        assert!((img.row as usize) < lines.len(), "row within lines");
+        assert!(
+            is_blank_line(&lines[img.row as usize]),
+            "reserved row is blank"
+        );
+        // "intro line" is above the image, "tail line" below it.
+        assert!(text(&lines[0]).contains("intro"));
+    }
+
+    #[test]
+    fn streaming_image_row_matches_one_shot() {
+        // Feeding the same document incrementally lands the image on the same row
+        // as parsing it whole — the settled/tail offset bookkeeping is consistent.
+        let theme = Theme::default();
+        let doc = "# Title\n\nbefore\n\n![pic](ok.png)\n\nafter paragraph here";
+
+        let mut whole = MarkdownState::new().with_image_resolver(Box::new(StubResolver));
+        whole.set(doc);
+        let _ = whole.lines(30, &theme, CodeHighlighter::Plain);
+        let whole_row = whole.images()[0].row;
+
+        let mut streamed = MarkdownState::new().with_image_resolver(Box::new(StubResolver));
+        for chunk in [
+            "# Title\n\nbe",
+            "fore\n\n![pic](ok",
+            ".png)\n\nafter ",
+            "paragraph here",
+        ] {
+            streamed.push_str(chunk);
+            let _ = streamed.lines(30, &theme, CodeHighlighter::Plain);
+        }
+        assert_eq!(streamed.images().len(), 1);
+        assert_eq!(
+            streamed.images()[0].row,
+            whole_row,
+            "streamed image row matches one-shot"
+        );
+    }
+
+    #[test]
+    fn no_resolver_means_no_streaming_placements() {
+        let theme = Theme::default();
+        let mut md = MarkdownState::new();
+        md.set("![a cat](ok.png)");
+        let _ = md.lines(40, &theme, CodeHighlighter::Plain);
+        assert!(md.images().is_empty(), "images() empty without a resolver");
+    }
+
+    #[test]
+    fn markdown_image_rect_offsets_by_area_and_row() {
+        let img = MarkdownImage {
+            row: 3,
+            indent: 2,
+            cols: 10,
+            rows: 4,
+            data: ImageData::from_rgba(2, 2, vec![0u8; 16]).unwrap(),
+            alt: String::new(),
+        };
+        let rect = img.rect(Rect::new(5, 1, 40, 20));
+        assert_eq!((rect.x, rect.y, rect.width, rect.height), (7, 4, 10, 4));
+        // Clamped to the area when it would overflow.
+        let tight = img.rect(Rect::new(5, 1, 8, 5));
+        assert_eq!(tight.width, 6, "clamped to area right edge");
     }
 }

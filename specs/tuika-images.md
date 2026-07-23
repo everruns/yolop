@@ -30,24 +30,29 @@ Scope is deliberately phased:
   after each frame. Capability detection gates the protocol; unsupported
   terminals get the alt-text fallback.
 - **Phase 2: more protocols** behind the same component, selected by capability
-  detection. **iTerm2 inline images: done** — `ImageLayer::emit` dispatches per
-  the recorded protocol, and RGBA is PNG-encoded (in-tuika, dependency-free) for
-  iTerm2, which transmits an image file rather than raw pixels. **Sixel:**
-  remaining.
+  detection. **Done.** `ImageLayer::emit` dispatches per the recorded protocol.
+  iTerm2 transmits an image file, so RGBA is PNG-encoded (in-tuika,
+  dependency-free). Sixel has no cell-based sizing, so the RGBA is
+  nearest-neighbor resampled to an assumed cell geometry, quantized to a fixed
+  6×6×6 color cube, and emitted band-by-band with run-length encoding; detection
+  is best-effort (`foot`/`mlterm`/`contour` in `TERM`) since Sixel has no
+  reliable env signal, so hosts usually set `ImageSupport::Sixel` explicitly.
 - **Phase 3: markdown `![alt](url)`**, in two steps:
   - **3a (done): visible placeholder.** The markdown builder parses `Tag::Image`
     and renders a marked, link-styled placeholder (the alt text, or the URL when
     there is no alt) instead of silently dropping the URL. No new API, no
     streaming-cache change — it flows through the existing inline machinery.
-  - **3b: pixels in markdown (done, one-shot view).** `Markdown::images`
-    resolves each image URL to `ImageData` via a host-supplied resolver (the
-    `Highlighter` pattern again — markdown has only a URL, never pixels), the
-    parser promotes a resolved `![alt](url)` to a block `MdItem::Image`, `flatten`
-    reserves its rows and reports where it landed, and the view overlays the
-    standalone `Image` component there — reusing its protocol emission and alt
-    fallback. **Remaining:** the same for the streaming `MarkdownState`, which
-    means threading image placements through the settled-prefix cache and
-    exposing them alongside `lines()` for the host to emit.
+  - **3b: pixels in markdown (done).** `Markdown::images` and
+    `MarkdownState::with_image_resolver` resolve each image URL to `ImageData`
+    via a host-supplied resolver (the `Highlighter` pattern again — markdown has
+    only a URL, never pixels), the parser promotes a resolved `![alt](url)` to a
+    block `MdItem::Image`, `flatten` reserves its rows and reports where it
+    landed, and the view overlays the standalone `Image` component there — reusing
+    its protocol emission and alt fallback. Streaming works too: block-image
+    placements are threaded through the settled-prefix cache (fixed rows for
+    settled blocks, re-derived each frame for the in-flight tail) and published
+    via `MarkdownState::images()` as `MarkdownImage`s, which a host paints at
+    `rect(area)` after drawing `lines()`.
 
 ## Design
 
