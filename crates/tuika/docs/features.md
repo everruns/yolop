@@ -174,11 +174,85 @@ Terminal and ConEmu (taskbar), WezTerm, Konsole, mintty. Others swallow the
 unknown OSC. Writes are best-effort — a failed progress write never disrupts the
 session.
 
+## Images (Kitty & iTerm2 graphics protocols)
+
+Paint real pixels — an avatar, a chart, a rendered diagram — over the cells a
+view reserves for them, using the **Kitty graphics protocol** or the **iTerm2
+inline-image protocol**, whichever the terminal speaks.
+[API](https://docs.rs/tuika/latest/tuika/image/index.html)
+
+<img src="demos/image.svg" width="880" alt="Image demo, side by side: on a Kitty/Ghostty/WezTerm/Konsole terminal the Image view renders a red/green gradient in place; on every other terminal the same view shows a dimmed italic '[image: a red/green gradient]' placeholder.">
+
+Unlike the other demos, this one is generated from the real render rather than
+recorded — VHS captures through xterm.js, which doesn't implement the Kitty
+graphics protocol, so it can't show the pixels. The picture above is the actual
+RGBA the component transmits; the fallback panel is the exact placeholder string
+it paints.
+
+Images are the one out-of-band feature that does **not** degrade harmlessly on
+its own: a terminal that can't read the graphics escape may paint the payload as
+garbage rather than swallowing it. So this is the only feature gated on real
+capability detection — `ImageSupport::detect()` reads the environment (`TERM`,
+`TERM_PROGRAM`, `KITTY_WINDOW_ID`, the Ghostty marker) and defaults to *no*
+graphics, where the same `Image` view falls back to an alt-text placeholder.
+
+Decoding stays in the host (it's a heavy dependency, kept out of tuika like
+syntax highlighting is): a host hands in raw RGBA via `ImageData::from_rgba`,
+and tuika encodes it for whichever protocol the terminal wants — raw RGBA for
+Kitty, an in-tuika PNG for iTerm2 — with no image-codec dependency. Because a
+graphics escape paints at the cursor — unlike the cursor-neutral OSC sequences
+above — emission is a two-step draw:
+
+- `Image` reserves a `cols × rows` cell footprint and, on render, records its
+  placement into a shared `ImageLayer` (the ownership shape of `RectProbe`).
+- **After** `terminal.draw()` flushes the frame, `ImageLayer::emit(out)` writes
+  each image's escape at its cell origin, bracketed by a cursor save/restore so
+  ratatui's cursor model is undisturbed. Then `ImageLayer::clear()` resets it
+  for the next frame.
+
+```rust
+use tuika::{Image, ImageData, ImageLayer, ImageSupport};
+
+let data = ImageData::from_rgba(2, 2, vec![0u8; 2 * 2 * 4]).unwrap();
+let layer = ImageLayer::new();
+let _image = Image::new(data, 20, 10)      // 20×10 cells on screen
+    .support(ImageSupport::detect())
+    .in_layer(&layer)
+    .alt("a 2×2 swatch");                  // shown where graphics aren't supported
+```
+
+The emitted bytes per protocol (base64 payload; `ST` is `ESC \`, `BEL` is
+`0x07`). Kitty carries raw RGBA (`f=32`), chunked, with `q=2` suppressing the
+terminal's replies so they aren't read as input:
+
+```text
+ESC _ G f=32,s=<px_w>,v=<px_h>,a=T,c=<cols>,r=<rows>,q=2,m=<more> ; <base64> ST
+```
+
+iTerm2 carries a PNG file sized in cells:
+
+```text
+ESC ] 1337 ; File=inline=1;width=<cols>;height=<rows>;preserveAspectRatio=0;size=<bytes> : <base64> BEL
+```
+
+**Supported terminals:** Kitty, Ghostty, WezTerm, Konsole (Kitty protocol);
+iTerm2 (its own protocol). Others show the alt-text fallback. See the `image`
+example (`cargo run -p tuika --example image`).
+
+Markdown `![alt](url)` renders too. The [`Markdown`](components.md) view's
+`.images(resolver, support, layer)` takes a host `ImageResolver` (URL →
+`ImageData` — markdown carries only the URL, never pixels, exactly like the code
+`Highlighter` seam), reserves a block for each resolved image, and paints it with
+the same `Image` machinery — real pixels where supported, alt text otherwise.
+Unresolved images stay a marked, link-styled inline placeholder rather than
+dropping the URL. (Pixels in the *streaming* `MarkdownState`, and the Sixel
+protocol, are the remaining follow-ups.)
+
 ## See also
 
 - [Component gallery](components.md) — the widgets that paint the grid.
 - [API documentation](https://docs.rs/tuika) — the complete reference for the
-  `hyperlink`, `mouse`, `clipboard`, and `native` modules.
+  `hyperlink`, `mouse`, `clipboard`, `native`, and `image` modules.
 - [Runnable examples](../examples/) — `mouse` records the selection/clipboard
   workflow live; quit with `q`/`esc`.
 - [README](../README.md) — the model behind the toolkit.

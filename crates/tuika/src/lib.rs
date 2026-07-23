@@ -45,6 +45,7 @@ pub mod geometry;
 pub mod highlight;
 pub mod host;
 pub mod hyperlink;
+pub mod image;
 pub mod layout;
 pub mod live;
 pub mod markdown;
@@ -65,10 +66,10 @@ pub mod width;
 // etc. for the common surface without deep paths.
 pub use clipboard::{osc52, write_clipboard};
 pub use components::{
-    Boxed, CodeBlock, Constrained, Flex, KeyHints, Loader, Markdown, MarkdownState, Paragraph,
-    ProgressBar, Responsive, Rule, Scroll, ScrollState, SelectList, SelectOutcome, SelectState,
-    Spacer, Spinner, SpinnerStyle, StatusBar, Tabs, TabsState, Text, TextInput, TextInputEvent,
-    TextInputMode, TextInputState, Wrap, markdown_to_lines, wrap_lines,
+    Boxed, CodeBlock, Constrained, Flex, ImageResolver, KeyHints, Loader, Markdown, MarkdownState,
+    Paragraph, ProgressBar, Responsive, Rule, Scroll, ScrollState, SelectList, SelectOutcome,
+    SelectState, Spacer, Spinner, SpinnerStyle, StatusBar, Tabs, TabsState, Text, TextInput,
+    TextInputEvent, TextInputMode, TextInputState, Wrap, markdown_to_lines, wrap_lines,
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 pub use focus::FocusRegistry;
@@ -79,6 +80,7 @@ pub use hyperlink::{
     HyperlinkBackend, LinkPolicy, ctrl_click_url, is_web_url, osc8, osc8_with, write_line,
     write_line_with,
 };
+pub use image::{Image, ImageData, ImageLayer, ImageSupport};
 pub use layout::{Align, Dimension, Direction, Justify, LayoutStyle};
 pub use live::{Live, LiveView, RedrawHandle};
 pub use mouse::{

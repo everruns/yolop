@@ -93,6 +93,24 @@ module-level docs like `overlay.rs`) maps to a real scene. It runs in the
 `tuika-msrv` CI job and at the end of the generator, so gallery drift fails CI
 instead of shipping a broken image to docs.rs.
 
+## Image demo
+
+The Images feature in `docs/features.md` (`docs/demos/image.svg`) can't be
+recorded with VHS: VHS captures through `ttyd` + `xterm.js`, which doesn't
+implement the Kitty graphics protocol, so a recording would only ever show the
+text fallback — never the pixels. So, like the offline SVG path for the hero, the
+demo is **generated from the real render** by
+[`examples/image_demo.rs`](examples/image_demo.rs): the picture is the actual
+RGBA `ImageData` the component transmits (embedded as a dependency-free PNG), and
+the fallback panel is the exact placeholder string the component paints. Being an
+`.svg`, it is outside the `.gif`-based `demo -- check` invariant, so it needs no
+`DEMOS` scene.
+
+```bash
+cargo run -p tuika --example image_demo            # writes docs/demos/image.svg
+cargo run -p tuika --example image_demo -- out.svg # custom path
+```
+
 ## Testing
 
 Layout and rendering are tested hermetically by rendering into an in-memory

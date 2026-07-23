@@ -29,12 +29,52 @@ use crate::components::code_block::code_block_lines;
 use crate::components::{line_width, wrap_lines};
 use crate::geometry::Size;
 use crate::highlight::{CodeHighlighter, Highlighter};
+use crate::image::{Image, ImageData, ImageLayer, ImageSupport};
 use crate::style::Theme;
 use crate::surface::Surface;
 use crate::view::{RenderCtx, View};
 
 /// Columns of indentation added per level of list / block-quote nesting.
 const INDENT: u16 = 2;
+
+/// Widest a block image is drawn, in cells, regardless of the available width —
+/// so a resolved `![alt](url)` stays a reasonable inline size rather than filling
+/// the whole transcript.
+const MAX_IMAGE_COLS: u16 = 60;
+
+/// Resolves a markdown image URL to decoded pixels.
+///
+/// Markdown carries only the URL, never pixels, so — exactly like
+/// [`Highlighter`] does for fenced code — the host supplies the decode. A
+/// resolved `![alt](url)` is rendered as a block image (real pixels via the
+/// terminal graphics protocol, or the alt fallback); returning `None` leaves it
+/// as the inline text placeholder. Wire one up with [`Markdown::images`].
+pub trait ImageResolver {
+    /// Resolve `url` to image data, or `None` to keep the text placeholder.
+    fn resolve(&self, url: &str) -> Option<ImageData>;
+}
+
+/// A block image discovered during [`flatten`]: the row it reserved in the
+/// output, its cell size, and the pixels to paint there. The [`Markdown`] view
+/// turns each into an [`Image`] overlay at the matching screen rect.
+#[derive(Clone, Debug)]
+struct BlockImage {
+    row: u16,
+    indent: u16,
+    cols: u16,
+    rows: u16,
+    data: ImageData,
+    alt: String,
+}
+
+/// Cell footprint for a block image at `avail` columns: capped at
+/// [`MAX_IMAGE_COLS`], with the row count derived from the pixel aspect ratio
+/// (terminal cells are about twice as tall as wide, so the height is halved).
+fn image_cell_size(data: &ImageData, avail: u16) -> (u16, u16) {
+    let cols = avail.clamp(1, MAX_IMAGE_COLS);
+    let rows = (cols as u32 * data.pixel_height() / (data.pixel_width().max(1) * 2)).clamp(1, 30);
+    (cols, rows as u16)
+}
 
 /// A parsed, width-independent markdown block. Wrapping and table layout happen
 /// later, at [`flatten`] time, against a concrete width.
@@ -48,6 +88,13 @@ enum MdItem {
     Verbatim { line: Line<'static>, indent: u16 },
     /// A GFM table, laid out to the available width when flattened.
     Table { table: TableData, indent: u16 },
+    /// A resolved block image: reserves rows at flatten time and is painted by an
+    /// [`Image`] overlay in the view (see [`ImageResolver`]).
+    Image {
+        data: ImageData,
+        alt: String,
+        indent: u16,
+    },
     /// A blank spacer row separating blocks.
     Blank,
 }
@@ -68,7 +115,18 @@ type Cell = Vec<Span<'static>>;
 /// Parse `source` into width-independent [`MdItem`]s. Fenced code blocks are
 /// highlighted here (once), via `highlighter`, using `theme`'s code palette.
 fn parse(source: &str, theme: &Theme, highlighter: CodeHighlighter) -> Vec<MdItem> {
-    let mut b = Builder::new(theme, highlighter);
+    parse_with(source, theme, highlighter, None)
+}
+
+/// [`parse`] with an optional [`ImageResolver`]: a resolved `![alt](url)` becomes
+/// a block [`MdItem::Image`] instead of the inline text placeholder.
+fn parse_with(
+    source: &str,
+    theme: &Theme,
+    highlighter: CodeHighlighter,
+    resolver: Option<&dyn ImageResolver>,
+) -> Vec<MdItem> {
+    let mut b = Builder::new(theme, highlighter, resolver);
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
@@ -103,10 +161,22 @@ struct Builder<'a> {
     // (`TableHead` / `TableRow`) closes the accumulated cells.
     table: Option<TableData>,
     cur_row: Vec<Cell>,
+
+    // Inline image being collected: (dest URL, alt-text accumulator). Set on
+    // `Tag::Image`, drained on `TagEnd::Image` into a placeholder or, when the
+    // resolver yields pixels, a block `MdItem::Image`.
+    image: Option<(String, String)>,
+
+    // Host hook resolving image URLs to pixels; `None` keeps the text placeholder.
+    resolver: Option<&'a dyn ImageResolver>,
 }
 
 impl<'a> Builder<'a> {
-    fn new(theme: &'a Theme, highlighter: CodeHighlighter<'a>) -> Self {
+    fn new(
+        theme: &'a Theme,
+        highlighter: CodeHighlighter<'a>,
+        resolver: Option<&'a dyn ImageResolver>,
+    ) -> Self {
         Self {
             theme,
             highlighter,
@@ -119,6 +189,8 @@ impl<'a> Builder<'a> {
             code: None,
             table: None,
             cur_row: Vec::new(),
+            image: None,
+            resolver,
         }
     }
 
@@ -165,6 +237,12 @@ impl<'a> Builder<'a> {
             body.push_str(text);
             return;
         }
+        // Inside an image, text is the alt description — collect it for the
+        // placeholder rather than emitting it as prose.
+        if let Some((_, alt)) = self.image.as_mut() {
+            alt.push_str(text);
+            return;
+        }
         let style = self.cur_style();
         // Only linkify bare URLs in plain body text, not inside links/headings.
         if style.add_modifier.contains(Modifier::UNDERLINED) {
@@ -174,6 +252,24 @@ impl<'a> Builder<'a> {
                 self.inline.push(span);
             }
         }
+    }
+
+    /// Render an inline image as a visible placeholder: a small marker glyph plus
+    /// the alt text — or the URL when there is no alt — link-styled, so an image
+    /// is never silently dropped. Actually painting the pixels in markdown
+    /// (resolving the URL to [`ImageData`](crate::image::ImageData) and emitting
+    /// through an [`ImageLayer`](crate::image::ImageLayer)) is a later phase; see
+    /// `specs/tuika-images.md`.
+    fn push_image_placeholder(&mut self, url: &str, alt: &str) {
+        let label = if alt.trim().is_empty() { url } else { alt };
+        self.inline
+            .push(Span::styled("🖼 ", Style::default().fg(self.theme.accent)));
+        self.inline.push(Span::styled(
+            label.to_string(),
+            Style::default()
+                .fg(self.theme.code.link)
+                .add_modifier(Modifier::UNDERLINED),
+        ));
     }
 
     fn event(&mut self, event: Event<'a>) {
@@ -273,6 +369,11 @@ impl<'a> Builder<'a> {
                     .add_modifier(Modifier::UNDERLINED);
                 self.style_stack.push(s);
             }
+            Tag::Image { dest_url, .. } => {
+                // Capture the target; alt text accrues via `push_text` until the
+                // matching `TagEnd::Image` renders the placeholder.
+                self.image = Some((dest_url.to_string(), String::new()));
+            }
             Tag::Table(aligns) => {
                 self.separate();
                 self.table = Some(TableData {
@@ -326,6 +427,21 @@ impl<'a> Builder<'a> {
             TagEnd::Item => self.flush(),
             TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
                 self.style_stack.pop();
+            }
+            TagEnd::Image => {
+                if let Some((url, alt)) = self.image.take() {
+                    match self.resolver.and_then(|r| r.resolve(&url)) {
+                        // Resolved: promote to a block image on its own rows. Any
+                        // inline run so far is flushed first so the image stands
+                        // apart from surrounding text.
+                        Some(data) => {
+                            self.flush();
+                            let indent = self.indent();
+                            self.items.push(MdItem::Image { data, alt, indent });
+                        }
+                        None => self.push_image_placeholder(&url, &alt),
+                    }
+                }
             }
             TagEnd::TableCell => {
                 let cell = trim_spans(std::mem::take(&mut self.inline));
@@ -428,6 +544,18 @@ fn linkify(text: &str, base: Style, link: ratatui::style::Color) -> Vec<Span<'st
 /// Flatten parsed items into final, width-fitted lines: prose is word-wrapped,
 /// code and tables are emitted verbatim, and each is offset by its indent.
 fn flatten(items: &[MdItem], width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    flatten_into(items, width, theme, &mut Vec::new())
+}
+
+/// [`flatten`] that also collects the block images it reserved, with the row each
+/// landed on, so the [`Markdown`] view can overlay an [`Image`] at the matching
+/// screen rect. A block image reserves `rows` blank lines here.
+fn flatten_into(
+    items: &[MdItem],
+    width: u16,
+    theme: &Theme,
+    images: &mut Vec<BlockImage>,
+) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for item in items {
         match item {
@@ -445,6 +573,22 @@ fn flatten(items: &[MdItem], width: u16, theme: &Theme) -> Vec<Line<'static>> {
                 let avail = width.saturating_sub(*indent).max(1);
                 for row in render_table(table, avail, theme) {
                     out.push(prefix_line(*indent, row.spans));
+                }
+            }
+            MdItem::Image { data, alt, indent } => {
+                let avail = width.saturating_sub(*indent).max(1);
+                let (cols, rows) = image_cell_size(data, avail);
+                images.push(BlockImage {
+                    row: out.len().min(u16::MAX as usize) as u16,
+                    indent: *indent,
+                    cols,
+                    rows,
+                    data: data.clone(),
+                    alt: alt.clone(),
+                });
+                // Reserve the image's rows; the view paints pixels over them.
+                for _ in 0..rows {
+                    out.push(Line::default());
                 }
             }
         }
@@ -825,6 +969,7 @@ fn is_blank_line(line: &Line) -> bool {
 /// | --- | --- | --- |
 /// | [`new(source)`](Self::new) | — | the markdown source to render |
 /// | [`highlighter(&h)`](Self::highlighter) | plain | syntax-highlight fenced code |
+/// | [`images(&r, s, &l)`](Self::images) | off | render `![alt](url)` as real pixels |
 ///
 /// ```no_run
 /// use tuika::Markdown;
@@ -835,6 +980,9 @@ fn is_blank_line(line: &Line) -> bool {
 pub struct Markdown<'a> {
     source: String,
     highlighter: CodeHighlighter<'a>,
+    resolver: Option<&'a dyn ImageResolver>,
+    image_support: ImageSupport,
+    image_layer: Option<ImageLayer>,
 }
 
 impl<'a> Markdown<'a> {
@@ -844,6 +992,9 @@ impl<'a> Markdown<'a> {
         Self {
             source: source.into(),
             highlighter: CodeHighlighter::Plain,
+            resolver: None,
+            image_support: ImageSupport::None,
+            image_layer: None,
         }
     }
 
@@ -852,22 +1003,45 @@ impl<'a> Markdown<'a> {
         self.highlighter = CodeHighlighter::With(highlighter);
         self
     }
+
+    /// Render `![alt](url)` images as real pixels.
+    ///
+    /// `resolver` decodes each URL to [`ImageData`] (markdown has only the URL —
+    /// see [`ImageResolver`]); a resolved image becomes a block reserved in the
+    /// layout and painted over by an [`Image`] using `support`, recording its
+    /// placement into `layer` for the host to [`emit`](ImageLayer::emit) after the
+    /// frame. Unresolved images, and every image when `support` is
+    /// [`ImageSupport::None`], fall back to the text placeholder / alt text.
+    pub fn images(
+        mut self,
+        resolver: &'a dyn ImageResolver,
+        support: ImageSupport,
+        layer: &ImageLayer,
+    ) -> Self {
+        self.resolver = Some(resolver);
+        self.image_support = support;
+        self.image_layer = Some(layer.clone());
+        self
+    }
+
+    /// Flatten the source to lines plus the block images it reserved.
+    fn lines_and_images(&self, width: u16, theme: &Theme) -> (Vec<Line<'static>>, Vec<BlockImage>) {
+        let items = parse_with(&self.source, theme, self.highlighter, self.resolver);
+        let mut images = Vec::new();
+        let lines = flatten_into(&items, width, theme, &mut images);
+        (lines, images)
+    }
 }
 
 impl View for Markdown<'_> {
     fn measure(&self, available: Size) -> Size {
-        let lines = markdown_to_lines(
-            &self.source,
-            available.width,
-            &Theme::default(),
-            self.highlighter,
-        );
+        let (lines, _) = self.lines_and_images(available.width, &Theme::default());
         let width = lines.iter().map(line_width).max().unwrap_or(0);
         Size::new(width.min(available.width), lines.len() as u16)
     }
 
     fn render(&self, area: Rect, surface: &mut Surface, ctx: &RenderCtx) {
-        let lines = markdown_to_lines(&self.source, area.width, ctx.theme, self.highlighter);
+        let (lines, images) = self.lines_and_images(area.width, ctx.theme);
         for (row, line) in lines.iter().enumerate() {
             let y = area.y.saturating_add(row as u16);
             if y >= area.bottom() {
@@ -880,6 +1054,28 @@ impl View for Markdown<'_> {
                 }
                 x = surface.set_string(x, y, span.content.as_ref(), span.style);
             }
+        }
+        // Overlay each block image on the rows it reserved, reusing the standalone
+        // `Image` component for pixel emission and the alt fallback alike.
+        for img in images {
+            let y = area.y.saturating_add(img.row);
+            let x = area.x.saturating_add(img.indent);
+            if y >= area.bottom() || x >= area.right() {
+                continue;
+            }
+            let rect = Rect {
+                x,
+                y,
+                width: img.cols.min(area.right() - x),
+                height: img.rows.min(area.bottom() - y),
+            };
+            let mut image = Image::new(img.data, img.cols, img.rows)
+                .support(self.image_support)
+                .alt(img.alt);
+            if let Some(layer) = &self.image_layer {
+                image = image.in_layer(layer);
+            }
+            image.render(rect, surface, ctx);
         }
     }
 }
@@ -1227,5 +1423,116 @@ mod tests {
         let _ = state.lines(40, &b, CodeHighlighter::Plain);
         // Cache was rebuilt under the new theme; still consistent, no stale panic.
         assert_eq!(state.cached_theme, Some(b));
+    }
+
+    #[test]
+    fn image_renders_alt_as_a_marked_placeholder() {
+        let theme = Theme::default();
+        let lines = markdown_to_lines(
+            "look: ![a cat](https://ex.com/cat.png) ok",
+            60,
+            &theme,
+            CodeHighlighter::Plain,
+        );
+        let whole: String = lines.iter().map(text).collect::<Vec<_>>().join("\n");
+        // The alt text shows behind an image marker; the surrounding prose stays.
+        assert!(whole.contains("🖼 a cat"), "expected marked alt: {whole:?}");
+        assert!(whole.contains("look:") && whole.contains("ok"));
+        // The alt label is link-styled, not plain body text.
+        let label = lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .find(|s| s.content.contains("a cat"))
+            .expect("alt span");
+        assert_eq!(label.style.fg, Some(theme.code.link));
+        assert!(label.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn image_without_alt_shows_the_url_so_it_is_never_dropped() {
+        // Before Tag::Image handling, an alt-less image vanished entirely — URL
+        // and all. Now the URL itself is the visible, link-styled label.
+        let out = plain("![](https://ex.com/x.png)", 60).join("\n");
+        assert!(out.contains("🖼 "), "marker present: {out:?}");
+        assert!(out.contains("https://ex.com/x.png"), "url shown: {out:?}");
+    }
+
+    /// A resolver that returns a fixed image for any URL containing "ok".
+    struct StubResolver;
+    impl ImageResolver for StubResolver {
+        fn resolve(&self, url: &str) -> Option<ImageData> {
+            url.contains("ok")
+                .then(|| ImageData::from_rgba(4, 2, vec![0u8; 4 * 2 * 4]).unwrap())
+        }
+    }
+
+    #[test]
+    fn resolved_block_image_reserves_rows_and_records_a_placement() {
+        use crate::testing::render;
+        let theme = Theme::default();
+        let layer = ImageLayer::new();
+        let resolver = StubResolver;
+        let view = Markdown::new("text before\n\n![a cat](ok.png)\n\nafter").images(
+            &resolver,
+            ImageSupport::Kitty,
+            &layer,
+        );
+        // Render into a wide/tall buffer; the block image reserves rows and
+        // records exactly one placement into the layer.
+        let _buf = render(&view, 40, 12, &theme);
+        assert_eq!(layer.len(), 1, "one block image recorded");
+    }
+
+    #[test]
+    fn unresolved_image_stays_an_inline_placeholder_even_with_images_enabled() {
+        use crate::testing::render;
+        let theme = Theme::default();
+        let layer = ImageLayer::new();
+        let resolver = StubResolver;
+        // URL lacks "ok", so the resolver declines → inline placeholder, no pixels.
+        let view =
+            Markdown::new("![a dog](nope.png)").images(&resolver, ImageSupport::Kitty, &layer);
+        let buf = render(&view, 40, 4, &theme);
+        let mut whole = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                whole.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(whole.contains("🖼 "), "placeholder marker shown: {whole:?}");
+        assert!(layer.is_empty(), "declined image records no placement");
+    }
+
+    #[test]
+    fn block_image_without_graphics_support_shows_alt_fallback() {
+        use crate::testing::render;
+        let theme = Theme::default();
+        let layer = ImageLayer::new();
+        let resolver = StubResolver;
+        // Resolver yields pixels, but the terminal has no graphics support.
+        let view = Markdown::new("![a cat](ok.png)").images(&resolver, ImageSupport::None, &layer);
+        let buf = render(&view, 40, 6, &theme);
+        let mut whole = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                whole.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(
+            whole.contains("[image: a cat]"),
+            "alt fallback painted: {whole:?}"
+        );
+        assert!(layer.is_empty(), "no placement without graphics support");
+    }
+
+    #[test]
+    fn block_image_reserves_height_proportional_to_aspect() {
+        // A 40x2 image (wide) reserves few rows; a 4x40 image (tall) reserves more.
+        let wide = ImageData::from_rgba(40, 2, vec![0u8; 40 * 2 * 4]).unwrap();
+        let tall = ImageData::from_rgba(4, 40, vec![0u8; 4 * 40 * 4]).unwrap();
+        let (_, wr) = image_cell_size(&wide, 40);
+        let (_, tr) = image_cell_size(&tall, 40);
+        assert!(wr < tr, "tall image reserves more rows: {wr} vs {tr}");
+        assert!(wr >= 1 && tr <= 30, "rows are clamped: {wr}, {tr}");
     }
 }

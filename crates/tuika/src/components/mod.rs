@@ -25,7 +25,7 @@ mod tabs;
 mod text;
 mod textinput;
 
-pub use crate::markdown::{Markdown, MarkdownState, markdown_to_lines};
+pub use crate::markdown::{ImageResolver, Markdown, MarkdownState, markdown_to_lines};
 pub use boxed::Boxed;
 pub use code_block::CodeBlock;
 pub use constrained::Constrained;
