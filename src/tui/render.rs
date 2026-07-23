@@ -1756,7 +1756,7 @@ pub(crate) fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 }
 
 pub(crate) fn draw_input_cursor(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    if app.busy || app.setup.is_some() {
+    if app.setup.is_some() {
         return;
     }
     if area.width == 0 || area.height == 0 {
@@ -1774,6 +1774,7 @@ pub(crate) fn message_separator_title(state: &ViewState) -> Line<'static> {
             state.busy_frame,
             activity,
             state.presentation.turn_elapsed_secs,
+            state.presentation.queued_messages,
         );
     }
     Line::from(vec![
@@ -1793,6 +1794,7 @@ pub(crate) fn thinking_title(
     frame: u64,
     activity: &str,
     elapsed_secs: Option<u64>,
+    queued_messages: usize,
 ) -> Line<'static> {
     const SPINNER: [&str; 4] = ["-", "\\", "|", "/"];
     let spinner = SPINNER[((frame / 2) as usize) % SPINNER.len()];
@@ -1811,10 +1813,12 @@ pub(crate) fn thinking_title(
             Style::default().fg(TEXT_DIM),
         ));
     }
-    spans.push(Span::styled(
-        " (input disabled) ",
-        Style::default().fg(TEXT_DIM),
-    ));
+    let queue_hint = if queued_messages == 0 {
+        " (Enter to queue · Esc twice to cancel) ".to_string()
+    } else {
+        format!(" ({queued_messages} queued · Enter to queue · Esc twice to cancel) ")
+    };
+    spans.push(Span::styled(queue_hint, Style::default().fg(TEXT_DIM)));
     Line::from(spans)
 }
 

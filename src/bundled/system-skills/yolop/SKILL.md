@@ -81,6 +81,7 @@ also appear in the registry when installed.
 | `Ctrl-C` (once, empty input) | Arm exit — press again to quit |
 | `Ctrl-C` (with draft text) | Clear the composer |
 | `Ctrl-D` | Exit immediately |
+| `Enter` while a turn runs | Queue a steering message for the next turn boundary |
 | `Esc` twice (while a turn runs) | Cancel the current turn |
 | `Ctrl+B` | Toggle the read-only background-tasks panel |
 

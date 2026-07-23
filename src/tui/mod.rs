@@ -27,7 +27,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -135,6 +135,10 @@ pub struct App {
     /// [`cursor_screen`](tuika::TextInputState::cursor_screen) — so the two modes
     /// can never drift.
     composer: tuika::TextInputState,
+    /// User messages submitted while a turn is active. The embedded runtime
+    /// cannot accept concurrent inputs, so these start in FIFO order at the
+    /// next turn boundary. Cancellation deliberately leaves the queue intact.
+    queued_messages: VecDeque<QueuedMessage>,
     pub busy: bool,
     pub should_quit: bool,
     ctrl_c_exit: bool,
@@ -437,6 +441,12 @@ pub(crate) struct CredentialOption {
     hint: String,
 }
 
+struct QueuedMessage {
+    prompt: String,
+    display: String,
+    images: Vec<ContentPart>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CredentialAction {
     UseEnv,
@@ -511,6 +521,7 @@ impl App {
                 composer.set_mode(tuika::TextInputMode::SubmitOnEnter);
                 composer
             },
+            queued_messages: VecDeque::new(),
             busy: false,
             should_quit: false,
             ctrl_c_exit: false,
@@ -751,6 +762,7 @@ impl App {
         PresentationState {
             stream_preview: self.stream_preview.clone(),
             busy: self.busy,
+            queued_messages: self.queued_messages.len(),
             turn_activity: self.turn_activity.clone(),
             model_id: self.model.model_id(),
             provider_name: self.model.provider_name(),
@@ -1111,6 +1123,18 @@ impl App {
                     self.finish_busy();
                     if let Some(notice) = self.session.take_checkpoint_notice() {
                         self.refresh_after_checkpoint_restore(notice).await;
+                        for display in self
+                            .queued_messages
+                            .iter()
+                            .map(|message| message.display.clone())
+                            .collect::<Vec<_>>()
+                        {
+                            self.push_user(display);
+                        }
+                        self.start_next_queued_turn();
+                        return Ok(());
+                    }
+                    if self.start_next_queued_turn() {
                         return Ok(());
                     }
                     self.after_turn_goal_check().await;
@@ -1120,11 +1144,13 @@ impl App {
                 Ok(TurnEvent::Failed(err)) => {
                     self.finish_busy();
                     self.push_system(format!("turn failed: {err}"));
+                    self.start_next_queued_turn();
                     return Ok(());
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     self.finish_busy();
+                    self.start_next_queued_turn();
                 }
             }
         }
@@ -1368,6 +1394,9 @@ impl App {
             self.handle_search_key(key);
             return;
         }
+        if self.busy && key.code != KeyCode::Esc {
+            self.esc_pending_cancel = false;
+        }
         // Ctrl+R opens reverse-history search from the idle composer.
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('r')) {
             self.history_search_start();
@@ -1441,8 +1470,7 @@ impl App {
             return;
         }
 
-        if self.busy {
-            // Block only input editing while a turn is running.
+        if self.busy && key.code == KeyCode::Esc {
             self.handle_busy_key(key);
             return;
         }
@@ -1459,7 +1487,9 @@ impl App {
                 tuika::TextInputEvent::Submit => self.submit_input().await,
             },
             KeyCode::Tab => {
-                if let Some(suggestion) = self.suggestions().first() {
+                if !self.busy
+                    && let Some(suggestion) = self.suggestions().first()
+                {
                     self.set_input_text(suggestion.completion.clone());
                 } else {
                     self.composer_edit_key(key);
@@ -1741,9 +1771,10 @@ impl App {
     }
 
     fn handle_paste(&mut self, pasted: String) {
-        if self.busy || self.setup.is_some() || self.background_panel.is_some() {
+        if self.setup.is_some() || self.background_panel.is_some() {
             return;
         }
+        self.esc_pending_cancel = false;
 
         let pasted = crate::tui::input::paste_attachment::normalize_pasted_text(&pasted);
         if pasted.is_empty() {
@@ -1777,7 +1808,7 @@ impl App {
     }
 
     fn try_paste_clipboard(&mut self) {
-        if self.busy || self.setup.is_some() || self.background_panel.is_some() {
+        if self.setup.is_some() || self.background_panel.is_some() {
             return;
         }
         match crate::tui::input::clipboard_paste::paste_image_content_part() {
@@ -1868,24 +1899,26 @@ impl App {
         // shell-style Up/Down recall. Uses the pre-expansion display text so
         // paste placeholders recall as the user saw them.
         self.history.record(&display_text);
-        if let Some(command) = parse_bang_shell_command(&text) {
-            if command.is_empty() {
-                self.push_system("usage: !<command>".into());
-            } else {
-                self.handle_shell_alias(command.to_string()).await;
+        if !self.busy {
+            if let Some(command) = parse_bang_shell_command(&text) {
+                if command.is_empty() {
+                    self.push_system("usage: !<command>".into());
+                } else {
+                    self.handle_shell_alias(command.to_string()).await;
+                }
+                return;
             }
-            return;
-        }
-        if let Some(rest) = text.strip_prefix('/') {
-            self.handle_command(rest).await;
-            return;
+            if let Some(rest) = text.strip_prefix('/') {
+                self.handle_command(rest).await;
+                return;
+            }
         }
         if text.is_empty() && self.pending_images.is_empty() {
             return;
         }
         let image_count = self.pending_images.len();
         let display = crate::tui::input::image_input::user_display_text(&display_text, image_count);
-        self.push_user(display);
+        self.push_user(display.clone());
         if self.user_ask_enabled
             && let Err(err) = self
                 .user_ask_store
@@ -1893,7 +1926,16 @@ impl App {
         {
             self.push_system(format!("user ask: {err}"));
         }
-        self.start_turn(text);
+        let images = std::mem::take(&mut self.pending_images);
+        if self.busy {
+            self.queued_messages.push_back(QueuedMessage {
+                prompt: text,
+                display,
+                images,
+            });
+        } else {
+            self.start_turn_with_images(text, images);
+        }
     }
 
     /// Open the background-tasks panel (read-only) or close it if already open.
@@ -2340,7 +2382,7 @@ impl App {
     }
 
     fn handle_ctrl_c(&mut self) {
-        if !self.busy && !self.input_text().trim().is_empty() {
+        if !self.input_text().trim().is_empty() {
             self.reset_input();
             self.disarm_ctrl_c_pending_exit();
             return;
@@ -2397,6 +2439,16 @@ impl App {
             self.term_progress.clear();
         }
         self.esc_pending_cancel = false;
+    }
+
+    /// Start the oldest steering message after the active turn has fully
+    /// settled. One runtime turn runs at a time; later messages remain queued.
+    fn start_next_queued_turn(&mut self) -> bool {
+        let Some(message) = self.queued_messages.pop_front() else {
+            return false;
+        };
+        self.start_turn_with_images(message.prompt, message.images);
+        true
     }
 
     fn maybe_start_goal_turn(&mut self) {
@@ -2592,6 +2644,11 @@ impl App {
     }
 
     fn start_turn(&mut self, prompt: String) {
+        let images = std::mem::take(&mut self.pending_images);
+        self.start_turn_with_images(prompt, images);
+    }
+
+    fn start_turn_with_images(&mut self, prompt: String, images: Vec<ContentPart>) {
         match self.worktree.ensure_before_turn(&prompt) {
             Ok(true) => {
                 self.startup.workspace_root = self.worktree.active_root();
@@ -2605,7 +2662,6 @@ impl App {
             Err(err) => self.push_system(format!("worktree: {err}")),
         }
 
-        let images = std::mem::take(&mut self.pending_images);
         let handle = self.session.run_turn(prompt, images);
         self.begin_turn(handle, None);
     }
@@ -2813,7 +2869,7 @@ fn help_shortcut_lines() -> [&'static str; 5] {
         "  Enter send · Shift-Enter newline · Tab complete (cmds, @files) · ↑/↓ history · Ctrl+R search",
         "  Ctrl+V paste image/text · Ctrl+B background tasks · !<cmd> shell alias",
         "  exit: Ctrl-C twice / Ctrl-D",
-        "  cancel turn: Esc twice (while model is busy)",
+        "  steer while busy: type and Enter to queue · cancel turn: Esc twice",
         "  scroll: terminal scrollback (no in-app page keys)",
     ]
 }
@@ -4473,6 +4529,7 @@ mod tests {
         PresentationState {
             stream_preview: None,
             busy: false,
+            queued_messages: 0,
             turn_activity: None,
             model_id: "gpt-5.5".to_string(),
             provider_name: "openai".to_string(),
@@ -5465,14 +5522,17 @@ mod tests {
                         }
                         Ok(TurnEvent::Done) => {
                             self.finish_busy();
+                            self.start_next_queued_turn();
                         }
                         Ok(TurnEvent::Failed(err)) => {
                             self.finish_busy();
                             self.push_system(format!("turn failed: {err}"));
+                            self.start_next_queued_turn();
                         }
                         Err(mpsc::error::TryRecvError::Empty) => {}
                         Err(mpsc::error::TryRecvError::Disconnected) => {
                             self.finish_busy();
+                            self.start_next_queued_turn();
                         }
                     }
                 }
@@ -6416,6 +6476,101 @@ mod tests {
             "second Esc should notify the turn worker"
         );
         assert_eq!(app.turn_activity.as_deref(), Some("cancelling"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn busy_composer_queues_messages_for_fifo_delivery() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+
+        app.set_input_text("first turn".into());
+        app.submit_input().await;
+        assert!(app.busy);
+
+        for ch in "steer this way".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        app.set_input_text("then verify it".into());
+        app.submit_input().await;
+
+        assert_eq!(app.queued_messages.len(), 2);
+        assert!(app.input_text().is_empty());
+        assert!(app.busy, "queueing must not interrupt the active turn");
+
+        app.pump_turn_until_idle_for_test().await;
+
+        assert!(app.queued_messages.is_empty());
+        let user_lines = app
+            .lines
+            .iter()
+            .filter(|line| line.author == Author::User)
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            user_lines,
+            ["first turn", "steer this way", "then verify it"]
+        );
+        let assistant_count = app
+            .lines
+            .iter()
+            .filter(|line| line.author == Author::Assistant)
+            .count();
+        assert_eq!(assistant_count, 3, "each queued message must be delivered");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_active_turn_retains_and_delivers_queued_message() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+
+        app.set_input_text("cancel this turn".into());
+        app.submit_input().await;
+        app.set_input_text("keep this steering".into());
+        app.submit_input().await;
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert_eq!(app.queued_messages.len(), 1);
+        app.pump_turn_until_idle_for_test().await;
+
+        assert!(app.queued_messages.is_empty());
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| { line.author == Author::User && line.text == "keep this steering" })
+        );
+        assert!(app.lines.iter().any(|line| {
+            line.author == Author::Assistant && line.text.contains("offline mode")
+        }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_c_clears_busy_composer_without_interrupting_turn() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        app.setup = None;
+        app.busy = true;
+        app.turn_cancel = Some(cancel_tx);
+        app.set_input_text("unsent steering draft".into());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+
+        assert!(app.input_text().is_empty());
+        assert!(app.busy);
+        assert!(cancel_rx.try_recv().is_err());
+        assert!(!app.should_quit);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -8030,7 +8185,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn app_view_state_hides_command_suggestions_when_input_disabled() {
+    async fn app_view_state_hides_command_suggestions_while_busy() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.setup = None;
@@ -8132,6 +8287,7 @@ mod tests {
         let state = ViewState {
             presentation: PresentationState {
                 busy: true,
+                queued_messages: 2,
                 turn_activity: Some("reading files".to_string()),
                 ..presentation_state_idle()
             },
@@ -8145,8 +8301,8 @@ mod tests {
             rows[0]
         );
         assert!(
-            rows[0].contains("input disabled"),
-            "busy separator should signal input is disabled: {}",
+            rows[0].contains("2 queued") && rows[0].contains("Enter to queue"),
+            "busy separator should expose steering and its queue: {}",
             rows[0]
         );
     }

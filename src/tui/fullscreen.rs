@@ -241,9 +241,9 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         );
     }
 
-    // Place the real terminal cursor inside the composer's TextInput rect, unless
-    // a turn is running (input disabled).
-    if !app.busy {
+    // The composer remains editable while a turn runs so Enter can queue a
+    // steering message for the next safe turn boundary.
+    if app.setup.is_none() {
         let input_rect = input_probe.rect();
         if input_rect.width > 0 && input_rect.height > 0 {
             let (x, y) = app.composer.cursor_screen(input_rect);
