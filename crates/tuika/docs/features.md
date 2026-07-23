@@ -12,6 +12,36 @@ terminal that understands the sequence acts on it; one that does not silently
 ignores the unknown OSC, so the feature degrades to plain text or a no-op
 rather than leaking escape codes onto the screen.
 
+## Capabilities
+
+`Capabilities` is the one place to ask what the terminal can do —
+`graphics` (an `ImageSupport`, the Images section below), `hyperlinks`,
+`clipboard`, `progress`, and `truecolor`.
+[API](https://docs.rs/tuika/latest/tuika/capabilities/index.html)
+
+```rust
+use tuika::Capabilities;
+
+let caps = Capabilities::from_env();   // instant, no terminal I/O
+if caps.supports_images() { /* … */ }
+```
+
+Two tiers. `Capabilities::from_env()` is an **advisory** guess from `TERM`,
+`TERM_PROGRAM`, `COLORTERM`, `KITTY_WINDOW_ID`, and the Ghostty marker — instant,
+never blocks. Because the OSC features above degrade harmlessly, you emit them
+regardless; the flag only decides whether to *show an affordance* (a "copy" hint,
+a link underline) the terminal can't act on, so those flags lean conservative.
+
+For accuracy — mainly to confirm **Sixel**, which has no reliable environment
+signal — `Capabilities::query(timeout)` also does a **Device Attributes** probe:
+it writes `DA1_REQUEST` (`ESC [ c`), reads the reply, and upgrades `graphics`
+when the terminal reports Sixel (DA1 feature `4`). Call it once at startup, in
+raw mode, before the event loop reads stdin (Unix ttys only; elsewhere it is just
+`from_env`). The pieces are also exposed standalone — `DA1_REQUEST` and
+`DeviceAttributes::parse` — so a host with its own read strategy can do the
+round-trip itself. Kitty and iTerm2 keep their reliable environment detection
+(DA1 doesn't report them).
+
 ## Hyperlinks (OSC 8)
 
 Turn a bare `http(s)` URL into a real clickable link, in place, without changing
@@ -262,7 +292,8 @@ inline placeholder rather than dropping the URL.
 
 - [Component gallery](components.md) — the widgets that paint the grid.
 - [API documentation](https://docs.rs/tuika) — the complete reference for the
-  `hyperlink`, `mouse`, `clipboard`, `native`, and `image` modules.
+  `capabilities`, `hyperlink`, `mouse`, `clipboard`, `native`, and `image`
+  modules.
 - [Runnable examples](../examples/) — `mouse` records the selection/clipboard
   workflow live; quit with `q`/`esc`.
 - [README](../README.md) — the model behind the toolkit.
