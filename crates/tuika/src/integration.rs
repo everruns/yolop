@@ -5,7 +5,7 @@
 //! no single owner: composing a real tree, and surviving tiny/degenerate
 //! screens where scroll and overlay resolution interact.
 
-use ratatui::text::{Line, Span};
+use ratatui_core::text::{Line, Span};
 
 use crate::components::{Boxed, Flex, Scroll, ScrollState, StatusBar, Text};
 use crate::overlay::OverlaySpec;
@@ -16,7 +16,7 @@ use crate::view::{RenderCtx, View, element};
 
 #[test]
 fn scroll_and_overlay_survive_tiny_screens() {
-    use ratatui::layout::Rect;
+    use ratatui_core::layout::Rect;
 
     // A tall scroll region rendered into a 1×1 viewport.
     let lines: Vec<Line<'static>> = (0..50).map(|i| Line::from(format!("l{i}"))).collect();

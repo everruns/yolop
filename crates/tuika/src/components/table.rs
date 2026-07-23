@@ -21,9 +21,9 @@
 //! [`SelectList`]: crate::SelectList
 //! [`Boxed::border_color`]: crate::Boxed::border_color
 
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::Line;
+use ratatui_core::layout::Rect;
+use ratatui_core::style::Style;
+use ratatui_core::text::Line;
 
 use crate::geometry::Size;
 use crate::layout::{Dimension, Item, LayoutStyle, solve};
@@ -75,7 +75,7 @@ impl Column {
 /// # Example
 ///
 /// ```
-/// use ratatui::text::Line;
+/// use ratatui_core::text::Line;
 /// use tuika::{Column, Table, SelectState, Theme};
 /// use tuika::testing::{grid, render};
 ///
@@ -404,7 +404,7 @@ mod tests {
     use crate::test_support::{buffer, rainbow_theme, row};
     use crate::view::{RenderCtx, View};
     use crate::{Size, Surface};
-    use ratatui::text::{Line, Span};
+    use ratatui_core::text::{Line, Span};
 
     fn sample() -> (Vec<Column>, Vec<Vec<Line<'static>>>) {
         let cols = vec![Column::auto("name"), Column::auto("kind")];
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn table_header_style_overrides_the_theme_default() {
-        use ratatui::style::{Color, Style};
+        use ratatui_core::style::{Color, Style};
         let (cols, rows) = sample();
         let t = rainbow_theme();
         let state = SelectState::new();
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn table_preserve_selection_fg_keeps_cell_colors() {
-        use ratatui::style::{Color, Style};
+        use ratatui_core::style::{Color, Style};
         let t = rainbow_theme();
         let cols = vec![Column::auto("c")];
         // A color-coded cell on the (only, selected) data row.

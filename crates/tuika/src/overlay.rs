@@ -7,7 +7,7 @@
 //! [`OverlaySpec`] resolves a target [`Rect`] from an [`Anchor`] plus size
 //! constraints relative to the screen.
 
-use ratatui::layout::Rect;
+use ratatui_core::layout::Rect;
 
 use super::geometry::Size;
 
@@ -64,7 +64,7 @@ impl Extent {
 ///
 /// ```
 /// use tuika::OverlaySpec;
-/// use ratatui::layout::Rect;
+/// use ratatui_core::layout::Rect;
 ///
 /// // A centered dialog at 50% × 40% of a 100 × 40 screen, never smaller than 34 × 7.
 /// let rect = OverlaySpec::centered(50, 40).min_size(34, 7).resolve(Rect::new(0, 0, 100, 40));
@@ -190,7 +190,7 @@ impl OverlaySpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::layout::Rect;
+    use ratatui_core::layout::Rect;
 
     #[test]
     fn overlay_centered_percentage() {

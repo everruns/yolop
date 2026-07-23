@@ -23,7 +23,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use ratatui::layout::Rect;
+use ratatui_core::layout::Rect;
 
 use crate::geometry::Size;
 use crate::surface::Surface;
@@ -95,7 +95,7 @@ mod tests {
     use crate::components::{Flex, Text};
     use crate::style::Theme;
     use crate::view::element;
-    use ratatui::layout::Rect;
+    use ratatui_core::layout::Rect;
 
     #[test]
     fn probe_reports_the_rect_a_view_was_painted_into() {

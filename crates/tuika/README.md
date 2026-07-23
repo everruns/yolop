@@ -15,11 +15,16 @@ overlay, focus, and component primitives that `ratatui` leaves to you, while
 letting `ratatui` keep ownership of the cell buffer and its diff against the
 terminal.
 
-It is a published, self-contained crate that depends only on `ratatui`,
-`crossterm`, `textwrap`, `unicode-segmentation`, and `unicode-width`, and is
-host-agnostic — it knows nothing about the application embedding it. (The
-optional `async` feature adds Tokio for [`AsyncRunner`](#terminal-lifecycle-and-runner);
-it is off by default.)
+It is a published, self-contained crate that depends only on `ratatui-core`
+(plus `ratatui-crossterm` for the terminal backend), `crossterm`, `textwrap`,
+`unicode-segmentation`, and `unicode-width`, and is host-agnostic — it knows
+nothing about the application embedding it. tuika renders none of ratatui's own
+widgets, so it builds against `ratatui-core` directly rather than the `ratatui`
+umbrella — keeping `ratatui-widgets`, `ratatui-macros`, and their transitive
+weight out of its dependency tree. Your application still uses any ratatui
+widget it likes (see [Compatibility](#compatibility)). (The optional `async`
+feature adds Tokio for [`AsyncRunner`](#terminal-lifecycle-and-runner); it is
+off by default.)
 
 ## Install
 
@@ -28,8 +33,10 @@ cargo add tuika
 ```
 
 `ratatui` and `crossterm` are part of `tuika`'s public interoperability
-surface, so pin the same minor versions in your own crate and Cargo will
-deduplicate them (see [Compatibility](#compatibility)).
+surface, so add `ratatui` to your own crate and pin a compatible minor version.
+tuika depends on `ratatui-core`, which the `ratatui` umbrella re-exports, so
+Cargo unifies the shared `Buffer`/`Rect`/`Style` types and your widgets compose
+with tuika's surfaces (see [Compatibility](#compatibility)).
 
 ## Model
 
@@ -417,8 +424,15 @@ Building something on tuika? Open a PR adding it here.
 - Tuika 0.x follows Cargo semver: minor releases may make deliberate breaking
   API changes; patch releases do not.
 - Ratatui and Crossterm are part of Tuika's public interoperability surface.
-  Tuika tracks compatible minor lines deliberately; applications should use
-  matching versions so Cargo can deduplicate them.
+  Tuika builds against `ratatui-core` (and `ratatui-crossterm`) directly, not
+  the `ratatui` umbrella; the umbrella re-exports that same `ratatui-core`, so a
+  matching `ratatui` minor line in your application resolves to one shared
+  `ratatui-core` and Cargo deduplicates the core types. Widgets such as
+  `Block`/`Paragraph`/`Table` live in `ratatui-widgets` (pulled in by your
+  `ratatui` dependency, not by tuika) and compose through
+  [`Surface::render_ratatui`](https://docs.rs/tuika/latest/tuika/surface/struct.Surface.html#method.render_ratatui)
+  and [`RatatuiView`](https://docs.rs/tuika/latest/tuika/struct.RatatuiView.html),
+  whose seam is a raw `ratatui-core` `Buffer`.
 
 ## Extending
 

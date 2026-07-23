@@ -5,9 +5,9 @@
 //! the theme selection style and a caret. Enter is surfaced to the host via
 //! [`SelectOutcome`] so the caller decides what "confirm" means.
 
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::Line;
+use ratatui_core::layout::Rect;
+use ratatui_core::style::Style;
+use ratatui_core::text::Line;
 
 use crate::event::{Event, EventFlow, KeyCode};
 use crate::geometry::Size;
@@ -114,7 +114,7 @@ impl SelectState {
 /// # Example
 ///
 /// ```
-/// use ratatui::text::Line;
+/// use ratatui_core::text::Line;
 /// use tuika::{SelectList, SelectState, Theme};
 /// use tuika::testing::{grid, render};
 ///
@@ -280,7 +280,7 @@ mod tests {
     use crate::test_support::{buffer, rainbow_theme, row};
     use crate::view::{RenderCtx, View};
     use crate::{Size, Surface};
-    use ratatui::text::Line;
+    use ratatui_core::text::Line;
 
     #[test]
     fn select_navigation_wraps_and_confirms() {
@@ -344,7 +344,7 @@ mod tests {
         assert!(row(&buf, 1).contains("beta"));
         // Selected row carries the selection background.
         assert_eq!(buf[(0, 1)].bg, theme.selection_bg);
-        assert_eq!(buf[(0, 0)].bg, ratatui::style::Color::Reset);
+        assert_eq!(buf[(0, 0)].bg, ratatui_core::style::Color::Reset);
     }
 
     #[test]

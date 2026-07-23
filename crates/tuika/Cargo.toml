@@ -31,7 +31,22 @@ bench = false
 async = ["dep:tokio", "dep:tokio-stream", "crossterm/event-stream"]
 
 [dependencies]
-ratatui = "0.30.2"
+# tuika uses only ratatui's cell buffer, style/text/layout primitives, the
+# `Widget`/`StatefulWidget` traits, and the `Terminal`/backend loop — all of
+# which live in `ratatui-core`. It renders none of ratatui's own widgets, so it
+# depends on the sub-crates directly instead of the `ratatui` umbrella. This
+# drops `ratatui-widgets` (Block/Paragraph/Table/Calendar/…) and `ratatui-macros`
+# — and with them the `time`/`lru`/`line-clipping` transitive weight — from
+# tuika's build. Downstream users keep every ratatui widget: they bring their own
+# `ratatui` and render it through `Surface::render_ratatui`/`RatatuiView`, whose
+# seam is a raw `&mut Buffer` from this same `ratatui-core` (Cargo unifies the
+# version). `underline-color` matches the umbrella default so cell rendering is
+# byte-identical; `std` is required for the terminal I/O loop.
+ratatui-core = { version = "0.1", features = ["std", "underline-color"] }
+# `CrosstermBackend` (+ `ClearType`/`WindowSize` impls) — the only piece tuika
+# needs that is not in `ratatui-core`. Default features pin the crossterm 0.29
+# backend, matching the direct `crossterm` dep below so Cargo dedups it.
+ratatui-crossterm = "0.1"
 crossterm = "0.29"
 # Async runner only (feature = "async"). `time` for the tick interval, `macros`
 # for `tokio::select!`; the host application brings its own runtime, so no `rt`.
@@ -48,9 +63,11 @@ pulldown-cmark = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 proptest = "1"
-# Benches build `Vec<Line>` corpora and paint into a `Buffer` directly, so they
-# name ratatui types the library only re-exports selectively. Same version as the
-# normal dependency above.
+# The `ratatui` umbrella is a dev-dependency only: benches build `Vec<Line>`
+# corpora and paint into a `Buffer` directly, and the doc examples demonstrate
+# wrapping real ratatui *widgets* through `RatatuiView`/`Surface::render_ratatui`.
+# Its `ratatui-core` matches the version the library depends on, so the `Buffer`
+# type is shared across the interop seam.
 ratatui = "0.30.2"
 # Benchmark harness. default-features off drops the plotters/rayon HTML-report
 # stack (heavy, and an MSRV liability) while keeping `cargo bench` working;

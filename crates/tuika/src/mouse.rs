@@ -23,9 +23,9 @@
 //! `Down`+`Up`, a swipe is `ScrollUp`/`ScrollDown` or a `Drag`), so touch input
 //! flows through this same path — there is no separate touch event to model.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui_core::buffer::Buffer;
+use ratatui_core::layout::Rect;
+use ratatui_core::style::Style;
 use std::time::{Duration, Instant};
 
 use crate::event::{Mouse, MouseButton, MouseKind};
@@ -371,8 +371,8 @@ mod tests {
     use crate::components::Text;
     use crate::event::{Mouse, MouseButton, MouseKind};
     use crate::style::Theme;
-    use ratatui::layout::Rect;
-    use ratatui::style::{Color, Style};
+    use ratatui_core::layout::Rect;
+    use ratatui_core::style::{Color, Style};
 
     fn down(col: u16, row: u16) -> Mouse {
         Mouse::at(MouseKind::Down(MouseButton::Left), col, row)
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn selected_text_spans_rows_linearly() {
-        use ratatui::text::Line;
+        use ratatui_core::text::Line;
         let theme = Theme::default();
         let lines = vec![Line::from("hello"), Line::from("world")];
         let buf = crate::testing::render(&Text::new(lines), 5, 2, &theme);

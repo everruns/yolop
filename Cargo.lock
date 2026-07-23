@@ -6793,6 +6793,8 @@ dependencies = [
  "proptest",
  "pulldown-cmark",
  "ratatui",
+ "ratatui-core",
+ "ratatui-crossterm",
  "textwrap",
  "tokio",
  "tokio-stream",

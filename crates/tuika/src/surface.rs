@@ -7,9 +7,9 @@
 //! still owns the shadow-buffer diff against the terminal, so `tuika` pays
 //! nothing extra for dirty-cell tracking.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui_core::buffer::Buffer;
+use ratatui_core::layout::Rect;
+use ratatui_core::style::Style;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::style::BorderGlyphs;
@@ -214,19 +214,19 @@ mod tests {
     use crate::style::Theme;
     use crate::test_support::{buffer, row};
     use crate::view::{RenderCtx, View, element};
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::style::Style;
+    use ratatui_core::buffer::Buffer;
+    use ratatui_core::layout::Rect;
+    use ratatui_core::style::Style;
 
     #[test]
     fn ratatui_rendering_preserves_clip_even_if_buffer_expands() {
-        let mut buf = Buffer::filled(Rect::new(0, 0, 12, 3), ratatui::buffer::Cell::new("#"));
+        let mut buf = Buffer::filled(Rect::new(0, 0, 12, 3), ratatui_core::buffer::Cell::new("#"));
         let clip = Rect::new(4, 1, 4, 1);
         {
             let mut surface = Surface::new(&mut buf, clip);
             surface.render_ratatui(Rect::new(2, 0, 8, 3), |_area, scratch| {
                 let expanded =
-                    Buffer::filled(Rect::new(0, 0, 12, 3), ratatui::buffer::Cell::new("x"));
+                    Buffer::filled(Rect::new(0, 0, 12, 3), ratatui_core::buffer::Cell::new("x"));
                 scratch.merge(&expanded);
             });
         }
@@ -245,9 +245,9 @@ mod tests {
 
     #[test]
     fn ratatui_rendering_starts_with_existing_cells() {
-        use ratatui::style::Color;
+        use ratatui_core::style::Color;
 
-        let mut cell = ratatui::buffer::Cell::new(".");
+        let mut cell = ratatui_core::buffer::Cell::new(".");
         cell.set_bg(Color::Blue);
         let mut buf = Buffer::filled(Rect::new(0, 0, 4, 1), cell);
         let area = buf.area;
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn ratatui_rendering_tolerates_a_callback_that_resizes_its_buffer() {
-        let mut buf = Buffer::filled(Rect::new(0, 0, 4, 1), ratatui::buffer::Cell::new("#"));
+        let mut buf = Buffer::filled(Rect::new(0, 0, 4, 1), ratatui_core::buffer::Cell::new("#"));
         let area = buf.area;
         let mut surface = Surface::new(&mut buf, area);
         surface.render_ratatui(area, |_area, scratch| {
@@ -288,7 +288,7 @@ mod tests {
         // A ZWJ family (multiple scalars) is a single grapheme: it must occupy one
         // cell and advance the cursor by 2, not scatter one component per cell.
         const FAMILY: &str = "👨\u{200D}👩\u{200D}👧";
-        let mut buf = Buffer::filled(Rect::new(0, 0, 6, 1), ratatui::buffer::Cell::new("."));
+        let mut buf = Buffer::filled(Rect::new(0, 0, 6, 1), ratatui_core::buffer::Cell::new("."));
         let end = {
             let mut surface = Surface::new(&mut buf, Rect::new(0, 0, 6, 1));
             surface.set_string(0, 0, &format!("{FAMILY}x"), Style::default())
@@ -307,7 +307,7 @@ mod tests {
     fn set_string_skip_pans_and_carries_across_calls() {
         // "abcdef" drawn with a running skip of 2: "ab" dropped, "cdef" drawn
         // from x=0. A second call keeps consuming from the same skip.
-        let mut buf = Buffer::filled(Rect::new(0, 0, 6, 1), ratatui::buffer::Cell::new("."));
+        let mut buf = Buffer::filled(Rect::new(0, 0, 6, 1), ratatui_core::buffer::Cell::new("."));
         let mut surface = Surface::new(&mut buf, Rect::new(0, 0, 6, 1));
         let mut skip = 2u16;
         let end = surface.set_string_skip(0, 0, "abcdef", Style::default(), &mut skip);
@@ -318,7 +318,7 @@ mod tests {
 
         // With skip still set, a whole short span is consumed without drawing and
         // the skip carries to the next call.
-        let mut buf2 = Buffer::filled(Rect::new(0, 0, 4, 1), ratatui::buffer::Cell::new("."));
+        let mut buf2 = Buffer::filled(Rect::new(0, 0, 4, 1), ratatui_core::buffer::Cell::new("."));
         let mut s2 = Surface::new(&mut buf2, Rect::new(0, 0, 4, 1));
         let mut skip = 3u16;
         let x = s2.set_string_skip(0, 0, "ab", Style::default(), &mut skip); // fully skipped
@@ -334,7 +334,8 @@ mod tests {
     fn set_string_skip_zero_matches_set_string() {
         // The flush-left fast path: skip == 0 must be identical to set_string.
         let render = |use_skip: bool| {
-            let mut buf = Buffer::filled(Rect::new(0, 0, 8, 1), ratatui::buffer::Cell::new("."));
+            let mut buf =
+                Buffer::filled(Rect::new(0, 0, 8, 1), ratatui_core::buffer::Cell::new("."));
             let end = {
                 let mut s = Surface::new(&mut buf, Rect::new(0, 0, 8, 1));
                 if use_skip {

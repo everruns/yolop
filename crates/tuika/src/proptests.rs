@@ -6,7 +6,7 @@
 //! the resize suite is exactly the kind proptest finds automatically).
 
 use proptest::prelude::*;
-use ratatui::layout::Rect;
+use ratatui_core::layout::Rect;
 
 use super::geometry::{Axis, Padding, Size};
 use super::layout::{Align, Dimension, Direction, Item, Justify, LayoutStyle, solve};

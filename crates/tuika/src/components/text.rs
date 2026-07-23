@@ -13,9 +13,9 @@
 //! every row it reflows to. [`Paragraph`] takes a single alignment for the whole
 //! block via [`Paragraph::alignment`].
 
-use ratatui::layout::{Alignment, Rect};
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui_core::layout::{Alignment, Rect};
+use ratatui_core::style::Style;
+use ratatui_core::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::geometry::Size;
@@ -75,7 +75,7 @@ pub fn line_width(line: &Line) -> u16 {
 ///
 /// ```
 /// use tuika::{Text, Theme};
-/// use ratatui::text::Line;
+/// use ratatui_core::text::Line;
 /// # use tuika::testing::render;
 /// let view = Text::new(vec![
 ///     Line::from("left"),
@@ -354,8 +354,8 @@ mod tests {
     use crate::test_support::{buffer, row};
     use crate::view::{RenderCtx, View};
     use crate::{Size, Surface};
-    use ratatui::style::{Color, Modifier, Style};
-    use ratatui::text::{Line, Span};
+    use ratatui_core::style::{Color, Modifier, Style};
+    use ratatui_core::text::{Line, Span};
 
     /// Concatenated text of a line's spans.
     fn line_text(line: &Line) -> String {

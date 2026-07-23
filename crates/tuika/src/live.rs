@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
-use ratatui::layout::Rect;
+use ratatui_core::layout::Rect;
 
 use crate::{Element, RenderCtx, Size, Surface, View};
 

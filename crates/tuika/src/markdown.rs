@@ -21,9 +21,9 @@
 //! in a layout.
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui_core::layout::Rect;
+use ratatui_core::style::{Modifier, Style};
+use ratatui_core::text::{Line, Span};
 
 use crate::components::code_block::code_block_lines;
 use crate::components::{line_width, wrap_lines};
@@ -1471,7 +1471,7 @@ mod tests {
 
     #[test]
     fn custom_sheet_restyles_both_links_and_bare_urls() {
-        use ratatui::style::Color;
+        use ratatui_core::style::Color;
         let theme = Theme::default();
         // One central rule remaps the link role: green + bold, no underline.
         let sheet = StyleSheet {
@@ -1506,7 +1506,7 @@ mod tests {
 
     #[test]
     fn custom_sheet_restyles_headings() {
-        use ratatui::style::Color;
+        use ratatui_core::style::Color;
         let theme = Theme::default();
         let sheet = StyleSheet {
             heading: StyleBundle::new().fg(Color::Magenta).italic(),
@@ -1523,7 +1523,7 @@ mod tests {
 
     #[test]
     fn sheet_change_invalidates_stream_cache() {
-        use ratatui::style::Color;
+        use ratatui_core::style::Color;
         let theme = Theme::default();
         let mut state = MarkdownState::new();
         state.set("A [link](https://ex.com) in prose.");
@@ -1687,7 +1687,7 @@ mod tests {
         assert!(state.stable_len > 0);
 
         let mut b = Theme::default();
-        b.code.heading = ratatui::style::Color::Indexed(200);
+        b.code.heading = ratatui_core::style::Color::Indexed(200);
         let _ = state.lines(40, &b, &StyleSheet::from_theme(&b), CodeHighlighter::Plain);
         // Cache was rebuilt under the new theme; still consistent, no stale panic.
         assert_eq!(state.cached_theme, Some(b));

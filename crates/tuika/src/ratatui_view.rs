@@ -4,8 +4,8 @@
 //! [`Surface::render_ratatui`](crate::Surface::render_ratatui), so arbitrary
 //! widget code never receives the frame's underlying buffer.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui_core::buffer::Buffer;
+use ratatui_core::layout::Rect;
 
 use crate::{RenderCtx, Size, Surface, View};
 

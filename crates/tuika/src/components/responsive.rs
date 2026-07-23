@@ -1,6 +1,6 @@
 //! Width-driven view selection for responsive terminal layouts.
 
-use ratatui::layout::Rect;
+use ratatui_core::layout::Rect;
 
 use crate::{Element, RenderCtx, Size, Surface, View};
 

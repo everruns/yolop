@@ -1,6 +1,6 @@
 //! Intrinsic min/max sizing for responsive flex children.
 
-use ratatui::layout::Rect;
+use ratatui_core::layout::Rect;
 
 use crate::{Element, RenderCtx, Size, Surface, View};
 
