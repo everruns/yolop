@@ -425,16 +425,25 @@ mod tests {
 
     // A read error from the event stream propagates out of the run. This uses a
     // real `io::Error` backend (crossterm over a `Vec` sink) so the run's error
-    // type is `io::Error` rather than the `Infallible` of `TestBackend`.
+    // type is `io::Error` rather than the `Infallible` of `TestBackend`. A fixed
+    // viewport is required: `Terminal::new`/`Fullscreen` queries the terminal
+    // size, which has no TTY to answer under CI and would panic; `Fixed` uses the
+    // given rect and never touches the terminal.
     #[tokio::test]
     async fn stream_error_propagates() {
         use ratatui::backend::CrosstermBackend;
+        use ratatui::layout::Rect;
 
         let runner = AsyncRunner::new(RunnerConfig {
             tick_rate: Duration::from_secs(3600),
         });
-        let mut terminal =
-            Terminal::new(CrosstermBackend::new(Vec::<u8>::new())).expect("test terminal");
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(Vec::<u8>::new()),
+            TerminalOptions {
+                viewport: Viewport::Fixed(Rect::new(0, 0, 10, 1)),
+            },
+        )
+        .expect("test terminal");
         let mut state = ();
         let events = tokio_stream::iter([Err::<Event, io::Error>(io::Error::other("boom"))]);
 
