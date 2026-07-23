@@ -66,6 +66,7 @@ fn main() -> io::Result<()> {
             let status = match support {
                 ImageSupport::Kitty => " graphics: Kitty protocol detected ",
                 ImageSupport::ITerm2 => " graphics: iTerm2 protocol detected ",
+                ImageSupport::Sixel => " graphics: Sixel protocol detected ",
                 ImageSupport::None => " graphics: none — showing text fallback ",
             };
             let bar = StatusBar::new()

@@ -1,4 +1,4 @@
-//! Terminal image rendering via the Kitty and iTerm2 graphics protocols.
+//! Terminal image rendering via the Kitty, iTerm2, and Sixel graphics protocols.
 //!
 //! A cell in ratatui's buffer carries one grapheme plus a style and nothing
 //! else, so a picture has no home there — the same wall [`crate::hyperlink`]
@@ -95,8 +95,6 @@ impl ImageData {
 }
 
 /// Which graphics protocol a terminal is believed to speak.
-///
-/// Sixel is a future variant selected by the same detection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageSupport {
     /// No known graphics protocol — [`Image`] renders its text fallback.
@@ -107,6 +105,11 @@ pub enum ImageSupport {
     /// The iTerm2 inline-image protocol (iTerm2, WezTerm). Transmits an encoded
     /// image file — tuika PNG-encodes the RGBA for it.
     ITerm2,
+    /// The Sixel protocol (foot, xterm +sixel, mlterm, contour, …). Transmits a
+    /// palette-quantized bitmap. Reliable auto-detection isn't possible from the
+    /// environment alone, so hosts on a Sixel terminal usually set this
+    /// explicitly rather than relying on [`detect`](Self::detect).
+    Sixel,
 }
 
 impl ImageSupport {
@@ -151,6 +154,13 @@ impl ImageSupport {
         // iTerm2 speaks its own inline-image protocol (TERM_PROGRAM=iTerm.app).
         if program.as_deref().is_some_and(|p| p.contains("iterm")) {
             return ImageSupport::ITerm2;
+        }
+        // Sixel has no reliable env signal (a DA1 query would be needed), so only
+        // the few terminals that advertise themselves in `TERM` are matched here;
+        // other Sixel terminals need an explicit `ImageSupport::Sixel`.
+        if term.is_some_and(|t| t.contains("foot") || t.contains("mlterm") || t.contains("contour"))
+        {
+            return ImageSupport::Sixel;
         }
         ImageSupport::None
     }
@@ -231,6 +241,7 @@ impl ImageLayer {
             write!(out, "\x1b[{row};{col}H")?;
             let escape = match p.support {
                 ImageSupport::ITerm2 => encode_iterm2(&p.data, p.rect.width, p.rect.height),
+                ImageSupport::Sixel => encode_sixel(&p.data, p.rect.width, p.rect.height),
                 // None shouldn't record, but Kitty is the safe default encoding.
                 _ => encode_kitty(&p.data, p.rect.width, p.rect.height),
             };
@@ -295,7 +306,10 @@ impl Image {
     /// Whether this image will be emitted through a graphics protocol (as
     /// opposed to falling back to text).
     fn will_paint(&self) -> bool {
-        matches!(self.support, ImageSupport::Kitty | ImageSupport::ITerm2) && self.layer.is_some()
+        matches!(
+            self.support,
+            ImageSupport::Kitty | ImageSupport::ITerm2 | ImageSupport::Sixel
+        ) && self.layer.is_some()
     }
 }
 
@@ -436,6 +450,113 @@ fn encode_iterm2(data: &ImageData, cols: u16, rows: u16) -> String {
         "\x1b]1337;File=inline=1;width={cols};height={rows};preserveAspectRatio=0;size={}:{payload}\x07",
         png.len()
     )
+}
+
+/// Assumed terminal cell pixel size, used only to scale a Sixel image into its
+/// reserved `cols × rows` cells: unlike Kitty (`c`/`r`) and iTerm2
+/// (`width`/`height`), the Sixel protocol has no cell-based sizing — it paints at
+/// the bitmap's pixel size — so tuika resamples to an assumed cell geometry.
+const SIXEL_CELL_W: u32 = 10;
+const SIXEL_CELL_H: u32 = 20;
+
+/// Encode `data` as a Sixel bitmap scaled to fill `cols × rows` cells.
+///
+/// Pure and allocation-only, like [`encode_kitty`]. The RGBA is nearest-neighbor
+/// resampled to `cols*SIXEL_CELL_W × rows*SIXEL_CELL_H` pixels (Sixel can't scale
+/// to cells itself), quantized to a fixed 6×6×6 color cube, and emitted band by
+/// band (6 rows each), one color pass per band with run-length encoding. The
+/// sequence is `ESC P q "1;1;W;H <palette><data> ESC \`.
+fn encode_sixel(data: &ImageData, cols: u16, rows: u16) -> String {
+    let tw = (cols as u32 * SIXEL_CELL_W).max(1);
+    let th = (rows as u32 * SIXEL_CELL_H).max(1);
+    let (sw, sh) = (data.pixel_width.max(1), data.pixel_height.max(1));
+
+    // Nearest-neighbor resample into a target grid of 6×6×6-cube palette indices.
+    let mut idx = vec![0u8; (tw * th) as usize];
+    for ty in 0..th {
+        let sy = ty * sh / th;
+        for tx in 0..tw {
+            let sx = tx * sw / tw;
+            let p = ((sy * sw + sx) * 4) as usize;
+            let q = |c: u8| (c as u32 * 5 + 127) / 255; // 0..=5
+            idx[(ty * tw + tx) as usize] =
+                (q(data.rgba[p]) * 36 + q(data.rgba[p + 1]) * 6 + q(data.rgba[p + 2])) as u8;
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str("\x1bPq"); // DCS, default params
+    out.push_str(&format!("\"1;1;{tw};{th}")); // raster: 1:1 aspect, W×H pixels
+    // Define the 216-color cube once (channels scaled to Sixel's 0..=100).
+    for i in 0u32..216 {
+        let (r, g, b) = (i / 36 % 6, i / 6 % 6, i % 6);
+        out.push_str(&format!("#{};2;{};{};{}", i, r * 20, g * 20, b * 20));
+    }
+
+    let bands = th.div_ceil(6);
+    for band in 0..bands {
+        let y0 = band * 6;
+        // Which palette colors appear anywhere in this 6-row band.
+        let mut present = [false; 216];
+        for p in 0..6 {
+            let y = y0 + p;
+            if y >= th {
+                break;
+            }
+            for tx in 0..tw {
+                present[idx[(y * tw + tx) as usize] as usize] = true;
+            }
+        }
+        let colors: Vec<usize> = (0..216).filter(|&c| present[c]).collect();
+        for (ci, &c) in colors.iter().enumerate() {
+            out.push_str(&format!("#{c}"));
+            // One sixel char per column: bit p set when row y0+p is this color.
+            let (mut run, mut len) = (0u8, 0u32);
+            for tx in 0..tw {
+                let mut bits = 0u8;
+                for p in 0..6 {
+                    let y = y0 + p;
+                    if y < th && idx[(y * tw + tx) as usize] as usize == c {
+                        bits |= 1 << p;
+                    }
+                }
+                if bits == run {
+                    len += 1;
+                } else {
+                    sixel_run(&mut out, run, len);
+                    run = bits;
+                    len = 1;
+                }
+            }
+            sixel_run(&mut out, run, len);
+            // Overlay the next color on the same band (`$`), else advance a band.
+            if ci + 1 < colors.len() {
+                out.push('$');
+            }
+        }
+        if band + 1 < bands {
+            out.push('-');
+        }
+    }
+    out.push_str("\x1b\\");
+    out
+}
+
+/// Emit a run of `len` copies of sixel value `bits` (0..=63), run-length-encoded
+/// with `!` for runs of three or more.
+fn sixel_run(out: &mut String, bits: u8, len: u32) {
+    if len == 0 {
+        return;
+    }
+    let ch = (0x3f + bits) as char;
+    if len >= 3 {
+        out.push_str(&format!("!{len}"));
+        out.push(ch);
+    } else {
+        for _ in 0..len {
+            out.push(ch);
+        }
+    }
 }
 
 /// Encode `rgba` (`w × h`, 8-bit RGBA) as a PNG, using stored (uncompressed)
@@ -792,6 +913,81 @@ mod tests {
         // IHDR carries the dimensions; IDAT and IEND are present.
         let s = String::from_utf8_lossy(&png);
         assert!(s.contains("IHDR") && s.contains("IDAT") && s.contains("IEND"));
+    }
+
+    #[test]
+    fn encode_sixel_has_dcs_frame_palette_and_data() {
+        let img = solid(2, 2, [255, 0, 0, 255]); // pure red
+        let out = encode_sixel(&img, 1, 1);
+        // DCS intro + `q`, raster attributes sized to cols*10 × rows*20 pixels.
+        assert!(
+            out.starts_with("\x1bPq\"1;1;10;20"),
+            "intro/raster: {:?}",
+            &out[..24]
+        );
+        assert!(out.ends_with("\x1b\\"), "ST terminated");
+        // Pure red quantizes to cube index r=5,g=0,b=0 → 180, defined as RGB 100;0;0.
+        assert!(out.contains("#180;2;100;0;0"), "red register defined");
+        // The band data selects that register and run-length-encodes a full column
+        // (all six rows set → value 63 → '~').
+        assert!(out.contains("#180"), "red register selected in data");
+        assert!(
+            out.contains("!"),
+            "run-length encoding used for the solid fill"
+        );
+        assert!(
+            out.contains('~'),
+            "a fully-set sixel column (0x3f+63) present"
+        );
+    }
+
+    #[test]
+    fn encode_sixel_bytes_stay_in_range() {
+        // Every sixel data byte must be printable in the sixel range or a control
+        // (#, !, $, -, digits, ;, ", ESC, P, q, backslash). Assert no stray bytes.
+        let img = solid(3, 2, [0, 128, 255, 255]);
+        let out = encode_sixel(&img, 2, 1);
+        for b in out.bytes() {
+            let ok = b == 0x1b
+                || b == b'P'
+                || b == b'q'
+                || b == b'\\'
+                || b == b'"'
+                || b == b'#'
+                || b == b'!'
+                || b == b'$'
+                || b == b'-'
+                || b == b';'
+                || b.is_ascii_digit()
+                || (0x3f..=0x7e).contains(&b);
+            assert!(ok, "unexpected sixel byte {b:#x}");
+        }
+    }
+
+    #[test]
+    fn detect_recognizes_sixel_terminals() {
+        assert_eq!(
+            ImageSupport::detect_from(Some("foot"), None, None, None),
+            ImageSupport::Sixel
+        );
+        assert_eq!(
+            ImageSupport::detect_from(Some("xterm-mlterm"), None, None, None),
+            ImageSupport::Sixel
+        );
+    }
+
+    #[test]
+    fn emit_dispatches_sixel() {
+        let layer = ImageLayer::new();
+        layer.record(
+            Rect::new(0, 0, 2, 1),
+            solid(1, 1, [1, 2, 3, 255]),
+            ImageSupport::Sixel,
+        );
+        let mut out: Vec<u8> = Vec::new();
+        layer.emit(&mut out).expect("emit");
+        let s = String::from_utf8(out).expect("utf8");
+        assert!(s.contains("\x1bPq"), "sixel DCS emitted: {s:?}");
     }
 
     #[test]

@@ -30,10 +30,13 @@ Scope is deliberately phased:
   after each frame. Capability detection gates the protocol; unsupported
   terminals get the alt-text fallback.
 - **Phase 2: more protocols** behind the same component, selected by capability
-  detection. **iTerm2 inline images: done** — `ImageLayer::emit` dispatches per
-  the recorded protocol, and RGBA is PNG-encoded (in-tuika, dependency-free) for
-  iTerm2, which transmits an image file rather than raw pixels. **Sixel:**
-  remaining.
+  detection. **Done.** `ImageLayer::emit` dispatches per the recorded protocol.
+  iTerm2 transmits an image file, so RGBA is PNG-encoded (in-tuika,
+  dependency-free). Sixel has no cell-based sizing, so the RGBA is
+  nearest-neighbor resampled to an assumed cell geometry, quantized to a fixed
+  6×6×6 color cube, and emitted band-by-band with run-length encoding; detection
+  is best-effort (`foot`/`mlterm`/`contour` in `TERM`) since Sixel has no
+  reliable env signal, so hosts usually set `ImageSupport::Sixel` explicitly.
 - **Phase 3: markdown `![alt](url)`**, in two steps:
   - **3a (done): visible placeholder.** The markdown builder parses `Tag::Image`
     and renders a marked, link-styled placeholder (the alt text, or the URL when

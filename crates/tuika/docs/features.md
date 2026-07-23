@@ -174,11 +174,11 @@ Terminal and ConEmu (taskbar), WezTerm, Konsole, mintty. Others swallow the
 unknown OSC. Writes are best-effort — a failed progress write never disrupts the
 session.
 
-## Images (Kitty & iTerm2 graphics protocols)
+## Images (Kitty, iTerm2 & Sixel graphics protocols)
 
 Paint real pixels — an avatar, a chart, a rendered diagram — over the cells a
-view reserves for them, using the **Kitty graphics protocol** or the **iTerm2
-inline-image protocol**, whichever the terminal speaks.
+view reserves for them, using the **Kitty**, **iTerm2**, or **Sixel** graphics
+protocol, whichever the terminal speaks.
 [API](https://docs.rs/tuika/latest/tuika/image/index.html)
 
 <img src="demos/image.svg" width="880" alt="Image demo, side by side: on a Kitty/Ghostty/WezTerm/Konsole terminal the Image view renders a red/green gradient in place; on every other terminal the same view shows a dimmed italic '[image: a red/green gradient]' placeholder.">
@@ -235,9 +235,18 @@ iTerm2 carries a PNG file sized in cells:
 ESC ] 1337 ; File=inline=1;width=<cols>;height=<rows>;preserveAspectRatio=0;size=<bytes> : <base64> BEL
 ```
 
+Sixel carries a palette-quantized bitmap (it has no cell-based sizing, so tuika
+resamples the pixels to an assumed cell geometry first):
+
+```text
+ESC P q "1;1;<px_w>;<px_h> <color registers> <band data> ESC \
+```
+
 **Supported terminals:** Kitty, Ghostty, WezTerm, Konsole (Kitty protocol);
-iTerm2 (its own protocol). Others show the alt-text fallback. See the `image`
-example (`cargo run -p tuika --example image`).
+iTerm2 (its own protocol); foot, xterm +sixel, mlterm, contour (Sixel). Others
+show the alt-text fallback. Sixel has no reliable environment signal, so a host
+on a Sixel terminal usually sets `ImageSupport::Sixel` explicitly. See the
+`image` example (`cargo run -p tuika --example image`).
 
 Markdown `![alt](url)` renders too, in both the one-shot `Markdown` view and the
 streaming `MarkdownState`. A host `ImageResolver` decodes each URL to `ImageData`
@@ -247,8 +256,7 @@ machinery — real pixels where supported, alt text otherwise. The view's
 `.images(resolver, support, layer)` overlays them for you; a host driving
 `MarkdownState::lines` reads `MarkdownState::images()` and paints each
 `MarkdownImage` at its `rect(area)`. Unresolved images stay a marked, link-styled
-inline placeholder rather than dropping the URL. (The Sixel protocol is the
-remaining follow-up.)
+inline placeholder rather than dropping the URL.
 
 ## See also
 
