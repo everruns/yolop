@@ -120,6 +120,31 @@ impl Flex {
             .map(|c| Item::new(c.dimension, c.view.measure(available)))
             .collect()
     }
+
+    /// Resolve the child rects this container would assign inside `area`,
+    /// without painting anything.
+    ///
+    /// This is the same measure-then-[`solve`] pass `render` runs, exposed so a
+    /// host can compute layout ahead of (or instead of) a render — to clamp a
+    /// scroll offset to a pane's real height, hit-test a click against child
+    /// rects, or decide what fits before drawing. The returned `Vec` has one
+    /// rect per child, in insertion order.
+    ///
+    /// ```
+    /// use tuika::{Flex, Text, element};
+    /// use ratatui::layout::Rect;
+    ///
+    /// let flex = Flex::row()
+    ///     .fixed(4, element(Text::raw("abcd")))
+    ///     .grow(1, element(Text::raw("rest")));
+    /// let rects = flex.solve(Rect::new(0, 0, 10, 1));
+    /// assert_eq!(rects.len(), 2);
+    /// assert_eq!(rects[0], Rect::new(0, 0, 4, 1));
+    /// assert_eq!(rects[1], Rect::new(4, 0, 6, 1)); // grows into the leftover
+    /// ```
+    pub fn solve(&self, area: Rect) -> Vec<Rect> {
+        solve(area, &self.style, &self.items(Size::from(area)))
+    }
 }
 
 impl View for Flex {
@@ -156,11 +181,64 @@ impl View for Flex {
             let mut fill = surface.child(area);
             fill.fill(bg);
         }
-        let items = self.items(Size::from(area));
-        let rects = solve(area, &self.style, &items);
+        let rects = self.solve(area);
         for (child, rect) in self.children.iter().zip(rects) {
             let mut child_surface = surface.child(rect);
             child.view.render(rect, &mut child_surface, ctx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::Text;
+    use crate::probe::RectProbe;
+    use crate::style::Theme;
+    use crate::view::element;
+
+    #[test]
+    fn solve_matches_the_rects_render_paints_into() {
+        // Probe every child, render, then compare the painted rects to what the
+        // paint-free `solve` returns for the same area — they must be identical.
+        let area = Rect::new(0, 0, 20, 6);
+        let probes: Vec<RectProbe> = (0..3).map(|_| RectProbe::new()).collect();
+        let flex = Flex::column()
+            .fixed(1, probes[0].wrap(element(Text::raw("header"))))
+            .grow(1, probes[1].wrap(element(Text::raw("body"))))
+            .fixed(2, probes[2].wrap(element(Text::raw("footer"))));
+
+        let precomputed = flex.solve(area);
+        let _ = crate::testing::render(&flex, area.width, area.height, &Theme::default());
+
+        let painted: Vec<Rect> = probes.iter().map(|p| p.rect()).collect();
+        assert_eq!(
+            precomputed, painted,
+            "solve() must return exactly the rects render() paints into"
+        );
+        // And they are the expected column layout: 1-row header, grown body, 2-row footer.
+        assert_eq!(precomputed[0], Rect::new(0, 0, 20, 1));
+        assert_eq!(precomputed[1], Rect::new(0, 1, 20, 3));
+        assert_eq!(precomputed[2], Rect::new(0, 4, 20, 2));
+    }
+
+    #[test]
+    fn solve_of_empty_container_is_empty() {
+        let flex = Flex::row();
+        assert!(flex.solve(Rect::new(0, 0, 10, 3)).is_empty());
+    }
+
+    #[test]
+    fn crate_root_reexports_solver_primitives() {
+        // `solve` and `Item` are reachable from the crate root, not just
+        // `tuika::layout` — build a layout by hand without a Flex.
+        use crate::{Dimension, Item, LayoutStyle, Size, solve};
+        let items = [
+            Item::new(Dimension::Fixed(3), Size::new(3, 1)),
+            Item::new(Dimension::Flex(1), Size::new(0, 1)),
+        ];
+        let rects = solve(Rect::new(0, 0, 10, 1), &LayoutStyle::row(), &items);
+        assert_eq!(rects[0], Rect::new(0, 0, 3, 1));
+        assert_eq!(rects[1], Rect::new(3, 0, 7, 1));
     }
 }

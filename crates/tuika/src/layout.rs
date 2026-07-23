@@ -162,6 +162,28 @@ impl Item {
 /// single line: resolve fixed/percent/auto main sizes, distribute remaining
 /// main space to flex children (or to `justify` when there are none), then
 /// align each child on the cross axis.
+///
+/// This is the flexbox solver as a standalone, callable step — re-exported at
+/// the crate root as [`tuika::solve`](crate::solve) alongside [`Item`],
+/// [`LayoutStyle`], and the [`Dimension`] rules. Reach for it (or the
+/// higher-level [`Flex::solve`](crate::Flex::solve)) when an app needs child
+/// rects *before* or *without* a render pass — to size a scroll region to a
+/// pane's real height, hit-test a click, or decide what fits — so the flexbox
+/// drives those layouts instead of a second engine.
+///
+/// ```
+/// use tuika::{Dimension, Item, LayoutStyle, Size, solve};
+/// use ratatui::layout::Rect;
+///
+/// // A sidebar of 8 columns, then the rest of the row for content.
+/// let items = [
+///     Item::new(Dimension::Fixed(8), Size::new(8, 1)),
+///     Item::new(Dimension::Flex(1), Size::new(0, 1)),
+/// ];
+/// let rects = solve(Rect::new(0, 0, 30, 1), &LayoutStyle::row(), &items);
+/// assert_eq!(rects[0], Rect::new(0, 0, 8, 1));
+/// assert_eq!(rects[1], Rect::new(8, 0, 22, 1));
+/// ```
 pub fn solve(area: Rect, style: &LayoutStyle, items: &[Item]) -> Vec<Rect> {
     if items.is_empty() {
         return Vec::new();
