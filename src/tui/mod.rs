@@ -396,7 +396,7 @@ const PROVIDER_OPTIONS: &[ProviderOption] = &[
     },
     ProviderOption {
         name: "codex",
-        label: "Codex subscription",
+        label: "Codex Subscription",
         hint: "ChatGPT Plus/Pro login",
     },
     ProviderOption {
@@ -7216,6 +7216,12 @@ mod tests {
         let rendered = setup_overlay_text(app);
         assert!(rendered.iter().any(|line| line.contains("Set Up Yolop")));
         assert!(rendered.iter().any(|line| line.contains("OpenAI")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("Codex Subscription")),
+            "provider picker should use the title-cased Codex Subscription label: {rendered:?}"
+        );
         assert!(rendered.iter().any(|line| line.contains("Offline demo")));
     }
 
