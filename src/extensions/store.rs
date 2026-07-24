@@ -1,6 +1,6 @@
 //! Extension installation: sources, the `extensions.lock` pin file, and
 //! install/remove into the global extensions directory. See
-//! `specs/extensions.md`, "Packaging, install, trust".
+//! `knowledge/specs/extensions.md`, "Packaging, install, trust".
 //!
 //! Trust: installing is consent by action (the user ran the install verb),
 //! mirroring how authoring `.mcp.json` consents to its stdio servers. The

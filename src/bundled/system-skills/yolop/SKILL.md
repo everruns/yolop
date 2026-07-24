@@ -125,7 +125,7 @@ yolop is an autonomous coding agent for the workspace it was started in.
 
 Natural-language control: the agent can switch model, effort, or provider, clear
 the screen, show help, and more without the user typing slash commands — see
-`specs/conversational-control.md`.
+`knowledge/specs/conversational-control.md`.
 
 ## CLI flags (non-interactive)
 
@@ -159,5 +159,5 @@ When the user asks what yolop can do or how to use it:
    features — match what they asked).
 2. For the **live** command or tool list, prefer `/help`, `/tools`, or
    `run_yolop_command` / `list_skills` rather than guessing.
-3. Point power users at `README.md` and `specs/` for protocol and configuration
+3. Point power users at `README.md` and `knowledge/specs/` for protocol and configuration
    depth; keep conversational answers short.

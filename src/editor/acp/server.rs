@@ -708,7 +708,7 @@ fn register_session<F: RuntimeFactory>(
 /// that gap: it awaits the wake channel (fed by the platform-store wake seam,
 /// `crate::runtime::background_wake`) and takes the same `turn_lock` as client prompts so
 /// a wake turn never overlaps one. Stops on connection teardown or when the
-/// runtime (and its wake sender) drops. See specs/background.md.
+/// runtime (and its wake sender) drops. See knowledge/specs/background.md.
 fn spawn_background_wake_drain(
     session: Arc<Session>,
     peer: Arc<Peer>,

@@ -18,3 +18,16 @@ when possible). For changes with no observable behavior (pure refactor, docs), s
 ## Checklist
 - [ ] Tests added or updated
 - [ ] Backward compatibility considered
+- [ ] Knowledge concepts updated, or no update required with a reason
+
+## Knowledge
+
+Updated concepts, or `No knowledge update required — <reason>`.
+
+## Security
+
+Security review and relevant threat-model categories, or why no security-relevant code changed.
+
+## Follow-ups
+
+List deferred work with rationale, or `No follow-ups.`

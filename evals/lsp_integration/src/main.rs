@@ -1,5 +1,5 @@
 //! lsp_integration — an isolated A/B study for yolop's optional **LSP
-//! capability** (`[[capabilities]] ref = "lsp"`, see `specs/lsp.md`).
+//! capability** (`[[capabilities]] ref = "lsp"`, see `knowledge/specs/lsp.md`).
 //!
 //! A [Mira](https://github.com/everruns/mira) eval study on the `mira-eval`
 //! Rust SDK, structured like `harness_basic/` (the subject spawns headless

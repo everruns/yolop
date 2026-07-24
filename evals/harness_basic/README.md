@@ -11,7 +11,7 @@ Unlike `swebench_verified/` (Python, benchmark-scale), this study is pure Rust
 on the [`mira-eval`](https://crates.io/crates/mira-eval) SDK — no Python
 plumbing — and drives yolop through its headless one-shot mode (`yolop -p`,
 the runtime path; the TUI is never involved). The `with-ast-edit` variant
-exercises the opt-in `ast_edit` capability; see [`specs/ast_edit.md`](../../specs/ast_edit.md).
+exercises the opt-in `ast_edit` capability; see [`knowledge/specs/ast_edit.md`](../../knowledge/specs/ast_edit.md).
 
 ## The matrix
 

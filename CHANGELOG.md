@@ -2,7 +2,7 @@
 
 All notable user-visible changes to yolop are recorded here.
 
-The format follows the [release spec](./specs/release.md): one section per
+The format follows the [release spec](./knowledge/specs/release.md): one section per
 released version, newest first, with a `### Highlights` summary, an optional
 `### Breaking Changes` block (required for MINOR/MAJOR with breakage), and a
 mechanical `### What's Changed` list of merged PRs.

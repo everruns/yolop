@@ -3,7 +3,7 @@
 //! One scope, global: `<config_dir>/yolop/extensions/<name>/plugin.json`
 //! (`YOLOP_EXTENSIONS_DIR` overrides, for tests and dev). There is
 //! deliberately no workspace scope — repos never carry yolop extensions
-//! (see specs/extensions.md, "Packaging, install, trust").
+//! (see knowledge/specs/extensions.md, "Packaging, install, trust").
 //!
 //! The manifest is the approval boundary (D4): it carries the full tool
 //! definitions (name, description, parameters schema, policy) so every

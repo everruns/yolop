@@ -5,7 +5,7 @@
 // short system-prompt block so the model treats those requests as global yolop
 // questions rather than project work (which belongs in AGENTS.md, source, tests).
 //
-// See specs/yolop.md.
+// See knowledge/specs/yolop.md.
 
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};

@@ -21,6 +21,7 @@ use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_core::message::ContentPart;
 use everruns_core::session_task::SessionTaskRegistry;
 use everruns_core::typed_id::SessionId;
+use futures::FutureExt;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -117,6 +118,9 @@ struct TranscriptWrapCache {
     prev_author: Option<Author>,
     /// The wrapped, gap-spaced transcript rows.
     lines: Vec<Line<'static>>,
+    /// Hyperlink runs into `lines` (labeled markdown links + bare URLs), used to
+    /// embed OSC 8 after painting so Ctrl+click works when the label ≠ URL.
+    links: Vec<tuika::BufferLink>,
 }
 
 pub struct App {
@@ -202,7 +206,7 @@ pub struct App {
     /// Wake channel for everruns `spawn_background` completions (fed by the
     /// platform-store wake seam, `crate::runtime::background_wake`). Drained while idle to
     /// auto-start a turn so the agent reacts to finished work. See
-    /// specs/background.md.
+    /// knowledge/specs/background.md.
     background_wake: crate::runtime::background_wake::WakeReceiver,
     /// Retained for the TUI lifetime so due local schedules keep polling.
     _schedule_runner: everruns_local::LocalScheduleRunnerHandle,
@@ -212,6 +216,8 @@ pub struct App {
     task_schedule_store: Arc<dyn everruns_core::traits::SessionScheduleStore>,
     session_store: Arc<dyn everruns_core::traits::SessionStore>,
     session_tasks: crate::tui::session_tasks_view::TaskTree,
+    session_tasks_refresh:
+        Option<tokio::task::JoinHandle<crate::tui::session_tasks_view::TaskTree>>,
     last_session_tasks_refresh: Option<Instant>,
     /// Open task-tree panel overlay, holding its scroll offset in lines.
     background_panel: Option<usize>,
@@ -570,6 +576,7 @@ impl App {
             task_schedule_store: runtime.task_schedule_store,
             session_store,
             session_tasks: Default::default(),
+            session_tasks_refresh: None,
             last_session_tasks_refresh: None,
             background_panel: None,
             background_selected: 0,
@@ -891,14 +898,38 @@ impl App {
         self.last_session_tasks_refresh = Some(Instant::now());
     }
 
-    async fn refresh_session_tasks_if_due(&mut self) {
+    fn refresh_session_tasks_if_due(&mut self) {
         if self
-            .last_session_tasks_refresh
-            .is_some_and(|last| last.elapsed() < SESSION_TASK_REFRESH_INTERVAL)
+            .session_tasks_refresh
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            let refresh = self.session_tasks_refresh.take().expect("checked above");
+            match refresh.now_or_never().expect("finished refresh") {
+                Ok(tasks) => self.session_tasks = tasks,
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => self
+                    .session_tasks
+                    .errors
+                    .push(format!("task tree refresh failed: {error}")),
+            }
+        }
+
+        if self.session_tasks_refresh.is_some()
+            || self
+                .last_session_tasks_refresh
+                .is_some_and(|last| last.elapsed() < SESSION_TASK_REFRESH_INTERVAL)
         {
             return;
         }
-        self.refresh_session_tasks().await;
+
+        let registry = Arc::clone(&self.task_registry);
+        let sessions = Arc::clone(&self.session_store);
+        let session_id = self.session.session_id();
+        self.session_tasks_refresh = Some(tokio::spawn(async move {
+            crate::tui::session_tasks_view::load_task_tree(session_id, &*registry, &*sessions).await
+        }));
+        self.last_session_tasks_refresh = Some(Instant::now());
     }
 
     fn goal_indicator(&self) -> Option<String> {
@@ -983,6 +1014,7 @@ impl App {
             || cache.source_len > self.lines.len();
         if stale {
             cache.lines.clear();
+            cache.links.clear();
             cache.width = width;
             cache.generation = self.transcript_generation;
             cache.source_len = 0;
@@ -990,6 +1022,7 @@ impl App {
         }
         cache.prev_author = render::append_transcript_range(
             &mut cache.lines,
+            &mut cache.links,
             &self.lines,
             cache.source_len,
             width,
@@ -999,6 +1032,12 @@ impl App {
         let len = cache.lines.len();
         self.transcript_cache = cache;
         len
+    }
+
+    /// Hyperlink runs for the cached transcript wrapping, used to embed OSC 8
+    /// after the full-screen paint.
+    fn transcript_links(&self) -> &[tuika::BufferLink] {
+        &self.transcript_cache.links
     }
 
     /// Clone the cached wrapped rows in `start..end`. Call
@@ -1133,7 +1172,7 @@ impl App {
         // Bound retained history now that inline mode has flushed this frame's
         // lines, so `trim_transcript` can drop the freshly-flushed prefix.
         self.trim_transcript();
-        self.refresh_session_tasks_if_due().await;
+        self.refresh_session_tasks_if_due();
         terminal.autoresize()?;
         if !self.render_mode.is_fullscreen() {
             // Ratatui keeps an inline viewport's cursor offset across resizes
@@ -3258,7 +3297,7 @@ mod tests {
     #[test]
     fn transcript_paragraph_links_urls() {
         let mut lines: Vec<Line> = Vec::new();
-        append_markdown_lines(
+        let links = append_markdown_lines(
             &mut lines,
             "",
             Style::default(),
@@ -3272,6 +3311,54 @@ mod tests {
         assert!(
             has_link,
             "paragraph URL should be styled as a link: {lines:?}"
+        );
+        assert!(
+            links.iter().any(|l| l.url.contains("rust-lang.org")),
+            "bare URL must produce a BufferLink: {links:?}"
+        );
+    }
+
+    #[test]
+    fn transcript_labeled_markdown_link_is_ctrl_clickable() {
+        // Labeled `[text](url)` must stay clickable after the transcript paints —
+        // the third time this regressed, style was kept but the destination was
+        // dropped so Ghostty Ctrl+click had nothing to open.
+        use ratatui::layout::Position;
+        let mut lines: Vec<Line> = Vec::new();
+        let links = append_markdown_lines(
+            &mut lines,
+            "agent › ",
+            Style::default(),
+            "PR: [#2875](https://github.com/everruns/everruns/pull/2875) merged.",
+            100,
+        );
+        let link = links
+            .iter()
+            .find(|l| l.url.contains("pull/2875"))
+            .expect("labeled markdown link must yield a BufferLink");
+        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 120, 4));
+        for (row, line) in lines.iter().enumerate() {
+            let mut x = 0u16;
+            for span in &line.spans {
+                x = buffer.set_span(x, row as u16, span, 120).0;
+            }
+        }
+        tuika::apply_buffer_links(
+            &mut buffer,
+            Position { x: 0, y: 0 },
+            &links,
+            tuika::LinkPolicy::WEB,
+        );
+        let mut event = tuika::Mouse::at(
+            tuika::MouseKind::Up(tuika::MouseButton::Left),
+            link.start_col + 1,
+            link.line,
+        );
+        event.ctrl = true;
+        assert_eq!(
+            tuika::ctrl_click_url(&event, &buffer, Rect::new(0, 0, 120, 4)).as_deref(),
+            Some(link.url.as_str()),
+            "Ctrl+click on the PR label must open the markdown destination"
         );
     }
 
@@ -5041,7 +5128,7 @@ mod tests {
         // A from-scratch reference: one full pass over the whole history.
         let full_rebuild = |app: &App, w: usize| -> Vec<Line<'static>> {
             let mut lines = Vec::new();
-            append_transcript_range(&mut lines, &app.lines, 0, w, None);
+            append_transcript_range(&mut lines, &mut Vec::new(), &app.lines, 0, w, None);
             lines
         };
 
@@ -5337,6 +5424,28 @@ mod tests {
         app: App,
         _workspace: tempfile::TempDir,
         _sessions: tempfile::TempDir,
+    }
+
+    #[tokio::test]
+    async fn pending_session_task_refresh_does_not_block_ui_loop() {
+        let mut test = app_with_llmsim().await;
+        test.app.last_session_tasks_refresh = None;
+        test.app.session_tasks_refresh = Some(tokio::spawn(std::future::pending()));
+
+        let started = Instant::now();
+        test.app.refresh_session_tasks_if_due();
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "a pending refresh blocked the UI loop for {elapsed:?}"
+        );
+        assert!(test.app.session_tasks_refresh.is_some());
+        test.app
+            .session_tasks_refresh
+            .take()
+            .expect("pending refresh")
+            .abort();
     }
 
     async fn app_with_llmsim() -> TestApp {

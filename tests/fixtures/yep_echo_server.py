@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal YEP capability server used by src/extensions spawn tests.
 
-Speaks the yolop extension protocol (specs/extensions.md): newline-delimited
+Speaks the yolop extension protocol (knowledge/specs/extensions.md): newline-delimited
 JSON-RPC over stdio. Serves one tool (`echo`) and a static prompt; emits a
 `tool/update` notification before each tool result to exercise streaming.
 stdout carries only protocol JSON; this file has no dependencies.

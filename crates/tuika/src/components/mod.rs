@@ -30,6 +30,7 @@ mod textinput;
 
 pub use crate::markdown::{
     ImageResolver, Markdown, MarkdownImage, MarkdownState, markdown_to_lines,
+    markdown_to_linked_lines,
 };
 pub use boxed::Boxed;
 pub use code_block::CodeBlock;

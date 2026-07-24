@@ -34,6 +34,16 @@ impl<'a> Surface<'a> {
         self.clip
     }
 
+    /// Mutable access to the underlying buffer.
+    ///
+    /// Prefer [`set_string`](Self::set_string) / [`set`](Self::set) for ordinary
+    /// painting — those honor the clip. This escape hatch is for post-process
+    /// passes (e.g. [`crate::apply_buffer_links`]) that rewrite cells already
+    /// painted inside the clip.
+    pub fn buffer_mut(&mut self) -> &mut Buffer {
+        self.buffer
+    }
+
     /// Re-borrow as a child surface clipped to `area` (further intersected with
     /// the current clip). Used when a container hands a sub-rect to a child.
     pub fn child(&mut self, area: Rect) -> Surface<'_> {

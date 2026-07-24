@@ -23,7 +23,7 @@
 //! # }
 //! ```
 //!
-//! See `specs/extensions.md` in the yolop repo for the full protocol.
+//! See `knowledge/specs/extensions.md` in the yolop repo for the full protocol.
 
 pub mod meta;
 pub mod protocol;

@@ -27,7 +27,7 @@
 //! Graphics protocols do not degrade as harmlessly as an unknown OSC — an
 //! unsupported terminal may paint the payload as garbage — so this is the first
 //! tuika feature to gate on real capability detection ([`ImageSupport::detect`]).
-//! See `specs/tuika-images.md` for the full design and phased plan.
+//! See `knowledge/specs/tuika-images.md` for the full design and phased plan.
 
 use std::cell::RefCell;
 use std::io::{self, Write};
