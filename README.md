@@ -118,8 +118,6 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   survive a restart. `spawn_background` can also schedule one-shot or recurring
   monitors; when a schedule fires or a task finishes while the session is idle,
   yolop proactively wakes the agent (disable with `proactive_wake`).
-
-  ![Task tree with nested branches and usage rollups](docs/features/task-tree.gif)
 - **Web** — `free_web_search`, `web_fetch` (HTTP GET/HEAD with markdown/text
   conversion and DNS-pinned SSRF protection), and `duckduckgo_instant_answer`,
   all working without an API key. Set `EVERRUNS_SYSTEM_ALLOWLIST_ENABLED=true`
