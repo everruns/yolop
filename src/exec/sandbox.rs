@@ -7,6 +7,8 @@
 use crate::config::SandboxMode;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+
+use crate::capabilities::skills::global_skills_dir;
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -115,6 +117,9 @@ fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command
     // covers macOS path canonicalization through the /tmp symlink.
     let temp = sandbox_temp_dir()?;
     let home = sandbox_home_dir(&temp)?;
+    if mode == SandboxMode::WorkspaceWrite {
+        prepared_global_skills_dir()?;
+    }
     let profile = macos_profile(cwd, &temp, mode);
     let mut command = Command::new(executable);
     command
@@ -192,12 +197,20 @@ pub(crate) fn run_linux_worker(
             AccessFs::from_all(abi),
         ))?;
     let ruleset = if mode == SandboxMode::WorkspaceWrite {
-        ruleset
+        let ruleset = ruleset
             .add_rule(PathBeneath::new(PathFd::new(cwd)?, AccessFs::from_all(abi)))?
             .add_rule(PathBeneath::new(
                 PathFd::new("/tmp")?,
                 AccessFs::from_all(abi),
+            ))?;
+        if let Some(skills) = prepared_global_skills_dir()? {
+            ruleset.add_rule(PathBeneath::new(
+                PathFd::new(skills)?,
+                AccessFs::from_all(abi),
             ))?
+        } else {
+            ruleset
+        }
     } else {
         ruleset
     };
@@ -251,6 +264,17 @@ fn native_command(_cwd: &Path, _script: &str, _mode: SandboxMode) -> Result<Comm
     anyhow::bail!(
         "native sandbox is supported only on macOS and Linux; refusing to run unsandboxed. Set `sandbox_mode = \"danger-full-access\"` only inside an already isolated environment"
     )
+}
+
+fn prepared_global_skills_dir() -> Result<Option<PathBuf>> {
+    let Some(path) = global_skills_dir() else {
+        return Ok(None);
+    };
+    std::fs::create_dir_all(&path)
+        .with_context(|| format!("create global skills directory: {}", path.display()))?;
+    Ok(Some(std::fs::canonicalize(&path).with_context(|| {
+        format!("canonicalize global skills directory: {}", path.display())
+    })?))
 }
 
 fn sandbox_temp_dir() -> Result<PathBuf> {
@@ -343,11 +367,19 @@ fn macos_profile(cwd: &Path, temp: &Path, mode: SandboxMode) -> String {
     } else {
         ""
     };
+    let global_skills_write = if mode == SandboxMode::WorkspaceWrite {
+        global_skills_dir()
+            .map(|path| format!(" (subpath \"{}\")", seatbelt_escape(&path)))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     format!(
-        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n(allow file-write*{} (subpath \"{}\"){})\n(deny network*)\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
+        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n(allow file-write*{} (subpath \"{}\"){}{})\n(deny network*)\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
         workspace_write,
         seatbelt_escape(temp),
         shared_temp_write,
+        global_skills_write,
         seatbelt_escape(&cwd.join(".git")),
         seatbelt_escape(&cwd.join(".git")),
     )
@@ -405,6 +437,26 @@ mod tests {
         assert!(profile.contains(
             r#"(allow file-write-data (require-all (path "/dev/null") (vnode-type CHARACTER-DEVICE)))"#
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_workspace_write_policy_allows_global_skills_only_when_writable() {
+        let skills = global_skills_dir().expect("home directory should resolve");
+        let writable = macos_profile(
+            Path::new("/workspace"),
+            Path::new("/private/tmp/sandbox"),
+            SandboxMode::WorkspaceWrite,
+        );
+        let read_only = macos_profile(
+            Path::new("/workspace"),
+            Path::new("/private/tmp/sandbox"),
+            SandboxMode::ReadOnly,
+        );
+        let rule = format!(r#"(subpath "{}")"#, seatbelt_escape(&skills));
+
+        assert!(writable.contains(&rule));
+        assert!(!read_only.contains(&rule));
     }
 
     #[cfg(target_os = "macos")]
