@@ -2,7 +2,7 @@
 //!
 //! Spec: harbor-framework/harbor `rfcs/0001-trajectory-format.md`, pinned to
 //! `ATIF-v1.7`. `--trajectory-out <path>` writes the whole session as one
-//! ATIF JSON document at end of run (see `specs/trajectory.md`).
+//! ATIF JSON document at end of run (see `knowledge/specs/trajectory.md`).
 //!
 //! The trajectory is folded from the session's runtime event log rather than
 //! the message store because events carry timestamps, per-generation token

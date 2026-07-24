@@ -28,7 +28,7 @@ Package the built binary with a `plugin.json` whose
 `yolop.capabilityServer.command` points at it, name the crate
 `yolop-extension-<name>`, and users install it with `/extensions install`.
 
-See [`specs/extensions.md`](https://github.com/everruns/yolop/blob/main/specs/extensions.md)
+See [`knowledge/specs/extensions.md`](https://github.com/everruns/yolop/blob/main/knowledge/specs/extensions.md)
 for the full protocol and packaging model.
 
 ## Status

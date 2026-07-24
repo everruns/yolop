@@ -13,7 +13,7 @@ that Z") into a working, installed yolop extension — built by yolop itself.
 
 An extension is a capability package served over YEP (the yolop extension
 protocol): a `plugin.json` manifest plus a capability server that speaks
-newline-delimited JSON-RPC over stdio. See [`specs/extensions.md`](../../../specs/extensions.md).
+newline-delimited JSON-RPC over stdio. See [`knowledge/specs/extensions.md`](../../../knowledge/specs/extensions.md).
 
 ## When to use
 

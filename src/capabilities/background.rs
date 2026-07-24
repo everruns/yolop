@@ -10,7 +10,7 @@
 // This capability adds only the `/background` command, which lists the
 // session's everruns tasks. The model inspects and controls them with the
 // everruns `list_tasks` / `get_task` / `cancel_task` tools (the `session_tasks`
-// capability). See specs/background.md.
+// capability). See knowledge/specs/background.md.
 //
 // `NarratedBackgroundExecutionCapability` wraps upstream
 // `BackgroundExecutionCapability` so `spawn_background` gets human narration

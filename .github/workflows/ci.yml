@@ -97,7 +97,7 @@ jobs:
         run: cargo run --locked -p tuika --example demo -- check
 
   # Cheap guard for the documentation boundary (README/docs must not link into
-  # internal specs/ or .agents/). Runs whenever Markdown changes — including
+  # internal knowledge/ or .agents/). Runs whenever Markdown changes — including
   # docs-only PRs, where the Rust `lint` job below is skipped — and needs no
   # Rust toolchain, so it stays fast.
   docs-boundary:
@@ -109,10 +109,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Validate OKF knowledge bundle
+        run: |
+          python3 scripts/validate_okf.py knowledge --check-links
+          python3 scripts/test_validate_okf.py
+
       - name: Public docs boundary
         run: |
-          if grep -R -n -E --include='*.md' '\]\([^)]*(specs/|\.agents/)' README.md docs; then
-            echo "::error::Public documentation must not link to internal specs/ or .agents/ files."
+          if grep -R -n -E --include='*.md' '\]\([^)]*(knowledge/|\.agents/)' README.md docs; then
+            echo "::error::Public documentation must not link to internal knowledge/ or .agents/ files."
             exit 1
           fi
 

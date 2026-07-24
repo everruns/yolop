@@ -1,5 +1,5 @@
 //! Extensions: installable capability-level packages served over YEP, the
-//! yolop extension protocol. See `specs/extensions.md`. Implemented:
+//! yolop extension protocol. See `knowledge/specs/extensions.md`. Implemented:
 //! the protocol core + persistent process manager + generic
 //! `ExtensionCapability` adapter (phase 1); install/enable management
 //! surface + lockfile (phase 2); contributed MCP servers (phase 3);

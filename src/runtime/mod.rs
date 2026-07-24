@@ -2686,7 +2686,7 @@ pub async fn build_with_options(
     // Install the wake seam: a `LocalPlatformStore` whose `send_message`
     // enqueues everruns background-task completion signals onto `background_wake`
     // for the host to run as a streamed turn (see `background_wake` and
-    // specs/background.md). Without a platform store, `spawn_background`'s
+    // knowledge/specs/background.md). Without a platform store, `spawn_background`'s
     // completion signal is a silent no-op and finished background work never
     // reaches the agent.
     let (background_wake_tx, background_wake_rx) = mpsc::unbounded_channel::<String>();
@@ -2778,14 +2778,14 @@ pub async fn build_with_options(
     // rename, symbols, code actions). Registered so it appears in the catalog
     // and can be switched on, but intentionally NOT part of the default
     // harness: it spawns external server processes, so it is opt-in via
-    // `[[capabilities]] ref = "lsp"` in settings.toml. See specs/lsp.md.
+    // `[[capabilities]] ref = "lsp"` in settings.toml. See knowledge/specs/lsp.md.
     capabilities.register(LspCapability::new(workspace_host.clone()));
     // Installed extension packages (`<config_dir>/yolop/extensions/<name>/`,
     // `YOLOP_EXTENSIONS_DIR` override) — each becomes an `ext:<name>`
     // capability proxying a YEP capability server. Registered for the catalog
     // but never on the default harness: enable with
     // `[[capabilities]] ref = "ext:<name>"` in settings.toml, exactly like
-    // `lsp`. See specs/extensions.md.
+    // `lsp`. See knowledge/specs/extensions.md.
     // Terminal-side command channel. Created here (before extensions register)
     // so extension `status/changed` pushes and `ClientCommandsCapability` share
     // one `UiCommand` stream that the `App` event loop drains.
@@ -3063,7 +3063,7 @@ pub async fn build_with_options(
     // `background` — the `/background` command listing this session's everruns
     // tasks. Detached work runs through everruns `spawn_background` (which wraps
     // the background-capable `bash` tool) and completions wake the agent via the
-    // platform-store wake seam (`crate::runtime::background_wake`). See specs/background.md.
+    // platform-store wake seam (`crate::runtime::background_wake`). See knowledge/specs/background.md.
     capabilities.register(BackgroundCapability {
         session_id,
         task_registry: task_registry.clone(),

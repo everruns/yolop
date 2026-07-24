@@ -1,7 +1,7 @@
 # lsp_integration — isolated A/B study for yolop's LSP capability
 
 A [Mira](https://github.com/everruns/mira) eval **study** dedicated to the
-optional `lsp` capability ([`specs/lsp.md`](../../specs/lsp.md)): the same
+optional `lsp` capability ([`knowledge/specs/lsp.md`](../../knowledge/specs/lsp.md)): the same
 semantic-navigation tasks run with the capability **off** (yolop out of the
 box) and **on** (`[[capabilities]] ref = "lsp"` in a per-case `settings.toml`),
 so the capability can be judged on pass rate, adoption, turns, tool calls,

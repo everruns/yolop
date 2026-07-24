@@ -6,7 +6,7 @@
 //! with `session/new`, and sends turns with `session/prompt`. yolop streams the
 //! turn back as `session/update` notifications.
 //!
-//! See `specs/acp.md` for the full surface and `README.md` for editor setup.
+//! See `knowledge/specs/acp.md` for the full surface and `README.md` for editor setup.
 //!
 //! Module layout:
 //!   * [`protocol`] — SDK schema re-exports plus small yolop helpers.
