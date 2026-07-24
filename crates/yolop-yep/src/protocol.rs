@@ -359,7 +359,7 @@ fn default_true() -> bool {
 /// crashed exporter can never stall the agent loop.
 ///
 /// The `data` field carries the event-type-specific payload verbatim (see the
-/// everruns event protocol, `specs/events.md`); the server maps it to spans.
+/// everruns event protocol, `knowledge/specs/events.md`); the server maps it to spans.
 /// Lenient/defaulted per the forward-compat rules — a new event type parses
 /// with its `data` intact even if this struct predates it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

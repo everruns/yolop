@@ -64,7 +64,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # The extension protocol wire types + server SDK live in their own crate so
 # extension authors can depend on them from crates.io; the host shares the
-# same source of truth (see specs/extensions.md).
+# same source of truth (see knowledge/specs/extensions.md).
 yolop-yep = { version = "0.2.0", path = "crates/yolop-yep" }
 sha2 = "0.11"
 toml = "1"
@@ -106,7 +106,7 @@ everruns-openrouter = "0.17.16"
 everruns-local = "0.17.16"
 everruns-mcp = "0.17.16"
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
-# everruns server/worker never enable it (specs/mcp.md, upstream runtime-mcp.md D2).
+# everruns server/worker never enable it (knowledge/specs/mcp.md, upstream runtime-mcp.md D2).
 everruns-runtime = { version = "0.17.16", features = ["mcp-stdio"] }
 everruns-integrations-duckduckgo = "0.17.16"
 everruns-integrations-parallel = "0.17.16"

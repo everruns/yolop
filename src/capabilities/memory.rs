@@ -11,7 +11,7 @@
 // small no matter how much the user remembers — the opposite of the old model,
 // which injected the whole file every turn.
 //
-// See specs/memory.md for the design and configuration knobs.
+// See knowledge/specs/memory.md for the design and configuration knobs.
 
 use crate::capabilities::narration::stable_labeled;
 use crate::config::SettingsStore;

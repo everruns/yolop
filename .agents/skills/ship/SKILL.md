@@ -10,7 +10,7 @@ user-invocable: true
 
 Goal: land the requested change safely, with evidence, and merge only after CI is green.
 
-This skill implements [`specs/shipping.md`](../../../specs/shipping.md). Keep operational guidance here. Keep the shipping success bar and constraints in the spec.
+This skill implements [`knowledge/specs/shipping.md`](../../../knowledge/specs/shipping.md). Keep operational guidance here. Keep the shipping success bar and constraints in the spec.
 
 This skill is outcome-oriented. Do not blindly walk a fixed checklist. Start from the goal and changed risk surface, then choose the smallest path that proves the change is ready.
 
@@ -58,8 +58,15 @@ Use this skill when the user asks to:
    - Fix issues you find and refresh the evidence.
 
 5. **Relevant artifacts stay in sync.**
-   - Update only the artifacts affected by the change: `specs/`, `AGENTS.md`,
-     `README.md`, `docs/`.
+   - Review whether the change alters durable behavior, intent, architecture,
+     policy, constraints, terminology, or maintainer process.
+   - If it does, update the affected `knowledge/` concepts in the same change;
+     update `knowledge/index.md` for added, removed, renamed, or reclassified
+     concepts and `knowledge/log.md` for significant knowledge changes.
+   - If it does not, record "No knowledge update required" with a short reason in
+     the PR body. Keep `AGENTS.md`, `README.md`, and `docs/` aligned where relevant.
+   - Validate changed knowledge with
+     `python3 scripts/validate_okf.py knowledge --check-links`.
 
 6. **Smoke test impacted functionality.**
    - Always smoke test the flows affected by the change end-to-end. This is in

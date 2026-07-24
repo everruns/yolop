@@ -202,7 +202,7 @@ pub struct App {
     /// Wake channel for everruns `spawn_background` completions (fed by the
     /// platform-store wake seam, `crate::runtime::background_wake`). Drained while idle to
     /// auto-start a turn so the agent reacts to finished work. See
-    /// specs/background.md.
+    /// knowledge/specs/background.md.
     background_wake: crate::runtime::background_wake::WakeReceiver,
     /// Retained for the TUI lifetime so due local schedules keep polling.
     _schedule_runner: everruns_local::LocalScheduleRunnerHandle,

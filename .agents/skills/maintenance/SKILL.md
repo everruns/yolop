@@ -1,6 +1,6 @@
 ---
 name: maintenance
-description: Goal-oriented repository maintenance and release-readiness work for yolop. Use when the user asks for maintenance, release prep, repo health review, dependency refreshes, spec/docs alignment, test gap review, or general cleanup without prescribing an exact sequence.
+description: Goal-oriented repository maintenance and release-readiness work for yolop. Use when the user asks for maintenance, release prep, repo health review, dependency refreshes, knowledge/docs alignment, test gap review, or general cleanup without prescribing an exact sequence.
 metadata:
   internal: true
 user-invocable: true
@@ -10,7 +10,7 @@ user-invocable: true
 
 Goal: leave the repo materially healthier and closer to release-ready, with evidence.
 
-This skill implements [`specs/maintenance.md`](../../../specs/maintenance.md). Keep operational guidance here. Keep design intent and constraints in the spec.
+This skill implements [`knowledge/specs/maintenance.md`](../../../knowledge/specs/maintenance.md). Keep operational guidance here. Keep design intent and constraints in the spec.
 
 This skill is outcome-oriented. Choose the smallest set of actions that closes the real maintenance risk in front of you.
 
@@ -19,8 +19,8 @@ This skill is outcome-oriented. Choose the smallest set of actions that closes t
 - release-readiness review
 - CI health on `main`
 - dependency refreshes (especially the `everruns-*` family)
-- spec or docs drift
-- feature-completeness drift across CLI / TUI / specs / README / tests
+- knowledge or docs drift
+- feature-completeness drift across CLI / TUI / knowledge / README / tests
 - test coverage gaps
 - code simplification / removing over-abstraction and dead code
 - security hygiene review
@@ -38,7 +38,7 @@ This skill is outcome-oriented. Choose the smallest set of actions that closes t
 
 - Start from goals and risk surface, not checklist order.
 - A red CI on `main` outranks every other scope. Fix it first or open an issue and report the pass as blocked.
-- Highest-signal first: recent diffs, failing checks, stale specs, outdated `everruns-*` versions.
+- Highest-signal first: recent diffs, failing checks, stale knowledge, outdated `everruns-*` versions.
 - Skip untouched areas with a reason. Prefer fixing over reporting.
 - For bugs uncovered, prefer a failing test before the fix when practical.
 - Keep changes PR-sized. Defer anything larger to a GitHub issue and record the issue number in the report.
@@ -81,19 +81,28 @@ useful changes:
   wiring) — leave behind anything tied to internal everruns paths
 - record meaningful divergence as a comment near the diverged code, not a separate doc
 
-### Specs And Docs Alignment
+### Knowledge And Docs Alignment
 
-- changed behavior reflected in `specs/`, `README.md`, `docs/`, or `AGENTS.md`
-- stale duplicate prose removed in favor of links to source files
+- read `knowledge/index.md`, then inspect concepts affected by behavior changed
+  since the last maintenance point
+- run `python3 scripts/validate_okf.py knowledge --check-links`
+- check for durable behavior, intent, architecture, policy, constraints,
+  terminology, or maintainer process that is missing from or contradicted by the
+  bundle; staleness is based on contradiction or missing coverage, not age alone
+- ensure `knowledge/index.md` covers every concept and accurately classifies it
+- remove or mark superseded obsolete concepts; update `knowledge/log.md` for
+  significant additions, removals, or changes
+- keep `README.md`, `docs/`, and `AGENTS.md` aligned without linking public docs
+  into `knowledge/` or duplicating source-level detail
 - README provider and model lists match `runtime.rs`
 
 ### Feature Completeness Drift
 
 A feature is ready only when its surfaces agree: CLI flags, TUI behavior,
-`specs/`, `README.md`, `docs/`, tests, bundled `skills/`.
+`knowledge/`, `README.md`, `docs/`, tests, bundled `skills/`.
 
 - diff `clap` definitions in `src/` against the README flag table
-- check recently shipped features (see `git log` since the last tag) for a test that exercises them and a spec/README mention
+- check recently shipped features (see `git log` since the last tag) for a test that exercises them and a knowledge/README mention
 - outcome: a small reconnecting fix, or a finding naming the missing surface and user-visible impact
 
 ### Code Simplification And De-Abstraction

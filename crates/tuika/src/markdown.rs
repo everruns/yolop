@@ -294,7 +294,7 @@ impl<'a> Builder<'a> {
     /// is never silently dropped. Actually painting the pixels in markdown
     /// (resolving the URL to [`ImageData`](crate::image::ImageData) and emitting
     /// through an [`ImageLayer`](crate::image::ImageLayer)) is a later phase; see
-    /// `specs/tuika-images.md`.
+    /// `knowledge/specs/tuika-images.md`.
     fn push_image_placeholder(&mut self, url: &str, alt: &str) {
         let label = if alt.trim().is_empty() { url } else { alt };
         self.inline

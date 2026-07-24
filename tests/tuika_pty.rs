@@ -9,7 +9,7 @@
 //!
 //! This covers the *protocol* a terminal receives; genuinely terminal-specific
 //! rendering (does Ghostty draw the Braille, does the taskbar light up) is the
-//! manual matrix documented in `specs/release.md`.
+//! manual matrix documented in `knowledge/specs/release.md`.
 #![cfg(unix)]
 
 use std::io::{Read, Write};

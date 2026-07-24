@@ -10,7 +10,7 @@
 //! catalog, but it is not part of the default harness; enable it with
 //! `[[capabilities]] ref = "lsp"` in settings.toml (or ask yolop to
 //! `set_config` it). Servers spawn lazily per language on first use and live
-//! for the rest of the session. See `specs/lsp.md`.
+//! for the rest of the session. See `knowledge/specs/lsp.md`.
 
 mod client;
 mod manager;

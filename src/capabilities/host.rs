@@ -562,7 +562,7 @@ impl Capability for SetupCapability {
         // through the same `SetupController` the `/setup` command uses, so a
         // natural-language request ("switch to high effort", "use gpt-5.4")
         // applies to the running session exactly like the slash command — no
-        // overlay, no next-run-only deferral. See specs/conversational-control.md.
+        // overlay, no next-run-only deferral. See knowledge/specs/conversational-control.md.
         vec![
             Box::new(SetReasoningEffortTool {
                 controller: self.controller(),
@@ -614,7 +614,7 @@ impl Capability for SetupCapability {
 
 /// Always-on guidance so the agent knows it can reconfigure the live session
 /// itself, in prose, without the user typing a slash command or touching an
-/// overlay. Mirrors the conversational-control contract (specs/conversational-control.md).
+/// overlay. Mirrors the conversational-control contract (knowledge/specs/conversational-control.md).
 const SETUP_TOOLS_PROMPT: &str = "<capability id=\"yolop_setup\">\n\
     You can reconfigure the live session yourself when it helps the task:\n\
     `set_reasoning_effort` changes the model's reasoning effort (escalate before \

@@ -5,7 +5,7 @@ name: Nightly Terminals
 # this runs `yolop tuika-gallery` inside *real* terminal emulators nightly to
 # check how they actually interpret those bytes.
 #
-# Maturity differs by leg (see specs/release.md § Manual Terminal Matrix):
+# Maturity differs by leg (see knowledge/specs/release.md § Manual Terminal Matrix):
 #   - tmux (Linux): text-capture via `capture-pane`, asserted — a regression
 #     here fails the nightly.
 #   - kitty / iTerm2 / Windows Terminal: GPU- or OS-locked GUI terminals driven

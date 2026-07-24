@@ -11,7 +11,7 @@ user-invocable: true
 Goal: cut a new yolop release and verify it lands on **both** crates.io and
 the `everruns/homebrew-tap` Homebrew tap.
 
-This skill implements [`specs/release.md`](../../../specs/release.md). Keep
+This skill implements [`knowledge/specs/release.md`](../../../knowledge/specs/release.md). Keep
 operational guidance here. Keep design intent in the spec.
 
 ## When To Use
@@ -45,6 +45,10 @@ change), use [`/ship`](../ship/SKILL.md) instead.
 5. **A failure rolls forward, not backward.** If a publish fails, open a
    hotfix PR (or fix-forward in the same PR if not yet merged). Do not
    leave the release half-shipped.
+6. **Durable knowledge is release-current.** Validate the OKF bundle and verify
+   that significant released behavior, architecture, policy, and process changes
+   since the previous tag are represented without exposing internal knowledge
+   through public documentation links.
 
 ## Operating Model
 
@@ -139,11 +143,19 @@ cargo update -p yolop
 
 ### 4. Run local verification
 
+Review commits since the previous tag for durable knowledge impact. Update the
+relevant concepts, `knowledge/index.md`, and `knowledge/log.md` when needed, then
+verify the bundle and code:
+
 ```bash
+python3 scripts/validate_okf.py knowledge --check-links
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 ```
+
+Confirm `README.md` and `docs/` describe released user-facing behavior while
+remaining independent of internal `knowledge/` and `.agents/` paths.
 
 ### 5. Verify publish-readiness
 
@@ -249,7 +261,7 @@ curl -sSfL https://raw.githubusercontent.com/everruns/homebrew-tap/main/Formula/
 Declare **shipped** only when crates.io reports `X.Y.Z` and the Homebrew tap
 formula points at `vX.Y.Z`. If a workflow fails, inspect logs (`gh run view
 <id> --log-failed`) and either re-run (transient — network / registry
-propagation) or open a hotfix PR (packaging bug — see `specs/release.md` §
+propagation) or open a hotfix PR (packaging bug — see `knowledge/specs/release.md` §
 Hotfix Releases).
 
 ## Common Pitfalls
@@ -267,7 +279,7 @@ Hotfix Releases).
 
 ## Authentication
 
-Required repo secrets — set up once, see [`specs/release.md`](../../../specs/release.md)
+Required repo secrets — set up once, see [`knowledge/specs/release.md`](../../../knowledge/specs/release.md)
 § Authentication for the full table.
 
 - `CARGO_REGISTRY_TOKEN` — crates.io publish scope.

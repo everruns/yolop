@@ -92,7 +92,7 @@ struct Cli {
     /// the TUI. Editors such as Zed spawn `yolop --acp` and drive it as an
     /// external agent. Builds one runtime per ACP session (cwd comes from the
     /// client); the `-C/--cwd`, `--print`, and `--session` flags are
-    /// ignored in this mode. See `specs/acp.md`.
+    /// ignored in this mode. See `knowledge/specs/acp.md`.
     #[arg(long, conflicts_with = "print")]
     acp: bool,
 
@@ -112,7 +112,7 @@ struct Cli {
 
     /// Write the full session as an ATIF v1.7 trajectory JSON file to this
     /// path at end of run. Works interactively and with `-p/--print`; see
-    /// `specs/trajectory.md`.
+    /// `knowledge/specs/trajectory.md`.
     #[arg(long, value_name = "PATH")]
     trajectory_out: Option<PathBuf>,
 

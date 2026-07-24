@@ -14,7 +14,7 @@
 //! from a detached background task's context, bypassing the host's streaming
 //! turn loop. Instead it routes the completion message by session id to the
 //! host's unbounded channel; the host (TUI event loop or ACP session loop) runs
-//! it as an ordinary streamed turn when idle. See specs/background.md.
+//! it as an ordinary streamed turn when idle. See knowledge/specs/background.md.
 
 use async_trait::async_trait;
 use everruns_core::error::{AgentLoopError, Result};

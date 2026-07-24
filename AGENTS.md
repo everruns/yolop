@@ -37,15 +37,20 @@ through Doppler; do not invoke Doppler preemptively for GitHub commands:
 doppler run -- bash -lc 'GH_TOKEN="$GITHUB_TOKEN" <command>'
 ```
 
-## Specs and docs
+## Knowledge and docs
 
-- `specs/` contains durable feature specifications. Read the relevant spec
-  before changing behavior in that area.
-- `README.md` is the public entry point; `docs/` contains standalone guidance
-  for external users. Neither may link to internal `specs/` or `.agents/`
-  material. See `specs/documentation.md` for the documentation contract.
-- Specs capture **why** and **what**, not exhaustive **how**. Do not duplicate
-  fields, enum variants, or exact tool schemas already in source.
+- `knowledge/` is the repository's Open Knowledge Format (OKF) bundle and durable
+  development memory. Read `knowledge/index.md` first, then only the concepts
+  relevant to the task and their links.
+- When a change alters durable behavior, intent, architecture, policy, constraints,
+  terminology, or maintainer process, update the affected concepts in the same
+  change. Update `knowledge/index.md` when concepts are added, removed, renamed, or
+  reclassified; update `knowledge/log.md` for significant knowledge changes.
+- Keep transient plans, task status, test output, and source-level details out of
+  the bundle. Knowledge captures **why** and **what**, not exhaustive **how**.
+- `README.md` is the public entry point; `docs/` contains standalone guidance for
+  external users. Neither may link to internal `knowledge/` or `.agents/` material.
+  See `knowledge/specs/documentation.md` for the documentation contract.
 
 ## Local dev and tests
 
@@ -139,7 +144,7 @@ installs the language servers the `lsp` variant needs). See
 
 - Conventional Commits: `type(scope): description`.
 - Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`.
-- Use `chore` for updates to `specs/`, `AGENTS.md`, or CI metadata.
+- Use `chore` for updates to `knowledge/`, `AGENTS.md`, or CI metadata.
 - Never add Claude/session/AI attribution links in commits, PRs, docs, or code comments.
 - Stage files explicitly by name. Avoid broad `git add .` / `git add -A`.
 
@@ -164,13 +169,13 @@ agent-like, stop and ask before committing.
   exercises it, gather evidence, perform a security review, open a mergeable PR,
   address every review comment, and merge only after CI is green.
 - When asked to ship, follow [`.agents/skills/ship/SKILL.md`](.agents/skills/ship/SKILL.md)
-  and [`specs/shipping.md`](specs/shipping.md).
+  and [`knowledge/specs/shipping.md`](knowledge/specs/shipping.md).
 - When asked for maintenance or release readiness, follow
   [`.agents/skills/maintenance/SKILL.md`](.agents/skills/maintenance/SKILL.md)
-  and [`specs/maintenance.md`](specs/maintenance.md).
+  and [`knowledge/specs/maintenance.md`](knowledge/specs/maintenance.md).
 - When asked to release, cut a version, or publish to crates.io / Homebrew,
   follow [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md)
-  and [`specs/release.md`](specs/release.md). Releases publish to both
+  and [`knowledge/specs/release.md`](knowledge/specs/release.md). Releases publish to both
   crates.io and the `everruns/homebrew-tap` Homebrew tap.
 
 ## Upstream relationship
