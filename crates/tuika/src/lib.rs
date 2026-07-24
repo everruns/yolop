@@ -75,6 +75,7 @@ pub mod width;
 
 // Curated top-level re-exports so callers write `tuika::Flex`, `tuika::Theme`,
 // etc. for the common surface without deep paths.
+pub use anim::{Easing, Repeat, Timeline};
 #[cfg(feature = "async")]
 pub use async_runner::{AsyncRunner, Signal};
 pub use capabilities::{Capabilities, DA1_REQUEST, DeviceAttributes};
@@ -82,9 +83,10 @@ pub use clipboard::{osc52, write_clipboard};
 pub use components::{
     Boxed, CodeBlock, Column, Constrained, Flex, FocusScope, ImageResolver, KeyHints, Loader,
     Markdown, MarkdownImage, MarkdownState, Paragraph, ProgressBar, Responsive, Rule, Scroll,
-    ScrollState, SelectList, SelectOutcome, SelectState, Spacer, Spinner, SpinnerStyle, StatusBar,
-    Table, Tabs, TabsState, Text, TextInput, TextInputEvent, TextInputMode, TextInputState, Wrap,
-    markdown_to_lines, wrap_lines,
+    ScrollState, SelectList, SelectOutcome, SelectState, Slider, SliderState, Spacer, Spinner,
+    SpinnerStyle, StatusBar, TabSelect, TabSelectOutcome, TabSelectState, Table, Tabs, TabsState,
+    Text, TextInput, TextInputEvent, TextInputMode, TextInputState, Wrap, markdown_to_lines,
+    wrap_lines,
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 pub use focus::FocusRegistry;
