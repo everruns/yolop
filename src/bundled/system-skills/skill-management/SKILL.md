@@ -12,8 +12,9 @@ Use this skill when the user wants to customize Yolop with skills.
 
 - Installed skills are directories with a `SKILL.md`.
 - Workspace skills live under `.agents/skills/<name>/`.
-- Global skills live under Yolop's config directory, normally
-  `<config_dir>/yolop/skills/<name>/`.
+- Global skills live under `~/.agents/skills/<name>/`. The former
+  `<config_dir>/yolop/skills/<name>/` location is supported temporarily for
+  compatibility.
 - System skills are built into Yolop and are read-only.
 - Workspace skills shadow global skills; global skills shadow system skills.
 - New or changed workspace/global skills are available immediately through
