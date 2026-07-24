@@ -7461,6 +7461,33 @@ mod tests {
         );
     }
 
+    /// Terminals without the kitty keyboard protocol often encode Shift+Enter as
+    /// a bare LF, which crossterm surfaces in raw mode as Ctrl+J. That must insert
+    /// a newline in the tuika composer — the previous bug was that Ctrl+J was an
+    /// unbound no-op, so Shift+Enter appeared to do nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_j_inserts_newline_without_submitting() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::empty()))
+            .await;
+
+        assert_eq!(app.input_text(), "a\nb");
+        assert!(
+            app.lines
+                .iter()
+                .all(|line| !matches!(line.author, Author::User)),
+            "Ctrl+J (raw-mode LF / terminal Shift+Enter) must not submit: {:?}",
+            app.lines
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn alt_shift_enter_submits_instead_of_inserting_newline() {
         let mut fixture = app_with_llmsim().await;
