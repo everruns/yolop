@@ -8,191 +8,92 @@ user-invocable: true
 
 # Release
 
-Goal: cut a new yolop release and verify it lands on **both** crates.io and
-the `everruns/homebrew-tap` Homebrew tap.
+Goal: cut a new yolop release and verify it lands on **both** crates.io and the
+`everruns/homebrew-tap` Homebrew tap.
 
-This skill implements [`knowledge/specs/release.md`](../../../knowledge/specs/release.md). Keep
-operational guidance here. Keep design intent in the spec.
+[`knowledge/specs/release.md`](../../../knowledge/specs/release.md) owns the versioning rules, the changelog
+format, the CI automation contract, post-release verification, hotfix and
+rollback policy, and the secrets table. This skill owns the procedure. For a
+non-release change, use [`/ship`](../ship/SKILL.md) instead.
 
-## When To Use
+Releases are agent-prepared, human-merged, CI-published. The agent never tags
+the release and never pushes to the tap — `release.yml` and `cli-binaries.yml`
+do that.
 
-Use this skill when the user asks to:
+## 0. Sync local state
 
-- release / cut a release / publish vX.Y.Z
-- ship to crates.io or Homebrew
-- prepare a release PR or a hotfix release
-
-For a generic "ship this change" request (PR → CI → merge of a non-release
-change), use [`/ship`](../ship/SKILL.md) instead.
-
-## Required Outcomes
-
-**All outcomes below are MANDATORY.**
-
-1. **The version is correct.** `Cargo.toml` and `Cargo.lock` agree on
-   `X.Y.Z`. `X.Y.Z` is strictly greater than the latest version on crates.io.
-2. **The changelog is honest.** `CHANGELOG.md` lists every commit landed
-   since the previous tag, in descending order, with PR numbers and authors.
-3. **Publish-readiness is proven before merge.** The library dry-runs
-   (`cargo publish --dry-run -p yolop-yep` and `-p tuika`) succeed; `yolop`'s
-   own publish is validated in CI once the libraries are live (dry-running it
-   locally fails until then — see step 5). The PR body includes a
-   publish-readiness report.
-4. **Post-merge verification is a hard gate.** After the release PR merges,
-   the agent must monitor CI and independently confirm that crates.io serves
-   `X.Y.Z` and the Homebrew tap formula points at `vX.Y.Z`. A "release" is
-   not done, shipped, or closed out until both are confirmed.
-5. **A failure rolls forward, not backward.** If a publish fails, open a
-   hotfix PR (or fix-forward in the same PR if not yet merged). Do not
-   leave the release half-shipped.
-6. **Durable knowledge is release-current.** Validate the OKF bundle and verify
-   that significant released behavior, architecture, policy, and process changes
-   since the previous tag are represented without exposing internal knowledge
-   through public documentation links.
-
-## Operating Model
-
-- Releases are agent-prepared, human-merged, CI-published.
-- Start by gathering the unreleased commit set, not by guessing the version.
-- The agent never tags the release directly — `release.yml` does that when
-  the `chore(release): prepare vX.Y.Z` commit lands on `main`.
-- The agent never pushes to `everruns/homebrew-tap` directly —
-  `cli-binaries.yml` does that.
-
-## Step-By-Step
-
-### 0. Sync local state
-
-Shallow clones lie. Before counting commits, force a full history:
+Shallow clones lie: cloud sandboxes default to depth ≈ 50 and silently drop
+older commits from `git log`.
 
 ```bash
 git fetch --unshallow origin main 2>/dev/null || git fetch origin main
 git fetch --tags
-```
 
-Cross-check the commit count if anything looks off:
-
-```bash
 LATEST=$(git describe --tags --abbrev=0)
 git log "$LATEST"..origin/main --oneline | wc -l
 gh api "repos/everruns/yolop/compare/$LATEST...main" --jq '.total_commits'
 ```
 
-If those disagree, the clone is still shallow.
+If those two counts disagree, the clone is still shallow.
 
-### 1. Pick the version
+## 1. Pick the version
 
-If the user gave a version, use it. Otherwise, propose based on the diff:
+Use the version the user gave. Otherwise propose one from the unreleased commit
+set under the spec's versioning rules, and confirm before proceeding.
 
-- only `fix`, `docs`, `chore`, `refactor`, `test` commits → patch
-- one or more `feat` commits → minor
-- breaking changes flagged in commit bodies → major (or minor pre-1.0 with
-  an explicit `### Breaking Changes` block)
+## 2. Update the changelog
 
-Confirm with the user before proceeding.
-
-### 2. Update the changelog
-
-`CHANGELOG.md` lives at the repo root. Add a section at the top under any
-intro:
-
-```markdown
-## [X.Y.Z] - YYYY-MM-DD
-
-### Highlights
-
-- 2–5 bullets summarizing the most user-visible changes.
-
-### Breaking Changes
-
-- (only when applicable; required for MINOR / MAJOR with breakage)
-
-### What's Changed
-
-* feat(scope): description ([#42](https://github.com/everruns/yolop/pull/42)) by @contributor
-* fix(scope): description ([#41](https://github.com/everruns/yolop/pull/41)) by @contributor
-
-**Full Changelog**: https://github.com/everruns/yolop/compare/vA.B.C...vX.Y.Z
-```
-
-Build the PR list mechanically:
+Build the commit list mechanically, then write the section in the format the
+spec defines (§ Changelog Format):
 
 ```bash
 git log "$LATEST"..HEAD --pretty=format:'%s' --reverse \
   | grep -v '^chore(release): prepare v'
 ```
 
-Map commits to PRs via `gh pr list --state merged --base main --limit 200`
-when commit subjects don't carry the PR number.
+Map commits to PRs with `gh pr list --state merged --base main --limit 200`
+when the subjects don't carry the number.
 
-### 3. Bump the version
+## 3. Bump the version
 
-Edit `Cargo.toml`:
+Edit `version` in `Cargo.toml`, then `cargo update -p yolop` to refresh the
+lockfile entry.
 
-```toml
-[package]
-name = "yolop"
-version = "X.Y.Z"
-```
+The three library crates are versioned separately. Bump one when its API or its
+published dependency range changes (for `yolop-yep`, also when the wire protocol
+changes) and update every workspace path dependency requirement that references
+it — a `tuika` bump usually forces a `tuika-codeformatters` bump, because the
+published formatter pins a compatible tuika range.
 
-Refresh the lockfile entry:
+## 4. Verify locally
 
-```bash
-cargo update -p yolop
-```
+Review the commits since the previous tag for durable knowledge impact and
+update the affected concepts, `knowledge/index.md`, and `knowledge/log.md`.
+Confirm `README.md` and `docs/` describe the released behavior. Then run the
+[checks in `AGENTS.md`](../../../AGENTS.md).
 
-### 4. Run local verification
+## 5. Verify publish-readiness
 
-Review commits since the previous tag for durable knowledge impact. Update the
-relevant concepts, `knowledge/index.md`, and `knowledge/log.md` when needed, then
-verify the bundle and code:
-
-```bash
-python3 scripts/validate_okf.py knowledge --check-links
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-```
-
-Confirm `README.md` and `docs/` describe released user-facing behavior while
-remaining independent of internal `knowledge/` and `.agents/` paths.
-
-### 5. Verify publish-readiness
-
-This is the step that catches what local tests don't — the `cargo publish`
-packaging boundary, missing files referenced by `Cargo.toml`, version drift:
+This is the step local tests can't stand in for — it exercises the `cargo
+publish` packaging boundary, missing files referenced by `Cargo.toml`, and
+version drift.
 
 ```bash
-cargo publish --dry-run -p yolop-yep   # SDK library; publishes first
-cargo publish --dry-run -p tuika       # TUI toolkit library; publishes first
-cargo publish --dry-run -p tuika-codeformatters # Highlighter; publishes after tuika
-cargo search yolop --limit 1     # confirm CURRENT crates.io version < X.Y.Z
-grep '^version' Cargo.toml       # confirm reads X.Y.Z
-grep '"yolop"' Cargo.lock | head -1  # confirm reads X.Y.Z
+cargo publish --dry-run -p yolop-yep            # SDK
+cargo publish --dry-run -p tuika                # TUI toolkit
+cargo publish --dry-run -p tuika-codeformatters # highlighter; publishes after tuika
+cargo search yolop --limit 1                    # crates.io version must be < X.Y.Z
+grep '^version' Cargo.toml
+grep '"yolop"' Cargo.lock | head -1
 ```
 
-**Four-crate workspace.** The repo publishes three libraries — the `yolop-yep`
-SDK, the `tuika` TUI toolkit, and the `tuika-codeformatters` highlighter — plus
-the `yolop` binary. Each library is separately versioned; bump one when its API
-or published dependency range changes (and bump `yolop-yep` for wire-protocol
-changes). crates.io requires the libraries live **before** `yolop`, so CI
-(`publish.yml`) derives a dependency-first order from Cargo metadata (currently
-`yolop-yep`, `tuika`, `tuika-codeformatters`, then `yolop`) and skips versions
-already live. A consequence for this step: **`cargo publish --dry-run -p yolop` fails
-locally** when a new in-tree library version isn't yet on crates.io — that is
-expected, not a broken release. Dry-run all three libraries instead (above);
-`yolop`'s own publish is validated in CI after they go live. When bumping a
-library, update its version in `crates/<crate>/Cargo.toml` **and** every
-workspace path dependency version requirement that references it. In
-particular, a Tuika bump usually requires a `tuika-codeformatters` bump because
-its published package pins a compatible Tuika range.
+`cargo publish --dry-run -p yolop` **fails locally** whenever a new in-tree
+library version isn't on crates.io yet — expected, not a broken release. CI
+validates `yolop`'s own publish after the libraries go live. If a *library*
+dry-run fails, fix the root cause and re-run; never open a release PR with a
+known-broken publish path.
 
-If any library dry-run fails, fix the root cause and re-run. Do **not** open
-a release PR with a known-broken publish path.
-
-### 6. Commit and push
-
-Stage explicitly — never `git add .`:
+## 6. Commit, push, open the PR
 
 ```bash
 git add CHANGELOG.md Cargo.toml Cargo.lock
@@ -200,45 +101,18 @@ git commit -m "chore(release): prepare vX.Y.Z"
 git push -u origin "$(git branch --show-current)"
 ```
 
-### 7. Open the PR
+Title the PR `chore(release): prepare vX.Y.Z`. The body carries the full
+changelog section, a **Publish-readiness** report (which dry-runs ran, what
+crates.io currently serves, that `Cargo.toml` and `Cargo.lock` agree), and an
+unchecked **Post-merge verification** list covering `release.yml`, `publish.yml`,
+`cli-binaries.yml`, crates.io, and the tap formula.
 
-Title: `chore(release): prepare vX.Y.Z` (under 70 chars).
+Do not enable auto-merge: a human must click squash so a real reviewer reads the
+changelog.
 
-Body must include:
+## 7. Monitor after merge
 
-- The full `## [X.Y.Z] - …` changelog section.
-- A **Publish-readiness** block:
-
-  ```markdown
-  ## Publish-readiness
-
-  - [x] `cargo fmt --check`
-  - [x] `cargo clippy --all-targets --all-features -- -D warnings`
-  - [x] `cargo test --all-features`
-  - [x] `cargo publish --dry-run -p yolop-yep`, `-p tuika`, and
-        `-p tuika-codeformatters` (the libraries; `-p yolop` is validated in CI
-        after they publish)
-  - [x] crates.io currently serves `A.B.C` → publishing `X.Y.Z`
-  - [x] `Cargo.toml` + `Cargo.lock` agree on `X.Y.Z`
-  ```
-
-- A **Post-merge verification** block stating that the release is not complete
-  until the agent has checked:
-
-  ```markdown
-  ## Post-merge verification
-
-  - [ ] `release.yml` created tag `vX.Y.Z` and the GitHub Release
-  - [ ] `publish.yml` finished green
-  - [ ] `cli-binaries.yml` finished green
-  - [ ] crates.io serves `X.Y.Z`
-  - [ ] Homebrew tap formula points at `vX.Y.Z`
-  ```
-
-### 8. Monitor publishing after merge
-
-Subscribe to PR activity for the release PR so the loop wakes you on each
-workflow completion. Then watch:
+Subscribe to PR activity so workflow completions wake you, then watch:
 
 ```bash
 gh run list --workflow=release.yml      --limit 1
@@ -246,47 +120,12 @@ gh run list --workflow=publish.yml      --limit 1
 gh run list --workflow=cli-binaries.yml --limit 1
 ```
 
-Confirm each finishes green, then run the post-release checks yourself. Do not
-ask the user to verify these manually and do not declare the release shipped
-from workflow status alone.
+Green workflows are not proof. Run the spec's post-release verification yourself
+and declare **shipped** only when crates.io reports `X.Y.Z` and the tap formula
+points at `vX.Y.Z`. crates.io publishes near-instantly; Homebrew takes minutes
+for the build and tap commit, so a half-verified release looks shipped when it
+isn't.
 
-```bash
-# crates.io
-cargo search yolop --limit 1   # shows X.Y.Z
-
-# GitHub Release
-gh release view "vX.Y.Z"       # tag + 3 tarballs + 3 sha256 files
-
-# Homebrew tap
-curl -sSfL https://raw.githubusercontent.com/everruns/homebrew-tap/main/Formula/yolop.rb \
-  | grep -oE 'download/v[0-9][^/]*' | sed 's|download/||'   # shows vX.Y.Z
-```
-
-Declare **shipped** only when crates.io reports `X.Y.Z` and the Homebrew tap
-formula points at `vX.Y.Z`. If a workflow fails, inspect logs (`gh run view
-<id> --log-failed`) and either re-run (transient — network / registry
-propagation) or open a hotfix PR (packaging bug — see `knowledge/specs/release.md` §
-Hotfix Releases).
-
-## Common Pitfalls
-
-- **Shallow clone.** Cloud sandboxes default to depth ≈ 50 and silently
-  drop older commits from `git log`. Always `git fetch --unshallow` first.
-- **Tag/Cargo drift.** A v0.4.0 → v0.4.1-style hotfix is almost always
-  caused by version drift between `Cargo.toml` and what `cargo publish`
-  actually sees. The dry-run catches it.
-- **Half-shipped releases.** crates.io publishes near-instantly; Homebrew
-  takes minutes (build + tap commit). Don't declare shipped until the tap
-  formula reflects the new version.
-- **Auto-merge.** Do not enable auto-merge on the release PR. A human must
-  click the squash button so a real reviewer sees the changelog.
-
-## Authentication
-
-Required repo secrets — set up once, see [`knowledge/specs/release.md`](../../../knowledge/specs/release.md)
-§ Authentication for the full table.
-
-- `CARGO_REGISTRY_TOKEN` — crates.io publish scope.
-- `DOPPLER_TOKEN` — service token; the Doppler config holds
-  `HOMEBREW_TAP_GITHUB_TOKEN`, a fine-grained PAT scoped to the tap repo
-  only.
+On failure, read the logs (`gh run view <id> --log-failed`) and either re-run
+(transient — network or registry propagation) or roll forward with a hotfix PR
+per the spec. Never leave a release half-shipped.

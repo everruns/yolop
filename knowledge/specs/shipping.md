@@ -42,26 +42,23 @@ Every shipped change MUST satisfy ALL of these. These are mandatory, not suggest
 
 - Shipping is outcome-oriented, not a mandatory linear checklist.
 - Validation starts with the smallest high-signal proof and deepens only when risk requires it.
-- Bug fixes prefer a failing test before the fix when practical.
 - Docs-only or config-only changes may skip code tests if the choice is justified and the relevant lint/build was run.
 - Security review is mandatory for code, configuration, or infrastructure changes. Perceived low risk does not justify skipping it.
 - Every review comment must be explicitly addressed, answered inline on its own thread with a written reply (in addition to any code change), and resolved before merge — including low-confidence suggestions, nits, and bot comments.
 - Auto-merge is not used: async reviewer bots can post after the last push or after CI turns green.
 - If a blocker cannot be resolved safely by the agent alone, shipping stops and reports rather than guesses.
 
-## Validation Menu
+## Validation Depth
 
-Use the smallest set that gives high confidence.
+Use the smallest set of checks that gives high confidence, drawn from the
+[checks in `AGENTS.md`](../../AGENTS.md) plus what the changed surface demands —
+`cargo build --release` for binary-surface or release-profile changes, the
+Doppler live-provider integration test when the change touches the agent loop or
+tool wiring.
 
-1. `cargo fmt --check`
-2. `cargo clippy --all-targets --all-features -- -D warnings`
-3. `cargo test --all-features`
-4. `cargo build --release` when changing the binary surface or release profile.
-5. `doppler run -- cargo test --all-features --test integration` for live-provider proof when the change touches the agent loop or tool wiring.
-6. `doppler run -- cargo run -- --provider openai -p "<focused prompt>"` for end-to-end smoke.
-7. `cargo run -- --provider llmsim -p "hi"` for offline smoke when CI access to provider keys is unavailable.
-8. Ensure test coverage proves the fix or acceptance criteria, including important negative paths. For visible transcript or status changes, assert the presentation model output directly.
-9. Update `README.md`, `docs/`, `AGENTS.md`, and `knowledge/specs/` when relevant.
+Coverage must prove the fix or the acceptance criteria, including the important
+negative paths. Visible transcript or status changes assert the presentation
+model output directly.
 
 ## Merge Discipline
 
@@ -73,6 +70,7 @@ Use the smallest set that gives high confidence.
 
 ## Related
 
+- [`knowledge/specs/agent-context.md`](./agent-context.md)
 - [`knowledge/specs/documentation.md`](./documentation.md)
 - [`knowledge/specs/maintenance.md`](./maintenance.md)
 - [`.agents/skills/ship/SKILL.md`](../../.agents/skills/ship/SKILL.md)

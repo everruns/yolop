@@ -3,6 +3,21 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-24 — Agent context layering
+
+- Added [Agent context](specs/agent-context.md): one owner per rule, progressive
+  disclosure across `AGENTS.md` → specs → skills → code, and constraint reserved
+  for irreversible actions.
+- Applied it: `AGENTS.md` now carries repository facts and gotchas only, with
+  benchmark procedure moved to `crates/tuika/benches/README.md` and eval
+  procedure left to `evals/README.md`; the ship, maintenance, and release skills
+  stopped restating their specs' bars, and maintenance and release split their
+  reference material out of `SKILL.md`.
+- Resolved two conflicting constraints: the ship skill no longer both mandates a
+  checklist and tells the agent not to walk one, and the release pre-release
+  checklist no longer requires a `-p yolop` dry-run that is expected to fail
+  locally.
+
 ## 2026-07-24
 
 - Corrected the release contract to publish all four workspace crates in dependency order, including `tuika-codeformatters` before `yolop`.

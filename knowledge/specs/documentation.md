@@ -25,7 +25,8 @@ Yolop without requiring knowledge of repository internals.
 - `knowledge/specs/` is internal durable product and design memory. It records intent,
   constraints, tradeoffs, and architectural decisions for maintainers.
 - `.agents/` and `AGENTS.md` contain contributor and agent workflows, not user
-  guidance.
+  guidance. How that internal context is layered and kept non-duplicative is
+  defined in [`agent-context.md`](./agent-context.md).
 
 ## Direction of links
 

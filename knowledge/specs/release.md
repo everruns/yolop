@@ -77,75 +77,35 @@ registries silently failed.
 
 ### Agent Steps
 
-When asked to release, the agent:
+The procedure lives in [`.agents/skills/release/SKILL.md`](../../.agents/skills/release/SKILL.md). These are the
+constraints it must satisfy:
 
-0. **Ensure full git history.** Cloud sandboxes are often shallow-cloned,
+1. **The commit set is complete.** Cloud sandboxes are often shallow-cloned,
    which silently hides commits and yields a wrong commit count or changelog.
-   Run `git fetch --unshallow origin main 2>/dev/null || git fetch origin main`
-   before counting or listing commits.
+   Full history is established before anything is counted or listed.
+2. **The version is confirmed.** Either given by the human, or proposed from the
+   unreleased commits under § Versioning and confirmed before proceeding.
+3. **The changelog is honest.** Every commit since the previous tag appears, in
+   the format defined in § Changelog Format.
+4. **Versions agree.** `Cargo.toml` and `Cargo.lock` read `X.Y.Z`, and each
+   separately versioned library crate carries a version consistent with every
+   workspace path dependency requirement that references it.
+5. **Publish-readiness is proven before the PR opens.** The library dry-runs
+   succeed and `X.Y.Z` exceeds what crates.io serves. A release PR is never
+   opened, and never merged, with a known-broken publish path.
+6. **Post-merge verification is independent.** Green workflows are not evidence
+   of a release. The agent checks crates.io and the Homebrew tap itself and
+   declares **shipped** only when both report the new version. A failure rolls
+   forward via hotfix rather than leaving the release half-published.
 
-1. **Determine the version.** Use the version specified by the human, or
-   propose the next version based on the unreleased commits (patch / minor /
-   major) and confirm before proceeding.
-
-2. **Update `CHANGELOG.md`.** Add a `## [X.Y.Z] - YYYY-MM-DD` section, list
-   PRs in descending order with GitHub-style links and contributor handles,
-   end with `**Full Changelog**: URL`. For minor/major bumps, add an explicit
-   `### Breaking Changes` block with before/after migration snippets.
-
-3. **Bump the version** in `Cargo.toml` and regenerate `Cargo.lock`
-   (`cargo update -p yolop`). The library crates under `crates/` — the
-   `yolop-yep` SDK, the `tuika` TUI toolkit, and `tuika-codeformatters` — are
-   **versioned separately**: bump one when its API or published dependency range
-   changes (for `yolop-yep`, also the wire protocol), and update every workspace
-   path dependency requirement that references it. A Tuika bump usually requires
-   a `tuika-codeformatters` bump because the published formatter pins a compatible
-   Tuika range.
-
-4. **Run local verification:**
-   - `cargo fmt --check`
-   - `cargo clippy --all-targets --all-features -- -D warnings`
-   - `cargo test`
-
-5. **Verify publish-readiness** (catches what local tests don't — the
-   `cargo publish` packaging step, missing files, version drift):
-   - `cargo publish --dry-run -p yolop-yep`, `-p tuika`, and
-     `-p tuika-codeformatters` must succeed.
-   - Confirm `Cargo.toml` and `Cargo.lock` agree on `X.Y.Z`.
-   - Confirm `X.Y.Z` is greater than the latest published version on
-     crates.io (`cargo search yolop --limit 1`).
-   - If any check fails, fix the root cause and re-run before opening the
-     PR. **Do not** merge a release PR with a known-broken publish path.
-
-   **Four crates, ordered publish.** `yolop` depends on `yolop-yep`, `tuika`,
-   and `tuika-codeformatters` by version, so crates.io requires all three live
-   first. `publish.yml` derives their dependency-first order from Cargo metadata
-   (currently `yolop-yep`, `tuika`, `tuika-codeformatters`, then `yolop`) and
-   skips versions already live. Because
-   of that ordering, `cargo publish --dry-run -p yolop` can fail locally until
-   all in-tree library versions are on crates.io. That is expected, not a broken
-   release; dry-run all three library crates and rely on CI to validate `yolop`
-   after they go live.
-
-6. **Commit and push** the changes on a feature branch with message
-   `chore(release): prepare vX.Y.Z`.
-
-7. **Open a PR** titled `chore(release): prepare vX.Y.Z`. Include the
-   changelog excerpt and a **publish-readiness report** (which dry-runs ran,
-   what the registry currently shows).
-
-8. **Monitor and verify post-merge publishing.** After the human
-   squash-merges the PR:
-   - Watch `release.yml` complete and confirm tag `vX.Y.Z` + the GitHub
-     Release were created.
-   - Watch `publish.yml` and `cli-binaries.yml` to completion. Surface any
-     failure immediately.
-   - Run post-release verification (see below) yourself and report which
-     targets show the new version. Workflow success is not enough: the agent
-     must independently check crates.io and the Homebrew tap after merge.
-   - Only declare the release **shipped** when crates.io reports `X.Y.Z` and
-     the Homebrew tap formula points at `vX.Y.Z`. If one fails, open a hotfix
-     PR rather than leaving the release half-published.
+**Four crates, ordered publish.** `yolop` depends on `yolop-yep`, `tuika`, and
+`tuika-codeformatters` by version, so crates.io requires all three live first.
+`publish.yml` derives their dependency-first order from Cargo metadata
+(currently `yolop-yep`, `tuika`, `tuika-codeformatters`, then `yolop`) and skips
+versions already live. A consequence: `cargo publish --dry-run -p yolop` can
+fail locally until all in-tree library versions are on crates.io. That is
+expected, not a broken release — the libraries are dry-run locally and CI
+validates `yolop` after they go live.
 
 ## CI Automation
 
@@ -192,7 +152,8 @@ The agent verifies before opening the release PR:
 - [ ] `cargo fmt`, `cargo clippy`, `cargo test` clean.
 - [ ] `CHANGELOG.md` has an entry for every commit since the last release.
 - [ ] `Cargo.toml` and `Cargo.lock` both read `X.Y.Z`.
-- [ ] `cargo publish --dry-run -p yolop` succeeds.
+- [ ] `cargo publish --dry-run` succeeds for each library crate (`-p yolop` is
+      validated by CI once they are live — see § Agent Steps).
 - [ ] `X.Y.Z` is greater than the latest crates.io version.
 - [ ] Manual terminal matrix walked (see below) if the TUI renderer changed.
 
