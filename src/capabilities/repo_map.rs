@@ -8,7 +8,7 @@ use crate::capabilities::narration::stable_labeled;
 use crate::exec::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus};
+use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
@@ -70,10 +70,30 @@ impl Capability for RepoMapCapability {
         Some("Code Navigation")
     }
 
-    // No system-prompt contribution: both tool descriptions already position the
-    // map as orientation before targeted grep/read, and the truncation advice
-    // ships in the truncated result itself (`truncation_metadata`), where it
-    // arrives at the moment it applies instead of on every turn.
+    /// Only the truncation rule. Both tool descriptions already position the map
+    /// as orientation before targeted grep/read, so that half of the old block
+    /// stayed deleted.
+    ///
+    /// The truncation advice came back because deleting it regressed
+    /// `evals/harness_basic`'s `repo-map-bounded` gate on gpt-5.5:
+    /// `duplicate_exploration_calls` breached its zero bar in 5/5 trials against
+    /// 2/5 before, with one extra tool call per run. `truncation_metadata` puts
+    /// the same words in the truncated result, but by then the model has already
+    /// decided what to do next — the reactive copy does not substitute for the
+    /// anticipatory one. Correctness never broke; only efficiency did.
+    ///
+    /// Measured on claude-sonnet-4-5 too, where it costs nothing: that model
+    /// recovers cleanly either way (`duplicate_exploration_calls` 0 in all
+    /// trials, both binaries).
+    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
+        Some(
+            "<capability id=\"repo_map\">\n\
+             If a `repo_map` or `repo_symbols` result is truncated, do not repeat the same \
+             call: add `query` or narrow `path`.\n\
+             </capability>"
+                .to_string(),
+        )
+    }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
