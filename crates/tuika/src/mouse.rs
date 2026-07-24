@@ -199,7 +199,10 @@ fn cell_class(buffer: &Buffer, column: u16, row: u16) -> CellClass {
     }
 }
 
-fn word_at(buffer: &Buffer, area: Rect, column: u16, row: u16) -> Option<SelectionRange> {
+/// The word (or contiguous punctuation run) under `(column, row)` in `buffer`,
+/// as an inclusive [`SelectionRange`] on that row. Word characters are Unicode
+/// alphanumerics plus `_`. Returns `None` over blank cells or outside `area`.
+pub fn word_at(buffer: &Buffer, area: Rect, column: u16, row: u16) -> Option<SelectionRange> {
     if !in_rect(area, column, row) {
         return None;
     }

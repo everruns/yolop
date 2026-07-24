@@ -280,13 +280,15 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     }
     app.resolve_link_click(f.buffer_mut());
     app.resolve_selection(f.buffer_mut());
-    if let Some(range) = app.selection_range() {
-        if app.take_pending_copy() {
-            let text = tuika::selected_text(f.buffer_mut(), selection, range);
-            if !text.is_empty() {
-                let _ = tuika::write_clipboard(&mut std::io::stdout(), &text);
-            }
+    // Copy reads the whole selection from the transcript cache (it may span rows
+    // that are scrolled off-screen); highlight paints only the visible slice.
+    if app.take_pending_copy() {
+        let text = app.selection_copy_text();
+        if !text.is_empty() {
+            let _ = tuika::write_clipboard(&mut std::io::stdout(), &text);
         }
+    }
+    if let Some(range) = app.selection_range() {
         tuika::highlight(
             f.buffer_mut(),
             selection,

@@ -105,7 +105,7 @@ pub use image::{Image, ImageData, ImageLayer, ImageSupport};
 pub use layout::{Align, Dimension, Direction, Item, Justify, LayoutStyle, solve};
 pub use live::{Live, LiveView, RedrawHandle};
 pub use mouse::{
-    Click, ClickTracker, HitMap, SelectionRange, SelectionState, highlight, selected_text,
+    Click, ClickTracker, HitMap, SelectionRange, SelectionState, highlight, selected_text, word_at,
 };
 pub use native::{ProgressState, TerminalProgress};
 pub use overlay::{Anchor, Extent, OverlaySpec};
