@@ -7040,6 +7040,227 @@ mod tests {
         );
     }
 
+    // --- MCP activation / OAuth reproductions (see issue report) -------------
+    // Ignored tests encode desired behavior. Re-run with:
+    //   cargo test --all-features repro_ -- --ignored --nocapture
+
+    /// Desired: `/mcp` stays conversational (transcript). Overlay is optional
+    /// secondary UI — not required for activation. Locks the no-window baseline
+    /// so a future manager sheet cannot become the only path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repro_mcp_command_does_not_open_setup_overlay_in_fullscreen() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.set_render_mode(RenderMode::Fullscreen);
+        app.lines.clear();
+
+        app.dispatch_command_for_test("mcp").await;
+
+        assert!(
+            app.setup.is_none(),
+            "/mcp must not open SetupStep (no MCP manager window). setup={:?}",
+            app.setup
+        );
+        assert!(
+            app.lines.iter().any(|line| {
+                line.text.contains("MCP")
+                    || line.text.contains("mcp")
+                    || line.text.contains("usage")
+            }),
+            "/mcp should print guidance in the transcript: {:?}",
+            app.lines
+        );
+    }
+
+    /// Characterization: today's `/tools` path prints frozen `startup.tool_names`
+    /// and therefore omits live MCP tools even when `/mcp` reports the server
+    /// active. Paired with `repro_tools_command_lists_live_mcp_tools` (ignored)
+    /// which encodes the desired fix.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tools_command_omits_configured_mcp_tools_today() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        std::fs::write(
+            app.startup.workspace_root.join(".mcp.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "mcpServers": {
+                    "echo": {
+                        "type": "stdio",
+                        "command": "python3",
+                        "args": ["-c", "pass"]
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .expect("write .mcp.json");
+        app.dispatch_command_for_test("mcp reload").await;
+        assert!(
+            app.startup.mcp_server_names.iter().any(|n| n == "echo"),
+            "echo must be active: {:?}",
+            app.startup.mcp_server_names
+        );
+
+        app.lines.clear();
+        app.dispatch_command_for_test("tools").await;
+        let tools_line = app
+            .lines
+            .iter()
+            .find(|line| line.text.starts_with("tools:"))
+            .map(|line| line.text.clone())
+            .expect("tools line");
+
+        assert!(
+            !tools_line.contains("mcp_echo__"),
+            "characterization of the bug: /tools must currently omit mcp_* names.\n\
+             If this fails, the bug may already be fixed — update the ignored repro.\n\
+             got: {tools_line}"
+        );
+        assert!(
+            !app.startup.tool_names.iter().any(|n| n.starts_with("mcp_")),
+            "startup.tool_names is the /tools source and has no mcp_* entries: {:?}",
+            app.startup.tool_names
+        );
+    }
+
+    /// Desired: `/tools` lists MCP tools the session can call.
+    ///
+    /// Current bug: `/tools` prints frozen `startup.tool_names` and never
+    /// includes discovered `mcp_*` tools — matching the Linear report where
+    /// login succeeded but `/tools` showed no Linear operations.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "repro: /tools omits live MCP tools after server is active"]
+    async fn repro_tools_command_lists_live_mcp_tools() {
+        let Some(python) =
+            crate::testing::mcp_e2e::require_python3("repro_tools_command_lists_live_mcp_tools")
+        else {
+            return;
+        };
+        let marker = tempfile::tempdir().expect("marker").keep();
+        let tool = crate::testing::mcp_e2e::mcp_tool("echo", "echo");
+        let fixture_path = crate::testing::mcp_e2e::fixture_server();
+
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        std::fs::write(
+            app.startup.workspace_root.join(".mcp.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "mcpServers": {
+                    "echo": {
+                        "type": "stdio",
+                        "command": python.to_str().unwrap(),
+                        "args": [
+                            fixture_path.to_str().unwrap(),
+                            marker.to_str().unwrap(),
+                        ]
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .expect("write .mcp.json");
+        app.dispatch_command_for_test("mcp reload").await;
+        assert!(
+            app.startup.mcp_server_names.iter().any(|n| n == "echo"),
+            "precondition: echo server must be live: {:?}",
+            app.startup.mcp_server_names
+        );
+
+        // Control: the same workspace MCP config is executable via a fresh
+        // runtime (proves the tool name is real, not hypothetical).
+        let scripted = crate::runtime::build_with_options(
+            app.startup.workspace_root.clone(),
+            crate::runtime::ProviderChoice::Sim,
+            None,
+            tempfile::tempdir().expect("sessions").keep(),
+            std::sync::Arc::new(crate::config::SettingsStore::open(
+                tempfile::tempdir()
+                    .expect("settings dir")
+                    .keep()
+                    .join("settings.toml"),
+            )),
+            crate::runtime::BuildOptions {
+                llmsim_override: Some(
+                    crate::testing::mcp_e2e::script(&tool, "repro-visible")
+                        .with_model("llmsim-yolop"),
+                ),
+                client_commands: true,
+                ..crate::runtime::BuildOptions::default()
+            },
+        )
+        .await
+        .expect("build scripted runtime");
+        let session_id = scripted.handles.session_id;
+        let input = scripted.model.input_message("use echo");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            scripted.handles.runtime.run_turn(session_id, input),
+        )
+        .await
+        .expect("timeout")
+        .expect("run_turn");
+        assert!(
+            result.success,
+            "precondition: MCP tool must run: {result:?}"
+        );
+        assert!(
+            marker.join("echo.called").exists(),
+            "precondition: echo MCP tool must have executed"
+        );
+
+        app.lines.clear();
+        app.dispatch_command_for_test("tools").await;
+        let tools_line = app
+            .lines
+            .iter()
+            .find(|line| line.text.starts_with("tools:"))
+            .map(|line| line.text.clone())
+            .expect("/tools should print a tools: line");
+
+        assert!(
+            tools_line.contains(&tool),
+            "/tools must list live MCP tool `{tool}` when the server is active and callable.\n\
+             got: {tools_line}\n\
+             (Screenshot failure mode: OAuth login succeeded, /tools still showed no MCP tools.)"
+        );
+    }
+
+    /// Desired: MCP OAuth surfaces the authorize URL in the transcript before
+    /// waiting, so fullscreen / invisible-browser cases stay conversational.
+    ///
+    /// Current: `mcp_login` prints "opening browser…" then blocks inside
+    /// `mcp_oauth_login::login` (which opens the browser internally) — no URL.
+    #[test]
+    #[ignore = "repro: MCP OAuth does not print the authorize URL before waiting"]
+    fn repro_mcp_oauth_login_exposes_authorize_url_in_host() {
+        let tui_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/mod.rs"));
+        let login_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/auth/mcp_oauth_login.rs"
+        ));
+
+        let mcp_login_start = tui_src
+            .find("async fn mcp_login")
+            .expect("mcp_login present");
+        let mcp_login_fn = &tui_src[mcp_login_start..mcp_login_start + 1500];
+
+        let host_mentions_url = mcp_login_fn.contains("auth_url")
+            || mcp_login_fn.contains("authorize_url")
+            || mcp_login_fn.contains("open this")
+            || mcp_login_fn.contains("visit this")
+            || mcp_login_fn.contains("authorization URL");
+        let login_api_returns_url_for_host = login_src.contains("LoginSession")
+            || login_src.contains("pending_auth_url")
+            || login_src.contains("pub async fn begin_login");
+        assert!(
+            host_mentions_url || login_api_returns_url_for_host,
+            "MCP OAuth must expose the authorize URL to the transcript before blocking.\n\
+             Today login() opens the browser internally and mcp_login only prints \
+             'opening browser…' — reproducing fullscreen 'does not open anything'."
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn status_command_switches_between_compact_and_expanded_layouts() {
         let mut fixture = app_with_llmsim().await;
