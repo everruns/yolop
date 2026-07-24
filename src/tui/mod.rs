@@ -11,7 +11,7 @@ use crate::session_state::user_ask::{
     AskOutcome, USER_ASK_EVALUATE_ARG, UserAskStore, evaluation_status_message,
     parse_evaluation_response as parse_user_ask_evaluation,
 };
-use crate::tui::host_ui::UiCommand;
+use crate::tui::host_ui::{UiCommand, UiRequest};
 use anyhow::Result;
 use crossterm::event::{
     self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
@@ -165,12 +165,18 @@ pub struct App {
     codex_login_tx: mpsc::UnboundedSender<CodexLoginEvent>,
     codex_login_rx: mpsc::UnboundedReceiver<CodexLoginEvent>,
     next_codex_login_id: u64,
+    /// Background MCP OAuth login (browser + loopback), parallel to Codex so
+    /// the event loop stays alive in both fullscreen and inline modes.
+    mcp_login: Option<PendingMcpLogin>,
+    mcp_login_tx: mpsc::UnboundedSender<McpLoginEvent>,
+    mcp_login_rx: mpsc::UnboundedReceiver<McpLoginEvent>,
+    next_mcp_login_id: u64,
     status_layout: StatusLayout,
     session_tokens: Option<u64>,
     /// Terminal-side commands emitted by `ClientCommandsCapability` (via
     /// `runtime.execute_command`). Drained in the event loop; see
     /// [`App::apply_ui_command`].
-    ui_rx: mpsc::UnboundedReceiver<UiCommand>,
+    ui_rx: mpsc::UnboundedReceiver<UiRequest>,
     /// Live status-bar text per extension (`ext:<name>` → status), pushed by
     /// extension servers over `status/changed`. Rendered in the status bar via
     /// [`App::presentation_state`].
@@ -371,6 +377,12 @@ struct PendingCodexLogin {
     task: tokio::task::JoinHandle<()>,
 }
 
+struct PendingMcpLogin {
+    id: u64,
+    name: String,
+    task: tokio::task::JoinHandle<()>,
+}
+
 /// An in-flight extension `ui/ask`: the prompt shown, the answer being typed,
 /// and the oneshot that delivers it back to the extension server.
 pub(crate) struct PendingAsk {
@@ -400,6 +412,15 @@ enum CodexLoginEvent {
         id: u64,
         selected: usize,
         result: Result<crate::config::CodexAuth, String>,
+    },
+}
+
+enum McpLoginEvent {
+    Finished {
+        id: u64,
+        name: String,
+        provider_key: String,
+        result: Result<crate::auth::mcp_oauth::McpOAuthTokenSet, String>,
     },
 }
 
@@ -527,6 +548,7 @@ impl App {
         let session = Session::new(runtime.handles, runtime.model.clone());
         let (models_tx, models_rx) = mpsc::unbounded_channel::<ModelDiscovery>();
         let (codex_login_tx, codex_login_rx) = mpsc::unbounded_channel::<CodexLoginEvent>();
+        let (mcp_login_tx, mcp_login_rx) = mpsc::unbounded_channel::<McpLoginEvent>();
         let mut app = Self {
             session,
             startup: runtime.startup,
@@ -554,6 +576,10 @@ impl App {
             codex_login_tx,
             codex_login_rx,
             next_codex_login_id: 0,
+            mcp_login: None,
+            mcp_login_tx,
+            mcp_login_rx,
+            next_mcp_login_id: 0,
             status_layout: StatusLayout::Compact,
             session_tokens: None,
             ui_rx: runtime.ui_rx,
@@ -1255,8 +1281,11 @@ impl App {
         // capability that emits more than one) doesn't cost a full
         // flush/draw per command, matching the test dispatch helper.
         let mut applied_ui_command = false;
-        while let Ok(command) = self.ui_rx.try_recv() {
-            self.apply_ui_command(command).await;
+        while let Ok(request) = self.ui_rx.try_recv() {
+            let messages = self.apply_ui_command(request.command).await;
+            if let Some(reply) = request.reply {
+                let _ = reply.send(messages);
+            }
             applied_ui_command = true;
         }
         // Extension `ui/ask` prompts. One at a time; a request arriving while a
@@ -1318,6 +1347,9 @@ impl App {
         // 3a) Codex login is intentionally a background operation so a browser
         // close or an abandoned device flow cannot stop terminal input.
         if self.apply_codex_login_events().await {
+            return Ok(());
+        }
+        if self.apply_mcp_login_events() {
             return Ok(());
         }
 
@@ -1508,6 +1540,7 @@ impl App {
                 }
                 KeyCode::Char('d') => {
                     self.abort_codex_login();
+                    self.abort_mcp_login();
                     self.should_quit = true;
                     return;
                 }
@@ -2210,12 +2243,16 @@ impl App {
     /// Apply a terminal-side command emitted by a capability. This is the only
     /// place the host interprets the `UiCommand` vocabulary; capabilities
     /// declare commands and request effects, the host performs them.
-    async fn apply_ui_command(&mut self, command: UiCommand) {
+    ///
+    /// Returns the system transcript lines produced while applying the command
+    /// so agent-facing `HostUi::request` callers (e.g. `run_yolop_command`) can
+    /// surface `/mcp` / `/tools` output conversationally.
+    async fn apply_ui_command(&mut self, command: UiCommand) -> Vec<String> {
+        let clearing = matches!(&command, UiCommand::ClearTranscript);
+        let start = self.lines.len();
         match command {
             UiCommand::ShowHelp => self.show_help(),
-            UiCommand::ShowTools => {
-                self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
-            }
+            UiCommand::ShowTools => self.show_tools().await,
             UiCommand::ManageMcp { arg } => self.manage_mcp_command(arg.as_deref()).await,
             UiCommand::ShowCwd => {
                 self.push_system(format!(
@@ -2246,11 +2283,11 @@ impl App {
                 self.agent_status = (!status.is_empty()).then(|| status.to_string());
             }
             UiCommand::SetExtensionStatus { ext, status } => {
-                // Empty status clears the field; a live value replaces it.
-                if status.trim().is_empty() {
+                let status = status.trim();
+                if status.is_empty() {
                     self.extension_status.remove(&ext);
                 } else {
-                    self.extension_status.insert(ext, status);
+                    self.extension_status.insert(ext, status.to_string());
                 }
             }
             UiCommand::SetExtensionActive {
@@ -2258,32 +2295,61 @@ impl App {
                 name,
                 activate,
             } => {
-                // enable_extension/disable_extension already persisted the
-                // setting; here we apply it to the running session so it takes
-                // effect on the next turn (EVE-795) rather than only next start.
-                let result = if activate {
-                    self.session.activate_capability(&capability_id).await
-                } else {
-                    self.session.deactivate_capability(&capability_id).await
-                };
-                match result {
-                    Ok(delta) if delta.changed => self.push_system(format!(
-                        "extension `{name}` {} for this session; effective on the next turn.",
-                        if activate { "enabled" } else { "disabled" }
-                    )),
-                    // No overlay change: already in the desired state, or (on
-                    // disable) it rides the harness layer from startup and only
-                    // settings can drop it — which happens next session.
-                    Ok(_) if !activate => self.push_system(format!(
-                        "extension `{name}` will be disabled on the next session."
-                    )),
-                    Ok(_) => {}
-                    Err(err) => self.push_system(format!(
-                        "extension `{name}` saved, but applying it to this session failed: {err}. \
-                         It will load on the next session."
-                    )),
-                }
+                self.set_extension_active(&capability_id, &name, activate)
+                    .await;
             }
+        }
+        let from = if clearing {
+            0
+        } else {
+            start.min(self.lines.len())
+        };
+        self.lines[from..]
+            .iter()
+            .filter(|line| line.author == Author::System)
+            .map(|line| line.text.clone())
+            .collect()
+    }
+
+    /// List capability tools plus live MCP tools discovered from the session's
+    /// scoped servers (so `/tools` matches what the next turn can call).
+    async fn show_tools(&mut self) {
+        let mut names = self.startup.tool_names.clone();
+        let mcp_names = self.session.list_mcp_tool_names().await;
+        for name in mcp_names {
+            if !names.iter().any(|existing| existing == &name) {
+                names.push(name);
+            }
+        }
+        names.sort();
+        self.push_system(format!("tools: {}", names.join(", ")));
+    }
+
+    async fn set_extension_active(&mut self, capability_id: &str, name: &str, activate: bool) {
+        // enable_extension/disable_extension already persisted the setting;
+        // here we apply it to the running session so it takes effect on the
+        // next turn (EVE-795) rather than only next start.
+        let result = if activate {
+            self.session.activate_capability(capability_id).await
+        } else {
+            self.session.deactivate_capability(capability_id).await
+        };
+        match result {
+            Ok(delta) if delta.changed => self.push_system(format!(
+                "extension `{name}` {} for this session; effective on the next turn.",
+                if activate { "enabled" } else { "disabled" }
+            )),
+            // No overlay change: already in the desired state, or (on disable)
+            // it rides the harness layer from startup and only settings can
+            // drop it — which happens next session.
+            Ok(_) if !activate => self.push_system(format!(
+                "extension `{name}` will be disabled on the next session."
+            )),
+            Ok(_) => {}
+            Err(err) => self.push_system(format!(
+                "extension `{name}` saved, but applying it to this session failed: {err}. \
+                 It will load on the next session."
+            )),
         }
     }
 
@@ -2382,10 +2448,11 @@ impl App {
         }
     }
 
-    /// Run the interactive OAuth login flow for a remote MCP server and persist
-    /// the resulting tokens. Because the runtime resolves credentials per turn
-    /// through the shared auth provider, the token is used on the next turn with
-    /// no restart or reload needed.
+    /// Start the interactive OAuth login flow for a remote MCP server without
+    /// blocking the host event loop. Prints the authorize URL to the transcript
+    /// (so fullscreen and inline both stay conversational if the browser is
+    /// invisible), best-effort opens the browser, and completes in the
+    /// background — same pattern as Codex login.
     async fn mcp_login(&mut self, name: &str) {
         let servers = crate::config::mcp::load_mcp_servers(&self.startup.workspace_root);
         let Some(server) = servers.get(name) else {
@@ -2400,30 +2467,102 @@ impl App {
             ));
             return;
         }
+        if self.mcp_login.is_some() {
+            self.push_system(
+                "an MCP OAuth login is already in progress; finish or wait for it before starting another"
+                    .into(),
+            );
+            return;
+        }
+
         let url = server.url.clone();
         let provider_key = server
             .oauth_provider_id
             .clone()
             .unwrap_or_else(|| name.to_string());
+        let server_name = name.to_string();
 
-        self.push_system(format!("opening browser for `{name}` OAuth login…"));
-        match crate::auth::mcp_oauth_login::login(&url, None, None).await {
-            Ok(tokens) => {
-                match crate::auth::mcp_oauth::save_tokens(
-                    &self.session.connections(),
-                    &provider_key,
-                    tokens,
-                ) {
-                    Ok(()) => self.push_system(format!(
-                        "signed in to `{name}` — the token is active on your next message"
-                    )),
-                    Err(error) => self.push_system(format!(
-                        "saved login for `{name}` failed to persist: {error}"
-                    )),
+        let prepared = match crate::auth::mcp_oauth_login::prepare_login(&url, None, None).await {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.push_system(format!("`{server_name}` OAuth login failed: {error}"));
+                return;
+            }
+        };
+
+        self.push_system(format!(
+            "MCP OAuth for `{server_name}` — open this URL to sign in:\n{}",
+            prepared.authorize_url
+        ));
+        if let Err(error) = crate::auth::oauth_flow::open_browser(prepared.authorize_url.as_str()) {
+            self.push_system(format!(
+                "could not open a browser automatically ({error}); open the URL above manually"
+            ));
+        } else {
+            self.push_system(format!(
+                "opened a browser for `{server_name}` OAuth login (waiting for redirect)…"
+            ));
+        }
+
+        self.next_mcp_login_id = self.next_mcp_login_id.wrapping_add(1);
+        let id = self.next_mcp_login_id;
+        let tx = self.mcp_login_tx.clone();
+        let name_for_task = server_name.clone();
+        let provider_for_task = provider_key.clone();
+        let task = tokio::spawn(async move {
+            let result = crate::auth::mcp_oauth_login::complete_login(prepared)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = tx.send(McpLoginEvent::Finished {
+                id,
+                name: name_for_task,
+                provider_key: provider_for_task,
+                result,
+            });
+        });
+        self.mcp_login = Some(PendingMcpLogin {
+            id,
+            name: server_name,
+            task,
+        });
+    }
+
+    fn apply_mcp_login_events(&mut self) -> bool {
+        let mut applied = false;
+        while let Ok(event) = self.mcp_login_rx.try_recv() {
+            let McpLoginEvent::Finished {
+                id,
+                name,
+                provider_key,
+                result,
+            } = event;
+            let current_id = self.mcp_login.as_ref().map(|login| login.id);
+            if current_id != Some(id) {
+                continue;
+            }
+            self.mcp_login = None;
+            applied = true;
+            match result {
+                Ok(tokens) => {
+                    match crate::auth::mcp_oauth::save_tokens(
+                        &self.session.connections(),
+                        &provider_key,
+                        tokens,
+                    ) {
+                        Ok(()) => self.push_system(format!(
+                            "signed in to `{name}` — the token is active on your next message"
+                        )),
+                        Err(error) => self.push_system(format!(
+                            "saved login for `{name}` failed to persist: {error}"
+                        )),
+                    }
+                }
+                Err(error) => {
+                    self.push_system(format!("`{name}` OAuth login failed: {error}"));
                 }
             }
-            Err(error) => self.push_system(format!("`{name}` OAuth login failed: {error}")),
         }
+        applied
     }
 
     /// Apply the on-disk MCP config to the live session and report the active
@@ -2578,6 +2717,7 @@ impl App {
 
         if self.ctrl_c_pending_exit() {
             self.abort_codex_login();
+            self.abort_mcp_login();
             self.ctrl_c_exit = true;
             self.should_quit = true;
             return;
@@ -3196,6 +3336,14 @@ mod tests {
         struct NoopUi;
         impl crate::tui::host_ui::HostUi for NoopUi {
             fn send(&self, _: crate::tui::host_ui::UiCommand) {}
+            fn request(
+                &self,
+                _: crate::tui::host_ui::UiCommand,
+            ) -> tokio::sync::oneshot::Receiver<Vec<String>> {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let _ = tx.send(Vec::new());
+                rx
+            }
         }
         crate::capabilities::client_commands::ClientCommandsCapability::new(std::sync::Arc::new(
             NoopUi,
@@ -5825,8 +5973,11 @@ mod tests {
         }
 
         async fn pump_ui_commands_for_test(&mut self) {
-            while let Ok(command) = self.ui_rx.try_recv() {
-                self.apply_ui_command(command).await;
+            while let Ok(request) = self.ui_rx.try_recv() {
+                let messages = self.apply_ui_command(request.command).await;
+                if let Some(reply) = request.reply {
+                    let _ = reply.send(messages);
+                }
             }
         }
 
@@ -7146,6 +7297,161 @@ mod tests {
                     && line.text.contains("OAuth login only applies")),
             "stdio server should be rejected before any browser flow: {:?}",
             app.lines
+        );
+    }
+
+    // --- MCP activation / OAuth reproductions (see issue report) -------------
+    // Ignored tests encode desired behavior. Re-run with:
+    //   cargo test --all-features repro_ -- --ignored --nocapture
+
+    /// Desired: `/mcp` stays conversational (transcript). Overlay is optional
+    /// secondary UI — not required for activation. Locks the no-window baseline
+    /// so a future manager sheet cannot become the only path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repro_mcp_command_does_not_open_setup_overlay_in_fullscreen() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.set_render_mode(RenderMode::Fullscreen);
+        app.lines.clear();
+
+        app.dispatch_command_for_test("mcp").await;
+
+        assert!(
+            app.setup.is_none(),
+            "/mcp must not open SetupStep (no MCP manager window). setup={:?}",
+            app.setup
+        );
+        assert!(
+            app.lines.iter().any(|line| {
+                line.text.contains("MCP")
+                    || line.text.contains("mcp")
+                    || line.text.contains("usage")
+            }),
+            "/mcp should print guidance in the transcript: {:?}",
+            app.lines
+        );
+    }
+
+    /// Desired: `/tools` lists MCP tools the session can call.
+    ///
+    /// Current bug: `/tools` prints frozen `startup.tool_names` and never
+    /// includes discovered `mcp_*` tools — matching the Linear report where
+    /// login succeeded but `/tools` showed no Linear operations.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repro_tools_command_lists_live_mcp_tools() {
+        let Some(python) =
+            crate::testing::mcp_e2e::require_python3("repro_tools_command_lists_live_mcp_tools")
+        else {
+            return;
+        };
+        let marker = tempfile::tempdir().expect("marker").keep();
+        let tool = crate::testing::mcp_e2e::mcp_tool("echo", "echo");
+        let fixture_path = crate::testing::mcp_e2e::fixture_server();
+
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        std::fs::write(
+            app.startup.workspace_root.join(".mcp.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "mcpServers": {
+                    "echo": {
+                        "type": "stdio",
+                        "command": python.to_str().unwrap(),
+                        "args": [
+                            fixture_path.to_str().unwrap(),
+                            marker.to_str().unwrap(),
+                        ]
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .expect("write .mcp.json");
+        app.dispatch_command_for_test("mcp reload").await;
+        assert!(
+            app.startup.mcp_server_names.iter().any(|n| n == "echo"),
+            "precondition: echo server must be live: {:?}",
+            app.startup.mcp_server_names
+        );
+
+        // Control: the same workspace MCP config is executable via a fresh
+        // runtime (proves the tool name is real, not hypothetical).
+        let scripted = crate::runtime::build_with_options(
+            app.startup.workspace_root.clone(),
+            crate::runtime::ProviderChoice::Sim,
+            None,
+            tempfile::tempdir().expect("sessions").keep(),
+            std::sync::Arc::new(crate::config::SettingsStore::open(
+                tempfile::tempdir()
+                    .expect("settings dir")
+                    .keep()
+                    .join("settings.toml"),
+            )),
+            crate::runtime::BuildOptions {
+                llmsim_override: Some(
+                    crate::testing::mcp_e2e::script(&tool, "repro-visible")
+                        .with_model("llmsim-yolop"),
+                ),
+                client_commands: true,
+                ..crate::runtime::BuildOptions::default()
+            },
+        )
+        .await
+        .expect("build scripted runtime");
+        let session_id = scripted.handles.session_id;
+        let input = scripted.model.input_message("use echo");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            scripted.handles.runtime.run_turn(session_id, input),
+        )
+        .await
+        .expect("timeout")
+        .expect("run_turn");
+        assert!(
+            result.success,
+            "precondition: MCP tool must run: {result:?}"
+        );
+        assert!(
+            marker.join("echo.called").exists(),
+            "precondition: echo MCP tool must have executed"
+        );
+
+        app.lines.clear();
+        app.dispatch_command_for_test("tools").await;
+        let tools_line = app
+            .lines
+            .iter()
+            .find(|line| line.text.starts_with("tools:"))
+            .map(|line| line.text.clone())
+            .expect("/tools should print a tools: line");
+
+        assert!(
+            tools_line.contains(&tool),
+            "/tools must list live MCP tool `{tool}` when the server is active and callable.\n\
+             got: {tools_line}\n\
+             (Screenshot failure mode: OAuth login succeeded, /tools still showed no MCP tools.)"
+        );
+    }
+
+    /// MCP OAuth surfaces the authorize URL in the transcript before waiting,
+    /// so fullscreen / invisible-browser cases stay conversational in both
+    /// render modes.
+    #[test]
+    fn repro_mcp_oauth_login_exposes_authorize_url_in_host() {
+        let tui_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/mod.rs"));
+        let login_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/auth/mcp_oauth_login.rs"
+        ));
+
+        assert!(
+            tui_src.contains("open this URL to sign in"),
+            "mcp_login must print the authorize URL in the transcript before waiting"
+        );
+        assert!(
+            login_src.contains("prepare_login") && login_src.contains("complete_login"),
+            "OAuth login must split prepare/complete so the host can show the URL"
         );
     }
 

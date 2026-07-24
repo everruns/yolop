@@ -9,6 +9,11 @@
 //! and cannot touch the TUI directly, so it instead calls this port, which
 //! forwards a typed [`UiCommand`] to the terminal event loop over a channel.
 //! The loop is the only thing that can perform the effect, so it applies it.
+//!
+//! Agent-facing tools ([`crate::capabilities::client_commands::RunYolopCommandTool`])
+//! use [`HostUi::request`] so the host can return the transcript lines it
+//! produced — making `/mcp` and `/tools` conversational instead of
+//! fire-and-forget.
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -71,21 +76,44 @@ pub enum UiCommand {
     },
 }
 
+/// Envelope on the host UI channel: a [`UiCommand`] plus an optional reply
+/// oneshot that receives the system transcript lines the host produced while
+/// applying it. Fire-and-forget callers leave `reply` as `None`.
+pub struct UiRequest {
+    pub command: UiCommand,
+    pub reply: Option<oneshot::Sender<Vec<String>>>,
+}
+
+impl UiRequest {
+    /// Queue `command` with no reply (slash-command and extension pushes).
+    pub fn fire(command: UiCommand) -> Self {
+        Self {
+            command,
+            reply: None,
+        }
+    }
+}
+
 /// What a client-executed command can ask the host UI to do. Implemented per
 /// host (the TUI's [`TuiHandle`]); a host that cannot honor client commands
 /// simply never registers the capability that depends on this port.
 pub trait HostUi: Send + Sync {
+    /// Fire-and-forget: apply `command` on the next event-loop tick.
     fn send(&self, command: UiCommand);
+
+    /// Apply `command` and return the system transcript lines the host produced.
+    /// Used by `run_yolop_command` so the agent sees `/mcp` / `/tools` output.
+    fn request(&self, command: UiCommand) -> oneshot::Receiver<Vec<String>>;
 }
 
 /// TUI implementation of [`HostUi`]: every call is a non-blocking channel
 /// send. The matching receiver is drained by the `App` event loop.
 pub struct TuiHandle {
-    tx: mpsc::UnboundedSender<UiCommand>,
+    tx: mpsc::UnboundedSender<UiRequest>,
 }
 
 impl TuiHandle {
-    pub fn new(tx: mpsc::UnboundedSender<UiCommand>) -> Self {
+    pub fn new(tx: mpsc::UnboundedSender<UiRequest>) -> Self {
         Self { tx }
     }
 }
@@ -94,6 +122,15 @@ impl HostUi for TuiHandle {
     fn send(&self, command: UiCommand) {
         // The receiver lives as long as the `App`; a failed send only happens
         // during shutdown, where dropping the command is the correct behavior.
-        let _ = self.tx.send(command);
+        let _ = self.tx.send(UiRequest::fire(command));
+    }
+
+    fn request(&self, command: UiCommand) -> oneshot::Receiver<Vec<String>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _ = self.tx.send(UiRequest {
+            command,
+            reply: Some(reply_tx),
+        });
+        reply_rx
     }
 }

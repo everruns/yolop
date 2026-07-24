@@ -38,7 +38,7 @@ use crate::exec::tools::Workspace;
 use crate::session_state::checkpoint::CheckpointManager;
 use crate::session_state::goal::GoalStore;
 use crate::session_state::user_ask::UserAskStore;
-use crate::tui::host_ui::{HostUi, TuiHandle, UiCommand};
+use crate::tui::host_ui::{HostUi, TuiHandle, UiCommand, UiRequest};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use everruns_core::capabilities::{
@@ -221,6 +221,76 @@ impl McpAuthProvider for StoredMcpAuthProvider {
             tokens.authorization_value(),
         )))
     }
+}
+
+/// Convert a scoped MCP server into a transport connection for discovery.
+fn mcp_connection_for(
+    name: &str,
+    server: &everruns_core::ScopedMcpServer,
+) -> Option<everruns_mcp::McpConnection> {
+    use everruns_core::McpServerTransportType;
+    use everruns_mcp::{McpConnection, McpEndpoint};
+
+    let endpoint = match server.transport_type {
+        McpServerTransportType::Http => McpEndpoint::Http {
+            url: server.url.clone(),
+            headers: server.headers.clone(),
+        },
+        McpServerTransportType::Stdio => {
+            let command = server.command.clone()?;
+            McpEndpoint::Stdio {
+                command,
+                args: server.args.clone(),
+                env: server.env.clone(),
+            }
+        }
+    };
+    Some(McpConnection {
+        name: name.to_string(),
+        endpoint,
+        auth_mode: server.auth_mode.clone(),
+        protocol_mode: server.protocol_mode,
+        oauth_provider_id: server.oauth_provider_id.clone(),
+        pending_oauth_provider: None,
+    })
+}
+
+/// Discover `mcp_<server>__<tool>` names for the given scoped servers, using
+/// stored OAuth tokens when present. Failures per-server are skipped (same
+/// degrade-open policy as the runtime turn path).
+pub(crate) async fn discover_mcp_tool_names(
+    connections: &Arc<ConnectionStore>,
+    servers: &everruns_core::ScopedMcpServers,
+) -> Vec<String> {
+    if servers.is_empty() {
+        return Vec::new();
+    }
+    let client = everruns_mcp::McpClient::new(
+        Arc::new(everruns_core::DirectEgressService::default()),
+        Arc::new(StoredMcpAuthProvider::new(connections.clone())),
+    );
+    let mut names = Vec::new();
+    for (name, server) in servers.iter() {
+        let Some(connection) = mcp_connection_for(name, server) else {
+            continue;
+        };
+        match client.discover(&connection).await {
+            Ok(tools) => {
+                for tool in tools {
+                    names.push(everruns_core::mcp_tool_name(name, &tool.name));
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    server = %name,
+                    %error,
+                    "MCP tool discovery for /tools listing failed; skipping server"
+                );
+            }
+        }
+    }
+    names.sort();
+    names
 }
 
 const SYSTEM_PROMPT: &str = include_str!("system.md");
@@ -2151,7 +2221,7 @@ pub struct BuiltRuntime {
     /// [`ClientCommandsCapability`]. The TUI drains it in its event loop;
     /// other hosts ignore it. Empty/never-written when
     /// [`BuildOptions::client_commands`] is `false`.
-    pub ui_rx: mpsc::UnboundedReceiver<UiCommand>,
+    pub ui_rx: mpsc::UnboundedReceiver<UiRequest>,
     /// Receiver for extension `ui/ask` requests; the TUI prompts the user and
     /// answers each via its oneshot. Empty/never-written outside the TUI.
     pub ask_rx: mpsc::UnboundedReceiver<crate::tui::host_ui::AskRequest>,
@@ -2247,6 +2317,17 @@ impl RuntimeHandles {
         session.mcp_servers = servers;
         self.session_store.add_session(session).await?;
         Ok(names)
+    }
+
+    /// Discover tool names currently offered by the session's scoped MCP
+    /// servers (`mcp_<server>__<tool>`). Used by `/tools` so the listing
+    /// matches what the next turn can call after login/reload — not the frozen
+    /// startup capability list.
+    pub async fn list_mcp_tool_names(&self) -> Vec<String> {
+        let Ok(Some(session)) = self.session_store.get_session(self.session_id).await else {
+            return Vec::new();
+        };
+        discover_mcp_tool_names(&self.connections, &session.mcp_servers).await
     }
 
     /// Activate a registered `ext:<name>` capability on the live session so its
@@ -2788,8 +2869,8 @@ pub async fn build_with_options(
     // `lsp`. See knowledge/specs/extensions.md.
     // Terminal-side command channel. Created here (before extensions register)
     // so extension `status/changed` pushes and `ClientCommandsCapability` share
-    // one `UiCommand` stream that the `App` event loop drains.
-    let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiCommand>();
+    // one `UiRequest` stream that the `App` event loop drains.
+    let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiRequest>();
     // Status-bar sink for extensions, only when the host has a status bar (the
     // TUI). Maps a server's `status/changed` into a `SetExtensionStatus`
     // command; `None` in `--print`/ACP, where it logs instead.
@@ -2798,10 +2879,10 @@ pub async fn build_with_options(
             let tx = ui_tx.clone();
             Arc::new(
                 move |ext: &str, params: crate::extensions::protocol::StatusChangedParams| {
-                    let _ = tx.send(UiCommand::SetExtensionStatus {
+                    let _ = tx.send(UiRequest::fire(UiCommand::SetExtensionStatus {
                         ext: ext.to_string(),
                         status: params.status,
-                    });
+                    }));
                 },
             ) as crate::extensions::StatusSink
         });

@@ -1022,6 +1022,13 @@ impl App {
         }
     }
 
+    pub(crate) fn abort_mcp_login(&mut self) {
+        if let Some(login) = self.mcp_login.take() {
+            login.task.abort();
+            self.push_system(format!("`{}` OAuth login canceled", login.name));
+        }
+    }
+
     pub(crate) async fn apply_codex_login_events(&mut self) -> bool {
         let mut applied = false;
         while let Ok(event) = self.codex_login_rx.try_recv() {

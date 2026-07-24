@@ -71,6 +71,11 @@ impl Session {
         self.handles.reload_mcp_servers().await
     }
 
+    /// Live MCP tool names (`mcp_<server>__<tool>`) for `/tools`.
+    pub async fn list_mcp_tool_names(&self) -> Vec<String> {
+        self.handles.list_mcp_tool_names().await
+    }
+
     /// The shared connection store backing MCP OAuth tokens. `/mcp login` saves
     /// through this so the runtime's auth provider (which holds the same handle)
     /// sees the new token immediately.

@@ -13,7 +13,7 @@ use super::secrets::{ExtensionSecrets, Secret};
 use super::store::{self, CrateFetcher, GitRunner, Source, SystemCrateFetcher, SystemGit};
 use crate::capabilities::narration::stable_labeled;
 use crate::config::SettingsStore;
-use crate::tui::host_ui::UiCommand;
+use crate::tui::host_ui::{UiCommand, UiRequest};
 use async_trait::async_trait;
 use everruns_core::capabilities::Capability;
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
@@ -37,7 +37,7 @@ pub struct ExtensionsCapability {
     /// UI-command sink (the TUI's `ui_rx`) used to activate/deactivate an
     /// extension on the live session after enable/disable; `None` in
     /// `--print`/ACP, where enable/disable only persists for the next session.
-    ui_tx: Option<UnboundedSender<UiCommand>>,
+    ui_tx: Option<UnboundedSender<UiRequest>>,
     /// Per-extension secret store (for `set_extension_secret` and the redacted
     /// config status in `list_extensions`). `None` in tests without secrets.
     secrets: Option<ExtensionSecrets>,
@@ -51,7 +51,7 @@ impl ExtensionsCapability {
         workspace_root: PathBuf,
         settings: Arc<SettingsStore>,
         live_processes: LiveProcessRegistry,
-        ui_tx: Option<UnboundedSender<UiCommand>>,
+        ui_tx: Option<UnboundedSender<UiRequest>>,
     ) -> Self {
         Self {
             extensions_dir,
@@ -150,7 +150,7 @@ struct ManageCtx {
     git: Arc<dyn GitRunner>,
     crates: Arc<dyn CrateFetcher>,
     live_processes: LiveProcessRegistry,
-    ui_tx: Option<UnboundedSender<UiCommand>>,
+    ui_tx: Option<UnboundedSender<UiRequest>>,
     secrets: Option<ExtensionSecrets>,
     ask_sink: Option<AskSink>,
 }
@@ -446,11 +446,11 @@ impl ManageTool {
                     .ui_tx
                     .as_ref()
                     .map(|tx| {
-                        tx.send(UiCommand::SetExtensionActive {
+                        tx.send(UiRequest::fire(UiCommand::SetExtensionActive {
                             capability_id: cap_id.clone(),
                             name: name.to_string(),
                             activate: enable,
-                        })
+                        }))
                         .is_ok()
                     })
                     .unwrap_or(false);
@@ -1342,7 +1342,7 @@ mod tests {
         seed_package(&src, "echo");
         let ext_dir = tmp.path().join("extensions");
         let settings = Arc::new(SettingsStore::open(tmp.path().join("settings.toml")));
-        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiCommand>();
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiRequest>();
         let cap = ExtensionsCapability {
             extensions_dir: ext_dir,
             workspace_root: tmp.path().to_path_buf(),
@@ -1369,7 +1369,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(
-            ui_rx.try_recv().unwrap(),
+            ui_rx.try_recv().unwrap().command,
             UiCommand::SetExtensionActive {
                 capability_id: "ext:echo".into(),
                 name: "echo".into(),
@@ -1382,7 +1382,7 @@ mod tests {
             .execute(json!({"name": "echo"}))
             .await;
         assert_eq!(
-            ui_rx.try_recv().unwrap(),
+            ui_rx.try_recv().unwrap().command,
             UiCommand::SetExtensionActive {
                 capability_id: "ext:echo".into(),
                 name: "echo".into(),

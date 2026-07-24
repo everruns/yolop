@@ -35,8 +35,10 @@ commands: `/help`, `/tools`, `/mcp`, `/cwd`, `/status [compact|expanded|toggle]`
 The TUI may expose other slash commands, but only use `run_yolop_command` for this listed
 client-command set. When the user asks for one of these terminal
 actions — for example "exit", "clear the screen", "show tools", "switch model",
-or "expand the status bar" — call `run_yolop_command`; do not merely tell the
-user to type the slash command.
+"log in to an MCP server" (`/mcp login <name>`), or "expand the status bar" —
+call `run_yolop_command` with the command and arguments; do not merely tell the
+user to type the slash command, and do not invent a manager window. The tool
+result includes the host's response text (server lists, tool lists, OAuth URLs).
 Use `set_status` for a concise live description of meaningful turn progress.
 The contribution is cleared automatically when the turn finishes; send an
 empty value to clear it earlier.
@@ -309,17 +311,43 @@ impl Tool for RunYolopCommandTool {
             return ToolExecutionResult::tool_error(format!("unknown yolop command: /{stripped}"));
         };
 
-        self.ui.send(command);
         let rendered = match &arg {
             Some(arg) => format!("/{name} {arg}"),
             None => format!("/{name}"),
         };
+
+        // Informational commands need the host's transcript lines back so the
+        // agent can act on `/mcp` / `/tools` conversationally. Side-effect
+        // commands (quit/clear/overlays) only need to be queued — awaiting a
+        // reply would hang any host that is not draining the UI channel
+        // (scripted tests, brief races at shutdown).
+        let message = if command_awaits_host_reply(name) {
+            let reply_rx = self.ui.request(command);
+            match tokio::time::timeout(std::time::Duration::from_secs(15), reply_rx).await {
+                Ok(Ok(messages)) if !messages.is_empty() => messages.join("\n"),
+                Ok(Ok(_)) => format!("command applied: {rendered}"),
+                Ok(Err(_)) => format!("command applied: {rendered}"),
+                Err(_) => format!(
+                    "command queued for the interactive terminal host ({rendered}); \
+                     host did not return output in time"
+                ),
+            }
+        } else {
+            self.ui.send(command);
+            format!("command applied: {rendered}")
+        };
+
         ToolExecutionResult::success(json!({
             "success": true,
             "command": rendered,
-            "message": "command queued for the interactive terminal host"
+            "message": message
         }))
     }
+}
+
+/// Whether `run_yolop_command` should wait for host transcript lines.
+fn command_awaits_host_reply(name: &str) -> bool {
+    matches!(name, "mcp" | "tools" | "help" | "cwd")
 }
 
 fn cmd(name: &str, description: &str, args: &[CommandArg]) -> CommandDescriptor {
@@ -359,6 +387,7 @@ fn arg(name: &str, required: bool) -> CommandArg {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+    use tokio::sync::oneshot;
 
     #[derive(Default)]
     struct RecordingUi {
@@ -374,6 +403,28 @@ mod tests {
     impl HostUi for RecordingUi {
         fn send(&self, command: UiCommand) {
             self.commands.lock().expect("commands lock").push(command);
+        }
+
+        fn request(&self, command: UiCommand) -> oneshot::Receiver<Vec<String>> {
+            self.send(command.clone());
+            let (tx, rx) = oneshot::channel();
+            // Unit tests without a live App still need a non-blocking reply.
+            // Integration coverage for real host text lives in the TUI suite.
+            let message = match &command {
+                UiCommand::ManageMcp { .. } => {
+                    vec![
+                        "active MCP servers: none".into(),
+                        "usage: /mcp [reload | login <name> | enable|disable|remove <name> [global|workspace]]"
+                            .into(),
+                    ]
+                }
+                UiCommand::ShowTools => vec!["tools: bash".into()],
+                UiCommand::ShowHelp => vec!["commands:".into()],
+                UiCommand::ShowCwd => vec!["workspace root: /tmp".into()],
+                _ => Vec::new(),
+            };
+            let _ = tx.send(message);
+            rx
         }
     }
 
@@ -563,6 +614,40 @@ mod tests {
             vec![UiCommand::SetStatusLayout {
                 arg: Some("expanded".to_string())
             }]
+        );
+    }
+
+    /// `run_yolop_command` for `/mcp` returns the host listing so the agent
+    /// can act conversationally (login/reload) without inventing a manager window.
+    #[tokio::test]
+    async fn repro_run_yolop_command_mcp_returns_host_output() {
+        let ui = Arc::new(RecordingUi::default());
+        let tool = RunYolopCommandTool { ui: ui.clone() };
+
+        let result = tool
+            .execute(json!({ "command": "mcp", "arguments": "" }))
+            .await;
+        assert!(result.is_success(), "tool should succeed: {result:?}");
+
+        let payload = match result {
+            ToolExecutionResult::Success(value) => value,
+            other => panic!("expected Success, got {other:?}"),
+        };
+        let message = payload
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        assert!(
+            !message.contains("queued for the interactive terminal host"),
+            "agent must receive the real /mcp listing, not a fire-and-forget queue ack.\n\
+             got message={message:?}; queued={:?}",
+            ui.take()
+        );
+        assert!(
+            message.contains("MCP") || message.contains("mcp") || message.contains("usage"),
+            "tool result should carry the host /mcp response for conversational control.\n\
+             got message={message:?}"
         );
     }
 }
