@@ -11,6 +11,7 @@
 mod boxed;
 pub(crate) mod code_block;
 mod constrained;
+mod diff;
 mod flex;
 mod focus_scope;
 mod key_hints;
@@ -36,6 +37,7 @@ pub use crate::markdown::{
 pub use boxed::Boxed;
 pub use code_block::CodeBlock;
 pub use constrained::Constrained;
+pub use diff::{Diff, DiffMode, DiffRow, DiffStyle, DiffTag, diff_rows};
 pub use flex::Flex;
 pub use focus_scope::FocusScope;
 pub use key_hints::KeyHints;
