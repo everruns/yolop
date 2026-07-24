@@ -8,6 +8,7 @@
 //! held by the host. To add a component, drop
 //! a new module here and implement `View`; nothing else needs to change.
 
+mod ascii_font;
 mod boxed;
 pub(crate) mod code_block;
 mod constrained;
@@ -34,6 +35,7 @@ mod textinput;
 pub use crate::markdown::{
     ImageResolver, Markdown, MarkdownImage, MarkdownState, markdown_to_lines,
 };
+pub use ascii_font::{AsciiFont, FONT_HEIGHT as ASCII_FONT_HEIGHT};
 pub use boxed::Boxed;
 pub use code_block::CodeBlock;
 pub use constrained::Constrained;
