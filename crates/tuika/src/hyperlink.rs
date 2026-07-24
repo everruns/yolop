@@ -79,6 +79,11 @@ impl LinkPolicy {
     pub const fn links_any(self) -> bool {
         self.web || self.mailto
     }
+
+    /// Whether `url` is a valid target under this policy.
+    pub fn allows(self, url: &str) -> bool {
+        sanitize_url(url, self).is_some()
+    }
 }
 
 impl Default for LinkPolicy {

@@ -67,14 +67,21 @@ There are two entry points:
 - `markdown_to_linked_lines` + `apply_buffer_links` — the markdown renderer
   preserves `[label](url)` destinations as [`BufferLink`]s through wrapping;
   after painting the lines, `apply_buffer_links` embeds OSC 8 into the boundary
-  cells (ForcedWidth) so a label that is not itself a URL stays Ctrl+clickable.
-  Configure schemes with `LinkPolicy` (and `Markdown::link_policy`).
+  cells (ForcedWidth) so a label that is not itself a URL stays clickable with
+  the terminal's native modifier. Configure schemes with `LinkPolicy` (and
+  `Markdown::link_policy`).
 
 Each of the first three has a policy-aware sibling — `osc8_with`, `write_line_with`, and
 `HyperlinkBackend::with_policy` — taking a `LinkPolicy` so the host chooses which
 schemes are linked. The default (`LinkPolicy::WEB`) is `http(s)`-only;
 `LinkPolicy::WEB.with_mailto()` also links `mailto:` addresses.
 `LinkPolicy::NONE` skips emission entirely.
+
+OSC 8 activation belongs to the terminal emulator. A host should not open the
+same URL again when mouse reporting also delivers the modifier-click to the
+application. Full-screen hosts that capture pointer motion can use
+`write_pointer_shape(..., PointerShape::Pointer)` on link hover; it emits OSC 22
+and should be paired with `PointerShape::Default` on hover exit and shutdown.
 
 ```rust
 use tuika::{osc8, is_web_url};
