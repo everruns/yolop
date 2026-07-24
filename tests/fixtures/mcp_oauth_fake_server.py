@@ -18,7 +18,7 @@ import json
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 
 ACCESS_TOKEN = "fake-access-token"
@@ -33,6 +33,24 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     }
 ]
+
+
+def _header_safe(value: str) -> bool:
+    """Reject values that could split HTTP response headers (CR/LF)."""
+    return "\r" not in value and "\n" not in value
+
+
+def _loopback_redirect(redirect: str) -> bool:
+    """Only auto-approve redirects to loopback http(s) URLs."""
+    try:
+        parsed = urlparse(redirect)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return False
+    return _header_safe(redirect)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -63,9 +81,10 @@ class Handler(BaseHTTPRequestHandler):
         base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
         if path == "/.well-known/oauth-protected-resource":
-            return self._send_json(200, {"authorization_servers": [base]})
+            self._send_json(200, {"authorization_servers": [base]})
+            return
         if path == "/.well-known/oauth-authorization-server":
-            return self._send_json(
+            self._send_json(
                 200,
                 {
                     "authorization_endpoint": f"{base}/authorize",
@@ -74,24 +93,43 @@ class Handler(BaseHTTPRequestHandler):
                     "scopes_supported": ["read"],
                 },
             )
+            return
         if path == "/authorize":
             qs = parse_qs(parsed.query)
             redirect = qs.get("redirect_uri", [""])[0]
             state = qs.get("state", [""])[0]
+            if not _loopback_redirect(redirect) or not _header_safe(state):
+                self._send(400, b"invalid redirect_uri or state", "text/plain")
+                return
             code = secrets.token_urlsafe(16)
             CODES[code] = {
                 "client_id": qs.get("client_id", [""])[0],
                 "redirect_uri": redirect,
             }
             # Auto-approve: redirect immediately (no HTML UI).
-            loc = f"{redirect}?code={code}&state={state}"
+            # Build Location via urlparse so query values are encoded and cannot
+            # inject header separators even if validation above is bypassed.
+            redirect_parts = urlparse(redirect)
+            query = urlencode({"code": code, "state": state})
+            loc = urlunparse(
+                (
+                    redirect_parts.scheme,
+                    redirect_parts.netloc,
+                    redirect_parts.path,
+                    redirect_parts.params,
+                    query,
+                    "",
+                )
+            )
             self.send_response(302)
             self.send_header("Location", loc)
             self.end_headers()
             return
         if path in ("/mcp", "/"):
-            return self._send_json(401, {"error": "unauthorized"})
-        return self._send(404, b"not found", "text/plain")
+            self._send_json(401, {"error": "unauthorized"})
+            return
+        self._send(404, b"not found", "text/plain")
+        return
 
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -110,10 +148,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/register":
             client_id = "fake-client-" + secrets.token_hex(4)
             CLIENTS[client_id] = "public"
-            return self._send_json(200, {"client_id": client_id})
+            self._send_json(200, {"client_id": client_id})
+            return
 
         if path == "/token":
-            return self._send_json(
+            self._send_json(
                 200,
                 {
                     "access_token": ACCESS_TOKEN,
@@ -123,15 +162,17 @@ class Handler(BaseHTTPRequestHandler):
                     "scope": "read",
                 },
             )
+            return
 
         if path in ("/mcp", "/"):
             auth = self.headers.get("Authorization", "")
             if auth != f"Bearer {ACCESS_TOKEN}":
-                return self._send_json(401, {"error": "unauthorized"})
+                self._send_json(401, {"error": "unauthorized"})
+                return
             method = body.get("method")
             mid = body.get("id")
             if method == "initialize":
-                return self._send_json(
+                self._send_json(
                     200,
                     {
                         "jsonrpc": "2.0",
@@ -143,13 +184,15 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     },
                 )
+                return
             if method == "tools/list":
-                return self._send_json(
+                self._send_json(
                     200,
                     {"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}},
                 )
+                return
             if method == "tools/call":
-                return self._send_json(
+                self._send_json(
                     200,
                     {
                         "jsonrpc": "2.0",
@@ -160,8 +203,9 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     },
                 )
+                return
             if mid is not None:
-                return self._send_json(
+                self._send_json(
                     200,
                     {
                         "jsonrpc": "2.0",
@@ -169,9 +213,12 @@ class Handler(BaseHTTPRequestHandler):
                         "error": {"code": -32601, "message": "method not found"},
                     },
                 )
-            return self._send(204, b"")
+                return
+            self._send(204, b"")
+            return
 
-        return self._send(404, b"not found", "text/plain")
+        self._send(404, b"not found", "text/plain")
+        return
 
 
 def main():
