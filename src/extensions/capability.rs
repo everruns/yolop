@@ -10,12 +10,15 @@ use super::manager::{
 };
 use super::package::{ExtensionPackage, ToolDefinition, extension_capability_id};
 use crate::capabilities::EnvironmentContextRegistry;
+use crate::capabilities::narration::stable_labeled;
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, SystemPromptContext};
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
+use everruns_core::tool_narration::ToolNarrationPhase;
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -464,6 +467,21 @@ struct ExtensionTool {
 
 #[async_trait]
 impl Tool for ExtensionTool {
+    fn narrate(
+        &self,
+        _tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        let _ = locale;
+        let mut label = self.definition.name.replace(['_', '-'], " ");
+        if let Some(first) = label.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        Some(stable_labeled(&label, None, phase))
+    }
+
     fn name(&self) -> &str {
         &self.definition.name
     }
@@ -501,6 +519,49 @@ mod tests {
     use crate::extensions::package::parse_manifest;
     use everruns_core::mcp_server::McpServerTransportType;
     use serde_json::json;
+
+    #[test]
+    fn extension_tool_narration_uses_manifest_tool_name() {
+        let manifest = parse_manifest(
+            &json!({
+                "name": "docs", "description": "Docs.",
+                "yolop": {
+                    "protocol_version": "1.0",
+                    "capabilityServer": { "command": "x" },
+                    "tools": [{
+                        "name": "search_docs",
+                        "description": "Search documentation.",
+                        "inputSchema": { "type": "object" }
+                    }]
+                }
+            })
+            .to_string(),
+        )
+        .expect("parse");
+        let cap = ExtensionCapability::new(
+            ExtensionPackage {
+                dir: std::env::temp_dir(),
+                manifest,
+            },
+            std::env::temp_dir(),
+        );
+        let tool = cap.tools().remove(0);
+        let call = ToolCall {
+            id: "call-1".into(),
+            name: "search_docs".into(),
+            arguments: json!({ "query": "narration" }),
+        };
+
+        assert_eq!(
+            tool.narrate(
+                &call,
+                ToolNarrationPhase::Started,
+                None,
+                everruns_core::tool_narration::ToolNarrationContext::default(),
+            ),
+            Some("Search docs".into())
+        );
+    }
 
     #[test]
     fn contributed_mcp_servers_are_prefixed_and_shaped() {

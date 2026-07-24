@@ -1,11 +1,14 @@
 //! The `connectors` capability — discover, connect, and disconnect sandbox
 //! and integration backends through a uniform tool surface.
 
+use crate::capabilities::narration::stable_labeled;
 use crate::connectors::catalog::{ConnectionCatalog, ConnectorInfo};
 use crate::connectors::store::ConnectionStore;
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::connector::ConnectorType;
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -106,6 +109,18 @@ struct ListConnectorsTool {
 
 #[async_trait]
 impl Tool for ListConnectorsTool {
+    fn narrate(
+        &self,
+        _tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        let _ = locale;
+        let detail = None;
+        Some(stable_labeled("List connectors", detail, phase))
+    }
+
     fn name(&self) -> &str {
         "list_connectors"
     }
@@ -141,6 +156,18 @@ struct GetConnectorTool {
 
 #[async_trait]
 impl Tool for GetConnectorTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        let _ = locale;
+        let detail = arg_str(&tool_call.arguments, &["provider"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Get connector", detail, phase))
+    }
+
     fn name(&self) -> &str {
         "get_connector"
     }
@@ -187,6 +214,18 @@ struct ConnectTool {
 
 #[async_trait]
 impl Tool for ConnectTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        let _ = locale;
+        let detail = arg_str(&tool_call.arguments, &["provider"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Connect provider", detail, phase))
+    }
+
     fn name(&self) -> &str {
         "connect"
     }
@@ -283,6 +322,18 @@ struct DisconnectTool {
 
 #[async_trait]
 impl Tool for DisconnectTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        let _ = locale;
+        let detail = arg_str(&tool_call.arguments, &["provider"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Disconnect provider", detail, phase))
+    }
+
     fn name(&self) -> &str {
         "disconnect"
     }
@@ -331,6 +382,29 @@ impl Tool for DisconnectTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connector_narration_names_action_and_provider() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let store = Arc::new(ConnectionStore::open(tmp.path().join("connections.toml")));
+        let catalog = Arc::new(ConnectionCatalog::with_defaults());
+        let tool = GetConnectorTool { catalog, store };
+        let call = ToolCall {
+            id: "call-1".into(),
+            name: "get_connector".into(),
+            arguments: json!({ "provider": "daytona" }),
+        };
+
+        assert_eq!(
+            tool.narrate(
+                &call,
+                ToolNarrationPhase::Started,
+                None,
+                everruns_core::tool_narration::ToolNarrationContext::default(),
+            ),
+            Some("Get connector: daytona".into())
+        );
+    }
 
     #[tokio::test]
     async fn list_connectors_includes_daytona() {

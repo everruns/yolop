@@ -419,6 +419,31 @@ mod tests {
     }
 
     #[test]
+    fn set_status_narration_includes_truncated_status() {
+        use everruns_core::tool_narration::ToolNarrationPhase;
+        use everruns_core::tool_types::ToolCall;
+
+        let tool = SetStatusTool {
+            ui: Arc::new(RecordingUi::default()),
+        };
+        let tool_call = ToolCall {
+            id: "call-1".to_string(),
+            name: "set_status".to_string(),
+            arguments: json!({ "status": "Auditing tool narration" }),
+        };
+
+        assert_eq!(
+            tool.narrate(
+                &tool_call,
+                ToolNarrationPhase::Started,
+                None,
+                everruns_core::tool_narration::ToolNarrationContext::default(),
+            ),
+            Some("Update status: Auditing tool narration".to_string())
+        );
+    }
+
+    #[test]
     fn run_yolop_command_schema_accepts_slashed_aliases() {
         let tool = RunYolopCommandTool {
             ui: Arc::new(RecordingUi::default()),
