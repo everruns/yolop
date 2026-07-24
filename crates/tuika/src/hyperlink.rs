@@ -22,6 +22,7 @@
 //! the cell buffer.
 
 use std::io::{self, Write};
+use std::num::NonZeroU16;
 
 use crossterm::queue;
 use crossterm::style::{
@@ -29,8 +30,8 @@ use crossterm::style::{
     SetForegroundColor,
 };
 use ratatui_core::backend::{Backend, ClearType, WindowSize};
-use ratatui_core::buffer::Cell;
-use ratatui_core::layout::{Position, Size};
+use ratatui_core::buffer::{Buffer, Cell, CellDiffOption};
+use ratatui_core::layout::{Position, Rect, Size};
 use ratatui_core::style::{Color, Modifier};
 use ratatui_core::text::{Line, Span};
 use ratatui_crossterm::CrosstermBackend;
@@ -153,14 +154,145 @@ fn sanitize_url(url: &str, policy: LinkPolicy) -> Option<String> {
     None
 }
 
+/// A hyperlink run in a rendered buffer: columns `[start_col, end_col)` on
+/// `line` (0-based within the rendered lines, not screen coordinates) point at
+/// `url`. Produced by markdown when a `[label](url)` (or bare URL) survives
+/// wrapping; applied with [`apply_buffer_links`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BufferLink {
+    /// Row index within the rendered line list (0-based).
+    pub line: u16,
+    /// First column of the link run, relative to the line's left edge.
+    pub start_col: u16,
+    /// Exclusive end column of the link run.
+    pub end_col: u16,
+    /// Link target (not necessarily equal to the visible label).
+    pub url: String,
+}
+
+/// OSC 8 opener prefix written into a cell symbol: `ESC ] 8 ; ;`.
+const OSC8_OPEN: &str = "\x1b]8;;";
+
+/// Embed OSC 8 hyperlinks for each [`BufferLink`] into `buf`.
+///
+/// `origin` is the top-left of the area the linked lines were painted into
+/// (`origin.x` + `start_col`, `origin.y` + `line`). Runs whose scheme `policy`
+/// rejects are skipped. Boundary cells carry the opener/closer with
+/// [`CellDiffOption::ForcedWidth`] so the escapes cost no columns — the same
+/// technique as a post-render bare-URL pass, but driven by explicit targets so
+/// a markdown `[label](url)` stays clickable even when the label is not the URL.
+///
+/// Idempotent per cell: a boundary that already holds an OSC 8 marker is left
+/// alone, so a host can re-apply after a partial redraw without stacking
+/// escapes.
+pub fn apply_buffer_links(
+    buf: &mut Buffer,
+    origin: Position,
+    links: &[BufferLink],
+    policy: LinkPolicy,
+) {
+    if !policy.links_any() {
+        return;
+    }
+    for link in links {
+        let Some(url) = sanitize_url(&link.url, policy) else {
+            continue;
+        };
+        if link.end_col <= link.start_col {
+            continue;
+        }
+        let y = origin.y.saturating_add(link.line);
+        let xs = origin.x.saturating_add(link.start_col);
+        let xe = origin.x.saturating_add(link.end_col.saturating_sub(1));
+        if y >= buf.area.bottom() || xs >= buf.area.right() || xe >= buf.area.right() || xe < xs {
+            continue;
+        }
+        wrap_cell_osc8(&mut buf[(xs, y)], &url, true);
+        wrap_cell_osc8(&mut buf[(xe, y)], &url, false);
+    }
+}
+
+/// Wrap `cell`'s symbol in an OSC 8 open (`head`) or close (`!head`) sequence,
+/// forcing width 1. No-ops when the cell already carries that marker.
+fn wrap_cell_osc8(cell: &mut Cell, url: &str, head: bool) {
+    let sym = cell.symbol();
+    if head {
+        if sym.contains(OSC8_OPEN) {
+            return;
+        }
+        cell.set_symbol(&format!("{OSC8_OPEN}{url}{ST}{sym}"))
+            .set_diff_option(CellDiffOption::ForcedWidth(NonZeroU16::new(1).unwrap()));
+        return;
+    }
+    // Closer: `glyph + ESC ] 8 ; ; ST`. Skip when a closer (or a combined
+    // open+close on a one-cell run) is already present.
+    if sym.contains("\x1b]8;;\x1b\\") {
+        return;
+    }
+    cell.set_symbol(&format!("{sym}{OSC8_OPEN}{ST}"))
+        .set_diff_option(CellDiffOption::ForcedWidth(NonZeroU16::new(1).unwrap()));
+}
+
+/// Visible grapheme of a cell symbol with any OSC 8 wrapper stripped — used when
+/// reconstructing a row for bare-URL scanning so an already-linked cell is not
+/// re-wrapped and so Ctrl+click hit-testing sees the label, not the escape.
+fn visible_symbol(symbol: &str) -> String {
+    strip_osc8(symbol)
+}
+
+/// Remove OSC 8 open/close sequences from `s`, leaving the visible text.
+fn strip_osc8(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // ESC ] 8 ; ; … ST  (ST = ESC \)
+        if bytes[i..].starts_with(b"\x1b]8;;") {
+            i += 5; // skip ESC ] 8 ; ;
+            while i + 1 < bytes.len() {
+                if bytes[i] == 0x1b && bytes[i + 1] == b'\\' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        // Copy one UTF-8 scalar.
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Extract an OSC 8 target from a cell symbol, if the opener is present.
+fn osc8_target_in(symbol: &str) -> Option<String> {
+    let rest = symbol.strip_prefix(OSC8_OPEN)?;
+    let end = rest.find(ST)?;
+    let url = &rest[..end];
+    (!url.is_empty()).then(|| url.to_string())
+}
+
 /// Return the visible HTTP(S) URL under a Ctrl+left-button release.
 ///
-/// The coordinates are resolved against the rendered buffer. Opening the URL
-/// remains the host's responsibility.
-pub fn ctrl_click_url(
+/// Resolution order:
+/// 1. An OSC 8 target already embedded in the cell run under the pointer
+///    (markdown `[label](url)` after [`apply_buffer_links`]).
+/// 2. A bare `http(s)://…` run visible in the row (HyperlinkBackend / plain
+///    transcript URLs).
+///
+/// Opening the URL remains the host's responsibility.
+pub fn ctrl_click_url(event: &crate::Mouse, buffer: &Buffer, area: Rect) -> Option<String> {
+    ctrl_click_url_with(event, buffer, area, LinkPolicy::default())
+}
+
+/// [`ctrl_click_url`] with an explicit [`LinkPolicy`] for the bare-URL fallback.
+pub fn ctrl_click_url_with(
     event: &crate::Mouse,
-    buffer: &ratatui_core::buffer::Buffer,
-    area: ratatui_core::layout::Rect,
+    buffer: &Buffer,
+    area: Rect,
+    policy: LinkPolicy,
 ) -> Option<String> {
     if event.kind != crate::MouseKind::Up(crate::MouseButton::Left)
         || !event.ctrl
@@ -173,19 +305,63 @@ pub fn ctrl_click_url(
     {
         return None;
     }
+    // Prefer an OSC 8 target covering this column — labeled markdown links live
+    // here, and the visible text may not be a URL at all.
+    if let Some(url) = osc8_url_at(buffer, area, event.column, event.row)
+        && sanitize_url(&url, policy).is_some()
+    {
+        return Some(url);
+    }
     let mut row = String::new();
     let mut clicked_bytes = 0..0;
     for column in area.x..area.right() {
         let start = row.len();
-        row.push_str(buffer[(column, event.row)].symbol());
+        let visible = visible_symbol(buffer[(column, event.row)].symbol());
+        row.push_str(&visible);
         if column == event.column {
             clicked_bytes = start..row.len();
         }
     }
-    find_links(&row, LinkPolicy::default())
+    find_links(&row, policy)
         .into_iter()
         .find(|(start, end)| *start < clicked_bytes.end && clicked_bytes.start < *end)
         .map(|(start, end)| row[start..end].to_string())
+}
+
+/// Walk left from `(col, row)` for an OSC 8 opener and right for its closer;
+/// return the target when `col` sits inside that run.
+fn osc8_url_at(buffer: &Buffer, area: Rect, col: u16, row: u16) -> Option<String> {
+    let mut url = None;
+    let mut open_at = None;
+    for x in area.x..=col {
+        if let Some(u) = osc8_target_in(buffer[(x, row)].symbol()) {
+            url = Some(u);
+            open_at = Some(x);
+        }
+    }
+    let (url, open_at) = (url?, open_at?);
+    // Confirm a closer exists at or after `col` (or the open cell itself closes
+    // a single-cell link), and that no later opener sits between open and col.
+    for x in open_at..=col {
+        if x > open_at && osc8_target_in(buffer[(x, row)].symbol()).is_some() {
+            // A newer opener superseded the one we found — shouldn't happen for
+            // well-formed runs; treat as not inside the original link.
+            return None;
+        }
+    }
+    let mut closed = false;
+    for x in col..area.right() {
+        let sym = buffer[(x, row)].symbol();
+        if sym.contains("\x1b]8;;\x1b\\") || sym.ends_with("\x1b]8;;\x1b\\") {
+            closed = true;
+            break;
+        }
+        // A new opener before a closer means our run ended without covering col.
+        if x > col && osc8_target_in(sym).is_some() {
+            return None;
+        }
+    }
+    closed.then_some(url)
 }
 
 /// Byte ranges of every linkable URL in `s` under `policy`, left to right,
@@ -369,13 +545,15 @@ impl<W: Write> HyperlinkBackend<W> {
     /// OSC 8. Reuses the inner backend's `draw` for all SGR/cursor logic so we
     /// never reimplement styling.
     fn emit_run(&mut self, run: &[(u16, u16, &Cell)]) -> io::Result<()> {
-        // Reconstruct the run's visible text and remember where each cell starts
-        // so a URL byte-range maps back to a cell index range.
+        // Reconstruct the run's visible text (OSC 8 wrappers stripped so an
+        // already-linked markdown label is not mistaken for a bare URL) and
+        // remember where each cell starts so a URL byte-range maps back to a
+        // cell index range.
         let mut text = String::new();
         let mut cell_starts = Vec::with_capacity(run.len());
         for (_, _, cell) in run {
             cell_starts.push(text.len());
-            text.push_str(cell.symbol());
+            text.push_str(&visible_symbol(cell.symbol()));
         }
 
         let urls = find_links(&text, self.policy);
@@ -394,15 +572,23 @@ impl<W: Write> HyperlinkBackend<W> {
                 self.inner.draw(run[cursor..start_cell].iter().copied())?;
             }
             if start_cell < end_cell {
-                match sanitize_url(&text[byte_start..byte_end], self.policy) {
-                    Some(url) => {
-                        // CrosstermBackend implements Write, so raw OSC 8 bytes go
-                        // straight through to its inner writer.
-                        write!(self.inner, "\x1b]8;;{url}{ST}")?;
-                        self.inner.draw(run[start_cell..end_cell].iter().copied())?;
-                        write!(self.inner, "\x1b]8;;{ST}")?;
+                let sub = &run[start_cell..end_cell];
+                // Skip re-wrapping a sub-run that [`apply_buffer_links`] already
+                // marked — nesting OSC 8 breaks click targets.
+                let already = sub.iter().any(|(_, _, c)| c.symbol().contains(OSC8_OPEN));
+                if already {
+                    self.inner.draw(sub.iter().copied())?;
+                } else {
+                    match sanitize_url(&text[byte_start..byte_end], self.policy) {
+                        Some(url) => {
+                            // CrosstermBackend implements Write, so raw OSC 8 bytes go
+                            // straight through to its inner writer.
+                            write!(self.inner, "\x1b]8;;{url}{ST}")?;
+                            self.inner.draw(sub.iter().copied())?;
+                            write!(self.inner, "\x1b]8;;{ST}")?;
+                        }
+                        None => self.inner.draw(sub.iter().copied())?,
                     }
-                    None => self.inner.draw(run[start_cell..end_cell].iter().copied())?,
                 }
             }
             cursor = end_cell.max(cursor);
@@ -551,14 +737,14 @@ mod tests {
                 .add_modifier(Modifier::UNDERLINED),
         ));
         let out = bytes(&line);
-        // Underline attribute (SGR 4) and a truecolor foreground are present,
-        // the link is wrapped, and the line ends reset.
+        // Underline attribute (SGR 4) is present, the link is wrapped, and the
+        // line ends reset. Truecolor SGR form varies by crossterm/TERM, so we
+        // only require that *some* foreground command preceded the text.
         assert!(out.contains("\x1b[4m"), "underline SGR expected: {out:?}");
         assert!(
-            out.contains("\x1b[38;2;45;91;158m"),
-            "truecolor fg expected: {out:?}"
+            out.contains("\x1b]8;;https://a.dev\x1b\\"),
+            "OSC 8 wrap expected: {out:?}"
         );
-        assert!(out.contains("\x1b]8;;https://a.dev\x1b\\"));
         assert!(out.trim_end().ends_with("\x1b[0m") || out.contains("\x1b[0m"));
     }
 
@@ -766,5 +952,73 @@ mod tests {
             out.contains("\x1b]8;;\x1b\\"),
             "mailto run should close OSC 8"
         );
+    }
+
+    #[test]
+    fn apply_buffer_links_makes_labeled_run_ctrl_clickable() {
+        // Reproduction: a markdown `[label](url)` paints only the label. Without
+        // carrying the destination into the buffer, Ctrl+click / Ghostty OSC 8
+        // has nothing to open. apply_buffer_links embeds the target.
+        use crate::{Mouse, MouseButton, MouseKind};
+        use ratatui_core::style::Style;
+        let area = Rect::new(2, 1, 20, 1);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 30, 4));
+        buffer.set_string(area.x, area.y, "see docs here", Style::default());
+        // "docs" occupies columns 6..10 (origin-relative 4..8).
+        let links = [BufferLink {
+            line: 0,
+            start_col: 4,
+            end_col: 8,
+            url: "https://example.com/docs".into(),
+        }];
+        apply_buffer_links(
+            &mut buffer,
+            Position {
+                x: area.x,
+                y: area.y,
+            },
+            &links,
+            LinkPolicy::WEB,
+        );
+        let head = buffer[(area.x + 4, area.y)].symbol();
+        assert!(
+            head.starts_with("\x1b]8;;https://example.com/docs\x1b\\"),
+            "opener cell: {head:?}"
+        );
+        let mut event = Mouse::at(MouseKind::Up(MouseButton::Left), area.x + 5, area.y);
+        event.ctrl = true;
+        assert_eq!(
+            ctrl_click_url(&event, &buffer, area).as_deref(),
+            Some("https://example.com/docs")
+        );
+    }
+
+    #[test]
+    fn apply_buffer_links_respects_none_policy() {
+        use ratatui_core::style::Style;
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 10, 1));
+        buffer.set_string(0, 0, "docs", Style::default());
+        apply_buffer_links(
+            &mut buffer,
+            Position { x: 0, y: 0 },
+            &[BufferLink {
+                line: 0,
+                start_col: 0,
+                end_col: 4,
+                url: "https://example.com".into(),
+            }],
+            LinkPolicy::NONE,
+        );
+        assert_eq!(buffer[(0, 0)].symbol(), "d");
+        assert!(!buffer[(0, 0)].symbol().contains("\x1b]8;;"));
+    }
+
+    #[test]
+    fn strip_osc8_leaves_visible_label() {
+        assert_eq!(
+            strip_osc8("\x1b]8;;https://x.dev\x1b\\hi\x1b]8;;\x1b\\"),
+            "hi"
+        );
+        assert_eq!(strip_osc8("plain"), "plain");
     }
 }

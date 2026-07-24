@@ -968,22 +968,33 @@ fn run_command(command: Commands) -> Result<()> {
     }
 }
 
-/// The OSC 8 hyperlink policy from the environment. `YOLOP_HYPERLINKS`
-/// (`1`/`true`/`on`) is the on/off gate — default off until the rendering is
-/// verified across terminals (see `tuika::HyperlinkBackend` and the tuika README
-/// matrix). When on, the conservative `http(s)`-only default applies unless
-/// `YOLOP_HYPERLINK_MAILTO` (`1`/`true`/`on`) also opts `mailto:` links in.
-fn hyperlink_policy() -> tuika::LinkPolicy {
-    let env_on = |name: &str| {
-        std::env::var(name)
-            .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
-            .unwrap_or(false)
+/// The OSC 8 hyperlink policy from the environment.
+///
+/// - `YOLOP_HYPERLINKS=0` / `false` / `off` — force off
+/// - `YOLOP_HYPERLINKS=1` / `true` / `on` — force on (`http(s)`)
+/// - unset — **auto**: on when [`tuika::Capabilities`] reports hyperlink support
+///   (Ghostty, Kitty, WezTerm, iTerm2, …), off otherwise
+///
+/// When on, `YOLOP_HYPERLINK_MAILTO=1` also opts `mailto:` links in.
+pub(crate) fn hyperlink_policy() -> tuika::LinkPolicy {
+    let raw = std::env::var("YOLOP_HYPERLINKS").ok();
+    let enabled = match raw.as_deref().map(str::trim) {
+        Some("0") | Some("false") | Some("off") => false,
+        Some("1") | Some("true") | Some("on") => true,
+        // Auto: trust capability detection so Ghostty/etc. get clickable links
+        // without a manual env knob — the third-time regression was leaving this
+        // off by default while the UI still *looked* linked.
+        None | Some("") | Some("auto") => tuika::Capabilities::from_env().hyperlinks,
+        Some(_) => tuika::Capabilities::from_env().hyperlinks,
     };
-    if !env_on("YOLOP_HYPERLINKS") {
+    if !enabled {
         return tuika::LinkPolicy::NONE;
     }
     let mut policy = tuika::LinkPolicy::WEB;
-    if env_on("YOLOP_HYPERLINK_MAILTO") {
+    let mailto = std::env::var("YOLOP_HYPERLINK_MAILTO")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
+        .unwrap_or(false);
+    if mailto {
         policy = policy.with_mailto();
     }
     policy
@@ -1135,8 +1146,8 @@ async fn run_tui(
     let stdout = io::stdout();
     // Opt-in OSC 8 hyperlinks: wrap the crossterm backend so http(s) (and, with
     // YOLOP_HYPERLINK_MAILTO, mailto) URLs in rendered output become clickable.
-    // Default off (pure pass-through) until the rendering is verified across
-    // terminals; enable with YOLOP_HYPERLINKS=1.
+    // OSC 8 hyperlinks via HyperlinkBackend — see `hyperlink_policy` (auto-on
+    // for Ghostty and other known OSC 8 terminals; override with YOLOP_HYPERLINKS).
     let backend = tuika::HyperlinkBackend::with_policy(stdout, hyperlink_policy());
     let viewport = if fullscreen {
         Viewport::Fullscreen

@@ -37,6 +37,7 @@ mod toast;
 
 pub use crate::markdown::{
     ImageResolver, Markdown, MarkdownImage, MarkdownState, markdown_to_lines,
+    markdown_to_linked_lines,
 };
 pub use ascii_font::{AsciiFont, FONT_HEIGHT as ASCII_FONT_HEIGHT};
 pub use boxed::Boxed;

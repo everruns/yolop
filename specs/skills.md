@@ -42,10 +42,11 @@ a labeled VFS root that yolop's file store maps to a **real on-disk directory**:
 1. **Workspace** — `<workspace>/.agents/skills/<name>/` (VFS `/.agents/skills`).
    Lives in the project under version control; ships with the repo it belongs to.
    Writable.
-2. **Global** — `<config_dir>/yolop/skills/<name>/` (e.g.
-   `~/.config/yolop/skills/` on Linux; VFS `/.yolop/global-skills`), installed
-   once per user and shared across every workspace. Writable. Overridable with
-   `YOLOP_GLOBAL_SKILLS_DIR`.
+2. **Global** — `~/.agents/skills/<name>/` (VFS
+   `/.yolop/global-skills`), installed once per user and shared across every
+   workspace. Writable. Overridable with `YOLOP_GLOBAL_SKILLS_DIR`. The prior
+   `<config_dir>/yolop/skills/` root is imported temporarily for compatibility;
+   existing primary entries are never overwritten.
 3. **Environment** — optional, integration-owned skills mounted into the
    session-only VFS (VFS `/.yolop/environment-skills`). Always read-only and
    never materialized on disk. Herdr currently contributes this scope when its

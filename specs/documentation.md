@@ -116,6 +116,56 @@ installed browser instead of the `go-rod` download, point `ROD_BROWSER_BIN` at
 its `chrome` binary. These environment knobs belong in the shell around a
 recording, not in committed tapes, so tapes stay portable.
 
+## README hero capture
+
+The README hero is a checked-in VHS workflow, not a one-off screen recording:
+
+- `docs/demo.tape` owns the terminal presentation and interaction;
+- `docs/demo-setup.sh` creates the disposable project under
+  `/tmp/yolop-hero-*`; and
+- `docs/demo.gif` is the generated asset embedded by `README.md`.
+
+Unlike feature-guide captures, the hero intentionally uses an authenticated
+Codex subscription with `gpt-5.6-sol` so it demonstrates the advertised live
+agent. This is an explicit live-provider exception to the offline-capture
+preference above. Authentication comes from the operator's existing yolop
+settings; the tape and rendered frames must never contain credentials, personal
+paths, or session identifiers.
+
+Regenerate from the repository root:
+
+```bash
+cargo build
+vhs validate docs/demo.tape
+vhs docs/demo.tape
+```
+
+The explicit build warms incremental compilation; the tape also builds while
+capture is hidden and allows up to five minutes for a cold build. Keep
+`NO_COLOR` cleared so the TUI palette survives the recorder. Keep loop offset
+unset: frame one must be the idle shell, followed by typing `yolop`, TUI
+startup, the task, and its verified final response in chronological order.
+
+The fixture and prompt should bound model work rather than scripting model
+output. Prefer exact dependency versions, existing dependencies, a small test
+surface, and low reasoning effort. If the live turn becomes slow, simplify
+those inputs before increasing the visible wait. Tune `PlaybackSpeed` in the
+tape—not by rotating or trimming the finished GIF—to target about one minute
+and less than 5 MiB.
+
+Before committing, inspect both endpoints and the asset metadata:
+
+```bash
+bash -n docs/demo-setup.sh
+ffprobe -v error -select_streams v:0 \
+  -show_entries stream=width,height,nb_frames,duration \
+  -of default=noprint_wrappers=1 docs/demo.gif
+```
+
+Frame one must show the empty shell prompt. The last frame must show completed
+tests and the requested success phrase. Re-run the capture after rebasing when
+fullscreen presentation changes, so the hero matches current `main`.
+
 ## Enforcement
 
 CI rejects Markdown links from `README.md` and `docs/` into `specs/` or

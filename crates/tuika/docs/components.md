@@ -422,14 +422,18 @@ view! { node(Slider::new(&state).label(&state)) }
 
 A multi-line edit model: buffer, cursor, editing, and soft-wrap. `TextInput`
 renders a snapshot; the host places the terminal cursor from
-`TextInputState::cursor_screen`.
+`TextInputState::cursor_screen`. Configure Enter vs Shift+Enter with
+`TextInputMode` (`SubmitOnEnter` by default): the other chord inserts a newline.
+Ctrl+J always inserts a newline (raw-mode LF from terminals without enhanced
+keyboard reporting).
 [API](https://docs.rs/tuika/latest/tuika/struct.TextInput.html)
 
 <img src="demos/textinput.gif" width="880" alt="TextInput demo">
 
 ```rust
-use tuika::{TextInput, TextInputState, view};
-let state = TextInputState::from_text("");
+use tuika::{TextInput, TextInputMode, TextInputState, view};
+let mut state = TextInputState::from_text("");
+state.set_mode(TextInputMode::SubmitOnEnter);
 view! {
     boxed(title = " commit message ") {
         node(TextInput::new(&state))

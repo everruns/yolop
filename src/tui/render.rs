@@ -313,6 +313,7 @@ pub(crate) fn recent_transcript_lines(
 /// every frame. Pass `start = 0`, `prev_author = None` to wrap everything.
 pub(crate) fn append_transcript_range(
     out: &mut Vec<Line<'static>>,
+    links: &mut Vec<tuika::BufferLink>,
     lines: &[ChatLine],
     start: usize,
     width: usize,
@@ -324,7 +325,7 @@ pub(crate) fn append_transcript_range(
         {
             out.push(Line::from(""));
         }
-        append_chat_lines(out, chat, width);
+        links.extend(append_chat_lines(out, chat, width));
         prev_author = Some(chat.author.clone());
     }
     prev_author
@@ -1336,7 +1337,7 @@ pub(crate) fn append_chat_lines<'a>(
     lines: &mut Vec<Line<'a>>,
     chat: &ChatLine,
     inner_width: usize,
-) {
+) -> Vec<tuika::BufferLink> {
     let presented = present_transcript_line(chat);
     if matches!(presented.author, Author::ToolDetail) {
         append_wrapped_plain(
@@ -1346,7 +1347,7 @@ pub(crate) fn append_chat_lines<'a>(
             &presented.text,
             inner_width,
         );
-        return;
+        return Vec::new();
     }
     if matches!(presented.author, Author::Stderr) {
         append_wrapped_plain(
@@ -1356,7 +1357,7 @@ pub(crate) fn append_chat_lines<'a>(
             &presented.text,
             inner_width,
         );
-        return;
+        return Vec::new();
     }
 
     let header_text = format!("{} › ", presented.label.unwrap_or_default());
@@ -1370,7 +1371,7 @@ pub(crate) fn append_chat_lines<'a>(
             header_style,
             &presented.text,
             inner_width,
-        );
+        )
     } else if matches!(presented.author, Author::Narration) {
         append_wrapped_styled(
             lines,
@@ -1380,6 +1381,7 @@ pub(crate) fn append_chat_lines<'a>(
             inner_width,
             Style::default().fg(TEXT_MUTED),
         );
+        Vec::new()
     } else if matches!(presented.author, Author::Diff) {
         append_wrapped_diff(
             lines,
@@ -1388,6 +1390,7 @@ pub(crate) fn append_chat_lines<'a>(
             &presented.text,
             inner_width,
         );
+        Vec::new()
     } else {
         append_wrapped_plain(
             lines,
@@ -1396,6 +1399,7 @@ pub(crate) fn append_chat_lines<'a>(
             &presented.text,
             inner_width,
         );
+        Vec::new()
     }
 }
 
@@ -1545,19 +1549,24 @@ pub(crate) fn diff_line_style(line: &str) -> Style {
 /// render at `inner_width` minus the header prefix, then prepend the header to
 /// the first row and matching indentation to the continuation rows so the
 /// author label (`agent › `) still owns the left gutter.
+///
+/// Returns [`tuika::BufferLink`]s for every hyperlink run in the rendered block
+/// (labeled `[text](url)` and bare URLs), with coordinates relative to the
+/// lines appended to `lines` — including the gutter offset — so the host can
+/// [`tuika::apply_buffer_links`] after painting.
 pub(crate) fn append_markdown_lines<'a>(
     lines: &mut Vec<Line<'a>>,
     first_prefix: &str,
     prefix_style: Style,
     text: &str,
     inner_width: usize,
-) {
+) -> Vec<tuika::BufferLink> {
     let prefix_cols = first_prefix.chars().count();
     let width = inner_width.saturating_sub(prefix_cols).max(1) as u16;
     let theme = super::fullscreen::yolop_theme();
     let sheet = tuika::StyleSheet::from_theme(&theme);
     let highlighter = tuika_codeformatters::TreeSitterHighlighter::new();
-    let rendered = tuika::markdown_to_lines(
+    let (rendered, md_links) = tuika::markdown_to_linked_lines(
         text,
         width,
         &theme,
@@ -1565,6 +1574,8 @@ pub(crate) fn append_markdown_lines<'a>(
         tuika::CodeHighlighter::With(&highlighter),
     );
 
+    let base_line = lines.len() as u16;
+    let gutter = prefix_cols as u16;
     let continuation = " ".repeat(prefix_cols);
     let mut first = true;
     if rendered.is_empty() {
@@ -1577,7 +1588,7 @@ pub(crate) fn append_markdown_lines<'a>(
             &mut first,
             vec![],
         );
-        return;
+        return Vec::new();
     }
     for line in rendered {
         push_markdown_line(
@@ -1589,6 +1600,15 @@ pub(crate) fn append_markdown_lines<'a>(
             line.spans,
         );
     }
+    md_links
+        .into_iter()
+        .map(|mut link| {
+            link.line = link.line.saturating_add(base_line);
+            link.start_col = link.start_col.saturating_add(gutter);
+            link.end_col = link.end_col.saturating_add(gutter);
+            link
+        })
+        .collect()
 }
 
 pub(crate) fn push_markdown_line<'a>(
