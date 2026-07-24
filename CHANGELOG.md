@@ -19,7 +19,7 @@ tags the version and publishes to crates.io and the Homebrew tap.
 - Fullscreen is now the default experience, with a responsive status drawer, an interactive task tree, non-blocking task refresh, and selection that spans transcript windows.
 - Extensions can emit trace events, export telemetry to Logfire, and request typed configuration and secrets through the expanded `yolop-yep` SDK and wire protocol.
 - MCP OAuth is conversational in both terminal modes, `/tools` updates live, OAuth callbacks are clearer, and tool activity narration is more complete.
-- Agent shortcuts now run through Tuika's configurable keymap engine, and skills can be shared from a common agents directory.
+- Agent shortcuts now run through Tuika's configurable keymap engine, skills can be shared from a common agents directory, and panic diagnostics survive fullscreen terminal restoration.
 
 #### Tuika
 
@@ -35,6 +35,7 @@ tags the version and publishes to crates.io and the Homebrew tap.
 
 ### What's Changed
 
+* fix(tui): preserve panic diagnostics ([#478](https://github.com/everruns/yolop/pull/478)) by @chaliy
 * fix(tui): let full-screen selection span more than one window ([#477](https://github.com/everruns/yolop/pull/477)) by @chaliy
 * feat(tui): make fullscreen the default ([#476](https://github.com/everruns/yolop/pull/476)) by @chaliy
 * feat(tuika): add keymap engine, route yolop shortcuts through it ([#474](https://github.com/everruns/yolop/pull/474)) by @chaliy
