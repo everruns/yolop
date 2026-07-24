@@ -1,8 +1,0 @@
-{
-  "_comment": "iai-callgrind instruction-count baseline. Deterministic and machine-independent for a fixed toolchain + libc. Regenerate with `python3 crates/tuika/benches/check_iai.py --update` and commit alongside the code change that shifted the counts.",
-  "tolerance_pct": 2.0,
-  "benchmarks": {
-    "highlight.python": 94727971,
-    "highlight.rust": 291034831
-  }
-}

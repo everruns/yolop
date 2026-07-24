@@ -13,17 +13,17 @@ stuck after reading the code, ask with short options.
 
 ## Layout
 
-A Cargo workspace of four packages; root `cargo test` / `cargo clippy` cover all
-of them.
+A Cargo workspace of two packages; root `cargo test` / `cargo clippy` cover
+both.
 
 - `.` — the `yolop` binary.
 - `crates/yolop-yep/` — the YEP extension protocol and server SDK, published
   separately for extension authors; the host depends on it for the wire types.
-- `crates/tuika/` — a standalone terminal-UI toolkit over ratatui (layout,
-  overlays, focus, streaming `Markdown`, `CodeBlock`), separately versioned,
-  powering the fullscreen renderer. See [`crates/tuika/README.md`](crates/tuika/README.md).
-- `crates/tuika-codeformatters/` — tuika's tree-sitter `Highlighter`, kept
-  separate so tuika core stays grammar-free.
+
+The fullscreen renderer is built on [tuika](https://github.com/everruns/tuika),
+a terminal-UI toolkit that lives in its own repository and is consumed from
+crates.io along with its `tuika-codeformatters` highlighter. See
+[Tuika](#tuika).
 
 ## Gotchas
 
@@ -67,9 +67,6 @@ python3 scripts/validate_okf.py knowledge --check-links   # when knowledge/ chan
   concepts the task touches.
 - [`.agents/skills/`](.agents/skills) — workflows the user can request by name:
   `/ship`, `/maintenance`, `/release`, `/author-extension`.
-- [`crates/tuika/benches/README.md`](crates/tuika/benches/README.md) — Criterion
-  and iai-callgrind procedure. The iai instruction counts are a committed
-  baseline and a CI gate.
 - [`evals/README.md`](evals/README.md) — the Mira eval studies (SWE-bench
   Verified, harness A/Bs, LSP isolation). Outside the Cargo workspace.
 - [`README.md`](README.md) and [`docs/`](docs/) — the public surface. Neither may
@@ -98,6 +95,15 @@ bundle.
 Start from latest `main` by default: `git fetch origin main`, then branch from or
 rebase onto `origin/main`. The merge bar (PR template, CI, squash) is owned by
 [`knowledge/specs/shipping.md`](knowledge/specs/shipping.md).
+
+## Tuika
+
+Toolkit-shaped work — layout, components, overlays, focus, keymap, markdown
+rendering, terminal escapes — belongs in
+[everruns/tuika](https://github.com/everruns/tuika), not here; what belongs here
+is how yolop *composes* it. Land a needed toolkit change there, release it, then
+bump the version. `tests/tuika_pty.rs` stays because it drives the `yolop`
+binary. See [`knowledge/specs/tuika.md`](knowledge/specs/tuika.md).
 
 ## Upstream relationship
 
