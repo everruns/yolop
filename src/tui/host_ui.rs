@@ -56,6 +56,8 @@ pub enum UiCommand {
     OpenModelOverlay { arg: Option<String> },
     /// Open the interactive reasoning-effort picker. `arg` pre-seeds it.
     OpenEffortOverlay { arg: Option<String> },
+    /// Set (or clear when empty) the agent's turn-scoped status contribution.
+    SetAgentStatus { status: String },
     /// Set (or, when `status` is empty, clear) an extension's status-bar field.
     /// Pushed by an extension server's `status/changed` notification.
     SetExtensionStatus { ext: String, status: String },

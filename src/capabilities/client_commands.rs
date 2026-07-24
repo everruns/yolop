@@ -37,6 +37,9 @@ client-command set. When the user asks for one of these terminal
 actions — for example "exit", "clear the screen", "show tools", "switch model",
 or "expand the status bar" — call `run_yolop_command`; do not merely tell the
 user to type the slash command.
+Use `set_status` for a concise live description of meaningful turn progress.
+The contribution is cleared automatically when the turn finishes; send an
+empty value to clear it earlier.
 </capability>"#;
 
 pub(crate) struct ClientCommandsCapability {
@@ -75,9 +78,14 @@ impl Capability for ClientCommandsCapability {
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![Box::new(RunYolopCommandTool {
-            ui: self.ui.clone(),
-        })]
+        vec![
+            Box::new(RunYolopCommandTool {
+                ui: self.ui.clone(),
+            }),
+            Box::new(SetStatusTool {
+                ui: self.ui.clone(),
+            }),
+        ]
     }
 
     async fn execute_command(
@@ -159,6 +167,72 @@ fn ui_command_for(name: &str, arg: Option<String>) -> Option<UiCommand> {
 
 struct RunYolopCommandTool {
     ui: Arc<dyn HostUi>,
+}
+
+struct SetStatusTool {
+    ui: Arc<dyn HostUi>,
+}
+
+#[async_trait]
+impl Tool for SetStatusTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        let _ = locale;
+        let status = arg_str(&tool_call.arguments, &["status"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Update status", status, phase))
+    }
+
+    fn name(&self) -> &str {
+        "set_status"
+    }
+
+    fn display_name(&self) -> Option<&str> {
+        Some("Status")
+    }
+
+    fn description(&self) -> &str {
+        "Set a concise, turn-scoped status shown in the interactive TUI. \
+         Use an empty status to clear it before the turn finishes."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Concise live progress, at most 120 characters. Empty clears it."
+                }
+            },
+            "required": ["status"],
+            "additionalProperties": false
+        })
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let Some(raw) = arguments.get("status").and_then(Value::as_str) else {
+            return ToolExecutionResult::tool_error("'status' is required");
+        };
+        let status = raw.trim();
+        if status.chars().count() > 120 {
+            return ToolExecutionResult::tool_error("status must be at most 120 characters");
+        }
+        if status.chars().any(char::is_control) {
+            return ToolExecutionResult::tool_error("status must be a single printable line");
+        }
+        self.ui.send(UiCommand::SetAgentStatus {
+            status: status.to_string(),
+        });
+        ToolExecutionResult::success(json!({
+            "success": true,
+            "status": status
+        }))
+    }
 }
 
 #[async_trait]
@@ -316,6 +390,7 @@ mod tests {
         assert!(prompt.contains("client-command set"));
         assert!(prompt.contains("/quit"));
         assert!(prompt.contains("/exit"));
+        assert!(prompt.contains("set_status"));
     }
 
     #[test]
@@ -368,6 +443,44 @@ mod tests {
 
         assert!(result.is_success(), "tool result: {result:?}");
         assert_eq!(ui.take(), vec![UiCommand::Quit]);
+    }
+
+    #[tokio::test]
+    async fn set_status_queues_turn_scoped_status_update() {
+        let ui = Arc::new(RecordingUi::default());
+        let tool = SetStatusTool { ui: ui.clone() };
+
+        let result = tool.execute(json!({ "status": "running tests 3/8" })).await;
+
+        assert!(result.is_success(), "tool result: {result:?}");
+        assert_eq!(
+            ui.take(),
+            vec![UiCommand::SetAgentStatus {
+                status: "running tests 3/8".to_string()
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn set_status_rejects_values_over_the_ui_limit() {
+        let ui = Arc::new(RecordingUi::default());
+        let tool = SetStatusTool { ui: ui.clone() };
+
+        let result = tool.execute(json!({ "status": "x".repeat(121) })).await;
+
+        assert!(result.is_error(), "tool result: {result:?}");
+        assert!(ui.take().is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_status_rejects_terminal_control_characters() {
+        let ui = Arc::new(RecordingUi::default());
+        let tool = SetStatusTool { ui: ui.clone() };
+
+        let result = tool.execute(json!({ "status": "tests\u{1b}[2J" })).await;
+
+        assert!(result.is_error(), "tool result: {result:?}");
+        assert!(ui.take().is_empty());
     }
 
     #[tokio::test]
