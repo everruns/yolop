@@ -119,8 +119,9 @@ When asked to release, the agent:
 
    **Four crates, ordered publish.** `yolop` depends on `yolop-yep`, `tuika`,
    and `tuika-codeformatters` by version, so crates.io requires all three live
-   first. `publish.yml` publishes `yolop-yep`, then `tuika`, then
-   `tuika-codeformatters`, then `yolop` (each skipped when already live). Because
+   first. `publish.yml` derives their dependency-first order from Cargo metadata
+   (currently `yolop-yep`, `tuika`, `tuika-codeformatters`, then `yolop`) and
+   skips versions already live. Because
    of that ordering, `cargo publish --dry-run -p yolop` can fail locally until
    all in-tree library versions are on crates.io. That is expected, not a broken
    release; dry-run all three library crates and rely on CI to validate `yolop`

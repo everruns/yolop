@@ -109,10 +109,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Validate OKF knowledge bundle
+      - name: Validate release and knowledge metadata
         run: |
           python3 scripts/validate_okf.py knowledge --check-links
           python3 scripts/test_validate_okf.py
+          python3 scripts/test_publish_order.py
+          test "$(python3 scripts/publish_order.py | tail -1)" = yolop
 
       - name: Public docs boundary
         run: |

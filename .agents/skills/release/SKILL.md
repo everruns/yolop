@@ -176,9 +176,9 @@ SDK, the `tuika` TUI toolkit, and the `tuika-codeformatters` highlighter — plu
 the `yolop` binary. Each library is separately versioned; bump one when its API
 or published dependency range changes (and bump `yolop-yep` for wire-protocol
 changes). crates.io requires the libraries live **before** `yolop`, so CI
-(`publish.yml`) publishes `yolop-yep`, then `tuika`, then
-`tuika-codeformatters`, then `yolop` (each skipped if its version is already
-live). A consequence for this step: **`cargo publish --dry-run -p yolop` fails
+(`publish.yml`) derives a dependency-first order from Cargo metadata (currently
+`yolop-yep`, `tuika`, `tuika-codeformatters`, then `yolop`) and skips versions
+already live. A consequence for this step: **`cargo publish --dry-run -p yolop` fails
 locally** when a new in-tree library version isn't yet on crates.io — that is
 expected, not a broken release. Dry-run all three libraries instead (above);
 `yolop`'s own publish is validated in CI after they go live. When bumping a
