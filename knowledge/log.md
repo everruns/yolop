@@ -11,6 +11,7 @@ wording, formatting, and link fixes do not need entries.
 - Crash reports and restored-terminal diagnostics now identify the active
   single-session runtime when its session ID is available.
 - Added [Tuika keymap](specs/keymap.md): the tuika declarative key-binding engine and Yolop's dispatch of its global shortcuts through it.
+- Excluded the tuika demo/theme/styling GIFs from the published `.crate` (~8.8 MiB → ~1 MiB), keeping only the two README-embedded assets; documented the GitHub-only/crate split in the documentation spec.
 
 ## 2026-07-23
 
