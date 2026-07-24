@@ -31,6 +31,7 @@ mod table;
 mod tabs;
 mod text;
 mod textinput;
+mod toast;
 
 pub use crate::markdown::{
     ImageResolver, Markdown, MarkdownImage, MarkdownState, markdown_to_lines,
@@ -58,3 +59,4 @@ pub use table::{Column, Table};
 pub use tabs::{Tabs, TabsState};
 pub use text::{Paragraph, Text, Wrap, line_width, wrap_lines};
 pub use textinput::{TextInput, TextInputEvent, TextInputMode, TextInputState};
+pub use toast::{DEFAULT_TTL as TOAST_DEFAULT_TTL, ToastLevel, ToastList, Toasts};
