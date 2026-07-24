@@ -3,21 +3,24 @@ use std::backtrace::Backtrace;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 const MAX_CRASH_REPORTS: usize = 5;
 const MAX_PANIC_MESSAGE_BYTES: usize = 8 * 1024;
 const MAX_REPORT_BYTES: usize = 256 * 1024;
 
+#[derive(Clone)]
 pub(crate) struct CrashReporter {
     path: Option<PathBuf>,
     written: Arc<AtomicBool>,
+    session_id: Arc<Mutex<Option<String>>>,
 }
 
 impl CrashReporter {
     pub(crate) fn install() -> Self {
         let written = Arc::new(AtomicBool::new(false));
+        let session_id = Arc::new(Mutex::new(None));
         let path = crash_report_dir()
             .and_then(|dir| prepare_crash_dir(&dir).then_some(dir))
             .map(|dir| {
@@ -28,6 +31,7 @@ impl CrashReporter {
 
         if let Some(path) = path.clone() {
             let hook_written = Arc::clone(&written);
+            let hook_session_id = Arc::clone(&session_id);
             let crash_dir = path.parent().map(Path::to_path_buf);
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
@@ -35,7 +39,11 @@ impl CrashReporter {
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
                 {
-                    if write_panic_report(&path, info).is_err() {
+                    let session_id = hook_session_id
+                        .try_lock()
+                        .ok()
+                        .and_then(|session_id| session_id.clone());
+                    if write_panic_report(&path, info, session_id.as_deref()).is_err() {
                         hook_written.store(false, Ordering::SeqCst);
                     } else if let Some(dir) = crash_dir.as_deref() {
                         prune_old_reports(dir, MAX_CRASH_REPORTS);
@@ -45,7 +53,24 @@ impl CrashReporter {
             }));
         }
 
-        Self { path, written }
+        Self {
+            path,
+            written,
+            session_id,
+        }
+    }
+
+    pub(crate) fn set_session_id(&self, session_id: impl Into<String>) {
+        if let Ok(mut current) = self.session_id.lock() {
+            *current = Some(session_id.into());
+        }
+    }
+
+    pub(crate) fn session_id(&self) -> Option<String> {
+        self.session_id
+            .try_lock()
+            .ok()
+            .and_then(|session_id| session_id.clone())
     }
 
     pub(crate) fn report_path(&self) -> Option<&Path> {
@@ -60,6 +85,7 @@ impl CrashReporter {
         Self {
             path: None,
             written: Arc::new(AtomicBool::new(false)),
+            session_id: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -87,7 +113,11 @@ fn prepare_crash_dir(dir: &Path) -> bool {
     true
 }
 
-fn write_panic_report(path: &Path, info: &std::panic::PanicHookInfo<'_>) -> std::io::Result<()> {
+fn write_panic_report(
+    path: &Path,
+    info: &std::panic::PanicHookInfo<'_>,
+    session_id: Option<&str>,
+) -> std::io::Result<()> {
     let mut payload = if let Some(message) = info.payload().downcast_ref::<&str>() {
         (*message).to_string()
     } else if let Some(message) = info.payload().downcast_ref::<String>() {
@@ -111,8 +141,11 @@ fn write_panic_report(path: &Path, info: &std::panic::PanicHookInfo<'_>) -> std:
         .name()
         .unwrap_or("unnamed")
         .to_string();
+    let session = session_id
+        .map(|session_id| format!("session_id: {session_id}\n"))
+        .unwrap_or_default();
     let mut body = format!(
-        "timestamp: {}\nversion: {}\nthread: {thread}\nlocation: {location}\npanic: {payload}\n\nbacktrace:\n{}\n",
+        "timestamp: {}\nversion: {}\n{session}thread: {thread}\nlocation: {location}\npanic: {payload}\n\nbacktrace:\n{}\n",
         chrono::Utc::now().to_rfc3339(),
         crate::version::VERSION_DETAILS,
         Backtrace::force_capture(),
@@ -254,6 +287,7 @@ mod tests {
         assert_eq!(reports.len(), 1);
         let report = std::fs::read_to_string(&reports[0]).expect("read crash report");
         assert!(report.contains("panic: crash-report-test"));
+        assert!(report.contains("session_id: session_crash_report_test"));
         assert!(report.contains("thread: crash_report::tests::panic_hook_child"));
         assert!(report.contains("backtrace:"));
     }
@@ -263,7 +297,8 @@ mod tests {
         if std::env::var_os("YOLOP_TEST_CRASH_DIR").is_none() {
             return;
         }
-        let _reporter = CrashReporter::install();
+        let reporter = CrashReporter::install();
+        reporter.set_session_id("session_crash_report_test");
         panic!("crash-report-test");
     }
 }

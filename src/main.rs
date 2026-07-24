@@ -480,17 +480,18 @@ fn main() -> Result<()> {
     // tokio worker threads a matching stack for deep async work spawned onto
     // them.
     let crash_reporter = crash_report::CrashReporter::install();
+    let worker_crash_reporter = crash_reporter.clone();
     let worker = std::thread::Builder::new()
         .name("yolop-main".to_string())
         .stack_size(16 * 1024 * 1024)
-        .spawn(|| {
+        .spawn(move || {
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(4)
                 .thread_stack_size(8 * 1024 * 1024)
                 .enable_all()
                 .build()
                 .expect("build tokio runtime")
-                .block_on(async_main())
+                .block_on(async_main(&worker_crash_reporter))
         })
         .expect("spawn yolop main thread");
     join_worker(worker, &crash_reporter)
@@ -503,6 +504,11 @@ fn join_worker<T>(
     match worker.join() {
         Ok(result) => result,
         Err(payload) => {
+            if let Some(session_id) = crash_reporter.session_id() {
+                // Session IDs are opaque local locators, not credentials; emitting
+                // one here is intentional so users can recover a crashed session.
+                eprintln!("yolop: crashed session id: {session_id}");
+            }
             if let Some(path) = crash_reporter.report_path() {
                 eprintln!("yolop: crash report written to {}", path.display());
             }
@@ -511,7 +517,7 @@ fn join_worker<T>(
     }
 }
 
-async fn async_main() -> Result<()> {
+async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -610,6 +616,7 @@ async fn async_main() -> Result<()> {
         },
     )
     .await?;
+    crash_reporter.set_session_id(runtime.handles.session_id.to_string());
 
     // Resolve the interactive TUI theme: the `--theme` flag wins, else the
     // persisted `theme` setting. Done before the print-mode branch so a bad
@@ -1649,6 +1656,7 @@ fn paint(enabled: bool, code: &str, text: &str) -> String {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::process::Command;
 
     #[test]
     fn worker_join_preserves_original_panic_payload() {
@@ -1663,6 +1671,37 @@ mod tests {
             panic.downcast_ref::<&str>().copied(),
             Some("original worker panic")
         );
+    }
+
+    #[test]
+    fn worker_join_prints_session_id() {
+        let output = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "tests::worker_join_prints_session_id_child",
+                "--nocapture",
+            ])
+            .env("YOLOP_TEST_WORKER_CRASH", "1")
+            .output()
+            .expect("run worker crash child");
+
+        assert!(!output.status.success(), "worker crash child should fail");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("yolop: crashed session id: session_worker_crash_test"),
+            "missing session id diagnostic: {stderr}"
+        );
+    }
+
+    #[test]
+    fn worker_join_prints_session_id_child() {
+        if std::env::var_os("YOLOP_TEST_WORKER_CRASH").is_none() {
+            return;
+        }
+        let reporter = crash_report::CrashReporter::disabled();
+        reporter.set_session_id("session_worker_crash_test");
+        let worker = std::thread::spawn(|| panic!("worker-crash-test"));
+        join_worker(worker, &reporter);
     }
 
     #[test]

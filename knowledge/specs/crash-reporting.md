@@ -21,13 +21,15 @@ Names combine a UTC timestamp with a random suffix. Yolop keeps the newest five
 reports. On Unix the directory is owner-only (`0o700`) and each report is
 `0o600`.
 
-A report contains only the Yolop version, timestamp, panic thread, source
-location, a bounded panic message, and a bounded backtrace. Yolop does not add
-prompts, messages, tool arguments or results, environment variables,
-credentials, or tracing logs. A panic message can still contain application
-data, so reports remain private local files and should be reviewed before
-sharing. Writing is best-effort and must never cause another panic.
+A report contains only the Yolop version, timestamp, current session ID when a
+single-session runtime has already started, panic thread, source location, a
+bounded panic message, and a bounded backtrace. Yolop does not add prompts,
+messages, tool arguments or results, environment variables, credentials, or
+tracing logs. A panic message can still contain application data, so reports
+remain private local files and should be reviewed before sharing. Writing is
+best-effort and must never cause another panic.
 
 When the large-stack application thread panics, terminal guards restore the
-screen first. Yolop then prints the report path and resumes the original panic
-payload; the outer thread must not replace it with a generic `Any` diagnostic.
+screen first. Yolop then prints the session ID when known and the report path,
+and resumes the original panic payload; the outer thread must not replace it
+with a generic `Any` diagnostic.

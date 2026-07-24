@@ -8,6 +8,8 @@ wording, formatting, and link fixes do not need entries.
 - Corrected the release contract to publish all four workspace crates in dependency order, including `tuika-codeformatters` before `yolop`.
 - Added [Crash reporting](specs/crash-reporting.md): bounded, owner-only local
   panic reports that remain visible after TUI terminal restoration.
+- Crash reports and restored-terminal diagnostics now identify the active
+  single-session runtime when its session ID is available.
 - Added [Tuika keymap](specs/keymap.md): the tuika declarative key-binding engine and Yolop's dispatch of its global shortcuts through it.
 
 ## 2026-07-23
