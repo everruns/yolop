@@ -55,6 +55,11 @@ with tuika's surfaces (see [Compatibility](#compatibility)).
 - **Overlays** (`overlay`) anchor a view over the base tree; the **host**
   (`host`) owns the alternate screen, translates crossterm input, and
   composites the frame.
+- **Keymap** (`keymap`) resolves declarative key bindings to named commands:
+  chords (`ctrl+r`) and multi-stroke sequences (`g g`) grouped into
+  prioritized, mode-gated `Layer`s, dispatched from a translated `Key` and
+  queryable for help/`KeyHints` surfaces. Host-agnostic, so it unit-tests
+  without a terminal.
 - **Motion** (`anim`, `components::{Spinner, ProgressBar, Loader}`,
   `native::TerminalProgress`) animates from a host-supplied frame counter and
   can drive the terminal's own OSC 9;4 progress indicator.
