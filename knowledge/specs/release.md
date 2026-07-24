@@ -34,13 +34,13 @@ Every yolop release ships to:
 | Target          | Surface                                  | How users install                       |
 |-----------------|------------------------------------------|-----------------------------------------|
 | GitHub Release  | tag `vX.Y.Z`, source archive, binaries   | `gh release download vX.Y.Z`            |
-| crates.io       | `yolop` binary + `yolop-yep` & `tuika` libs | `cargo install yolop --locked`       |
+| crates.io       | `yolop` binary + three library crates       | `cargo install yolop --locked`       |
 | Homebrew tap    | formula at `everruns/homebrew-tap`       | `brew install everruns/tap/yolop`       |
 
-The two library crates (`yolop-yep`, `tuika`) are versioned independently of
-`yolop` and are published as a side effect of a `yolop` release only when their
-in-tree version isn't already on crates.io (see § `publish.yml`). They can also
-be consumed on their own (`cargo add tuika`).
+The three library crates (`yolop-yep`, `tuika`, and `tuika-codeformatters`)
+are versioned independently of `yolop` and are published as a side effect of a
+`yolop` release only when their in-tree version isn't already on crates.io (see
+§ `publish.yml`). They can also be consumed on their own (`cargo add tuika`).
 
 Prebuilt CLI binaries are produced for:
 
@@ -95,10 +95,12 @@ When asked to release, the agent:
 
 3. **Bump the version** in `Cargo.toml` and regenerate `Cargo.lock`
    (`cargo update -p yolop`). The library crates under `crates/` — the
-   `yolop-yep` SDK and the `tuika` TUI toolkit — are **versioned separately**:
-   bump one only when its own API changes (for `yolop-yep`, also the wire
-   protocol), and when you do, update both `crates/<crate>/Cargo.toml` and the
-   matching `<crate> = { version = … }` requirement in the root `Cargo.toml`.
+   `yolop-yep` SDK, the `tuika` TUI toolkit, and `tuika-codeformatters` — are
+   **versioned separately**: bump one when its API or published dependency range
+   changes (for `yolop-yep`, also the wire protocol), and update every workspace
+   path dependency requirement that references it. A Tuika bump usually requires
+   a `tuika-codeformatters` bump because the published formatter pins a compatible
+   Tuika range.
 
 4. **Run local verification:**
    - `cargo fmt --check`
@@ -107,21 +109,23 @@ When asked to release, the agent:
 
 5. **Verify publish-readiness** (catches what local tests don't — the
    `cargo publish` packaging step, missing files, version drift):
-   - `cargo publish --dry-run -p yolop-yep` must succeed.
+   - `cargo publish --dry-run -p yolop-yep`, `-p tuika`, and
+     `-p tuika-codeformatters` must succeed.
    - Confirm `Cargo.toml` and `Cargo.lock` agree on `X.Y.Z`.
    - Confirm `X.Y.Z` is greater than the latest published version on
      crates.io (`cargo search yolop --limit 1`).
    - If any check fails, fix the root cause and re-run before opening the
      PR. **Do not** merge a release PR with a known-broken publish path.
 
-   **Three crates, ordered publish.** `yolop` depends on both `yolop-yep` and
-   `tuika` by version, so crates.io requires both live first. `publish.yml`
-   publishes `yolop-yep`, then `tuika`, then `yolop` (each skipped when already
-   live). Because of that ordering, `cargo publish --dry-run -p yolop`
-   **fails locally** — *"no matching package named `tuika` found"* (or
-   `yolop-yep`) — until both in-tree library versions are on crates.io. That
-   is expected, not a broken release; dry-run the two library crates and rely
-   on CI to validate `yolop` after they go live.
+   **Four crates, ordered publish.** `yolop` depends on `yolop-yep`, `tuika`,
+   and `tuika-codeformatters` by version, so crates.io requires all three live
+   first. `publish.yml` derives their dependency-first order from Cargo metadata
+   (currently `yolop-yep`, `tuika`, `tuika-codeformatters`, then `yolop`) and
+   skips versions already live. Because
+   of that ordering, `cargo publish --dry-run -p yolop` can fail locally until
+   all in-tree library versions are on crates.io. That is expected, not a broken
+   release; dry-run all three library crates and rely on CI to validate `yolop`
+   after they go live.
 
 6. **Commit and push** the changes on a feature branch with message
    `chore(release): prepare vX.Y.Z`.
@@ -163,9 +167,9 @@ When asked to release, the agent:
 - **Trigger**: `release: published`, or `workflow_dispatch --ref vX.Y.Z` from
   `release.yml`.
 - **Actions**: installs the pinned Rust toolchain, verifies the tag matches
-  `Cargo.toml`, runs `cargo publish -p yolop`, then runs
-  `scripts/verify_crates_publish.py` to confirm crates.io serves the new
-  version.
+  `Cargo.toml`, publishes `yolop-yep`, `tuika`, `tuika-codeformatters`, and
+  `yolop` in dependency order (skipping versions already live), then runs
+  `scripts/verify_crates_publish.py` to confirm crates.io serves the new version.
 - **Secret**: `CARGO_REGISTRY_TOKEN`.
 
 ### `cli-binaries.yml`

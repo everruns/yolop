@@ -165,26 +165,29 @@ packaging boundary, missing files referenced by `Cargo.toml`, version drift:
 ```bash
 cargo publish --dry-run -p yolop-yep   # SDK library; publishes first
 cargo publish --dry-run -p tuika       # TUI toolkit library; publishes first
+cargo publish --dry-run -p tuika-codeformatters # Highlighter; publishes after tuika
 cargo search yolop --limit 1     # confirm CURRENT crates.io version < X.Y.Z
 grep '^version' Cargo.toml       # confirm reads X.Y.Z
 grep '"yolop"' Cargo.lock | head -1  # confirm reads X.Y.Z
 ```
 
-**Three-crate workspace.** The repo publishes three crates: two libraries —
-the `yolop-yep` SDK and the `tuika` TUI toolkit (each separately versioned;
-bump one only when its own API changes, and for `yolop-yep` the wire protocol)
-— and the `yolop` binary, which depends on **both** by version. crates.io
-requires the libraries live **before** `yolop`, so CI (`publish.yml`) publishes
-`yolop-yep`, then `tuika`, then `yolop` (each skipped if its version is already
-live). A consequence for this step: **`cargo publish --dry-run -p yolop` fails
-locally** with *"no matching package named `tuika` found"* (or `yolop-yep`)
-whenever an in-tree library version isn't yet on crates.io — that is expected,
-not a broken release. Dry-run the two libraries instead (above); `yolop`'s own
-publish is validated in CI after they go live. When bumping a library, update
-its version in `crates/<crate>/Cargo.toml` **and** the
-`<crate> = { version = … }` requirement in the root `Cargo.toml`.
+**Four-crate workspace.** The repo publishes three libraries — the `yolop-yep`
+SDK, the `tuika` TUI toolkit, and the `tuika-codeformatters` highlighter — plus
+the `yolop` binary. Each library is separately versioned; bump one when its API
+or published dependency range changes (and bump `yolop-yep` for wire-protocol
+changes). crates.io requires the libraries live **before** `yolop`, so CI
+(`publish.yml`) derives a dependency-first order from Cargo metadata (currently
+`yolop-yep`, `tuika`, `tuika-codeformatters`, then `yolop`) and skips versions
+already live. A consequence for this step: **`cargo publish --dry-run -p yolop` fails
+locally** when a new in-tree library version isn't yet on crates.io — that is
+expected, not a broken release. Dry-run all three libraries instead (above);
+`yolop`'s own publish is validated in CI after they go live. When bumping a
+library, update its version in `crates/<crate>/Cargo.toml` **and** every
+workspace path dependency version requirement that references it. In
+particular, a Tuika bump usually requires a `tuika-codeformatters` bump because
+its published package pins a compatible Tuika range.
 
-If either library dry-run fails, fix the root cause and re-run. Do **not** open
+If any library dry-run fails, fix the root cause and re-run. Do **not** open
 a release PR with a known-broken publish path.
 
 ### 6. Commit and push
@@ -212,8 +215,9 @@ Body must include:
   - [x] `cargo fmt --check`
   - [x] `cargo clippy --all-targets --all-features -- -D warnings`
   - [x] `cargo test --all-features`
-  - [x] `cargo publish --dry-run -p yolop-yep` and `-p tuika` (the libraries;
-        `-p yolop` is validated in CI after they publish)
+  - [x] `cargo publish --dry-run -p yolop-yep`, `-p tuika`, and
+        `-p tuika-codeformatters` (the libraries; `-p yolop` is validated in CI
+        after they publish)
   - [x] crates.io currently serves `A.B.C` → publishing `X.Y.Z`
   - [x] `Cargo.toml` + `Cargo.lock` agree on `X.Y.Z`
   ```

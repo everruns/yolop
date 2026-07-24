@@ -8,7 +8,7 @@ members = [
 
 [package]
 name = "yolop"
-version = "0.12.0"
+version = "0.12.1"
 edition = "2024"
 authors = ["Everruns <support@everruns.com>"]
 license = "MIT"
@@ -72,7 +72,7 @@ textwrap = "0.16"
 tuika = { version = "0.4.0", path = "crates/tuika" }
 # Tree-sitter Highlighter impl for tuika's CodeBlock/Markdown; owns the grammar
 # deps so tuika core stays dependency-light (see crates/tuika-codeformatters).
-tuika-codeformatters = { version = "0.1.0", path = "crates/tuika-codeformatters" }
+tuika-codeformatters = { version = "0.2.0", path = "crates/tuika-codeformatters" }
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tree-sitter = "0.26"
