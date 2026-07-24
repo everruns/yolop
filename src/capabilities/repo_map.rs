@@ -8,7 +8,7 @@ use crate::capabilities::narration::stable_labeled;
 use crate::exec::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
@@ -70,26 +70,10 @@ impl Capability for RepoMapCapability {
         Some("Code Navigation")
     }
 
-    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        Some(
-            "<capability id=\"repo_map\">\n\
-             For broad codebase orientation, call `repo_map` or `repo_symbols` to get an \
-             on-demand symbol overview. Use grep/read for exact text and implementation \
-             details; the map is structural context, not a replacement for reading code. \
-             If a map is truncated, do not repeat the same call: add `query` or narrow `path`.\n\
-             </capability>"
-                .to_string(),
-        )
-    }
-
-    fn system_prompt_preview(&self) -> Option<String> {
-        Some(
-            "<capability id=\"repo_map\">\n\
-             Use `repo_map` / `repo_symbols` for on-demand multi-language symbol overviews.\n\
-             </capability>"
-                .to_string(),
-        )
-    }
+    // No system-prompt contribution: both tool descriptions already position the
+    // map as orientation before targeted grep/read, and the truncation advice
+    // ships in the truncated result itself (`truncation_metadata`), where it
+    // arrives at the moment it applies instead of on every turn.
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![

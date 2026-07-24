@@ -615,15 +615,14 @@ impl Capability for SetupCapability {
 /// Always-on guidance so the agent knows it can reconfigure the live session
 /// itself, in prose, without the user typing a slash command or touching an
 /// overlay. Mirrors the conversational-control contract (knowledge/specs/conversational-control.md).
-const SETUP_TOOLS_PROMPT: &str = "<capability id=\"yolop_setup\">\n\
-    You can reconfigure the live session yourself when it helps the task:\n\
-    `set_reasoning_effort` changes the model's reasoning effort (escalate before \
-    a hard step, deescalate for cheap follow-ups), `set_model` switches the model, \
-    and `set_provider` switches the provider. All three apply on the next turn of \
-    this session — no restart. Effort options are model-specific; if the level is \
-    unknown, `set_reasoning_effort` returns the accepted values, so retry with one \
-    of those. Prefer the smallest change that fits; do not thrash the model \
-    or provider mid-task.\n\
+// Discovery, not how-to: without this the model does not know it may retune the
+// live session at all. When to escalate effort, and not thrashing the model
+// mid-task, are judgement calls left to the model.
+pub(crate) const SETUP_TOOLS_PROMPT: &str = "<capability id=\"yolop_setup\">\n\
+    You can reconfigure the live session yourself when it helps the task: \
+    `set_reasoning_effort`, `set_model`, and `set_provider` all apply on the next \
+    turn of this session — no restart. Effort levels are model-specific; if one is \
+    unknown, `set_reasoning_effort` returns the accepted values.\n\
     </capability>";
 
 fn setup_command_arg() -> CommandArg {

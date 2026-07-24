@@ -12,7 +12,7 @@ use ast_grep_core::tree_sitter::StrDoc;
 use ast_grep_core::{AstGrep, Node};
 use ast_grep_language::SupportLang;
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::tool_types::ToolHints;
 use everruns_core::tools::{Tool, ToolExecutionResult};
@@ -81,25 +81,10 @@ impl Capability for AstGrepCapability {
         Some("Code Navigation")
     }
 
-    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        Some(
-            "<capability id=\"ast_grep\">\n\
-             For structural code search, call `ast_grep` with an ast-grep pattern and usually \
-             a language filter. Use it after repo-map/grep have narrowed the area, and read \
-             matched files before editing.\n\
-             </capability>"
-                .to_string(),
-        )
-    }
-
-    fn system_prompt_preview(&self) -> Option<String> {
-        Some(
-            "<capability id=\"ast_grep\">\n\
-             Use `ast_grep` for read-only structural pattern search.\n\
-             </capability>"
-                .to_string(),
-        )
-    }
+    // No system-prompt contribution: `ast_grep`'s description already states what
+    // it searches and which languages it supports. When to reach for it, and
+    // reading a match before editing it, are judgement calls the model makes from
+    // the surrounding task.
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![Box::new(AstGrepTool {
@@ -141,25 +126,9 @@ impl Capability for AstEditCapability {
         Some("Code Navigation")
     }
 
-    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        Some(
-            "<capability id=\"ast_edit\">\n\
-             For shape-based rewrites, call `ast_edit` with `pattern` and `replacement`. \
-             Preview with `dry_run=true` (the default), show the user the diff, then apply with \
-             `dry_run=false` after they accept. Confirm the pattern with `ast_grep` first.\n\
-             </capability>"
-                .to_string(),
-        )
-    }
-
-    fn system_prompt_preview(&self) -> Option<String> {
-        Some(
-            "<capability id=\"ast_edit\">\n\
-             Use `ast_edit` for previewed structural rewrites.\n\
-             </capability>"
-                .to_string(),
-        )
-    }
+    // No system-prompt contribution: `ast_edit`'s description already carries the
+    // preview-then-apply contract (`dry_run` defaults to true; call again with
+    // `dry_run=false` once the user accepts).
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![Box::new(AstEditTool {

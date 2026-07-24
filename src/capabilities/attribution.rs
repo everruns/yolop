@@ -18,7 +18,7 @@ pub(crate) const YOLOP_PR_ATTRIBUTION: &str = "Produced by [yolop](https://everr
 
 /// Render the `## Attribution` system-prompt block. Pure so it is unit-testable
 /// without a `SystemPromptContext`.
-fn yolop_attribution_prompt() -> String {
+pub(crate) fn yolop_attribution_prompt() -> String {
     format!(
         "\
 ## Attribution

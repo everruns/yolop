@@ -20,6 +20,13 @@ wording, formatting, and link fixes do not need entries.
 
 ## 2026-07-24
 
+- Added [System prompt composition](specs/system-prompt.md): one fact has one
+  home, discovery is always-on while how-to is reveal-gated, judgement is
+  preferred over encoded rules unless an eval says otherwise, and the per-turn
+  budget is enforced by a test.
+- Reveal gating (`capabilities::tool_reveal`) lets a capability withhold its
+  how-to prose until `tool_search` has loaded one of its tools; `config` and
+  `memory` use it, and `memory` now discloses titles separately from framing.
 - Corrected the release contract to publish all four workspace crates in dependency order, including `tuika-codeformatters` before `yolop`.
 - Added [Crash reporting](specs/crash-reporting.md): bounded, owner-only local
   panic reports that remain visible after TUI terminal restoration.

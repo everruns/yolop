@@ -61,6 +61,14 @@ to use `recall` to read full text or find the rest. This keeps prompt cost flat
 no matter how much the user has stored — the opposite of injecting the whole
 file.
 
+The block itself is disclosed in two tiers, per
+[system prompt composition](system-prompt.md). Titles are the disclosure and
+always ride. The framing paragraph — what memory is for, which tool does what,
+where the file lives — is how-to for three deferred tools whose descriptions
+already carry it, so it waits until `tool_search` reveals one of them. Empty
+memory with nothing revealed contributes no block at all; `remember`'s
+description is enough for the model to find it.
+
 ## Tools
 
 - `remember(title, memory, id?)` — store a memory. The timestamp is set

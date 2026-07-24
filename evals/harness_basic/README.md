@@ -22,7 +22,7 @@ Four axes, crossed with 25 samples (small edit / refactor / search / guardrail /
 | **binary** | `candidate` · `baseline` · `dependency-baseline` | `BINARIES`; configured by the matching `HARNESS_BASIC_*_BIN` variable |
 | **target** (model) | `anthropic/claude-sonnet-4-5` · `anthropic/claude-opus-4-8` · `openai/gpt-5.5` · `openrouter/z-ai/glm-5.2` | `targets()` in `src/main.rs` |
 | **effort** | `default` (yolop's per-model default; no flag) · `low` · `high` | `EFFORTS` |
-| **harness** | `default` (out-of-the-box yolop) · `with-ast-edit` (opt-in `ast_edit` capability) · `no-progress-guard` · `no-ast-grep` | `HARNESS_VARIANTS` |
+| **harness** | `default` (out-of-the-box yolop) · `with-ast-edit` (opt-in `ast_edit` capability) · `no-progress-guard` · `no-ast-grep` · `no-tool-reveal` | `HARNESS_VARIANTS` |
 
 Every target gates on its provider key env var (`ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`) and is *skipped* (not failed) when the
@@ -72,7 +72,13 @@ edits back from it). `default` adds nothing — it is yolop out of the box.
 `with-ast-edit` enables the opt-in `ast_edit` capability for previewed
 structural rewrites. `no-progress-guard` disables the progress-guard capability
 so guardrail changes can be compared against the same binary with that
-capability removed.
+capability removed. `no-tool-reveal` disables reveal gating, restoring the
+always-on `config` and `memory` prompt prose that the gate otherwise withholds
+until `tool_search` loads one of those tools — the A/B for whether deferring
+that prose costs task success.
+
+A lean-vs-verbose *prompt* comparison is not a harness variant: the verbose
+prompt is an earlier revision of yolop, so it is the `baseline` binary arm.
 
 Adding a configuration to the matrix is one entry in `src/main.rs`:
 

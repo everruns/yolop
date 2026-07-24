@@ -62,6 +62,18 @@ const HARNESS_VARIANTS: &[HarnessVariant] = &[
         name: "no-ast-grep",
         settings: "[[capabilities]]\nref = \"ast_grep\"\nenabled = false\n",
     },
+    // Reveal gating (`yolop_tool_reveal`) holds the `config` and `memory` how-to
+    // prose back until `tool_search` loads one of their schemas. Disabling it
+    // restores the always-on blocks, which is the A/B for the gate itself: does
+    // withholding that prose until the tools are callable cost any task success?
+    //
+    // The wider lean-vs-verbose prompt comparison does not belong here — the
+    // verbose prompt is a previous revision, so it is the `baseline` binary arm,
+    // not a settings toggle.
+    HarnessVariant {
+        name: "no-tool-reveal",
+        settings: "[[capabilities]]\nref = \"yolop_tool_reveal\"\nenabled = false\n",
+    },
 ];
 
 /// Study plumbing, not a variant under test: every case runs in a plain temp

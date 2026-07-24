@@ -41,14 +41,9 @@ impl Capability for CheckpointCapability {
     }
 
     fn system_prompt_addition(&self) -> Option<&str> {
-        Some(
-            "<capability id=\"yolop_checkpoint\">\n\
-             When the user asks to undo, redo, rewind, or roll back this Yolop session, use \
-             `manage_checkpoint`. First request a preview. Describe it and ask for confirmation; \
-             only queue the returned token after the user confirms. Workspace restore is available \
-             only in a Yolop-owned worktree.\n\
-             </capability>",
-        )
+        // `manage_checkpoint`'s description carries the preview → confirm → queue
+        // contract, including the worktree limit on workspace restore.
+        None
     }
 
     fn commands(&self) -> Vec<CommandDescriptor> {
@@ -183,9 +178,11 @@ impl Tool for ManageCheckpointTool {
     }
 
     fn description(&self) -> &str {
-        "List or preview session undo/redo/rewind. Preview returns a confirmation token. Only use \
-         operation=confirm after the user explicitly confirms; confirmation is queued until the \
-         current turn ends so model history is never mutated mid-turn."
+        "List or preview session undo/redo/rewind — use this when the user asks to undo, redo, \
+         rewind, or roll back the session. Preview returns a confirmation token; describe the \
+         preview and only use operation=confirm after the user explicitly confirms. Confirmation \
+         is queued until the current turn ends so model history is never mutated mid-turn. \
+         Workspace restore is available only in a Yolop-owned worktree."
     }
 
     fn parameters_schema(&self) -> Value {

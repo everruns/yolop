@@ -44,18 +44,22 @@ impl Capability for ConnectorsCapability {
     }
 
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        Some(format!(
-            "<capability id=\"{id}\">\n\
-             Connectors link yolop to remote sandbox backends. Use `list_connectors` to see \
-             available providers and connection status, `get_connector` for setup instructions, \
-             and `connect` / `disconnect` to manage credentials stored in {path}. \
-             When Daytona is connected, use the `daytona_*` tools to create isolated sandboxes \
-             and outsource risky or heavy work away from the host workspace. Host `bash` and file \
-             tools still operate on the local workspace.\n\
-             </capability>",
-            id = self.id(),
-            path = self.store.path().display()
-        ))
+        // The four tool descriptions cover discovery, setup, and credential
+        // management. What they cannot say is what a *connected* provider unlocks,
+        // because the `daytona_*` tools belong to another capability — so
+        // contribute that routing hint, and only once Daytona is actually
+        // connected. Nothing connected means nothing to route to, and the block
+        // costs zero.
+        self.store.is_connected("daytona").then(|| {
+            format!(
+                "<capability id=\"{id}\">\n\
+                 Daytona is connected: use the `daytona_*` tools to create isolated sandboxes \
+                 and outsource risky or heavy work away from the host workspace. Host `bash` \
+                 and file tools still operate on the local workspace.\n\
+                 </capability>",
+                id = self.id()
+            )
+        })
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {

@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use everruns_core::atoms::{PostToolExecHook, PostToolExecHookPriority};
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::tool_types::{ToolCall, ToolDefinition, ToolResult};
 use everruns_core::traits::ToolContext;
 use serde_json::{Map, Value, json};
@@ -64,19 +64,10 @@ impl Capability for ProgressGuardCapability {
         true
     }
 
-    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        Some(
-            "<capability id=\"progress_guard\">\n\
-             The runtime tracks investigation, mutation, and validation tool usage. If a \
-             progress_guard warning appears in a tool result, stop broad exploration, state \
-             the current hypothesis, inspect only the missing evidence, make/verify the \
-             smallest relevant change, or end with a no-change diagnosis before continuing. \
-             Escalated warnings require a checkpoint: facts, hypothesis, and next decisive \
-             action.\n\
-             </capability>"
-                .to_string(),
-        )
-    }
+    // No system-prompt contribution. Every warning this capability emits already
+    // names the situation and the required next action, and it arrives in the
+    // tool result at the moment it applies. Pre-announcing the mechanism on every
+    // turn paid for a warning that usually never fires.
 
     fn system_prompt_preview(&self) -> Option<String> {
         Some(

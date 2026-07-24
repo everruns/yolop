@@ -5,14 +5,17 @@
 // fatal). This capability layers *semantics* on top of that file via the
 // informational schema in `crate::config::schema`: it exposes `get_config` (read
 // the schema + current values) and `set_config` (validate + persist any known
-// key) so the agent can configure yolop the way a user describes it, and it
-// drops a short always-on pointer into the system prompt so the agent knows the
-// configuration surface exists.
+// key) so the agent can configure yolop the way a user describes it.
+//
+// Its prompt block is reveal-gated (see `capabilities::tool_reveal`): both tools
+// defer their schemas, and the block only tells you things — where the file is,
+// when an edit lands — that you can act on once you are actually calling them.
 //
 // Provider/model edits are persisted here and take effect on the next run; use
 // the interactive `/setup` command to switch the *live* model mid-session.
 
 use crate::capabilities::narration::{narrate_get_config, narrate_set_config};
+use crate::capabilities::tool_reveal::RevealedTools;
 use crate::config::capability_settings::{
     CapabilityCatalog, apply_capability_settings, build_capability_override,
     capability_catalog_json, capability_catalog_list, effective_harness_json, overrides_to_json,
@@ -37,6 +40,7 @@ pub(crate) const CONFIG_CAPABILITY_ID: &str = "yolop_config";
 pub(crate) struct ConfigCapability {
     pub(crate) settings: Arc<SettingsStore>,
     pub(crate) catalog: Arc<CapabilityCatalog>,
+    pub(crate) reveals: Arc<RevealedTools>,
 }
 
 #[async_trait]
@@ -57,16 +61,23 @@ impl Capability for ConfigCapability {
         Some("Personalization")
     }
 
-    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
+    async fn system_prompt_contribution(&self, ctx: &SystemPromptContext) -> Option<String> {
+        // `get_config` / `set_config` describe the key space, the `capabilities`
+        // overrides, and the `json` argument. What is left is the file location
+        // and the two facts a caller cannot discover from a schema: edits are
+        // never fatal, and they land on the next run rather than immediately.
+        // Both are only actionable while editing config, so they wait until one
+        // of the tools has been revealed; the tool descriptions carry discovery.
+        if !self
+            .reveals
+            .any_revealed(ctx.session_id, &["get_config", "set_config"])
+        {
+            return None;
+        }
         Some(format!(
-            "<capability id=\"{}\">\nyolop's settings live at {} and are schema-described \
-             (default provider/model, per-provider API tokens and models, endpoint base URLs, \
-             attribution, harness capabilities). To inspect or change any of it, call \
-             `get_config` and `set_config` (use `key=capabilities` / \
-             `key=capabilities.<ref>` for harness overrides; pass a `json` object to append \
-             entries). Or activate the `yolop-config` skill. Unknown keys in the file are \
-             ignored, never fatal. Provider/model and capability edits apply on the next run; \
-             use `/setup` to switch the live model now.\n</capability>",
+            "<capability id=\"{}\">\nyolop's settings live at {}. Unknown keys are ignored, \
+             never fatal. Provider/model and capability edits apply on the next run; use \
+             `/setup` to switch the live model now.\n</capability>",
             self.id(),
             self.settings.path().display()
         ))
@@ -1119,5 +1130,62 @@ mod tests {
         let snapshot = settings.snapshot();
         assert_eq!(snapshot.capabilities.len(), 2);
         assert!(snapshot.capabilities[1].is_remove());
+    }
+
+    /// The block is how-to for two deferred tools, so it stays out of the prompt
+    /// until `tool_search` has loaded one of them.
+    #[tokio::test]
+    async fn config_block_waits_for_a_tool_reveal() {
+        let (_tmp, settings) = store();
+        let reveals = Arc::new(RevealedTools::new());
+        let capability = ConfigCapability {
+            settings: settings.clone(),
+            catalog: catalog(),
+            reveals: reveals.clone(),
+        };
+        let session = everruns_core::typed_id::SessionId::new();
+        let ctx = SystemPromptContext::without_file_store(session);
+
+        assert!(
+            capability.system_prompt_contribution(&ctx).await.is_none(),
+            "no reveal yet — `get_config`'s description carries discovery on its own"
+        );
+
+        reveals.record(session, ["get_config".to_string()]);
+
+        let block = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("revealed tools bring the block back");
+        assert!(block.contains("settings live at"));
+        assert!(block.contains("apply on the next run"));
+    }
+
+    /// A reveal in one session must not unhide the block in another.
+    #[tokio::test]
+    async fn config_block_is_scoped_to_the_revealing_session() {
+        let (_tmp, settings) = store();
+        let reveals = Arc::new(RevealedTools::new());
+        let capability = ConfigCapability {
+            settings,
+            catalog: catalog(),
+            reveals: reveals.clone(),
+        };
+        let revealed = everruns_core::typed_id::SessionId::new();
+        let other = everruns_core::typed_id::SessionId::new();
+        reveals.record(revealed, ["set_config".to_string()]);
+
+        assert!(
+            capability
+                .system_prompt_contribution(&SystemPromptContext::without_file_store(revealed))
+                .await
+                .is_some()
+        );
+        assert!(
+            capability
+                .system_prompt_contribution(&SystemPromptContext::without_file_store(other))
+                .await
+                .is_none()
+        );
     }
 }
