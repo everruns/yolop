@@ -8,7 +8,7 @@ members = [
 
 [package]
 name = "yolop"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 authors = ["Everruns <support@everruns.com>"]
 license = "MIT"
@@ -65,11 +65,11 @@ serde_json = "1.0"
 # The extension protocol wire types + server SDK live in their own crate so
 # extension authors can depend on them from crates.io; the host shares the
 # same source of truth (see knowledge/specs/extensions.md).
-yolop-yep = { version = "0.2.0", path = "crates/yolop-yep" }
+yolop-yep = { version = "0.3.0", path = "crates/yolop-yep" }
 sha2 = "0.11"
 toml = "1"
 textwrap = "0.16"
-tuika = { version = "0.3.0", path = "crates/tuika" }
+tuika = { version = "0.4.0", path = "crates/tuika" }
 # Tree-sitter Highlighter impl for tuika's CodeBlock/Markdown; owns the grammar
 # deps so tuika core stays dependency-light (see crates/tuika-codeformatters).
 tuika-codeformatters = { version = "0.1.0", path = "crates/tuika-codeformatters" }

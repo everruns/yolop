@@ -10,6 +10,71 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.12.0] - 2026-07-24
+
+### Highlights
+
+#### Yolop
+
+- Fullscreen is now the default experience, with a responsive status drawer, an interactive task tree, non-blocking task refresh, and selection that spans transcript windows.
+- Extensions can emit trace events, export telemetry to Logfire, and request typed configuration and secrets through the expanded `yolop-yep` SDK and wire protocol.
+- MCP OAuth is conversational in both terminal modes, `/tools` updates live, OAuth callbacks are clearer, and tool activity narration is more complete.
+- Agent shortcuts now run through Tuika's configurable keymap engine, skills can be shared from a common agents directory, and panic diagnostics survive fullscreen terminal restoration.
+
+#### Tuika
+
+- First-class terminal graphics support now covers Kitty, iTerm2, and Sixel, including streamed images embedded in Markdown.
+- A paint-free flexbox solver, terminal capability detection, centralized stylesheets, focus scopes, and an async runner provide stronger foundations for complex apps.
+- New components include selectable tables, timelines, diffs, QR codes, framebuffers, image views, and other OpenTUI-parity primitives.
+- Scrolling adds horizontal pan and host-controlled offsets; Boxed, Line, Table, TextInput, and Markdown links gain substantial interaction and styling improvements.
+
+### Breaking Changes
+
+- yolop now starts in fullscreen mode by default; use the existing mode controls when the classic inline presentation is preferred.
+- Tuika now builds directly on `ratatui-core` rather than the umbrella `ratatui` crate, so applications relying on Tuika's former transitive dependency may need to declare their own Ratatui dependencies.
+
+### What's Changed
+
+* fix(tui): preserve panic diagnostics ([#478](https://github.com/everruns/yolop/pull/478)) by @chaliy
+* fix(tui): let full-screen selection span more than one window ([#477](https://github.com/everruns/yolop/pull/477)) by @chaliy
+* feat(tui): make fullscreen the default ([#476](https://github.com/everruns/yolop/pull/476)) by @chaliy
+* feat(tuika): add keymap engine, route yolop shortcuts through it ([#474](https://github.com/everruns/yolop/pull/474)) by @chaliy
+* fix(mcp): conversational OAuth and live /tools in both modes ([#473](https://github.com/everruns/yolop/pull/473)) by @chaliy
+* fix(tools): add missing activity narration ([#475](https://github.com/everruns/yolop/pull/475)) by @chaliy
+* feat(auth): polish OAuth callback page ([#471](https://github.com/everruns/yolop/pull/471)) by @chaliy
+* feat(tuika): OpenTUI feature-parity components (timeline, diff, qr, framebuffer…) ([#469](https://github.com/everruns/yolop/pull/469)) by @chaliy
+* docs(readme): remove task tree demo ([#472](https://github.com/everruns/yolop/pull/472)) by @chaliy
+* chore(knowledge): migrate specs to OKF ([#465](https://github.com/everruns/yolop/pull/465)) by @chaliy
+* fix(tui): avoid blocking on task refresh ([#468](https://github.com/everruns/yolop/pull/468)) by @chaliy
+* fix(tuika): keep markdown link destinations Ctrl+clickable ([#466](https://github.com/everruns/yolop/pull/466)) by @chaliy
+* feat(skills): use shared agents directory ([#467](https://github.com/everruns/yolop/pull/467)) by @chaliy
+* chore(docs): document hero recording ([#464](https://github.com/everruns/yolop/pull/464)) by @chaliy
+* fix(tuika): honor enter mode and Ctrl+J newline ([#463](https://github.com/everruns/yolop/pull/463)) by @chaliy
+* docs(readme): refresh hero demo ([#462](https://github.com/everruns/yolop/pull/462)) by @chaliy
+* feat(tui): add interactive task tree ([#460](https://github.com/everruns/yolop/pull/460)) by @chaliy
+* feat(tui): add responsive fullscreen status drawer ([#461](https://github.com/everruns/yolop/pull/461)) by @chaliy
+* feat(extensions): trace facet, Logfire export, config & secrets ([#459](https://github.com/everruns/yolop/pull/459)) by @chaliy
+* refactor(tuika): build on ratatui-core, drop the umbrella ([#458](https://github.com/everruns/yolop/pull/458)) by @chaliy
+* feat(tuika): open Table chrome — caret, header style, selection fg ([#457](https://github.com/everruns/yolop/pull/457)) by @chaliy
+* feat(tuika): horizontal pan on Scroll + max-offset accessors ([#456](https://github.com/everruns/yolop/pull/456)) by @chaliy
+* feat(tuika): centralized stylesheet layer for roles + markdown ([#455](https://github.com/everruns/yolop/pull/455)) by @chaliy
+* feat(tuika): add a terminal Capabilities detection subsystem ([#454](https://github.com/everruns/yolop/pull/454)) by @chaliy
+* feat(tuika): add async runner behind the "async" feature ([#452](https://github.com/everruns/yolop/pull/452)) by @chaliy
+* feat(tuika): columned, selectable Table component ([#453](https://github.com/everruns/yolop/pull/453)) by @chaliy
+* feat(tuika): explicit Boxed border color + FocusScope ([#449](https://github.com/everruns/yolop/pull/449)) by @chaliy
+* feat(tuika): host-settable ScrollState::set_offset ([#450](https://github.com/everruns/yolop/pull/450)) by @chaliy
+* docs(tuika): showcase image rendering in the README ([#451](https://github.com/everruns/yolop/pull/451)) by @chaliy
+* feat(tuika): first-class, paint-free flexbox solve ([#448](https://github.com/everruns/yolop/pull/448)) by @chaliy
+* feat(tuika): stream markdown image pixels + add Sixel protocol ([#447](https://github.com/everruns/yolop/pull/447)) by @chaliy
+* feat(tuika): honor Line alignment and add Boxed bottom title ([#446](https://github.com/everruns/yolop/pull/446)) by @chaliy
+* feat(tuika): render images (Kitty + iTerm2, standalone & markdown) ([#445](https://github.com/everruns/yolop/pull/445)) by @chaliy
+* chore(deps): bump vt100 from 0.15.2 to 0.16.2 ([#435](https://github.com/everruns/yolop/pull/435)) by @dependabot[bot]
+* chore(deps): bump criterion from 0.5.1 to 0.8.2 ([#434](https://github.com/everruns/yolop/pull/434)) by @dependabot[bot]
+* chore(deps): bump dorny/paths-filter from 3 to 4 ([#433](https://github.com/everruns/yolop/pull/433)) by @dependabot[bot]
+* docs(tuika): document OverlaySpec with example and gallery demo ([#444](https://github.com/everruns/yolop/pull/444)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.11.0...v0.12.0
+
 ## [0.11.0] - 2026-07-23
 
 ### Highlights
