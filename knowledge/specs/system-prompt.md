@@ -84,9 +84,32 @@ numeric thresholds ("only for work with at least three steps"), counters ("if
 stuck twice, ask"), and habit instructions ("do not repeat passing checks").
 
 The prompt-specific caveat is that the preference is a default, not an absolute.
-The `lsp` block is deliberately directive because softer phrasing drove adoption
-to near zero in `evals/lsp_integration`. Where an eval contradicts the
-preference, the eval wins — and a preference is not evidence.
+Two blocks are directive on measured grounds:
+
+- `lsp` — softer phrasing drove adoption to near zero in `evals/lsp_integration`.
+- `repo_map` — its truncation rule was deleted on the reasoning that the same
+  words already ship inside the truncated result, and `repo-map-bounded`
+  regressed on gpt-5.5: repeated exploration calls breached their zero bar in
+  5/5 trials against 2/5 before.
+
+Where an eval contradicts the preference, the eval wins — and a preference is
+not evidence.
+
+### Reactive text does not substitute for anticipatory text
+
+The `repo_map` regression refines the "fact is about a specific result" row
+above. Putting guidance in the tool result is right when it tells the model what
+a result *means*. It is not sufficient when the guidance must shape the choice
+the model makes *on seeing* that result: by then the next call is already being
+formed, and a rule it has been carrying is not the same as a rule it has just
+been handed. `progress_guard` remains result-only because its warnings interrupt
+a pattern rather than steer the next call.
+
+The distinction is also model-specific. The same deletion that cost gpt-5.5 an
+extra call per truncated map was free on claude-sonnet-4-5. Prompt content that
+looks redundant against one model's judgement can be load-bearing for another's,
+which is why composition changes get A/B'd on both providers rather than
+reasoned about.
 
 ### The budget is a test
 

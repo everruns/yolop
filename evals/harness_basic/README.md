@@ -278,6 +278,24 @@ Verified: with the `no-ast-grep` settings applied, the `ast_grep` tool is
 absent from yolop's registered toolset (and each case's input tokens drop by
 the removed schema's size).
 
+## Prompt-composition changes
+
+Runs under `results/` are gitignored and die with the machine, so evidence that
+should outlive a run is condensed into a committed manifest.
+[`prompt_composition_baseline.json`](prompt_composition_baseline.json) pins the
+pre-trim revision to build as `HARNESS_BASIC_BASELINE_BIN`, the focused samples
+worth repeating, and the measured findings — including one run marked
+`DO_NOT_CITE` because provider credit ran out mid-run and skewed the arms.
+
+Two lessons are encoded there and in
+[`knowledge/specs/system-prompt.md`](../../knowledge/specs/system-prompt.md).
+Run **both** providers: deleting the `repo_map` truncation rule was free on
+`claude-sonnet-4-5` and cost `gpt-5.5` — the default provider — an extra call
+and triple the repeated-exploration rate. And compare **metrics, not pass
+rates**, when a sample applies `when_binary` checks: `repo-map-bounded` holds
+`candidate` to bounds `baseline` never faces, so raw pass counts across binaries
+are not comparable there.
+
 ## Layout
 
 ```
@@ -286,6 +304,7 @@ evals/harness_basic/
                 #   yolop subject (spawn + events.jsonl mining), unit tests
   analyze_search_efficiency.py  # baseline/candidate distribution gates
   search_efficiency_baseline.json  # immutable pre-fix revision + evidence
+  prompt_composition_baseline.json # immutable pre-trim revision + evidence
   analyze_progress_efficiency.py  # state-progress distribution gates
   tests/         # analyzer unit tests
   Cargo.toml    # standalone crate (outside the yolop package), mira-eval SDK
