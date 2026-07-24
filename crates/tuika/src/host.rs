@@ -20,9 +20,9 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
     is_raw_mode_enabled,
 };
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui_core::buffer::Buffer;
+use ratatui_core::layout::Rect;
+use ratatui_core::style::Style;
 
 use super::event::{Event, Key, KeyCode, Mouse, MouseButton, MouseKind};
 use super::style::{StyleSheet, Theme};
@@ -254,9 +254,9 @@ mod tests {
     use crate::style::Theme;
     use crate::test_support::{buffer, rainbow_theme, row};
     use crate::view::{Element, element};
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::text::{Line, Span};
+    use ratatui_core::buffer::Buffer;
+    use ratatui_core::layout::Rect;
+    use ratatui_core::text::{Line, Span};
 
     /// A representative tree: a scrollable bordered body, a progress bar, and a
     /// status bar — the shapes the full-screen renderer actually composes.

@@ -6,7 +6,7 @@
 //! restyles every component at once, and downstream libraries can ship their
 //! own palette without touching component code.
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui_core::style::{Color, Modifier, Style};
 
 use crate::geometry::Padding;
 
@@ -382,7 +382,7 @@ pub enum Role {
 ///
 /// ```
 /// use tuika::{StyleBundle, StyleSheet, Theme};
-/// use ratatui::style::Color;
+/// use ratatui_core::style::Color;
 ///
 /// let theme = Theme::default();
 /// let sheet = StyleSheet {
@@ -471,7 +471,7 @@ impl Default for StyleSheet {
 mod tests {
     use super::*;
     use crate::test_support::rainbow_theme;
-    use ratatui::style::Modifier;
+    use ratatui_core::style::Modifier;
 
     #[test]
     fn theme_helper_styles_map_to_slots() {
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn default_theme_is_the_toolkit_identity_not_a_host_brand() {
-        use ratatui::style::Color;
+        use ratatui_core::style::Color;
         // tuika's own look is warm red-on-dark. It is deliberately a neutral toolkit
         // identity, not any host's brand — a host with its own palette builds its own
         // `Theme` (e.g. yolop's `fullscreen::yolop_theme`) instead of inheriting this.
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn bundle_apply_overrides_color_but_only_adds_modifiers() {
-        use ratatui::style::Color;
+        use ratatui_core::style::Color;
         // A modifier-only bundle keeps the base's color and adds its modifier.
         let base = Style::default().fg(Color::Red);
         let emphasized = StyleBundle::new().italic().apply(base);
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn overriding_one_role_leaves_the_rest_at_theme_defaults() {
-        use ratatui::style::Color;
+        use ratatui_core::style::Color;
         let t = rainbow_theme();
         let sheet = StyleSheet {
             link: StyleBundle::new().fg(Color::Green).bold(),

@@ -14,8 +14,8 @@
 //! `set_cursor_position`. Hosts can configure whether Enter or Shift+Enter
 //! submits via [`TextInputMode`]; the other chord inserts a newline.
 
-use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui_core::layout::Rect;
+use ratatui_core::style::Style;
 use unicode_width::UnicodeWidthChar;
 
 use crate::event::{Event, KeyCode};
@@ -695,7 +695,7 @@ mod tests {
     use crate::event::{Event, Key, KeyCode};
     use crate::test_support::{render_el, render_view_rows};
     use crate::view::element;
-    use ratatui::layout::Rect;
+    use ratatui_core::layout::Rect;
 
     fn press(state: &mut TextInputState, code: KeyCode) -> bool {
         state.handle(&Event::Key(Key::new(code)))

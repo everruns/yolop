@@ -28,11 +28,12 @@ use crossterm::style::{
     Attribute, Color as CtColor, Print, ResetColor, SetAttribute, SetBackgroundColor,
     SetForegroundColor,
 };
-use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
-use ratatui::buffer::Cell;
-use ratatui::layout::{Position, Size};
-use ratatui::style::{Color, Modifier};
-use ratatui::text::{Line, Span};
+use ratatui_core::backend::{Backend, ClearType, WindowSize};
+use ratatui_core::buffer::Cell;
+use ratatui_core::layout::{Position, Size};
+use ratatui_core::style::{Color, Modifier};
+use ratatui_core::text::{Line, Span};
+use ratatui_crossterm::CrosstermBackend;
 
 /// String terminator for an OSC sequence: `ESC \`.
 const ST: &str = "\x1b\\";
@@ -158,8 +159,8 @@ fn sanitize_url(url: &str, policy: LinkPolicy) -> Option<String> {
 /// remains the host's responsibility.
 pub fn ctrl_click_url(
     event: &crate::Mouse,
-    buffer: &ratatui::buffer::Buffer,
-    area: ratatui::layout::Rect,
+    buffer: &ratatui_core::buffer::Buffer,
+    area: ratatui_core::layout::Rect,
 ) -> Option<String> {
     if event.kind != crate::MouseKind::Up(crate::MouseButton::Left)
         || !event.ctrl
@@ -545,7 +546,7 @@ mod tests {
     fn write_line_emits_color_and_underline_then_resets() {
         let line = Line::from(Span::styled(
             "https://a.dev",
-            ratatui::style::Style::default()
+            ratatui_core::style::Style::default()
                 .fg(Color::Rgb(45, 91, 158))
                 .add_modifier(Modifier::UNDERLINED),
         ));
@@ -572,7 +573,7 @@ mod tests {
     #[test]
     fn ctrl_click_returns_visible_url_under_pointer() {
         use crate::{Mouse, MouseButton, MouseKind};
-        use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+        use ratatui_core::{buffer::Buffer, layout::Rect, style::Style};
         let area = Rect::new(3, 2, 40, 1);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 50, 5));
         buffer.set_string(
@@ -592,7 +593,7 @@ mod tests {
     #[test]
     fn ctrl_click_ignores_plain_clicks_and_non_url_text() {
         use crate::{Mouse, MouseButton, MouseKind};
-        use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+        use ratatui_core::{buffer::Buffer, layout::Rect, style::Style};
         let area = Rect::new(0, 0, 30, 1);
         let mut buffer = Buffer::empty(area);
         buffer.set_string(0, 0, "https://example.com plain", Style::default());
@@ -690,7 +691,7 @@ mod tests {
     /// Render a row of single-char cells through a backend built with `policy`
     /// and return the emitted bytes.
     fn draw_row_with(text: &str, policy: LinkPolicy) -> String {
-        use ratatui::buffer::Cell;
+        use ratatui_core::buffer::Cell;
         let cells: Vec<(u16, u16, Cell)> = text
             .chars()
             .enumerate()

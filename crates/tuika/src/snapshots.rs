@@ -7,9 +7,9 @@
 //! To (re)generate after an intentional change:
 //! `UPDATE_SNAPSHOTS=1 cargo test --all-features tuika::snapshots`.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
+use ratatui_core::buffer::Buffer;
+use ratatui_core::layout::Rect;
+use ratatui_core::text::{Line, Span};
 
 use super::components::{
     Boxed, Flex, ProgressBar, Scroll, ScrollState, SelectList, SelectState, Spinner, SpinnerStyle,

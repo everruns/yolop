@@ -34,8 +34,8 @@ use std::io::{self, Write};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui_core::layout::Rect;
+use ratatui_core::style::{Modifier, Style};
 
 use crate::geometry::Size;
 use crate::surface::Surface;

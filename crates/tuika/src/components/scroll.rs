@@ -20,9 +20,9 @@
 //! [`max_x_offset`](ScrollState::max_x_offset) expose the in-range bounds for a
 //! host that drives the offsets itself.
 
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::Line;
+use ratatui_core::layout::Rect;
+use ratatui_core::style::Style;
+use ratatui_core::text::Line;
 
 use crate::event::{Event, EventFlow, KeyCode, MouseKind};
 use crate::geometry::Size;
@@ -363,8 +363,8 @@ mod tests {
     use crate::style::Theme;
     use crate::test_support::{buffer, rainbow_theme, row};
     use crate::view::{RenderCtx, View};
-    use ratatui::style::Color;
-    use ratatui::text::{Line, Span};
+    use ratatui_core::style::Color;
+    use ratatui_core::text::{Line, Span};
 
     #[test]
     fn scroll_sticks_to_bottom_until_scrolled_up() {

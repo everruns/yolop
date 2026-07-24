@@ -18,7 +18,7 @@
 //! its own slots (`background`, `surface`, `accent`, the [`CodeTheme`] syntax
 //! roles); it does not reproduce every upstream UI element.
 
-use ratatui::style::Color;
+use ratatui_core::style::Color;
 
 use crate::style::{CodeTheme, Theme};
 

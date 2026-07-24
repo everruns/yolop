@@ -11,9 +11,9 @@
 //! width, never word-wrapped) because indentation is meaningful in code — unlike
 //! prose, which [`Markdown`](crate::components::Markdown) word-wraps.
 
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui_core::layout::Rect;
+use ratatui_core::style::{Modifier, Style};
+use ratatui_core::text::{Line, Span};
 
 use crate::components::text::line_width;
 use crate::geometry::Size;

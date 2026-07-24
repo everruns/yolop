@@ -61,8 +61,9 @@ use std::ops::ControlFlow;
 use std::time::Duration;
 
 use crossterm::event::EventStream;
-use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::{Terminal, TerminalOptions, Viewport};
+use ratatui_core::backend::Backend;
+use ratatui_core::terminal::{Terminal, TerminalOptions, Viewport};
+use ratatui_crossterm::CrosstermBackend;
 use tokio::time::{MissedTickBehavior, interval};
 use tokio_stream::{Stream, StreamExt};
 
@@ -174,14 +175,14 @@ impl AsyncRunner {
     /// The core loop: caller-owned `terminal` and `events`, no terminal
     /// lifecycle. This is what [`run`](Self::run) builds on, and the seam tests
     /// use to drive the runner against a
-    /// [`TestBackend`](ratatui::backend::TestBackend) with a scripted event
+    /// [`TestBackend`](ratatui_core::backend::TestBackend) with a scripted event
     /// stream. Hosts that already own their terminal and event source (or want a
     /// non-crossterm one) can call it directly.
     ///
     /// The backend error and the event-stream error share one type `Er`, which
     /// is the run's error type: for the real terminal that is [`io::Error`], but
     /// leaving it generic lets an infallible backend
-    /// ([`TestBackend`](ratatui::backend::TestBackend), whose error is
+    /// ([`TestBackend`](ratatui_core::backend::TestBackend), whose error is
     /// [`Infallible`](std::convert::Infallible)) pair with an infallible stream.
     ///
     /// `events` yields already-translated tuika [`Event`]s. An `Err` item ends
@@ -273,7 +274,7 @@ mod tests {
     use crate::components::Text;
     use crate::event::{Key, KeyCode};
     use crate::view::element;
-    use ratatui::backend::TestBackend;
+    use ratatui_core::backend::TestBackend;
 
     /// A key event as the infallible-stream item the `TestBackend` tests use.
     fn key(code: KeyCode) -> Result<Event, Infallible> {
@@ -431,8 +432,8 @@ mod tests {
     // given rect and never touches the terminal.
     #[tokio::test]
     async fn stream_error_propagates() {
-        use ratatui::backend::CrosstermBackend;
-        use ratatui::layout::Rect;
+        use ratatui_core::layout::Rect;
+        use ratatui_crossterm::CrosstermBackend;
 
         let runner = AsyncRunner::new(RunnerConfig {
             tick_rate: Duration::from_secs(3600),

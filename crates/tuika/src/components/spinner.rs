@@ -4,8 +4,8 @@
 //! for that frame. Pair with a steady tick (yolop advances `busy_frame` every
 //! loop iteration while a turn runs) for smooth motion.
 
-use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui_core::layout::Rect;
+use ratatui_core::style::Style;
 
 use crate::geometry::Size;
 use crate::surface::Surface;
@@ -40,7 +40,7 @@ impl SpinnerStyle {
 pub struct Spinner {
     style: SpinnerStyle,
     frame: u64,
-    color: Option<ratatui::style::Color>,
+    color: Option<ratatui_core::style::Color>,
 }
 
 impl Spinner {
@@ -60,7 +60,7 @@ impl Spinner {
     }
 
     /// Override the glyph color (defaults to the theme accent).
-    pub fn color(mut self, color: ratatui::style::Color) -> Self {
+    pub fn color(mut self, color: ratatui_core::style::Color) -> Self {
         self.color = Some(color);
         self
     }

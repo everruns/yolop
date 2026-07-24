@@ -10,7 +10,7 @@
 //! focus-aware view inside it (notably [`Boxed`](crate::Boxed)) recolors
 //! accordingly.
 
-use ratatui::layout::Rect;
+use ratatui_core::layout::Rect;
 
 use crate::geometry::Size;
 use crate::surface::Surface;
@@ -82,7 +82,7 @@ mod tests {
 
     /// The focus flag a `FocusScope` imposes on its subtree wins over the root
     /// context's flag — a `Boxed` inside picks the matching theme border color.
-    fn corner_color(scope_focused: bool, root_focused: bool) -> ratatui::style::Color {
+    fn corner_color(scope_focused: bool, root_focused: bool) -> ratatui_core::style::Color {
         let t = rainbow_theme();
         let mut buf = buffer(8, 3);
         let area = buf.area;

@@ -6,9 +6,9 @@
 //! the reusable form of the blue/gold separators a chat UI draws above and
 //! below its composer.
 
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui_core::layout::Rect;
+use ratatui_core::style::Style;
+use ratatui_core::text::{Line, Span};
 
 use super::line_width;
 use crate::geometry::Size;
@@ -96,8 +96,8 @@ mod tests {
     use super::*;
     use crate::style::Theme;
     use crate::test_support::row;
-    use ratatui::style::{Color, Style};
-    use ratatui::text::{Line, Span};
+    use ratatui_core::style::{Color, Style};
+    use ratatui_core::text::{Line, Span};
 
     #[test]
     fn rule_renders_title_then_fills_to_width() {

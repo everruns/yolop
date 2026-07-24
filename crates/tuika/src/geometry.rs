@@ -1,12 +1,12 @@
 //! Geometry helpers shared across `tuika`.
 //!
 //! `tuika` reuses ratatui's [`Rect`] as its area type so the compositor can
-//! draw straight into a ratatui [`Buffer`](ratatui::buffer::Buffer), but the
+//! draw straight into a ratatui [`Buffer`](ratatui_core::buffer::Buffer), but the
 //! layout solver reasons about a direction-agnostic main/cross axis. The
 //! helpers here bridge the two: an [`Axis`] projects a `Rect` onto its main or
 //! cross extent so the flex solver can be written once for rows and columns.
 
-use ratatui::layout::Rect;
+use ratatui_core::layout::Rect;
 
 /// An intrinsic size in terminal cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

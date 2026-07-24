@@ -1,7 +1,7 @@
 //! Compact, responsive key/action hints.
 
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui_core::layout::Rect;
+use ratatui_core::style::{Color, Style};
 
 use crate::width::str_cols;
 use crate::{RenderCtx, Size, Surface, View};

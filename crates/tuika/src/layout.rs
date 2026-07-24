@@ -7,7 +7,7 @@
 //! rects for one axis. It is written once against a direction-agnostic
 //! [`Axis`] so rows and columns share the same code path.
 
-use ratatui::layout::Rect;
+use ratatui_core::layout::Rect;
 
 use super::geometry::{Axis, Padding, Size};
 
@@ -173,7 +173,7 @@ impl Item {
 ///
 /// ```
 /// use tuika::{Dimension, Item, LayoutStyle, Size, solve};
-/// use ratatui::layout::Rect;
+/// use ratatui_core::layout::Rect;
 ///
 /// // A sidebar of 8 columns, then the rest of the row for content.
 /// let items = [
@@ -295,7 +295,7 @@ pub fn solve(area: Rect, style: &LayoutStyle, items: &[Item]) -> Vec<Rect> {
 mod tests {
     use super::*;
     use crate::geometry::{Padding, Size};
-    use ratatui::layout::Rect;
+    use ratatui_core::layout::Rect;
 
     fn item(dim: Dimension, w: u16, h: u16) -> Item {
         Item::new(dim, Size::new(w, h))

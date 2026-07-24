@@ -10,8 +10,9 @@ use std::ops::ControlFlow;
 use std::time::{Duration, Instant};
 
 use crossterm::event;
-use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::{Terminal, TerminalOptions, Viewport};
+use ratatui_core::backend::Backend;
+use ratatui_core::terminal::{Terminal, TerminalOptions, Viewport};
+use ratatui_crossterm::CrosstermBackend;
 
 use crate::{Element, Event, RedrawHandle, TerminalSession, Theme, paint, translate_event};
 

@@ -10,7 +10,7 @@
 //! `View` for its render, and, if interactive, a small state struct with an
 //! event handler. No trait-object tree to reconcile.
 
-use ratatui::layout::Rect;
+use ratatui_core::layout::Rect;
 
 use super::geometry::Size;
 use super::style::{StyleSheet, Theme};

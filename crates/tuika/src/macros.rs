@@ -152,8 +152,8 @@ mod tests {
     use crate::test_support::render_el;
     use crate::view::{Element, RenderCtx, View, element};
     use crate::{Size, Surface};
-    use ratatui::layout::Rect;
-    use ratatui::style::Style;
+    use ratatui_core::layout::Rect;
+    use ratatui_core::style::Style;
 
     #[test]
     fn view_macro_matches_builder() {
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn view_macro_forwards_border_color() {
-        use ratatui::style::Color;
+        use ratatui_core::style::Color;
         // `border_color =` folds to `Boxed::border_color`, rendering identically
         // to the builder form.
         let built: Element =
