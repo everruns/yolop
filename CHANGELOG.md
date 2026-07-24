@@ -10,6 +10,24 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.12.1] - 2026-07-24
+
+### Highlights
+
+#### Yolop
+
+- Fix crates.io installation by publishing a `tuika-codeformatters` release compatible with Tuika 0.4 before the Yolop binary.
+
+#### Tuika
+
+- Publish `tuika-codeformatters` 0.2.0 with its dependency updated to Tuika 0.4.
+
+### What's Changed
+
+* fix(release): publish compatible tuika-codeformatters before yolop
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.12.0...v0.12.1
+
 ## [0.12.0] - 2026-07-24
 
 ### Highlights

@@ -6804,7 +6804,7 @@ dependencies = [
 
 [[package]]
 name = "tuika-codeformatters"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "crossterm",
@@ -7774,7 +7774,7 @@ dependencies = [
 
 [[package]]
 name = "yolop"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
