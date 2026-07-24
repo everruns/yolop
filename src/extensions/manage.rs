@@ -11,10 +11,13 @@ use super::protocol::UiAskParams;
 use super::scaffold::{self, HookSpec, Language, ScaffoldRequest, ToolSpec};
 use super::secrets::{ExtensionSecrets, Secret};
 use super::store::{self, CrateFetcher, GitRunner, Source, SystemCrateFetcher, SystemGit};
+use crate::capabilities::narration::stable_labeled;
 use crate::config::SettingsStore;
 use crate::tui::host_ui::UiCommand;
 use async_trait::async_trait;
 use everruns_core::capabilities::Capability;
+use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
+use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -726,6 +729,34 @@ impl ManageTool {
 
 #[async_trait]
 impl Tool for ManageTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        let _ = locale;
+        let label = match self.verb {
+            Verb::Scaffold => "Scaffold extension",
+            Verb::List => "List extensions",
+            Verb::Install => "Install extension",
+            Verb::Remove => "Remove extension",
+            Verb::Enable => "Enable extension",
+            Verb::Disable => "Disable extension",
+            Verb::Reload => "Reload extension",
+            Verb::SetSecret => "Set extension secret",
+            Verb::Doctor => "Check extension",
+        };
+        let key = if matches!(self.verb, Verb::Install) {
+            "source"
+        } else {
+            "name"
+        };
+        let detail = arg_str(&tool_call.arguments, &[key]).map(|value| truncate(value, 48));
+        Some(stable_labeled(label, detail, phase))
+    }
+
     fn name(&self) -> &str {
         match self.verb {
             Verb::Scaffold => "scaffold_extension",
@@ -919,6 +950,29 @@ mod tests {
             ask_sink: None,
         };
         (cap, settings, ext_dir)
+    }
+
+    #[test]
+    fn manage_tool_narration_names_action_and_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cap, _, _) = capability(tmp.path());
+        let mut tools = cap.tools();
+        let tool = tools.remove(4);
+        let call = ToolCall {
+            id: "call-1".into(),
+            name: "enable_extension".into(),
+            arguments: json!({ "name": "linear" }),
+        };
+
+        assert_eq!(
+            tool.narrate(
+                &call,
+                ToolNarrationPhase::Started,
+                None,
+                everruns_core::tool_narration::ToolNarrationContext::default(),
+            ),
+            Some("Enable extension: linear".into())
+        );
     }
 
     #[tokio::test]

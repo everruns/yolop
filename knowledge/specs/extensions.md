@@ -481,7 +481,7 @@ verbatim when unrecognized): `tools`, `streaming`, `hooks`, `prompt`,
 | →server | `initialize` | req | protocol version, session id, workspace root, locale, validated config, host feature set |
 | ←server | (result) | — | identity, contributions (prompt, tools, hooks, MCP servers, commands), clamped by manifest |
 | →server | `initialized` | ntf | handshake complete |
-| →server | `tool/call` | req | `{tool_call_id, name, args}`; response is the final `ToolExecutionResult`-shaped payload |
+| →server | `tool/call` | req | `{tool_call_id, name, args}`; response is the final `ToolExecutionResult`-shaped payload; the host uses the manifest tool name as stable activity narration |
 | ←server | `tool/update` | ntf | streamed progress/partial output; correlates via `request_id` in the payload |
 | →server | `cancel` | req | `{id}` — abort any in-flight request (mira semantics: best-effort, aborted call resolves with error `cancelled`) |
 | →server | `prompt/contribution` | req | dynamic system prompt (only if declared `dynamic`); timeout + last-known-good |
