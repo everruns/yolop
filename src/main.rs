@@ -6,6 +6,7 @@ mod auth;
 mod capabilities;
 mod config;
 mod connectors;
+mod crash_report;
 mod drivers;
 mod editor;
 mod exec;
@@ -478,6 +479,7 @@ fn main() -> Result<()> {
     // stack so every platform behaves like the generous default, and give the
     // tokio worker threads a matching stack for deep async work spawned onto
     // them.
+    let crash_reporter = crash_report::CrashReporter::install();
     let worker = std::thread::Builder::new()
         .name("yolop-main".to_string())
         .stack_size(16 * 1024 * 1024)
@@ -491,7 +493,22 @@ fn main() -> Result<()> {
                 .block_on(async_main())
         })
         .expect("spawn yolop main thread");
-    worker.join().expect("yolop main thread panicked")
+    join_worker(worker, &crash_reporter)
+}
+
+fn join_worker<T>(
+    worker: std::thread::JoinHandle<T>,
+    crash_reporter: &crash_report::CrashReporter,
+) -> T {
+    match worker.join() {
+        Ok(result) => result,
+        Err(payload) => {
+            if let Some(path) = crash_reporter.report_path() {
+                eprintln!("yolop: crash report written to {}", path.display());
+            }
+            std::panic::resume_unwind(payload)
+        }
+    }
 }
 
 async fn async_main() -> Result<()> {
@@ -1632,6 +1649,21 @@ fn paint(enabled: bool, code: &str, text: &str) -> String {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn worker_join_preserves_original_panic_payload() {
+        let reporter = crash_report::CrashReporter::disabled();
+        let worker = std::thread::spawn(|| panic!("original worker panic"));
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            join_worker(worker, &reporter)
+        }))
+        .expect_err("worker panic should propagate");
+        assert_eq!(
+            panic.downcast_ref::<&str>().copied(),
+            Some("original worker panic")
+        );
+    }
 
     #[test]
     fn continuation_preserves_reusable_arguments_and_replaces_turn_arguments() {

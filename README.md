@@ -400,6 +400,23 @@ Yolop-owned worktree and never changes the branch, `HEAD`, commits, or index.
 > session should not be persisted, point `--session-dir` at a wipeable path (e.g.
 > a `tmpfs`) or delete the JSONL after the run.
 
+### Crash reports
+
+If Yolop panics, it writes a local report containing the version, bounded panic
+message, source location, and bounded backtrace. Yolop does not add prompts,
+tool payloads, environment variables, credentials, or tracing logs. Because a
+panic message can still contain application data, review a report before
+sharing it. Yolop keeps the newest five:
+
+| OS      | Default location                                      |
+|---------|-------------------------------------------------------|
+| Linux   | `$XDG_DATA_HOME/yolop/crashes/`                       |
+| macOS   | `~/Library/Application Support/yolop/crashes/`        |
+| Windows | `%APPDATA%\yolop\crashes\`                            |
+
+On Unix the directory is `0o700` and reports are `0o600`. After restoring the
+terminal, Yolop prints the report path before preserving the original panic.
+
 ## Contributing
 
 Development setup, validation commands, and local smoke tests live in

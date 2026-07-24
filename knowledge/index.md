@@ -48,6 +48,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 
 ## Safety and execution
 
+- [Crash reporting](specs/crash-reporting.md) — local privacy-preserving panic diagnostics.
 - [Sandboxing](specs/sandboxing.md) — filesystem and process boundaries.
 
 ## Engineering processes
