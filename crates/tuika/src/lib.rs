@@ -84,7 +84,7 @@ pub use components::{
     Markdown, MarkdownImage, MarkdownState, Paragraph, ProgressBar, Responsive, Rule, Scroll,
     ScrollState, SelectList, SelectOutcome, SelectState, Spacer, Spinner, SpinnerStyle, StatusBar,
     Table, Tabs, TabsState, Text, TextInput, TextInputEvent, TextInputMode, TextInputState, Wrap,
-    markdown_to_lines, wrap_lines,
+    markdown_to_lines, markdown_to_linked_lines, wrap_lines,
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 pub use focus::FocusRegistry;
@@ -92,8 +92,8 @@ pub use geometry::{Padding, Size};
 pub use highlight::{CodeHighlighter, Highlighter, PlainHighlighter};
 pub use host::{AltScreen, Overlay, TerminalSession, paint, paint_with_sheet, translate_event};
 pub use hyperlink::{
-    HyperlinkBackend, LinkPolicy, ctrl_click_url, is_web_url, osc8, osc8_with, write_line,
-    write_line_with,
+    BufferLink, HyperlinkBackend, LinkPolicy, apply_buffer_links, ctrl_click_url,
+    ctrl_click_url_with, is_web_url, osc8, osc8_with, write_line, write_line_with,
 };
 pub use image::{Image, ImageData, ImageLayer, ImageSupport};
 pub use layout::{Align, Dimension, Direction, Item, Justify, LayoutStyle, solve};
