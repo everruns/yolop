@@ -141,7 +141,8 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let state = app.view_state();
     let input_width = area.width.saturating_sub(2);
     let desired_input_height = app.input_height(input_width);
-    let status_rows = state.status_row_count();
+    let status = render::fullscreen_status_layout(&state, area.width);
+    let status_rows = status.lines.len().try_into().unwrap_or(u16::MAX);
     let preview_visible = render::chrome_preview_visible(&state);
     // NOTE (layout policy, item 2): `chrome_dimensions` stays hand-rolled on
     // purpose. tuika's Flex solver places the rows of the `view!` tree below, but
@@ -161,10 +162,10 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let status_sep_height = u16::from(input_height < 3);
     let transcript_height = area.height.saturating_sub(chrome_height).max(1);
 
-    // Content as styled lines — the exact pure builders the inline renderer uses,
-    // so colors, separators, and status can never drift between the two modes.
+    // Transcript and compact chrome share the inline renderer's pure builders.
+    // Expanded status is a fullscreen projection over the same presentation
+    // fields so it can use responsive columns and typed hit targets.
     let inner_w = area.width.saturating_sub(2) as usize;
-    let status_lines = render::session_status_lines(&state);
     let preview_line = render::preview_slot_line(&state, area.width);
 
     // The transcript is a real Scroll over the *full* history, bound to the
@@ -207,7 +208,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             fixed(1) { node(message_rule(&state)) }
             fixed(input_height) { node(composer_row(&app.composer, &input_probe)) }
             fixed(status_sep_height) { node(status_rule()) }
-            fixed(status_rows) { node(Text::new(status_lines)) }
+            fixed(status_rows) { node(Text::new(status.lines.clone())) }
         }
     };
 
@@ -215,6 +216,14 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     // styled lines' own colors show through.
     let theme = yolop_theme();
     tuika::paint(f.buffer_mut(), area, &theme, root.as_ref(), &[]);
+    app.set_status_hit_regions(
+        Rect {
+            y: area.bottom().saturating_sub(status_rows),
+            height: status_rows,
+            ..area
+        },
+        &status.hits,
+    );
 
     // Mouse text selection over the transcript. Its selectable inner rect is the
     // transcript region inset one column (matching `transcript_view`'s padding).

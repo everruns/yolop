@@ -171,6 +171,8 @@ pub struct App {
     /// extension servers over `status/changed`. Rendered in the status bar via
     /// [`App::presentation_state`].
     extension_status: std::collections::BTreeMap<String, String>,
+    /// Turn-scoped status text set by the agent through the host UI.
+    agent_status: Option<String>,
     /// Incoming extension `ui/ask` requests; each is prompted one at a time via
     /// [`App::pending_ask`].
     ask_rx: mpsc::UnboundedReceiver<crate::tui::host_ui::AskRequest>,
@@ -244,6 +246,8 @@ pub struct App {
     /// the next draw, where the freshly rendered frame buffer is readable.
     selection: tuika::SelectionState,
     selection_area: Rect,
+    /// Click targets from the last fullscreen status layout.
+    status_hit_regions: Vec<(Rect, StatusAction)>,
     pending_copy: bool,
     pending_link_click: Option<tuika::Mouse>,
     pending_open_url: Option<String>,
@@ -546,6 +550,7 @@ impl App {
             session_tokens: None,
             ui_rx: runtime.ui_rx,
             extension_status: std::collections::BTreeMap::new(),
+            agent_status: None,
             ask_rx: runtime.ask_rx,
             pending_ask: None,
             sandbox_approval_rx: runtime.sandbox_approval_rx,
@@ -578,6 +583,7 @@ impl App {
             transcript_cache: TranscriptWrapCache::default(),
             selection: tuika::SelectionState::new(),
             selection_area: Rect::ZERO,
+            status_hit_regions: Vec::new(),
             pending_copy: false,
             pending_link_click: None,
             pending_open_url: None,
@@ -645,6 +651,23 @@ impl App {
     /// Record the transcript's inner rect (the selectable region) from the draw.
     pub(crate) fn set_selection_area(&mut self, area: Rect) {
         self.selection_area = area;
+    }
+
+    pub(crate) fn set_status_hit_regions(&mut self, area: Rect, hits: &[render::StatusHit]) {
+        self.status_hit_regions = hits
+            .iter()
+            .map(|hit| {
+                (
+                    Rect {
+                        x: area.x.saturating_add(hit.start_col),
+                        y: area.y.saturating_add(hit.row),
+                        width: hit.end_col.saturating_sub(hit.start_col),
+                        height: 1,
+                    },
+                    hit.action,
+                )
+            })
+            .collect();
     }
 
     /// Take and clear the deferred-copy flag set when a drag was released.
@@ -811,6 +834,7 @@ impl App {
             ask_indicator: self.ask_indicator(),
             worktree_compact: self.worktree.status_bar_compact(),
             worktree_expanded: self.worktree.status_bar_expanded(),
+            agent_status: self.agent_status.clone(),
             extension_status: self
                 .extension_status
                 .iter()
@@ -2140,6 +2164,10 @@ impl App {
             UiCommand::OpenEffortOverlay { arg } => {
                 self.start_effort_setup(arg.as_deref().unwrap_or(""))
             }
+            UiCommand::SetAgentStatus { status } => {
+                let status = status.trim();
+                self.agent_status = (!status.is_empty()).then(|| status.to_string());
+            }
             UiCommand::SetExtensionStatus { ext, status } => {
                 // Empty status clears the field; a live value replaces it.
                 if status.trim().is_empty() {
@@ -2403,6 +2431,25 @@ impl App {
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
             return false;
         }
+        if self.render_mode.is_fullscreen() {
+            let action = self.status_hit_regions.iter().find_map(|(area, action)| {
+                (mouse.column >= area.x
+                    && mouse.column < area.right()
+                    && mouse.row >= area.y
+                    && mouse.row < area.bottom())
+                .then_some(*action)
+            });
+            let Some(action) = action else {
+                return false;
+            };
+            match action {
+                StatusAction::ToggleLayout => self.set_status_layout(None),
+                StatusAction::OpenModel => self.start_model_setup(),
+                StatusAction::OpenEffort => self.start_effort_setup(""),
+                StatusAction::OpenBackground => self.background_panel = Some(0),
+            }
+            return true;
+        }
         if self.mouse_is_on_status(mouse, terminal_area) {
             self.set_status_layout(None);
             return true;
@@ -2495,6 +2542,7 @@ impl App {
         self.busy = false;
         self.busy_frame = 0;
         self.turn_activity = None;
+        self.agent_status = None;
         self.turn_started_at = None;
         self.stream_preview = None;
         self.rx = None;
@@ -4568,6 +4616,7 @@ mod tests {
             ask_indicator: None,
             worktree_compact: None,
             worktree_expanded: None,
+            agent_status: None,
             extension_status: Vec::new(),
         }
     }
@@ -8479,6 +8528,118 @@ mod tests {
             !status.contains("session "),
             "compact status should keep session id for expanded layout: {status}"
         );
+    }
+
+    #[test]
+    fn fullscreen_expanded_status_uses_responsive_columns() {
+        let state = ViewState {
+            presentation: PresentationState {
+                status_layout: StatusLayout::Expanded,
+                agent_status: Some("running tests 3/8".to_string()),
+                worktree_expanded: Some(("codex/status-drawer".into(), "…/bb69/yolop".into())),
+                ..presentation_state_idle()
+            },
+            ..view_state_idle()
+        };
+
+        let wide = fullscreen_status_layout(&state, 120);
+        let plain = |line: &Line<'_>| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        let wide_text = wide.lines.iter().map(&plain).collect::<Vec<_>>().join("\n");
+        assert!(
+            wide_text.lines().next().is_some_and(|line| {
+                line.contains("Runtime") && line.contains("Session") && line.contains("Workspace")
+            }),
+            "wide drawer should place all sections in columns: {wide_text}"
+        );
+        assert!(wide_text.contains("agent running tests 3/8"));
+        assert!(
+            wide.lines
+                .iter()
+                .all(|line| tuika::components::line_width(line) <= 120)
+        );
+
+        let narrow = fullscreen_status_layout(&state, 80);
+        let narrow_text = narrow
+            .lines
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            narrow.lines.len() > wide.lines.len(),
+            "two-column drawer should reflow to more rows"
+        );
+        assert!(narrow_text.lines().next().is_some_and(|line| {
+            line.contains("Runtime") && line.contains("Session") && !line.contains("Workspace")
+        }));
+        assert!(narrow_text.contains("Workspace"));
+        assert!(
+            narrow
+                .lines
+                .iter()
+                .all(|line| tuika::components::line_width(line) <= 80)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_status_model_and_effort_fields_are_clickable() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.status_layout = StatusLayout::Expanded;
+        app.set_render_mode(RenderMode::Fullscreen);
+        let _ = render_app_lines(app, 120, 36);
+
+        for action in [StatusAction::OpenModel, StatusAction::OpenEffort] {
+            let area = app
+                .status_hit_regions
+                .iter()
+                .find_map(|(area, candidate)| (*candidate == action).then_some(*area))
+                .expect("status action hit region");
+            assert!(app.handle_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::empty(),
+                },
+                Rect::new(0, 0, 120, 36),
+            ));
+            match action {
+                StatusAction::OpenModel => {
+                    assert!(matches!(app.setup, Some(SetupStep::PickModel { .. })));
+                }
+                StatusAction::OpenEffort => {
+                    assert!(matches!(app.setup, Some(SetupStep::PickEffort { .. })));
+                }
+                _ => unreachable!(),
+            }
+            app.setup = None;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn agent_status_is_visible_for_the_turn_and_clears_on_finish() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.apply_ui_command(UiCommand::SetAgentStatus {
+            status: "running tests 3/8".to_string(),
+        })
+        .await;
+
+        assert_eq!(
+            app.presentation_state().agent_status.as_deref(),
+            Some("running tests 3/8")
+        );
+
+        app.finish_busy();
+
+        assert!(app.presentation_state().agent_status.is_none());
     }
 
     #[test]

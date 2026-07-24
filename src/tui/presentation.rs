@@ -49,6 +49,8 @@ pub(crate) struct PresentationState {
     pub ask_indicator: Option<String>,
     pub worktree_compact: Option<String>,
     pub worktree_expanded: Option<(String, String)>,
+    /// Turn-scoped status text contributed by the agent through the TUI host.
+    pub agent_status: Option<String>,
     /// Live status pushed by extensions over `status/changed`, as
     /// `(extension_name, status_text)` pairs. Rendered as its own status field.
     pub extension_status: Vec<(String, String)>,
@@ -78,6 +80,21 @@ pub(crate) struct StatusLine {
 pub(crate) struct StatusField {
     pub label: Option<&'static str>,
     pub value: String,
+    pub action: Option<StatusAction>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StatusAction {
+    ToggleLayout,
+    OpenModel,
+    OpenEffort,
+    OpenBackground,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StatusSection {
+    pub title: &'static str,
+    pub fields: Vec<StatusField>,
 }
 
 impl Author {
@@ -119,6 +136,69 @@ impl PresentationState {
             StatusLayout::Compact => compact_status_lines(self),
             StatusLayout::Expanded => expanded_status_lines(self),
         }
+    }
+
+    pub(crate) fn expanded_status_sections(&self) -> Vec<StatusSection> {
+        let mut session = vec![
+            status_value(message_count_label(self.lines_count)),
+            status_field("tokens", token_label(self.session_tokens)),
+        ];
+        if let Some(ctx) = context_label(
+            self.context_used_tokens,
+            self.context_window_tokens,
+            self.compaction_budget_percent,
+        ) {
+            session.push(status_field("ctx", ctx));
+        }
+        if let Some(bg) = background_label(self.background, false) {
+            session.push(status_field_action(
+                "background",
+                bg,
+                StatusAction::OpenBackground,
+            ));
+        }
+        session.push(status_field("goal", goal_label(self)));
+        session.push(status_field("ask", ask_label(self)));
+        if let Some(status) = self
+            .agent_status
+            .as_deref()
+            .or_else(|| self.activity_text())
+            .filter(|status| !status.is_empty())
+        {
+            session.push(status_field("agent", status));
+        }
+
+        let mut workspace = vec![
+            status_field("hooks", self.hooks_summary.clone()),
+            status_field("session", self.session_id.clone()),
+            status_field("version", VERSION_DETAILS),
+        ];
+        if let Some((branch, path)) = &self.worktree_expanded {
+            workspace.insert(0, status_field("path", path.clone()));
+            workspace.insert(0, status_field("worktree", branch.clone()));
+        }
+        workspace.extend(extension_status_fields(self));
+
+        vec![
+            StatusSection {
+                title: "Runtime",
+                fields: vec![
+                    status_value_action("[collapse ↑]", StatusAction::ToggleLayout),
+                    status_field("provider", self.provider_name.clone()),
+                    status_field_action("model", self.model_id.clone(), StatusAction::OpenModel),
+                    status_field_action("effort", effort_label(self), StatusAction::OpenEffort),
+                    status_field("approval", self.approval_mode.clone()),
+                ],
+            },
+            StatusSection {
+                title: "Session",
+                fields: session,
+            },
+            StatusSection {
+                title: "Workspace",
+                fields: workspace,
+            },
+        ]
     }
 
     pub(crate) fn activity_text(&self) -> Option<&str> {
@@ -170,7 +250,7 @@ fn expanded_status_lines(state: &PresentationState) -> Vec<StatusLine> {
         counts.push(status_field("ctx", ctx));
     }
     if let Some(bg) = background_label(state.background, false) {
-        counts.push(status_field("bg", bg));
+        counts.push(status_field_action("bg", bg, StatusAction::OpenBackground));
     }
     // Extension-pushed status shares the counts row so the expanded layout's
     // fixed row budget is unchanged.
@@ -179,14 +259,14 @@ fn expanded_status_lines(state: &PresentationState) -> Vec<StatusLine> {
     let mut lines = vec![
         StatusLine {
             fields: vec![
-                status_value("[collapse ↑]"),
+                status_value_action("[collapse ↑]", StatusAction::ToggleLayout),
                 status_field("provider", state.provider_name.clone()),
-                status_field("model", state.model_id.clone()),
+                status_field_action("model", state.model_id.clone(), StatusAction::OpenModel),
             ],
         },
         StatusLine {
             fields: vec![
-                status_field("effort", effort_label(state)),
+                status_field_action("effort", effort_label(state), StatusAction::OpenEffort),
                 status_field("approval", state.approval_mode.clone()),
                 status_field("hooks", state.hooks_summary.clone()),
                 status_field("goal", goal_label(state)),
@@ -226,19 +306,19 @@ fn status_contributions(state: &PresentationState) -> Vec<Vec<StatusField>> {
         counts.push(status_field("ctx", ctx));
     }
     if let Some(bg) = background_label(state.background, true) {
-        counts.push(status_field("bg", bg));
+        counts.push(status_field_action("bg", bg, StatusAction::OpenBackground));
     }
     if let Some(wt) = &state.worktree_compact {
         counts.push(status_field("wt", wt.clone()));
     }
     let mut groups = vec![
         vec![
-            status_value(toggle_label),
+            status_value_action(toggle_label, StatusAction::ToggleLayout),
             status_value(state.provider_name.clone()),
-            status_value(state.model_id.clone()),
+            status_value_action(state.model_id.clone(), StatusAction::OpenModel),
         ],
         vec![
-            status_field("effort", effort_label(state)),
+            status_field_action("effort", effort_label(state), StatusAction::OpenEffort),
             status_field("approval", state.approval_mode.clone()),
         ],
         vec![
@@ -294,6 +374,7 @@ fn status_value(value: impl Into<String>) -> StatusField {
     StatusField {
         label: None,
         value: value.into(),
+        action: None,
     }
 }
 
@@ -301,6 +382,27 @@ fn status_field(label: &'static str, value: impl Into<String>) -> StatusField {
     StatusField {
         label: Some(label),
         value: value.into(),
+        action: None,
+    }
+}
+
+fn status_value_action(value: impl Into<String>, action: StatusAction) -> StatusField {
+    StatusField {
+        label: None,
+        value: value.into(),
+        action: Some(action),
+    }
+}
+
+fn status_field_action(
+    label: &'static str,
+    value: impl Into<String>,
+    action: StatusAction,
+) -> StatusField {
+    StatusField {
+        label: Some(label),
+        value: value.into(),
+        action: Some(action),
     }
 }
 
@@ -416,6 +518,7 @@ mod tests {
             ask_indicator: None,
             worktree_compact: None,
             worktree_expanded: None,
+            agent_status: None,
             extension_status: Vec::new(),
         }
     }
@@ -448,6 +551,44 @@ mod tests {
         // No extensions → no stray field.
         s.extension_status.clear();
         assert!(!flatten(s.status_lines()).contains("git-guard"));
+    }
+
+    #[test]
+    fn expanded_sections_group_runtime_session_and_workspace_status() {
+        let model = PresentationState {
+            status_layout: StatusLayout::Expanded,
+            agent_status: Some("running tests 3/8".to_string()),
+            worktree_expanded: Some(("codex/status-drawer".into(), "…/bb69/yolop".into())),
+            ..state()
+        };
+
+        let sections = model.expanded_status_sections();
+
+        assert_eq!(
+            sections
+                .iter()
+                .map(|section| section.title)
+                .collect::<Vec<_>>(),
+            vec!["Runtime", "Session", "Workspace"]
+        );
+        assert!(sections[0].fields.iter().any(|field| {
+            field.label == Some("model") && field.action == Some(StatusAction::OpenModel)
+        }));
+        assert!(sections[0].fields.iter().any(|field| {
+            field.label == Some("effort") && field.action == Some(StatusAction::OpenEffort)
+        }));
+        assert!(
+            sections[1]
+                .fields
+                .iter()
+                .any(|field| field.label == Some("agent") && field.value == "running tests 3/8")
+        );
+        assert!(
+            sections[2]
+                .fields
+                .iter()
+                .any(|field| field.label == Some("worktree"))
+        );
     }
 
     #[test]

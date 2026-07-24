@@ -1861,8 +1861,207 @@ pub(crate) fn session_status_lines(state: &ViewState) -> Vec<Line<'static>> {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StatusHit {
+    pub row: u16,
+    pub start_col: u16,
+    pub end_col: u16,
+    pub action: StatusAction,
+}
+
+pub(crate) struct FullscreenStatusLayout {
+    pub lines: Vec<Line<'static>>,
+    pub hits: Vec<StatusHit>,
+}
+
+pub(crate) fn fullscreen_status_layout(state: &ViewState, width: u16) -> FullscreenStatusLayout {
+    if state.presentation.status_layout == StatusLayout::Compact {
+        return linear_status_layout(&state.presentation.status_lines(), width);
+    }
+    section_status_layout(&state.presentation.expanded_status_sections(), width)
+}
+
 pub(crate) fn draw_session_status(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
     f.render_widget(Paragraph::new(session_status_lines(state)), area);
+}
+
+fn linear_status_layout(lines: &[StatusLine], width: u16) -> FullscreenStatusLayout {
+    let mut rendered = Vec::with_capacity(lines.len());
+    let mut hits = Vec::new();
+    for (row, line) in lines.iter().enumerate() {
+        let mut spans = vec![Span::styled(" ", Style::default().fg(TEXT_MUTED))];
+        let mut col: u16 = 1;
+        for (index, field) in line.fields.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled("  ·  ", Style::default().fg(TEXT_DIM)));
+                col = col.saturating_add(5);
+            }
+            let start = col;
+            if let Some(label) = field.label {
+                let label = format!("{label} ");
+                col = col.saturating_add(tuika::str_cols(&label));
+                spans.push(Span::styled(label, Style::default().fg(TEXT_DIM)));
+            }
+            col = col.saturating_add(tuika::str_cols(&field.value));
+            spans.push(Span::styled(
+                field.value.clone(),
+                Style::default().fg(TEXT_MUTED),
+            ));
+            if let Some(action) = field.action
+                && start < width
+            {
+                hits.push(StatusHit {
+                    row: row as u16,
+                    start_col: start,
+                    end_col: col.min(width),
+                    action,
+                });
+            }
+        }
+        rendered.push(Line::from(spans));
+    }
+    FullscreenStatusLayout {
+        lines: rendered,
+        hits,
+    }
+}
+
+struct StatusCell {
+    lines: Vec<Line<'static>>,
+    hits: Vec<StatusHit>,
+}
+
+fn section_status_layout(sections: &[StatusSection], width: u16) -> FullscreenStatusLayout {
+    if width == 0 {
+        return FullscreenStatusLayout {
+            lines: Vec::new(),
+            hits: Vec::new(),
+        };
+    }
+    let column_count = if width >= 96 { 3 } else { 2 }.min(sections.len()).max(1);
+    let mut lines = Vec::new();
+    let mut hits = Vec::new();
+    for group in sections.chunks(column_count) {
+        let group_columns = group.len();
+        let separators = group_columns.saturating_sub(1) as u16;
+        let columns_width = width.saturating_sub(separators);
+        let base_width = columns_width / group_columns as u16;
+        let extra = columns_width % group_columns as u16;
+        let widths = (0..group_columns)
+            .map(|index| base_width + u16::from((index as u16) < extra))
+            .collect::<Vec<_>>();
+        let cells = group
+            .iter()
+            .zip(widths.iter().copied())
+            .map(|(section, cell_width)| status_cell(section, cell_width))
+            .collect::<Vec<_>>();
+        let height = cells.iter().map(|cell| cell.lines.len()).max().unwrap_or(0);
+        let row_offset = lines.len() as u16;
+        for row in 0..height {
+            let mut spans = Vec::new();
+            for (column, &cell_width) in widths.iter().enumerate() {
+                if let Some(line) = cells.get(column).and_then(|cell| cell.lines.get(row)) {
+                    spans.extend(line.spans.clone());
+                    let line_width = line
+                        .spans
+                        .iter()
+                        .map(|span| tuika::str_cols(span.content.as_ref()))
+                        .fold(0, u16::saturating_add);
+                    if line_width < cell_width {
+                        spans.push(Span::raw(" ".repeat((cell_width - line_width) as usize)));
+                    }
+                } else {
+                    spans.push(Span::raw(" ".repeat(cell_width as usize)));
+                }
+                if column + 1 < group_columns {
+                    spans.push(Span::styled("│", Style::default().fg(TEXT_DIM)));
+                }
+            }
+            lines.push(Line::from(spans));
+        }
+
+        let mut column_offset: u16 = 0;
+        for (column, cell) in cells.iter().enumerate() {
+            hits.extend(cell.hits.iter().map(|hit| StatusHit {
+                row: row_offset.saturating_add(hit.row),
+                start_col: column_offset.saturating_add(hit.start_col),
+                end_col: column_offset.saturating_add(hit.end_col),
+                action: hit.action,
+            }));
+            column_offset = column_offset
+                .saturating_add(widths[column])
+                .saturating_add(1);
+        }
+    }
+
+    FullscreenStatusLayout { lines, hits }
+}
+
+fn status_cell(section: &StatusSection, width: u16) -> StatusCell {
+    let mut lines = Vec::with_capacity(section.fields.len() + 1);
+    let mut hits = Vec::new();
+    let title_text = fit_status_text(section.title, width.saturating_sub(2));
+    let title = format!(" {title_text} ");
+    let title_width = tuika::str_cols(&title).min(width);
+    lines.push(Line::from(vec![
+        Span::styled(title, Style::default().fg(ACCENT_GOLD)),
+        Span::styled(
+            "─".repeat(width.saturating_sub(title_width) as usize),
+            Style::default().fg(TEXT_DIM),
+        ),
+    ]));
+    for (row, field) in section.fields.iter().enumerate() {
+        let label = field
+            .label
+            .map(|label| format!("{label} "))
+            .unwrap_or_default();
+        let prefix_width = 1u16.saturating_add(tuika::str_cols(&label));
+        let value_width = width.saturating_sub(prefix_width);
+        let value = fit_status_text(&field.value, value_width);
+        let end_col = prefix_width
+            .saturating_add(tuika::str_cols(&value))
+            .min(width);
+        let mut spans = vec![Span::raw(" ")];
+        if !label.is_empty() {
+            spans.push(Span::styled(label, Style::default().fg(TEXT_DIM)));
+        }
+        spans.push(Span::styled(value, Style::default().fg(TEXT_MUTED)));
+        lines.push(Line::from(spans));
+        if let Some(action) = field.action
+            && end_col > 1
+        {
+            hits.push(StatusHit {
+                row: row as u16 + 1,
+                start_col: 1,
+                end_col,
+                action,
+            });
+        }
+    }
+    StatusCell { lines, hits }
+}
+
+fn fit_status_text(text: &str, width: u16) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if tuika::str_cols(text) <= width {
+        return text.to_string();
+    }
+    if width == 1 {
+        return "…".to_string();
+    }
+    let wrapped = tuika::wrap_lines(&[Line::from(text.to_string())], width - 1);
+    let prefix = wrapped
+        .first()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    format!("{}…", prefix.trim_end())
 }
 
 fn status_line(line: &StatusLine) -> Line<'static> {

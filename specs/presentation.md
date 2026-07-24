@@ -31,6 +31,22 @@ widgets, overlays, and terminal-specific affordances. It must not be the only
 place where a user-visible transcript label, tool wording, or status-bar value
 is assembled.
 
+### Fullscreen Status Drawer
+
+The fullscreen host projects expanded session status as a responsive drawer.
+At wide terminal widths the Runtime, Session, and Workspace sections render as
+three columns; narrower widths reflow them to two columns. Compact mode remains
+one row. Values must fit their assigned column without escaping the frame.
+
+Status fields may carry typed host actions. Model and reasoning-effort fields
+open their existing selectors, background state opens its panel, and the
+explicit expand/collapse field changes layout. Empty status space has no action.
+
+The interactive TUI exposes a bounded, turn-scoped agent status contribution.
+The agent may update or clear that value while working; the host clears it when
+the turn finishes. Host-owned runtime, safety, session, and workspace values
+remain authoritative and cannot be replaced by the agent contribution.
+
 `--print` and ACP may project the model differently, but shared semantics should
 come from the same presentation model rather than parallel ad hoc formatting.
 
