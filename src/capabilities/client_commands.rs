@@ -540,4 +540,73 @@ mod tests {
             }]
         );
     }
+
+    /// Characterization: today's `run_yolop_command` only acknowledges a queue;
+    /// the host `/mcp` listing never returns to the agent. Paired with the
+    /// ignored `repro_run_yolop_command_mcp_returns_host_output` desired fix.
+    #[tokio::test]
+    async fn run_yolop_command_mcp_queues_without_host_output_today() {
+        let ui = Arc::new(RecordingUi::default());
+        let tool = RunYolopCommandTool { ui: ui.clone() };
+
+        let result = tool
+            .execute(json!({ "command": "mcp", "arguments": "" }))
+            .await;
+        assert!(result.is_success(), "tool result: {result:?}");
+        assert_eq!(
+            ui.take(),
+            vec![UiCommand::ManageMcp { arg: None }],
+            "mcp must still be queued on the host"
+        );
+
+        let payload = match result {
+            ToolExecutionResult::Success(value) => value,
+            other => panic!("expected Success, got {other:?}"),
+        };
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("command queued for the interactive terminal host"),
+            "characterization of the bug: agent only sees the queue ack"
+        );
+    }
+
+    /// Desired: `run_yolop_command` for `/mcp` returns the host listing so the
+    /// agent can act conversationally (login/reload) without inventing a
+    /// "manager window".
+    ///
+    /// Current bug: only `"command queued for the interactive terminal host"`
+    /// comes back — matching the Linear transcript where the agent claimed it
+    /// opened an MCP manager after a bare `/mcp` queue.
+    #[tokio::test]
+    #[ignore = "repro: run_yolop_command mcp returns no host output to the agent"]
+    async fn repro_run_yolop_command_mcp_returns_host_output() {
+        let ui = Arc::new(RecordingUi::default());
+        let tool = RunYolopCommandTool { ui: ui.clone() };
+
+        let result = tool
+            .execute(json!({ "command": "mcp", "arguments": "" }))
+            .await;
+        assert!(result.is_success(), "tool should succeed: {result:?}");
+
+        let payload = match result {
+            ToolExecutionResult::Success(value) => value,
+            other => panic!("expected Success, got {other:?}"),
+        };
+        let message = payload
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        assert!(
+            !message.contains("queued for the interactive terminal host"),
+            "agent must receive the real /mcp listing, not a fire-and-forget queue ack.\n\
+             got message={message:?}; queued={:?}",
+            ui.take()
+        );
+        assert!(
+            message.contains("MCP") || message.contains("mcp") || message.contains("usage"),
+            "tool result should carry the host /mcp response for conversational control.\n\
+             got message={message:?}"
+        );
+    }
 }
