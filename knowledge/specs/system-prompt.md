@@ -8,6 +8,18 @@ description: Defines the system prompt composition contract for Yolop.
 
 Status: implemented.
 
+## Scope
+
+This is the prompt **yolop ships to the model at runtime** — `system.md` plus
+capability contributions. The context *this repository* presents to coding
+agents reading it is a different subject, owned by
+[agent context](agent-context.md).
+
+The two share their principles — one owner per instruction, progressive
+disclosure, judgment over ritual, prefer references in code — and this spec does
+not restate them. What follows is only what is specific to a prompt assembled
+per turn from capabilities.
+
 ## Why
 
 Yolop's system prompt is not a file. `src/runtime/system.md` is around a
@@ -64,17 +76,17 @@ two cannot drift. Reveals are per session and the registry is bounded.
 disclose every turn, the framing paragraph waits for a reveal, and empty memory
 with no reveal contributes nothing.
 
-### Judgement over rules
+### Judgement yields to measurement
 
-Prefer describing the goal to encoding a rule the model can derive. Numeric
-thresholds ("only for work with at least three steps"), counters ("if stuck
-twice, ask"), and habit instructions ("do not repeat passing checks") are the
-shapes to avoid; they constrain models that would otherwise decide correctly.
+Judgment over ritual applies here as it does everywhere
+([agent context](agent-context.md)); the shapes to watch for in a prompt are
+numeric thresholds ("only for work with at least three steps"), counters ("if
+stuck twice, ask"), and habit instructions ("do not repeat passing checks").
 
-This is a default, not an absolute — it yields to measurement. The `lsp` block
-is deliberately directive because softer phrasing drove adoption to near zero in
-`evals/lsp_integration`. Evidence beats the preference; a preference is not
-evidence.
+The prompt-specific caveat is that the preference is a default, not an absolute.
+The `lsp` block is deliberately directive because softer phrasing drove adoption
+to near zero in `evals/lsp_integration`. Where an eval contradicts the
+preference, the eval wins — and a preference is not evidence.
 
 ### The budget is a test
 
@@ -103,3 +115,10 @@ because it is a capability toggle on one binary.
 - No prompt content in `AGENTS.md`'s place. Project policy lives there and is
   loaded by the `agent_instructions` capability, deliberately late in the prefix
   so it does not invalidate the cached stable prefix.
+
+## Related
+
+- [agent context](agent-context.md) — the same principles applied to the context
+  this repository presents to agents reading it.
+- [tool search](tool-search.md) — the deferral mechanism reveal gating rides on.
+- [memory](memory.md) — the two-tier disclosure this contract produces.

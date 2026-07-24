@@ -86,5 +86,6 @@ artifacts, or credentials. Everywhere else, the outcome is the instruction.
 ## Related
 
 - [`documentation.md`](./documentation.md) — the public/internal documentation boundary.
+- [`system-prompt.md`](./system-prompt.md) — the same principles applied to the prompt yolop ships at runtime.
 - [`skills.md`](./skills.md) — the runtime skills capability yolop ships.
 - [`okf.md`](./okf.md) — why the knowledge bundle is plain OKF markdown.

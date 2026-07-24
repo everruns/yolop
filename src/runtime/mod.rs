@@ -6608,6 +6608,50 @@ mod tests {
         assert_eq!(position(ENVIRONMENT_CONTEXT_CAPABILITY_ID), ids.len() - 1);
     }
 
+    /// Reveal gating only means anything alongside deferral, so both
+    /// capabilities ship enabled by default.
+    ///
+    /// The literal ref is asserted because an unknown `ref` in a capability
+    /// override is silently ignored — a typo would not fail, it would quietly
+    /// disable nothing. `evals/harness_basic`'s `no-tool-reveal` variant spells
+    /// this same string in a separate crate that cannot import the constant.
+    #[test]
+    fn tool_reveal_ships_with_tool_search_and_is_toggleable_by_ref() {
+        let ids = coding_harness_capabilities(true, None, &Settings::default());
+        let enabled = |id: &str| ids.iter().any(|cap| cap.capability_id() == id);
+
+        assert!(enabled(TOOL_SEARCH_CAPABILITY_ID));
+        assert!(enabled(TOOL_REVEAL_CAPABILITY_ID));
+        assert_eq!(
+            TOOL_REVEAL_CAPABILITY_ID, "yolop_tool_reveal",
+            "the eval variant's `ref` string tracks this constant"
+        );
+
+        // Go through the same catalog-validated path the settings file uses, so
+        // the ref is proven to resolve rather than assumed.
+        let mut catalog = crate::config::capability_settings::CapabilityCatalog::new();
+        catalog.register_arc(Arc::new(ToolRevealCapability::new(Arc::new(
+            RevealedTools::new(),
+        ))));
+        let override_entry = crate::config::capability_settings::build_capability_override(
+            &catalog,
+            TOOL_REVEAL_CAPABILITY_ID,
+            Some(false),
+            false,
+            None,
+        )
+        .expect("`yolop_tool_reveal` should resolve in the capability catalog");
+
+        let disabled =
+            crate::config::capability_settings::apply_capability_settings(ids, &[override_entry]);
+        assert!(
+            !disabled
+                .iter()
+                .any(|cap| cap.capability_id() == TOOL_REVEAL_CAPABILITY_ID),
+            "disabling the ref must actually drop the capability"
+        );
+    }
+
     /// System prompt is paid on every turn — keep it small enough that the
     /// first-turn input does not balloon for trivial requests. Bump
     /// intentionally and document why in the commit message; never raise
