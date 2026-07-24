@@ -100,21 +100,11 @@ impl Capability for ExtensionsCapability {
     }
 
     fn system_prompt_addition(&self) -> Option<&str> {
-        Some(
-            "Extensions are installable capability packages. Use `list_extensions` to see what is \
-             installed and enabled, `install_extension` for a crates.io crate \
-             (`crates.io:yolop-extension-<name>`), git URL, or local path, \
-             `enable_extension`/`disable_extension` to toggle one (applied to the running \
-             session immediately in the TUI — effective on the next turn — and persisted for \
-             future sessions), `reload_extension` to restart an enabled extension's server in \
-             place after editing its code, and `remove_extension` to uninstall. To build a NEW \
-             yourself, `scaffold_extension` generates a ready-to-edit package (manifest + \
-             capability server) — declare what it contributes via `tools`, `hooks`, and/or \
-             `prompt` — then edit the generated `handle_*` bodies, `install_extension \
-             source=<dir>`, `doctor_extension` to verify, and `enable_extension`. Installing \
-             runs third-party code on the user's machine — confirm the source with the user \
-             first.",
-        )
+        // Every fact this block used to state — the install sources, the
+        // scaffold→install→doctor→enable loop, next-session timing, and the
+        // "runs third-party code, confirm the source" warning — is in the
+        // `ManageTool` descriptions below. Restating it per turn bought nothing.
+        None
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {

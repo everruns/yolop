@@ -7,7 +7,7 @@
 use crate::capabilities::narration::stable_labeled;
 use crate::config::hooks::{HookScope, HooksStore};
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
@@ -42,27 +42,9 @@ impl Capability for HooksCapability {
         Some("Extensibility")
     }
 
-    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        Some(
-            "<capability id=\"hooks\">\n\
-             Configure hook requests such as \"setup a hook to prevent calls to git\" with \
-             `validate_hook` and `upsert_hook`. Use `list_hooks` before changing existing hooks \
-             and `remove_hook` when removing or disabling one. Do not store hook requests as \
-             memory notes; hooks are real global/workspace configuration.\n\
-             </capability>"
-                .to_string(),
-        )
-    }
-
-    fn system_prompt_preview(&self) -> Option<String> {
-        Some(
-            "<capability id=\"hooks\">\n\
-             Configure global/workspace hooks with `list_hooks`, `validate_hook`, `upsert_hook`, \
-             and `remove_hook`.\n\
-             </capability>"
-                .to_string(),
-        )
-    }
+    // No system-prompt contribution: the four tool descriptions already carry the
+    // workflow (`list_hooks` before changing, `validate_hook` before writing) and
+    // state that hooks are global/workspace configuration.
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![

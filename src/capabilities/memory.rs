@@ -14,6 +14,7 @@
 // See knowledge/specs/memory.md for the design and configuration knobs.
 
 use crate::capabilities::narration::stable_labeled;
+use crate::capabilities::tool_reveal::RevealedTools;
 use crate::config::SettingsStore;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -649,18 +650,26 @@ fn render_memory_block(
     memory_path: &Path,
     titles: &[(String, String, DateTime<Utc>)],
     total: usize,
+    detailed: bool,
 ) -> String {
     let mut out = String::new();
     out.push_str("<memory>\n");
-    out.push_str(
-        "Global, durable user memory across all yolop sessions — preferences, facts, and \
-         conventions about the user (\"prefer terse answers\", \"my name is Mike\"). Only memory \
-         TITLES are shown here: call `recall` with an id or a search query to read a memory's full \
-         text, `remember` to add or update one, and `forget` to delete one. This is GLOBAL \
-         personalization about the user, NOT project guidance (that belongs in the repo's \
-         AGENTS.md).\n",
-    );
-    out.push_str(&format!("memory file: {}\n", memory_path.display()));
+    // The framing paragraph is how-to for `recall`/`remember`/`forget` — all
+    // deferred, and all three tool descriptions already say what they do and that
+    // memory is global rather than project guidance. It is worth its tokens only
+    // once one of them has been revealed. The titles below are different: they
+    // are the disclosure itself, and nothing else in context carries them.
+    if detailed {
+        out.push_str(
+            "Global, durable user memory across all yolop sessions — preferences, facts, and \
+             conventions about the user (\"prefer terse answers\", \"my name is Mike\"). Only \
+             memory TITLES are shown here: call `recall` with an id or a search query to read a \
+             memory's full text, `remember` to add or update one, and `forget` to delete one. \
+             This is GLOBAL personalization about the user, NOT project guidance (that belongs \
+             in the repo's AGENTS.md).\n",
+        );
+        out.push_str(&format!("memory file: {}\n", memory_path.display()));
+    }
 
     if total == 0 {
         out.push_str("memory is empty — use `remember` to store a durable preference or fact.\n");
@@ -690,6 +699,7 @@ fn render_memory_block(
 
 pub(crate) struct GlobalMemoryCapability {
     pub(crate) memory: Arc<MemoryStore>,
+    pub(crate) reveals: Arc<RevealedTools>,
 }
 
 impl GlobalMemoryCapability {
@@ -754,12 +764,26 @@ impl Capability for GlobalMemoryCapability {
 
     async fn system_prompt_contribution_with_config(
         &self,
-        _ctx: &SystemPromptContext,
+        ctx: &SystemPromptContext,
         config: &Value,
     ) -> Option<String> {
         let cfg = Self::resolved_config(config);
         let (titles, total) = self.memory.titles(cfg.disclosed_titles);
-        Some(render_memory_block(self.memory.path(), &titles, total))
+        let detailed = self
+            .reveals
+            .any_revealed(ctx.session_id, &["recall", "remember", "forget"]);
+        // Empty memory with nothing revealed has neither disclosure nor
+        // actionable how-to to offer; `remember`'s description is enough for the
+        // model to find it.
+        if total == 0 && !detailed {
+            return None;
+        }
+        Some(render_memory_block(
+            self.memory.path(),
+            &titles,
+            total,
+            detailed,
+        ))
     }
 
     fn system_prompt_preview(&self) -> Option<String> {
@@ -1277,17 +1301,42 @@ mod tests {
 
     #[test]
     fn render_block_handles_empty_and_overflow() {
-        let empty = render_memory_block(Path::new("/cfg/MEMORY.md"), &[], 0);
+        let empty = render_memory_block(Path::new("/cfg/MEMORY.md"), &[], 0, true);
         assert!(empty.starts_with("<memory>\n"));
         assert!(empty.contains("memory is empty"));
         assert!(empty.ends_with("</memory>"));
 
         let now = Utc::now();
         let titles = vec![("m-1".to_string(), "Prefer terse".to_string(), now)];
-        let block = render_memory_block(Path::new("/cfg/MEMORY.md"), &titles, 9);
+        let block = render_memory_block(Path::new("/cfg/MEMORY.md"), &titles, 9, true);
         assert!(block.contains("known memories (most recent first, 1 of 9)"));
         assert!(block.contains("- [m-1] Prefer terse"));
         assert!(block.contains("more memories exist than shown"));
+    }
+
+    /// Until a memory tool is revealed the block discloses titles and nothing
+    /// else: the how-to is in the tool descriptions, and repeating it every turn
+    /// is what the reveal gate exists to avoid.
+    #[test]
+    fn undisclosed_block_keeps_titles_and_drops_the_how_to() {
+        let now = Utc::now();
+        let titles = vec![("m-1".to_string(), "Prefer terse".to_string(), now)];
+
+        let lean = render_memory_block(Path::new("/cfg/MEMORY.md"), &titles, 1, false);
+        assert!(
+            lean.contains("- [m-1] Prefer terse"),
+            "titles still disclose"
+        );
+        assert!(!lean.contains("Global, durable user memory"));
+        assert!(!lean.contains("memory file:"));
+
+        let full = render_memory_block(Path::new("/cfg/MEMORY.md"), &titles, 1, true);
+        assert!(full.contains("Global, durable user memory"));
+        assert!(full.contains("memory file:"));
+        assert!(
+            full.len() > lean.len() + 300,
+            "the gated framing is the bulk of the block"
+        );
     }
 
     #[test]
@@ -1326,6 +1375,7 @@ mod tests {
         let (_tmp, store) = store_in_tmp();
         let cap = GlobalMemoryCapability {
             memory: Arc::new(store),
+            reveals: Arc::new(RevealedTools::new()),
         };
         assert!(cap.config_schema().is_some());
         assert!(cap.validate_config(&json!({ "recall_limit": 2 })).is_ok());
@@ -1428,6 +1478,7 @@ mod tests {
         let (_tmp, store) = store_in_tmp();
         let capability = GlobalMemoryCapability {
             memory: Arc::new(store),
+            reveals: Arc::new(RevealedTools::new()),
         };
         let names: Vec<String> = capability
             .tools()
@@ -1436,5 +1487,46 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["remember", "recall", "forget"]);
         assert!(capability.commands().is_empty());
+    }
+
+    /// Titles are disclosure and always ride; the framing paragraph is how-to for
+    /// three deferred tools and waits for a reveal. Empty memory with no reveal
+    /// has neither, so the block disappears entirely.
+    #[tokio::test]
+    async fn memory_block_discloses_titles_but_gates_the_framing() {
+        let (_tmp, store) = store_in_tmp();
+        let reveals = Arc::new(RevealedTools::new());
+        let session = everruns_core::typed_id::SessionId::new();
+        let ctx = SystemPromptContext::without_file_store(session);
+
+        let capability = GlobalMemoryCapability {
+            memory: Arc::new(store),
+            reveals: reveals.clone(),
+        };
+        assert!(
+            capability.system_prompt_contribution(&ctx).await.is_none(),
+            "empty memory with nothing revealed contributes nothing at all"
+        );
+
+        capability
+            .memory
+            .remember("Prefer terse", "Keep answers short.", None)
+            .expect("remember");
+
+        let gated = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("stored titles are always disclosed");
+        assert!(gated.contains("Prefer terse"));
+        assert!(!gated.contains("Global, durable user memory"));
+
+        reveals.record(session, ["recall".to_string()]);
+
+        let full = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("revealed");
+        assert!(full.contains("Prefer terse"));
+        assert!(full.contains("Global, durable user memory"));
     }
 }

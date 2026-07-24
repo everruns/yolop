@@ -11,6 +11,9 @@ pub mod session_log;
 
 use crate::capabilities::mcp::McpCapability as YolopMcpCapability;
 use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, MemoryStore};
+use crate::capabilities::tool_reveal::{
+    RevealedTools, TOOL_REVEAL_CAPABILITY_ID, ToolRevealCapability,
+};
 use crate::capabilities::yolop::{YOLOP_CAPABILITY_ID, YolopCapability};
 use crate::capabilities::{
     APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability,
@@ -2080,6 +2083,11 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         // `tool_search` tool. Works on every model. Default threshold is 15
         // tools (see DEFAULT_TOOL_SEARCH_THRESHOLD).
         AgentCapabilityConfig::new(TOOL_SEARCH_CAPABILITY_ID),
+        // Records what `tool_search` loaded so reveal-gated prompt blocks
+        // (`config`, `memory`) can stay silent until their tools are callable.
+        // Pairs with TOOL_SEARCH_CAPABILITY_ID above — gating is meaningless
+        // without deferral.
+        AgentCapabilityConfig::new(TOOL_REVEAL_CAPABILITY_ID),
         AgentCapabilityConfig::new(TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID),
         AgentCapabilityConfig::new(SESSION_TASKS_CAPABILITY_ID),
         AgentCapabilityConfig::new(DUCKDUCKGO_CAPABILITY_ID),
@@ -2816,8 +2824,13 @@ pub async fn build_with_options(
     //   * user_hooks           — executes user-authored hook specs loaded from
     //                            global/workspace hook config
     let mut capabilities = CapabilityRegistry::new();
+    // Shared across every reveal-gated capability: `tool_reveal` writes it from
+    // `tool_search` results, `config` and `memory` read it when deciding whether
+    // their how-to prose has earned its place this turn.
+    let tool_reveals = Arc::new(RevealedTools::new());
     let environment_context = EnvironmentContextRegistry::default();
     environment_context.set("sandbox_mode", sandbox_mode.as_str());
+    capabilities.register(ToolRevealCapability::new(tool_reveals.clone()));
     capabilities.register(SessionCapability);
     capabilities.register(AgentInstructionsCapability);
     // TODO(EVE-620): revert to `capabilities.register(FileSystemCapability)` once
@@ -3106,6 +3119,7 @@ pub async fn build_with_options(
     // MEMORY_CAPABILITY_ID below.
     capabilities.register(GlobalMemoryCapability {
         memory: Arc::new(MemoryStore::beside_settings(&settings)),
+        reveals: tool_reveals.clone(),
     });
     // `hooks` — global/workspace hook self-configuration tools. Runtime
     // execution is still upstream `user_hooks`, registered above.
@@ -3168,6 +3182,7 @@ pub async fn build_with_options(
     capabilities.register(ConfigCapability {
         settings: settings.clone(),
         catalog: Arc::new(catalog),
+        reveals: tool_reveals.clone(),
     });
 
     let mut driver_registry = DriverRegistry::new();
@@ -6593,19 +6608,106 @@ mod tests {
         assert_eq!(position(ENVIRONMENT_CONTEXT_CAPABILITY_ID), ids.len() - 1);
     }
 
+    /// Reveal gating only means anything alongside deferral, so both
+    /// capabilities ship enabled by default.
+    ///
+    /// The literal ref is asserted because an unknown `ref` in a capability
+    /// override is silently ignored — a typo would not fail, it would quietly
+    /// disable nothing. `evals/harness_basic`'s `no-tool-reveal` variant spells
+    /// this same string in a separate crate that cannot import the constant.
+    #[test]
+    fn tool_reveal_ships_with_tool_search_and_is_toggleable_by_ref() {
+        let ids = coding_harness_capabilities(true, None, &Settings::default());
+        let enabled = |id: &str| ids.iter().any(|cap| cap.capability_id() == id);
+
+        assert!(enabled(TOOL_SEARCH_CAPABILITY_ID));
+        assert!(enabled(TOOL_REVEAL_CAPABILITY_ID));
+        assert_eq!(
+            TOOL_REVEAL_CAPABILITY_ID, "yolop_tool_reveal",
+            "the eval variant's `ref` string tracks this constant"
+        );
+
+        // Go through the same catalog-validated path the settings file uses, so
+        // the ref is proven to resolve rather than assumed.
+        let mut catalog = crate::config::capability_settings::CapabilityCatalog::new();
+        catalog.register_arc(Arc::new(ToolRevealCapability::new(Arc::new(
+            RevealedTools::new(),
+        ))));
+        let override_entry = crate::config::capability_settings::build_capability_override(
+            &catalog,
+            TOOL_REVEAL_CAPABILITY_ID,
+            Some(false),
+            false,
+            None,
+        )
+        .expect("`yolop_tool_reveal` should resolve in the capability catalog");
+
+        let disabled =
+            crate::config::capability_settings::apply_capability_settings(ids, &[override_entry]);
+        assert!(
+            !disabled
+                .iter()
+                .any(|cap| cap.capability_id() == TOOL_REVEAL_CAPABILITY_ID),
+            "disabling the ref must actually drop the capability"
+        );
+    }
+
     /// System prompt is paid on every turn — keep it small enough that the
     /// first-turn input does not balloon for trivial requests. Bump
     /// intentionally and document why in the commit message; never raise
     /// silently.
     #[test]
     fn system_prompt_within_budget() {
-        const MAX_BYTES: usize = 1_300;
+        const MAX_BYTES: usize = 1_200;
         assert!(
             SYSTEM_PROMPT.len() <= MAX_BYTES,
             "SYSTEM_PROMPT is {} bytes (~{} tokens), cap is {} bytes",
             SYSTEM_PROMPT.len(),
             SYSTEM_PROMPT.len() / 4,
             MAX_BYTES,
+        );
+    }
+
+    /// `SYSTEM_PROMPT` is under a tenth of what the model actually reads: the
+    /// rest is capability blocks, and for a long time nothing watched their
+    /// total. Trimming them once does not keep them trimmed — each new
+    /// capability adds prose that looks small on its own — so the budget covers
+    /// the sum.
+    ///
+    /// Only always-on blocks with no per-session state are listed; blocks that
+    /// need a live store (`config`, `memory`, `user_ask`) are reveal-gated or
+    /// dominated by data rather than prose. Adding a static block means adding
+    /// it here, which is the point: growth becomes a deliberate edit to a cap,
+    /// not a silent side effect.
+    ///
+    /// Before the Claude-5-generation prompt pass this totalled ~9,000 bytes.
+    #[test]
+    fn always_on_capability_prompts_within_budget() {
+        use crate::capabilities::approval::render_approval_block;
+        use crate::capabilities::attribution::yolop_attribution_prompt;
+        use crate::capabilities::background::BACKGROUND_SYSTEM_PROMPT;
+        use crate::capabilities::client_commands::CLIENT_COMMANDS_PROMPT;
+        use crate::capabilities::host::SETUP_TOOLS_PROMPT;
+        use crate::config::ApprovalMode;
+
+        // Current total is 5,657; the headroom is deliberately thin.
+        const MAX_BYTES: usize = 5_800;
+
+        let approval = render_approval_block(ApprovalMode::Normal).expect("normal contributes");
+        let blocks: Vec<(&str, usize)> = vec![
+            ("system.md", SYSTEM_PROMPT.len()),
+            ("approval", approval.len()),
+            ("background", BACKGROUND_SYSTEM_PROMPT.len()),
+            ("client_commands", CLIENT_COMMANDS_PROMPT.len()),
+            ("setup", SETUP_TOOLS_PROMPT.len()),
+            ("attribution", yolop_attribution_prompt().len()),
+        ];
+
+        let total: usize = blocks.iter().map(|(_, bytes)| bytes).sum();
+        assert!(
+            total <= MAX_BYTES,
+            "always-on prompt blocks total {total} bytes (~{} tokens), cap is {MAX_BYTES}: {blocks:?}",
+            total / 4,
         );
     }
 }

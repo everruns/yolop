@@ -41,7 +41,7 @@ pub(crate) const BACKGROUND_CAPABILITY_ID: &str = "background";
 // `progress_guard`'s Waiting class): waiting on an external event must cost
 // zero turns, so steer the model to detach the wait and rely on the
 // completion wake instead of foreground watches or poll-sleep turns.
-const BACKGROUND_SYSTEM_PROMPT: &str = "<capability id=\"background\">\n\
+pub(crate) const BACKGROUND_SYSTEM_PROMPT: &str = "<capability id=\"background\">\n\
     Waiting on an external event — a CI run, a PR review window, a deploy, a long \
     build — must not consume turns. Do not run watch commands in the foreground and \
     do not poll status across turns. Start one blocking watch detached via \

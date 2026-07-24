@@ -348,13 +348,6 @@ fn write_if_changed(target: &Path, contents: &[u8]) -> std::io::Result<()> {
 
 pub(crate) const SKILL_MANAGEMENT_CAPABILITY_ID: &str = "yolop_skill_management";
 
-const SKILL_MANAGEMENT_PROMPT: &str = "<capability id=\"yolop_skill_management\">\n\
-    To uninstall a skill, call `delete_skill` with its name and scope \
-    (`workspace` or `global`). It removes the installed skill directory in that \
-    scope. System skills are read-only and cannot be deleted. Install and update \
-    still go through `write_skill`; this only handles removal.\n\
-    </capability>";
-
 /// Skill removal for yolop's writable scopes. The upstream
 /// `ScopedSkillsCapability` owns discovery and `list/activate/read/write_skill`
 /// but has no uninstall, so yolop contributes `delete_skill` here. It operates
@@ -389,7 +382,10 @@ impl Capability for SkillManagementCapability {
         Some("Examples")
     }
     fn system_prompt_addition(&self) -> Option<&str> {
-        Some(SKILL_MANAGEMENT_PROMPT)
+        // `delete_skill`'s description already states the scope argument, that
+        // system skills are read-only, and that install/update go through
+        // `write_skill`.
+        None
     }
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![Box::new(DeleteSkillTool {
@@ -762,12 +758,22 @@ mod tests {
             names.iter().any(|n| n == "delete_skill"),
             "delete_skill should be exposed: {names:?}"
         );
+        // Uninstall guidance belongs to the tool, not to a per-turn prompt block:
+        // the description is already in context whenever the tool is offered.
         assert!(
-            capability
-                .system_prompt_addition()
-                .expect("prompt")
-                .contains("delete_skill")
+            capability.system_prompt_addition().is_none(),
+            "skill removal guidance lives in `delete_skill`'s description"
         );
+        let description = capability
+            .tools()
+            .into_iter()
+            .find(|t| t.name() == "delete_skill")
+            .expect("delete_skill")
+            .description()
+            .to_string();
+        assert!(description.contains("workspace"));
+        assert!(description.contains("System skills cannot be deleted"));
+        assert!(description.contains("write_skill"));
     }
 
     /// Build a tool whose workspace/global scopes point at fresh temp dirs.

@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 pub(crate) const CLIENT_COMMANDS_CAPABILITY_ID: &str = "yolop_client_commands";
 
-const CLIENT_COMMANDS_PROMPT: &str = r#"<capability id="yolop_client_commands">
+pub(crate) const CLIENT_COMMANDS_PROMPT: &str = r#"<capability id="yolop_client_commands">
 For natural-language requests, `run_yolop_command` can perform these TUI client
 commands: `/help`, `/tools`, `/mcp`, `/cwd`, `/status [compact|expanded|toggle]`,
 `/model [id]`, `/effort [level]`, `/clear`, and `/quit` (`/exit` is an alias).

@@ -71,6 +71,20 @@ arguments) on:
 - Anthropic `claude-sonnet`
 - NVIDIA Nemotron via OpenRouter
 
+## Reveal gating
+
+Deferral hid tool *schemas* while capability prompt blocks kept explaining how
+to call those same hidden tools every turn. `capabilities::tool_reveal` closes
+that: a `PostToolExecHook` records `tool_search`'s structured `loaded` names
+into a bounded, session-keyed registry, and gated capabilities check it before
+contributing how-to prose. Discovery text stays ungated — see
+[system prompt composition](system-prompt.md) for where the line falls.
+
+The registry reads `tool_search`'s own result rather than mirroring upstream
+state, so it cannot drift from what the model was shown. Gating is meaningless
+without deferral, so `yolop_tool_reveal` is enabled alongside
+`TOOL_SEARCH_CAPABILITY_ID`.
+
 ## Non-goals
 
 - No native/server-side tool search. The native OpenAI path stays unused until

@@ -1,7 +1,7 @@
 use crate::capabilities::narration::stable_labeled;
 use crate::config::mcp::{McpConfigScope, McpConfigStore, McpServerEntry};
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::tool_types::ToolCall;
 use everruns_core::tools::{Tool, ToolExecutionResult};
@@ -32,23 +32,9 @@ impl Capability for McpCapability {
         Some("Extensibility")
     }
 
-    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        Some(
-            "<capability id=\"mcp\">\n\
-              Manage global and workspace MCP servers with `list_mcp_servers`, \
-              `upsert_mcp_server`, `remove_mcp_server`, and `set_mcp_server_enabled`. \
-              Global servers live in settings.toml under `[mcp.servers.<name>]`; workspace \
-              servers live in `.mcp.json` and override global servers by name. Config changes \
-              take effect on the next `/mcp reload` (or a new session); use `enabled=false` to \
-              deactivate without deleting.\n\
-              </capability>"
-                .to_string(),
-        )
-    }
-
-    fn system_prompt_preview(&self) -> Option<String> {
-        Some("<capability id=\"mcp\">Manage global/workspace MCP servers with list/upsert/remove/enable tools.</capability>".to_string())
-    }
+    // No system-prompt contribution: the four tool descriptions already name the
+    // verbs and the `/mcp reload` timing, and the file layout moved into
+    // `upsert_mcp_server`'s description where it is needed to fill in `scope`.
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
@@ -130,7 +116,10 @@ impl Tool for UpsertMcpServerTool {
         Some("Upsert MCP server")
     }
     fn description(&self) -> &str {
-        "Create or replace one global or workspace MCP server. Changes take effect on the next `/mcp reload` or a new session."
+        "Create or replace one global or workspace MCP server. Global servers live in \
+         settings.toml under `[mcp.servers.<name>]`; workspace servers live in `.mcp.json` and \
+         override global servers by name. Changes take effect on the next `/mcp reload` or a \
+         new session."
     }
     fn parameters_schema(&self) -> Value {
         json!({

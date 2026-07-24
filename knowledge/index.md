@@ -16,6 +16,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 - [Commands](specs/commands.md) — client command behavior.
 - [User ask](specs/user-ask.md) — request tracking and turn-end validation.
 - [Mid-turn steering](specs/steering.md) — input received during execution.
+- [System prompt composition](specs/system-prompt.md) — what earns a place in the per-turn prefix.
 
 ## Capabilities and integrations
 

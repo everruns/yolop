@@ -36,7 +36,7 @@ pub(crate) const APPROVAL_CAPABILITY_ID: &str = "yolop_approval";
 /// Pure so the per-mode branch logic is unit-testable without a
 /// `SystemPromptContext`. Returns `None` for [`ApprovalMode::Off`], which
 /// contributes nothing to the prompt.
-fn render_approval_block(mode: ApprovalMode) -> Option<String> {
+pub(crate) fn render_approval_block(mode: ApprovalMode) -> Option<String> {
     let threshold = match mode {
         ApprovalMode::Off => return None,
         ApprovalMode::Protective => {
