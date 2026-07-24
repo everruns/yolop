@@ -36,6 +36,11 @@ pub struct TextInputState {
 }
 
 /// Controls which Enter chord submits a text input.
+///
+/// Applied by both [`TextInputState::handle_enter`] and [`TextInputState::handle`]
+/// when it sees Enter / Shift+Enter. Ctrl+J always inserts a newline regardless
+/// of this mode (emacs newline / raw-mode LF from terminals without enhanced
+/// keyboard reporting).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextInputMode {
     /// Enter submits; Shift+Enter inserts a newline.
@@ -132,9 +137,11 @@ impl TextInputState {
         self.col = self.lines[self.row].chars().count();
     }
 
-    /// Clear to a single empty line.
+    /// Clear to a single empty line. Preserves [`TextInputMode`].
     pub fn clear(&mut self) {
+        let mode = self.mode;
         *self = Self::new();
+        self.mode = mode;
     }
 
     /// Move the cursor to `(row, col)`, clamped into the buffer. Lets a host
@@ -361,132 +368,144 @@ impl TextInputState {
         self.col = 0;
     }
 
-    /// Apply an input event. Returns `true` when the buffer or cursor changed.
-    /// Enter inserts a newline; a host that submits on Enter should intercept it
-    /// before calling this.
+    /// Apply an input event according to the configured [`TextInputMode`].
+    ///
+    /// Returns [`None`] when the event is ignored; [`Some`] with
+    /// [`TextInputEvent::Changed`] when the buffer or cursor changed, or
+    /// [`TextInputEvent::Submit`] when the Enter chord requested submission
+    /// (the buffer is left unchanged so the host can read [`Self::text`] and
+    /// clear).
+    ///
+    /// Enter / Shift+Enter follow [`TextInputMode`]. Ctrl+J (emacs newline,
+    /// and the raw-mode encoding of a bare LF that many terminals send for
+    /// Shift+Enter without the kitty keyboard protocol) always inserts a
+    /// newline.
     ///
     /// Beyond the plain keys, an emacs-style keymap covers the readline bindings
     /// a terminal composer is expected to honor (so the widget matches what
     /// `ratatui-textarea` gave hosts before): `C-a`/`C-e` line start/end,
     /// `C-f`/`C-b` char move, `C-p`/`C-n` line move, `C-h`/`C-d` delete,
-    /// `C-k`/`C-u` kill to line end/start, `C-w`/`M-Backspace` delete word back,
-    /// `M-f`/`M-b` word move, `M-d` delete word forward.
-    pub fn handle(&mut self, event: &Event) -> bool {
+    /// `C-j` newline, `C-k`/`C-u` kill to line end/start, `C-w`/`M-Backspace`
+    /// delete word back, `M-f`/`M-b` word move, `M-d` delete word forward.
+    pub fn handle(&mut self, event: &Event) -> Option<TextInputEvent> {
         match event {
             Event::Key(k) if k.ctrl && !k.alt => match k.code {
                 KeyCode::Char('a') => {
                     self.move_home();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('e') => {
                     self.move_end();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('f') => {
                     self.move_right();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('b') => {
                     self.move_left();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('p') => {
                     self.move_up();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('n') => {
                     self.move_down();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('h') => {
                     self.backspace();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('d') => {
                     self.delete();
-                    true
+                    Some(TextInputEvent::Changed)
+                }
+                KeyCode::Char('j') => {
+                    // Emacs newline; also raw-mode LF from terminals that map
+                    // Shift+Enter to a bare `\n` without enhanced keyboard reporting.
+                    self.newline();
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('k') => {
                     self.kill_to_line_end();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('u') => {
                     self.kill_to_line_start();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('w') => {
                     self.delete_word_left();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
-                _ => false,
+                _ => None,
             },
             Event::Key(k) if k.alt && !k.ctrl => match k.code {
                 KeyCode::Char('f') => {
                     self.move_word_right();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('b') => {
                     self.move_word_left();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Char('d') => {
                     self.delete_word_right();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Backspace => {
                     self.delete_word_left();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
-                _ => false,
+                _ => None,
             },
             Event::Key(k) if !k.ctrl && !k.alt => match k.code {
                 KeyCode::Char(c) => {
                     self.insert_char(c);
-                    true
+                    Some(TextInputEvent::Changed)
                 }
-                KeyCode::Enter => {
-                    self.newline();
-                    true
-                }
+                KeyCode::Enter => Some(self.handle_enter(k.shift)),
                 KeyCode::Backspace => {
                     self.backspace();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Delete => {
                     self.delete();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Left => {
                     self.move_left();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Right => {
                     self.move_right();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Up => {
                     self.move_up();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Down => {
                     self.move_down();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::Home => {
                     self.move_home();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
                 KeyCode::End => {
                     self.move_end();
-                    true
+                    Some(TextInputEvent::Changed)
                 }
-                _ => false,
+                _ => None,
             },
             Event::Paste(text) => {
                 self.insert_str(text);
-                true
+                Some(TextInputEvent::Changed)
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -698,25 +717,46 @@ mod tests {
     use ratatui_core::layout::Rect;
 
     fn press(state: &mut TextInputState, code: KeyCode) -> bool {
-        state.handle(&Event::Key(Key::new(code)))
+        matches!(
+            state.handle(&Event::Key(Key::new(code))),
+            Some(TextInputEvent::Changed)
+        )
+    }
+
+    fn press_shift(state: &mut TextInputState, code: KeyCode) -> bool {
+        matches!(
+            state.handle(&Event::Key(Key {
+                code,
+                ctrl: false,
+                alt: false,
+                shift: true,
+            })),
+            Some(TextInputEvent::Changed)
+        )
     }
 
     fn press_ctrl(state: &mut TextInputState, code: KeyCode) -> bool {
-        state.handle(&Event::Key(Key {
-            code,
-            ctrl: true,
-            alt: false,
-            shift: false,
-        }))
+        matches!(
+            state.handle(&Event::Key(Key {
+                code,
+                ctrl: true,
+                alt: false,
+                shift: false,
+            })),
+            Some(TextInputEvent::Changed)
+        )
     }
 
     fn press_alt(state: &mut TextInputState, code: KeyCode) -> bool {
-        state.handle(&Event::Key(Key {
-            code,
-            ctrl: false,
-            alt: true,
-            shift: false,
-        }))
+        matches!(
+            state.handle(&Event::Key(Key {
+                code,
+                ctrl: false,
+                alt: true,
+                shift: false,
+            })),
+            Some(TextInputEvent::Changed)
+        )
     }
 
     fn type_str(state: &mut TextInputState, s: &str) {
@@ -769,7 +809,8 @@ mod tests {
         press(&mut state, KeyCode::Right);
         press(&mut state, KeyCode::Right);
         assert_eq!(state.cursor(), (0, 2));
-        press(&mut state, KeyCode::Enter);
+        // Default mode submits on Enter; Shift+Enter inserts the newline.
+        assert!(press_shift(&mut state, KeyCode::Enter));
         assert_eq!(state.text(), "ab\ncd");
         assert_eq!(state.line_count(), 2);
         assert_eq!(state.cursor(), (1, 0));
@@ -798,7 +839,10 @@ mod tests {
     #[test]
     fn text_input_paste_inserts_multiline() {
         let mut state = TextInputState::new();
-        assert!(state.handle(&Event::Paste("one\ntwo".to_string())));
+        assert_eq!(
+            state.handle(&Event::Paste("one\ntwo".to_string())),
+            Some(TextInputEvent::Changed)
+        );
         assert_eq!(state.text(), "one\ntwo");
         assert_eq!(state.line_count(), 2);
         assert_eq!(state.cursor(), (1, 3));
@@ -1040,5 +1084,83 @@ mod tests {
         assert_eq!(state.handle_enter(false), TextInputEvent::Changed);
         assert_eq!(state.handle_enter(true), TextInputEvent::Submit);
         assert_eq!(state.text(), "\n");
+    }
+
+    /// Reproduction: hosts that feed every key through [`TextInputState::handle`]
+    /// (the natural component API) must still honor [`TextInputMode`]. Shift+Enter
+    /// in the default `SubmitOnEnter` mode has to insert a newline — not submit,
+    /// and not be ignored — without the host special-casing Enter.
+    #[test]
+    fn handle_honors_submit_on_enter_mode_for_shift_enter_newline() {
+        let mut state = TextInputState::new();
+        assert_eq!(state.mode(), TextInputMode::SubmitOnEnter);
+        type_str(&mut state, "one");
+        let shift_enter = Event::Key(Key {
+            code: KeyCode::Enter,
+            ctrl: false,
+            alt: false,
+            shift: true,
+        });
+        assert_eq!(
+            state.handle(&shift_enter),
+            Some(TextInputEvent::Changed),
+            "Shift+Enter must insert a newline under SubmitOnEnter"
+        );
+        assert_eq!(state.text(), "one\n");
+        type_str(&mut state, "two");
+        assert_eq!(
+            state.handle(&Event::Key(Key::new(KeyCode::Enter))),
+            Some(TextInputEvent::Submit),
+            "plain Enter must submit under SubmitOnEnter, not insert another newline"
+        );
+        assert_eq!(
+            state.text(),
+            "one\ntwo",
+            "submit must leave the draft text intact"
+        );
+    }
+
+    #[test]
+    fn handle_honors_submit_on_shift_enter_mode() {
+        let mut state = TextInputState::new();
+        state.set_mode(TextInputMode::SubmitOnShiftEnter);
+        type_str(&mut state, "one");
+        assert_eq!(
+            state.handle(&Event::Key(Key::new(KeyCode::Enter))),
+            Some(TextInputEvent::Changed)
+        );
+        assert_eq!(state.text(), "one\n");
+        type_str(&mut state, "two");
+        let shift_enter = Event::Key(Key {
+            code: KeyCode::Enter,
+            ctrl: false,
+            alt: false,
+            shift: true,
+        });
+        assert_eq!(state.handle(&shift_enter), Some(TextInputEvent::Submit));
+        assert_eq!(state.text(), "one\ntwo");
+    }
+
+    #[test]
+    fn clear_preserves_enter_mode() {
+        let mut state = TextInputState::new();
+        state.set_mode(TextInputMode::SubmitOnShiftEnter);
+        type_str(&mut state, "draft");
+        state.clear();
+        assert!(state.is_empty());
+        assert_eq!(state.mode(), TextInputMode::SubmitOnShiftEnter);
+    }
+
+    /// Many terminals (VS Code / Cursor integrated terminal, classic xterm with
+    /// no kitty keyboard protocol) encode Shift+Enter as a bare LF byte. In raw
+    /// mode crossterm surfaces that as Ctrl+J — emacs newline — which must insert
+    /// a newline rather than being ignored.
+    #[test]
+    fn handle_ctrl_j_inserts_newline() {
+        let mut state = TextInputState::new();
+        type_str(&mut state, "ab");
+        assert!(press_ctrl(&mut state, KeyCode::Char('j')));
+        assert_eq!(state.text(), "ab\n");
+        assert_eq!(state.cursor(), (1, 0));
     }
 }
