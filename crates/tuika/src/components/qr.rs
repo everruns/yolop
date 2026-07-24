@@ -105,17 +105,23 @@ impl Gf {
         }
     }
 
-    /// The monic generator polynomial of degree `degree` (coefficients high→low).
+    /// The monic generator polynomial of degree `degree`, coefficients high→low
+    /// with a leading `1` — the product `∏(x - α^i)` for `i in 0..degree`.
     fn rs_generator(&self, degree: usize) -> Vec<u8> {
-        let mut coeffs = vec![1u8];
+        // Start from the constant polynomial 1 and multiply in one `(x + α^i)`
+        // factor at a time (subtraction is XOR in GF(2^8)).
+        let mut g = vec![1u8];
         for i in 0..degree {
-            coeffs.push(0);
-            for j in (1..coeffs.len()).rev() {
-                coeffs[j] = coeffs[j - 1] ^ self.mul(coeffs[j], self.exp[i]);
+            let factor = [1u8, self.exp[i]]; // x + α^i, high→low
+            let mut next = vec![0u8; g.len() + 1];
+            for (a, &ga) in g.iter().enumerate() {
+                for (b, &fb) in factor.iter().enumerate() {
+                    next[a + b] ^= self.mul(ga, fb);
+                }
             }
-            coeffs[0] = self.mul(coeffs[0], self.exp[i]);
+            g = next;
         }
-        coeffs
+        g
     }
 
     /// The `ec_len` Reed-Solomon error-correction codewords for `data`.
@@ -604,6 +610,24 @@ mod tests {
         let b = gf.rs_ecc(&data, 10);
         assert_eq!(a.len(), 10);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn rs_generator_and_ecc_match_known_vectors() {
+        let gf = Gf::new();
+        // The degree-2 generator is (x + 1)(x + α) = x² + α^25·x + α^1, whose
+        // GF(256) coefficients are [1, 3, 2] (high→low, monic).
+        assert_eq!(gf.rs_generator(2), vec![1, 3, 2]);
+        // The canonical QR spec example (Annex I.2): the 16 data codewords of a
+        // 1-M "01234567" numeric message produce these 10 EC codewords.
+        let data = [
+            0x10, 0x20, 0x0c, 0x56, 0x61, 0x80, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11,
+            0xec, 0x11,
+        ];
+        assert_eq!(
+            gf.rs_ecc(&data, 10),
+            vec![0xa5, 0x24, 0xd4, 0xc1, 0xed, 0x36, 0xc7, 0x87, 0x2c, 0x55]
+        );
     }
 
     fn finder_at(m: &[Vec<bool>], ox: usize, oy: usize) -> bool {
