@@ -10,10 +10,24 @@ stdout carries only protocol JSON; this file has no dependencies.
 import json
 import sys
 
+# Set from `initialize.config.trace_log`: a file the server appends each
+# received `trace/event` type to. Lets a spawn test assert the host forwards
+# the session event stream to a `trace`-declaring extension (a fire-and-forget
+# notification, so there is nothing to reply on the wire). Config-driven rather
+# than env-driven so parallel tests don't collide.
+TRACE_LOG = None
+
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
+
+
+def record_trace(event_type):
+    if not TRACE_LOG:
+        return
+    with open(TRACE_LOG, "a", encoding="utf-8") as handle:
+        handle.write(event_type + "\n")
 
 
 def main():
@@ -28,12 +42,23 @@ def main():
         method = msg.get("method")
         msg_id = msg.get("id")
         if method == "initialize":
+            config = (msg.get("params") or {}).get("config") or {}
+            if isinstance(config, dict) and config.get("trace_log"):
+                global TRACE_LOG
+                TRACE_LOG = config["trace_log"]
+            # Echo an injected env var (for the secret-injection spawn test):
+            # the host injects `secret`/`env`-mapped config fields into our
+            # environment. Record it so the test can assert it arrived.
+            import os
+            probe = os.environ.get("YEP_ECHO_ENV")
+            if probe:
+                record_trace("env:" + probe)
             send({
                 "id": msg_id,
                 "result": {
                     "protocol_version": "1.0",
                     "name": "echo",
-                    "capabilities": ["tools", "prompt", "streaming"],
+                    "capabilities": ["tools", "prompt", "streaming", "trace"],
                     "capability_params": {
                         "prompt": {"static": "echo fixture prompt"},
                         "tools": [{"name": "echo"}],
@@ -42,6 +67,10 @@ def main():
             })
         elif method == "initialized":
             continue
+        elif method == "trace/event":
+            # Fire-and-forget notification: record it, send nothing back.
+            params = msg.get("params") or {}
+            record_trace(params.get("event_type", ""))
         elif method == "tool/call":
             params = msg.get("params") or {}
             if params.get("name") != "echo":

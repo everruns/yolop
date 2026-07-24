@@ -452,15 +452,7 @@ pub(crate) fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
 /// both the inline sheet renderer and the full-screen tuika overlay show the
 /// same content.
 pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usize, usize)) {
-    let field = if ask.value.is_empty() {
-        ask.placeholder
-            .as_ref()
-            .map(|p| format!("({p})"))
-            .unwrap_or_default()
-    } else {
-        ask.value.clone()
-    };
-    let lines = vec![
+    let mut lines = vec![
         Line::from(Span::styled(
             "An extension is asking:",
             Style::default()
@@ -470,13 +462,47 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
         Line::from(""),
         Line::from(ask.prompt.clone()),
         Line::from(""),
-        Line::from(format!("> {field}")),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Enter to answer · Esc to cancel",
-            Style::default().add_modifier(Modifier::DIM),
-        )),
     ];
+    // Selector mode: a highlighted list of options.
+    if !ask.options.is_empty() {
+        for (i, option) in ask.options.iter().enumerate() {
+            let selected = i == ask.selected;
+            let marker = if selected { "▶ " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(TEXT_PRIMARY)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().add_modifier(Modifier::DIM)
+            };
+            lines.push(Line::from(Span::styled(format!("{marker}{option}"), style)));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "↑/↓ to choose · Enter to select · Esc to cancel",
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+        // No text cursor in selector mode; park it on the selected row.
+        return (lines, (4 + ask.selected, 0));
+    }
+    // Text / secret input. Secret input is masked; the placeholder (shown when
+    // empty) is never masked.
+    let field = if ask.value.is_empty() {
+        ask.placeholder
+            .as_ref()
+            .map(|p| format!("({p})"))
+            .unwrap_or_default()
+    } else if ask.secret {
+        "•".repeat(ask.value.chars().count())
+    } else {
+        ask.value.clone()
+    };
+    lines.push(Line::from(format!("> {field}")));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Enter to answer · Esc to cancel",
+        Style::default().add_modifier(Modifier::DIM),
+    )));
     // The typed answer is on row 4, after the "> " prompt.
     let cursor = (4, "> ".len() + ask.value.chars().count());
     (lines, cursor)

@@ -32,7 +32,7 @@ pub mod schema;
 mod server;
 
 pub use meta::{Meta, meta, meta_json};
-pub use protocol::PROTOCOL_VERSION;
+pub use protocol::{PROTOCOL_VERSION, TraceEventParams};
 #[cfg(feature = "schema")]
 pub use schema::schema_json;
 pub use server::{HookResponse, Server, ToolResponse};

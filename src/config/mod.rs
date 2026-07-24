@@ -846,12 +846,71 @@ impl SettingsStore {
         }
         Ok(changed)
     }
+
+    /// Set one key in a capability's inline config (creating an enabling
+    /// override if none exists yet). Used by extension setup to persist a
+    /// non-secret answer. Secrets never come here — they live in the credential
+    /// store.
+    pub fn set_capability_config(
+        &self,
+        capability_ref: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        // The active (last non-remove) override for this ref, or a fresh one.
+        let index = guard
+            .capabilities
+            .iter()
+            .rposition(|entry| entry.capability_ref == capability_ref && !entry.is_remove());
+        let entry = match index {
+            Some(i) => &mut guard.capabilities[i],
+            None => {
+                guard
+                    .capabilities
+                    .push(CapabilityOverride::enable(capability_ref));
+                guard.capabilities.last_mut().expect("just pushed")
+            }
+        };
+        if !entry.config.is_object() {
+            entry.config = serde_json::Value::Object(serde_json::Map::new());
+        }
+        if let serde_json::Value::Object(map) = &mut entry.config {
+            map.insert(key.to_string(), value);
+        }
+        save_to(&self.path, &guard)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use everruns_core::McpServerAuthMode;
+
+    #[test]
+    fn set_capability_config_creates_override_and_persists() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        // No override yet → creates an enabling one carrying the config.
+        store
+            .set_capability_config("ext:obs", "mode", serde_json::json!("slow"))
+            .expect("write");
+        store
+            .set_capability_config("ext:obs", "label", serde_json::json!("x"))
+            .expect("write");
+        let reloaded = SettingsStore::open(path);
+        let config = reloaded
+            .snapshot()
+            .capability_overrides_for("ext:obs")
+            .iter()
+            .rev()
+            .find(|(_, e)| !e.is_remove())
+            .map(|(_, e)| e.config.clone())
+            .expect("override");
+        assert_eq!(config["mode"], "slow");
+        assert_eq!(config["label"], "x");
+    }
 
     #[test]
     fn default_provider_roundtrip_via_disk() {

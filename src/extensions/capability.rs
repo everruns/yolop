@@ -39,6 +39,9 @@ pub struct ExtensionCapability {
     /// Shared live-process registry so `reload_extension` can restart this
     /// extension's server mid-session; `None` outside the runtime (tests).
     live_processes: Option<LiveProcessRegistry>,
+    /// Per-extension secret store; supplies the injected env for `secret`
+    /// config fields. `None` outside the runtime (tests without secrets).
+    secrets: Option<super::secrets::ExtensionSecrets>,
     environment_context: Option<EnvironmentContextRegistry>,
     /// Process shared by all tool instances so the server persists across
     /// turns; rebuilt (killing the old server) when the config changes —
@@ -55,9 +58,17 @@ impl ExtensionCapability {
             status_sink: None,
             ask_sink: None,
             live_processes: None,
+            secrets: None,
             environment_context: None,
             process: Mutex::new(None),
         }
+    }
+
+    /// Wire the per-extension secret store, so `secret` config fields are
+    /// injected into the server's environment at spawn.
+    pub fn with_secrets(mut self, secrets: super::secrets::ExtensionSecrets) -> Self {
+        self.secrets = Some(secrets);
+        self
     }
 
     /// Wire the shared live-process registry so this extension's server can be
@@ -98,11 +109,34 @@ impl ExtensionCapability {
             .and_then(Value::as_u64)
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS)
             .clamp(1_000, 600_000);
+        let manifest = &self.package.manifest;
+        // Env injection: `secret` fields from the credential store, plus
+        // non-secret fields that declare an `env` mapping, sourced from config.
+        let mut env = self
+            .secrets
+            .as_ref()
+            .map(|s| s.env_overrides(manifest))
+            .unwrap_or_default();
+        for field in manifest.config_fields() {
+            if field.secret {
+                continue;
+            }
+            if let (Some(env_name), Some(value)) = (
+                field.env.as_ref(),
+                config.get(&field.name).and_then(Value::as_str),
+            ) {
+                env.insert(env_name.clone(), value.to_string());
+            }
+        }
+        // Cache by the original config (below); pass a secret-stripped copy to
+        // the server so a `secret` key never rides `initialize.config`.
+        let spec_config = strip_secret_keys(config, manifest);
         let process = Arc::new(ExtensionProcess::new(ExtensionProcessSpec {
             manifest: self.package.manifest.clone(),
             package_dir: self.package.dir.clone(),
             workspace_root: self.workspace_root.clone(),
-            config: config.clone(),
+            config: spec_config,
+            env,
             request_timeout: Duration::from_millis(timeout_ms),
             status_sink: self
                 .package
@@ -123,6 +157,19 @@ impl ExtensionCapability {
         }
         *slot = Some((config.clone(), process.clone()));
         process
+    }
+
+    /// The live-server process to forward `trace/event` notifications to,
+    /// built with `config` (so it shares the per-config process cache with the
+    /// tool/hook/prompt facets), iff this extension declares the `trace` facet.
+    /// `None` otherwise — a non-declaring extension never sees the event stream
+    /// (D4). The runtime pairs this with a session event subscription to drive
+    /// forwarding (see `extensions::trace`).
+    pub fn trace_process(&self, config: &Value) -> Option<Arc<ExtensionProcess>> {
+        self.package
+            .manifest
+            .trace
+            .then(|| self.process_for(config))
     }
 
     /// Tool names this extension asks to keep fully loaded (never deferred
@@ -383,6 +430,30 @@ impl Capability for ExtensionCapability {
                 }) as Box<dyn Tool>
             })
             .collect()
+    }
+}
+
+/// Remove any `secret`-declared key from a config object so a credential never
+/// travels via `initialize.config` (secrets are injected as env instead). A
+/// non-object config is returned unchanged.
+fn strip_secret_keys(config: &Value, manifest: &super::package::ExtensionManifest) -> Value {
+    let secret_names: Vec<String> = manifest
+        .secret_fields()
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    if secret_names.is_empty() {
+        return config.clone();
+    }
+    match config {
+        Value::Object(map) => {
+            let mut map = map.clone();
+            for name in &secret_names {
+                map.remove(name);
+            }
+            Value::Object(map)
+        }
+        other => other.clone(),
     }
 }
 

@@ -7853,6 +7853,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "yolop-extension-logfire"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "serde_json",
+ "yolop-yep",
+]
+
+[[package]]
 name = "yolop-yep"
 version = "0.2.0"
 dependencies = [

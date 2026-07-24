@@ -72,6 +72,14 @@ struct RawFacet {
     /// answer). D4 opt-in — a non-declaring extension's `ui/ask` is refused.
     #[serde(default)]
     ui_ask: bool,
+    /// Subscribes the extension to the session's agentic event stream: the host
+    /// forwards each lifecycle event (`turn.*`, `reason.*`, `act.*`,
+    /// `tool.started/completed`, `llm.generation`) as a fire-and-forget
+    /// `trace/event` notification, for export to a tracing backend. D4 opt-in —
+    /// the event stream is only forwarded to a declaring, enabled extension, and
+    /// the facet triggers an eager server spawn so no early events are missed.
+    #[serde(default)]
+    trace: bool,
 }
 
 /// A manifest-declared hook subscription. Static (the approved upper bound):
@@ -215,12 +223,102 @@ pub struct ExtensionManifest {
     pub status: bool,
     pub skills: bool,
     pub ui_ask: bool,
+    pub trace: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct ExtensionPackage {
     pub dir: PathBuf,
     pub manifest: ExtensionManifest,
+}
+
+/// One field declared in an extension's `config_schema`, with yolop's setup
+/// vocabulary folded in: `secret` (the value is a credential — stored in the
+/// secret store, redacted, never shown to the agent) and `env` (inject the
+/// value into the server's environment under this name). `required` comes from
+/// the schema's top-level `required` array and drives setup prompting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigField {
+    pub name: String,
+    pub secret: bool,
+    pub env: Option<String>,
+    pub required: bool,
+    pub description: String,
+    /// Allowed values (from the schema `enum`); when non-empty the setup prompt
+    /// presents a selector instead of a free-text field.
+    pub options: Vec<String>,
+}
+
+impl ConfigField {
+    /// The setup input kind, derived from the field's shape. Extensible: new
+    /// kinds slot in here as the schema vocabulary grows.
+    pub fn kind(&self) -> ConfigFieldKind {
+        if self.secret {
+            ConfigFieldKind::Secret
+        } else if !self.options.is_empty() {
+            ConfigFieldKind::Select
+        } else {
+            ConfigFieldKind::Text
+        }
+    }
+}
+
+/// How a config field is entered during setup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFieldKind {
+    Text,
+    Secret,
+    Select,
+}
+
+impl ExtensionManifest {
+    /// The setup fields declared in `config_schema.properties`. Empty when the
+    /// extension declares no schema. Lenient — unknown keywords are ignored.
+    pub fn config_fields(&self) -> Vec<ConfigField> {
+        let Some(schema) = &self.config_schema else {
+            return Vec::new();
+        };
+        let required: std::collections::HashSet<&str> = schema
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+            return Vec::new();
+        };
+        props
+            .iter()
+            .map(|(name, spec)| ConfigField {
+                name: name.clone(),
+                secret: spec.get("secret").and_then(Value::as_bool).unwrap_or(false),
+                env: spec.get("env").and_then(Value::as_str).map(str::to_string),
+                required: required.contains(name.as_str()),
+                description: spec
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                options: spec
+                    .get("enum")
+                    .and_then(Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    /// The subset of `config_fields` marked `secret` — credentials that live in
+    /// the secret store, never in `settings.toml` config.
+    pub fn secret_fields(&self) -> Vec<ConfigField> {
+        self.config_fields()
+            .into_iter()
+            .filter(|f| f.secret)
+            .collect()
+    }
 }
 
 /// Capability ref for an extension: `ext:<name>`.
@@ -280,6 +378,7 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         && raw.yolop.commands.is_empty()
         && !raw.yolop.status
         && !raw.yolop.skills
+        && !raw.yolop.trace
     {
         return Err("extension declares no contributions; nothing to contribute".into());
     }
@@ -326,6 +425,7 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
         status: raw.yolop.status,
         skills: raw.yolop.skills,
         ui_ask: raw.yolop.ui_ask,
+        trace: raw.yolop.trace,
     })
 }
 

@@ -261,9 +261,48 @@
       },
       "type": "object"
     },
+    "TraceEventParams": {
+      "description": "Host → server `trace/event` notification: one agentic-lifecycle event\n(a turn/reason/act/tool/llm event from the host's session event log),\nforwarded observe-only to an extension that declares the `trace` facet so\nit can export the run to an external tracing backend (Logfire, an OTLP\ncollector, …). Fire-and-forget — the server never replies, so a slow or\ncrashed exporter can never stall the agent loop.\n\nThe `data` field carries the event-type-specific payload verbatim (see the\neverruns event protocol, `specs/events.md`); the server maps it to spans.\nLenient/defaulted per the forward-compat rules — a new event type parses\nwith its `data` intact even if this struct predates it.",
+      "properties": {
+        "context": {
+          "description": "Correlation ids (turn/exec/message/model/…) carried verbatim, for\nstitching point-in-time events into spans."
+        },
+        "data": {
+          "description": "Event-type-specific payload, carried verbatim."
+        },
+        "event_type": {
+          "default": "",
+          "description": "Event type, e.g. `turn.started`, `tool.completed`, `llm.generation`.",
+          "type": "string"
+        },
+        "id": {
+          "default": "",
+          "description": "Stable event id from the host's session event log.",
+          "type": "string"
+        },
+        "session_id": {
+          "default": "",
+          "description": "Session the event belongs to.",
+          "type": "string"
+        },
+        "ts": {
+          "default": "",
+          "description": "RFC 3339 timestamp of the event.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "UiAskParams": {
       "description": "Server → host `ui/ask` params: ask the user a question and wait for a typed\nanswer. The host prompts interactively (TUI); in headless/ACP hosts with no\nprompt surface the request is refused.",
       "properties": {
+        "options": {
+          "description": "When non-empty, the host presents a selector over these options instead\nof a free-text field; the answer is the chosen option. Extensible: future\ninput kinds add fields here without breaking older peers (unknown fields\nare ignored, missing ones default).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "placeholder": {
           "description": "Optional placeholder / hint for the input field.",
           "type": [
@@ -275,6 +314,10 @@
           "default": "",
           "description": "The question shown to the user.",
           "type": "string"
+        },
+        "secret": {
+          "description": "When true, the host masks the typed input and never echoes the answer\n(for credentials). The value still returns in `UiAskResult`.",
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -345,6 +388,11 @@
     "tool/update": {
       "params": {
         "$ref": "#/$defs/ToolUpdateParams"
+      }
+    },
+    "trace/event": {
+      "params": {
+        "$ref": "#/$defs/TraceEventParams"
       }
     },
     "ui/ask": {

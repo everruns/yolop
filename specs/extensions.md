@@ -111,6 +111,61 @@ mid-turn, then resolves the request's oneshot with the typed answer (or
 another is pending is answered `cancelled`. Refused (`cancelled`) with no sink,
 so `--print`/ACP never blocks on it. Covered by
 `ui_ask_reverse_request_is_answered_by_the_sink`.
+Config & secrets: an extension's `config_schema` is also its setup form. Two
+yolop keywords extend JSON Schema at the property level: `secret: true` marks a
+value as a credential, and `env: "NAME"` injects the value into the server's
+environment under that name (so servers read env, not the wire). Non-secret
+fields flow through `initialize.config` as before; a non-secret field that also
+declares `env` is additionally injected as env, sourced from config. `secret`
+fields are stored in the shared credential store (`connections.toml`, 0600,
+redacted — `ExtensionSecrets`, keyed `ext:<name>`), **never** in `settings.toml`,
+and reach the server as injected env only (`capability.rs` strips any `secret`
+key from `initialize.config`). The `secret` marker decouples the concept from the
+location: moving credentials to a keychain later changes only `secrets.rs`. Agent
+leak-protection is threefold: entry is out-of-band via `set_extension_secret`
+(and setup-on-enable), which prompts the *user* through the `ui/ask` surface —
+the agent triggers it but supplies no value and is refused if it passes one; all
+agent-facing reads (`list_extensions`) report a field's `set`/`unset` status,
+never its value; and a redacting `Secret` newtype keeps values out of logs. On
+`enable_extension`, every required field that is unset is prompted for (setup on
+enable), dispatched by `ConfigField::kind`: `secret` → masked entry stored in the
+credential store; an `enum` field → a **selector**; otherwise free text — both
+persisted to capability config (`SettingsStore::set_capability_config`). The kind
+enum is the extension point: new input kinds slot in without touching callers.
+The prompts ride the one `ui/ask` reverse-request, now carrying `secret` (the
+host masks input and shows `(saved)`, never the value — both TUI overlays honor
+it via `ask_overlay_content`) and `options` (an arrow-key selector). Non-secret
+config reaches SDK servers through `Server::on_config`, a handler the SDK invokes
+once with `initialize.config` at handshake — so an author builds state (an
+exporter, a client) from config without hand-parsing the wire. The `logfire`
+extension dogfoods the whole path: `token` (secret → `LOGFIRE_TOKEN` env),
+`endpoint` and `service_name` (plain config consumed via `on_config`). Covered by
+`secret_config_field_is_injected_as_env`,
+`set_extension_secret_refuses_agent_value_and_needs_a_prompt`,
+`list_reports_secret_status_never_values`, `setup_on_enable_prompts_by_field_kind`,
+and the SDK's `on_config_receives_initialize_config`.
+Traces: an extension that declares `trace` in its manifest (the D4 opt-in)
+receives the session's agentic event stream — each lifecycle event (`turn.*`,
+`reason.*`, `act.*`, `tool.started/completed`, `llm.generation`) forwarded as a
+fire-and-forget host→server `trace/event` notification, so it can export the run
+to a tracing backend (Logfire, an OTLP collector). This is the observe-only dual
+of `hook/fire`: `hook/fire` is a *request* that can block one tool call;
+`trace/event` is a *notification* the host never awaits, so a slow or crashed
+exporter can never stall the agent loop. The host taps the existing session
+event broadcast (`JsonlEventEmitter::subscribe`, the same fan-out
+`herdr.start_monitor` uses) and, for each enabled declaring extension, spawns one
+forwarder task (`src/extensions/trace.rs`) filtered to the session; the facet is
+eager-spawned so early events aren't missed, and high-frequency streaming deltas
+are dropped (the paired `*.started`/`*.completed` events already bound the work).
+The wire type is `TraceEventParams` (event type, ids, timestamp, and the event
+`context`/`data` carried verbatim); the SDK exposes it as `Server::on_trace`
+(a stateful `FnMut` so an exporter can pair spans across events). The reference
+consumer is the `yolop-extension-logfire` crate — a capability server on the SDK
+that folds the events into OpenTelemetry spans and POSTs OTLP/HTTP to Logfire,
+configured by the same environment variables Logfire's onboarding checklist uses
+(`LOGFIRE_TOKEN`, `LOGFIRE_ENDPOINT`, `OTEL_SERVICE_NAME`). Covered by
+`trace_events_are_forwarded_to_a_declaring_server`; a non-declaring extension
+gets no forwarder (`non_declaring_extension_has_no_trace_process`).
 Live reload: `reload_extension name=<name>` restarts an already-enabled
 extension's *server process* in place, so implementation edits take effect
 mid-session without a yolop restart — the self-writing inner loop. Each
@@ -410,7 +465,7 @@ both sides: **ignore unknown fields** (no deny-unknown-fields on the wire),
 version sniffing**. The handshake's contribution facets are capability
 tokens with structured `capability_params` (open vocabulary, carried
 verbatim when unrecognized): `tools`, `streaming`, `hooks`, `prompt`,
-`dynamic_prompt`, `mcp_servers`, `commands`, `ui_ask`, `cancel`,
+`dynamic_prompt`, `mcp_servers`, `commands`, `ui_ask`, `trace`, `cancel`,
 `provider` (future). A server advertising only `tools` is fully conforming.
 
 ### Methods
@@ -425,6 +480,7 @@ verbatim when unrecognized): `tools`, `streaming`, `hooks`, `prompt`,
 | →server | `cancel` | req | `{id}` — abort any in-flight request (mira semantics: best-effort, aborted call resolves with error `cancelled`) |
 | →server | `prompt/contribution` | req | dynamic system prompt (only if declared `dynamic`); timeout + last-known-good |
 | →server | `hook/fire` | req | `{event, toolName, payload}` → decision per subscription (`allow/block/mutate`) |
+| →server | `trace/event` | ntf | forward one agentic-lifecycle event (turn/reason/act/tool/llm) to a `trace`-declaring extension; observe-only, never awaited |
 | →server | `config/changed` | req | new validated config → `ok` \| `restart-required` |
 | →server | `workspace/changed` | ntf | active worktree/root repointed |
 | ←server | `ui/ask` | req | user question/form — bridged to the `user_ask` capability |

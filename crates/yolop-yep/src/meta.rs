@@ -43,6 +43,11 @@ pub const METHODS: &[Method] = &[
         "Ask the user a question and wait for a typed answer (TUI hosts only).",
     ),
     Method::host("config/changed", "Notify the server its config changed."),
+    Method::host(
+        "trace/event",
+        "Notification: forward one agentic-lifecycle event (turn/reason/act/tool/llm) to an \
+         extension that declares `trace`, for export to a tracing backend.",
+    ),
     Method::host("shutdown", "Request a graceful stop."),
 ];
 
@@ -57,6 +62,7 @@ pub const CAPABILITY_TOKENS: &[&str] = &[
     "status",
     "commands",
     "ui_ask",
+    "trace",
 ];
 
 /// Direction a method flows.

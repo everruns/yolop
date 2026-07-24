@@ -4,9 +4,12 @@
 //! harness (like `connectors`) and owns the verbs. Tools so both the user
 //! and the model can drive setup; a thin `/extensions` command mirrors them.
 
+use super::client::AskSink;
 use super::manager::LiveProcessRegistry;
 use super::package::{discover_extensions, extension_capability_id};
+use super::protocol::UiAskParams;
 use super::scaffold::{self, HookSpec, Language, ScaffoldRequest, ToolSpec};
+use super::secrets::{ExtensionSecrets, Secret};
 use super::store::{self, CrateFetcher, GitRunner, Source, SystemCrateFetcher, SystemGit};
 use crate::config::SettingsStore;
 use crate::tui::host_ui::UiCommand;
@@ -32,6 +35,11 @@ pub struct ExtensionsCapability {
     /// extension on the live session after enable/disable; `None` in
     /// `--print`/ACP, where enable/disable only persists for the next session.
     ui_tx: Option<UnboundedSender<UiCommand>>,
+    /// Per-extension secret store (for `set_extension_secret` and the redacted
+    /// config status in `list_extensions`). `None` in tests without secrets.
+    secrets: Option<ExtensionSecrets>,
+    /// Prompt surface for interactive secret entry; `None` refuses it (headless).
+    ask_sink: Option<AskSink>,
 }
 
 impl ExtensionsCapability {
@@ -50,7 +58,22 @@ impl ExtensionsCapability {
             crates: Arc::new(SystemCrateFetcher::default()),
             live_processes,
             ui_tx,
+            secrets: None,
+            ask_sink: None,
         }
+    }
+
+    /// Wire the secret store so `set_extension_secret` can persist credentials
+    /// and `list_extensions` can report their (redacted) set/unset status.
+    pub fn with_secrets(mut self, secrets: ExtensionSecrets) -> Self {
+        self.secrets = Some(secrets);
+        self
+    }
+
+    /// Wire the interactive prompt surface for secret entry (TUI only).
+    pub fn with_ask_sink(mut self, ask_sink: Option<AskSink>) -> Self {
+        self.ask_sink = ask_sink;
+        self
     }
 }
 
@@ -100,6 +123,8 @@ impl Capability for ExtensionsCapability {
             crates: self.crates.clone(),
             live_processes: self.live_processes.clone(),
             ui_tx: self.ui_tx.clone(),
+            secrets: self.secrets.clone(),
+            ask_sink: self.ask_sink.clone(),
         });
         vec![
             Box::new(ManageTool::new(ctx.clone(), Verb::Scaffold)),
@@ -109,6 +134,7 @@ impl Capability for ExtensionsCapability {
             Box::new(ManageTool::new(ctx.clone(), Verb::Enable)),
             Box::new(ManageTool::new(ctx.clone(), Verb::Disable)),
             Box::new(ManageTool::new(ctx.clone(), Verb::Reload)),
+            Box::new(ManageTool::new(ctx.clone(), Verb::SetSecret)),
             Box::new(ManageTool::new(ctx, Verb::Doctor)),
         ]
     }
@@ -122,6 +148,8 @@ struct ManageCtx {
     crates: Arc<dyn CrateFetcher>,
     live_processes: LiveProcessRegistry,
     ui_tx: Option<UnboundedSender<UiCommand>>,
+    secrets: Option<ExtensionSecrets>,
+    ask_sink: Option<AskSink>,
 }
 
 #[derive(Clone, Copy)]
@@ -133,6 +161,7 @@ enum Verb {
     Enable,
     Disable,
     Reload,
+    SetSecret,
     Doctor,
 }
 
@@ -273,10 +302,14 @@ impl ManageTool {
             .iter()
             .map(|pkg| {
                 let cap_id = extension_capability_id(&pkg.manifest.name);
-                let enabled = settings
-                    .capability_overrides_for(&cap_id)
+                let overrides = settings.capability_overrides_for(&cap_id);
+                let enabled = overrides.iter().any(|(_, entry)| !entry.is_remove());
+                let ext_config = overrides
                     .iter()
-                    .any(|(_, entry)| !entry.is_remove());
+                    .rev()
+                    .find(|(_, entry)| !entry.is_remove())
+                    .map(|(_, entry)| entry.config.clone())
+                    .unwrap_or(Value::Null);
                 json!({
                     "name": pkg.manifest.name,
                     "description": pkg.manifest.description,
@@ -284,10 +317,46 @@ impl ManageTool {
                     "enabled": enabled,
                     "capability_ref": cap_id,
                     "tools": pkg.manifest.tools.iter().map(|t| &t.name).collect::<Vec<_>>(),
+                    // Setup fields with only their set/unset status — secret
+                    // VALUES are never included (the agent-leak guard).
+                    "config": self.config_status(&pkg.manifest, &ext_config),
                 })
             })
             .collect();
         ToolExecutionResult::Success(json!({ "extensions": items }))
+    }
+
+    /// Per-field setup status the agent may see: name, whether it's a secret,
+    /// whether it's required, and whether a value is set — never the value.
+    fn config_status(
+        &self,
+        manifest: &super::package::ExtensionManifest,
+        ext_config: &Value,
+    ) -> Vec<Value> {
+        manifest
+            .config_fields()
+            .into_iter()
+            .map(|field| {
+                let set = if field.secret {
+                    self.ctx
+                        .secrets
+                        .as_ref()
+                        .map(|s| s.is_set(&manifest.name, &field.name))
+                        .unwrap_or(false)
+                } else {
+                    ext_config
+                        .get(&field.name)
+                        .map(|v| !v.is_null())
+                        .unwrap_or(false)
+                };
+                json!({
+                    "name": field.name,
+                    "secret": field.secret,
+                    "required": field.required,
+                    "set": set,
+                })
+            })
+            .collect()
     }
 
     async fn install(&self, args: &Value) -> ToolExecutionResult {
@@ -338,6 +407,10 @@ impl ManageTool {
             .ctx
             .settings
             .set_capability_enabled(&extension_capability_id(name), false);
+        // And drop any stored secrets so a reinstall doesn't inherit stale ones.
+        if let Some(secrets) = &self.ctx.secrets {
+            let _ = secrets.clear(name);
+        }
         match store::remove(&self.ctx.extensions_dir, name) {
             Ok(true) => ToolExecutionResult::Success(json!({ "removed": name })),
             Ok(false) => ToolExecutionResult::ToolError(format!("no extension named `{name}`")),
@@ -394,6 +467,200 @@ impl ManageTool {
             }
             Err(err) => ToolExecutionResult::ToolError(format!("config write failed: {err}")),
         }
+    }
+
+    /// Prompt the user for one setup field, honoring its kind: a `secret` is
+    /// masked, an `enum` becomes a selector, otherwise free text. The value
+    /// comes from the user through the ask surface — never from the agent, so it
+    /// never enters the model's context. Returns the entered value (`None` on
+    /// cancel/empty).
+    async fn prompt_field(
+        &self,
+        manifest: &super::package::ExtensionManifest,
+        field: &super::package::ConfigField,
+    ) -> Result<Option<String>, String> {
+        let Some(ask) = &self.ctx.ask_sink else {
+            let hint = field
+                .env
+                .as_ref()
+                .map(|e| format!(" Set the `{e}` environment variable instead."))
+                .unwrap_or_default();
+            return Err(format!(
+                "interactive setup is not available in this session (headless).{hint}"
+            ));
+        };
+        let prompt = if field.description.is_empty() {
+            format!("Set `{}` for extension `{}`", field.name, manifest.name)
+        } else {
+            format!(
+                "{} — `{}` for extension `{}`",
+                field.description, field.name, manifest.name
+            )
+        };
+        let answer = ask(UiAskParams {
+            prompt,
+            placeholder: field
+                .secret
+                .then(|| "stored securely, not shown to the agent".to_string()),
+            secret: field.secret,
+            options: field.options.clone(),
+        })
+        .await;
+        if answer.cancelled || answer.answer.trim().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(answer.answer))
+        }
+    }
+
+    /// Prompt for a `secret` field and store it in the credential store.
+    async fn prompt_and_store_secret(
+        &self,
+        manifest: &super::package::ExtensionManifest,
+        field: &super::package::ConfigField,
+    ) -> Result<bool, String> {
+        // Prompt first, so a headless session reports the env-var guidance
+        // (from `prompt_field`) rather than a storage-availability error.
+        match self.prompt_field(manifest, field).await? {
+            Some(value) => {
+                let Some(secrets) = self.ctx.secrets.clone() else {
+                    return Err("secret storage is not available in this session".into());
+                };
+                secrets
+                    .set(&manifest.name, &field.name, Secret::new(value))
+                    .map_err(|e| format!("could not store secret: {e}"))?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Prompt for a non-secret field and persist it to the extension's config.
+    async fn prompt_and_store_config(
+        &self,
+        manifest: &super::package::ExtensionManifest,
+        field: &super::package::ConfigField,
+    ) -> Result<bool, String> {
+        match self.prompt_field(manifest, field).await? {
+            Some(value) => {
+                self.ctx
+                    .settings
+                    .set_capability_config(
+                        &extension_capability_id(&manifest.name),
+                        &field.name,
+                        Value::String(value),
+                    )
+                    .map_err(|e| format!("config write failed: {e}"))?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn set_secret(&self, args: &Value) -> ToolExecutionResult {
+        let Some(name) = args.get("name").and_then(Value::as_str) else {
+            return ToolExecutionResult::ToolError("`name` is required".into());
+        };
+        let Some(field_name) = args.get("field").and_then(Value::as_str) else {
+            return ToolExecutionResult::ToolError("`field` is required".into());
+        };
+        // A value must never be passed by the agent — that would put the secret
+        // in the transcript. Refuse it explicitly.
+        if args.get("value").is_some() {
+            return ToolExecutionResult::ToolError(
+                "do not pass `value`: secrets are entered by the user, never through the agent. \
+                 Call with just `name` and `field`."
+                    .into(),
+            );
+        }
+        let Some(pkg) = discover_extensions(&self.ctx.extensions_dir)
+            .into_iter()
+            .find(|pkg| pkg.manifest.name == name)
+        else {
+            return ToolExecutionResult::ToolError(format!(
+                "no extension named `{name}` is installed"
+            ));
+        };
+        let Some(field) = pkg
+            .manifest
+            .secret_fields()
+            .into_iter()
+            .find(|f| f.name == field_name)
+        else {
+            return ToolExecutionResult::ToolError(format!(
+                "extension `{name}` has no secret config field `{field_name}`"
+            ));
+        };
+        match self.prompt_and_store_secret(&pkg.manifest, &field).await {
+            Ok(true) => ToolExecutionResult::Success(json!({
+                "name": name,
+                "field": field_name,
+                "set": true,
+                "note": "Stored securely. Reload or restart the extension to apply it.",
+            })),
+            Ok(false) => ToolExecutionResult::Success(json!({
+                "name": name, "field": field_name, "set": false,
+                "note": "Cancelled; nothing stored.",
+            })),
+            Err(err) => ToolExecutionResult::ToolError(err),
+        }
+    }
+
+    /// Enable, then run setup: prompt for any required field (secret, select, or
+    /// text) that isn't set yet. Best-effort — with no prompt surface the
+    /// extension still enables and stays inert until configured.
+    async fn enable(&self, args: &Value) -> ToolExecutionResult {
+        let result = self.toggle(args, true);
+        if !matches!(result, ToolExecutionResult::Success(_)) {
+            return result;
+        }
+        if let Some(name) = args.get("name").and_then(Value::as_str)
+            && self.ctx.ask_sink.is_some()
+            && let Some(pkg) = discover_extensions(&self.ctx.extensions_dir)
+                .into_iter()
+                .find(|pkg| pkg.manifest.name == name)
+        {
+            let settings = self.ctx.settings.snapshot();
+            let ext_config = settings
+                .capability_overrides_for(&extension_capability_id(name))
+                .iter()
+                .rev()
+                .find(|(_, entry)| !entry.is_remove())
+                .map(|(_, entry)| entry.config.clone())
+                .unwrap_or(Value::Null);
+            for field in pkg.manifest.config_fields() {
+                if !field.required {
+                    continue;
+                }
+                let set = if field.secret {
+                    self.ctx
+                        .secrets
+                        .as_ref()
+                        .map(|s| s.is_set(name, &field.name))
+                        .unwrap_or(false)
+                } else {
+                    ext_config
+                        .get(&field.name)
+                        .map(|v| !v.is_null())
+                        .unwrap_or(false)
+                };
+                if set {
+                    continue;
+                }
+                // Dispatch by field kind (secret → store; text/select → config).
+                // Ignore prompt failures/cancellations: enable already applied.
+                let _ = match field.kind() {
+                    super::package::ConfigFieldKind::Secret => {
+                        self.prompt_and_store_secret(&pkg.manifest, &field).await
+                    }
+                    super::package::ConfigFieldKind::Text
+                    | super::package::ConfigFieldKind::Select => {
+                        self.prompt_and_store_config(&pkg.manifest, &field).await
+                    }
+                };
+            }
+        }
+        result
     }
 
     async fn reload(&self, args: &Value) -> ToolExecutionResult {
@@ -468,6 +735,7 @@ impl Tool for ManageTool {
             Verb::Enable => "enable_extension",
             Verb::Disable => "disable_extension",
             Verb::Reload => "reload_extension",
+            Verb::SetSecret => "set_extension_secret",
             Verb::Doctor => "doctor_extension",
         }
     }
@@ -507,6 +775,13 @@ impl Tool for ManageTool {
                  extension's server code — e.g. while iterating on one you authored. Manifest \
                  changes (adding a tool, changing a schema) still need a restart; reload never \
                  changes the approved surface."
+            }
+            Verb::SetSecret => {
+                "Set a secret config field (e.g. an API token) for an installed extension. \
+                 The user is prompted to enter the value directly — you never provide it and \
+                 never see it; it is stored in the credential store, not in settings, and \
+                 injected into the extension's server as env. Call with `name` and `field` \
+                 only (never `value`). Use for `secret` fields shown by `list_extensions`."
             }
             Verb::Doctor => {
                 "Conformance-check an installed extension: spawn its server, run the \
@@ -575,6 +850,15 @@ impl Tool for ManageTool {
                 },
                 "required": ["source"]
             }),
+            Verb::SetSecret => json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Extension name." },
+                    "field": { "type": "string",
+                        "description": "The secret config field to set (from list_extensions)." }
+                },
+                "required": ["name", "field"]
+            }),
             _ => json!({
                 "type": "object",
                 "properties": {
@@ -591,9 +875,10 @@ impl Tool for ManageTool {
             Verb::List => self.list(),
             Verb::Install => self.install(&arguments).await,
             Verb::Remove => self.remove(&arguments),
-            Verb::Enable => self.toggle(&arguments, true),
+            Verb::Enable => self.enable(&arguments).await,
             Verb::Disable => self.toggle(&arguments, false),
             Verb::Reload => self.reload(&arguments).await,
+            Verb::SetSecret => self.set_secret(&arguments).await,
             Verb::Doctor => self.doctor(&arguments).await,
         }
     }
@@ -630,6 +915,8 @@ mod tests {
             crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
             live_processes: LiveProcessRegistry::default(),
             ui_tx: None,
+            secrets: None,
+            ask_sink: None,
         };
         (cap, settings, ext_dir)
     }
@@ -760,6 +1047,207 @@ mod tests {
         }
     }
 
+    fn seed_secret_package(dir: &Path, name: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(MANIFEST_FILE),
+            json!({
+                "name": name, "description": "T.",
+                "yolop": { "protocol_version": "1.0",
+                    "capabilityServer": { "command": "x" }, "tools": [{"name": "t"}],
+                    "config_schema": { "type": "object", "required": ["token"], "properties": {
+                        "token": { "type": "string", "secret": true, "env": "TOK" } } } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_extension_secret_refuses_agent_value_and_needs_a_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        seed_secret_package(&src, "logfire");
+        let (cap, _settings, _ext_dir) = capability(tmp.path());
+        let tools = cap.tools();
+        let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
+        get("install_extension")
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await;
+
+        // A value from the agent is refused outright — secrets never enter the
+        // transcript.
+        match get("set_extension_secret")
+            .execute(json!({ "name": "logfire", "field": "token", "value": "pylf_leak" }))
+            .await
+        {
+            ToolExecutionResult::ToolError(m) => assert!(m.contains("do not pass `value`"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+
+        // Without a prompt surface (no ask_sink in this unit test), interactive
+        // entry is refused with guidance — never silently no-ops.
+        match get("set_extension_secret")
+            .execute(json!({ "name": "logfire", "field": "token" }))
+            .await
+        {
+            ToolExecutionResult::ToolError(m) => {
+                assert!(m.contains("not available") && m.contains("TOK"), "{m}")
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // A non-secret / unknown field is rejected.
+        match get("set_extension_secret")
+            .execute(json!({ "name": "logfire", "field": "nope" }))
+            .await
+        {
+            ToolExecutionResult::ToolError(m) => {
+                assert!(m.contains("no secret config field"), "{m}")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_reports_secret_status_never_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        seed_secret_package(&src, "logfire");
+        let ext_dir = tmp.path().join("extensions");
+        let settings = Arc::new(SettingsStore::open(tmp.path().join("settings.toml")));
+        let secrets = crate::extensions::secrets::ExtensionSecrets::open_at(
+            tmp.path().join("connections.toml"),
+        );
+        let cap = ExtensionsCapability {
+            extensions_dir: ext_dir,
+            workspace_root: tmp.path().to_path_buf(),
+            settings,
+            git: Arc::new(crate::extensions::store::SystemGit),
+            crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
+            live_processes: LiveProcessRegistry::default(),
+            ui_tx: None,
+            secrets: Some(secrets.clone()),
+            ask_sink: None,
+        };
+        let tools = cap.tools();
+        let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
+        get("install_extension")
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await;
+
+        // Unset secret: status shows `set:false`, and no value anywhere.
+        let before = match get("list_extensions").execute(json!({})).await {
+            ToolExecutionResult::Success(v) => v,
+            other => panic!("{other:?}"),
+        };
+        let token = &before["extensions"][0]["config"][0];
+        assert_eq!(token["name"], "token");
+        assert_eq!(token["secret"], true);
+        assert_eq!(token["set"], false);
+
+        // Store a secret, then the status flips to set — still no value shown.
+        secrets
+            .set(
+                "logfire",
+                "token",
+                crate::extensions::secrets::Secret::new("pylf_v1_topsecret"),
+            )
+            .unwrap();
+        let after = match get("list_extensions").execute(json!({})).await {
+            ToolExecutionResult::Success(v) => v,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(after["extensions"][0]["config"][0]["set"], true);
+        assert!(
+            !after.to_string().contains("topsecret"),
+            "secret value must never appear in list output"
+        );
+    }
+
+    #[tokio::test]
+    async fn setup_on_enable_prompts_by_field_kind() {
+        use crate::extensions::protocol::{UiAskParams, UiAskResult};
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join(MANIFEST_FILE),
+            json!({
+                "name": "obs", "description": "T.",
+                "yolop": { "protocol_version": "1.0",
+                    "capabilityServer": { "command": "x" }, "tools": [{"name": "t"}],
+                    "config_schema": { "type": "object",
+                        "required": ["token", "mode", "label"],
+                        "properties": {
+                            "token": { "type": "string", "secret": true, "env": "TOK" },
+                            "mode": { "type": "string", "enum": ["fast", "slow"] },
+                            "label": { "type": "string" }
+                        } } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        // A scripted prompt surface: picks option[1] for selects, a fixed
+        // secret for secret fields, and fixed text otherwise.
+        let ask: crate::extensions::AskSink = Arc::new(|p: UiAskParams| {
+            let answer = if !p.options.is_empty() {
+                p.options.get(1).cloned().unwrap_or_default()
+            } else if p.secret {
+                "s3cr3t".to_string()
+            } else {
+                "typed-text".to_string()
+            };
+            Box::pin(async move {
+                UiAskResult {
+                    answer,
+                    cancelled: false,
+                }
+            })
+                as std::pin::Pin<Box<dyn std::future::Future<Output = UiAskResult> + Send>>
+        });
+        let settings = Arc::new(SettingsStore::open(tmp.path().join("settings.toml")));
+        let secrets = crate::extensions::secrets::ExtensionSecrets::open_at(
+            tmp.path().join("connections.toml"),
+        );
+        let cap = ExtensionsCapability {
+            extensions_dir: tmp.path().join("extensions"),
+            workspace_root: tmp.path().to_path_buf(),
+            settings: settings.clone(),
+            git: Arc::new(crate::extensions::store::SystemGit),
+            crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
+            live_processes: LiveProcessRegistry::default(),
+            ui_tx: None,
+            secrets: Some(secrets.clone()),
+            ask_sink: Some(ask),
+        };
+        let tools = cap.tools();
+        let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
+        get("install_extension")
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await;
+
+        get("enable_extension")
+            .execute(json!({ "name": "obs" }))
+            .await;
+
+        // Secret went to the credential store (redacted); text/select to config.
+        assert!(secrets.is_set("obs", "token"));
+        let snap = settings.snapshot();
+        let config = snap
+            .capability_overrides_for("ext:obs")
+            .iter()
+            .rev()
+            .find(|(_, e)| !e.is_remove())
+            .map(|(_, e)| e.config.clone())
+            .unwrap();
+        assert_eq!(config["mode"], "slow"); // selector picked option[1]
+        assert_eq!(config["label"], "typed-text");
+        // The secret is never written to settings config.
+        assert!(config.get("token").is_none());
+    }
+
     #[tokio::test]
     async fn reload_reports_when_nothing_is_live() {
         let tmp = tempfile::tempdir().unwrap();
@@ -809,6 +1297,8 @@ mod tests {
             crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
             live_processes: LiveProcessRegistry::default(),
             ui_tx: Some(ui_tx),
+            secrets: None,
+            ask_sink: None,
         };
         let tools = cap.tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
