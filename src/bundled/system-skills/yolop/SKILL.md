@@ -52,7 +52,7 @@ path as `/shell` (handy for quick one-offs).
 | --- | --- |
 | `/setup [subcommand]` | Guided provider/model setup, or direct forms: `status`, `provider`, `model`, `effort`, `token`, `url`, `attribution`, `approval` |
 | `/goal [condition]` | Set a completion condition and keep working until met; `pause`/`resume`, `clear`, or omit for status |
-| `/background` | List background tasks and their status |
+| `/background` | Show the task tree and branch usage |
 | `/btw <question>` | Ask a side question with session context — no tools, not added to history |
 | `/worktree [off]` | Show worktree status, or `off` to disable auto worktree activation |
 
@@ -83,13 +83,14 @@ also appear in the registry when installed.
 | `Ctrl-D` | Exit immediately |
 | `Enter` while a turn runs | Queue a steering message for the next turn boundary |
 | `Esc` twice (while a turn runs) | Cancel the current turn |
-| `Ctrl+B` | Toggle the read-only background-tasks panel |
+| `Ctrl+B` | Toggle the interactive task-tree panel |
 
-### Background-tasks panel
+### Task-tree panel
 
 | Shortcut | Action |
 | --- | --- |
-| `↑` / `↓` or `k` / `j` | Scroll the task list |
+| `↑` / `↓` or `k` / `j` | Select a task |
+| `x` or `Delete` | Request cooperative cancellation |
 | `Esc` or `q` | Close the panel |
 
 Transcript history scrolls through the terminal's own scrollback (ratatui inline

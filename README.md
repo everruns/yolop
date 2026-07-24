@@ -75,8 +75,9 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 - **TUI chat** (ratatui) — scrolling transcript with tree-sitter syntax
   highlighting of fenced code blocks, a multiline composer, a live status bar,
   slash commands (`/help`, `/tools`, `/mcp`, `/setup`, `/model`, `/goal`,
-  `/shell`, `/background`, …), a `Ctrl+B` background-tasks panel, `!<command>`
-  as a direct shell shortcut, `@`-triggered file-path completion, and shell-style
+  `/shell`, `/background`, …), a `Ctrl+B` task-tree panel with branch token/cost
+  rollups and cooperative cancellation, `!<command>` as a direct shell shortcut,
+  `@`-triggered file-path completion, and shell-style
   history recall (`↑`/`↓`, `Ctrl+R`) persisted across sessions.
 - **Side questions** — `/btw <question>` answers out-of-band using the current
   session context, with no tools and nothing added to conversation history.
@@ -112,11 +113,13 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 - **Background tasks** — `spawn_background` runs a shell command detached from
   the current turn (e.g. watching CI): it streams to a log, writes a
   `result.json`, and tracks a session task you inspect with `list_tasks`,
-  `get_task`, and `cancel_task` (or the `/background` command and `Ctrl+B`
-  panel). Detached commands may run up to 24 hours and their results survive a
-  restart. `spawn_background` can also schedule one-shot or recurring monitors;
-  when a schedule fires or a task finishes while the session is idle, yolop
-  proactively wakes the agent (disable with `proactive_wake`).
+  `get_task`, and `cancel_task` (or the `/background` command and interactive
+  `Ctrl+B` tree). Detached commands may run up to 24 hours and their results
+  survive a restart. `spawn_background` can also schedule one-shot or recurring
+  monitors; when a schedule fires or a task finishes while the session is idle,
+  yolop proactively wakes the agent (disable with `proactive_wake`).
+
+  ![Task tree with nested branches and usage rollups](docs/features/task-tree.gif)
 - **Web** — `free_web_search`, `web_fetch` (HTTP GET/HEAD with markdown/text
   conversion and DNS-pinned SSRF protection), and `duckduckgo_instant_answer`,
   all working without an API key. Set `EVERRUNS_SYSTEM_ALLOWLIST_ENABLED=true`

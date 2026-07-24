@@ -549,9 +549,8 @@ pub(crate) fn draw_ask_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 }
 
-/// Read-only background-tasks panel overlay (toggled with Ctrl+B). Reuses the
-/// registry's `/background` rendering for the body, scrolled by the stored
-/// offset, inside the same centered panel as the setup overlay.
+/// Interactive task-tree panel overlay (toggled with Ctrl+B). Reuses the
+/// `/background` tree rendering, adding a selected row and cancellation key.
 pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let Some(offset) = app.background_panel else {
         return;
@@ -600,7 +599,7 @@ pub(crate) fn background_panel_lines(body: &str, offset: usize, height: usize) -
     if height == 0 {
         return Vec::new();
     }
-    let mut out = vec!["Background tasks — ↑/↓ scroll · Ctrl+B/Esc to close".to_string()];
+    let mut out = vec!["Task tree — ↑/↓ select · x cancel · Ctrl+B/Esc close".to_string()];
     let body_rows = height.saturating_sub(1);
     for line in body.lines().skip(offset).take(body_rows) {
         out.push(line.to_string());

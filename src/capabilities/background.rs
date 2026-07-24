@@ -17,7 +17,7 @@
 // instead of the generic "Running Spawn Background" fallback.
 
 use crate::capabilities::narration::narrate_spawn_background;
-use crate::tui::session_tasks_view::render_task_list;
+use crate::tui::session_tasks_view::{load_task_tree, render_task_tree};
 use async_trait::async_trait;
 use everruns_core::capabilities::{
     BackgroundExecutionCapability, Capability, CapabilityLocalization, CapabilityStatus,
@@ -31,6 +31,7 @@ use everruns_core::session_task::TASK_KIND_MONITOR;
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::tool_types::{ToolCall, ToolDefinition};
 use everruns_core::tools::Tool;
+use everruns_core::traits::SessionStore;
 use everruns_core::typed_id::SessionId;
 use std::sync::Arc;
 
@@ -61,6 +62,7 @@ const BACKGROUND_SYSTEM_PROMPT: &str = "<capability id=\"background\">\n\
 pub(crate) struct BackgroundCapability {
     pub(crate) session_id: SessionId,
     pub(crate) task_registry: Arc<dyn SessionTaskRegistry>,
+    pub(crate) session_store: Arc<dyn SessionStore>,
 }
 
 #[async_trait]
@@ -117,7 +119,7 @@ impl Capability for BackgroundCapability {
     fn commands(&self) -> Vec<CommandDescriptor> {
         vec![CommandDescriptor {
             name: "background".to_string(),
-            description: "list background tasks and their status".to_string(),
+            description: "show the session task tree and branch usage".to_string(),
             source: CommandSource::System,
             args: Vec::new(),
         }]
@@ -135,13 +137,15 @@ impl Capability for BackgroundCapability {
                 request.name
             )));
         }
-        let (tasks, task_error) = match self.task_registry.list(self.session_id, None).await {
-            Ok(tasks) => (tasks, None),
-            Err(err) => (Vec::new(), Some(err.to_string())),
-        };
+        let tree = load_task_tree(
+            self.session_id,
+            self.task_registry.as_ref(),
+            self.session_store.as_ref(),
+        )
+        .await;
         Ok(CommandResult {
             success: true,
-            message: render_task_list(&tasks, task_error.as_deref()),
+            message: render_task_tree(&tree, None),
             error_code: None,
             error_fields: None,
         })
@@ -280,11 +284,23 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl everruns_core::traits::SessionStore for StubRegistry {
+        async fn get_session(
+            &self,
+            _session_id: SessionId,
+        ) -> everruns_core::Result<Option<everruns_core::Session>> {
+            Ok(None)
+        }
+    }
+
     #[tokio::test]
     async fn system_prompt_teaches_detached_waits_per_host() {
+        let store = Arc::new(StubRegistry { tasks: vec![] });
         let capability = BackgroundCapability {
             session_id: SessionId::new(),
-            task_registry: Arc::new(StubRegistry { tasks: vec![] }),
+            task_registry: store.clone(),
+            session_store: store,
         };
         let ctx = SystemPromptContext::without_file_store(SessionId::new());
 
@@ -317,9 +333,11 @@ mod tests {
             },
             chrono::Utc::now(),
         );
+        let store = Arc::new(StubRegistry { tasks: vec![task] });
         let capability = BackgroundCapability {
             session_id,
-            task_registry: Arc::new(StubRegistry { tasks: vec![task] }),
+            task_registry: store.clone(),
+            session_store: store,
         };
         let ctx = SystemPromptContext::without_file_store(session_id);
 
@@ -331,6 +349,49 @@ mod tests {
         assert!(prompt.contains("Active scheduled monitor obligations"));
         assert!(prompt.contains("task_scheduled_check"));
         assert!(prompt.contains("Reconcile each"));
+    }
+
+    #[tokio::test]
+    async fn background_command_renders_the_session_task_tree() {
+        let session_id = SessionId::from_seed(43);
+        let task = everruns_core::session_task::new_session_task(
+            CreateSessionTask {
+                session_id,
+                id: Some("task_command".into()),
+                kind: everruns_core::session_task::TASK_KIND_BACKGROUND_TOOL.into(),
+                display_name: "compile workspace".into(),
+                spec: serde_json::json!({}),
+                state: everruns_core::session_task::SessionTaskState::Running,
+                links: Default::default(),
+                wake_policy: everruns_core::session_task::TaskWakePolicy::Silent,
+            },
+            chrono::Utc::now(),
+        );
+        let store = Arc::new(StubRegistry { tasks: vec![task] });
+        let capability = BackgroundCapability {
+            session_id,
+            task_registry: store.clone(),
+            session_store: store,
+        };
+
+        let result = capability
+            .execute_command(
+                &ExecuteCommandRequest {
+                    name: "background".into(),
+                    arguments: None,
+                    controls: None,
+                },
+                &CommandExecutionContext::without_host(session_id),
+            )
+            .await
+            .expect("background command");
+
+        assert!(result.success);
+        assert!(
+            result
+                .message
+                .contains("[task_command] background_tool running: compile workspace")
+        );
     }
 
     #[test]
