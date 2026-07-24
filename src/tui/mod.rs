@@ -19,7 +19,7 @@ use crossterm::event::{
 };
 use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_core::message::ContentPart;
-use everruns_core::session_task::{SessionTask, SessionTaskRegistry};
+use everruns_core::session_task::SessionTaskRegistry;
 use everruns_core::typed_id::SessionId;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -209,13 +209,14 @@ pub struct App {
     /// Everruns session-task registry used by `spawn_background`; the TUI reads
     /// it for the background status segment and panel.
     task_registry: Arc<dyn SessionTaskRegistry>,
-    session_tasks: Vec<SessionTask>,
-    session_tasks_error: Option<String>,
+    task_schedule_store: Arc<dyn everruns_core::traits::SessionScheduleStore>,
+    session_store: Arc<dyn everruns_core::traits::SessionStore>,
+    session_tasks: crate::tui::session_tasks_view::TaskTree,
     last_session_tasks_refresh: Option<Instant>,
-    /// Open background-tasks panel overlay, holding its scroll offset (in
-    /// lines). `None` when closed. Toggled with Ctrl+B; read-only view of the
-    /// session task list.
+    /// Open task-tree panel overlay, holding its scroll offset in lines.
     background_panel: Option<usize>,
+    /// Selected task row while the task-tree panel is open.
+    background_selected: usize,
     goal_store: Arc<GoalStore>,
     user_ask_store: Arc<UserAskStore>,
     user_ask_enabled: bool,
@@ -516,6 +517,7 @@ impl App {
         let user_ask_store = runtime.user_ask_store.clone();
         let user_ask_enabled = runtime.user_ask_enabled;
         let session_id = runtime.handles.session_id;
+        let session_store = runtime.handles.session_store.clone();
         let session = Session::new(runtime.handles, runtime.model.clone());
         let (models_tx, models_rx) = mpsc::unbounded_channel::<ModelDiscovery>();
         let (codex_login_tx, codex_login_rx) = mpsc::unbounded_channel::<CodexLoginEvent>();
@@ -565,10 +567,12 @@ impl App {
             background_wake: runtime.background_wake,
             _schedule_runner: runtime.schedule_runner,
             task_registry: runtime.task_registry,
-            session_tasks: Vec::new(),
-            session_tasks_error: None,
+            task_schedule_store: runtime.task_schedule_store,
+            session_store,
+            session_tasks: Default::default(),
             last_session_tasks_refresh: None,
             background_panel: None,
+            background_selected: 0,
             goal_store,
             user_ask_store,
             user_ask_enabled,
@@ -864,31 +868,26 @@ impl App {
     }
 
     fn background_counts(&self) -> Option<crate::tui::session_tasks_view::BackgroundCounts> {
-        crate::tui::session_tasks_view::counts(&self.session_tasks)
+        self.session_tasks.counts()
     }
 
     fn background_panel_body(&self) -> String {
-        crate::tui::session_tasks_view::render_task_list(
+        crate::tui::session_tasks_view::render_task_tree(
             &self.session_tasks,
-            self.session_tasks_error.as_deref(),
+            Some(self.background_selected),
         )
     }
 
     async fn refresh_session_tasks(&mut self) {
-        match self
-            .task_registry
-            .list(self.session.session_id(), None)
-            .await
-        {
-            Ok(tasks) => {
-                self.session_tasks = tasks;
-                self.session_tasks_error = None;
-            }
-            Err(err) => {
-                self.session_tasks.clear();
-                self.session_tasks_error = Some(err.to_string());
-            }
-        }
+        self.session_tasks = crate::tui::session_tasks_view::load_task_tree(
+            self.session.session_id(),
+            self.task_registry.as_ref(),
+            self.session_store.as_ref(),
+        )
+        .await;
+        self.background_selected = self
+            .background_selected
+            .min(self.session_tasks.rows.len().saturating_sub(1));
         self.last_session_tasks_refresh = Some(Instant::now());
     }
 
@@ -1519,7 +1518,7 @@ impl App {
         // The background panel overlay captures navigation keys (even mid-turn,
         // so you can watch tasks while a turn runs).
         if self.background_panel.is_some() {
-            self.handle_background_panel_key(key);
+            self.handle_background_panel_key(key).await;
             return;
         }
 
@@ -2027,37 +2026,76 @@ impl App {
         }
     }
 
-    /// Open the background-tasks panel (read-only) or close it if already open.
+    /// Open the task-tree panel or close it if already open.
     /// Suppressed while the setup overlay is up so two modals never stack.
     fn toggle_background_panel(&mut self) {
         if self.background_panel.is_some() {
             self.background_panel = None;
         } else if self.setup.is_none() {
             self.background_panel = Some(0);
+            self.background_selected = 0;
         }
     }
 
-    /// Navigation for the open background panel: Esc/q closes, Up/Down scroll.
-    fn handle_background_panel_key(&mut self, key: KeyEvent) {
+    /// Navigation and cooperative cancellation for the open task-tree panel.
+    async fn handle_background_panel_key(&mut self, key: KeyEvent) {
         let Some(offset) = self.background_panel else {
             return;
         };
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.background_panel = None,
             KeyCode::Up | KeyCode::Char('k') => {
-                self.background_panel = Some(offset.saturating_sub(1));
+                self.background_selected = self.background_selected.saturating_sub(1);
+                self.background_panel = Some(offset.min(self.background_selected));
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                // Clamp so scrolling can't run past the last line of content.
-                let max = self
-                    .background_panel_body()
-                    .lines()
-                    .count()
-                    .saturating_sub(1);
-                self.background_panel = Some(offset.saturating_add(1).min(max));
+                let max = self.session_tasks.rows.len().saturating_sub(1);
+                self.background_selected = self.background_selected.saturating_add(1).min(max);
+                self.background_panel =
+                    Some(offset.max(self.background_selected.saturating_sub(1)));
+            }
+            KeyCode::Char('x') | KeyCode::Delete => {
+                self.cancel_selected_task().await;
             }
             _ => {}
         }
+    }
+
+    async fn cancel_selected_task(&mut self) {
+        let Some(task) = self
+            .session_tasks
+            .selected(self.background_selected)
+            .cloned()
+        else {
+            return;
+        };
+        if task.state.is_terminal() {
+            self.push_system(format!("task {} is already {}", task.id, task.state));
+            return;
+        }
+        if task.kind == everruns_core::session_task::TASK_KIND_MONITOR {
+            match crate::capabilities::session_tasks_override::cancel_monitor_task(
+                &task,
+                self.task_registry.as_ref(),
+                self.task_schedule_store.as_ref(),
+            )
+            .await
+            {
+                Ok(_) => self.push_system(format!("monitor {} disarmed", task.id)),
+                Err(error) => self.push_system(format!("could not cancel {}: {error}", task.id)),
+            }
+        } else {
+            match self
+                .task_registry
+                .request_cancel(task.session_id, &task.id)
+                .await
+            {
+                Ok(Some(_)) => self.push_system(format!("cancellation requested for {}", task.id)),
+                Ok(None) => self.push_system(format!("task {} no longer exists", task.id)),
+                Err(error) => self.push_system(format!("could not cancel {}: {error}", task.id)),
+            }
+        }
+        self.refresh_session_tasks().await;
     }
 
     /// Proactive wake: drain any everruns `spawn_background` completion signal
@@ -3069,7 +3107,7 @@ mod tests {
     };
     use everruns_core::message::Message;
     use everruns_core::session_task::{
-        CreateSessionTask, SessionTaskState, TASK_KIND_BACKGROUND_TOOL,
+        CreateSessionTask, SessionTaskState, TASK_KIND_BACKGROUND_TOOL, TASK_KIND_MONITOR,
     };
     use everruns_core::tool_types::ToolCall;
     use everruns_core::{MessageId, SessionId, TurnId};
@@ -5467,10 +5505,12 @@ mod tests {
         assert_eq!(app.background_panel, Some(0));
 
         // With no tasks the body is a single line, so Down can't scroll past it.
-        app.handle_background_panel_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+        app.handle_background_panel_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()))
+            .await;
         assert_eq!(app.background_panel, Some(0));
 
-        app.handle_background_panel_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
+        app.handle_background_panel_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
         assert!(app.background_panel.is_none());
     }
 
@@ -5532,16 +5572,105 @@ mod tests {
                 total: 1,
             })
         );
-        let lines = render_app_lines(app, 120, 20).join("\n");
-        assert!(lines.contains("Background tasks"), "panel header: {lines}");
-        assert!(
-            lines.contains("background task(s): 1 running, 0 scheduled"),
-            "panel should summarize session tasks: {lines}"
-        );
-        assert!(
-            lines.contains("[task_panel] background_tool running: write marker"),
-            "panel should list the session task row: {lines}"
-        );
+        let (fullscreen, regular) = render_regular_and_fullscreen(app, 120, 20);
+        for (mode, lines) in [
+            ("default", regular.join("\n")),
+            ("fullscreen", fullscreen.join("\n")),
+        ] {
+            assert!(lines.contains("Task tree"), "{mode} panel header: {lines}");
+            assert!(
+                lines.contains("1 task(s): 1 running, 0 scheduled"),
+                "{mode} panel should summarize session tasks: {lines}"
+            );
+            assert!(
+                lines.contains("[task_panel] background_tool running: write marker"),
+                "{mode} panel should list the session task row: {lines}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn background_panel_cancels_selected_task() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        let session_id = app.session.session_id();
+        app.task_registry
+            .create(CreateSessionTask {
+                session_id,
+                id: Some("task_cancel_me".to_string()),
+                kind: TASK_KIND_BACKGROUND_TOOL.to_string(),
+                display_name: "long command".to_string(),
+                spec: serde_json::json!({ "tool": "bash" }),
+                state: SessionTaskState::Running,
+                links: Default::default(),
+                wake_policy: Default::default(),
+            })
+            .await
+            .unwrap();
+        app.refresh_session_tasks().await;
+        app.background_panel = Some(0);
+
+        app.handle_background_panel_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()))
+            .await;
+
+        let task = app
+            .task_registry
+            .get(session_id, "task_cancel_me")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(task.cancel_requested_at.is_some());
+        assert!(app.background_panel_body().contains("canceling"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn background_panel_disarms_selected_monitor() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        let session_id = app.session.session_id();
+        let schedule = app
+            .task_schedule_store
+            .create_schedule(
+                session_id,
+                "scheduled check".into(),
+                None,
+                Some(chrono::Utc::now() + chrono::Duration::minutes(10)),
+                "UTC".into(),
+            )
+            .await
+            .expect("create schedule");
+        app.task_registry
+            .create(CreateSessionTask {
+                session_id,
+                id: Some("task_monitor_panel".to_string()),
+                kind: TASK_KIND_MONITOR.to_string(),
+                display_name: "scheduled check".to_string(),
+                spec: serde_json::json!({ "schedule_id": schedule.id.to_string() }),
+                state: SessionTaskState::Running,
+                links: Default::default(),
+                wake_policy: Default::default(),
+            })
+            .await
+            .expect("create monitor task");
+        app.refresh_session_tasks().await;
+        app.background_panel = Some(0);
+
+        app.handle_background_panel_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::empty()))
+            .await;
+
+        let task = app
+            .task_registry
+            .get(session_id, "task_monitor_panel")
+            .await
+            .unwrap()
+            .unwrap();
+        let schedules = app
+            .task_schedule_store
+            .list_schedules(session_id)
+            .await
+            .unwrap();
+        assert_eq!(task.state, SessionTaskState::Canceled);
+        assert!(!schedules[0].enabled);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5566,7 +5695,7 @@ mod tests {
     fn background_panel_lines_header_and_scroll() {
         let body = "row-a\nrow-b\nrow-c\nrow-d";
         let lines = render::background_panel_lines(body, 1, 3);
-        assert!(lines[0].contains("Background tasks"));
+        assert!(lines[0].contains("Task tree"));
         // height 3 ⇒ 1 header + 2 body rows, starting at offset 1.
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[1], "row-b");

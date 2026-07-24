@@ -2171,6 +2171,9 @@ pub struct BuiltRuntime {
     /// TUI reads this to show `spawn_background` tasks through the generic
     /// runtime task model.
     pub task_registry: Arc<dyn SessionTaskRegistry>,
+    /// Schedule store paired with the task registry. The TUI uses it to make
+    /// monitor cancellation terminal by disarming the durable schedule.
+    pub task_schedule_store: Arc<dyn everruns_core::traits::SessionScheduleStore>,
 }
 
 #[derive(Clone)]
@@ -2674,6 +2677,11 @@ pub async fn build_with_options(
     let local_backends = LocalBackends::new(local_profile, base_backends)
         .context("initialize everruns-local backend stores")?;
     let task_registry: Arc<dyn SessionTaskRegistry> = local_backends.task_registry.clone();
+    let task_schedule_store: Arc<dyn everruns_core::traits::SessionScheduleStore> = Arc::new(
+        local_backends
+            .schedule_store()
+            .context("open local schedule store for task controls")?,
+    );
     checkpoints.attach_task_registry(task_registry.clone());
     // Install the wake seam: a `LocalPlatformStore` whose `send_message`
     // enqueues everruns background-task completion signals onto `background_wake`
@@ -3059,6 +3067,7 @@ pub async fn build_with_options(
     capabilities.register(BackgroundCapability {
         session_id,
         task_registry: task_registry.clone(),
+        session_store: backends.session_store.clone(),
     });
     // Terminal-side commands. Registered only when the host can apply their
     // effects (the TUI). The capability declares help/tools/mcp/cwd/model/
@@ -3281,6 +3290,7 @@ pub async fn build_with_options(
         schedule_runner,
         workspace_host,
         task_registry,
+        task_schedule_store,
         goal_store,
         user_ask_store,
         user_ask_enabled,

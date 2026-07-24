@@ -12,11 +12,15 @@ use everruns_core::capabilities::{
     Capability, CapabilityLocalization, CapabilityStatus, SessionTasksCapability,
     SystemPromptContext,
 };
+use everruns_core::session_schedule::SessionSchedule;
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::tool_types::{ToolCall, ToolDefinition, ToolHints, ToolPolicy};
 use everruns_core::tools::{Tool, ToolExecutionResult};
-use everruns_core::traits::ToolContext;
-use everruns_core::{ScheduleId, SessionTaskState, SessionTaskUpdate};
+use everruns_core::traits::{SessionScheduleStore, ToolContext};
+use everruns_core::{
+    AgentLoopError, ScheduleId, SessionTask, SessionTaskRegistry, SessionTaskState,
+    SessionTaskUpdate,
+};
 use serde_json::{Value, json};
 
 const CANCEL_TASK: &str = "cancel_task";
@@ -179,7 +183,29 @@ impl Tool for TruthfulCancelTaskTool {
         };
 
         if task.kind == everruns_core::session_task::TASK_KIND_MONITOR {
-            return cancel_monitor(&task_id, context).await;
+            let Some(schedule_store) = context.schedule_store.as_ref() else {
+                return ToolExecutionResult::tool_error(format!(
+                    "Monitor {task_id} cannot be disarmed because no schedule store is available; cancellation remains pending."
+                ));
+            };
+            return match cancel_monitor_task(&task, registry.as_ref(), schedule_store.as_ref())
+                .await
+            {
+                Ok(canceled) => ToolExecutionResult::success(json!({
+                    "task_id": task_id,
+                    "state": canceled.task.state,
+                    "terminal": canceled.task.state.is_terminal(),
+                    "disarmed": true,
+                    "cancellation_pending": false,
+                    "cancel_requested_at": canceled.task.cancel_requested_at,
+                    "schedule_id": canceled.schedule.id,
+                    "schedule_enabled": canceled.schedule.enabled,
+                })),
+                Err(AgentLoopError::ToolExecution(message)) => {
+                    ToolExecutionResult::tool_error(message)
+                }
+                Err(error) => ToolExecutionResult::internal_error(error),
+            };
         }
 
         let result = self.inner.execute_with_context(arguments, context).await;
@@ -206,53 +232,50 @@ impl Tool for TruthfulCancelTaskTool {
     }
 }
 
-async fn cancel_monitor(task_id: &str, context: &ToolContext) -> ToolExecutionResult {
-    let registry = context
-        .session_task_registry
-        .as_ref()
-        .expect("cancel monitor is called only with a task registry");
-    let task = match registry.request_cancel(context.session_id, task_id).await {
-        Ok(Some(task)) => task,
-        Ok(None) => {
-            return ToolExecutionResult::tool_error(format!("No task found with id: {task_id}"));
-        }
-        Err(error) => return ToolExecutionResult::internal_error(error),
-    };
+pub(crate) struct CanceledMonitor {
+    pub(crate) task: SessionTask,
+    pub(crate) schedule: SessionSchedule,
+}
+
+/// Keep monitor cancellation identical whether it starts from the task tool or
+/// the interactive TUI: first record intent, then disarm, then settle terminal.
+pub(crate) async fn cancel_monitor_task(
+    task: &SessionTask,
+    registry: &dyn SessionTaskRegistry,
+    schedule_store: &dyn SessionScheduleStore,
+) -> everruns_core::Result<CanceledMonitor> {
+    let task_id = &task.id;
+    let task = registry
+        .request_cancel(task.session_id, task_id)
+        .await?
+        .ok_or_else(|| AgentLoopError::tool(format!("No task found with id: {task_id}")))?;
     let Some(schedule_id) = task
         .spec
         .get("schedule_id")
         .and_then(Value::as_str)
         .and_then(|raw| ScheduleId::parse(raw).ok())
     else {
-        return ToolExecutionResult::tool_error(format!(
+        return Err(AgentLoopError::tool(format!(
             "Monitor {task_id} has no valid linked schedule_id; cancellation remains pending."
-        ));
+        )));
     };
-    let Some(schedule_store) = context.schedule_store.as_ref() else {
-        return ToolExecutionResult::tool_error(format!(
-            "Monitor {task_id} cannot be disarmed because no schedule store is available; cancellation remains pending."
-        ));
-    };
-    let schedule = match schedule_store
-        .cancel_schedule(context.session_id, schedule_id)
+    let schedule = schedule_store
+        .cancel_schedule(task.session_id, schedule_id)
         .await
-    {
-        Ok(schedule) => schedule,
-        Err(_) => {
-            return ToolExecutionResult::tool_error(format!(
+        .map_err(|_| {
+            AgentLoopError::tool(format!(
                 "Monitor {task_id} could not be disarmed; cancellation remains pending."
-            ));
-        }
-    };
+            ))
+        })?;
     if schedule.enabled {
-        return ToolExecutionResult::tool_error(format!(
+        return Err(AgentLoopError::tool(format!(
             "Monitor {task_id} cancellation did not disable its schedule; cancellation remains pending."
-        ));
+        )));
     }
 
-    let canceled = match registry
+    let canceled = registry
         .update(
-            context.session_id,
+            task.session_id,
             task_id,
             SessionTaskUpdate {
                 state: Some(SessionTaskState::Canceled),
@@ -260,32 +283,22 @@ async fn cancel_monitor(task_id: &str, context: &ToolContext) -> ToolExecutionRe
                 ..Default::default()
             },
         )
-        .await
-    {
-        Ok(Some(task)) => task,
-        Ok(None) => {
-            return ToolExecutionResult::tool_error(format!(
+        .await?
+        .ok_or_else(|| {
+            AgentLoopError::tool(format!(
                 "Monitor schedule was disarmed, but task {task_id} disappeared before its state was updated."
-            ));
-        }
-        Err(error) => return ToolExecutionResult::internal_error(error),
-    };
+            ))
+        })?;
     if canceled.state != SessionTaskState::Canceled {
-        return ToolExecutionResult::tool_error(format!(
+        return Err(AgentLoopError::tool(format!(
             "Monitor {task_id} schedule was disarmed, but its task did not reach canceled state."
-        ));
+        )));
     }
 
-    ToolExecutionResult::success(json!({
-        "task_id": task_id,
-        "state": canceled.state,
-        "terminal": canceled.state.is_terminal(),
-        "disarmed": true,
-        "cancellation_pending": false,
-        "cancel_requested_at": canceled.cancel_requested_at,
-        "schedule_id": schedule.id,
-        "schedule_enabled": schedule.enabled,
-    }))
+    Ok(CanceledMonitor {
+        task: canceled,
+        schedule,
+    })
 }
 
 #[cfg(test)]
