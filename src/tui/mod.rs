@@ -46,6 +46,7 @@ pub mod presentation;
 pub mod prompt_history;
 pub mod session_tasks_view;
 pub mod transcript;
+mod transcript_selection;
 
 // Re-export the moved free items so the rest of the crate (and the test module)
 // can keep referring to them as `crate::tui::*`. `setup` exposes only `impl App`
@@ -254,11 +255,13 @@ pub struct App {
     /// tail appends leave it untouched so only the new lines are re-wrapped.
     transcript_generation: u64,
     transcript_cache: TranscriptWrapCache,
-    /// Full-screen mouse text selection over the transcript. `selection_area`
-    /// is the transcript's inner rect recorded by the last draw (so the event
-    /// handler can bound drags to it); `pending_copy` defers the OSC 52 copy to
+    /// Full-screen mouse text selection over the transcript, anchored in
+    /// content-row space so it survives scrolling and can span more than one
+    /// visible window. `selection_area` is the transcript's inner rect recorded
+    /// by the last draw (so the event handler can bound drags to it and map
+    /// screen rows to content rows); `pending_copy` defers the OSC 52 copy to
     /// the next draw, where the freshly rendered frame buffer is readable.
-    selection: tuika::SelectionState,
+    selection: transcript_selection::TranscriptSelection,
     selection_area: Rect,
     /// Click targets from the last fullscreen status layout.
     status_hit_regions: Vec<(Rect, StatusAction)>,
@@ -622,7 +625,7 @@ impl App {
             scroll_metrics: (0, 0),
             transcript_generation: 0,
             transcript_cache: TranscriptWrapCache::default(),
-            selection: tuika::SelectionState::new(),
+            selection: transcript_selection::TranscriptSelection::new(),
             selection_area: Rect::ZERO,
             status_hit_regions: Vec::new(),
             pending_copy: false,
@@ -667,12 +670,27 @@ impl App {
         self.render_mode = mode;
     }
 
-    /// The active full-screen transcript selection, if any (read by the draw to
-    /// highlight and copy it).
+    /// Resolve a queued double-click into a word selection against the freshly
+    /// rendered `buffer`. The pending position is in content space; its row must
+    /// still be visible (a double click always lands on a visible cell), so we
+    /// read the word bounds off the buffer and re-anchor the result in content
+    /// space. Sets `pending_copy` so the word is copied like a drag.
     pub(crate) fn resolve_selection(&mut self, buffer: &ratatui::buffer::Buffer) {
-        if self.selection.resolve(buffer, self.selection_area) {
-            self.pending_copy = true;
-        }
+        let Some((column, content_row)) = self.selection.take_pending_word() else {
+            return;
+        };
+        let Some(screen_row) = self.screen_row_for_content(content_row) else {
+            return;
+        };
+        let Some(word) = tuika::word_at(buffer, self.selection_area, column, screen_row) else {
+            return;
+        };
+        self.selection
+            .select_word(transcript_selection::ContentRange {
+                start: (word.start.0, content_row),
+                end: (word.end.0, content_row),
+            });
+        self.pending_copy = true;
     }
 
     pub(crate) fn resolve_link_click(&mut self, buffer: &ratatui::buffer::Buffer) {
@@ -686,8 +704,123 @@ impl App {
         self.pending_open_url.take()
     }
 
+    /// The selection mapped into the *current* viewport window, for painting.
+    /// Returns `None` when the selection is scrolled entirely off-screen even
+    /// though it is still active (see [`has_selection`](Self::has_selection)).
     pub(crate) fn selection_range(&self) -> Option<tuika::SelectionRange> {
-        self.selection.range()
+        self.visible_selection_range(self.selection.range()?)
+    }
+
+    /// Whether a non-empty transcript selection currently exists, regardless of
+    /// whether it is scrolled into view.
+    #[cfg(test)]
+    pub(crate) fn has_selection(&self) -> bool {
+        self.selection.is_active()
+    }
+
+    /// Content row for a viewport screen row, clamped to the transcript. Short
+    /// content is top-padded to rest at the bottom, so the padding offsets the
+    /// mapping; a taller transcript is windowed by the scroll offset instead.
+    fn content_row_for_screen(&self, screen_row: u16) -> usize {
+        let area = self.selection_area;
+        let (content_h, viewport_h) = self.scroll_metrics;
+        let top_pad = viewport_h.saturating_sub(content_h);
+        let rel = (screen_row.saturating_sub(area.y) as usize)
+            .min((area.height.saturating_sub(1)) as usize);
+        let content_row = self.scroll.offset() + rel.saturating_sub(top_pad);
+        content_row.min(content_h.saturating_sub(1))
+    }
+
+    /// The viewport screen row a content row occupies, or `None` when it is
+    /// scrolled out of the visible window. Inverse of
+    /// [`content_row_for_screen`](Self::content_row_for_screen).
+    fn screen_row_for_content(&self, content_row: usize) -> Option<u16> {
+        let area = self.selection_area;
+        let (content_h, viewport_h) = self.scroll_metrics;
+        let offset = self.scroll.offset();
+        if content_row < offset {
+            return None;
+        }
+        let top_pad = viewport_h.saturating_sub(content_h);
+        let rel = content_row - offset + top_pad;
+        (rel < area.height as usize).then(|| area.y + rel as u16)
+    }
+
+    /// Clamp a viewport column to the selectable transcript rect.
+    fn clamp_selection_col(&self, column: u16) -> u16 {
+        let area = self.selection_area;
+        column.clamp(area.x, area.right().saturating_sub(1))
+    }
+
+    /// Map a content-space selection into the current window as a viewport
+    /// [`tuika::SelectionRange`]. A start above the window (or end below it)
+    /// becomes a full-width edge row so the linear span fills across it.
+    fn visible_selection_range(
+        &self,
+        range: transcript_selection::ContentRange,
+    ) -> Option<tuika::SelectionRange> {
+        let area = self.selection_area;
+        let (content_h, viewport_h) = self.scroll_metrics;
+        if area.height == 0 || content_h == 0 || viewport_h == 0 {
+            return None;
+        }
+        let offset = self.scroll.offset();
+        let top_pad = viewport_h.saturating_sub(content_h);
+        let win_top = offset;
+        let win_bot = offset + content_h.min(viewport_h) - 1;
+        let (mut s_col, mut s_row) = range.start;
+        let (mut e_col, mut e_row) = range.end;
+        if e_row < win_top || s_row > win_bot {
+            return None;
+        }
+        if s_row < win_top {
+            s_row = win_top;
+            s_col = area.x;
+        }
+        if e_row > win_bot {
+            e_row = win_bot;
+            e_col = area.right().saturating_sub(1);
+        }
+        let to_screen = |r: usize| area.y + (top_pad + (r - offset)) as u16;
+        Some(tuika::SelectionRange {
+            start: (s_col, to_screen(s_row)),
+            end: (e_col, to_screen(e_row)),
+        })
+    }
+
+    /// The selected text, read from the wrapped transcript cache so a multi-row
+    /// selection copies in full even when most of it is scrolled off-screen.
+    /// Rows are rendered into a scratch buffer and read back through
+    /// [`tuika::selected_text`] so wide glyphs and trailing-blank trimming match
+    /// what a single-window selection would copy.
+    fn selection_copy_text(&self) -> String {
+        let Some(range) = self.selection.range() else {
+            return String::new();
+        };
+        let area = self.selection_area;
+        let lines = &self.transcript_cache.lines;
+        if area.width == 0 || lines.is_empty() {
+            return String::new();
+        }
+        let last = lines.len() - 1;
+        let start_row = range.start.1.min(last);
+        // A transcript can wrap past u16::MAX rows, so cap the scratch buffer's
+        // height (a selection that tall is already far beyond anything readable)
+        // to keep the row count inside a u16 without overflow.
+        let row_count = (range.end.1.min(last) - start_row + 1).min(u16::MAX as usize);
+        let end_row = start_row + row_count - 1;
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, area.width, row_count as u16));
+        for (i, row) in (start_row..=end_row).enumerate() {
+            buf.set_line(0, i as u16, &lines[row], area.width);
+        }
+        // Columns are viewport-absolute; the scratch buffer starts at the
+        // transcript's left inset, so shift them 0-based.
+        let base = area.x;
+        let sr = tuika::SelectionRange {
+            start: (range.start.0.saturating_sub(base), 0),
+            end: (range.end.0.saturating_sub(base), row_count as u16 - 1),
+        };
+        tuika::selected_text(&buf, buf.area, sr)
     }
 
     /// Record the transcript's inner rect (the selectable region) from the draw.
@@ -746,35 +879,70 @@ impl App {
                     && m.row >= a.y
                     && m.row < a.bottom();
                 if inside {
-                    self.selection.handle(&m);
+                    let cell = (
+                        self.clamp_selection_col(m.column),
+                        self.content_row_for_screen(m.row),
+                    );
+                    self.selection.press(cell);
                     true
                 } else {
                     // A press elsewhere dismisses any existing selection but is
                     // otherwise left for the normal mouse handler (e.g. status).
-                    let had = self.selection.range().is_some();
+                    let had = self.selection.is_active();
                     self.selection.clear();
                     had
                 }
             }
-            tuika::MouseKind::Drag(tuika::MouseButton::Left)
-            | tuika::MouseKind::Up(tuika::MouseButton::Left) => {
-                if self.selection.handle(&m) {
-                    if matches!(m.kind, tuika::MouseKind::Up(tuika::MouseButton::Left))
-                        && self.selection.range().is_some()
-                    {
-                        self.pending_copy = true;
-                    }
-                    true
-                } else {
-                    false
+            tuika::MouseKind::Drag(tuika::MouseButton::Left) => {
+                if !self.selection.is_pressed() {
+                    return false;
                 }
+                // Auto-scroll when the drag reaches a vertical edge so a single
+                // drag can extend past the visible window, the way a terminal
+                // does. The content row is then read against the new offset.
+                self.autoscroll_for_drag(m.row);
+                let cell = (
+                    self.clamp_selection_col(m.column),
+                    self.content_row_for_screen(m.row),
+                );
+                self.selection.drag(cell)
+            }
+            tuika::MouseKind::Up(tuika::MouseButton::Left) => {
+                if !self.selection.is_pressed() {
+                    return false;
+                }
+                let cell = (
+                    self.clamp_selection_col(m.column),
+                    self.content_row_for_screen(m.row),
+                );
+                let changed = self.selection.release(cell);
+                if changed && self.selection.is_active() {
+                    self.pending_copy = true;
+                }
+                changed
             }
             _ => false,
         }
     }
 
-    /// Drop any full-screen selection (on scroll, key input, or new output —
-    /// its cell coordinates no longer point at the same text).
+    /// Scroll the transcript one step when a drag reaches the top or bottom edge
+    /// of the selectable rect, so a drag alone can extend the selection past the
+    /// visible window. A no-op away from the edges.
+    fn autoscroll_for_drag(&mut self, screen_row: u16) {
+        let a = self.selection_area;
+        if a.height == 0 {
+            return;
+        }
+        if screen_row <= a.y {
+            self.scroll_transcript(MouseEventKind::ScrollUp);
+        } else if screen_row + 1 >= a.bottom() {
+            self.scroll_transcript(MouseEventKind::ScrollDown);
+        }
+    }
+
+    /// Drop any full-screen selection (on key input or a new turn). Scrolling no
+    /// longer clears it — the selection is anchored in content space and moves
+    /// with the text.
     fn clear_selection(&mut self) {
         self.selection.clear();
     }
@@ -2647,13 +2815,18 @@ impl App {
     /// true when consumed. Uses the metrics recorded by the last full-screen
     /// draw so it need not re-run layout.
     fn handle_fullscreen_scroll(&mut self, kind: MouseEventKind) -> bool {
+        // The selection is content-anchored, so scrolling keeps it: it simply
+        // moves with the text (and lets a drag extend across the boundary).
+        self.scroll_transcript(kind)
+    }
+
+    /// Apply one wheel step to the transcript scroll. Returns true when consumed.
+    fn scroll_transcript(&mut self, kind: MouseEventKind) -> bool {
         let tuika_kind = match kind {
             MouseEventKind::ScrollUp => tuika::MouseKind::ScrollUp,
             MouseEventKind::ScrollDown => tuika::MouseKind::ScrollDown,
             _ => return false,
         };
-        // Scrolling moves the text under any selection; drop it.
-        self.clear_selection();
         let (content_h, viewport_h) = self.scroll_metrics;
         let event = tuika::Event::Mouse(tuika::Mouse::at(tuika_kind, 0, 0));
         self.scroll.handle(&event, content_h, viewport_h).consumed()
@@ -5463,9 +5636,89 @@ mod tests {
             "the selection should copy the transcript text, got {text:?}"
         );
 
-        // Scrolling clears the stale selection.
+        // Scrolling no longer discards the selection: it is anchored in content
+        // space, so it survives the scroll and stays available to copy.
         test.app.handle_fullscreen_scroll(MouseEventKind::ScrollUp);
-        assert!(test.app.selection_range().is_none());
+        assert!(test.app.has_selection());
+    }
+
+    /// Repro for "impossible to select more than one window of text": a drag
+    /// that keeps going past the top edge must auto-scroll and keep extending
+    /// the selection, so the copied text spans lines that were never on screen
+    /// at the same time. Before the fix, edge/wheel scrolling cleared the
+    /// selection outright, capping it at the single visible window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_selection_spans_more_than_one_window() {
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        for i in 0..80 {
+            test.app.push_user(format!("line {i:02}"));
+        }
+
+        // First draw records metrics + the selectable rect; bottom-stuck, so the
+        // newest lines are visible and the oldest are scrolled off the top.
+        let _ = render_app_lines(&mut test.app, 40, 12);
+        let area = test.app.selection_area;
+        assert!(area.height >= 3, "need a few transcript rows to drag over");
+
+        let ev = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        };
+
+        // Anchor at the right end of the newest (bottom) visible row so the
+        // selection's bottom endpoint covers that whole line, then drag up-left.
+        let bottom_row = area.bottom() - 1;
+        test.app.handle_fullscreen_selection(ev(
+            MouseEventKind::Down(MouseButton::Left),
+            area.right() - 1,
+            bottom_row,
+        ));
+        test.app.handle_fullscreen_selection(ev(
+            MouseEventKind::Drag(MouseButton::Left),
+            area.x,
+            bottom_row,
+        ));
+        assert!(
+            test.app.selection_range().is_some(),
+            "the drag should have started a selection"
+        );
+
+        // Keep dragging at the top edge: each drag auto-scrolls to reveal earlier
+        // lines and grows the selection, so it climbs far past one window.
+        for _ in 0..120 {
+            test.app.handle_fullscreen_selection(ev(
+                MouseEventKind::Drag(MouseButton::Left),
+                area.x,
+                area.y,
+            ));
+        }
+        test.app.handle_fullscreen_selection(ev(
+            MouseEventKind::Up(MouseButton::Left),
+            area.x,
+            area.y,
+        ));
+        assert!(test.app.pending_copy, "releasing the drag arms the copy");
+
+        // Redraw so the deferred copy runs against the current window.
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut test.app)).expect("draw");
+
+        let text = test.app.selection_copy_text();
+        // An 8-row window can show only a handful of "line NN" rows at once; a
+        // selection naming lines dozens apart could only come from spanning many.
+        assert!(
+            text.contains("line 79"),
+            "selection should still include the newest line, got:\n{text}"
+        );
+        assert!(
+            text.contains("line 15"),
+            "selection should reach lines from far earlier windows, got:\n{text}"
+        );
     }
 
     /// Render the same app state in regular and full-screen mode and return
