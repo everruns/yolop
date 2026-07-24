@@ -11,6 +11,14 @@ repository = "https://github.com/everruns/yolop"
 readme = "README.md"
 keywords = ["tui", "terminal", "ratatui", "widgets", "layout"]
 categories = ["command-line-interface"]
+# The `docs/` demo/theme/styling GIFs total ~8 MiB and are consumed only by the
+# GitHub-rendered README and `docs/*.md` (served from the repo, not the crate).
+# rustdoc/docs.rs references none of them — the crate-level docs live in a
+# hand-written `//!` header in `lib.rs` — so bundling them just bloats the
+# published `.crate`. Keep `hero.gif` and `demos/image.svg`: those are the only
+# two the crates.io README (`README.md`) embeds by relative path. See
+# `tests/packaging.rs` for the guard that keeps this list honest.
+exclude = ["docs/demos/*.gif", "docs/styling/*.gif", "docs/themes/*.gif"]
 
 # Build docs with every feature so the optional `async` runner is documented,
 # and set the `docsrs` cfg that turns on per-item feature badges (see lib.rs).
