@@ -52,6 +52,7 @@ pub mod event;
 #[macro_use]
 mod macros;
 pub mod focus;
+pub mod framebuffer;
 pub mod geometry;
 pub mod highlight;
 pub mod host;
@@ -92,6 +93,7 @@ pub use components::{
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 pub use focus::FocusRegistry;
+pub use framebuffer::{FrameBuffer, FrameBufferView, Rgba, Sprite};
 pub use geometry::{Padding, Size};
 pub use highlight::{CodeHighlighter, Highlighter, PlainHighlighter};
 pub use host::{AltScreen, Overlay, TerminalSession, paint, paint_with_sheet, translate_event};
