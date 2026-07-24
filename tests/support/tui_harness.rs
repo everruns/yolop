@@ -34,9 +34,8 @@ pub struct TuiSpawnOptions {
     pub cursor_reply_budget: usize,
     /// Directory prepended to `PATH` for subprocess lookup in the spawned TUI.
     pub path_prefix: Option<PathBuf>,
-    /// Launch the alternate-screen renderer (`--fullscreen`) instead of the
-    /// default inline TUI.
-    pub fullscreen: bool,
+    /// Pass `--inline` instead of using the default fullscreen renderer.
+    pub inline: bool,
     /// Workspace passed through `-C`; useful for real-binary containment tests.
     pub workspace: Option<PathBuf>,
     /// Enable shell sandboxing for this process.
@@ -51,7 +50,7 @@ impl Default for TuiSpawnOptions {
             cursor_row: 1,
             cursor_reply_budget: usize::MAX,
             path_prefix: None,
-            fullscreen: false,
+            inline: true,
             workspace: None,
             sandbox: false,
         }
@@ -223,8 +222,8 @@ pub fn spawn_tui_llmsim_with_settings(
     let mut cmd = CommandBuilder::new(binary);
     cmd.args(["--provider", "llmsim", "--session-dir"]);
     cmd.arg(session_dir.path());
-    if options.fullscreen {
-        cmd.arg("--fullscreen");
+    if options.inline {
+        cmd.arg("--inline");
     }
     if options.sandbox {
         cmd.arg("--sandbox");

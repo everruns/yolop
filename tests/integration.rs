@@ -761,28 +761,28 @@ fn tui_escape_does_not_exit_and_ctrl_c_exits() {
 }
 
 #[test]
-fn tui_default_renders_and_responds_smoke() {
-    tui_smoke(false);
+fn tui_default_fullscreen_renders_and_responds_smoke() {
+    tui_smoke(
+        TuiSpawnOptions {
+            inline: false,
+            ..TuiSpawnOptions::default()
+        },
+        "default fullscreen",
+        true,
+    );
 }
 
 #[test]
-fn tui_fullscreen_renders_and_responds_smoke() {
-    tui_smoke(true);
+fn tui_inline_renders_and_responds_smoke() {
+    tui_smoke(TuiSpawnOptions::default(), "inline", false);
 }
 
 /// End-to-end smoke for both TUI renderers: start the TUI, drive one llmsim
 /// turn, and assert the rendered grid shows the composer and provider status
 /// bar with no subprocess output leaked onto the frame (the corruption this
 /// change fixes), then exit cleanly.
-fn tui_smoke(fullscreen: bool) {
-    let mode = if fullscreen { "fullscreen" } else { "default" };
-    let mut tui = spawn_tui_llmsim_with(
-        &yolop_binary(),
-        TuiSpawnOptions {
-            fullscreen,
-            ..TuiSpawnOptions::default()
-        },
-    );
+fn tui_smoke(options: TuiSpawnOptions, mode: &str, fullscreen: bool) {
+    let mut tui = spawn_tui_llmsim_with(&yolop_binary(), options);
     // Wait on the composer hint from the shared chrome, which both renderers
     // draw (unlike the startup banner, which inline flushes to scrollback that
     // the fullscreen alternate screen does not have).
@@ -809,7 +809,7 @@ fn tui_smoke(fullscreen: bool) {
         "{mode}: provider status bar should be on-screen:\n{screen}"
     );
     // The frame must not carry leaked child-process output. These are the git
-    // progress lines that corrupted the --fullscreen status bar before the
+    // progress lines that corrupted the fullscreen status bar before the
     // subprocess output was captured/detached.
     for leak in ["Preparing worktree", "HEAD is now at", "From github.com"] {
         assert!(
@@ -842,9 +842,10 @@ fn tui_smoke(fullscreen: bool) {
             output.matches("real responses").count() >= 2,
             "fullscreen: final assistant message should be reprinted after exit: {output}"
         );
+    } else {
         assert!(
-            output.contains("--fullscreen --session"),
-            "fullscreen: continuation command should preserve --fullscreen: {output}"
+            output.contains("--inline --session"),
+            "inline: continuation command should preserve --inline: {output}"
         );
     }
 }

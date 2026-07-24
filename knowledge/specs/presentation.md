@@ -37,6 +37,13 @@ widgets, overlays, and terminal-specific affordances. It must not be the only
 place where a user-visible transcript label, tool wording, or status-bar value
 is assembled.
 
+### Interactive Renderer Default
+
+Interactive sessions use the fullscreen alternate-screen renderer by default.
+The application owns transcript scrolling, overlays, and viewport composition in
+this mode. `--inline` selects the scrollback-native composer when terminal
+history is preferred.
+
 ### Fullscreen Status Drawer
 
 The fullscreen host projects expanded session status as a responsive drawer.
