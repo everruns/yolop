@@ -57,7 +57,14 @@ with tuika's surfaces (see [Compatibility](#compatibility)).
   composites the frame.
 - **Motion** (`anim`, `components::{Spinner, ProgressBar, Loader}`,
   `native::TerminalProgress`) animates from a host-supplied frame counter and
-  can drive the terminal's own OSC 9;4 progress indicator.
+  can drive the terminal's own OSC 9;4 progress indicator. `anim::Timeline` adds
+  a scheduler-free keyframe track (values eased over frame offsets, with
+  looping/ping-pong) sampled purely from that counter.
+- **Pixels** (`framebuffer`) — a mutable RGBA `FrameBuffer` the host draws into
+  (`set`/`blend`/`fill_rect`/`blit`, a per-pixel `shade` shader post-pass, and
+  `Sprite` spritesheet frames). `FrameBufferView` paints it into cells with
+  half-blocks on any terminal, or hand `to_image_data()` to the crisp graphics
+  protocols.
 
 ## Components
 
@@ -69,7 +76,10 @@ component. Linked names below jump straight to their demo.
 | [`Text`](docs/components.md#text) / `Paragraph` | Styled lines / word-wrapped plain text |
 | `Wrap` | Word-wraps pre-styled lines, preserving per-span styles |
 | [`Markdown`](docs/components.md#markdown--markdownstate) (+ `MarkdownState`) | CommonMark → styled lines; `MarkdownState` streams incrementally |
-| [`CodeBlock`](docs/components.md#codeblock) | Themed, framed code block with a pluggable `Highlighter` |
+| [`CodeBlock`](docs/components.md#codeblock) | Themed, framed code block with a pluggable `Highlighter` and optional line-number gutter |
+| `Diff` | Line diff (LCS), unified or side-by-side, with `+`/`-` gutters and line numbers |
+| `AsciiFont` | Large "figlet-style" block-letter banner text |
+| `QrCode` (+ `QrEcc`) | QR code (byte-mode v1–4 encoder) rendered with half-blocks |
 | [`Rule`](docs/components.md#rule) | Horizontal separator: optional title + fill glyph to width |
 | [`Flex`](docs/components.md#flex) | Flexbox container (the composition primitive) |
 | `Responsive` / `Constrained` | Breakpoint selection and min/max measurement |
@@ -77,8 +87,12 @@ component. Linked names below jump straight to their demo.
 | `Spacer` | Flexible filler |
 | [`Scroll`](docs/components.md#scroll--scrollstate) (+ `ScrollState`) | Vertical scroll viewport + scrollbar |
 | [`SelectList`](docs/components.md#selectlist--selectstate) (+ `SelectState`) | Selectable list |
+| `Slider` (+ `SliderState`) | One-row value picker over a numeric range |
 | [`StatusBar`](docs/components.md#statusbar) | One-row left/right status segments |
 | [`Tabs`](docs/components.md#tabs--tabsstate) / `KeyHints` | Host-state tab navigation and command hints |
+| `TabSelect` (+ `TabSelectState`) | Value-selecting segmented control |
+| `Toasts` / `ToastList` | Transient notification stack with frame-driven expiry |
+| `Console` (+ `ConsoleLog`) | Captured stdout/log ring buffer + tailing overlay view |
 | [`Spinner`](docs/components.md#spinner) | Frame-cycled activity glyph |
 | [`ProgressBar`](docs/components.md#progressbar) | Determinate (sub-cell) / indeterminate bar |
 | [`Loader`](docs/components.md#loader) | Spinner + message + hint row |

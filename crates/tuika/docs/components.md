@@ -56,6 +56,26 @@ view! {
 }
 ```
 
+### `Timeline`
+
+A scheduler-free keyframe track: values eased over frame offsets, with
+`Once`/`Loop`/`PingPong` repeat, sampled purely from the host frame counter — the
+minimal analog of OpenTUI's Timeline. Compose several (one per animated property)
+rather than reconciling a tween tree. The demo drives three `ProgressBar`s from
+three timelines.
+[API](https://docs.rs/tuika/latest/tuika/struct.Timeline.html)
+
+<img src="demos/timeline.gif" width="880" alt="Timeline demo">
+
+```rust
+use tuika::{Repeat, Timeline, anim::ease_out};
+let slide = Timeline::new().keyframe(0, 0.0).ease(30, 1.0, ease_out);
+let pulse = Timeline::new()
+    .keyframe(0, 0.0).keyframe(10, 1.0).keyframe(20, 0.0)
+    .repeat(Repeat::Loop);
+let x = slide.sample(frame); // 0.0 → 1.0 over 30 frames, then holds
+```
+
 ## Text
 
 ### `Text`
@@ -159,7 +179,9 @@ let doc = Markdown::new("\
 
 A themed, syntax-highlighted fenced block: a language label, a left rail, and a
 code background. Highlighting comes from a pluggable `Highlighter` (none → plain,
-theme-colored text); the `tuika-codeformatters` crate ships a tree-sitter one.
+theme-colored text); the `tuika-codeformatters` crate ships a tree-sitter one. An
+optional line-number gutter (`line_numbers(true)` / `start_line(n)`) rides to the
+left of the rail.
 [API](https://docs.rs/tuika/latest/tuika/struct.CodeBlock.html)
 
 <img src="demos/code_block.gif" width="880" alt="CodeBlock demo">
@@ -167,7 +189,24 @@ theme-colored text); the `tuika-codeformatters` crate ships a tree-sitter one.
 ```rust
 use tuika::{CodeBlock, view};
 view! {
-    node(CodeBlock::new("rust", "fn main() {}").highlighter(&highlighter))
+    node(CodeBlock::new("rust", "fn main() {}").highlighter(&highlighter).line_numbers(true))
+}
+```
+
+### `Diff`
+
+A line-oriented diff (LCS) rendered **unified** (`+`/`-`/` ` gutters) or
+**side-by-side**, with an optional line-number gutter. Added/removed lines use
+conventional green/red (overridable via `DiffStyle`). The pure `diff_rows(old,
+new)` classifier is reusable on its own.
+[API](https://docs.rs/tuika/latest/tuika/struct.Diff.html)
+
+<img src="demos/diff.gif" width="880" alt="Diff demo">
+
+```rust
+use tuika::{Diff, DiffMode, view};
+view! {
+    node(Diff::new(old, new).mode(DiffMode::SideBySide).line_numbers(true))
 }
 ```
 
@@ -346,6 +385,39 @@ state.handle(&event, labels.len());
 view! { node(Tabs::new(labels, &state)) }
 ```
 
+### `TabSelect` + `TabSelectState`
+
+A value-selecting segmented control (as opposed to `Tabs`, which is navigation
+chrome): moving the cursor changes the selected value immediately, and
+Enter/Space activates it. `handle` returns a `TabSelectOutcome` distinguishing a
+change from an activation.
+[API](https://docs.rs/tuika/latest/tuika/struct.TabSelect.html)
+
+<img src="demos/tab_select.gif" width="880" alt="TabSelect demo">
+
+```rust
+use tuika::{TabSelect, TabSelectState, view};
+let mut state = TabSelectState::default();
+state.handle(&event, labels.len());
+view! { node(TabSelect::new(labels, &state)) }
+```
+
+### `Slider` + `SliderState`
+
+A one-row value picker over a numeric range with a filled track and thumb.
+`SliderState` clamps to `min..=max`, steps via the arrow keys (Home/End snap to
+the bounds), and `set_ratio` maps a click position to a value.
+[API](https://docs.rs/tuika/latest/tuika/struct.Slider.html)
+
+<img src="demos/slider.gif" width="880" alt="Slider demo">
+
+```rust
+use tuika::{Slider, SliderState, view};
+let mut state = SliderState::new(0.0, 100.0, 40.0).step(5.0);
+state.handle(&event);
+view! { node(Slider::new(&state).label(&state)) }
+```
+
 ### `TextInput` + `TextInputState`
 
 A multi-line edit model: buffer, cursor, editing, and soft-wrap. `TextInput`
@@ -367,6 +439,93 @@ view! {
         node(TextInput::new(&state))
     }
 }
+```
+
+## Notifications & console
+
+### `Toasts` + `ToastList`
+
+A transient notification stack with frame-driven expiry: each toast carries a
+remaining lifetime in frames, `tick()` decrements them, and one is dropped at
+zero. Four severity levels select the bar color and glyph. Place a `ToastList`
+in a corner overlay.
+[API](https://docs.rs/tuika/latest/tuika/struct.Toasts.html)
+
+<img src="demos/toast.gif" width="880" alt="Toasts demo">
+
+```rust
+use tuika::{ToastLevel, ToastList, Toasts, view};
+let mut toasts = Toasts::new(4);
+toasts.push(ToastLevel::Success, "Saved");
+toasts.tick(); // once per frame; drops expired toasts
+view! { node(ToastList::new(&toasts)) }
+```
+
+### `Console` + `ConsoleLog`
+
+Capture `println!`/`tracing` output into a capped ring buffer and show it in a
+toggleable overlay. `ConsoleLog` is a cheap, cloneable, `Send`/`Sync` handle that
+implements `std::io::Write`, so it drops straight into a logging pipeline; the
+`Console` view tails the most recent lines.
+[API](https://docs.rs/tuika/latest/tuika/struct.ConsoleLog.html)
+
+<img src="demos/console.gif" width="880" alt="Console demo">
+
+```rust
+use tuika::{Console, ConsoleLog, view};
+let log = ConsoleLog::new(500);
+// tracing_subscriber::fmt().with_writer({ let l = log.clone(); move || l.clone() }).init();
+view! { node(Console::new(&log).title(" console ")) }
+```
+
+## Banners, codes & pixels
+
+### `AsciiFont`
+
+Large "figlet-style" block-letter banners from an embedded 5-row font (A–Z, 0–9,
+punctuation; case-insensitive). Themed accent by default, overridable.
+[API](https://docs.rs/tuika/latest/tuika/struct.AsciiFont.html)
+
+<img src="demos/ascii_font.gif" width="880" alt="AsciiFont demo">
+
+```rust
+use tuika::{AsciiFont, view};
+view! { node(AsciiFont::new("TUIKA")) }
+```
+
+### `QrCode`
+
+A QR code drawn with half-block cells. The bundled encoder is byte-mode, versions
+1–4 (up to 78 bytes at ECC Low — URLs, Wi-Fi credentials, tokens), with
+Reed-Solomon, interleaving, and masking; larger payloads can be encoded elsewhere
+and handed to `QrCode::from_matrix`.
+[API](https://docs.rs/tuika/latest/tuika/struct.QrCode.html)
+
+<img src="demos/qr.gif" width="880" alt="QrCode demo">
+
+```rust
+use tuika::{QrCode, QrEcc, view};
+let qr = QrCode::encode("https://example.com", QrEcc::Medium).expect("fits v1–4");
+view! { node(qr) }
+```
+
+### `FrameBuffer` + `FrameBufferView`
+
+A mutable RGBA pixel canvas — `set`/`blend`/`fill_rect`/`blit`, a per-pixel
+`shade` shader post-pass, and `Sprite` spritesheet frames. `FrameBufferView`
+packs two vertical pixels per cell with a half-block, so it renders in any
+terminal; `to_image_data()` hands the same pixels to the Kitty/iTerm2/Sixel
+graphics protocols for a crisp render.
+[API](https://docs.rs/tuika/latest/tuika/struct.FrameBuffer.html)
+
+<img src="demos/framebuffer.gif" width="880" alt="FrameBuffer demo">
+
+```rust
+use tuika::{FrameBuffer, FrameBufferView, view};
+let mut fb = FrameBuffer::new(64, 32);
+fb.clear([20, 20, 40, 255]);
+fb.fill_rect(8, 8, 16, 16, [240, 90, 90, 255]);
+view! { node(FrameBufferView::new(&fb, 64, 16)) }
 ```
 
 ## See also

@@ -52,6 +52,7 @@ pub mod event;
 #[macro_use]
 mod macros;
 pub mod focus;
+pub mod framebuffer;
 pub mod geometry;
 pub mod highlight;
 pub mod host;
@@ -75,19 +76,24 @@ pub mod width;
 
 // Curated top-level re-exports so callers write `tuika::Flex`, `tuika::Theme`,
 // etc. for the common surface without deep paths.
+pub use anim::{Easing, Repeat, Timeline};
 #[cfg(feature = "async")]
 pub use async_runner::{AsyncRunner, Signal};
 pub use capabilities::{Capabilities, DA1_REQUEST, DeviceAttributes};
 pub use clipboard::{osc52, write_clipboard};
 pub use components::{
-    Boxed, CodeBlock, Column, Constrained, Flex, FocusScope, ImageResolver, KeyHints, Loader,
-    Markdown, MarkdownImage, MarkdownState, Paragraph, ProgressBar, Responsive, Rule, Scroll,
-    ScrollState, SelectList, SelectOutcome, SelectState, Spacer, Spinner, SpinnerStyle, StatusBar,
-    Table, Tabs, TabsState, Text, TextInput, TextInputEvent, TextInputMode, TextInputState, Wrap,
-    markdown_to_lines, markdown_to_linked_lines, wrap_lines,
+    ASCII_FONT_HEIGHT, AsciiFont, Boxed, CONSOLE_DEFAULT_CAPACITY, CodeBlock, Column, Console,
+    ConsoleLog, Constrained, Diff, DiffMode, DiffRow, DiffStyle, DiffTag, Flex, FocusScope,
+    ImageResolver, KeyHints, Loader, Markdown, MarkdownImage, MarkdownState, Paragraph,
+    ProgressBar, QrCode, QrEcc, Responsive, Rule, Scroll, ScrollState, SelectList, SelectOutcome,
+    SelectState, Slider, SliderState, Spacer, Spinner, SpinnerStyle, StatusBar, TOAST_DEFAULT_TTL,
+    TabSelect, TabSelectOutcome, TabSelectState, Table, Tabs, TabsState, Text, TextInput,
+    TextInputEvent, TextInputMode, TextInputState, ToastLevel, ToastList, Toasts, Wrap, diff_rows,
+    markdown_to_lines, markdown_to_linked_lines, qr_encode, wrap_lines,
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 pub use focus::FocusRegistry;
+pub use framebuffer::{FrameBuffer, FrameBufferView, Rgba, Sprite};
 pub use geometry::{Padding, Size};
 pub use highlight::{CodeHighlighter, Highlighter, PlainHighlighter};
 pub use host::{AltScreen, Overlay, TerminalSession, paint, paint_with_sheet, translate_event};

@@ -491,7 +491,8 @@ impl<'a> Builder<'a> {
                     let body = body.strip_suffix('\n').unwrap_or(&body);
                     let lines: Vec<&str> = body.split('\n').collect();
                     let indent = self.indent();
-                    for line in code_block_lines(&lang, &lines, self.theme, self.highlighter, true)
+                    for line in
+                        code_block_lines(&lang, &lines, self.theme, self.highlighter, true, None)
                     {
                         self.items.push(MdItem::Verbatim { line, indent });
                     }
@@ -567,7 +568,7 @@ impl<'a> Builder<'a> {
         if let Some((lang, body)) = self.code.take() {
             let body = body.strip_suffix('\n').unwrap_or(&body);
             let lines: Vec<&str> = body.split('\n').collect();
-            for line in code_block_lines(&lang, &lines, self.theme, self.highlighter, true) {
+            for line in code_block_lines(&lang, &lines, self.theme, self.highlighter, true, None) {
                 self.items.push(MdItem::Verbatim { line, indent: 0 });
             }
         }
