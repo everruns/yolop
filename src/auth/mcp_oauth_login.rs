@@ -108,14 +108,49 @@ fn require_secure(url: &str, what: &str) -> Result<Url> {
     }
 }
 
+/// Prepared interactive login: discovery + DCR + PKCE are done, the authorize
+/// URL is ready to show the user, and [`complete_login`] waits on the loopback
+/// callback then exchanges the code. Splitting prepare from complete lets the
+/// TUI print the URL (and keep the event loop alive) in both fullscreen and
+/// inline modes before blocking on the browser.
+pub(crate) struct PreparedLogin {
+    pub authorize_url: String,
+    listener: TcpListener,
+    state: String,
+    verifier: String,
+    redirect_uri: String,
+    endpoints: OAuthEndpoints,
+    oauth_client: OAuthClient,
+    scope: Option<String>,
+}
+
 /// Run the full interactive login for `mcp_url`, returning tokens ready to
 /// persist. `configured_client_id` skips dynamic registration when the caller
 /// already has a client; `scope` overrides the server-advertised scopes.
+///
+/// Prefer [`prepare_login`] + [`complete_login`] in interactive hosts so the
+/// authorize URL can be shown before waiting on the browser.
+/// Convenience wrapper: prepare, open the browser, then complete. Kept for
+/// callers that do not need to surface the authorize URL first.
+#[allow(dead_code)]
 pub(crate) async fn login(
     mcp_url: &str,
     configured_client_id: Option<&str>,
     scope: Option<&str>,
 ) -> Result<McpOAuthTokenSet> {
+    let prepared = prepare_login(mcp_url, configured_client_id, scope).await?;
+    crate::auth::oauth_flow::open_browser(prepared.authorize_url.as_str())?;
+    complete_login(prepared).await
+}
+
+/// Discover, register, and build the authorize URL without opening a browser or
+/// waiting on the callback. The caller should show [`PreparedLogin::authorize_url`]
+/// then call [`complete_login`].
+pub(crate) async fn prepare_login(
+    mcp_url: &str,
+    configured_client_id: Option<&str>,
+    scope: Option<&str>,
+) -> Result<PreparedLogin> {
     let client = http_client()?;
     let endpoints = discover_endpoints(&client, mcp_url).await?;
 
@@ -153,8 +188,32 @@ pub(crate) async fn login(
         &state,
         scope.as_deref(),
     )?;
-    crate::auth::oauth_flow::open_browser(auth_url.as_str())?;
+    Ok(PreparedLogin {
+        authorize_url: auth_url.to_string(),
+        listener,
+        state,
+        verifier,
+        redirect_uri,
+        endpoints,
+        oauth_client,
+        scope,
+    })
+}
 
+/// Wait for the authorize redirect on the prepared loopback listener and
+/// exchange the code for tokens.
+pub(crate) async fn complete_login(prepared: PreparedLogin) -> Result<McpOAuthTokenSet> {
+    let PreparedLogin {
+        listener,
+        state,
+        verifier,
+        redirect_uri,
+        endpoints,
+        oauth_client,
+        scope,
+        ..
+    } = prepared;
+    let client = http_client()?;
     let code = wait_for_callback(listener, &state).await?;
     exchange_code(
         &client,

@@ -175,7 +175,7 @@ async fn scripted_prompt_command_tool_queues_quit_ui_command() {
         "natural-language command should run through the tool entry point"
     );
     let command = runtime.ui_rx.try_recv().expect("queued UI command");
-    assert_eq!(command, UiCommand::Quit);
+    assert_eq!(command.command, UiCommand::Quit);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

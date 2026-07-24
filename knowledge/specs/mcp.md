@@ -88,10 +88,15 @@ Credentials for a server are resolved per request by the runtime's
 protected-resource metadata (RFC 9728) → authorization-server metadata
 (RFC 8414 / OpenID discovery) → dynamic client registration (RFC 7591) when the
 server offers it → authorization code + PKCE (RFC 7636) through the browser with
-a loopback redirect. The token endpoint and client id are persisted alongside
-the tokens so refresh is self-contained. Because credentials are resolved per
-turn, a fresh login takes effect on the next message — no restart (composes with
-live reload above).
+a loopback redirect. The authorize URL is printed in the transcript before the
+host waits on the callback (so fullscreen and inline both stay usable if the
+browser is invisible), and the wait runs in the background so the event loop is
+not blocked. The token endpoint and client id are persisted alongside the tokens
+so refresh is self-contained. Because credentials are resolved per turn, a fresh
+login takes effect on the next message — no restart (composes with live reload
+above). Agent-driven `/mcp` and `/tools` via `run_yolop_command` return the
+host's response text in the tool result; `/tools` includes live discovered
+`mcp_*` names from the session's scoped servers.
 
 ## Trust model
 

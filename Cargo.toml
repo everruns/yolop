@@ -104,7 +104,7 @@ everruns-openai = "0.17.16"
 # crate in 0.13.0; register it alongside openai to keep DriverId::OpenRouter.
 everruns-openrouter = "0.17.16"
 everruns-local = "0.17.16"
-everruns-mcp = "0.17.16"
+everruns-mcp = { version = "0.17.16", features = ["stdio"] }
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
 # everruns server/worker never enable it (knowledge/specs/mcp.md, upstream runtime-mcp.md D2).
 everruns-runtime = { version = "0.17.16", features = ["mcp-stdio"] }
