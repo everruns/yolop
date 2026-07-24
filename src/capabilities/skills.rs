@@ -20,7 +20,7 @@
 // Scopes (precedence: workspace > global > system; the core capability de-dups
 // by skill directory name, so a nearer scope shadows a farther one):
 //   * workspace — `<workspace>/.agents/skills`           (writable)
-//   * global    — `<config_dir>/yolop/skills`            (writable; override: YOLOP_GLOBAL_SKILLS_DIR)
+//   * global    — `~/.agents/skills`                     (writable; override: YOLOP_GLOBAL_SKILLS_DIR)
 //   * system    — pre-packed, materialized once          (read-only; override: YOLOP_SYSTEM_SKILLS_DIR)
 
 use crate::capabilities::narration::stable_labeled;
@@ -38,6 +38,8 @@ use std::sync::Arc;
 
 /// Env override for the global skills directory.
 const GLOBAL_SKILLS_DIR_ENV: &str = "YOLOP_GLOBAL_SKILLS_DIR";
+/// Env override for the legacy global skills directory.
+const LEGACY_GLOBAL_SKILLS_DIR_ENV: &str = "YOLOP_LEGACY_GLOBAL_SKILLS_DIR";
 /// Env override for the system skills directory (skips materialization).
 const SYSTEM_SKILLS_DIR_ENV: &str = "YOLOP_SYSTEM_SKILLS_DIR";
 
@@ -79,7 +81,7 @@ static SYSTEM_SKILLS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/src/bundl
 pub struct SkillDirs {
     /// `<workspace>/.agents/skills` — always present (created on demand).
     pub workspace: PathBuf,
-    /// Global skills directory, or `None` when no platform config dir exists.
+    /// Global skills directory, or `None` when no home directory exists.
     pub global: Option<PathBuf>,
     /// Materialized system skills directory, or `None` when unavailable.
     pub system: Option<PathBuf>,
@@ -89,9 +91,21 @@ impl SkillDirs {
     /// Resolve the workspace/global/system directories for `workspace_root`.
     /// Materializes the embedded system skills as a side effect (idempotent).
     pub fn resolve(workspace_root: &Path) -> Self {
+        let global = global_skills_dir();
+        if let (Some(primary), Some(legacy)) = (&global, legacy_global_skills_dir())
+            && primary != &legacy
+            && let Err(error) = import_legacy_global_skills(&legacy, primary)
+        {
+            tracing::warn!(
+                legacy = %legacy.display(),
+                primary = %primary.display(),
+                %error,
+                "failed to import legacy global skills"
+            );
+        }
         Self {
             workspace: workspace_root.join(".agents").join("skills"),
-            global: global_skills_dir(),
+            global,
             system: system_skills_dir(),
         }
     }
@@ -190,15 +204,60 @@ impl SkillDirResolver for HostSkillDirResolver {
     }
 }
 
-/// Global skills directory, or `None` when no platform config directory exists.
-/// Honors `YOLOP_GLOBAL_SKILLS_DIR`; otherwise `<config_dir>/yolop/skills`.
+/// Global skills directory, or `None` when no home directory exists.
+/// Honors `YOLOP_GLOBAL_SKILLS_DIR`; otherwise `~/.agents/skills`.
 /// The path is returned even when absent so newly installed global skills become
 /// available without restarting the process.
 pub fn global_skills_dir() -> Option<PathBuf> {
     Some(match std::env::var(GLOBAL_SKILLS_DIR_ENV) {
         Ok(value) if !value.is_empty() => PathBuf::from(value),
+        _ => dirs::home_dir()?.join(".agents").join("skills"),
+    })
+}
+
+/// Previous global skills directory retained temporarily for discovery.
+pub fn legacy_global_skills_dir() -> Option<PathBuf> {
+    Some(match std::env::var(LEGACY_GLOBAL_SKILLS_DIR_ENV) {
+        Ok(value) if !value.is_empty() => PathBuf::from(value),
         _ => dirs::config_dir()?.join("yolop").join("skills"),
     })
+}
+
+/// Copy legacy global skills into the primary root without replacing newer entries.
+fn import_legacy_global_skills(legacy: &Path, primary: &Path) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(legacy) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    std::fs::create_dir_all(primary)?;
+    for entry in entries {
+        let entry = entry?;
+        let source = entry.path();
+        if !entry.file_type()?.is_dir() || !source.join("SKILL.md").is_file() {
+            continue;
+        }
+        let target = primary.join(entry.file_name());
+        if !target.exists() {
+            copy_dir_without_symlinks(&source, &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_without_symlinks(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(target)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let destination = target.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_without_symlinks(&entry.path(), &destination)?;
+        } else if file_type.is_file() {
+            std::fs::copy(entry.path(), destination)?;
+        }
+    }
+    Ok(())
 }
 
 /// System skills directory, materializing the embedded skills first.
@@ -513,6 +572,37 @@ mod tests {
         assert_eq!(
             relative_under("/.agents/skills/foo", GLOBAL_SKILLS_VFS),
             None
+        );
+    }
+
+    #[test]
+    fn imports_legacy_global_skills_without_overwriting_primary() {
+        let legacy = tempfile::tempdir().unwrap();
+        let primary = tempfile::tempdir().unwrap();
+        let old = legacy.path().join("old-skill");
+        std::fs::create_dir_all(old.join("assets")).unwrap();
+        std::fs::write(old.join("SKILL.md"), "legacy").unwrap();
+        std::fs::write(old.join("assets/example.txt"), "asset").unwrap();
+        let existing = primary.path().join("existing");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::fs::write(existing.join("SKILL.md"), "primary").unwrap();
+        let legacy_existing = legacy.path().join("existing");
+        std::fs::create_dir_all(&legacy_existing).unwrap();
+        std::fs::write(legacy_existing.join("SKILL.md"), "legacy replacement").unwrap();
+
+        import_legacy_global_skills(legacy.path(), primary.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(primary.path().join("old-skill/SKILL.md")).unwrap(),
+            "legacy"
+        );
+        assert_eq!(
+            std::fs::read_to_string(primary.path().join("old-skill/assets/example.txt")).unwrap(),
+            "asset"
+        );
+        assert_eq!(
+            std::fs::read_to_string(existing.join("SKILL.md")).unwrap(),
+            "primary"
         );
     }
 
