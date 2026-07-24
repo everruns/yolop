@@ -116,12 +116,11 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     trajectory_out: Option<PathBuf>,
 
-    /// EXPERIMENTAL: render the interactive TUI full-screen on the alternate
-    /// screen (via the `tuika` toolkit) instead of the default inline
-    /// scrollback composer. Overlays and scrolling are owned in-app; native
-    /// terminal scrollback is unavailable in this mode.
+    /// Render the interactive TUI inline instead of using the default
+    /// fullscreen alternate-screen renderer. Native terminal scrollback is
+    /// available in this mode.
     #[arg(long)]
-    fullscreen: bool,
+    inline: bool,
 
     /// Color theme for the interactive TUI. `yolop` (default) is yolop's own
     /// palette; other values select a bundled `tuika` preset (e.g.
@@ -622,7 +621,7 @@ async fn async_main() -> Result<()> {
         return run_print_mode(runtime, prompt, image_parts, cli.trajectory_out).await;
     }
     let pending_images = tui::input::image_input::load_image_parts(&cli.images)?;
-    run_tui(runtime, pending_images, cli.trajectory_out, cli.fullscreen).await
+    run_tui(runtime, pending_images, cli.trajectory_out, !cli.inline).await
 }
 
 fn resolve_workspace_root(
@@ -1638,7 +1637,7 @@ mod tests {
     fn continuation_preserves_reusable_arguments_and_replaces_turn_arguments() {
         let args = [
             "yolop",
-            "--fullscreen",
+            "--inline",
             "--sandbox",
             "--model",
             "gpt test",
@@ -1654,7 +1653,7 @@ mod tests {
 
         assert_eq!(
             continuation_command(args, "new-session"),
-            "yolop --fullscreen --sandbox --model 'gpt test' --session new-session"
+            "yolop --inline --sandbox --model 'gpt test' --session new-session"
         );
     }
 
@@ -1671,7 +1670,7 @@ mod tests {
             session: None,
             session_dir: None,
             trajectory_out: None,
-            fullscreen: false,
+            inline: false,
             theme: None,
             sandbox: false,
         }
@@ -1730,7 +1729,7 @@ mod tests {
             session: None,
             session_dir: None,
             trajectory_out: None,
-            fullscreen: false,
+            inline: false,
             theme: None,
             sandbox: false,
         };

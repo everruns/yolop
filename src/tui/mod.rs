@@ -240,9 +240,8 @@ pub struct App {
     pending_images: Vec<ContentPart>,
     /// Large paste placeholders mapped to their full clipboard/terminal payloads.
     pending_pastes: Vec<(String, String)>,
-    /// Which renderer this session drives. `Inline` is the default
-    /// scrollback-native composer; `Fullscreen` is the experimental
-    /// alternate-screen `tuika` renderer (`--fullscreen`).
+    /// Which renderer this session drives. `Fullscreen` is the CLI default;
+    /// `Inline` is the scrollback-native composer selected by `--inline`.
     render_mode: RenderMode,
     /// Full-screen transcript scroll position (unused in inline mode).
     scroll: tuika::ScrollState,
@@ -303,10 +302,10 @@ pub(crate) struct HistorySearch {
 /// The renderer backing a TUI session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum RenderMode {
-    /// Scrollback-native inline composer (default).
+    /// Scrollback-native inline composer.
     #[default]
     Inline,
-    /// Experimental full-screen alternate-screen renderer (`tuika`).
+    /// Full-screen alternate-screen renderer (`tuika`) and CLI default.
     Fullscreen,
 }
 
@@ -662,8 +661,8 @@ impl App {
         app
     }
 
-    /// Switch this session to the experimental full-screen renderer. Called by
-    /// `run_tui` before the loop when `--fullscreen` is set.
+    /// Switch this session to the full-screen renderer. Called by `run_tui`
+    /// unless `--inline` is set.
     pub(crate) fn set_render_mode(&mut self, mode: RenderMode) {
         self.render_mode = mode;
     }

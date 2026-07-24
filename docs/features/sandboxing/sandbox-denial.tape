@@ -15,7 +15,7 @@ Set MarginFill "#111318"
 Env NO_COLOR ""
 Env COLORTERM "truecolor"
 
-Type "target/debug/yolop --fullscreen --provider llmsim --session-dir /tmp/yolop-vhs-sessions"
+Type "target/debug/yolop --provider llmsim --session-dir /tmp/yolop-vhs-sessions"
 Enter
 Sleep 3s
 Type "!touch ../yolop-sandbox-escape-proof.txt"
