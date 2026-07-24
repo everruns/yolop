@@ -506,17 +506,7 @@ async fn read_request_line(socket: &mut TcpStream) -> Result<String> {
 }
 
 async fn write_response(socket: &mut TcpStream, status: &str, message: &str) -> Result<()> {
-    let body = format!(
-        "<!doctype html><meta charset=\"utf-8\"><title>Yolop MCP login</title>\
-         <body style=\"font:16px system-ui;margin:4rem auto;max-width:32rem\">\
-         <h1>{}</h1><p>{}</p></body>",
-        if status.starts_with("200") {
-            "Signed in"
-        } else {
-            "Login interrupted"
-        },
-        crate::auth::oauth_flow::html_escape(message),
-    );
+    let body = crate::auth::oauth_flow::callback_page(status, message, "MCP server");
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -621,6 +611,33 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::MockOAuthServer;
     use super::*;
+
+    #[tokio::test]
+    async fn callback_response_serves_branded_page() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            write_response(
+                &mut socket,
+                "200 OK",
+                "MCP login complete. You can return to the terminal.",
+            )
+            .await
+            .unwrap();
+        });
+
+        let mut browser = TcpStream::connect(address).await.unwrap();
+        server.await.unwrap();
+        let mut response = String::new();
+        browser.read_to_string(&mut response).await.unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("Content-Type: text/html; charset=utf-8"));
+        assert!(response.contains("<svg"));
+        assert!(response.contains("MCP server is connected."));
+        assert!(response.contains("Your terminal is already warming up the keyboard."));
+    }
 
     #[tokio::test]
     async fn discovers_endpoints_via_protected_resource_metadata() {
