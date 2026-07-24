@@ -505,6 +505,8 @@ fn join_worker<T>(
         Ok(result) => result,
         Err(payload) => {
             if let Some(session_id) = crash_reporter.session_id() {
+                // codeql[rust/cleartext-logging] -- This opaque local identifier is
+                // intentionally emitted so users can recover the crashed session.
                 eprintln!("yolop: crashed session id: {session_id}");
             }
             if let Some(path) = crash_reporter.report_path() {
