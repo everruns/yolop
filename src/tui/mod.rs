@@ -21,6 +21,7 @@ use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_core::message::ContentPart;
 use everruns_core::session_task::SessionTaskRegistry;
 use everruns_core::typed_id::SessionId;
+use futures::FutureExt;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -212,6 +213,8 @@ pub struct App {
     task_schedule_store: Arc<dyn everruns_core::traits::SessionScheduleStore>,
     session_store: Arc<dyn everruns_core::traits::SessionStore>,
     session_tasks: crate::tui::session_tasks_view::TaskTree,
+    session_tasks_refresh:
+        Option<tokio::task::JoinHandle<crate::tui::session_tasks_view::TaskTree>>,
     last_session_tasks_refresh: Option<Instant>,
     /// Open task-tree panel overlay, holding its scroll offset in lines.
     background_panel: Option<usize>,
@@ -570,6 +573,7 @@ impl App {
             task_schedule_store: runtime.task_schedule_store,
             session_store,
             session_tasks: Default::default(),
+            session_tasks_refresh: None,
             last_session_tasks_refresh: None,
             background_panel: None,
             background_selected: 0,
@@ -891,14 +895,38 @@ impl App {
         self.last_session_tasks_refresh = Some(Instant::now());
     }
 
-    async fn refresh_session_tasks_if_due(&mut self) {
+    fn refresh_session_tasks_if_due(&mut self) {
         if self
-            .last_session_tasks_refresh
-            .is_some_and(|last| last.elapsed() < SESSION_TASK_REFRESH_INTERVAL)
+            .session_tasks_refresh
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            let refresh = self.session_tasks_refresh.take().expect("checked above");
+            match refresh.now_or_never().expect("finished refresh") {
+                Ok(tasks) => self.session_tasks = tasks,
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => self
+                    .session_tasks
+                    .errors
+                    .push(format!("task tree refresh failed: {error}")),
+            }
+        }
+
+        if self.session_tasks_refresh.is_some()
+            || self
+                .last_session_tasks_refresh
+                .is_some_and(|last| last.elapsed() < SESSION_TASK_REFRESH_INTERVAL)
         {
             return;
         }
-        self.refresh_session_tasks().await;
+
+        let registry = Arc::clone(&self.task_registry);
+        let sessions = Arc::clone(&self.session_store);
+        let session_id = self.session.session_id();
+        self.session_tasks_refresh = Some(tokio::spawn(async move {
+            crate::tui::session_tasks_view::load_task_tree(session_id, &*registry, &*sessions).await
+        }));
+        self.last_session_tasks_refresh = Some(Instant::now());
     }
 
     fn goal_indicator(&self) -> Option<String> {
@@ -1133,7 +1161,7 @@ impl App {
         // Bound retained history now that inline mode has flushed this frame's
         // lines, so `trim_transcript` can drop the freshly-flushed prefix.
         self.trim_transcript();
-        self.refresh_session_tasks_if_due().await;
+        self.refresh_session_tasks_if_due();
         terminal.autoresize()?;
         if !self.render_mode.is_fullscreen() {
             // Ratatui keeps an inline viewport's cursor offset across resizes
@@ -5337,6 +5365,28 @@ mod tests {
         app: App,
         _workspace: tempfile::TempDir,
         _sessions: tempfile::TempDir,
+    }
+
+    #[tokio::test]
+    async fn pending_session_task_refresh_does_not_block_ui_loop() {
+        let mut test = app_with_llmsim().await;
+        test.app.last_session_tasks_refresh = None;
+        test.app.session_tasks_refresh = Some(tokio::spawn(std::future::pending()));
+
+        let started = Instant::now();
+        test.app.refresh_session_tasks_if_due();
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "a pending refresh blocked the UI loop for {elapsed:?}"
+        );
+        assert!(test.app.session_tasks_refresh.is_some());
+        test.app
+            .session_tasks_refresh
+            .take()
+            .expect("pending refresh")
+            .abort();
     }
 
     async fn app_with_llmsim() -> TestApp {
