@@ -35,6 +35,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 pub(crate) mod fullscreen;
+mod keymap;
 mod render;
 mod setup;
 mod viewport;
@@ -53,6 +54,7 @@ pub mod transcript;
 // The view-model types and runtime-event translation live in `crate::tui::transcript`
 // (the single boundary that interprets `everruns_core` events); re-export them
 // here so the TUI's own submodules keep referring to them as `crate::tui::*`.
+pub(crate) use self::keymap::{GlobalAction, global_keymap};
 pub(crate) use self::{render::*, viewport::*};
 pub(crate) use crate::tui::presentation::*;
 pub(crate) use crate::tui::transcript::*;
@@ -276,6 +278,9 @@ pub struct App {
     /// Active Ctrl+R reverse-history search, if any. While set it owns the
     /// keyboard and the composer previews the current match.
     history_search: Option<HistorySearch>,
+    /// App-global chord shortcuts (Ctrl+R/C/D/B/V), resolved through `tuika`'s
+    /// keymap engine rather than a hand-rolled match. See [`crate::tui::keymap`].
+    keymap: tuika::Keymap<GlobalAction>,
     /// When the active turn began, for the live elapsed timer on the busy
     /// indicator. `None` while idle.
     turn_started_at: Option<Instant>,
@@ -634,6 +639,7 @@ impl App {
                 crate::tui::prompt_history::PromptHistory::load()
             },
             history_search: None,
+            keymap: global_keymap(),
             turn_started_at: None,
             context_used_tokens: None,
         };
@@ -1527,36 +1533,29 @@ impl App {
         if self.busy && key.code != KeyCode::Esc {
             self.esc_pending_cancel = false;
         }
-        // Ctrl+R opens reverse-history search from the idle composer.
-        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('r')) {
-            self.history_search_start();
-            return;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('c') => {
-                    self.handle_ctrl_c();
-                    return;
-                }
-                KeyCode::Char('d') => {
+        // App-global chord shortcuts resolve through the keymap (see
+        // `crate::tui::keymap`), so yolop's bindings live in one declarative
+        // place instead of a hand-rolled match. They fire regardless of mode
+        // (mid-turn, during setup, or with an overlay open) — the same ordering
+        // they had before, since this sits ahead of every modal guard below.
+        if let Some(action) = self.dispatch_global_key(key) {
+            match action {
+                GlobalAction::ReverseSearch => self.history_search_start(),
+                GlobalAction::Interrupt => self.handle_ctrl_c(),
+                GlobalAction::Quit => {
                     self.abort_codex_login();
                     self.abort_mcp_login();
                     self.should_quit = true;
-                    return;
                 }
-                KeyCode::Char('b') => {
-                    // Clear the armed single-Ctrl+C exit ourselves, since this
-                    // branch returns before the shared reset below.
+                GlobalAction::ToggleBackground => {
+                    // This branch returns before the shared grace reset below, so
+                    // clear the armed single-Ctrl+C exit ourselves.
                     self.disarm_ctrl_c_pending_exit();
                     self.toggle_background_panel();
-                    return;
                 }
-                KeyCode::Char('v') => {
-                    self.try_paste_clipboard();
-                    return;
-                }
-                _ => {}
+                GlobalAction::PasteImage => self.try_paste_clipboard(),
             }
+            return;
         }
 
         self.disarm_ctrl_c_pending_exit_if_grace_elapsed();
@@ -1631,6 +1630,24 @@ impl App {
             _ => {
                 self.composer_edit_key(normalize_printable_key(key));
             }
+        }
+    }
+
+    /// Resolve one crossterm key against the app-global [`keymap`](crate::tui::keymap),
+    /// returning the [`GlobalAction`] to run when a global chord matches.
+    ///
+    /// Every global binding is a single stroke, so the keymap never returns
+    /// `Pending` here; a non-match (`Unmatched`) — or a key that does not
+    /// translate to a `tuika` event, such as a release — yields `None` so the
+    /// key falls through to the composer and modal handlers below.
+    fn dispatch_global_key(&mut self, key: KeyEvent) -> Option<GlobalAction> {
+        let tuika::Event::Key(translated) = tuika::translate_event(CrosstermEvent::Key(key))?
+        else {
+            return None;
+        };
+        match self.keymap.dispatch(translated) {
+            tuika::Dispatch::Command(action) => Some(action),
+            tuika::Dispatch::Pending | tuika::Dispatch::Unmatched => None,
         }
     }
 
@@ -5786,6 +5803,20 @@ mod tests {
             "Ctrl+B must disarm the pending Ctrl+C exit"
         );
         assert_eq!(app.background_panel, Some(0));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ctrl_d_quits_through_the_keymap() {
+        // Exercises the keymap dispatch seam end to end: the Ctrl+D chord must
+        // resolve to `GlobalAction::Quit` and set `should_quit`.
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.setup = None;
+        assert!(!app.should_quit);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .await;
+        assert!(app.should_quit, "Ctrl+D must quit the session");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
