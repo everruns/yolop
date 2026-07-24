@@ -1564,7 +1564,10 @@ pub(crate) fn append_markdown_lines<'a>(
     let prefix_cols = first_prefix.chars().count();
     let width = inner_width.saturating_sub(prefix_cols).max(1) as u16;
     let theme = super::fullscreen::yolop_theme();
-    let sheet = tuika::StyleSheet::from_theme(&theme);
+    let mut sheet = tuika::StyleSheet::from_theme(&theme);
+    // Leave underlining to the terminal's native OSC 8 hover/modifier state.
+    // Keeping it permanently underlined masks Ghostty's clickability feedback.
+    sheet.link = tuika::StyleBundle::new().fg(theme.code.link);
     let highlighter = tuika_codeformatters::TreeSitterHighlighter::new();
     let (rendered, md_links) = tuika::markdown_to_linked_lines(
         text,

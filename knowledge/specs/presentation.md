@@ -44,6 +44,12 @@ The application owns transcript scrolling, overlays, and viewport composition in
 this mode. `--inline` selects the scrollback-native composer when terminal
 history is preferred.
 
+Transcript links use OSC 8 targets and leave activation to the terminal
+emulator, including its platform-native modifier (`Ctrl` on Linux, `Command` on
+macOS). The fullscreen host must not also launch the URL from the reported mouse
+event. While mouse capture is active, link hover may set the terminal pointer
+through OSC 22, and must restore the default pointer when the session ends.
+
 ### Fullscreen Status Drawer
 
 The fullscreen host projects expanded session status as a responsive drawer.

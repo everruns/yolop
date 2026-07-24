@@ -48,6 +48,10 @@ impl AltScreen {
     pub fn leave(&mut self) {
         if self.active {
             let mut out = io::stdout();
+            let _ = out.write_all(
+                crate::native::encode_pointer_shape(crate::native::PointerShape::Default)
+                    .as_bytes(),
+            );
             let _ = execute!(out, DisableMouseCapture, LeaveAlternateScreen);
             let _ = out.flush();
             self.active = false;
@@ -102,6 +106,9 @@ impl TerminalSession {
             return;
         }
         let mut out = io::stdout();
+        let _ = out.write_all(
+            crate::native::encode_pointer_shape(crate::native::PointerShape::Default).as_bytes(),
+        );
         let _ = execute!(out, Show, DisableMouseCapture, LeaveAlternateScreen);
         let _ = out.flush();
         if self.raw_mode_owned {
@@ -230,6 +237,7 @@ pub fn translate_event(event: CtEvent) -> Option<Event> {
                 shift: m.modifiers.contains(KeyModifiers::SHIFT),
                 ctrl: m.modifiers.contains(KeyModifiers::CONTROL),
                 alt: m.modifiers.contains(KeyModifiers::ALT),
+                super_key: m.modifiers.contains(KeyModifiers::SUPER),
             }))
         }
         CtEvent::Paste(text) => Some(Event::Paste(text)),
@@ -284,14 +292,14 @@ mod tests {
             kind: MouseEventKind::Down(CtButton::Right),
             column: 7,
             row: 3,
-            modifiers: KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+            modifiers: KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::SUPER,
         });
         let Some(Event::Mouse(m)) = translate_event(ct) else {
             panic!("expected a mouse event");
         };
         assert_eq!(m.kind, MouseKind::Down(MouseButton::Right));
         assert_eq!((m.column, m.row), (7, 3));
-        assert!(m.shift && m.ctrl && !m.alt);
+        assert!(m.shift && m.ctrl && !m.alt && m.super_key);
         assert!(!m.plain());
     }
 

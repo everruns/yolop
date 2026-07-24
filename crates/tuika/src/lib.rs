@@ -109,7 +109,9 @@ pub use live::{Live, LiveView, RedrawHandle};
 pub use mouse::{
     Click, ClickTracker, HitMap, SelectionRange, SelectionState, highlight, selected_text, word_at,
 };
-pub use native::{ProgressState, TerminalProgress};
+pub use native::{
+    PointerShape, ProgressState, TerminalProgress, encode_pointer_shape, write_pointer_shape,
+};
 pub use overlay::{Anchor, Extent, OverlaySpec};
 pub use probe::{Probe, RectProbe};
 pub use ratatui_view::RatatuiView;

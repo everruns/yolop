@@ -268,6 +268,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
                 v
             })
             .collect();
+        let policy = crate::hyperlink_policy();
         tuika::apply_buffer_links(
             f.buffer_mut(),
             Position {
@@ -275,10 +276,20 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
                 y: origin_y,
             },
             &visible,
-            crate::hyperlink_policy(),
+            policy,
+        );
+        let interactive: Vec<_> = visible
+            .into_iter()
+            .filter(|link| policy.allows(&link.url))
+            .collect();
+        app.set_visible_links(
+            Position {
+                x: selection.x,
+                y: origin_y,
+            },
+            &interactive,
         );
     }
-    app.resolve_link_click(f.buffer_mut());
     app.resolve_selection(f.buffer_mut());
     // Copy reads the whole selection from the transcript cache (it may span rows
     // that are scrolled off-screen); highlight paints only the visible slice.

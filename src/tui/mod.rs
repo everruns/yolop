@@ -122,7 +122,8 @@ struct TranscriptWrapCache {
     /// The wrapped, gap-spaced transcript rows.
     lines: Vec<Line<'static>>,
     /// Hyperlink runs into `lines` (labeled markdown links + bare URLs), used to
-    /// embed OSC 8 after painting so Ctrl+click works when the label ≠ URL.
+    /// embed native OSC 8 targets after painting when the label differs from
+    /// the URL.
     links: Vec<tuika::BufferLink>,
 }
 
@@ -263,11 +264,12 @@ pub struct App {
     /// the next draw, where the freshly rendered frame buffer is readable.
     selection: transcript_selection::TranscriptSelection,
     selection_area: Rect,
+    /// Link cell runs visible in the last full-screen transcript frame.
+    visible_link_regions: Vec<Rect>,
+    pointer_shape: tuika::PointerShape,
     /// Click targets from the last fullscreen status layout.
     status_hit_regions: Vec<(Rect, StatusAction)>,
     pending_copy: bool,
-    pending_link_click: Option<tuika::Mouse>,
-    pending_open_url: Option<String>,
     /// Drives the terminal's native OSC 9;4 progress indicator (Ghostty top
     /// bar / taskbar) while a turn runs. Works in both renderers. Enabled only
     /// for real TUI sessions via [`App::enable_native_progress`] so tests and
@@ -627,10 +629,10 @@ impl App {
             transcript_cache: TranscriptWrapCache::default(),
             selection: transcript_selection::TranscriptSelection::new(),
             selection_area: Rect::ZERO,
+            visible_link_regions: Vec::new(),
+            pointer_shape: tuika::PointerShape::Default,
             status_hit_regions: Vec::new(),
             pending_copy: false,
-            pending_link_click: None,
-            pending_open_url: None,
             term_progress: tuika::TerminalProgress::new(),
             native_progress: false,
             // Tests run in-memory so recall never reads or appends to the real
@@ -693,15 +695,45 @@ impl App {
         self.pending_copy = true;
     }
 
-    pub(crate) fn resolve_link_click(&mut self, buffer: &ratatui::buffer::Buffer) {
-        let Some(event) = self.pending_link_click.take() else {
-            return;
-        };
-        self.pending_open_url = tuika::ctrl_click_url(&event, buffer, self.selection_area);
+    pub(crate) fn set_visible_links(
+        &mut self,
+        origin: ratatui::layout::Position,
+        links: &[tuika::BufferLink],
+    ) {
+        self.visible_link_regions = links
+            .iter()
+            .filter(|link| link.end_col > link.start_col)
+            .map(|link| {
+                Rect::new(
+                    origin.x.saturating_add(link.start_col),
+                    origin.y.saturating_add(link.line),
+                    link.end_col.saturating_sub(link.start_col),
+                    1,
+                )
+            })
+            .collect();
     }
 
-    pub(crate) fn take_pending_open_url(&mut self) -> Option<String> {
-        self.pending_open_url.take()
+    fn update_link_pointer(&mut self, mouse: MouseEvent) -> Option<tuika::PointerShape> {
+        if !matches!(mouse.kind, MouseEventKind::Moved) {
+            return None;
+        }
+        let hovered = self.visible_link_regions.iter().any(|area| {
+            mouse.column >= area.x
+                && mouse.column < area.right()
+                && mouse.row >= area.y
+                && mouse.row < area.bottom()
+        });
+        let next = if hovered {
+            tuika::PointerShape::Pointer
+        } else {
+            tuika::PointerShape::Default
+        };
+        if next == self.pointer_shape {
+            return None;
+        }
+        self.pointer_shape = next;
+        Some(next)
     }
 
     /// The selection mapped into the *current* viewport window, for painting.
@@ -860,12 +892,6 @@ impl App {
         else {
             return false;
         };
-        if m.kind == tuika::MouseKind::Up(tuika::MouseButton::Left) && m.ctrl && !m.shift && !m.alt
-        {
-            self.selection.clear();
-            self.pending_link_click = Some(m);
-            return true;
-        }
         if !m.plain() {
             return false;
         }
@@ -1381,12 +1407,6 @@ impl App {
         }
         terminal.draw(|f| draw(f, self))?;
 
-        if let Some(url) = self.take_pending_open_url()
-            && let Err(error) = crate::auth::oauth_flow::open_browser(&url)
-        {
-            tracing::warn!(%error, %url, "failed to open ctrl-clicked link");
-        }
-
         // 1) drain background turn events
         if let Some(rx) = self.rx.as_mut() {
             match rx.try_recv() {
@@ -1565,6 +1585,9 @@ impl App {
                 }
                 CrosstermEvent::Mouse(mouse) => {
                     if self.render_mode.is_fullscreen() {
+                        if let Some(shape) = self.update_link_pointer(mouse) {
+                            let _ = tuika::write_pointer_shape(&mut std::io::stdout(), shape);
+                        }
                         if self.handle_fullscreen_scroll(mouse.kind) {
                             continue;
                         }
@@ -3643,11 +3666,12 @@ mod tests {
         );
         let has_link = lines.iter().flat_map(|line| line.spans.iter()).any(|span| {
             span.content.contains("https://rust-lang.org")
-                && span.style.add_modifier.contains(Modifier::UNDERLINED)
+                && span.style.fg == Some(fullscreen::yolop_theme().code.link)
+                && !span.style.add_modifier.contains(Modifier::UNDERLINED)
         });
         assert!(
             has_link,
-            "paragraph URL should be styled as a link: {lines:?}"
+            "paragraph URL should be link-colored without masking native hover: {lines:?}"
         );
         assert!(
             links.iter().any(|l| l.url.contains("rust-lang.org")),
@@ -3656,10 +3680,10 @@ mod tests {
     }
 
     #[test]
-    fn transcript_labeled_markdown_link_is_ctrl_clickable() {
+    fn transcript_labeled_markdown_link_has_native_target() {
         // Labeled `[text](url)` must stay clickable after the transcript paints —
         // the third time this regressed, style was kept but the destination was
-        // dropped so Ghostty Ctrl+click had nothing to open.
+        // dropped so Ghostty had nothing to open.
         use ratatui::layout::Position;
         let mut lines: Vec<Line> = Vec::new();
         let links = append_markdown_lines(
@@ -3695,7 +3719,7 @@ mod tests {
         assert_eq!(
             tuika::ctrl_click_url(&event, &buffer, Rect::new(0, 0, 120, 4)).as_deref(),
             Some(link.url.as_str()),
-            "Ctrl+click on the PR label must open the markdown destination"
+            "the PR label must preserve the markdown destination"
         );
     }
 
@@ -5546,7 +5570,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn fullscreen_ctrl_click_resolves_visible_url() {
+    async fn fullscreen_ctrl_click_is_left_to_the_terminal() {
         let mut test = app_with_llmsim().await;
         test.app.setup = None;
         test.app.set_render_mode(RenderMode::Fullscreen);
@@ -5558,18 +5582,38 @@ mod tests {
             row: area.y,
             modifiers: KeyModifiers::CONTROL,
         };
-        assert!(test.app.handle_fullscreen_selection(event));
-        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 50, 8));
-        buffer.set_string(
-            area.x,
-            area.y,
-            "see https://example.com/docs now",
-            Style::default(),
+        assert!(!test.app.handle_fullscreen_selection(event));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_link_hover_changes_pointer_shape() {
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        test.app.set_visible_links(
+            ratatui::layout::Position { x: 4, y: 6 },
+            &[tuika::BufferLink {
+                line: 1,
+                start_col: 3,
+                end_col: 9,
+                url: "https://example.com".to_string(),
+            }],
         );
-        test.app.resolve_link_click(&buffer);
+        let moved = |column, row| MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
         assert_eq!(
-            test.app.take_pending_open_url().as_deref(),
-            Some("https://example.com/docs")
+            test.app.update_link_pointer(moved(8, 7)),
+            Some(tuika::PointerShape::Pointer)
+        );
+        assert_eq!(test.app.update_link_pointer(moved(9, 7)), None);
+        assert_eq!(
+            test.app.update_link_pointer(moved(2, 2)),
+            Some(tuika::PointerShape::Default)
         );
     }
 

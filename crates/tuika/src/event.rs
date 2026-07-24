@@ -104,6 +104,8 @@ pub struct Mouse {
     pub ctrl: bool,
     /// Alt held during the event.
     pub alt: bool,
+    /// Super/Command held during the event.
+    pub super_key: bool,
 }
 
 impl Mouse {
@@ -117,6 +119,7 @@ impl Mouse {
             shift: false,
             ctrl: false,
             alt: false,
+            super_key: false,
         }
     }
 
@@ -125,7 +128,7 @@ impl Mouse {
     /// implements its own selection should generally act only on `plain()`
     /// left-drags and leave Shift-drags to the terminal.
     pub fn plain(&self) -> bool {
-        !self.shift && !self.ctrl && !self.alt
+        !self.shift && !self.ctrl && !self.alt && !self.super_key
     }
 }
 
