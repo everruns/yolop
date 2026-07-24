@@ -132,6 +132,14 @@ impl SliderState {
 /// theme's dim color — the same palette split as [`ProgressBar`](crate::ProgressBar).
 /// Like a progress bar it fills the width it's given, so place it in a
 /// [`fixed`](crate::Flex) row or let a flex child grow.
+///
+/// ```
+/// use tuika::{Slider, SliderState};
+/// let mut state = SliderState::new(0.0, 100.0, 50.0).step(10.0);
+/// state.increment();
+/// assert_eq!(state.value(), 60.0);
+/// let _view = Slider::new(&state).label(&state); // a `View` one row tall
+/// ```
 pub struct Slider {
     ratio: f32,
     label: Option<String>,

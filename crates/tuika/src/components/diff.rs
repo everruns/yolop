@@ -188,6 +188,16 @@ impl Default for DiffStyle {
 }
 
 /// A rendered line-diff view (see the [module docs](self)).
+///
+/// ```
+/// use tuika::{Diff, DiffMode, DiffTag, diff_rows};
+/// // The pure classifier is usable on its own:
+/// let rows = diff_rows("a\nb\nc", "a\nB\nc");
+/// assert_eq!(rows[1].tag, DiffTag::Delete);
+/// assert_eq!(rows[2].tag, DiffTag::Insert);
+/// // …or wrap it in a view.
+/// let _view = Diff::new("a\nb", "a\nc").mode(DiffMode::SideBySide).line_numbers(true);
+/// ```
 pub struct Diff {
     rows: Vec<DiffRow>,
     mode: DiffMode,

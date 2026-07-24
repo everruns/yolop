@@ -65,6 +65,16 @@ struct Toast {
 pub const DEFAULT_TTL: u64 = 120;
 
 /// A host-owned stack of active toasts (newest first).
+///
+/// ```
+/// use tuika::{ToastLevel, Toasts};
+/// let mut toasts = Toasts::new(4);
+/// toasts.push_for(ToastLevel::Success, "Saved", Some(2));
+/// assert_eq!(toasts.len(), 1);
+/// toasts.tick(); // 2 → 1
+/// assert_eq!(toasts.tick(), 1); // 1 → 0, dropped
+/// assert!(toasts.is_empty());
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct Toasts {
     items: Vec<Toast>,

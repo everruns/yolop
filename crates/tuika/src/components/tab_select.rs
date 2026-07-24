@@ -84,6 +84,15 @@ impl TabSelectState {
 
 /// A one-row segmented control derived from a [`TabSelectState`]: each option is
 /// a padded pill, the selected one drawn in the theme's selection style.
+///
+/// ```
+/// use tuika::{Event, Key, KeyCode, TabSelectOutcome, TabSelectState};
+/// let mut state = TabSelectState::default();
+/// let right = Event::Key(Key::new(KeyCode::Right));
+/// assert_eq!(state.handle(&right, 3), TabSelectOutcome::Changed(1));
+/// let enter = Event::Key(Key::new(KeyCode::Enter));
+/// assert_eq!(state.handle(&enter, 3), TabSelectOutcome::Activated(1));
+/// ```
 pub struct TabSelect {
     labels: Vec<Line<'static>>,
     selected: usize,
