@@ -57,3 +57,4 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 - [Maintenance](specs/maintenance.md) — repository health and release readiness.
 - [Release](specs/release.md) — publishing crates and Homebrew releases.
 - [Documentation](specs/documentation.md) — public/internal documentation contract.
+- [Agent context](specs/agent-context.md) — how AGENTS.md, knowledge, and skills are layered.

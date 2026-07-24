@@ -8,124 +8,88 @@ user-invocable: true
 
 # Ship
 
-Goal: land the requested change safely, with evidence, and merge only after CI is green.
+Goal: land the requested change safely, with evidence, and merge only after CI
+is green.
 
-This skill implements [`knowledge/specs/shipping.md`](../../../knowledge/specs/shipping.md). Keep operational guidance here. Keep the shipping success bar and constraints in the spec.
+Read [`knowledge/specs/shipping.md`](../../../knowledge/specs/shipping.md) § Required Outcomes first — it
+owns the bar every shipped change must clear. This skill owns how to reach it.
 
-This skill is outcome-oriented. Do not blindly walk a fixed checklist. Start from the goal and changed risk surface, then choose the smallest path that proves the change is ready.
+"Fix and ship" means implement first, then switch into shipping mode.
 
-## When To Use
+## Working the change
 
-Use this skill when the user asks to:
+Start from the goal and the changed risk surface, not from checklist order.
+Review the delta (`git diff origin/main...HEAD`, `git log origin/main..HEAD`),
+confirm the requested behavior is actually implemented, then pick the smallest
+evidence that would convince a skeptical reviewer — targeted diff review,
+focused tests, then the [checks in `AGENTS.md`](../../../AGENTS.md) for the
+surfaces you touched.
 
-- ship or fix and ship a change
-- take work through validation, PR creation, CI, and merge
-- prove a branch is merge-ready
+Two pieces of evidence are not interchangeable, and neither substitutes for the
+other:
 
-## Required Outcomes
+- **The feature test.** It must drive the changed behavior's real entry point —
+  dispatch the command, call the handler, run the turn — not assert on a
+  constructor or on adjacent code that still compiles. Changes to transcript
+  output, live activity, or status values assert the terminal-independent
+  presentation model; terminal-buffer tests are layout coverage, not proof of
+  visible semantics.
+- **The smoke test.** Run the affected flow end to end. Agent-loop changes go
+  through a live provider (`doppler run -- cargo run -- --provider openai -p
+  "<focused prompt>"`); for offline-safe changes, `--provider llmsim` proving
+  the binary still starts is enough.
 
-**ALL outcomes below are MANDATORY. Do not skip or weaken any requirement.**
+Before pushing, reread the diff for duplication and accidental complexity you
+introduced, and fix it.
 
-1. **The branch state is safe.**
-   - Do not ship from `main` or `master`.
-   - The working tree must be clean before the final push.
-   - Prefer rebasing onto the latest `origin/main` before merge.
+Stop and report only for blockers you cannot resolve alone: merge conflicts you
+cannot judge, missing credentials, ambiguous product intent, CI failures you
+cannot reproduce.
 
-2. **The requested goal is achieved with evidence.**
-   - Review the delta with `git diff origin/main...HEAD` and `git log origin/main..HEAD`.
-   - Confirm the requested behavior is actually implemented.
-   - Validation must match risk. For bugs, prefer a failing test first when practical.
+## Security review
 
-3. **The changed feature is tested before merge.**
-   - Every behavior change MUST be covered by an automated test that exercises
-     the new or changed behavior directly — not merely adjacent code that still
-     compiles. Add or update the test as part of the change.
-   - The test must actually drive the feature's entry point (e.g. dispatch the
-     command, call the handler, run the turn), not just assert on a constructor.
-   - Changes to user-visible transcript output, live activity, or status values
-     must assert the terminal-independent presentation model directly. Terminal
-     buffer tests alone are layout coverage, not proof of visible semantics.
-   - If a behavior is genuinely impractical to cover automatically, say so
-     explicitly in the PR body, describe the manual verification you performed
-     instead, and list the gap under **Follow-ups**. "Hard to test" is not a
-     silent pass.
-   - Docs-only or config-only changes with no behavior change are exempt (state
-     why).
+Mandatory for every change touching code, configuration, or infrastructure —
+perceived low risk does not excuse it. Yolop is a coding agent with disk and
+shell access on the user's host, so the categories are concentrated:
 
-4. **The changed code is fit to merge.**
-   - Simplify obvious duplication or accidental complexity.
-   - Perform the structured security review below.
-   - Fix issues you find and refresh the evidence.
+- **TM-FS** — filesystem. The write blocklist still covers `.git/`,
+  `node_modules/`, `target/`, `dist/`, `build/`, `.next/`, `.venv/`, `venv/`,
+  `.tox/`, `.gradle/` at any depth; reads stay unrestricted only inside the
+  workspace root.
+- **TM-BASH** — shell execution. Timeouts and per-stream output caps survive.
+  Any change to `tools.rs` must preserve the bounded execution model.
+- **TM-LLM** — prompt construction and key handling. Keys are read from process
+  env only, and never logged or written to session JSONL.
+- **TM-TOOL** — capability registration. New capabilities respect the write
+  blocklist.
+- **TM-DEP** — dependency risk. A new crate needs a one-line justification.
+  `everruns-*` versions move together; mismatched versions are a soft API break.
 
-5. **Relevant artifacts stay in sync.**
-   - Review whether the change alters durable behavior, intent, architecture,
-     policy, constraints, terminology, or maintainer process.
-   - If it does, update the affected `knowledge/` concepts in the same change;
-     update `knowledge/index.md` for added, removed, renamed, or reclassified
-     concepts and `knowledge/log.md` for significant knowledge changes.
-   - If it does not, record "No knowledge update required" with a short reason in
-     the PR body. Keep `AGENTS.md`, `README.md`, and `docs/` aligned where relevant.
-   - Validate changed knowledge with
-     `python3 scripts/validate_okf.py knowledge --check-links`.
+For each relevant category, check the diff for injection (command, prompt, path
+traversal), data exposure, missing validation at trust boundaries, and resource
+exhaustion (unbounded loops, missing limits).
 
-6. **Smoke test impacted functionality.**
-   - Always smoke test the flows affected by the change end-to-end. This is in
-     addition to, not a substitute for, the automated feature test in outcome 3.
-   - For changes that touch the agent loop, run `doppler run -- cargo run -- --provider openai -p "<focused prompt>"` and read the output.
-   - For offline-safe changes, `cargo run -- --provider llmsim -p "hi"` is enough to prove the binary still starts.
-   - Docs-only or config-only changes that do not affect runtime may skip smoke testing with explicit justification.
+Record the result in the PR body under **Security**. Docs-only, comment-only, or
+test-only changes may state "No security-relevant code changes" with a one-line
+justification.
 
-7. **Follow-ups are surfaced, not silently dropped.**
-   - Default to implementing everything in scope before merging.
-   - For each candidate, decide explicitly: **implement now** (preferred) or **defer**.
-   - For anything deferred, list it under a **Follow-ups** section in the PR body with a one-line rationale.
-   - If there are no follow-ups, state "No follow-ups." in the PR body.
+## PR and merge
 
-8. **The PR is mergeable and merged safely.**
-   - Push the branch.
-   - Create or update the PR.
-   - Address every review comment — including low-confidence suggestions, nits, and bot comments. For each comment, post an inline reply on the same thread explaining the resolution (and apply a code change too when one is needed), then mark that thread resolved. An inline reply is required even when the fix is a pure code change; no comment may be left unanswered or unresolved before merge.
-   - Wait for CI to go green.
-   - Merge with squash only after CI is green and the final review sweep is clean.
-   - After merging, monitor main CI for the merge commit. If it fails, fix or revert promptly.
+Write the body around functional change and impact — what changed, why, how it
+was validated, notable risks — using
+[`.github/pull_request_template.md`](../../../.github/pull_request_template.md).
+Two sections are never omitted: **Security** (above) and **Follow-ups**
+(everything deferred, one line of rationale each, or "No follow-ups."). Default
+to implementing in-scope work rather than deferring it.
 
-## Operating Model
+Record the knowledge decision explicitly: either the concepts you updated, or
+"No knowledge update required" with a reason.
 
-- Start from the goal and risk surface, not checklist order.
-- Choose the highest-signal path first: targeted diff review, focused tests, relevant builds, then smoke tests.
-- "Fix and ship" means implement first, then switch into shipping mode.
-- Stop only for blockers you cannot safely resolve alone: merge conflicts, missing credentials, ambiguous product intent, or CI failures you cannot reproduce.
+Every review comment gets an inline reply on its own thread and is marked
+resolved — including nits, low-confidence suggestions, and bot comments. A reply
+is required even when the resolution is a pure code change.
 
-## Security Review
-
-Mandatory for every change that touches code, configuration, or infrastructure. Yolop is a coding agent with disk and shell access on the user's host, so the relevant categories are concentrated:
-
-- **TM-FS** — filesystem access. Verify the write blocklist still covers `.git/`, `node_modules/`, `target/`, `dist/`, `build/`, `.next/`, `.venv/`, `venv/`, `.tox/`, `.gradle/` at any depth. Verify reads remain unrestricted only inside the workspace root.
-- **TM-BASH** — shell execution. Verify timeouts and output caps. Any change to `tools.rs` must preserve the bounded execution model.
-- **TM-LLM** — prompt construction and API key handling. Verify keys are never logged or written to session JSONL. Verify provider env vars are read from process env only.
-- **TM-TOOL** — capability registration. Verify new capabilities respect the write blocklist.
-- **TM-DEP** — dependency risk. New crates need a one-line justification. Bump `everruns-*` versions together; mismatched versions are a soft API break.
-
-For every relevant category, check the diff for: injection (command/prompt/path traversal), data exposure (keys in logs, session files), input validation at trust boundaries, dependency risk, and resource exhaustion (unbounded loops, missing limits).
-
-Document the review in the PR body under **Security**. Changes that are purely docs, comments, or test-only may state "No security-relevant code changes" with a one-line justification.
-
-## Common Evidence Commands
-
-Pick only what matches the changed surface:
-
-- `cargo fmt --check`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo test --all-features`
-- `cargo fetch --locked`
-- `cargo build --release` (when changing binary surface or release profile)
-- `doppler run -- cargo test --all-features --test integration` (when a live-provider integration test is relevant)
-- `doppler run -- cargo run -- --provider openai -p "<smoke prompt>"`
-
-## PR And Merge
-
-- Use a Conventional Commit style PR title under 70 characters.
-- In the PR body, explain what changed, why, how it was validated, notable risks, and an explicit **Follow-ups** section (or "No follow-ups.").
-- After CI is green, wait at least 2 minutes for async reviewer bots, then do one last comment sweep before merge.
-- Merge with `gh pr merge --squash` only after CI is green and the final review sweep is clean.
-- Do not use auto-merge: async review bots can post after the last push.
+Merge with `gh pr merge --squash` after CI is green and a final comment sweep is
+clean; give async reviewer bots at least 2 minutes after CI turns green. Do not
+enable auto-merge — bots can post after the last push. After the merge lands,
+watch main CI for the merge commit and fix or revert promptly if it fails.

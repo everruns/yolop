@@ -169,8 +169,19 @@ Specs preserve design intent, rationale, and constraints — not implementation 
 - replace exhaustive feature-flag or capability lists with links to source
 - keep the "why" and constraints; link to code for the "what"
 
+## Agent Context Hygiene
+
+The context agents read drifts the same way code does, and duplication is its
+characteristic failure: a rule stated in `AGENTS.md`, restated in a spec, and
+restated again in a skill will disagree within a few changes. Maintenance should
+check the layering defined in [`agent-context.md`](./agent-context.md) — one
+owner per rule, `AGENTS.md` carrying only every-turn facts, skills thin at the
+top with reference material split out, and no instruction that both mandates a
+step and invites judgment about it.
+
 ## Related
 
 - [`.agents/skills/maintenance/SKILL.md`](../../.agents/skills/maintenance/SKILL.md)
+- [`knowledge/specs/agent-context.md`](./agent-context.md)
 - [`knowledge/specs/documentation.md`](./documentation.md)
 - [`knowledge/specs/shipping.md`](./shipping.md)

@@ -1,186 +1,107 @@
 # Yolop — coding-agent guidance
 
-Yolop is a terminal coding agent built on top of
-[`everruns-runtime`](https://crates.io/crates/everruns-runtime). The binary is
-named `yolop`; the crate is `yolop`.
+Yolop is a terminal coding agent built on
+[`everruns-runtime`](https://crates.io/crates/everruns-runtime). The binary and
+the crate are both named `yolop`.
 
-This file is read on every turn by the agent itself when run inside this
-repository, so keep it short, factual, and project-specific.
+This file is read on every turn. It carries repository facts and gotchas only;
+depth lives behind the links below. [`knowledge/specs/agent-context.md`](knowledge/specs/agent-context.md)
+defines how this repository organizes what agents read.
 
-## Workflow
+Telegraph — keep updates short and factual. Fix root causes; when you are still
+stuck after reading the code, ask with short options.
 
-- Telegraph. Drop filler. Keep updates short and factual.
-- Fix the root cause. If unsure, read more code; if still stuck, ask with short options.
-- When `repo_map` or `repo_symbols` reveals a likely owning module, narrow to that module next. Read it and one or two call sites/tests before doing more broad grep; resume broad search only if the owner is disproven.
-- Unrecognized working-tree changes are probably from another agent or the user. Work with them. Stop only if they make the task unsafe.
-- Start from latest `main` by default: `git fetch origin main`, then branch from or rebase onto `origin/main`.
-- Keep changes small, PR-sized, testable, and runnable locally.
-- For bug fixes, write or update a failing test before the fix when practical.
-- Important decisions belong as concise comments near the relevant code, not in scratch docs.
-- No backward compatibility required unless a spec says so — `yolop` is pre-1.0.
+## Layout
 
-## Cloud and secrets
+A Cargo workspace of four packages; root `cargo test` / `cargo clippy` cover all
+of them.
 
-Use Doppler for any secret-backed command. `OPENAI_API_KEY` is the default
-provider key; `ANTHROPIC_API_KEY` is the secondary. CI loads both via the
-`DOPPLER_TOKEN` repository secret.
+- `.` — the `yolop` binary.
+- `crates/yolop-yep/` — the YEP extension protocol and server SDK, published
+  separately for extension authors; the host depends on it for the wire types.
+- `crates/tuika/` — a standalone terminal-UI toolkit over ratatui (layout,
+  overlays, focus, streaming `Markdown`, `CodeBlock`), separately versioned,
+  powering the fullscreen renderer. See [`crates/tuika/README.md`](crates/tuika/README.md).
+- `crates/tuika-codeformatters/` — tuika's tree-sitter `Highlighter`, kept
+  separate so tuika core stays grammar-free.
 
-```bash
-doppler run -- cargo test --all-features
-doppler run -- cargo run -- -p "say hi"
-```
+## Gotchas
 
-Use `gh` directly first. Only if `gh` reports that it is not authenticated, retry
-through Doppler; do not invoke Doppler preemptively for GitHub commands:
+- Secrets come from Doppler. `OPENAI_API_KEY` is the default provider key,
+  `ANTHROPIC_API_KEY` the secondary; CI loads both from the `DOPPLER_TOKEN`
+  repository secret.
 
-```bash
-doppler run -- bash -lc 'GH_TOKEN="$GITHUB_TOKEN" <command>'
-```
+  ```bash
+  doppler run -- cargo test --all-features
+  doppler run -- cargo run -- --provider openai -p "hi"
+  ```
 
-## Knowledge and docs
+- Try `gh` directly first. Only if it reports that it is not authenticated,
+  retry through Doppler — do not reach for Doppler preemptively:
+  `doppler run -- bash -lc 'GH_TOKEN="$GITHUB_TOKEN" <command>'`.
+- `--provider llmsim` needs no API key, so `cargo run -- --provider llmsim -p "hi"`
+  is the offline smoke test.
+- Yolop is pre-1.0: no backward compatibility is required unless a spec says so.
+- Unrecognized working-tree changes are probably from another agent or the user.
+  Work with them; stop only if they make the task unsafe.
+- Decisions worth keeping belong as concise comments near the relevant code, not
+  in scratch documents.
+- For bug fixes, prefer writing the failing test before the fix.
 
-- `knowledge/` is the repository's Open Knowledge Format (OKF) bundle and durable
-  development memory. Read `knowledge/index.md` first, then only the concepts
-  relevant to the task and their links.
-- When a change alters durable behavior, intent, architecture, policy, constraints,
-  terminology, or maintainer process, update the affected concepts in the same
-  change. Update `knowledge/index.md` when concepts are added, removed, renamed, or
-  reclassified; update `knowledge/log.md` for significant knowledge changes.
-- Keep transient plans, task status, test output, and source-level details out of
-  the bundle. Knowledge captures **why** and **what**, not exhaustive **how**.
-- `README.md` is the public entry point; `docs/` contains standalone guidance for
-  external users. Neither may link to internal `knowledge/` or `.agents/` material.
-  See `knowledge/specs/documentation.md` for the documentation contract.
+`RUST_LOG` is honored for the tracing layer (stderr).
 
-## Local dev and tests
-
-Yolop is a small Cargo **workspace**: the root package is the `yolop` binary,
-`crates/yolop-yep/` is the extension-protocol library + server SDK (published
-separately for extension authors; the host depends on it for the wire types),
-`crates/tuika/` is a standalone terminal-UI toolkit (layout, overlays, focus,
-components over ratatui — including the streaming `Markdown` renderer and
-`CodeBlock`) with its own version, powering the experimental `--fullscreen`
-renderer — see `crates/tuika/README.md`, and `crates/tuika-codeformatters/` is
-tuika's tree-sitter `Highlighter` implementation (kept separate so tuika core
-stays grammar-free; yolop's markdown/code rendering flows through both).
-`cargo test`/`clippy` at the root cover all four. For touched code:
+## Checks
 
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
+python3 scripts/validate_okf.py knowledge --check-links   # when knowledge/ changed
 ```
 
-Quick offline smoke test (no API key needed — uses the bundled `llmsim`
-provider):
+## Where things live
 
-```bash
-cargo run -- --provider llmsim -p "hi"
-```
+- [`knowledge/`](knowledge/index.md) — the OKF bundle and durable development
+  memory: intent, architecture, policy, constraints, and the success bars for
+  shipping, maintenance, and release. Read the index first, then only the
+  concepts the task touches.
+- [`.agents/skills/`](.agents/skills) — workflows the user can request by name:
+  `/ship`, `/maintenance`, `/release`, `/author-extension`.
+- [`crates/tuika/benches/README.md`](crates/tuika/benches/README.md) — Criterion
+  and iai-callgrind procedure. The iai instruction counts are a committed
+  baseline and a CI gate.
+- [`evals/README.md`](evals/README.md) — the Mira eval studies (SWE-bench
+  Verified, harness A/Bs, LSP isolation). Outside the Cargo workspace.
+- [`README.md`](README.md) and [`docs/`](docs/) — the public surface. Neither may
+  link into `knowledge/` or `.agents/`; see
+  [`knowledge/specs/documentation.md`](knowledge/specs/documentation.md).
 
-Real provider smoke test through Doppler:
+## Keeping knowledge current
 
-```bash
-doppler run -- cargo run -- --provider openai -p "hi"
-```
+When a change alters durable behavior, intent, architecture, policy,
+constraints, terminology, or maintainer process, update the affected concepts in
+the same change. Update `knowledge/index.md` when concepts are added, removed,
+renamed, or reclassified, and `knowledge/log.md` for significant knowledge
+changes. Transient plans, task status, and source-level detail stay out of the
+bundle.
 
-`RUST_LOG` is honored for the tracing layer (stderr).
+## Commits
 
-Component render benchmarks live under `crates/*/benches/` (Criterion). Run a
-crate's suite and, when checking a change for a regression, save a baseline
-first and compare against it:
+- Conventional Commits: `type(scope): description`, using `feat`, `fix`, `docs`,
+  `refactor`, `test`, or `chore`. `chore` covers `knowledge/`, `AGENTS.md`, and
+  CI metadata.
+- Stage files explicitly by name. Avoid `git add .` / `git add -A`.
+- Never add Claude/session/AI attribution to commits, PRs, docs, or comments.
+- Commit attribution must be a real human user. If the git identity is missing
+  or agent-like, stop and ask before committing.
 
-```bash
-cargo bench -p tuika --bench markdown -- --save-baseline before
-# ...make the change...
-cargo bench -p tuika --bench markdown -- --baseline before
-```
-
-Wall-clock numbers are too noisy on shared CI runners to gate on, so CI runs the
-benches only on `main` (and via manual dispatch) and uploads the Criterion
-output as an artifact; regression-checking is a local, baseline-to-baseline
-comparison. New component benches go in the owning crate's `benches/` as another
-`[[bench]]` with `harness = false`.
-
-Alongside those, the `*_iai` benches count CPU instructions under
-Valgrind/callgrind ([iai-callgrind](https://github.com/iai-callgrind/iai-callgrind)).
-Instruction counts are deterministic and machine-independent for a fixed
-toolchain + libc, so the numbers are committed to `crates/*/benches/iai-baseline.json`
-and the CI `iai` job **fails** on a regression past the baseline's tolerance —
-this is a real gate, not an archive. Running them locally needs Valgrind and a
-version-matched runner (`cargo install iai-callgrind-runner`):
-
-```bash
-rm -rf target/iai
-cargo bench -p tuika --bench markdown_iai \
-  -p tuika-codeformatters --bench highlight_iai -- --save-summary=json
-python3 crates/tuika/benches/check_iai.py            # compare to the committed baseline
-python3 crates/tuika/benches/check_iai.py --update   # bless new counts (commit alongside the change)
-```
-
-When a change legitimately shifts counts (renderer change, dependency bump,
-toolchain upgrade), regenerate the baseline with `--update` and commit it with
-the code — like a snapshot test. To refresh it from CI's exact environment,
-run the workflow manually (`workflow_dispatch`) and commit the uploaded
-`iai-baseline` artifact.
-
-The `evals/` directory holds [Mira](https://github.com/everruns/mira) eval
-studies for benchmarking yolop and other agents. `evals/swebench_verified/` is
-the SWE-bench Verified study — a single self-contained `swebench_verified.py`
-built on the `mira-eval` Python SDK, with PEP 723 inline deps; the `mira` host
-CLI drives it from that directory (`mira --cmd "uv run swebench_verified.py"
-run`). It is outside the Cargo workspace; `uv run` provisions its deps on first
-use, and its tests (which import the SDK) run with `uv run --with mira-eval -m
-unittest discover -s evals/swebench_verified/tests`. `evals/harness_basic/` is
-a pure-Rust study on the `mira-eval` SDK (its own standalone crate, outside
-this Cargo package) that A/Bs yolop harness configurations on basic coding
-cases through headless `yolop -p`; `cargo test` inside that directory runs its
-tests. `evals/lsp_integration/` follows the same pure-Rust pattern but isolates
-the optional LSP capability on semantic-navigation traps (its `bootstrap.sh`
-installs the language servers the `lsp` variant needs). See
-[`evals/README.md`](evals/README.md).
-
-## Git and commits
-
-- Conventional Commits: `type(scope): description`.
-- Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`.
-- Use `chore` for updates to `knowledge/`, `AGENTS.md`, or CI metadata.
-- Never add Claude/session/AI attribution links in commits, PRs, docs, or code comments.
-- Stage files explicitly by name. Avoid broad `git add .` / `git add -A`.
-
-Commit attribution must be a real human user. If git identity is missing or
-agent-like, stop and ask before committing.
-
-## PRs and CI
-
-- Use `.github/pull_request_template.md`. Center the description on functional
-  change and impact, not a code-location walkthrough (the diff shows that). Add a
-  Before / After with proof — CLI output, logs, or screenshots for UI — whenever
-  behavior changes.
-- PR titles must be Conventional Commits and under 70 characters.
-- Use **Squash and Merge**.
-- GitHub Actions is the CI source of truth.
-- Never merge red CI.
-- Before merge, prefer rebasing onto latest `origin/main`.
-
-## Shipping, maintenance, and releases
-
-- "Ship" means implement, test the changed feature with an automated test that
-  exercises it, gather evidence, perform a security review, open a mergeable PR,
-  address every review comment, and merge only after CI is green.
-- When asked to ship, follow [`.agents/skills/ship/SKILL.md`](.agents/skills/ship/SKILL.md)
-  and [`knowledge/specs/shipping.md`](knowledge/specs/shipping.md).
-- When asked for maintenance or release readiness, follow
-  [`.agents/skills/maintenance/SKILL.md`](.agents/skills/maintenance/SKILL.md)
-  and [`knowledge/specs/maintenance.md`](knowledge/specs/maintenance.md).
-- When asked to release, cut a version, or publish to crates.io / Homebrew,
-  follow [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md)
-  and [`knowledge/specs/release.md`](knowledge/specs/release.md). Releases publish to both
-  crates.io and the `everruns/homebrew-tap` Homebrew tap.
+Start from latest `main` by default: `git fetch origin main`, then branch from or
+rebase onto `origin/main`. The merge bar (PR template, CI, squash) is owned by
+[`knowledge/specs/shipping.md`](knowledge/specs/shipping.md).
 
 ## Upstream relationship
 
-Yolop is a friendly fork / promotion of the `examples/coding-cli` example in
-[`everruns/everruns`](https://github.com/everruns/everruns). When the upstream
-example changes meaningfully, mirror the useful parts here. Keep public
-runtime crate versions in lockstep with what is published on crates.io.
+Yolop is a friendly fork of the `examples/coding-cli` example in
+[`everruns/everruns`](https://github.com/everruns/everruns). Mirror meaningful
+upstream changes, and keep the public runtime crate versions in lockstep with
+what is published on crates.io.

@@ -28,29 +28,20 @@ not author an extension for it.
 
 ## What an extension can contribute
 
-Declare only what you need; a manifest must contribute at least one of:
+A manifest must contribute at least one facet; declare only what you need.
+[`extensions.md`](../../../knowledge/specs/extensions.md) defines each one — this is what to pass the
+scaffold and what it generates.
 
-- **tools** — functions the model can call (the model sees name + schema).
-- **hooks** — `pre_tool_use` (can **block** a tool call, e.g. deny git) or
-  `post_tool_use` (observe-only).
-- **prompt** — a static system-prompt contribution.
-- **mcpServers** — contributed MCP servers (declare in the manifest directly).
-- **status** — a status-bar field the server updates live by pushing
-  `status/changed` (e.g. a counter). Scaffold with `status: true`; the generated
-  server gets an `emit_status(text)` helper (empty text clears the field). Shows
-  in the inline and full-screen TUIs; a no-op in `--print`/ACP.
-- **skills** — a `skills/` directory of `SKILL.md` files, mounted read-only for
-  the enabled extension (same discovery as workspace/global skills). Scaffold
-  with `skills: true` to get a starter `skills/<name>/SKILL.md`.
-- **commands** — slash commands, registered namespaced as `/<ext>:<cmd>` in the
-  palette and dispatched to the server over `command/execute` (the result
-  message is shown to the user). Scaffold with `commands: ["name", …]`; the
-  generated server gets a `handle_command(name, arguments)` seam.
-- **ui_ask** — declare `ui_ask: true`, then the server may send a `ui/ask`
-  request (`{prompt, placeholder?}`) to prompt the user for a typed answer
-  mid-turn; the TUI shows an overlay and returns `{answer, cancelled}`. Refused
-  in `--print`/ACP. (No scaffold-template helper yet — send the request by hand
-  from your server.)
+| Facet | Scaffold | Generated seam |
+| --- | --- | --- |
+| **tools** | `tools=[…]` | `handle_tool(name, args)` returning the result dict |
+| **hooks** | `hooks=[…]` | `handle_hook(event, tool_name, args)` — `pre_tool_use` can block, `post_tool_use` observes |
+| **prompt** | `prompt=…` | a static system-prompt contribution |
+| **mcpServers** | — | declared in the manifest directly |
+| **status** | `status: true` | `emit_status(text)`; empty text clears the field. TUI-only, a no-op in `--print`/ACP |
+| **skills** | `skills: true` | a starter `skills/<name>/SKILL.md`, mounted read-only when the extension is enabled |
+| **commands** | `commands: ["name", …]` | `handle_command(name, arguments)`; registered as `/<ext>:<cmd>` |
+| **ui_ask** | — | declare `ui_ask: true` and send `ui/ask` (`{prompt, placeholder?}`) by hand; refused in `--print`/ACP |
 
 Not yet available: providers.
 
@@ -68,13 +59,10 @@ Not yet available: providers.
    templates skip that.
 
 2. **Implement.** Open the generated server (the tool result prints its path)
-   and fill in the `handle_*` bodies:
-   - `handle_tool(name, args)` — return the tool result dict.
-   - `handle_hook(event, tool_name, args)` — return `{}` to allow, or
-     `{"block": True, "reason": "…"}` to deny (pre_tool_use only). The server
-     receives *every* subscribed tool call, so gate on `tool_name`/`args`.
-   - Keep stdout for protocol JSON only; log to stderr.
-   Edit only the marked handler bodies — leave the protocol plumbing alone.
+   and fill in the marked `handle_*` bodies; leave the protocol plumbing alone.
+   A hook returns `{}` to allow or `{"block": True, "reason": "…"}` to deny —
+   and it receives *every* subscribed tool call, so gate on `tool_name`/`args`.
+   Keep stdout for protocol JSON only; log to stderr.
 
 3. **Install.** `install_extension source=<package dir>` — copies the package
    into the store and pins it. Installing runs third-party code; since *you*
