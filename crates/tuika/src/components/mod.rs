@@ -11,6 +11,7 @@
 mod ascii_font;
 mod boxed;
 pub(crate) mod code_block;
+mod console;
 mod constrained;
 mod diff;
 mod flex;
@@ -39,6 +40,7 @@ pub use crate::markdown::{
 pub use ascii_font::{AsciiFont, FONT_HEIGHT as ASCII_FONT_HEIGHT};
 pub use boxed::Boxed;
 pub use code_block::CodeBlock;
+pub use console::{Console, ConsoleLog, DEFAULT_CAPACITY as CONSOLE_DEFAULT_CAPACITY};
 pub use constrained::Constrained;
 pub use diff::{Diff, DiffMode, DiffRow, DiffStyle, DiffTag, diff_rows};
 pub use flex::Flex;

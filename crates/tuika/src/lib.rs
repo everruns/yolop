@@ -81,13 +81,14 @@ pub use async_runner::{AsyncRunner, Signal};
 pub use capabilities::{Capabilities, DA1_REQUEST, DeviceAttributes};
 pub use clipboard::{osc52, write_clipboard};
 pub use components::{
-    ASCII_FONT_HEIGHT, AsciiFont, Boxed, CodeBlock, Column, Constrained, Diff, DiffMode, DiffRow,
-    DiffStyle, DiffTag, Flex, FocusScope, ImageResolver, KeyHints, Loader, Markdown, MarkdownImage,
-    MarkdownState, Paragraph, ProgressBar, Responsive, Rule, Scroll, ScrollState, SelectList,
-    SelectOutcome, SelectState, Slider, SliderState, Spacer, Spinner, SpinnerStyle, StatusBar,
-    TOAST_DEFAULT_TTL, TabSelect, TabSelectOutcome, TabSelectState, Table, Tabs, TabsState, Text,
-    TextInput, TextInputEvent, TextInputMode, TextInputState, ToastLevel, ToastList, Toasts, Wrap,
-    diff_rows, markdown_to_lines, wrap_lines,
+    ASCII_FONT_HEIGHT, AsciiFont, Boxed, CONSOLE_DEFAULT_CAPACITY, CodeBlock, Column, Console,
+    ConsoleLog, Constrained, Diff, DiffMode, DiffRow, DiffStyle, DiffTag, Flex, FocusScope,
+    ImageResolver, KeyHints, Loader, Markdown, MarkdownImage, MarkdownState, Paragraph,
+    ProgressBar, Responsive, Rule, Scroll, ScrollState, SelectList, SelectOutcome, SelectState,
+    Slider, SliderState, Spacer, Spinner, SpinnerStyle, StatusBar, TOAST_DEFAULT_TTL, TabSelect,
+    TabSelectOutcome, TabSelectState, Table, Tabs, TabsState, Text, TextInput, TextInputEvent,
+    TextInputMode, TextInputState, ToastLevel, ToastList, Toasts, Wrap, diff_rows,
+    markdown_to_lines, wrap_lines,
 };
 pub use event::{Event, EventFlow, Key, KeyCode, Mouse, MouseButton, MouseKind};
 pub use focus::FocusRegistry;
