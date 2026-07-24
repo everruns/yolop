@@ -315,22 +315,39 @@ impl Tool for RunYolopCommandTool {
             Some(arg) => format!("/{name} {arg}"),
             None => format!("/{name}"),
         };
-        // Wait for the host to apply the command and return any system lines it
-        // produced so `/mcp` / `/tools` / OAuth URLs are visible to the agent
-        // (not only in the transcript).
-        let reply_rx = self.ui.request(command);
-        let messages = reply_rx.await.unwrap_or_default();
-        let message = if messages.is_empty() {
-            format!("command applied: {rendered}")
+
+        // Informational commands need the host's transcript lines back so the
+        // agent can act on `/mcp` / `/tools` conversationally. Side-effect
+        // commands (quit/clear/overlays) only need to be queued — awaiting a
+        // reply would hang any host that is not draining the UI channel
+        // (scripted tests, brief races at shutdown).
+        let message = if command_awaits_host_reply(name) {
+            let reply_rx = self.ui.request(command);
+            match tokio::time::timeout(std::time::Duration::from_secs(15), reply_rx).await {
+                Ok(Ok(messages)) if !messages.is_empty() => messages.join("\n"),
+                Ok(Ok(_)) => format!("command applied: {rendered}"),
+                Ok(Err(_)) => format!("command applied: {rendered}"),
+                Err(_) => format!(
+                    "command queued for the interactive terminal host ({rendered}); \
+                     host did not return output in time"
+                ),
+            }
         } else {
-            messages.join("\n")
+            self.ui.send(command);
+            format!("command applied: {rendered}")
         };
+
         ToolExecutionResult::success(json!({
             "success": true,
             "command": rendered,
             "message": message
         }))
     }
+}
+
+/// Whether `run_yolop_command` should wait for host transcript lines.
+fn command_awaits_host_reply(name: &str) -> bool {
+    matches!(name, "mcp" | "tools" | "help" | "cwd")
 }
 
 fn cmd(name: &str, description: &str, args: &[CommandArg]) -> CommandDescriptor {

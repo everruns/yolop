@@ -125,13 +125,9 @@ pub(crate) struct PreparedLogin {
 }
 
 /// Run the full interactive login for `mcp_url`, returning tokens ready to
-/// persist. `configured_client_id` skips dynamic registration when the caller
-/// already has a client; `scope` overrides the server-advertised scopes.
-///
-/// Prefer [`prepare_login`] + [`complete_login`] in interactive hosts so the
-/// authorize URL can be shown before waiting on the browser.
-/// Convenience wrapper: prepare, open the browser, then complete. Kept for
-/// callers that do not need to surface the authorize URL first.
+/// persist. Convenience wrapper around [`prepare_login`] + open browser +
+/// [`complete_login`] for callers that do not need to surface the authorize
+/// URL first.
 #[allow(dead_code)]
 pub(crate) async fn login(
     mcp_url: &str,
