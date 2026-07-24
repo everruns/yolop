@@ -25,7 +25,7 @@
 //! builders, which return styled [`Line`]s.
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -235,6 +235,49 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         height: t.height,
     };
     app.set_selection_area(selection);
+    // Embed OSC 8 for markdown links (including labeled `[text](url)`) that fall
+    // inside the visible transcript window. Bare URLs are also covered when
+    // HyperlinkBackend is enabled; this pass is what makes a non-URL label
+    // Ctrl+clickable in Ghostty.
+    {
+        let content_h = app.scroll_metrics.0;
+        let viewport_h = app.scroll_metrics.1;
+        // When content fits, pad_to_bottom puts blanks above — visible row 0 of
+        // content sits at selection.y + (viewport_h - content_h). When scrolled,
+        // cache line `offset + i` maps to selection row i.
+        let (origin_y, first_line) = if content_h <= viewport_h {
+            (
+                selection
+                    .y
+                    .saturating_add(viewport_h.saturating_sub(content_h) as u16),
+                0usize,
+            )
+        } else {
+            (selection.y, app.scroll.offset())
+        };
+        let last_line = first_line.saturating_add(viewport_h);
+        let visible: Vec<tuika::BufferLink> = app
+            .transcript_links()
+            .iter()
+            .filter(|l| (l.line as usize) >= first_line && (l.line as usize) < last_line)
+            .map(|l| {
+                let mut v = l.clone();
+                v.line = (l.line as usize)
+                    .saturating_sub(first_line)
+                    .min(u16::MAX as usize) as u16;
+                v
+            })
+            .collect();
+        tuika::apply_buffer_links(
+            f.buffer_mut(),
+            Position {
+                x: selection.x,
+                y: origin_y,
+            },
+            &visible,
+            crate::hyperlink_policy(),
+        );
+    }
     app.resolve_link_click(f.buffer_mut());
     app.resolve_selection(f.buffer_mut());
     if let Some(range) = app.selection_range() {

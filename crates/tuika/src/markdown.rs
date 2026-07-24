@@ -24,15 +24,18 @@ use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Par
 use ratatui_core::layout::Rect;
 use ratatui_core::style::{Modifier, Style};
 use ratatui_core::text::{Line, Span};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::components::code_block::code_block_lines;
-use crate::components::{line_width, wrap_lines};
+use crate::components::line_width;
 use crate::geometry::Size;
 use crate::highlight::{CodeHighlighter, Highlighter};
+use crate::hyperlink::{BufferLink, LinkPolicy, apply_buffer_links};
 use crate::image::{Image, ImageData, ImageLayer, ImageSupport};
 use crate::style::{StyleBundle, StyleSheet, Theme};
 use crate::surface::Surface;
 use crate::view::{RenderCtx, View};
+use crate::width::grapheme_cols;
 
 /// Columns of indentation added per level of list / block-quote nesting.
 const INDENT: u16 = 2;
@@ -105,10 +108,7 @@ fn image_cell_size(data: &ImageData, avail: u16) -> (u16, u16) {
 /// later, at [`flatten`] time, against a concrete width.
 enum MdItem {
     /// Word-wrappable prose (a paragraph line, heading, list item, quote line).
-    Prose {
-        spans: Vec<Span<'static>>,
-        indent: u16,
-    },
+    Prose { spans: Vec<RichSpan>, indent: u16 },
     /// A verbatim line (code) drawn as-is at `indent`, never reflowed.
     Verbatim { line: Line<'static>, indent: u16 },
     /// A GFM table, laid out to the available width when flattened.
@@ -124,6 +124,34 @@ enum MdItem {
     Blank,
 }
 
+/// An inline run that may carry an OSC 8 hyperlink target.
+///
+/// ratatui's [`Span`] has no href field, so markdown keeps the destination here
+/// through wrapping; [`flatten_linked`] turns contiguous href runs into
+/// [`BufferLink`]s the host (or [`Markdown`] view) applies with
+/// [`apply_buffer_links`].
+#[derive(Clone, Debug)]
+struct RichSpan {
+    content: String,
+    style: Style,
+    /// When set, this run is a hyperlink to `href` (the visible label may differ).
+    href: Option<String>,
+}
+
+impl RichSpan {
+    fn styled(content: impl Into<String>, style: Style, href: Option<String>) -> Self {
+        Self {
+            content: content.into(),
+            style,
+            href,
+        }
+    }
+
+    fn to_span(&self) -> Span<'static> {
+        Span::styled(self.content.clone(), self.style)
+    }
+}
+
 /// Table contents captured during parsing: each cell is a run of pre-styled
 /// inline spans (bold, links, inline code, emoji), boxed and width-fitted at
 /// render time by [`render_table`].
@@ -135,7 +163,7 @@ struct TableData {
 
 /// One table cell's inline content, already styled by the shared inline
 /// machinery so cells carry the same markup as prose.
-type Cell = Vec<Span<'static>>;
+type Cell = Vec<RichSpan>;
 
 /// Parse `source` into width-independent [`MdItem`]s. Fenced code blocks are
 /// highlighted here (once), via `highlighter`, using `theme`'s code palette;
@@ -177,13 +205,16 @@ struct Builder<'a> {
     items: Vec<MdItem>,
 
     // Inline accumulation for the current prose block.
-    inline: Vec<Span<'static>>,
+    inline: Vec<RichSpan>,
     style_stack: Vec<Style>,
+    /// Destinations for open `[label](url)` tags (usually depth 1). Text pushed
+    /// while this is non-empty inherits the innermost href.
+    link_stack: Vec<String>,
 
     // Block nesting.
     lists: Vec<Option<u64>>, // ordered start counter per open list, `None` = bullet
     quote_depth: u16,
-    pending_marker: Option<Vec<Span<'static>>>,
+    pending_marker: Option<Vec<RichSpan>>,
 
     // Fenced/indented code block being collected.
     code: Option<(String, String)>, // (language tag, body)
@@ -218,6 +249,7 @@ impl<'a> Builder<'a> {
             items: Vec::new(),
             inline: Vec::new(),
             style_stack: vec![Style::default().fg(theme.text)],
+            link_stack: Vec::new(),
             lists: Vec::new(),
             quote_depth: 0,
             pending_marker: None,
@@ -231,6 +263,10 @@ impl<'a> Builder<'a> {
 
     fn cur_style(&self) -> Style {
         *self.style_stack.last().unwrap()
+    }
+
+    fn cur_href(&self) -> Option<String> {
+        self.link_stack.last().cloned()
     }
 
     /// Indentation for the current block, from list + quote nesting.
@@ -279,9 +315,12 @@ impl<'a> Builder<'a> {
             return;
         }
         let style = self.cur_style();
+        let href = self.cur_href();
         // Only linkify bare URLs in plain body text, not inside links/headings.
-        if style.add_modifier.contains(Modifier::UNDERLINED) {
-            self.inline.push(Span::styled(text.to_string(), style));
+        // Inside an explicit link the destination is already on `href`.
+        if href.is_some() || style.add_modifier.contains(Modifier::UNDERLINED) {
+            self.inline
+                .push(RichSpan::styled(text.to_string(), style, href));
         } else {
             for span in linkify(text, style, self.sheet.link) {
                 self.inline.push(span);
@@ -297,10 +336,18 @@ impl<'a> Builder<'a> {
     /// `specs/tuika-images.md`.
     fn push_image_placeholder(&mut self, url: &str, alt: &str) {
         let label = if alt.trim().is_empty() { url } else { alt };
-        self.inline
-            .push(Span::styled("🖼 ", self.sheet.image_marker.to_style()));
-        self.inline
-            .push(Span::styled(label.to_string(), self.sheet.link.to_style()));
+        self.inline.push(RichSpan::styled(
+            "🖼 ",
+            self.sheet.image_marker.to_style(),
+            None,
+        ));
+        // Placeholder label points at the image URL so Ctrl+click / OSC 8 can
+        // still open it when the host applies buffer links.
+        self.inline.push(RichSpan::styled(
+            label.to_string(),
+            self.sheet.link.to_style(),
+            Some(url.to_string()),
+        ));
     }
 
     fn event(&mut self, event: Event<'a>) {
@@ -309,32 +356,42 @@ impl<'a> Builder<'a> {
             Event::End(tag) => self.end(tag),
             Event::Text(t) => self.push_text(&t),
             Event::Code(t) => {
-                self.inline.push(Span::styled(
+                self.inline.push(RichSpan::styled(
                     t.to_string(),
                     self.sheet.inline_code.to_style(),
+                    self.cur_href(),
                 ));
             }
             Event::SoftBreak => {
                 if self.code.is_none() {
-                    self.inline.push(Span::raw(" "));
+                    self.inline
+                        .push(RichSpan::styled(" ", self.cur_style(), self.cur_href()));
                 }
             }
             // A hard break inside a cell can't split it into another block, so
             // it collapses to a space; elsewhere it flushes the prose line.
-            Event::HardBreak if self.table.is_some() => self.inline.push(Span::raw(" ")),
+            Event::HardBreak if self.table.is_some() => {
+                self.inline
+                    .push(RichSpan::styled(" ", self.cur_style(), self.cur_href()))
+            }
             Event::HardBreak => self.flush(),
             Event::Rule => {
                 self.separate();
                 self.items.push(MdItem::Prose {
-                    spans: vec![Span::styled("─".repeat(24), self.sheet.rule.to_style())],
+                    spans: vec![RichSpan::styled(
+                        "─".repeat(24),
+                        self.sheet.rule.to_style(),
+                        None,
+                    )],
                     indent: self.indent(),
                 });
             }
             Event::TaskListMarker(done) => {
                 let glyph = if done { "[x] " } else { "[ ] " };
-                self.inline.push(Span::styled(
+                self.inline.push(RichSpan::styled(
                     glyph.to_string(),
                     self.sheet.task_marker.to_style(),
+                    None,
                 ));
             }
             _ => {}
@@ -379,15 +436,17 @@ impl<'a> Builder<'a> {
                     }
                     _ => "• ".to_string(),
                 };
-                self.pending_marker = Some(vec![Span::styled(
+                self.pending_marker = Some(vec![RichSpan::styled(
                     marker,
                     self.sheet.list_marker.to_style(),
+                    None,
                 )]);
             }
             Tag::Emphasis => self.push_style_bundle(self.sheet.emphasis),
             Tag::Strong => self.push_style_bundle(self.sheet.strong),
             Tag::Strikethrough => self.push_style_bundle(self.sheet.strikethrough),
-            Tag::Link { .. } => {
+            Tag::Link { dest_url, .. } => {
+                self.link_stack.push(dest_url.to_string());
                 self.style_stack.push(self.sheet.link.to_style());
             }
             Tag::Image { dest_url, .. } => {
@@ -442,8 +501,12 @@ impl<'a> Builder<'a> {
                 self.lists.pop();
             }
             TagEnd::Item => self.flush(),
-            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
+            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
                 self.style_stack.pop();
+            }
+            TagEnd::Link => {
+                self.style_stack.pop();
+                self.link_stack.pop();
             }
             TagEnd::Image => {
                 if let Some((url, alt)) = self.image.take() {
@@ -513,60 +576,71 @@ impl<'a> Builder<'a> {
 
 /// Trim surrounding whitespace from a cell's span run: the leading edge of the
 /// first span and the trailing edge of the last, dropping any span left empty.
-fn trim_spans(mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+fn trim_spans(mut spans: Vec<RichSpan>) -> Vec<RichSpan> {
     if let Some(first) = spans.first_mut() {
-        first.content = first.content.trim_start().to_string().into();
+        first.content = first.content.trim_start().to_string();
     }
     if let Some(last) = spans.last_mut() {
-        last.content = last.content.trim_end().to_string().into();
+        last.content = last.content.trim_end().to_string();
     }
     spans.retain(|s| !s.content.is_empty());
     spans
 }
 
 /// Display columns of a cell's span run, grapheme-aware.
-fn spans_cols(spans: &[Span]) -> usize {
+fn spans_cols(spans: &[RichSpan]) -> usize {
     spans
         .iter()
-        .map(|s| crate::width::str_cols(s.content.as_ref()) as usize)
+        .map(|s| crate::width::str_cols(&s.content) as usize)
         .sum()
 }
 
 /// Style bare `http(s)://` URLs in `text` with the `link` role, leaving the rest
 /// at `base`. The link role is overlaid onto `base`, so a URL inside otherwise
 /// plain prose keeps that prose's context and gains the link color + underline.
-fn linkify(text: &str, base: Style, link: StyleBundle) -> Vec<Span<'static>> {
+/// Each URL span also carries `href = Some(url)` so OSC 8 / Ctrl+click can open
+/// it after wrapping.
+fn linkify(text: &str, base: Style, link: StyleBundle) -> Vec<RichSpan> {
     let mut spans = Vec::new();
     let mut rest = text;
     while let Some(start) = rest.find("http://").or_else(|| rest.find("https://")) {
         let (before, from) = rest.split_at(start);
         if !before.is_empty() {
-            spans.push(Span::styled(before.to_string(), base));
+            spans.push(RichSpan::styled(before.to_string(), base, None));
         }
         let raw = from.find(char::is_whitespace).unwrap_or(from.len());
         let end = from[..raw]
             .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']'])
             .len();
         let (url, after) = from.split_at(end.max(1));
-        spans.push(Span::styled(url.to_string(), link.apply(base)));
+        spans.push(RichSpan::styled(
+            url.to_string(),
+            link.apply(base),
+            Some(url.to_string()),
+        ));
         rest = after;
     }
     if !rest.is_empty() {
-        spans.push(Span::styled(rest.to_string(), base));
+        spans.push(RichSpan::styled(rest.to_string(), base, None));
     }
     if spans.is_empty() {
-        spans.push(Span::styled(text.to_string(), base));
+        spans.push(RichSpan::styled(text.to_string(), base, None));
     }
     spans
 }
 
-/// Flatten parsed items into final, width-fitted lines: prose is word-wrapped,
-/// code and tables are emitted verbatim, and each is offset by its indent.
-fn flatten(items: &[MdItem], width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    flatten_into(items, width, theme, &mut Vec::new())
+/// Flatten parsed items into lines plus [`BufferLink`]s for every hyperlink run
+/// that survived wrapping — labeled markdown links included.
+fn flatten_linked(
+    items: &[MdItem],
+    width: u16,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Vec<BufferLink>) {
+    let mut images = Vec::new();
+    flatten_linked_into(items, width, theme, &mut images)
 }
 
-/// [`flatten`] that also collects the block images it reserved, with the row each
+/// Flatten into lines and collect the block images reserved, with the row each
 /// landed on, so the [`Markdown`] view can overlay an [`Image`] at the matching
 /// screen rect. A block image reserves `rows` blank lines here.
 fn flatten_into(
@@ -575,23 +649,59 @@ fn flatten_into(
     theme: &Theme,
     images: &mut Vec<MarkdownImage>,
 ) -> Vec<Line<'static>> {
+    flatten_linked_into(items, width, theme, images).0
+}
+
+fn flatten_linked_into(
+    items: &[MdItem],
+    width: u16,
+    theme: &Theme,
+    images: &mut Vec<MarkdownImage>,
+) -> (Vec<Line<'static>>, Vec<BufferLink>) {
     let mut out = Vec::new();
+    let mut links = Vec::new();
     for item in items {
         match item {
             MdItem::Blank => out.push(Line::default()),
             MdItem::Prose { spans, indent } => {
                 let avail = width.saturating_sub(*indent).max(1);
-                for row in wrap_lines(&[Line::from(spans.clone())], avail) {
-                    out.push(prefix_line(*indent, row.spans));
+                for (row, row_links) in wrap_rich(spans, avail) {
+                    let line_idx = out.len() as u16;
+                    let line = prefix_line(*indent, row);
+                    for mut bl in row_links {
+                        bl.line = line_idx;
+                        bl.start_col = bl.start_col.saturating_add(*indent);
+                        bl.end_col = bl.end_col.saturating_add(*indent);
+                        links.push(bl);
+                    }
+                    out.push(line);
                 }
             }
             MdItem::Verbatim { line, indent } => {
-                out.push(prefix_line(*indent, line.spans.clone()));
+                out.push(prefix_line(
+                    *indent,
+                    line.spans
+                        .iter()
+                        .map(|s| RichSpan {
+                            content: s.content.to_string(),
+                            style: s.style,
+                            href: None,
+                        })
+                        .collect(),
+                ));
             }
             MdItem::Table { table, indent } => {
                 let avail = width.saturating_sub(*indent).max(1);
-                for row in render_table(table, avail, theme) {
-                    out.push(prefix_line(*indent, row.spans));
+                for (row, row_links) in render_table_linked(table, avail, theme) {
+                    let line_idx = out.len() as u16;
+                    let line = prefix_line(*indent, row);
+                    for mut bl in row_links {
+                        bl.line = line_idx;
+                        bl.start_col = bl.start_col.saturating_add(*indent);
+                        bl.end_col = bl.end_col.saturating_add(*indent);
+                        links.push(bl);
+                    }
+                    out.push(line);
                 }
             }
             MdItem::Image { data, alt, indent } => {
@@ -612,36 +722,172 @@ fn flatten_into(
             }
         }
     }
-    out
+    (out, links)
 }
 
 /// Prefix `spans` with `indent` blank columns.
-fn prefix_line(indent: u16, mut spans: Vec<Span<'static>>) -> Line<'static> {
+fn prefix_line(indent: u16, mut spans: Vec<RichSpan>) -> Line<'static> {
     if indent == 0 {
-        return Line::from(spans);
+        return Line::from(spans.into_iter().map(|s| s.to_span()).collect::<Vec<_>>());
     }
     let mut line = vec![Span::raw(" ".repeat(indent as usize))];
-    line.append(&mut spans);
+    line.extend(spans.drain(..).map(|s| s.to_span()));
     Line::from(line)
+}
+
+/// Word-wrap rich spans to `width`, preserving style and href across the reflow.
+/// Returns each output row as `(spans, link runs relative to column 0)`.
+fn wrap_rich(spans: &[RichSpan], width: u16) -> Vec<(Vec<RichSpan>, Vec<BufferLink>)> {
+    if width == 0 {
+        let links = link_runs(spans, 0);
+        return vec![(spans.to_vec(), links)];
+    }
+    // Grapheme cells carry style + href so a multi-scalar emoji stays intact and
+    // a labeled link keeps its destination across the wrap.
+    let cells: Vec<(&str, Style, Option<&str>)> = spans
+        .iter()
+        .flat_map(|s| {
+            let href = s.href.as_deref();
+            s.content.graphemes(true).map(move |g| (g, s.style, href))
+        })
+        .collect();
+    let mut out: Vec<(Vec<RichSpan>, Vec<BufferLink>)> = Vec::new();
+    let mut cur: Vec<(&str, Style, Option<&str>)> = Vec::new();
+    let mut cur_w = 0u16;
+    let mut i = 0;
+    let n = cells.len();
+    let is_break = |g: &str| g.chars().all(char::is_whitespace);
+    while i < n {
+        if is_break(cells[i].0) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut word_w = 0u16;
+        while i < n && !is_break(cells[i].0) {
+            word_w = word_w.saturating_add(grapheme_cols(cells[i].0));
+            i += 1;
+        }
+        let word = &cells[start..i];
+        let sep = u16::from(!cur.is_empty());
+        if word_w <= width && cur_w + sep + word_w <= width {
+            if sep == 1 {
+                let (_, st, href) = *cur.last().expect("sep implies non-empty cur");
+                cur.push((" ", st, href));
+                cur_w += 1;
+            }
+            cur.extend_from_slice(word);
+            cur_w += word_w;
+        } else if word_w <= width {
+            if !cur.is_empty() {
+                out.push(coalesce_rich(&cur));
+                cur.clear();
+            }
+            cur.extend_from_slice(word);
+            cur_w = word_w;
+        } else {
+            if !cur.is_empty() {
+                out.push(coalesce_rich(&cur));
+                cur.clear();
+                cur_w = 0;
+            }
+            for &cell in word {
+                let w = grapheme_cols(cell.0);
+                if cur_w + w > width && !cur.is_empty() {
+                    out.push(coalesce_rich(&cur));
+                    cur.clear();
+                    cur_w = 0;
+                }
+                cur.push(cell);
+                cur_w += w;
+            }
+        }
+    }
+    if !cur.is_empty() {
+        out.push(coalesce_rich(&cur));
+    }
+    if out.is_empty() {
+        out.push((Vec::new(), Vec::new()));
+    }
+    out
+}
+
+fn coalesce_rich(cells: &[(&str, Style, Option<&str>)]) -> (Vec<RichSpan>, Vec<BufferLink>) {
+    let mut spans: Vec<RichSpan> = Vec::new();
+    let mut buf = String::new();
+    let mut run_style: Option<Style> = None;
+    let mut run_href: Option<String> = None;
+    let flush = |spans: &mut Vec<RichSpan>,
+                 buf: &mut String,
+                 style: &mut Option<Style>,
+                 href: &mut Option<String>| {
+        if let Some(st) = style.take() {
+            spans.push(RichSpan::styled(std::mem::take(buf), st, href.take()));
+        }
+    };
+    for &(g, st, href) in cells {
+        let href = href.map(str::to_string);
+        match (&run_style, &run_href) {
+            (Some(s), h) if *s == st && *h == href => buf.push_str(g),
+            _ => {
+                flush(&mut spans, &mut buf, &mut run_style, &mut run_href);
+                run_style = Some(st);
+                run_href = href;
+                buf.push_str(g);
+            }
+        }
+    }
+    flush(&mut spans, &mut buf, &mut run_style, &mut run_href);
+    let links = link_runs(&spans, 0);
+    (spans, links)
+}
+
+/// Contiguous href runs in `spans`, with columns relative to `col_offset`.
+fn link_runs(spans: &[RichSpan], col_offset: u16) -> Vec<BufferLink> {
+    let mut links = Vec::new();
+    let mut col = col_offset;
+    let mut i = 0;
+    while i < spans.len() {
+        let Some(url) = spans[i].href.clone() else {
+            col = col.saturating_add(crate::width::str_cols(&spans[i].content));
+            i += 1;
+            continue;
+        };
+        let start = col;
+        while i < spans.len() && spans[i].href.as_deref() == Some(url.as_str()) {
+            col = col.saturating_add(crate::width::str_cols(&spans[i].content));
+            i += 1;
+        }
+        if col > start {
+            links.push(BufferLink {
+                line: 0, // filled in by flatten
+                start_col: start,
+                end_col: col,
+                url,
+            });
+        }
+    }
+    links
 }
 
 /// Lay a table out to `width` columns with box-drawing borders. Column widths
 /// fit the content, shrinking the widest columns (and wrapping their cells)
-/// until the whole table fits.
-fn render_table(table: &TableData, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+/// until the whole table fits. Link hrefs in cells are preserved.
+fn render_table_linked(
+    table: &TableData,
+    width: u16,
+    theme: &Theme,
+) -> Vec<(Vec<RichSpan>, Vec<BufferLink>)> {
     let cols = table
         .header
         .len()
         .max(table.rows.iter().map(Vec::len).max().unwrap_or(0))
         .max(1);
 
-    // A boxed table needs `3*cols + 1` for borders plus ≥1 column per column.
-    // Below that, drop the box and render pipe-joined rows that word-wrap to fit.
     if (width as usize) < 4 * cols + 1 {
-        return render_table_plain(table, width, cols, theme);
+        return render_table_plain_linked(table, width, cols, theme);
     }
 
-    // Natural width per column = widest cell (header + body).
     let mut widths = vec![0usize; cols];
     for (c, w) in widths.iter_mut().enumerate() {
         *w = spans_cols(cell_at(&table.header, c));
@@ -651,9 +897,6 @@ fn render_table(table: &TableData, width: u16, theme: &Theme) -> Vec<Line<'stati
         *w = (*w).max(1);
     }
 
-    // Shrink to fit: borders cost `3*cols + 1` (│ + " cell " per column). The
-    // guard above guarantees `budget >= cols`, so shrinking each column toward 1
-    // always reaches the budget before bottoming out.
     let budget = (width as usize).saturating_sub(3 * cols + 1).max(cols);
     while widths.iter().sum::<usize>() > budget {
         let (idx, _) = widths.iter().enumerate().max_by_key(|(_, w)| **w).unwrap();
@@ -663,89 +906,102 @@ fn render_table(table: &TableData, width: u16, theme: &Theme) -> Vec<Line<'stati
         widths[idx] -= 1;
     }
 
-    // Cells carry their own inline styling (header bold, links, code); only the
-    // borders need a style here.
     let border = Style::default().fg(theme.dim);
-
     let mut out = Vec::new();
-    out.push(rule_row('╭', '┬', '╮', &widths, border));
-    out.extend(cell_rows(
+    out.push((
+        vec![RichSpan::styled(
+            rule_row_text('╭', '┬', '╮', &widths),
+            border,
+            None,
+        )],
+        vec![],
+    ));
+    out.extend(cell_rows_linked(
         &table.header,
         &widths,
         &table.aligns,
         border,
         cols,
     ));
-    out.push(rule_row('├', '┼', '┤', &widths, border));
+    out.push((
+        vec![RichSpan::styled(
+            rule_row_text('├', '┼', '┤', &widths),
+            border,
+            None,
+        )],
+        vec![],
+    ));
     for row in &table.rows {
-        out.extend(cell_rows(row, &widths, &table.aligns, border, cols));
+        out.extend(cell_rows_linked(row, &widths, &table.aligns, border, cols));
     }
-    out.push(rule_row('╰', '┴', '╯', &widths, border));
+    out.push((
+        vec![RichSpan::styled(
+            rule_row_text('╰', '┴', '╯', &widths),
+            border,
+            None,
+        )],
+        vec![],
+    ));
     out
 }
 
-/// Boxless table fallback for widths too narrow to draw borders: each row's
-/// styled cells joined by ` | ` and word-wrapped to `width` (cells keep their
-/// inline styling). Guarantees every returned line fits `width`.
-fn render_table_plain(
+fn render_table_plain_linked(
     table: &TableData,
     width: u16,
     cols: usize,
     theme: &Theme,
-) -> Vec<Line<'static>> {
+) -> Vec<(Vec<RichSpan>, Vec<BufferLink>)> {
     let sep = Style::default().fg(theme.dim);
-    let join = |row: &[Cell]| -> Line<'static> {
+    let join = |row: &[Cell]| -> Vec<RichSpan> {
         let mut spans = Vec::new();
         for c in 0..cols {
             if c > 0 {
-                spans.push(Span::styled(" | ".to_string(), sep));
+                spans.push(RichSpan::styled(" | ".to_string(), sep, None));
             }
             spans.extend(cell_at(row, c).iter().cloned());
         }
-        Line::from(spans)
+        spans
     };
 
     let mut out = Vec::new();
-    out.extend(wrap_lines(&[join(&table.header)], width));
+    out.extend(wrap_rich(&join(&table.header), width));
     for row in &table.rows {
-        out.extend(wrap_lines(&[join(row)], width));
+        out.extend(wrap_rich(&join(row), width));
     }
     out
 }
 
 /// The `c`th cell of `row`, or an empty span run when the row is short.
-fn cell_at(row: &[Cell], c: usize) -> &[Span<'static>] {
+fn cell_at(row: &[Cell], c: usize) -> &[RichSpan] {
     row.get(c).map(Vec::as_slice).unwrap_or(&[])
 }
 
-fn rule_row(left: char, mid: char, right: char, widths: &[usize], style: Style) -> Line<'static> {
+fn rule_row_text(left: char, mid: char, right: char, widths: &[usize]) -> String {
     let mut s = String::new();
     s.push(left);
     for (i, w) in widths.iter().enumerate() {
         s.push_str(&"─".repeat(w + 2));
         s.push(if i + 1 == widths.len() { right } else { mid });
     }
-    Line::from(Span::styled(s, style))
+    s
 }
 
-fn cell_rows(
+fn cell_rows_linked(
     row: &[Cell],
     widths: &[usize],
     aligns: &[Alignment],
     border: Style,
     cols: usize,
-) -> Vec<Line<'static>> {
-    // Wrap each cell's styled spans to its column width (grapheme-aware, so wide
-    // glyphs stay intact); a table row is as tall as its tallest wrapped cell.
-    let wrapped: Vec<Vec<Line<'static>>> = (0..cols)
+) -> Vec<(Vec<RichSpan>, Vec<BufferLink>)> {
+    let wrapped: Vec<Vec<(Vec<RichSpan>, Vec<BufferLink>)>> = (0..cols)
         .map(|c| {
             let cell = cell_at(row, c);
             if cell.is_empty() {
-                vec![Line::default()]
+                vec![(Vec::new(), Vec::new())]
             } else {
-                let lines = wrap_lines(&[Line::from(cell.to_vec())], widths[c].max(1) as u16);
+                let lines = wrap_rich(cell, widths[c].max(1) as u16);
                 if lines.is_empty() {
-                    vec![Line::default()]
+                    vec![(Vec::new(), Vec::new())]
                 } else {
                     lines
                 }
@@ -753,28 +1009,54 @@ fn cell_rows(
         })
         .collect();
     let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
-
-    let empty = Line::default();
+    let empty: (Vec<RichSpan>, Vec<BufferLink>) = (Vec::new(), Vec::new());
     let mut lines = Vec::new();
     for r in 0..height {
-        let mut spans = vec![Span::styled("│".to_string(), border)];
+        let mut spans = vec![RichSpan::styled("│".to_string(), border, None)];
+        let mut links = Vec::new();
+        let mut col = 1u16; // after the leading │
         for (c, width) in widths.iter().enumerate() {
-            let content = wrapped[c].get(r).unwrap_or(&empty);
-            let pad = width.saturating_sub(line_width(content) as usize);
+            let (content, cell_links) = wrapped[c].get(r).unwrap_or(&empty);
+            let content_w = spans_cols(content) as u16;
+            let pad = (*width as u16).saturating_sub(content_w);
             let align = aligns.get(c).copied().unwrap_or(Alignment::None);
             let (left, right) = match align {
                 Alignment::Right => (pad, 0),
                 Alignment::Center => (pad / 2, pad - pad / 2),
                 _ => (0, pad),
             };
-            // A one-space gutter each side, alignment padding, then the cell's
-            // own styled spans between.
-            spans.push(Span::raw(format!(" {}", " ".repeat(left))));
-            spans.extend(content.spans.iter().cloned());
-            spans.push(Span::raw(format!("{} ", " ".repeat(right))));
-            spans.push(Span::styled("│".to_string(), border));
+            // gutter space
+            spans.push(RichSpan::styled(" ".to_string(), Style::default(), None));
+            col += 1;
+            if left > 0 {
+                spans.push(RichSpan::styled(
+                    " ".repeat(left as usize),
+                    Style::default(),
+                    None,
+                ));
+                col += left;
+            }
+            for mut bl in cell_links.iter().cloned() {
+                bl.start_col = bl.start_col.saturating_add(col);
+                bl.end_col = bl.end_col.saturating_add(col);
+                links.push(bl);
+            }
+            spans.extend(content.iter().cloned());
+            col = col.saturating_add(content_w);
+            if right > 0 {
+                spans.push(RichSpan::styled(
+                    " ".repeat(right as usize),
+                    Style::default(),
+                    None,
+                ));
+                col += right;
+            }
+            spans.push(RichSpan::styled(" ".to_string(), Style::default(), None));
+            col += 1;
+            spans.push(RichSpan::styled("│".to_string(), border, None));
+            col += 1;
         }
-        lines.push(Line::from(spans));
+        lines.push((spans, links));
     }
     lines
 }
@@ -790,8 +1072,24 @@ pub fn markdown_to_lines(
     sheet: &StyleSheet,
     highlighter: CodeHighlighter,
 ) -> Vec<Line<'static>> {
+    markdown_to_linked_lines(source, width, theme, sheet, highlighter).0
+}
+
+/// Like [`markdown_to_lines`], but also returns [`BufferLink`]s for every
+/// hyperlink run (labeled `[text](url)` and bare URLs) after wrapping.
+///
+/// Apply them with [`apply_buffer_links`] after painting the lines so OSC 8 /
+/// Ctrl+click can open the destination even when the visible label is not the
+/// URL. Pass [`LinkPolicy::NONE`] to [`apply_buffer_links`] to skip emission.
+pub fn markdown_to_linked_lines(
+    source: &str,
+    width: u16,
+    theme: &Theme,
+    sheet: &StyleSheet,
+    highlighter: CodeHighlighter,
+) -> (Vec<Line<'static>>, Vec<BufferLink>) {
     let items = parse(source, theme, sheet, highlighter);
-    flatten(&items, width, theme)
+    flatten_linked(&items, width, theme)
 }
 
 /// Byte offset of the last *stable block boundary* in `source[from..]`, in
@@ -1058,6 +1356,7 @@ fn is_blank_line(line: &Line) -> bool {
 /// | [`new(source)`](Self::new) | — | the markdown source to render |
 /// | [`highlighter(&h)`](Self::highlighter) | plain | syntax-highlight fenced code |
 /// | [`images(&r, s, &l)`](Self::images) | off | render `![alt](url)` as real pixels |
+/// | [`link_policy(p)`](Self::link_policy) | [`LinkPolicy::WEB`] | OSC 8 schemes for links |
 ///
 /// ```no_run
 /// use tuika::Markdown;
@@ -1071,6 +1370,8 @@ pub struct Markdown<'a> {
     resolver: Option<&'a dyn ImageResolver>,
     image_support: ImageSupport,
     image_layer: Option<ImageLayer>,
+    /// Which URL schemes become OSC 8 hyperlinks when this view paints.
+    link_policy: LinkPolicy,
 }
 
 impl<'a> Markdown<'a> {
@@ -1083,12 +1384,23 @@ impl<'a> Markdown<'a> {
             resolver: None,
             image_support: ImageSupport::None,
             image_layer: None,
+            link_policy: LinkPolicy::default(),
         }
     }
 
     /// Use `highlighter` to syntax-highlight fenced code blocks.
     pub fn highlighter(mut self, highlighter: &'a dyn Highlighter) -> Self {
         self.highlighter = CodeHighlighter::With(highlighter);
+        self
+    }
+
+    /// Configure which URL schemes are emitted as OSC 8 hyperlinks.
+    ///
+    /// The default ([`LinkPolicy::WEB`]) links `http(s)` only.
+    /// [`LinkPolicy::NONE`] paints styled labels but emits no OSC 8 — useful when
+    /// the host handles clicks itself or wants links inert.
+    pub fn link_policy(mut self, policy: LinkPolicy) -> Self {
+        self.link_policy = policy;
         self
     }
 
@@ -1112,30 +1424,30 @@ impl<'a> Markdown<'a> {
         self
     }
 
-    /// Flatten the source to lines plus the block images it reserved.
-    fn lines_and_images(
+    /// Flatten the source to lines, block images, and hyperlink runs.
+    fn lines_images_links(
         &self,
         width: u16,
         theme: &Theme,
         sheet: &StyleSheet,
-    ) -> (Vec<Line<'static>>, Vec<MarkdownImage>) {
+    ) -> (Vec<Line<'static>>, Vec<MarkdownImage>, Vec<BufferLink>) {
         let items = parse_with(&self.source, theme, sheet, self.highlighter, self.resolver);
         let mut images = Vec::new();
-        let lines = flatten_into(&items, width, theme, &mut images);
-        (lines, images)
+        let (lines, links) = flatten_linked_into(&items, width, theme, &mut images);
+        (lines, images, links)
     }
 }
 
 impl View for Markdown<'_> {
     fn measure(&self, available: Size) -> Size {
-        let (lines, _) =
-            self.lines_and_images(available.width, &Theme::default(), &StyleSheet::default());
+        let (lines, _, _) =
+            self.lines_images_links(available.width, &Theme::default(), &StyleSheet::default());
         let width = lines.iter().map(line_width).max().unwrap_or(0);
         Size::new(width.min(available.width), lines.len() as u16)
     }
 
     fn render(&self, area: Rect, surface: &mut Surface, ctx: &RenderCtx) {
-        let (lines, images) = self.lines_and_images(area.width, ctx.theme, &ctx.sheet);
+        let (lines, images, links) = self.lines_images_links(area.width, ctx.theme, &ctx.sheet);
         for (row, line) in lines.iter().enumerate() {
             let y = area.y.saturating_add(row as u16);
             if y >= area.bottom() {
@@ -1149,6 +1461,17 @@ impl View for Markdown<'_> {
                 x = surface.set_string(x, y, span.content.as_ref(), span.style);
             }
         }
+        // Embed OSC 8 for labeled links (and bare URLs) so Ctrl+click / Ghostty
+        // open the destination even when the visible text is not the URL.
+        apply_buffer_links(
+            surface.buffer_mut(),
+            ratatui_core::layout::Position {
+                x: area.x,
+                y: area.y,
+            },
+            &links,
+            self.link_policy,
+        );
         // Overlay each block image on the rows it reserved, reusing the standalone
         // `Image` component for pixel emission and the alt fallback alike.
         for img in images {
@@ -1467,6 +1790,67 @@ mod tests {
             .expect("url span");
         assert_eq!(url.style.fg, Some(theme.code.link));
         assert!(url.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn labeled_markdown_link_preserves_destination_for_ctrl_click() {
+        // Reproduction of the Ghostty Ctrl+click failure: `[label](url)` was
+        // only styled — the destination was dropped — so OSC 8 / ctrl_click had
+        // nothing to open under the pointer.
+        use crate::{Mouse, MouseButton, MouseKind, apply_buffer_links, ctrl_click_url};
+        use ratatui_core::buffer::Buffer;
+        use ratatui_core::layout::Position;
+
+        let theme = Theme::default();
+        let (lines, links) = markdown_to_linked_lines(
+            "See the [docs](https://example.com/api) please.",
+            60,
+            &theme,
+            &StyleSheet::from_theme(&theme),
+            CodeHighlighter::Plain,
+        );
+        assert!(
+            links.iter().any(|l| l.url == "https://example.com/api"),
+            "labeled link must yield a BufferLink: {links:?}"
+        );
+        let link = links
+            .iter()
+            .find(|l| l.url == "https://example.com/api")
+            .unwrap();
+        // Visible text is the label, not the URL.
+        let plain: String = lines[link.line as usize]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(plain.contains("docs"), "label visible: {plain:?}");
+        assert!(
+            !plain.contains("example.com"),
+            "URL must not replace the label: {plain:?}"
+        );
+
+        let area = Rect::new(0, 0, 60, 3);
+        let mut buffer = Buffer::empty(area);
+        for (row, line) in lines.iter().enumerate() {
+            let mut x = 0u16;
+            for span in &line.spans {
+                x = buffer.set_span(x, row as u16, span, area.width).0;
+            }
+        }
+        apply_buffer_links(
+            &mut buffer,
+            Position { x: 0, y: 0 },
+            &links,
+            LinkPolicy::WEB,
+        );
+        let click_col = link.start_col + 1; // inside "docs"
+        let mut event = Mouse::at(MouseKind::Up(MouseButton::Left), click_col, link.line);
+        event.ctrl = true;
+        assert_eq!(
+            ctrl_click_url(&event, &buffer, area).as_deref(),
+            Some("https://example.com/api"),
+            "Ctrl+click on the label must resolve the markdown destination"
+        );
     }
 
     #[test]

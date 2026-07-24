@@ -44,10 +44,12 @@ round-trip itself. Kitty and iTerm2 keep their reliable environment detection
 
 ## Hyperlinks (OSC 8)
 
-Turn a bare `http(s)` URL into a real clickable link, in place, without changing
-the visible text. A cell buffer can't carry a link target — a `ratatui::Cell`
-is one grapheme plus a style — so tuika emits the link by writing the OSC 8
-sequence around the run instead of through the buffer.
+Turn a bare `http(s)` URL — or a markdown `[label](url)` whose visible text is
+not the URL — into a real clickable link, without changing the visible text. A
+cell buffer can't carry a link target — a `ratatui::Cell` is one grapheme plus a
+style — so tuika emits the link by writing the OSC 8 sequence around the run
+(either via [`HyperlinkBackend`] scanning bare URLs, or via
+[`apply_buffer_links`] for explicit destinations from the markdown renderer).
 [API](https://docs.rs/tuika/latest/tuika/hyperlink/index.html)
 
 <img src="demos/hyperlink.gif" width="880" alt="Hyperlink demo: a transcript line with 'https://docs.rs/tuika' and a markdown link label both shown in an underlined link color; unsupported terminals would render the same text without the link.">
@@ -62,11 +64,17 @@ There are two entry points:
 - `HyperlinkBackend` — a `ratatui::Backend` wrapper that scans drawn cell runs
   for URLs and wraps just those in OSC 8, so links work inside the normal render
   path too. When disabled it's a zero-cost pass-through.
+- `markdown_to_linked_lines` + `apply_buffer_links` — the markdown renderer
+  preserves `[label](url)` destinations as [`BufferLink`]s through wrapping;
+  after painting the lines, `apply_buffer_links` embeds OSC 8 into the boundary
+  cells (ForcedWidth) so a label that is not itself a URL stays Ctrl+clickable.
+  Configure schemes with `LinkPolicy` (and `Markdown::link_policy`).
 
-Each has a policy-aware sibling — `osc8_with`, `write_line_with`, and
+Each of the first three has a policy-aware sibling — `osc8_with`, `write_line_with`, and
 `HyperlinkBackend::with_policy` — taking a `LinkPolicy` so the host chooses which
 schemes are linked. The default (`LinkPolicy::WEB`) is `http(s)`-only;
 `LinkPolicy::WEB.with_mailto()` also links `mailto:` addresses.
+`LinkPolicy::NONE` skips emission entirely.
 
 ```rust
 use tuika::{osc8, is_web_url};
@@ -112,9 +120,11 @@ event model (`MouseKind` carries `Down`/`Up`/`Drag`, `Moved`, and scroll, with
   boundaries; `selected_text(buffer, area, range)` then reads the selected text
   back out of the rendered buffer (wide glyphs intact) and `highlight(buffer,
   area, range, style)` paints it in.
-- `ctrl_click_url(event, buffer, area)` returns the visible bare `http://` or
-  `https://` URL under a Ctrl+left-button release. The host remains responsible
-  for opening it; Yolop's fullscreen host opens it in the system browser.
+- `ctrl_click_url(event, buffer, area)` returns the URL under a Ctrl+left-button
+  release: first an OSC 8 target embedded in the cell run (labeled markdown
+  links after `apply_buffer_links`), then a visible bare `http(s)://` run. The
+  host remains responsible for opening it; Yolop's fullscreen host opens it in
+  the system browser.
 - `HitMap<T>` maps screen rects to values (a button, a link, a row); the
   last-pushed match wins, so children and overlays registered after their
   parents take precedence. `ClickTracker` turns a same-cell `Down`/`Up` into a
