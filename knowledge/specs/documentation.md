@@ -105,6 +105,14 @@ Reproducing any VHS capture — the feature guides above, the tuika component
 demos (`crates/tuika/scripts/gen-tuika-demos.sh`), and the tuika README hero
 (`crates/tuika/scripts/gen-tuika-hero.sh`) — needs the same tools on `PATH`:
 
+The tuika demo/theme/styling GIFs are GitHub-only assets: they are consumed by
+the tuika README and `docs/*.md` (served from the repo) but excluded from the
+published `.crate` via `crates/tuika/Cargo.toml`, since docs.rs renders the
+hand-written `lib.rs` header and references none of them. Only `hero.gif` and
+`demos/image.svg` — the two the crates.io README embeds by relative path — ship
+in the crate. `crates/tuika/tests/packaging.rs` guards that split.
+
+
 - **VHS**, which drives **ttyd** and **ffmpeg** (both must be installed
   separately) and renders frames through a headless Chromium it fetches via
   `go-rod` on first run into `~/.cache/rod`.
