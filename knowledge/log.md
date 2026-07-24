@@ -5,6 +5,8 @@ wording, formatting, and link fixes do not need entries.
 
 ## 2026-07-24
 
+- Added [Crash reporting](specs/crash-reporting.md): bounded, owner-only local
+  panic reports that remain visible after TUI terminal restoration.
 - Added [Tuika keymap](specs/keymap.md): the tuika declarative key-binding engine and Yolop's dispatch of its global shortcuts through it.
 
 ## 2026-07-23

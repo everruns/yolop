@@ -1098,13 +1098,13 @@ impl App {
     }
 
     fn refresh_session_tasks_if_due(&mut self) {
-        if self
+        let refresh_result = self
             .session_tasks_refresh
-            .as_ref()
-            .is_some_and(tokio::task::JoinHandle::is_finished)
-        {
-            let refresh = self.session_tasks_refresh.take().expect("checked above");
-            match refresh.now_or_never().expect("finished refresh") {
+            .as_mut()
+            .and_then(FutureExt::now_or_never);
+        if let Some(result) = refresh_result {
+            self.session_tasks_refresh = None;
+            match result {
                 Ok(tasks) => self.session_tasks = tasks,
                 Err(error) if error.is_cancelled() => {}
                 Err(error) => self
@@ -5863,6 +5863,29 @@ mod tests {
             .take()
             .expect("pending refresh")
             .abort();
+    }
+
+    #[tokio::test]
+    async fn completed_session_task_refresh_is_applied_without_panicking() {
+        let mut test = app_with_llmsim().await;
+        let mut expected = crate::tui::session_tasks_view::TaskTree::default();
+        expected.errors.push("refreshed".into());
+        test.app.session_tasks_refresh = Some(tokio::spawn(async move { expected }));
+        test.app.last_session_tasks_refresh = Some(Instant::now());
+        while !test
+            .app
+            .session_tasks_refresh
+            .as_ref()
+            .expect("refresh task")
+            .is_finished()
+        {
+            tokio::task::yield_now().await;
+        }
+
+        test.app.refresh_session_tasks_if_due();
+
+        assert!(test.app.session_tasks_refresh.is_none());
+        assert_eq!(test.app.session_tasks.errors, ["refreshed"]);
     }
 
     async fn app_with_llmsim() -> TestApp {
