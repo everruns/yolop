@@ -1542,9 +1542,39 @@ pub(crate) fn diff_line_style(line: &str) -> Style {
     Style::default().fg(color)
 }
 
+/// `tuika-mermaid` with a transcript-width guard.
+///
+/// mmdflux lays a diagram out at its natural size and ignores the width tuika
+/// offers, so a wide flowchart in a narrow terminal would be painted clipped —
+/// half a box, no way to read the rest. Falling back to `None` there hands the
+/// block back to tuika's themed code block, which keeps the Mermaid source
+/// itself on screen.
+struct MermaidFencedBlocks;
+
+impl tuika::components::markdown::FencedBlockRenderer for MermaidFencedBlocks {
+    fn render(
+        &self,
+        language: &str,
+        source: &str,
+        width: u16,
+        theme: &tuika::style::Theme,
+    ) -> Option<Vec<Line<'static>>> {
+        let rendered =
+            tuika_mermaid::MermaidRenderer::new().render(language, source, width, theme)?;
+        rendered
+            .iter()
+            .all(|line| line_width(line) <= width as usize)
+            .then_some(rendered)
+    }
+}
+
 /// Render assistant markdown to transcript lines via tuika's streaming markdown
-/// renderer + tree-sitter code highlighting (see `crates/tuika` and
-/// `crates/tuika-codeformatters`).
+/// renderer + tree-sitter code highlighting (see the `tuika` and
+/// `tuika-codeformatters` crates).
+///
+/// ` ```mermaid ` fences go through [`MermaidFencedBlocks`], which paints them
+/// as Unicode cell diagrams; unsupported, malformed, or too-wide diagrams keep
+/// the ordinary code-block fallback so the source stays readable.
 ///
 /// The tuika renderer word-wraps prose and lays code/tables out to a width; we
 /// render at `inner_width` minus the header prefix, then prepend the header to
@@ -1570,12 +1600,14 @@ pub(crate) fn append_markdown_lines<'a>(
     // Keeping it permanently underlined masks Ghostty's clickability feedback.
     sheet.link = tuika::style::StyleBundle::new().fg(theme.code.link);
     let highlighter = tuika_codeformatters::TreeSitterHighlighter::new();
-    let (rendered, md_links) = tuika::components::markdown::to_linked_lines(
+    let mermaid = MermaidFencedBlocks;
+    let (rendered, md_links) = tuika::components::markdown::to_linked_lines_with_renderer(
         text,
         width,
         &theme,
         &sheet,
         tuika::highlight::CodeHighlighter::With(&highlighter),
+        &mermaid,
     );
 
     let base_line = lines.len() as u16;

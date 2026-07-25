@@ -74,6 +74,10 @@ tuika = "0.5.0"
 # Tree-sitter Highlighter impl for tuika's CodeBlock/Markdown; owns the grammar
 # deps so tuika core stays dependency-light. Published from the tuika repo.
 tuika-codeformatters = "0.3.0"
+# FencedBlockRenderer impl that turns ```mermaid fences into Unicode diagrams
+# via mmdflux; keeps diagram layout out of tuika core. Published from the tuika
+# repo.
+tuika-mermaid = "0.1.0"
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tree-sitter = "0.26"

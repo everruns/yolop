@@ -4842,6 +4842,124 @@ mod tests {
         );
     }
 
+    /// A `mermaid` fence in an assistant message is painted as a diagram, not
+    /// echoed as source.
+    #[test]
+    fn markdown_mermaid_fence_renders_as_a_diagram() {
+        let mut lines = Vec::new();
+        append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::Assistant,
+                text: "```mermaid\nflowchart LR\n  A[Parse] --> B[Paint]\n```".to_string(),
+            },
+            80,
+        );
+
+        let body = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            body.contains("Parse") && body.contains("Paint"),
+            "node labels should survive rendering: {body}"
+        );
+        assert!(
+            !body.contains("flowchart LR"),
+            "the Mermaid source should be replaced by the diagram: {body}"
+        );
+        assert!(
+            body.contains('─') || body.contains('│'),
+            "the diagram should be drawn with box-drawing cells: {body}"
+        );
+        assert!(
+            lines.iter().all(|line| line_text(line).starts_with("agent")
+                || line_text(line).starts_with("      ")),
+            "diagram rows should keep the author gutter: {lines:?}"
+        );
+    }
+
+    /// Mermaid mmdflux cannot parse falls back to the ordinary code block, so
+    /// the source a user can still read stays on screen.
+    #[test]
+    fn markdown_unrenderable_mermaid_falls_back_to_source() {
+        let mut lines = Vec::new();
+        append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::Assistant,
+                text: "```mermaid\nthis is not a diagram\n```".to_string(),
+            },
+            80,
+        );
+
+        let body = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            body.contains("this is not a diagram"),
+            "unrenderable Mermaid should keep its source visible: {body}"
+        );
+    }
+
+    /// mmdflux lays diagrams out at their natural size; when that overflows the
+    /// transcript we show the source instead of a clipped half-diagram.
+    #[test]
+    fn markdown_mermaid_too_wide_for_the_transcript_falls_back_to_source() {
+        let text = "```mermaid\nflowchart LR\n  A[Parse] --> B[Layout] --> C[Paint]\n```";
+        let mut narrow = Vec::new();
+        append_chat_lines(
+            &mut narrow,
+            &ChatLine {
+                author: Author::Assistant,
+                text: text.to_string(),
+            },
+            30,
+        );
+
+        let body = narrow.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            body.contains("flowchart LR"),
+            "a diagram wider than the transcript should fall back to source: {body}"
+        );
+
+        // The same diagram fits — and renders — once the transcript is wide
+        // enough, so the fallback is about width, not about this input.
+        let mut wide = Vec::new();
+        append_chat_lines(
+            &mut wide,
+            &ChatLine {
+                author: Author::Assistant,
+                text: text.to_string(),
+            },
+            80,
+        );
+        assert!(
+            !wide
+                .iter()
+                .map(line_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+                .contains("flowchart LR"),
+            "the same diagram should render at width 80: {wide:?}"
+        );
+    }
+
+    /// Other fence languages keep the syntax-highlighted code block.
+    #[test]
+    fn markdown_non_mermaid_fence_is_untouched_by_the_diagram_renderer() {
+        let mut lines = Vec::new();
+        append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::Assistant,
+                text: "```rust\nfn main() { println!(\"hi\"); }\n```".to_string(),
+            },
+            60,
+        );
+
+        let body = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            body.contains("fn main()"),
+            "rust fences should render as code: {body}"
+        );
+    }
+
     #[test]
     fn markdown_lines_wrap_styled_content_to_available_width() {
         let width = 32;
