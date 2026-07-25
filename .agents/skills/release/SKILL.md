@@ -59,11 +59,14 @@ when the subjects don't carry the number.
 Edit `version` in `Cargo.toml`, then `cargo update -p yolop` to refresh the
 lockfile entry.
 
-The three library crates are versioned separately. Bump one when its API or its
-published dependency range changes (for `yolop-yep`, also when the wire protocol
-changes) and update every workspace path dependency requirement that references
-it — a `tuika` bump usually forces a `tuika-codeformatters` bump, because the
-published formatter pins a compatible tuika range.
+`yolop-yep` is versioned separately. Bump it when its API or the wire protocol
+changes, and update the workspace path dependency requirement that references
+it.
+
+`tuika` and `tuika-codeformatters` are not released from here — they ship from
+[`everruns/tuika`](https://github.com/everruns/tuika). Bumping their version
+requirements is an ordinary dependency bump, and a release that needs new
+toolkit behavior waits on a tuika release first.
 
 ## 4. Verify locally
 
@@ -79,19 +82,17 @@ publish` packaging boundary, missing files referenced by `Cargo.toml`, and
 version drift.
 
 ```bash
-cargo publish --dry-run -p yolop-yep            # SDK
-cargo publish --dry-run -p tuika                # TUI toolkit
-cargo publish --dry-run -p tuika-codeformatters # highlighter; publishes after tuika
-cargo search yolop --limit 1                    # crates.io version must be < X.Y.Z
+cargo publish --dry-run -p yolop-yep   # SDK; publishes before yolop
+cargo search yolop --limit 1           # crates.io version must be < X.Y.Z
 grep '^version' Cargo.toml
 grep '"yolop"' Cargo.lock | head -1
 ```
 
-`cargo publish --dry-run -p yolop` **fails locally** whenever a new in-tree
-library version isn't on crates.io yet — expected, not a broken release. CI
-validates `yolop`'s own publish after the libraries go live. If a *library*
-dry-run fails, fix the root cause and re-run; never open a release PR with a
-known-broken publish path.
+`cargo publish --dry-run -p yolop` **fails locally** whenever a new `yolop-yep`
+version isn't on crates.io yet — expected, not a broken release. CI validates
+`yolop`'s own publish after the SDK goes live. If the *SDK* dry-run fails, fix
+the root cause and re-run; never open a release PR with a known-broken publish
+path.
 
 ## 6. Commit, push, open the PR
 

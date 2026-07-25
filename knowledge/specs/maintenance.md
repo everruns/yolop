@@ -152,8 +152,8 @@ Constraints:
   the test suite — a behavior change disguised as cleanup is a regression.
 - Keep simplifications small and independently reviewable; do not fold a
   de-abstraction sweep into an unrelated change.
-- Removing a public item from a published crate (`yolop-yep`, `tuika`) is a
-  breaking change and must be called out, not slipped in.
+- Removing a public item from the published `yolop-yep` crate is a breaking
+  change and must be called out, not slipped in.
 - A simplification too large to land inline (a cross-cutting abstraction with
   many call sites) is deferred to a tracked issue naming the abstraction and why
   it no longer pays its way — same discipline as any other deferred finding.

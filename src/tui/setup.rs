@@ -11,11 +11,11 @@
 use super::*;
 
 /// Step a picker selection up one row, clamping at the top. Routes the
-/// transition through tuika's [`SelectState`](tuika::SelectState) so every setup
+/// transition through tuika's [`SelectState`](tuika::components::SelectState) so every setup
 /// picker shares one tested navigation source instead of open-coding the clamp
 /// (see the `draw_setup_picker` note in `fullscreen.rs`).
 fn select_up(selected: usize) -> usize {
-    let mut state = tuika::SelectState::new();
+    let mut state = tuika::components::SelectState::new();
     state.select(selected);
     state.move_up();
     state.selected()
@@ -23,7 +23,7 @@ fn select_up(selected: usize) -> usize {
 
 /// Step a picker selection down one row, clamping at the last of `len` rows.
 fn select_down(selected: usize, len: usize) -> usize {
-    let mut state = tuika::SelectState::new();
+    let mut state = tuika::components::SelectState::new();
     state.select(selected);
     state.move_down(len);
     state.selected()

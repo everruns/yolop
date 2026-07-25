@@ -4,6 +4,7 @@
 //! mutation lives elsewhere.
 
 use super::*;
+use tuika::width::str_cols;
 
 // Color presentation for the transcript view-model types defined in
 // `crate::tui::transcript`. Labels and status semantics live in `crate::tui::presentation`
@@ -296,7 +297,7 @@ pub(crate) fn recent_transcript_lines(
 }
 
 /// Wrap the **full**-screen transcript for `lines[start..]` onto `out`,
-/// oldest-first, for the full-screen `tuika::Scroll` viewport (which owns the
+/// oldest-first, for the full-screen `tuika::components::Scroll` viewport (which owns the
 /// alternate screen and can scroll the entire history, unlike the inline
 /// recent-tail mirror above). Uses the same [`append_chat_lines`] formatting and
 /// [`should_insert_chat_gap`] spacing as [`recent_transcript_lines`], but
@@ -313,7 +314,7 @@ pub(crate) fn recent_transcript_lines(
 /// every frame. Pass `start = 0`, `prev_author = None` to wrap everything.
 pub(crate) fn append_transcript_range(
     out: &mut Vec<Line<'static>>,
-    links: &mut Vec<tuika::BufferLink>,
+    links: &mut Vec<BufferLink>,
     lines: &[ChatLine],
     start: usize,
     width: usize,
@@ -1337,7 +1338,7 @@ pub(crate) fn append_chat_lines<'a>(
     lines: &mut Vec<Line<'a>>,
     chat: &ChatLine,
     inner_width: usize,
-) -> Vec<tuika::BufferLink> {
+) -> Vec<BufferLink> {
     let presented = present_transcript_line(chat);
     if matches!(presented.author, Author::ToolDetail) {
         append_wrapped_plain(
@@ -1550,31 +1551,31 @@ pub(crate) fn diff_line_style(line: &str) -> Style {
 /// the first row and matching indentation to the continuation rows so the
 /// author label (`agent › `) still owns the left gutter.
 ///
-/// Returns [`tuika::BufferLink`]s for every hyperlink run in the rendered block
+/// Returns [`BufferLink`]s for every hyperlink run in the rendered block
 /// (labeled `[text](url)` and bare URLs), with coordinates relative to the
 /// lines appended to `lines` — including the gutter offset — so the host can
-/// [`tuika::apply_buffer_links`] after painting.
+/// [`hyperlink::apply_buffer_links`] after painting.
 pub(crate) fn append_markdown_lines<'a>(
     lines: &mut Vec<Line<'a>>,
     first_prefix: &str,
     prefix_style: Style,
     text: &str,
     inner_width: usize,
-) -> Vec<tuika::BufferLink> {
+) -> Vec<BufferLink> {
     let prefix_cols = first_prefix.chars().count();
     let width = inner_width.saturating_sub(prefix_cols).max(1) as u16;
     let theme = super::fullscreen::yolop_theme();
     let mut sheet = tuika::StyleSheet::from_theme(&theme);
     // Leave underlining to the terminal's native OSC 8 hover/modifier state.
     // Keeping it permanently underlined masks Ghostty's clickability feedback.
-    sheet.link = tuika::StyleBundle::new().fg(theme.code.link);
+    sheet.link = tuika::style::StyleBundle::new().fg(theme.code.link);
     let highlighter = tuika_codeformatters::TreeSitterHighlighter::new();
-    let (rendered, md_links) = tuika::markdown_to_linked_lines(
+    let (rendered, md_links) = tuika::components::markdown::to_linked_lines(
         text,
         width,
         &theme,
         &sheet,
-        tuika::CodeHighlighter::With(&highlighter),
+        tuika::highlight::CodeHighlighter::With(&highlighter),
     );
 
     let base_line = lines.len() as u16;
@@ -1777,7 +1778,7 @@ pub(crate) fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     // stay identical.
     let theme = crate::tui::fullscreen::yolop_theme();
     let view = tuika::element(
-        tuika::TextInput::new(&app.composer).style(Style::default().fg(TEXT_PRIMARY)),
+        tuika::components::TextInput::new(&app.composer).style(Style::default().fg(TEXT_PRIMARY)),
     );
     tuika::paint(f.buffer_mut(), input_area, &theme, view.as_ref(), &[]);
     draw_input_cursor(f, input_area, app);
@@ -1921,10 +1922,10 @@ fn linear_status_layout(lines: &[StatusLine], width: u16) -> FullscreenStatusLay
             let start = col;
             if let Some(label) = field.label {
                 let label = format!("{label} ");
-                col = col.saturating_add(tuika::str_cols(&label));
+                col = col.saturating_add(str_cols(&label));
                 spans.push(Span::styled(label, Style::default().fg(TEXT_DIM)));
             }
-            col = col.saturating_add(tuika::str_cols(&field.value));
+            col = col.saturating_add(str_cols(&field.value));
             spans.push(Span::styled(
                 field.value.clone(),
                 Style::default().fg(TEXT_MUTED),
@@ -1987,7 +1988,7 @@ fn section_status_layout(sections: &[StatusSection], width: u16) -> FullscreenSt
                     let line_width = line
                         .spans
                         .iter()
-                        .map(|span| tuika::str_cols(span.content.as_ref()))
+                        .map(|span| str_cols(span.content.as_ref()))
                         .fold(0, u16::saturating_add);
                     if line_width < cell_width {
                         spans.push(Span::raw(" ".repeat((cell_width - line_width) as usize)));
@@ -2024,7 +2025,7 @@ fn status_cell(section: &StatusSection, width: u16) -> StatusCell {
     let mut hits = Vec::new();
     let title_text = fit_status_text(section.title, width.saturating_sub(2));
     let title = format!(" {title_text} ");
-    let title_width = tuika::str_cols(&title).min(width);
+    let title_width = str_cols(&title).min(width);
     lines.push(Line::from(vec![
         Span::styled(title, Style::default().fg(ACCENT_GOLD)),
         Span::styled(
@@ -2037,12 +2038,10 @@ fn status_cell(section: &StatusSection, width: u16) -> StatusCell {
             .label
             .map(|label| format!("{label} "))
             .unwrap_or_default();
-        let prefix_width = 1u16.saturating_add(tuika::str_cols(&label));
+        let prefix_width = 1u16.saturating_add(str_cols(&label));
         let value_width = width.saturating_sub(prefix_width);
         let value = fit_status_text(&field.value, value_width);
-        let end_col = prefix_width
-            .saturating_add(tuika::str_cols(&value))
-            .min(width);
+        let end_col = prefix_width.saturating_add(str_cols(&value)).min(width);
         let mut spans = vec![Span::raw(" ")];
         if !label.is_empty() {
             spans.push(Span::styled(label, Style::default().fg(TEXT_DIM)));
@@ -2067,13 +2066,13 @@ fn fit_status_text(text: &str, width: u16) -> String {
     if width == 0 {
         return String::new();
     }
-    if tuika::str_cols(text) <= width {
+    if str_cols(text) <= width {
         return text.to_string();
     }
     if width == 1 {
         return "…".to_string();
     }
-    let wrapped = tuika::wrap_lines(&[Line::from(text.to_string())], width - 1);
+    let wrapped = tuika::components::text::wrap_lines(&[Line::from(text.to_string())], width - 1);
     let prefix = wrapped
         .first()
         .map(|line| {

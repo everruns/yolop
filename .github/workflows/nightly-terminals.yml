@@ -70,7 +70,7 @@ jobs:
           cat capture.txt
 
       - name: Assert the gallery rendered
-        run: bash crates/tuika/scripts/nightly-assert-gallery.sh capture.txt
+        run: bash scripts/nightly-assert-gallery.sh capture.txt
 
       - name: Upload capture
         if: always()
@@ -106,11 +106,11 @@ jobs:
       - name: Run gallery under kitty (Xvfb) and capture
         run: |
           xvfb-run -a --server-args="-screen 0 1200x800x24" \
-            bash crates/tuika/scripts/nightly-kitty-capture.sh "$PWD/target/debug/yolop"
+            bash scripts/nightly-kitty-capture.sh "$PWD/target/debug/yolop"
 
       - name: Assert (non-fatal)
         run: |
-          bash crates/tuika/scripts/nightly-assert-gallery.sh capture.txt \
+          bash scripts/nightly-assert-gallery.sh capture.txt \
             || echo "::warning::kitty capture did not pass assertions (best-effort leg)"
 
       - name: Upload capture + screenshot
@@ -170,7 +170,7 @@ jobs:
 
       - name: Assert (non-fatal)
         run: |
-          bash crates/tuika/scripts/nightly-assert-gallery.sh capture.txt \
+          bash scripts/nightly-assert-gallery.sh capture.txt \
             || echo "::warning::iTerm2 capture did not pass assertions (best-effort leg)"
 
       - name: Upload capture + screenshot

@@ -44,8 +44,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 - [MCP](specs/mcp.md) — Model Context Protocol client support.
 - [OKF](specs/okf.md) — Open Knowledge Format integration.
 - [Trajectory export](specs/trajectory.md) — ATIF trajectory export.
-- [Tuika images](specs/tuika-images.md) — terminal image rendering.
-- [Tuika keymap](specs/keymap.md) — declarative key-binding dispatch.
+- [Tuika](specs/tuika.md) — the terminal-UI toolkit dependency and its seams.
 
 ## Safety and execution
 

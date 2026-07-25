@@ -33,6 +33,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
+use tuika::components::{ScrollState, TextInputEvent, TextInputState};
+use tuika::keymap::Dispatch;
+use tuika::mouse::{SelectionRange, selected_text, word_at};
+use tuika::term::hyperlink::BufferLink;
+use tuika::term::pointer::{self, PointerShape};
+use tuika::term::progress::TerminalProgress;
 
 pub(crate) mod fullscreen;
 mod keymap;
@@ -124,7 +130,7 @@ struct TranscriptWrapCache {
     /// Hyperlink runs into `lines` (labeled markdown links + bare URLs), used to
     /// embed native OSC 8 targets after painting when the label differs from
     /// the URL.
-    links: Vec<tuika::BufferLink>,
+    links: Vec<BufferLink>,
 }
 
 pub struct App {
@@ -134,13 +140,13 @@ pub struct App {
     pub lines: Vec<ChatLine>,
     printed_lines: usize,
     /// The single composer model, shared by **both** renderers: a tuika
-    /// [`TextInputState`](tuika::TextInputState) that owns the draft text and
+    /// [`TextInputState`](TextInputState) that owns the draft text and
     /// cursor and applies its own edits (emacs bindings, word movement, wrapping).
     /// Inline and full-screen both read and write it, render it through the same
-    /// [`TextInput`](tuika::TextInput) view, and place the terminal cursor via
-    /// [`cursor_screen`](tuika::TextInputState::cursor_screen) — so the two modes
+    /// [`TextInput`](tuika::components::TextInput) view, and place the terminal cursor via
+    /// [`cursor_screen`](TextInputState::cursor_screen) — so the two modes
     /// can never drift.
-    composer: tuika::TextInputState,
+    composer: TextInputState,
     /// User messages submitted while a turn is active. The embedded runtime
     /// cannot accept concurrent inputs, so these start in FIFO order at the
     /// next turn boundary. Cancellation deliberately leaves the queue intact.
@@ -246,7 +252,7 @@ pub struct App {
     /// `Inline` is the scrollback-native composer selected by `--inline`.
     render_mode: RenderMode,
     /// Full-screen transcript scroll position (unused in inline mode).
-    scroll: tuika::ScrollState,
+    scroll: ScrollState,
     /// Last (content_height, viewport_height) the full-screen transcript drew,
     /// so mouse/paging handlers can clamp scrolling without re-laying out.
     scroll_metrics: (usize, usize),
@@ -266,7 +272,7 @@ pub struct App {
     selection_area: Rect,
     /// Link cell runs visible in the last full-screen transcript frame.
     visible_link_regions: Vec<Rect>,
-    pointer_shape: tuika::PointerShape,
+    pointer_shape: PointerShape,
     /// Click targets from the last fullscreen status layout.
     status_hit_regions: Vec<(Rect, StatusAction)>,
     pending_copy: bool,
@@ -274,7 +280,7 @@ pub struct App {
     /// bar / taskbar) while a turn runs. Works in both renderers. Enabled only
     /// for real TUI sessions via [`App::enable_native_progress`] so tests and
     /// non-terminal hosts emit no escape sequences.
-    term_progress: tuika::TerminalProgress,
+    term_progress: TerminalProgress,
     native_progress: bool,
     /// Shell-style Up/Down recall of previously submitted composer prompts,
     /// persisted across sessions. See [`crate::tui::prompt_history`].
@@ -284,7 +290,7 @@ pub struct App {
     history_search: Option<HistorySearch>,
     /// App-global chord shortcuts (Ctrl+R/C/D/B/V), resolved through `tuika`'s
     /// keymap engine rather than a hand-rolled match. See [`crate::tui::keymap`].
-    keymap: tuika::Keymap<GlobalAction>,
+    keymap: tuika::keymap::Keymap<GlobalAction>,
     /// When the active turn began, for the live elapsed timer on the busy
     /// indicator. `None` while idle.
     turn_started_at: Option<Instant>,
@@ -565,8 +571,8 @@ impl App {
             lines: Vec::new(),
             printed_lines: 0,
             composer: {
-                let mut composer = tuika::TextInputState::new();
-                composer.set_mode(tuika::TextInputMode::SubmitOnEnter);
+                let mut composer = TextInputState::new();
+                composer.set_mode(tuika::components::TextInputMode::SubmitOnEnter);
                 composer
             },
             queued_messages: VecDeque::new(),
@@ -623,17 +629,17 @@ impl App {
             pending_images,
             pending_pastes: Vec::new(),
             render_mode: RenderMode::default(),
-            scroll: tuika::ScrollState::new(),
+            scroll: ScrollState::new(),
             scroll_metrics: (0, 0),
             transcript_generation: 0,
             transcript_cache: TranscriptWrapCache::default(),
             selection: transcript_selection::TranscriptSelection::new(),
             selection_area: Rect::ZERO,
             visible_link_regions: Vec::new(),
-            pointer_shape: tuika::PointerShape::Default,
+            pointer_shape: PointerShape::Default,
             status_hit_regions: Vec::new(),
             pending_copy: false,
-            term_progress: tuika::TerminalProgress::new(),
+            term_progress: TerminalProgress::new(),
             native_progress: false,
             // Tests run in-memory so recall never reads or appends to the real
             // per-user history file.
@@ -684,7 +690,7 @@ impl App {
         let Some(screen_row) = self.screen_row_for_content(content_row) else {
             return;
         };
-        let Some(word) = tuika::word_at(buffer, self.selection_area, column, screen_row) else {
+        let Some(word) = word_at(buffer, self.selection_area, column, screen_row) else {
             return;
         };
         self.selection
@@ -698,7 +704,7 @@ impl App {
     pub(crate) fn set_visible_links(
         &mut self,
         origin: ratatui::layout::Position,
-        links: &[tuika::BufferLink],
+        links: &[BufferLink],
     ) {
         self.visible_link_regions = links
             .iter()
@@ -714,7 +720,7 @@ impl App {
             .collect();
     }
 
-    fn update_link_pointer(&mut self, mouse: MouseEvent) -> Option<tuika::PointerShape> {
+    fn update_link_pointer(&mut self, mouse: MouseEvent) -> Option<PointerShape> {
         if !matches!(mouse.kind, MouseEventKind::Moved) {
             return None;
         }
@@ -725,9 +731,9 @@ impl App {
                 && mouse.row < area.bottom()
         });
         let next = if hovered {
-            tuika::PointerShape::Pointer
+            PointerShape::Pointer
         } else {
-            tuika::PointerShape::Default
+            PointerShape::Default
         };
         if next == self.pointer_shape {
             return None;
@@ -739,7 +745,7 @@ impl App {
     /// The selection mapped into the *current* viewport window, for painting.
     /// Returns `None` when the selection is scrolled entirely off-screen even
     /// though it is still active (see [`has_selection`](Self::has_selection)).
-    pub(crate) fn selection_range(&self) -> Option<tuika::SelectionRange> {
+    pub(crate) fn selection_range(&self) -> Option<SelectionRange> {
         self.visible_selection_range(self.selection.range()?)
     }
 
@@ -785,12 +791,12 @@ impl App {
     }
 
     /// Map a content-space selection into the current window as a viewport
-    /// [`tuika::SelectionRange`]. A start above the window (or end below it)
+    /// [`SelectionRange`]. A start above the window (or end below it)
     /// becomes a full-width edge row so the linear span fills across it.
     fn visible_selection_range(
         &self,
         range: transcript_selection::ContentRange,
-    ) -> Option<tuika::SelectionRange> {
+    ) -> Option<SelectionRange> {
         let area = self.selection_area;
         let (content_h, viewport_h) = self.scroll_metrics;
         if area.height == 0 || content_h == 0 || viewport_h == 0 {
@@ -814,7 +820,7 @@ impl App {
             e_col = area.right().saturating_sub(1);
         }
         let to_screen = |r: usize| area.y + (top_pad + (r - offset)) as u16;
-        Some(tuika::SelectionRange {
+        Some(SelectionRange {
             start: (s_col, to_screen(s_row)),
             end: (e_col, to_screen(e_row)),
         })
@@ -823,7 +829,7 @@ impl App {
     /// The selected text, read from the wrapped transcript cache so a multi-row
     /// selection copies in full even when most of it is scrolled off-screen.
     /// Rows are rendered into a scratch buffer and read back through
-    /// [`tuika::selected_text`] so wide glyphs and trailing-blank trimming match
+    /// [`selected_text`] so wide glyphs and trailing-blank trimming match
     /// what a single-window selection would copy.
     fn selection_copy_text(&self) -> String {
         let Some(range) = self.selection.range() else {
@@ -848,11 +854,11 @@ impl App {
         // Columns are viewport-absolute; the scratch buffer starts at the
         // transcript's left inset, so shift them 0-based.
         let base = area.x;
-        let sr = tuika::SelectionRange {
+        let sr = SelectionRange {
             start: (range.start.0.saturating_sub(base), 0),
             end: (range.end.0.saturating_sub(base), row_count as u16 - 1),
         };
-        tuika::selected_text(&buf, buf.area, sr)
+        selected_text(&buf, buf.area, sr)
     }
 
     /// Record the transcript's inner rect (the selectable region) from the draw.
@@ -1261,7 +1267,7 @@ impl App {
 
     /// Hyperlink runs for the cached transcript wrapping, used to embed OSC 8
     /// after the full-screen paint.
-    fn transcript_links(&self) -> &[tuika::BufferLink] {
+    fn transcript_links(&self) -> &[BufferLink] {
         &self.transcript_cache.links
     }
 
@@ -1586,7 +1592,7 @@ impl App {
                 CrosstermEvent::Mouse(mouse) => {
                     if self.render_mode.is_fullscreen() {
                         if let Some(shape) = self.update_link_pointer(mouse) {
-                            let _ = tuika::write_pointer_shape(&mut std::io::stdout(), shape);
+                            let _ = pointer::write(&mut std::io::stdout(), shape);
                         }
                         if self.handle_fullscreen_scroll(mouse.kind) {
                             continue;
@@ -1803,8 +1809,8 @@ impl App {
                 .composer
                 .handle_enter(key.modifiers == KeyModifiers::SHIFT)
             {
-                tuika::TextInputEvent::Changed => {}
-                tuika::TextInputEvent::Submit => self.submit_input().await,
+                TextInputEvent::Changed => {}
+                TextInputEvent::Submit => self.submit_input().await,
             },
             KeyCode::Tab => {
                 if !self.busy
@@ -1836,8 +1842,8 @@ impl App {
             return None;
         };
         match self.keymap.dispatch(translated) {
-            tuika::Dispatch::Command(action) => Some(action),
-            tuika::Dispatch::Pending | tuika::Dispatch::Unmatched => None,
+            Dispatch::Command(action) => Some(action),
+            Dispatch::Pending | Dispatch::Unmatched => None,
         }
     }
 
@@ -3490,6 +3496,8 @@ fn shifted_char(ch: char) -> Option<char> {
 
 #[cfg(test)]
 mod tests {
+    use tuika::term::hyperlink;
+
     use super::*;
     use crate::capabilities::model_discovery::DiscoveredProviderModel;
     use everruns_core::events::{
@@ -3704,11 +3712,11 @@ mod tests {
                 x = buffer.set_span(x, row as u16, span, 120).0;
             }
         }
-        tuika::apply_buffer_links(
+        hyperlink::apply_buffer_links(
             &mut buffer,
             Position { x: 0, y: 0 },
             &links,
-            tuika::LinkPolicy::WEB,
+            hyperlink::LinkPolicy::WEB,
         );
         let mut event = tuika::Mouse::at(
             tuika::MouseKind::Up(tuika::MouseButton::Left),
@@ -3717,7 +3725,7 @@ mod tests {
         );
         event.ctrl = true;
         assert_eq!(
-            tuika::ctrl_click_url(&event, &buffer, Rect::new(0, 0, 120, 4)).as_deref(),
+            hyperlink::ctrl_click_url(&event, &buffer, Rect::new(0, 0, 120, 4)).as_deref(),
             Some(link.url.as_str()),
             "the PR label must preserve the markdown destination"
         );
@@ -5592,7 +5600,7 @@ mod tests {
         test.app.set_render_mode(RenderMode::Fullscreen);
         test.app.set_visible_links(
             ratatui::layout::Position { x: 4, y: 6 },
-            &[tuika::BufferLink {
+            &[BufferLink {
                 line: 1,
                 start_col: 3,
                 end_col: 9,
@@ -5608,12 +5616,12 @@ mod tests {
 
         assert_eq!(
             test.app.update_link_pointer(moved(8, 7)),
-            Some(tuika::PointerShape::Pointer)
+            Some(PointerShape::Pointer)
         );
         assert_eq!(test.app.update_link_pointer(moved(9, 7)), None);
         assert_eq!(
             test.app.update_link_pointer(moved(2, 2)),
-            Some(tuika::PointerShape::Default)
+            Some(PointerShape::Default)
         );
     }
 
@@ -5674,7 +5682,7 @@ mod tests {
                 .contains(ratatui::style::Modifier::REVERSED)
         });
         assert!(highlighted, "the selected row should be highlighted");
-        let text = tuika::selected_text(buffer, test.app.selection_area, range);
+        let text = selected_text(buffer, test.app.selection_area, range);
         assert!(
             text.contains("hello"),
             "the selection should copy the transcript text, got {text:?}"
@@ -8337,7 +8345,7 @@ mod tests {
 
         // `input_height` is the composer's own visual height, clamped to the
         // bound — the App delegates straight to the shared TextInputState.
-        let expected = tuika::TextInputState::from_text(&app.input_text())
+        let expected = TextInputState::from_text(&app.input_text())
             .visual_height(input_width)
             .clamp(1, MAX_INPUT_HEIGHT);
         assert_eq!(
@@ -9481,7 +9489,7 @@ mod tests {
         assert!(
             wide.lines
                 .iter()
-                .all(|line| tuika::components::line_width(line) <= 120)
+                .all(|line| tuika::components::text::line_width(line) <= 120)
         );
 
         let narrow = fullscreen_status_layout(&state, 80);
@@ -9503,7 +9511,7 @@ mod tests {
             narrow
                 .lines
                 .iter()
-                .all(|line| tuika::components::line_width(line) <= 80)
+                .all(|line| tuika::components::text::line_width(line) <= 80)
         );
     }
 

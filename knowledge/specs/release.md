@@ -34,13 +34,20 @@ Every yolop release ships to:
 | Target          | Surface                                  | How users install                       |
 |-----------------|------------------------------------------|-----------------------------------------|
 | GitHub Release  | tag `vX.Y.Z`, source archive, binaries   | `gh release download vX.Y.Z`            |
-| crates.io       | `yolop` binary + three library crates       | `cargo install yolop --locked`       |
+| crates.io       | `yolop` binary + the `yolop-yep` library  | `cargo install yolop --locked`          |
 | Homebrew tap    | formula at `everruns/homebrew-tap`       | `brew install everruns/tap/yolop`       |
 
-The three library crates (`yolop-yep`, `tuika`, and `tuika-codeformatters`)
-are versioned independently of `yolop` and are published as a side effect of a
-`yolop` release only when their in-tree version isn't already on crates.io (see
-§ `publish.yml`). They can also be consumed on their own (`cargo add tuika`).
+The `yolop-yep` extension SDK is versioned independently of `yolop` and is
+published as a side effect of a `yolop` release only when its in-tree version
+isn't already on crates.io (see § `publish.yml`). Extension authors consume it
+on its own (`cargo add yolop-yep`).
+
+The TUI toolkit yolop renders through — `tuika` and `tuika-codeformatters` — is
+**not** released from here. It ships from
+[`everruns/tuika`](https://github.com/everruns/tuika) on its own schedule, and a
+yolop release simply depends on whatever version is already live. A yolop
+release that needs new toolkit behavior therefore waits on a tuika release
+first; see [`tuika.md`](./tuika.md).
 
 Prebuilt CLI binaries are produced for:
 
@@ -98,14 +105,13 @@ constraints it must satisfy:
    declares **shipped** only when both report the new version. A failure rolls
    forward via hotfix rather than leaving the release half-published.
 
-**Four crates, ordered publish.** `yolop` depends on `yolop-yep`, `tuika`, and
-`tuika-codeformatters` by version, so crates.io requires all three live first.
-`publish.yml` derives their dependency-first order from Cargo metadata
-(currently `yolop-yep`, `tuika`, `tuika-codeformatters`, then `yolop`) and skips
+**Two crates, ordered publish.** `yolop` depends on `yolop-yep` by version, so
+crates.io requires it live first. `publish.yml` derives the dependency-first
+order from Cargo metadata (currently `yolop-yep`, then `yolop`) and skips
 versions already live. A consequence: `cargo publish --dry-run -p yolop` can
-fail locally until all in-tree library versions are on crates.io. That is
-expected, not a broken release — the libraries are dry-run locally and CI
-validates `yolop` after they go live.
+fail locally until a new `yolop-yep` version is on crates.io. That is expected,
+not a broken release — `yolop-yep` is dry-run locally and CI validates `yolop`
+after it goes live.
 
 ## CI Automation
 
@@ -127,8 +133,8 @@ validates `yolop` after they go live.
 - **Trigger**: `release: published`, or `workflow_dispatch --ref vX.Y.Z` from
   `release.yml`.
 - **Actions**: installs the pinned Rust toolchain, verifies the tag matches
-  `Cargo.toml`, publishes `yolop-yep`, `tuika`, `tuika-codeformatters`, and
-  `yolop` in dependency order (skipping versions already live), then runs
+  `Cargo.toml`, publishes `yolop-yep` and `yolop` in dependency order
+  (skipping versions already live), then runs
   `scripts/verify_crates_publish.py` to confirm crates.io serves the new version.
 - **Secret**: `CARGO_REGISTRY_TOKEN`.
 
@@ -186,7 +192,7 @@ at the top of the window), **Windows Terminal** and **ConEmu** (taskbar),
 silently ignore the unknown OSC, so emitting it is safe everywhere — the
 in-terminal UI is unaffected.
 
-**OSC 8 hyperlinks** (`HyperlinkBackend` in `crates/tuika/src/hyperlink.rs`)
+**OSC 8 hyperlinks** (tuika's `HyperlinkBackend`)
 wrap `http(s)` URL runs so a supporting terminal makes them clickable:
 **Ghostty**, **iTerm2**, **WezTerm**, **Kitty**, **Konsole**, recent **GNOME
 Terminal / VTE**. Others ignore the escape and render the URL as plain (usually
@@ -208,7 +214,7 @@ differ in maturity:
 
 | Leg | Runner | Capture | Status |
 |-----|--------|---------|--------|
-| tmux | Linux | `capture-pane` text | **Asserted** — `crates/tuika/scripts/nightly-assert-gallery.sh` gates the job on the box chrome, a real Braille glyph, and the footer URL. |
+| tmux | Linux | `capture-pane` text | **Asserted** — `scripts/nightly-assert-gallery.sh` gates the job on the box chrome, a real Braille glyph, and the footer URL. |
 | kitty | Linux (Xvfb, software GL) | remote-control text + screenshot | Best-effort — captured as an artifact; assertion is a warning, not a failure. |
 | iTerm2 | macOS | AppleScript session text + `screencapture` | Best-effort — artifact for inspection. |
 | Windows Terminal | Windows | screenshot | Best-effort — artifact for inspection. |

@@ -3,13 +3,23 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-24 — Tuika moved to its own repository
+
+- `tuika` and `tuika-codeformatters` left this workspace for
+  [everruns/tuika](https://github.com/everruns/tuika) and are now consumed from
+  crates.io. Yolop publishes two crates again (`yolop-yep`, `yolop`).
+- Replaced the two tuika-internal concepts (keymap engine, image rendering) with
+  [Tuika](specs/tuika.md), which records the dependency boundary, the seams Yolop
+  fills, and the testing split. The toolkit's own design rationale now lives in
+  its repository.
+
 ## 2026-07-24 — Agent context layering
 
 - Added [Agent context](specs/agent-context.md): one owner per rule, progressive
   disclosure across `AGENTS.md` → specs → skills → code, and constraint reserved
   for irreversible actions.
 - Applied it: `AGENTS.md` now carries repository facts and gotchas only, with
-  benchmark procedure moved to `crates/tuika/benches/README.md` and eval
+  benchmark procedure moved to the toolkit's own repository and eval
   procedure left to `evals/README.md`; the ship, maintenance, and release skills
   stopped restating their specs' bars, and maintenance and release split their
   reference material out of `SKILL.md`.
@@ -32,7 +42,7 @@ wording, formatting, and link fixes do not need entries.
   panic reports that remain visible after TUI terminal restoration.
 - Crash reports and restored-terminal diagnostics now identify the active
   single-session runtime when its session ID is available.
-- Added [Tuika keymap](specs/keymap.md): the tuika declarative key-binding engine and Yolop's dispatch of its global shortcuts through it.
+- Added `specs/keymap.md`: the tuika declarative key-binding engine and Yolop's dispatch of its global shortcuts through it. (Superseded — the engine's rationale moved to the tuika repository; see [Tuika](specs/tuika.md).)
 - Excluded the tuika demo/theme/styling GIFs from the published `.crate` (~8.8 MiB → ~1 MiB), keeping only the two README-embedded assets; documented the GitHub-only/crate split in the documentation spec.
 
 ## 2026-07-23

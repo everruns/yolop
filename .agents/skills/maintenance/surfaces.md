@@ -70,7 +70,7 @@ On a deep pass, hunt for complexity the codebase no longer earns — single-use
 abstractions, premature generalization, indirection with no payoff, duplication
 that wants a helper, deep nesting, names that hide intent. Verify with `cargo
 build`, `cargo clippy`, and `cargo test`: a simplification that changes behavior
-is a bug. Removing a public item from `yolop-yep` or `tuika` is a breaking
+is a bug. Removing a public item from `yolop-yep` is a breaking
 change — call it out in the PR.
 
 ## Security posture
