@@ -23,12 +23,15 @@ than a one-line convenience.
 
 ## What
 
-Yolop depends on two crates from crates.io:
+Yolop depends on three crates from crates.io:
 
 - `tuika` — the toolkit. Version-pinned like any other dependency, with no path
   override.
 - `tuika-codeformatters` — the tree-sitter `Highlighter` implementation. Kept
   separate upstream so tuika core stays grammar-free.
+- `tuika-mermaid` — the `FencedBlockRenderer` that turns ` ```mermaid ` fences
+  into Unicode cell diagrams. Kept separate upstream so tuika core takes on no
+  diagram engine.
 
 ## Where the boundary falls
 
@@ -38,6 +41,7 @@ tuika owns *presentation*; yolop owns *acquisition and meaning*. Concretely:
 | --- | --- | --- |
 | Code highlighting | `CodeBlock` framing, gutter, wrapping | the `Highlighter` (`tuika-codeformatters`) |
 | Markdown images | block reservation and protocol emission | an `ImageResolver` that decodes bytes to RGBA |
+| Mermaid fences | the `FencedBlockRenderer` seam | the renderer (`tuika-mermaid`) and the transcript's width guard |
 | Key bindings | the keymap engine (chords, sequences, gated layers, dispatch) | the binding table and what each command *means* |
 | Links | OSC 8 encoding and the `LinkPolicy` sanitizer | which schemes are allowed, and the transcript's link runs |
 | Progress | the OSC 9;4 encoder | when a turn is running |
@@ -65,8 +69,14 @@ it receives, or a modifier-click opens the browser twice. See
 - **A yolop-only feature does not belong upstream.** If a proposed tuika change
   only makes sense for yolop, the right shape is a new seam (a trait, a state
   type, a callback) that yolop fills in.
-- **The two crates move together.** `tuika-codeformatters` pins a compatible
-  `tuika` range, so bumping one usually means bumping both.
+- **The companion crates move with tuika.** `tuika-codeformatters` and
+  `tuika-mermaid` pin a compatible `tuika` range, so bumping one usually means
+  bumping all three.
+- **A fenced block that does not fit is not painted.** A companion renderer may
+  lay content out at its natural size and ignore the offered width;
+  `tuika-mermaid` does. The transcript falls back to the themed code block
+  rather than paint a diagram the viewport will clip, so the source stays
+  readable at any terminal width.
 - **`ratatui` stays aligned.** Yolop and tuika must resolve to one shared
   `ratatui-core`, since the interoperability seam is a raw `Buffer` from it. A
   `ratatui` major bump is a coordinated change across both repositories.

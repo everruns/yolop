@@ -3399,6 +3399,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmdflux"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc3d57274846e2bab54eeb7e77e5418c76b8ea3e3ef4c5808daf73e1e68b89a6"
+dependencies = [
+ "pest",
+ "pest_derive",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tracing",
+ "unicode-width",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6686,6 +6701,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tuika-mermaid"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cdbe844e64cef702bd6a25ee5000a14d56634cf4307f25404fc6cb3b5c5bce7"
+dependencies = [
+ "mmdflux",
+ "ratatui-core",
+ "tuika",
+]
+
+[[package]]
 name = "typed-arena"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7707,6 +7733,7 @@ dependencies = [
  "tree-sitter-zig",
  "tuika",
  "tuika-codeformatters",
+ "tuika-mermaid",
  "urlencoding",
  "vt100",
  "yolop-yep",

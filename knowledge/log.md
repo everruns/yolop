@@ -3,6 +3,14 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-25 — Mermaid fences in the transcript
+
+- Yolop fills tuika's `FencedBlockRenderer` seam with `tuika-mermaid`, so
+  ` ```mermaid ` fences render as Unicode diagrams. [Tuika](specs/tuika.md)
+  gained the third companion crate and the rule that a fenced block which does
+  not fit the transcript width falls back to the themed code block rather than
+  being painted clipped.
+
 ## 2026-07-24 — Tuika moved to its own repository
 
 - `tuika` and `tuika-codeformatters` left this workspace for
