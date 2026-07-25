@@ -3,6 +3,17 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-25 — Agentyk execution backend (experiment)
+
+- Added [Agentyk backend](specs/agentyk-backend.md): a feature-gated, isolated
+  second execution backend (`--engine agentyk`, feature `agentyk-backend`) built
+  on the [agentyk](https://github.com/everruns/agentyk) library instead of
+  `everruns-runtime`. Its purpose is measurement — the concept records what a
+  real coding agent cannot yet do on agentyk's seams (provider metadata,
+  prompt caching, tool cancellation, tool progress, edit/grep tools, parallel
+  dispatch, mid-turn input, MCP transports).
+- The shipping backend is unchanged and remains the default.
+
 ## 2026-07-25 — Mermaid fences in the transcript
 
 - Yolop fills tuika's `FencedBlockRenderer` seam with `tuika-mermaid`, so

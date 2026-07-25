@@ -41,6 +41,11 @@ crates.io along with its `tuika-codeformatters` highlighter. See
   `doppler run -- bash -lc 'GH_TOKEN="$GITHUB_TOKEN" <command>'`.
 - `--provider llmsim` needs no API key, so `cargo run -- --provider llmsim -p "hi"`
   is the offline smoke test.
+- `--engine agentyk` (feature `agentyk-backend`, off by default) runs an
+  isolated experimental backend built on the `agentyk` library instead of
+  everruns-runtime. It lives entirely in `src/agentyk_backend/`; do not wire it
+  into the shipping path. See
+  [`knowledge/specs/agentyk-backend.md`](knowledge/specs/agentyk-backend.md).
 - Yolop is pre-1.0: no backward compatibility is required unless a spec says so.
 - Unrecognized working-tree changes are probably from another agent or the user.
   Work with them; stop only if they make the task unsafe.

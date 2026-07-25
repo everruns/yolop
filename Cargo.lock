@@ -120,6 +120,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentyk"
+version = "0.1.0"
+source = "git+https://github.com/everruns/agentyk?branch=claude%2Fagentyk-app-experiment-o9jduh#954df0b917852b2a99eeafee59a0ff1bf6174b39"
+dependencies = [
+ "agentyk-core",
+ "agentyk-engine",
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "agentyk-core"
+version = "0.1.0"
+source = "git+https://github.com/everruns/agentyk?branch=claude%2Fagentyk-app-experiment-o9jduh#954df0b917852b2a99eeafee59a0ff1bf6174b39"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "uuid",
+]
+
+[[package]]
+name = "agentyk-engine"
+version = "0.1.0"
+source = "git+https://github.com/everruns/agentyk?branch=claude%2Fagentyk-app-experiment-o9jduh#954df0b917852b2a99eeafee59a0ff1bf6174b39"
+dependencies = [
+ "agentyk-core",
+ "async-trait",
+ "chrono",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4851,6 +4891,7 @@ dependencies = [
  "mime",
  "percent-encoding",
  "pin-project-lite",
+ "quinn",
  "rustls",
  "rustls-pki-types",
  "serde",
@@ -7663,6 +7704,7 @@ name = "yolop"
 version = "0.12.1"
 dependencies = [
  "agent-client-protocol",
+ "agentyk",
  "anyhow",
  "arboard",
  "ast-grep-core",

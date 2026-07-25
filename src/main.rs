@@ -2,6 +2,8 @@
 // Decision: support both interactive TUI and a `--print` one-shot mode so the
 // example is testable in CI and easy to demo against a real codebase.
 
+#[cfg(feature = "agentyk-backend")]
+mod agentyk_backend;
 mod auth;
 mod capabilities;
 mod config;
@@ -136,6 +138,20 @@ struct Cli {
     /// workspace and temporary directories, and network access is blocked.
     #[arg(long)]
     sandbox: bool,
+
+    /// Execution backend. `everruns` (default) is the shipping one;
+    /// `agentyk` is the isolated experiment built on the agentyk library and
+    /// requires a build with `--features agentyk-backend`. See
+    /// `knowledge/specs/agentyk-backend.md`.
+    #[arg(long, value_enum, default_value = "everruns")]
+    engine: EngineArg,
+}
+
+/// Which execution backend runs the turn loop.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum EngineArg {
+    Everruns,
+    Agentyk,
 }
 
 #[derive(Subcommand, Debug)]
@@ -571,6 +587,24 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
     };
     let cwd = resolve_workspace_root(cli.cwd.clone(), resume_session_id, &sessions_dir)?;
 
+    // The agentyk backend is a separate execution story end to end: it builds
+    // its own agent and owns its own loop, so it branches before the everruns
+    // runtime is built rather than swapping a piece inside it.
+    if cli.engine == EngineArg::Agentyk {
+        if let Some(warning) = exec::sandbox::danger_warning(effective_sandbox_mode) {
+            eprintln!("yolop: {warning}");
+        }
+        return run_agentyk_engine(
+            &cli,
+            cwd,
+            provider,
+            &settings,
+            effective_sandbox_mode,
+            &sessions_dir,
+        )
+        .await;
+    }
+
     // ACP mode builds runtimes per session (cwd arrives via `session/new`), so
     // it bypasses the up-front runtime build and the TUI.
     if cli.acp {
@@ -648,6 +682,59 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
     }
     let pending_images = tui::input::image_input::load_image_parts(&cli.images)?;
     run_tui(runtime, pending_images, cli.trajectory_out, !cli.inline).await
+}
+
+/// Hand the run to the experimental agentyk backend.
+///
+/// Only the flags that backend actually honors are read; the rest (`--acp`,
+/// `--trajectory-out`, `--image`, `--theme`, `--inline`, `--session`) belong
+/// to surfaces it does not have yet and are reported as ignored rather than
+/// silently dropped.
+#[cfg(feature = "agentyk-backend")]
+async fn run_agentyk_engine(
+    cli: &Cli,
+    cwd: PathBuf,
+    provider: ProviderChoice,
+    settings: &SettingsStore,
+    sandbox: config::SandboxMode,
+    sessions_dir: &Path,
+) -> Result<()> {
+    for (flag, ignored) in [
+        ("--acp", cli.acp),
+        ("--trajectory-out", cli.trajectory_out.is_some()),
+        ("--image", !cli.images.is_empty()),
+        ("--theme", cli.theme.is_some()),
+        ("--inline", cli.inline),
+        ("--session", cli.session.is_some()),
+    ] {
+        if ignored {
+            eprintln!("yolop: {flag} is not supported by --engine agentyk yet");
+        }
+    }
+    agentyk_backend::run(agentyk_backend::RunConfig {
+        workspace: cwd,
+        provider,
+        settings: settings.snapshot(),
+        sandbox,
+        prompt: cli.print.clone(),
+        session_log: Some(sessions_dir.join("agentyk").join("events.jsonl")),
+    })
+    .await
+}
+
+#[cfg(not(feature = "agentyk-backend"))]
+async fn run_agentyk_engine(
+    _cli: &Cli,
+    _cwd: PathBuf,
+    _provider: ProviderChoice,
+    _settings: &SettingsStore,
+    _sandbox: config::SandboxMode,
+    _sessions_dir: &Path,
+) -> Result<()> {
+    anyhow::bail!(
+        "--engine agentyk needs a build with the `agentyk-backend` feature: \
+         cargo run --features agentyk-backend -- --engine agentyk …"
+    )
 }
 
 fn resolve_workspace_root(
@@ -1747,6 +1834,7 @@ mod tests {
             inline: false,
             theme: None,
             sandbox: false,
+            engine: EngineArg::Everruns,
         }
     }
 
@@ -1806,6 +1894,7 @@ mod tests {
             inline: false,
             theme: None,
             sandbox: false,
+            engine: EngineArg::Everruns,
         };
 
         let (provider, _notes) = pick_provider(&cli, &settings);

@@ -23,8 +23,22 @@ exclude = ["/docs"]
 name = "yolop"
 path = "src/main.rs"
 
+[features]
+default = []
+# Experimental second execution backend, selected with `--engine agentyk`:
+# yolop's turn story built on the `agentyk` library instead of
+# everruns-runtime. Off by default; see knowledge/specs/agentyk-backend.md.
+agentyk-backend = ["dep:agentyk"]
+
 [dependencies]
 agent-client-protocol = "2.0.0"
+# The experimental `--engine agentyk` backend only. Consumed from git while
+# agentyk is pre-release: the published 0.1.0 predates middleware, the engine
+# crate, and the filesystem capability the backend is built on.
+agentyk = { git = "https://github.com/everruns/agentyk", branch = "claude/agentyk-app-experiment-o9jduh", features = [
+    "http",
+    "fs",
+], optional = true }
 anyhow = "1.0"
 ast-grep-core = "0.45"
 ast-grep-language = { version = "0.45", default-features = false, features = [

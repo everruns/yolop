@@ -38,6 +38,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 ## Protocols and optional integrations
 
 - [ACP](specs/acp.md) — Agent Client Protocol support.
+- [Agentyk backend](specs/agentyk-backend.md) — the experimental execution backend built on the agentyk library.
 - [AST editing](specs/ast_edit.md) — previewed structural rewrites.
 - [Herdr](specs/herdr.md) — cloud execution integration.
 - [LSP](specs/lsp.md) — language-server integration.

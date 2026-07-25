@@ -2477,3 +2477,49 @@ fn openrouter_tool_call_executes_end_to_end() {
     );
     assert!(!stdout.contains("success="), "unexpected footer: {stdout}");
 }
+
+/// The experimental agentyk backend, end to end and offline: one scripted
+/// model step requests `bash`, the sandboxed tool runs it, and the answer
+/// reaches stdout. Proves the `--engine agentyk` path is wired, not just that
+/// it compiles.
+#[cfg(feature = "agentyk-backend")]
+#[test]
+fn agentyk_engine_print_smoke() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sessions = tempfile::tempdir().expect("sessions");
+    let output = Command::new(yolop_binary())
+        .args([
+            "--engine",
+            "agentyk",
+            "--provider",
+            "llmsim",
+            "-C",
+            workspace.path().to_str().unwrap(),
+            "--session-dir",
+            sessions.path().to_str().unwrap(),
+            "-p",
+            "hi",
+        ])
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .output()
+        .expect("spawn yolop --engine agentyk");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "agentyk backend run failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("the agentyk backend is wired up"),
+        "expected the scripted answer: {stdout}"
+    );
+    assert!(
+        stdout.contains("bash echo agentyk-ok"),
+        "expected the tool line from the event stream: {stdout}"
+    );
+    // The session's events land in the JSONL log the backend opened.
+    let log = sessions.path().join("agentyk").join("events.jsonl");
+    let events = std::fs::read_to_string(&log).expect("session log written");
+    assert!(events.contains("tool.completed"), "{events}");
+}
