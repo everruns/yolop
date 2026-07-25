@@ -1,6 +1,6 @@
 //! Content-anchored text selection for the full-screen transcript.
 //!
-//! A bare terminal — and [`tuika::SelectionState`] — track a selection in
+//! A bare terminal — and [`tuika::mouse::SelectionState`] — track a selection in
 //! *viewport* cells, so scrolling the transcript invalidates it and a drag is
 //! capped at the single visible window. This anchors the selection in
 //! *content-row* space instead: the wrapped-row index into the transcript cache,

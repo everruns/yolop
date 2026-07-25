@@ -4,16 +4,16 @@
 //! yolop's always-on chord shortcuts (reverse-history search, interrupt, quit,
 //! the background task panel, image paste) used to live as a hand-rolled
 //! `match` at the top of [`App::handle_key`](super::App::handle_key). They now
-//! resolve through a single [`tuika::Keymap`], so the bindings are declarative
+//! resolve through a single [`tuika::keymap::Keymap`], so the bindings are declarative
 //! and discoverable in one place — and yolop dogfoods the toolkit's own keymap.
 //!
 //! These bindings are deliberately *global*: they fire regardless of the app's
 //! mode (mid-turn, during setup, or with an overlay open), which is why they sit
-//! in one always-active layer with no [`when`](tuika::Layer::when) gate. Modal
+//! in one always-active layer with no [`when`](tuika::keymap::Layer::when) gate. Modal
 //! key handling (setup steps, the background panel, `ui/ask` prompts) stays with
 //! the owning handler, which the engine's mode-gated layers could absorb later.
 
-use tuika::{Keymap, Layer};
+use tuika::keymap::{Keymap, Layer};
 
 /// A global action a chord shortcut can trigger. Each maps to a method on
 /// [`App`](super::App) in [`App::handle_key`](super::App::handle_key).
@@ -34,8 +34,8 @@ pub(crate) enum GlobalAction {
 /// Build yolop's global keymap: one always-active layer of chord shortcuts.
 ///
 /// The labels are carried on each binding so a future help overlay or
-/// [`KeyHints`](tuika::KeyHints) row can render them straight from
-/// [`Keymap::hints`](tuika::Keymap::hints).
+/// [`KeyHints`](tuika::components::KeyHints) row can render them straight from
+/// [`Keymap::hints`](tuika::keymap::Keymap::hints).
 pub(crate) fn global_keymap() -> Keymap<GlobalAction> {
     Keymap::new().layer(
         Layer::new("global")
@@ -50,8 +50,8 @@ pub(crate) fn global_keymap() -> Keymap<GlobalAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tuika::Dispatch;
     use tuika::event::{Key, KeyCode};
+    use tuika::keymap::Dispatch;
 
     fn ctrl(c: char) -> Key {
         Key {

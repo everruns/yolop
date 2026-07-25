@@ -8,14 +8,14 @@
 //! `tuika` [`view!`] tree of real components and paints it with
 //! [`tuika::paint`]:
 //!
-//! - **separators** are [`tuika::Rule`]s (blue message rule, gold status rule);
-//! - **the composer** is a [`tuika::TextInput`] over full-screen's own model of
+//! - **separators** are [`tuika::components::Rule`]s (blue message rule, gold status rule);
+//! - **the composer** is a [`tuika::components::TextInput`] over full-screen's own model of
 //!   record ([`App::composer`], a tuika `TextInputState` that handles its own
 //!   key events) — no ratatui-textarea widget;
 //! - **the preview row** (reverse-search / suggestions / streaming preview) and
-//!   **the status** are [`tuika::Text`] views built from the same pure line
+//!   **the status** are [`tuika::components::Text`] views built from the same pure line
 //!   builders the inline chrome uses, so the two modes cannot visually drift;
-//! - **the transcript** is a [`tuika::Scroll`] over the *full* history, bound to
+//! - **the transcript** is a [`tuika::components::Scroll`] over the *full* history, bound to
 //!   [`App`]'s persisted `ScrollState`, inside a probed region so full-screen
 //!   mouse text selection (see [`super::App`]) can be bounded to it.
 //!
@@ -29,10 +29,13 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use tuika::{
-    Boxed, Element, Overlay, Padding, RectProbe, Rule, Scroll, SelectList, SelectState, Spacer,
-    Text, TextInput, TextInputState, element, view,
+use tuika::components::{
+    Boxed, Rule, Scroll, SelectList, SelectState, Spacer, Text, TextInput, TextInputState,
 };
+use tuika::probe::RectProbe;
+use tuika::term::clipboard;
+use tuika::term::hyperlink::{self, BufferLink};
+use tuika::{Element, Overlay, Padding, element, view};
 
 use super::render;
 use super::{
@@ -60,7 +63,7 @@ pub(crate) fn resolve_theme(name: &str) -> Option<tuika::Theme> {
     if name.eq_ignore_ascii_case("yolop") {
         return Some(native_theme());
     }
-    tuika::theme_by_name(name)
+    tuika::themes::by_name(name)
 }
 
 /// The names a `--theme` value may take: `yolop` plus every bundled preset.
@@ -100,7 +103,7 @@ pub(crate) fn native_theme() -> tuika::Theme {
         // Markdown prose + syntax palette for tuika's Markdown/CodeBlock. These
         // mirror yolop's former hand-rolled highlighter so rendered code and
         // prose keep the same look now that both flow through tuika.
-        code: tuika::CodeTheme {
+        code: tuika::style::CodeTheme {
             heading: TEXT_PRIMARY,
             link: ACCENT_BLUE,
             background: CODE_BG,
@@ -256,7 +259,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             (selection.y, app.scroll.offset())
         };
         let last_line = first_line.saturating_add(viewport_h);
-        let visible: Vec<tuika::BufferLink> = app
+        let visible: Vec<BufferLink> = app
             .transcript_links()
             .iter()
             .filter(|l| (l.line as usize) >= first_line && (l.line as usize) < last_line)
@@ -269,7 +272,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             })
             .collect();
         let policy = crate::hyperlink_policy();
-        tuika::apply_buffer_links(
+        hyperlink::apply_buffer_links(
             f.buffer_mut(),
             Position {
                 x: selection.x,
@@ -296,11 +299,11 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     if app.take_pending_copy() {
         let text = app.selection_copy_text();
         if !text.is_empty() {
-            let _ = tuika::write_clipboard(&mut std::io::stdout(), &text);
+            let _ = clipboard::write(&mut std::io::stdout(), &text);
         }
     }
     if let Some(range) = app.selection_range() {
-        tuika::highlight(
+        tuika::mouse::paint_selection(
             f.buffer_mut(),
             selection,
             range,

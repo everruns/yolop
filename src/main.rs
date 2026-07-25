@@ -45,6 +45,8 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tui::{App, COMPOSER_VIEWPORT_HEIGHT, maybe_reanchor_inline_viewport};
+use tuika::term::capabilities::Capabilities;
+use tuika::term::hyperlink::{HyperlinkBackend, LinkPolicy};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -995,11 +997,11 @@ fn run_command(command: Commands) -> Result<()> {
 ///
 /// - `YOLOP_HYPERLINKS=0` / `false` / `off` — force off
 /// - `YOLOP_HYPERLINKS=1` / `true` / `on` — force on (`http(s)`)
-/// - unset — **auto**: on when [`tuika::Capabilities`] reports hyperlink support
+/// - unset — **auto**: on when [`Capabilities`] reports hyperlink support
 ///   (Ghostty, Kitty, WezTerm, iTerm2, …), off otherwise
 ///
 /// When on, `YOLOP_HYPERLINK_MAILTO=1` also opts `mailto:` links in.
-pub(crate) fn hyperlink_policy() -> tuika::LinkPolicy {
+pub(crate) fn hyperlink_policy() -> LinkPolicy {
     let raw = std::env::var("YOLOP_HYPERLINKS").ok();
     let enabled = match raw.as_deref().map(str::trim) {
         Some("0") | Some("false") | Some("off") => false,
@@ -1007,13 +1009,13 @@ pub(crate) fn hyperlink_policy() -> tuika::LinkPolicy {
         // Auto: trust capability detection so Ghostty/etc. get clickable links
         // without a manual env knob — the third-time regression was leaving this
         // off by default while the UI still *looked* linked.
-        None | Some("") | Some("auto") => tuika::Capabilities::from_env().hyperlinks,
-        Some(_) => tuika::Capabilities::from_env().hyperlinks,
+        None | Some("") | Some("auto") => Capabilities::from_env().hyperlinks,
+        Some(_) => Capabilities::from_env().hyperlinks,
     };
     if !enabled {
-        return tuika::LinkPolicy::NONE;
+        return LinkPolicy::NONE;
     }
-    let mut policy = tuika::LinkPolicy::WEB;
+    let mut policy = LinkPolicy::WEB;
     let mailto = std::env::var("YOLOP_HYPERLINK_MAILTO")
         .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
         .unwrap_or(false);
@@ -1032,9 +1034,9 @@ fn run_tuika_gallery() -> Result<()> {
 
     // Route through the same hyperlink-aware backend as the main TUI so the
     // demo's URL becomes a clickable OSC 8 link when YOLOP_HYPERLINKS is set.
-    let backend = tuika::HyperlinkBackend::with_policy(io::stdout(), hyperlink_policy());
+    let backend = HyperlinkBackend::with_policy(io::stdout(), hyperlink_policy());
     let theme = tuika::Theme::default();
-    let mut progress = tuika::TerminalProgress::new();
+    let mut progress = tuika::term::progress::TerminalProgress::new();
     progress.indeterminate();
     let runner = tuika::Runner::new(tuika::RunnerConfig {
         tick_rate: Duration::from_millis(80),
@@ -1062,7 +1064,8 @@ fn run_tuika_gallery() -> Result<()> {
 fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
     use ratatui::style::Modifier;
     use ratatui::text::{Line, Span};
-    use tuika::{CodeHighlighter, Loader, MarkdownState, ProgressBar, Spinner, SpinnerStyle, Text};
+    use tuika::components::{Loader, MarkdownState, ProgressBar, Spinner, SpinnerStyle, Text};
+    use tuika::highlight::CodeHighlighter;
 
     // The whole demo is expressed with the declarative `view!` DSL. Leaf and
     // third-party components (Spinner, ProgressBar, Loader, Text) enter through
@@ -1162,7 +1165,7 @@ async fn run_tui(
     // an RAII guard that restores them on drop. The viewport becomes the whole
     // terminal instead of a short inline strip.
     let alt_screen = if fullscreen {
-        Some(tuika::AltScreen::enter()?)
+        Some(tuika::host::AltScreen::enter()?)
     } else {
         None
     };
@@ -1171,7 +1174,7 @@ async fn run_tui(
     // YOLOP_HYPERLINK_MAILTO, mailto) URLs in rendered output become clickable.
     // OSC 8 hyperlinks via HyperlinkBackend — see `hyperlink_policy` (auto-on
     // for Ghostty and other known OSC 8 terminals; override with YOLOP_HYPERLINKS).
-    let backend = tuika::HyperlinkBackend::with_policy(stdout, hyperlink_policy());
+    let backend = HyperlinkBackend::with_policy(stdout, hyperlink_policy());
     let viewport = if fullscreen {
         Viewport::Fullscreen
     } else {
