@@ -76,6 +76,32 @@ two cannot drift. Reveals are per session and the registry is bounded.
 disclose every turn, the framing paragraph waits for a reveal, and empty memory
 with no reveal contributes nothing.
 
+### The host's rendering is a fact the model cannot infer
+
+An answer is text until something paints it, and what paints it differs per
+host: the TUI renders the transcript itself, `--print` writes raw text, and an
+ACP editor renders the markdown its own way. The model cannot deduce which one
+it is talking to, so anything it might reasonably decide *because* of the answer
+being rendered belongs in `<environment_context>` next to `client_ui`.
+
+`ui_capabilities` is that field: an additive list of what the host is known to
+render (`supports_markdown`, `supports_markdown_mermaid`), or `none` for a host
+that renders nothing. Additive is the point. A listed capability is a claim
+yolop can stand behind; an absent one means "not known to render", which is the
+only honest thing to say about Mermaid over ACP — the editor renders the
+markdown, and the protocol never says how. A per-capability true/false would
+force a guess there, and `none` beats omitting the field, which would read as a
+value yolop failed to compute.
+
+State the capability, not the instruction: whether a diagram is worth drawing is
+the model's call.
+
+Keep these fields *static per host*. Live values that change mid-session — the
+terminal width, the current scroll position — would rewrite the prefix on every
+resize and cost the cached prefix that `AGENTS.md`'s placement exists to
+protect. A capability that only holds at some widths still advertises `true`;
+degrading gracefully at the narrow end is the renderer's job, not the prompt's.
+
 ### Judgement yields to measurement
 
 Judgment over ritual applies here as it does everywhere

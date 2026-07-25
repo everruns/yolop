@@ -84,6 +84,28 @@ impl ClientUiContext {
             Self::None => "none",
         }
     }
+
+    /// What the host is known to render, so the model can decide how much
+    /// formatting an answer is worth.
+    ///
+    /// A listed capability is a claim yolop can stand behind; an absent one
+    /// means "not known to render", which is why the list is additive rather
+    /// than a per-capability true/false. That distinction is load-bearing for
+    /// ACP: the editor renders agent messages as markdown, but nothing in the
+    /// protocol says whether it draws Mermaid, so `supports_markdown` is listed
+    /// and `supports_markdown_mermaid` is not.
+    ///
+    /// The TUI renders the transcript itself and claims both — full-screen and
+    /// the inline mirror share one markdown path, so they cannot diverge.
+    /// `--print` writes raw text to stdout and headless runs have no viewer at
+    /// all, so neither claims anything.
+    fn ui_capabilities(&self) -> &'static [&'static str] {
+        match self {
+            Self::Tui => &["supports_markdown", "supports_markdown_mermaid"],
+            Self::Acp => &["supports_markdown"],
+            Self::Print | Self::None => &[],
+        }
+    }
 }
 
 impl CodingCliEnvironmentCapability {
@@ -142,7 +164,7 @@ impl Capability for CodingCliEnvironmentCapability {
         "Coding CLI Environment Context"
     }
     fn description(&self) -> &str {
-        "Adds current workspace, shell, date, timezone, and Git context to the prompt."
+        "Adds current workspace, shell, date, timezone, Git, and UI rendering context to the prompt."
     }
     fn status(&self) -> CapabilityStatus {
         CapabilityStatus::Available
@@ -159,6 +181,7 @@ impl Capability for CodingCliEnvironmentCapability {
 <environment_context>
   <cwd>/path/to/workspace</cwd>
   <client_ui>TUI|print|ACP|none</client_ui>
+  <ui_capabilities>supports_markdown, supports_markdown_mermaid</ui_capabilities>
   <shell>zsh</shell>
   <current_date>YYYY-MM-DD</current_date>
   <timezone>Region/City</timezone>
@@ -193,6 +216,19 @@ fn render_environment_context(context: &EnvironmentContext) -> String {
     out.push_str("<environment_context>\n");
     push_xml_field(&mut out, "cwd", &context.cwd);
     push_xml_field(&mut out, "client_ui", context.client_ui.as_str());
+    // Empty stays "none" rather than an empty element: a host that renders
+    // nothing is a fact worth stating, and an absent field would read as one
+    // yolop failed to compute.
+    let ui_capabilities = context.client_ui.ui_capabilities();
+    push_xml_field(
+        &mut out,
+        "ui_capabilities",
+        &if ui_capabilities.is_empty() {
+            "none".to_string()
+        } else {
+            ui_capabilities.join(", ")
+        },
+    );
     push_xml_field(&mut out, "repo_root", &context.repo_root);
     if let Some(path) = &context.worktree_path {
         out.push_str("  <git_worktree>\n");
@@ -1655,6 +1691,9 @@ mod tests {
         assert!(rendered.starts_with("<environment_context>\n"));
         assert!(rendered.contains("  <cwd>/repo</cwd>\n"));
         assert!(rendered.contains("  <client_ui>TUI</client_ui>\n"));
+        assert!(rendered.contains(
+            "  <ui_capabilities>supports_markdown, supports_markdown_mermaid</ui_capabilities>\n"
+        ));
         assert!(rendered.contains("  <shell>zsh</shell>\n"));
         assert!(rendered.contains("  <current_date>2026-05-20</current_date>\n"));
         assert!(rendered.contains("  <timezone>America/Chicago</timezone>\n"));
@@ -1675,6 +1714,77 @@ mod tests {
             "  <contribution name=\"unsafe&lt;name&gt;\">value &amp; more</contribution>\n"
         ));
         assert!(rendered.ends_with("</environment_context>"));
+    }
+
+    /// The transcript renderer is what decides what gets drawn, so the list
+    /// follows the host: yolop paints the TUI itself, an ACP editor renders the
+    /// markdown its own way, and `--print` emits raw text.
+    ///
+    /// Mermaid over ACP is the case the additive list exists for — unlisted,
+    /// because the protocol never says whether the editor draws it.
+    #[test]
+    fn ui_capabilities_follow_the_client_ui() {
+        assert_eq!(
+            ClientUiContext::Tui.ui_capabilities(),
+            ["supports_markdown", "supports_markdown_mermaid"]
+        );
+        assert_eq!(
+            ClientUiContext::Acp.ui_capabilities(),
+            ["supports_markdown"]
+        );
+        assert!(ClientUiContext::Print.ui_capabilities().is_empty());
+        assert!(ClientUiContext::None.ui_capabilities().is_empty());
+    }
+
+    /// End to end through the capability the runtime registers, so the field
+    /// is proven to reach the assembled prompt rather than only the renderer.
+    #[tokio::test]
+    async fn environment_capability_contributes_ui_capabilities() {
+        let dir = std::env::temp_dir();
+        let capability = CodingCliEnvironmentCapability::new(
+            dir.clone(),
+            Arc::new(RwLock::new(dir)),
+            ClientUiContext::Tui,
+            EnvironmentContextRegistry::default(),
+        );
+        let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
+            everruns_core::typed_id::SessionId::new(),
+        );
+
+        let contribution = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("environment context always contributes");
+
+        assert!(
+            contribution.contains(
+                "<ui_capabilities>supports_markdown, supports_markdown_mermaid</ui_capabilities>"
+            ),
+            "{contribution}"
+        );
+    }
+
+    /// A host that renders nothing says so, rather than dropping the field and
+    /// leaving the model to guess whether it was simply not computed.
+    #[test]
+    fn environment_context_reports_no_ui_capabilities_for_print() {
+        let rendered = render_environment_context(&EnvironmentContext {
+            cwd: "/repo".to_string(),
+            client_ui: ClientUiContext::Print,
+            shell: "zsh".to_string(),
+            current_date: "2026-05-20".to_string(),
+            timezone: "America/Chicago".to_string(),
+            git_repo: None,
+            git_user: None,
+            git_email: None,
+            repo_root: "/repo".to_string(),
+            git_current_branch: None,
+            worktree_path: None,
+            contributions: BTreeMap::new(),
+        });
+
+        assert!(rendered.contains("  <client_ui>print</client_ui>\n"));
+        assert!(rendered.contains("  <ui_capabilities>none</ui_capabilities>\n"));
     }
 
     #[test]
