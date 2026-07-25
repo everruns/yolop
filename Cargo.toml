@@ -26,10 +26,10 @@ name = "yolop"
 path = "src/main.rs"
 
 [dependencies]
-agent-client-protocol = "1.0.1"
+agent-client-protocol = "2.0.0"
 anyhow = "1.0"
-ast-grep-core = "0.44"
-ast-grep-language = { version = "0.44", default-features = false, features = [
+ast-grep-core = "0.45"
+ast-grep-language = { version = "0.45", default-features = false, features = [
     "tree-sitter-bash",
     "tree-sitter-c-sharp",
     "tree-sitter-css",
