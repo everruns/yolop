@@ -60,6 +60,14 @@ impl EventListener for StdoutRenderer {
                 }
                 println!("{}", self.dim(&format!("· {}", describe(call))));
             }
+            // Ephemeral progress from a still-running tool: the only thing
+            // that fills the gap between `tool.started` and its result.
+            EventData::ToolProgress { progress, .. } => {
+                println!(
+                    "{}",
+                    self.dim(&format!("  {}", first_line(&progress.message)))
+                );
+            }
             EventData::ToolDenied { name, reason, .. } => {
                 println!("{}", self.dim(&format!("· {name} denied — {reason}")));
             }

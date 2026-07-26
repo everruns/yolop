@@ -44,13 +44,12 @@ convenience would stop measuring what agentyk can do on its own.
 | --- | --- |
 | Model | yolop's `ProviderChoice` → `agentyk::ModelSpec` (`model.rs`) |
 | Turn loop, history, replay | `agentyk::Session`, `JsonlEventLog` per run |
-| Files | `agentyk::FileSystemCapability` over `WriteBlocklistFileSystem`(`RealDiskFileSystem`) |
-| Shell | yolop's sandbox provider behind an agentyk `Tool` |
-| `edit_file`, `grep_files` | yolop-side tools — agentyk ships neither |
+| Files | `agentyk::FileSystemCapability` over `WriteBlocklistFileSystem`(`RealDiskFileSystem`) — read/write/edit/grep/stat/list/delete |
+| Shell | yolop's sandbox provider behind an agentyk `Tool`, narrating progress as it runs |
 | Instructions | an `agent_instructions` capability reading AGENTS.md/CLAUDE.md |
 | Approval | `TurnMiddleware`, gating on the `hints` metadata hatch |
 | Output | an `EventListener` rendering the event stream to stdout |
-| Cancellation | `CancellationToken` bound to ctrl-c in the REPL |
+| Cancellation | `CancellationToken` bound to ctrl-c, racing both the tool call and the approval prompt |
 
 Not covered, and not intended to be in this pass: the TUI, ACP, worktrees,
 checkpoints, background tasks, MCP, skills, hooks, extensions, trajectory
@@ -58,44 +57,50 @@ export, session resume, compaction, and the rest of yolop's capability set.
 
 ## Findings
 
-What the port actually hit, in the order it hurt. Fixing these is agentyk's
-work, not yolop's; they are recorded here because this backend is the evidence.
+What the port actually hit, in the order it hurt. Fixing these was agentyk's
+work, not yolop's; they are recorded here because this backend is the evidence,
+and the first five have since landed upstream (see
+[`knowledge/yolop-adoption.md`](https://github.com/everruns/agentyk/blob/main/knowledge/yolop-adoption.md)
+in that repository). The backend now consumes the fixes rather than working
+around them: the hand-written `edit_file`/`grep_files` went upstream and were
+deleted here, the shell reports progress and structured results through the
+library's seams, and cancellation reaches into a running command.
 
-1. **Provider coverage is two protocols wide.** agentyk ships `openai` (Chat
+1. **Provider coverage is two protocols wide.** *(Partly addressed:
+   `ModelSpec::metadata` now exists, so a subscription provider is
+   expressible; a Codex driver itself is still unwritten.)* agentyk ships `openai` (Chat
    Completions), `anthropic`, and `llmsim`. yolop serves eight providers.
    Google, Ollama, OpenRouter, and custom endpoints reach the OpenAI driver
    with a base URL, but Codex cannot be expressed at all: `ModelSpec` carries
    `api_key` and `base_url` and nothing else, so subscription auth (refresh
    token, account id, expiry) has no home. `ProviderMetadata` — or an
    equivalent hatch on `ModelSpec` — is the missing piece.
-2. **No prompt caching.** The Anthropic driver never emits `cache_control`
-   breakpoints and reads no `Message.metadata`. Every turn re-sends the whole
-   transcript uncached, which is the difference between a viable and an
-   unviable coding session on cost alone.
-3. **A tool call cannot be cancelled.** `InProcessExecutor` checks the
-   cancellation token between actions and between streaming chunks, but awaits
-   `atoms::act` unraced; `ToolContext` carries no token. Ctrl-c during a long
-   `bash` is therefore honored only after the command finishes. For a coding
-   agent this is the single most user-visible gap.
-4. **Tools cannot report progress.** `ToolOutput` is `{ content: String,
-   is_error: bool }` and `ToolContext` has no event sink, so a tool cannot
-   stream partial output, emit narration, or run in the background — everruns'
-   `BackgroundEventSink` and narration phases have no counterpart. Rich tool
-   results (images, structured payloads) are unrepresentable for the same
-   reason.
-5. **The filesystem capability is a starter set.** No `edit_file`, no
-   `grep_files`, no `stat_file`, no offset/limit reads, no byte caps. Both
-   tools written here are generic, not yolop-specific, and belong upstream.
-6. **Tool batches run sequentially.** `TurnEngine` prepares the whole batch,
+2. ~~**No prompt caching.**~~ *Fixed upstream:* the Anthropic driver places
+   `cache_control` breakpoints by default, including the last two messages so
+   caching stays incremental as the transcript grows.
+3. ~~**A tool call cannot be cancelled.**~~ *Fixed upstream:* the executor
+   races every call against the token and drops the loser, and `ToolContext`
+   carries the token. Ctrl-c during a long `bash` now kills the child, because
+   the command is spawned with `kill_on_drop`.
+4. ~~**Tools cannot report progress.**~~ *Fixed upstream:*
+   `ToolContext::report_progress` emits ephemeral `tool.progress` events, and
+   `ToolOutput::metadata` carries structured results to the host. The shell
+   tool uses both. Still open: results the *model* can look at (an image),
+   and background/detached tools.
+5. ~~**The filesystem capability is a starter set.**~~ *Fixed upstream:*
+   `edit_file`, `grep_files`, `stat_file`, and line-window reads now ship with
+   the library, and this backend deleted its copies. Byte caps on reads are
+   still absent.
+6. **Tool batches run sequentially.** *(Open.)* `TurnEngine` prepares the whole batch,
    but the in-process host dispatches it one call at a time. Parallel reads are
    table stakes for a coding agent.
-7. **No mid-turn input.** `Session::run` takes `&mut self` for the duration of
+7. **No mid-turn input.** *(Open.)* `Session::run` takes `&mut self` for the duration of
    a turn and there is no way to append a message to history without running
    one, so steering ("actually, stop and do X") cannot be expressed at all.
-8. **MCP is stdio-only and unauthenticated.** No HTTP/SSE transport and no auth
+8. **MCP is stdio-only and unauthenticated.** *(Open.)* No HTTP/SSE transport and no auth
    provider seam, so yolop's remote MCP servers cannot be served. Capabilities
    still cannot contribute MCP servers (agentyk's own gap 13).
-9. **Reasoning effort is unvalidated.** `ModelSpec::reasoning_effort` takes any
+9. **Reasoning effort is unvalidated.** *(Open.)* `ModelSpec::reasoning_effort` takes any
    string; there is no model-profile notion, so an effort a model rejects is
    discovered by the provider returning an error.
 

@@ -13,6 +13,11 @@ wording, formatting, and link fixes do not need entries.
   prompt caching, tool cancellation, tool progress, edit/grep tools, parallel
   dispatch, mid-turn input, MCP transports).
 - The shipping backend is unchanged and remains the default.
+- Five of the recorded gaps were then fixed in agentyk itself (tool
+  cancellation, tool progress and result metadata, prompt caching, provider
+  metadata on `ModelSpec`, the missing filesystem tools). The backend consumes
+  those fixes instead of working around them; the concept records which
+  findings remain open.
 
 ## 2026-07-25 — Mermaid fences in the transcript
 

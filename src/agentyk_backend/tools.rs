@@ -1,26 +1,31 @@
-//! The workspace tools agentyk does not ship: a sandboxed `bash`, plus
-//! `edit_file` and `grep_files`.
+//! The one workspace tool agentyk cannot ship: a sandboxed `bash`.
 //!
 //! `bash` is custom for the same reason it is custom on the everruns backend —
 //! real child processes need yolop's containment, timeout, and output policy,
-//! and no library tool can supply those. `edit_file` and `grep_files` are here
-//! because agentyk's `FileSystemCapability` stops at read/write/list/delete;
-//! a coding agent without a targeted-edit tool rewrites whole files, and one
-//! without repository search shells out for every lookup.
+//! and no library tool can supply those. Everything else this backend needs
+//! (`read_file`, `write_file`, `edit_file`, `grep_files`, `stat_file`,
+//! `list_directory`, `delete_file`) now comes from agentyk's
+//! `FileSystemCapability`; the hand-written `edit_file`/`grep_files` this
+//! module used to carry went upstream, which was the point of writing them
+//! here first.
 //!
-//! Every definition carries a `hints` object in `ToolDefinition.metadata` —
-//! the metadata hatch standing in for everruns' typed `ToolHints`. The
-//! approval middleware reads it; the model never sees it.
+//! The tool is also the backend's proof of the library's newer seams: it
+//! streams progress while the command runs, hands back structured result data
+//! for the host, and is dropped mid-command when the turn is cancelled — which
+//! is what kills the child, since the command is spawned with `kill_on_drop`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use agentyk::{Capability, Result as AgentykResult, Tool, ToolContext, ToolDefinition, ToolOutput};
+use agentyk::{
+    Capability, Result as AgentykResult, Tool, ToolContext, ToolDefinition, ToolOutput,
+    ToolProgress,
+};
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::config::SandboxMode;
 use crate::exec::sandbox::{SandboxProvider, provider};
@@ -28,16 +33,13 @@ use crate::exec::sandbox::{SandboxProvider, provider};
 /// Ceiling on how much of a command's output goes back to the model.
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
-/// Bounded so one `grep_files` cannot fill the context window.
-const MAX_GREP_MATCHES: usize = 200;
+/// Report the first output line, then every Nth — enough to show a long build
+/// is alive without turning the transcript into the build log.
+const PROGRESS_EVERY_LINES: usize = 20;
 
-/// The metadata key the approval middleware reads. Mirrors everruns'
-/// `ToolHints` shape closely enough to port back.
+/// The metadata key carrying risk hints, matching what agentyk's bundled
+/// tools now declare for themselves.
 pub const HINTS_KEY: &str = "hints";
-
-fn hints(readonly: bool, destructive: bool) -> Value {
-    json!({ HINTS_KEY: { "readonly": readonly, "destructive": destructive } })
-}
 
 /// Whether a tool definition declares itself read-only via the hints hatch.
 /// Unknown (hint-less) tools are treated as *not* read-only — failing closed
@@ -48,7 +50,7 @@ pub fn is_readonly(definition: &ToolDefinition) -> bool {
         .unwrap_or(false)
 }
 
-/// yolop's workspace tools, attached as one capability.
+/// yolop's sandboxed shell, attached as a capability.
 pub struct WorkspaceToolsCapability {
     tools: Vec<Arc<dyn Tool>>,
     sandbox: SandboxMode,
@@ -56,16 +58,10 @@ pub struct WorkspaceToolsCapability {
 
 impl WorkspaceToolsCapability {
     pub fn new(workspace: PathBuf, sandbox: SandboxMode) -> Self {
-        let tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(BashTool {
-                workspace: workspace.clone(),
-                sandbox: provider(sandbox),
-            }),
-            Arc::new(EditFileTool {
-                workspace: workspace.clone(),
-            }),
-            Arc::new(GrepFilesTool { workspace }),
-        ];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(BashTool {
+            workspace,
+            sandbox: provider(sandbox),
+        })];
         Self { tools, sandbox }
     }
 }
@@ -77,7 +73,7 @@ impl Capability for WorkspaceToolsCapability {
     }
 
     fn description(&self) -> &str {
-        "Sandboxed shell plus targeted file edit and repository search."
+        "A sandboxed shell rooted at the workspace."
     }
 
     async fn system_prompt_contribution(
@@ -118,14 +114,14 @@ impl Tool for BashTool {
                 "required": ["command"]
             }),
         )
-        .with_metadata(hints(false, true))
+        .with_metadata(json!({ HINTS_KEY: { "readonly": false, "destructive": true } }))
     }
 
-    async fn execute(&self, arguments: Value, _context: &ToolContext) -> ToolOutput {
+    async fn execute(&self, arguments: Value, context: &ToolContext) -> ToolOutput {
         let Some(command) = arguments["command"].as_str() else {
             return ToolOutput::error("`command` is required and must be a string");
         };
-        match self.run(command).await {
+        match self.run(command, context).await {
             Ok(output) => output,
             Err(error) => ToolOutput::error(format!("failed to run command: {error}")),
         }
@@ -133,23 +129,46 @@ impl Tool for BashTool {
 }
 
 impl BashTool {
-    async fn run(&self, command: &str) -> anyhow::Result<ToolOutput> {
+    async fn run(&self, command: &str, context: &ToolContext) -> anyhow::Result<ToolOutput> {
+        let started = Instant::now();
         let mut spawn = self.sandbox.command(&self.workspace, command)?;
         spawn
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // The turn's cancellation drops this future; `kill_on_drop` is
+            // what turns that into a dead process rather than an orphan.
             .kill_on_drop(true);
         let mut child = spawn.spawn()?;
-        let mut stdout = child.stdout.take().expect("piped stdout");
-        let mut stderr = child.stderr.take().expect("piped stderr");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
 
         let collect = async {
-            let mut out = Vec::new();
-            let mut err = Vec::new();
-            let (a, b) = tokio::join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err));
-            a?;
-            b?;
+            let mut out = String::new();
+            let mut err = String::new();
+            let mut lines = BufReader::new(stdout).lines();
+            let mut seen = 0usize;
+            // Reading line by line (rather than to_end) is what makes progress
+            // possible at all: the host hears about a long build while it
+            // builds, not after.
+            while let Some(line) = lines.next_line().await? {
+                if seen.is_multiple_of(PROGRESS_EVERY_LINES) {
+                    context
+                        .report_progress(
+                            ToolProgress::message(clip(&line))
+                                .with_detail(json!({"lines": seen + 1})),
+                        )
+                        .await;
+                }
+                seen += 1;
+                out.push_str(&line);
+                out.push('\n');
+            }
+            let mut error_lines = BufReader::new(stderr).lines();
+            while let Some(line) = error_lines.next_line().await? {
+                err.push_str(&line);
+                err.push('\n');
+            }
             let status = child.wait().await?;
             Ok::<_, std::io::Error>((out, err, status))
         };
@@ -164,8 +183,8 @@ impl BashTool {
             }
         };
 
-        let mut body = truncate(String::from_utf8_lossy(&out).into_owned());
-        let stderr_text = truncate(String::from_utf8_lossy(&err).into_owned());
+        let mut body = truncate(out);
+        let stderr_text = truncate(err);
         if !stderr_text.trim().is_empty() {
             if !body.is_empty() && !body.ends_with('\n') {
                 body.push('\n');
@@ -176,184 +195,32 @@ impl BashTool {
             body = "(no output)".to_string();
         }
 
+        let exit_code = status.code();
+        let metadata = json!({
+            "exit_code": exit_code,
+            "duration_ms": started.elapsed().as_millis() as u64,
+            "sandbox": self.sandbox.mode().as_str(),
+        });
+
         // A non-zero exit is a tool error so the model sees the failure
         // instead of inferring it from the text.
         Ok(match status.success() {
-            true => ToolOutput::text(body),
+            true => ToolOutput::text(body).with_metadata(metadata),
             false => ToolOutput::error(format!(
                 "exit status {}\n{body}",
-                status
-                    .code()
-                    .map_or_else(|| "signal".to_string(), |code| code.to_string())
-            )),
+                exit_code.map_or_else(|| "signal".to_string(), |code| code.to_string())
+            ))
+            .with_metadata(metadata),
         })
     }
 }
 
-struct EditFileTool {
-    workspace: PathBuf,
-}
-
-#[async_trait]
-impl Tool for EditFileTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition::new(
-            "edit_file",
-            "Replace an exact string in a file. `old_string` must appear \
-             exactly once unless `replace_all` is true. Prefer this over \
-             rewriting a whole file with write_file.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Workspace-relative file path." },
-                    "old_string": { "type": "string", "description": "Exact text to replace." },
-                    "new_string": { "type": "string", "description": "Replacement text." },
-                    "replace_all": { "type": "boolean", "description": "Replace every occurrence." }
-                },
-                "required": ["path", "old_string", "new_string"]
-            }),
-        )
-        .with_metadata(hints(false, true))
+fn clip(line: &str) -> String {
+    let line = line.trim_end();
+    match line.chars().count() > 120 {
+        true => format!("{}…", line.chars().take(120).collect::<String>()),
+        false => line.to_string(),
     }
-
-    async fn execute(&self, arguments: Value, _context: &ToolContext) -> ToolOutput {
-        let (Some(path), Some(old), Some(new)) = (
-            arguments["path"].as_str(),
-            arguments["old_string"].as_str(),
-            arguments["new_string"].as_str(),
-        ) else {
-            return ToolOutput::error("`path`, `old_string`, and `new_string` are required");
-        };
-        let replace_all = arguments["replace_all"].as_bool().unwrap_or(false);
-        let resolved = match resolve(&self.workspace, path) {
-            Ok(resolved) => resolved,
-            Err(error) => return ToolOutput::error(error),
-        };
-        let contents = match tokio::fs::read_to_string(&resolved).await {
-            Ok(contents) => contents,
-            Err(error) => return ToolOutput::error(format!("read {path}: {error}")),
-        };
-        let occurrences = contents.matches(old).count();
-        if occurrences == 0 {
-            return ToolOutput::error(format!("`old_string` not found in {path}"));
-        }
-        if occurrences > 1 && !replace_all {
-            return ToolOutput::error(format!(
-                "`old_string` appears {occurrences} times in {path}; add more context or set \
-                 replace_all"
-            ));
-        }
-        let updated = match replace_all {
-            true => contents.replace(old, new),
-            false => contents.replacen(old, new, 1),
-        };
-        match tokio::fs::write(&resolved, updated).await {
-            Ok(()) => ToolOutput::text(format!("edited {path} ({occurrences} replacement(s))")),
-            Err(error) => ToolOutput::error(format!("write {path}: {error}")),
-        }
-    }
-}
-
-struct GrepFilesTool {
-    workspace: PathBuf,
-}
-
-#[async_trait]
-impl Tool for GrepFilesTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition::new(
-            "grep_files",
-            "Search the workspace for a regular expression. Returns \
-             `path:line: text` matches. Cheaper than shelling out to grep and \
-             never needs approval.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "pattern": { "type": "string", "description": "Regular expression." },
-                    "path": { "type": "string", "description": "Workspace-relative subdirectory to search." }
-                },
-                "required": ["pattern"]
-            }),
-        )
-        .with_metadata(hints(true, false))
-    }
-
-    async fn execute(&self, arguments: Value, _context: &ToolContext) -> ToolOutput {
-        let Some(pattern) = arguments["pattern"].as_str() else {
-            return ToolOutput::error("`pattern` is required and must be a string");
-        };
-        let regex = match regex::Regex::new(pattern) {
-            Ok(regex) => regex,
-            Err(error) => return ToolOutput::error(format!("invalid pattern: {error}")),
-        };
-        let root = match arguments["path"].as_str() {
-            Some(path) => match resolve(&self.workspace, path) {
-                Ok(resolved) => resolved,
-                Err(error) => return ToolOutput::error(error),
-            },
-            None => self.workspace.clone(),
-        };
-        let workspace = self.workspace.clone();
-        // `ignore` walks synchronously and honors .gitignore, which is what
-        // keeps target/ and node_modules/ out of the results.
-        let matches = tokio::task::spawn_blocking(move || search(&workspace, &root, &regex)).await;
-        match matches {
-            Ok(lines) if lines.is_empty() => ToolOutput::text("(no matches)"),
-            Ok(lines) => ToolOutput::text(lines.join("\n")),
-            Err(error) => ToolOutput::error(format!("search failed: {error}")),
-        }
-    }
-}
-
-fn search(workspace: &Path, root: &Path, regex: &regex::Regex) -> Vec<String> {
-    let mut results = Vec::new();
-    for entry in ignore::WalkBuilder::new(root).build().flatten() {
-        if results.len() >= MAX_GREP_MATCHES {
-            results.push(format!(
-                "… more than {MAX_GREP_MATCHES} matches, refine the pattern"
-            ));
-            break;
-        }
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-            continue;
-        }
-        let Ok(contents) = std::fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        let display = entry
-            .path()
-            .strip_prefix(workspace)
-            .unwrap_or(entry.path())
-            .display()
-            .to_string();
-        for (number, line) in contents.lines().enumerate() {
-            if regex.is_match(line) {
-                results.push(format!("{display}:{}: {}", number + 1, line.trim_end()));
-                if results.len() >= MAX_GREP_MATCHES {
-                    break;
-                }
-            }
-        }
-    }
-    results
-}
-
-/// Resolve a model-supplied path inside the workspace, rejecting `..`
-/// structurally rather than asking the OS whether the result escaped.
-fn resolve(workspace: &Path, path: &str) -> Result<PathBuf, String> {
-    let candidate = Path::new(path);
-    let mut resolved = workspace.to_path_buf();
-    for component in candidate.components() {
-        match component {
-            std::path::Component::Normal(part) => resolved.push(part),
-            std::path::Component::CurDir => {}
-            std::path::Component::RootDir if candidate.is_absolute() => {
-                return Err(format!("`{path}` must be workspace-relative"));
-            }
-            _ => return Err(format!("`{path}` escapes the workspace")),
-        }
-    }
-    Ok(resolved)
 }
 
 fn truncate(mut text: String) -> String {
@@ -372,73 +239,77 @@ fn truncate(mut text: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentyk::{SessionId, TurnId};
+    use agentyk::{SessionId, ToolProgressSink, TurnId};
+    use std::sync::Mutex;
 
-    fn context() -> ToolContext {
-        ToolContext::new(SessionId::new(), TurnId::new())
+    #[derive(Default)]
+    struct Reports(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl ToolProgressSink for Reports {
+        async fn progress(&self, progress: ToolProgress) {
+            self.0.lock().expect("reports").push(progress.message);
+        }
     }
 
-    #[test]
-    fn paths_cannot_escape_the_workspace() {
-        let workspace = Path::new("/tmp/ws");
-        assert!(resolve(workspace, "../etc/passwd").is_err());
-        assert!(resolve(workspace, "/etc/passwd").is_err());
-        assert_eq!(
-            resolve(workspace, "src/main.rs").unwrap(),
-            workspace.join("src/main.rs")
-        );
-    }
-
-    #[tokio::test]
-    async fn edit_requires_a_unique_match() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "x\nx\n").unwrap();
-        let tool = EditFileTool {
-            workspace: dir.path().to_path_buf(),
-        };
-        let ambiguous = tool
-            .execute(
-                json!({"path": "a.txt", "old_string": "x", "new_string": "y"}),
-                &context(),
-            )
-            .await;
-        assert!(ambiguous.is_error, "{ambiguous:?}");
-
-        let all = tool
-            .execute(
-                json!({"path": "a.txt", "old_string": "x", "new_string": "y", "replace_all": true}),
-                &context(),
-            )
-            .await;
-        assert!(!all.is_error, "{all:?}");
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
-            "y\ny\n"
-        );
+    fn tool(workspace: &std::path::Path) -> BashTool {
+        BashTool {
+            workspace: workspace.to_path_buf(),
+            // Tests run in the libtest harness; Linux's native provider
+            // re-execs the yolop binary, which only the integration tests can
+            // do. Containment itself is covered there.
+            sandbox: provider(SandboxMode::DangerFullAccess),
+        }
     }
 
     #[tokio::test]
-    async fn grep_reports_path_and_line() {
+    async fn output_and_exit_code_reach_the_model_and_the_host() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "alpha\nbeta\n").unwrap();
-        let tool = GrepFilesTool {
-            workspace: dir.path().to_path_buf(),
-        };
-        let found = tool.execute(json!({"pattern": "^bet"}), &context()).await;
-        assert!(found.content.contains("a.txt:2: beta"), "{found:?}");
+        let context = ToolContext::new(SessionId::new(), TurnId::new());
+
+        let ok = tool(dir.path())
+            .run("echo out; echo err >&2", &context)
+            .await
+            .unwrap();
+        assert!(!ok.is_error, "{ok:?}");
+        assert!(ok.content.contains("out") && ok.content.contains("err"));
+        assert_eq!(ok.metadata["exit_code"], 0);
+
+        let failed = tool(dir.path()).run("exit 3", &context).await.unwrap();
+        assert!(failed.is_error);
+        assert!(failed.content.contains("exit status 3"));
+        assert_eq!(failed.metadata["exit_code"], 3);
+    }
+
+    #[tokio::test]
+    async fn long_output_is_narrated_while_it_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let reports = Arc::new(Reports::default());
+        let context = ToolContext::new(SessionId::new(), TurnId::new())
+            .with_progress(reports.clone() as Arc<dyn ToolProgressSink>);
+
+        tool(dir.path())
+            .run("for i in $(seq 1 45); do echo line-$i; done", &context)
+            .await
+            .unwrap();
+
+        let seen = reports.0.lock().unwrap().clone();
+        // First line, then every twentieth.
+        assert_eq!(seen, ["line-1", "line-21", "line-41"], "{seen:?}");
+    }
+
+    #[tokio::test]
+    async fn commands_run_in_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("marker.txt"), "hi").unwrap();
+        let context = ToolContext::new(SessionId::new(), TurnId::new());
+        let output = tool(dir.path()).run("ls", &context).await.unwrap();
+        assert!(output.content.contains("marker.txt"), "{output:?}");
     }
 
     #[test]
-    fn hints_classify_read_only_tools() {
-        let grep = GrepFilesTool {
-            workspace: PathBuf::from("/tmp"),
-        };
-        assert!(is_readonly(&grep.definition()));
-        let edit = EditFileTool {
-            workspace: PathBuf::from("/tmp"),
-        };
-        assert!(!is_readonly(&edit.definition()));
-        // A tool with no hints at all is treated as unclassified, not safe.
-        assert!(!is_readonly(&ToolDefinition::new("x", "", json!({}))));
+    fn hints_classify_the_shell_as_mutating() {
+        let definition = tool(std::path::Path::new("/tmp")).definition();
+        assert!(!is_readonly(&definition));
     }
 }
