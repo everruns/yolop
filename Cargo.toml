@@ -35,7 +35,7 @@ agent-client-protocol = "2.0.0"
 # The experimental `--engine agentyk` backend only. Consumed from git while
 # agentyk is pre-release: the published 0.1.0 predates middleware, the engine
 # crate, and the filesystem capability the backend is built on.
-agentyk = { git = "https://github.com/everruns/agentyk", branch = "claude/agentyk-app-experiment-o9jduh", features = [
+agentyk = { git = "https://github.com/everruns/agentyk", branch = "main", features = [
     "http",
     "fs",
 ], optional = true }

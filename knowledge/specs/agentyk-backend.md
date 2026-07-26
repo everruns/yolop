@@ -114,7 +114,7 @@ for free.
 
 ## Constraints
 
-- The agentyk dependency is a git dependency on a branch while agentyk is
+- The agentyk dependency tracks the library's `main` branch while agentyk is
   pre-release — the published `0.1.0` predates middleware, the engine crate,
   and the filesystem capability. It moves to a version requirement when
   agentyk publishes one that carries them.
