@@ -41,7 +41,7 @@ tuika owns *presentation*; yolop owns *acquisition and meaning*. Concretely:
 | --- | --- | --- |
 | Code highlighting | `CodeBlock` framing, gutter, wrapping | the `Highlighter` (`tuika-codeformatters`) |
 | Markdown images | block reservation and protocol emission | an `ImageResolver` that decodes bytes to RGBA |
-| Mermaid fences | the `FencedBlockRenderer` seam | the renderer (`tuika-mermaid`) and the transcript's width guard |
+| Mermaid fences | the `FencedBlockRenderer` seam | the renderer (`tuika-mermaid`), the transcript's width guard, and telling the model the TUI paints them ([system prompt](./system-prompt.md)) |
 | Key bindings | the keymap engine (chords, sequences, gated layers, dispatch) | the binding table and what each command *means* |
 | Links | OSC 8 encoding and the `LinkPolicy` sanitizer | which schemes are allowed, and the transcript's link runs |
 | Progress | the OSC 9;4 encoder | when a turn is running |

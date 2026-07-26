@@ -3,6 +3,16 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-25 — Host rendering advertised to the model
+
+- `<environment_context>` now carries `ui_capabilities` beside `client_ui` — an
+  additive list of what the host renders — so the model can decide whether a
+  diagram is worth drawing.
+  [System prompt composition](specs/system-prompt.md) gained the rule these
+  fields follow: state the host's capability rather than an instruction, and
+  keep the fields static per host so a mid-session change cannot churn the
+  cached prefix.
+
 ## 2026-07-25 — Mermaid fences in the transcript
 
 - Yolop fills tuika's `FencedBlockRenderer` seam with `tuika-mermaid`, so
