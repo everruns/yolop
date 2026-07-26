@@ -59,7 +59,7 @@ export, session resume, compaction, and the rest of yolop's capability set.
 
 What the port actually hit, in the order it hurt. Fixing these was agentyk's
 work, not yolop's; they are recorded here because this backend is the evidence,
-and the first five have since landed upstream (see
+and all nine have since landed upstream (see
 [`knowledge/yolop-adoption.md`](https://github.com/everruns/agentyk/blob/main/knowledge/yolop-adoption.md)
 in that repository). The backend now consumes the fixes rather than working
 around them: the hand-written `edit_file`/`grep_files` went upstream and were
@@ -91,18 +91,23 @@ library's seams, and cancellation reaches into a running command.
    `edit_file`, `grep_files`, `stat_file`, and line-window reads now ship with
    the library, and this backend deleted its copies. Byte caps on reads are
    still absent.
-6. **Tool batches run sequentially.** *(Open.)* `TurnEngine` prepares the whole batch,
-   but the in-process host dispatches it one call at a time. Parallel reads are
-   table stakes for a coding agent.
-7. **No mid-turn input.** *(Open.)* `Session::run` takes `&mut self` for the duration of
-   a turn and there is no way to append a message to history without running
-   one, so steering ("actually, stop and do X") cannot be expressed at all.
-8. **MCP is stdio-only and unauthenticated.** *(Open.)* No HTTP/SSE transport and no auth
-   provider seam, so yolop's remote MCP servers cannot be served. Capabilities
-   still cannot contribute MCP servers (agentyk's own gap 13).
-9. **Reasoning effort is unvalidated.** *(Open.)* `ModelSpec::reasoning_effort` takes any
-   string; there is no model-profile notion, so an effort a model rejects is
-   discovered by the provider returning an error.
+6. ~~**Tool batches run sequentially.**~~ *Fixed upstream:* the in-process
+   host dispatches a prepared batch concurrently, recording results in batch
+   order. `InProcessExecutor::sequential()` is the opt-out for hosts that need
+   policy to bite inside a batch.
+7. ~~**No mid-turn input.**~~ *Fixed upstream:* `Session::input()` hands out a
+   queue the engine drains at the next reasoning step. This backend does not
+   use it yet — its REPL reads one prompt at a time — but the TUI would.
+8. ~~**MCP is stdio-only and unauthenticated.**~~ *Fixed upstream:*
+   `McpServer::http` speaks the Streamable HTTP transport and
+   `McpAuthProvider` supplies credentials per request. This backend still
+   attaches no MCP capability at all; the gap that blocked it is gone.
+   Capabilities contributing MCP servers (agentyk's gap 13) is still open.
+9. ~~**Reasoning effort is unvalidated.**~~ *Fixed upstream:* a `ModelCatalog`
+   validates the composition at `build()`. This backend attaches none — yolop
+   already resolves effort against its own model profiles before building a
+   `ModelSpec` — so the finding is closed on agentyk's side, not consumed
+   here.
 
 What worked without friction, and is worth recording as such: capabilities
 composed by object (instructions, workspace tools) needed no ceremony;
