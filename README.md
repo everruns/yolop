@@ -138,7 +138,8 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   `read_skill`, `write_skill`, and `activate_skill`. Skills installed after
   startup are available immediately.
 - **OKF knowledge** — a bundled `okf` skill for the
-  [Open Knowledge Format](https://okf.md/spec/): read, author, convert to, and
+  [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md):
+  read, author, convert to, and
   validate knowledge bundles. See [OKF](./docs/features/okf/okf.md).
 - **Herdr-aware sessions** — when launched in a Herdr pane, Yolop reports
   `working` / `idle` / `blocked` lifecycle states and exposes read-only Herdr

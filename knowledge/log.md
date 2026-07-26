@@ -3,6 +3,19 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-26 — OKF skill tracks the authoritative v0.2 spec
+
+- The bundled `okf` skill was rewritten against `SPEC.md` in
+  `GoogleCloudPlatform/knowledge-catalog`, now named as the only authoritative
+  source; the `okf.md` site it previously cited is not normative and described a
+  superseded v0.1 model. [`okf`](specs/okf.md) gained the v0.2 families the skill
+  must teach — `sources` with credibility signals, `generated`/`verified` with
+  the actor convention and trust tiers, `status`/`stale_after`, and the
+  `Attested Computation` contract — plus the rule that validator lint stays
+  behind `--strict` so a permissive format is not taught as a strict one, and the
+  requirement that the skill's validator copy stay byte-identical to the one CI
+  runs.
+
 ## 2026-07-25 — Host rendering advertised to the model
 
 - `<environment_context>` now carries `ui_capabilities` beside `client_ui` — an
