@@ -47,13 +47,17 @@ convenience would stop measuring what agentyk can do on its own.
 | Files | `agentyk::FileSystemCapability` over `WriteBlocklistFileSystem`(`RealDiskFileSystem`) — read/write/edit/grep/stat/list/delete |
 | Shell | yolop's sandbox provider behind an agentyk `Tool`, narrating progress as it runs |
 | Instructions | an `agent_instructions` capability reading AGENTS.md/CLAUDE.md |
+| MCP | yolop's configured servers (`yolop mcp add`, stdio and HTTP) as `McpCapability`, credentials from the environment per request |
+| Model limits | yolop's everruns model profiles as an `agentyk::ModelCatalog`, so a bad `--reasoning-effort` fails at composition |
+| Images | `-i/--image` attachments ride on the message that asks about them |
 | Approval | `TurnMiddleware`, gating on the `hints` metadata hatch |
 | Output | an `EventListener` rendering the event stream to stdout |
 | Cancellation | `CancellationToken` bound to ctrl-c, racing both the tool call and the approval prompt |
+| Steering | a line typed while a turn runs joins it via `Session::input()`; typed while idle, it starts the next one |
 
 Not covered, and not intended to be in this pass: the TUI, ACP, worktrees,
-checkpoints, background tasks, MCP, skills, hooks, extensions, trajectory
-export, session resume, compaction, and the rest of yolop's capability set.
+checkpoints, background tasks, skills, hooks, extensions, trajectory export,
+session resume, compaction, and the rest of yolop's capability set.
 
 ## Findings
 
@@ -95,19 +99,28 @@ library's seams, and cancellation reaches into a running command.
    host dispatches a prepared batch concurrently, recording results in batch
    order. `InProcessExecutor::sequential()` is the opt-out for hosts that need
    policy to bite inside a batch.
-7. ~~**No mid-turn input.**~~ *Fixed upstream:* `Session::input()` hands out a
-   queue the engine drains at the next reasoning step. This backend does not
-   use it yet — its REPL reads one prompt at a time — but the TUI would.
-8. ~~**MCP is stdio-only and unauthenticated.**~~ *Fixed upstream:*
-   `McpServer::http` speaks the Streamable HTTP transport and
-   `McpAuthProvider` supplies credentials per request. This backend still
-   attaches no MCP capability at all; the gap that blocked it is gone.
-   Capabilities contributing MCP servers (agentyk's gap 13) is still open.
-9. ~~**Reasoning effort is unvalidated.**~~ *Fixed upstream:* a `ModelCatalog`
-   validates the composition at `build()`. This backend attaches none — yolop
-   already resolves effort against its own model profiles before building a
-   `ModelSpec` — so the finding is closed on agentyk's side, not consumed
-   here.
+7. ~~**No mid-turn input.**~~ *Fixed upstream and consumed:* the REPL reads
+   stdin on its own thread, so a line typed while the agent works becomes
+   steering (`Session::input()`) and one typed while it is idle starts the
+   next turn. The operator does not have to know which state it is in.
+8. ~~**MCP is stdio-only and unauthenticated.**~~ *Fixed upstream and
+   consumed:* the backend attaches yolop's *effective* MCP servers from the
+   same store `yolop mcp add` writes, mapping both transports, with bearer
+   tokens read from the environment per request. Capabilities contributing
+   MCP servers (agentyk's gap 13) is still open.
+9. ~~**Reasoning effort is unvalidated.**~~ *Fixed upstream and consumed:*
+   `YolopModelCatalog` exposes everruns' model profiles to agentyk, so
+   `--engine agentyk` rejects an unsupported effort at composition with the
+   same authority the shipping backend has — and the profile's context window
+   and output ceiling become the context budget for free.
+
+10. ~~**A turn could not be opened with an image.**~~ Found while consuming
+    the above: `Session::run` took `impl Into<String>`, so `-i/--image` had
+    nowhere to go even though tool *results* could carry images and both
+    drivers mapped them. *Fixed upstream* (`impl Into<Message>`) and consumed:
+    attachments ride on the message that asks about them. The lesson
+    generalizes — a capability at one end of a pipeline is unusable until
+    every entry point admits it, and only an adopter notices.
 
 What worked without friction, and is worth recording as such: capabilities
 composed by object (instructions, workspace tools) needed no ceremony;

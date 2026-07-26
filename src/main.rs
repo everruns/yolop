@@ -702,7 +702,6 @@ async fn run_agentyk_engine(
     for (flag, ignored) in [
         ("--acp", cli.acp),
         ("--trajectory-out", cli.trajectory_out.is_some()),
-        ("--image", !cli.images.is_empty()),
         ("--theme", cli.theme.is_some()),
         ("--inline", cli.inline),
         ("--session", cli.session.is_some()),
@@ -717,6 +716,7 @@ async fn run_agentyk_engine(
         settings: settings.snapshot(),
         sandbox,
         prompt: cli.print.clone(),
+        images: tui::input::image_input::load_image_parts(&cli.images)?,
         session_log: Some(sessions_dir.join("agentyk").join("events.jsonl")),
     })
     .await

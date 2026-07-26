@@ -38,6 +38,8 @@ agent-client-protocol = "2.0.0"
 agentyk = { git = "https://github.com/everruns/agentyk", branch = "main", features = [
     "http",
     "fs",
+    # The HTTP MCP transport needs `http` too; `mcp` alone is stdio.
+    "mcp",
 ], optional = true }
 anyhow = "1.0"
 ast-grep-core = "0.45"

@@ -90,6 +90,16 @@ impl EventListener for StdoutRenderer {
     }
 }
 
+/// Acknowledge a line that joined a running turn, so the operator can tell
+/// steering from a prompt that will start the next one.
+pub fn steered(text: &str, color: bool) -> String {
+    let line = format!("↳ steering: {}", first_line(text));
+    match color {
+        true => format!("{DIM}{line}{RESET}"),
+        false => line,
+    }
+}
+
 /// Print the answer the turn settled on. Streaming already showed it, so this
 /// only adds the trailing newline unless nothing streamed at all.
 pub fn final_answer(response: &str, _color: bool) {

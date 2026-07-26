@@ -18,8 +18,11 @@ wording, formatting, and link fixes do not need entries.
   `ModelSpec`, the missing filesystem tools, then multimodal tool results,
   concurrent tool dispatch, mid-turn steering, MCP over HTTP with auth, and
   model-profile validation. The backend consumes the ones it needs rather than
-  working around them; the concept records which it consumes and which are
-  closed upstream without a use here yet.
+  working around them: MCP servers now come from yolop's own config (both
+  transports, credentials per request), model limits from yolop's everruns
+  profiles, steering from a stdin reader that tells a course correction from a
+  new prompt, and `-i/--image` from the input half of multimodal — which the
+  adoption itself turned up as the tenth finding.
 
 ## 2026-07-25 — Mermaid fences in the transcript
 
