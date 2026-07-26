@@ -1,7 +1,7 @@
 // TUI app state and event loop.
-// Decision: keep the TUI surface tiny. Transcript output is inserted into the
-// native terminal scrollback; ratatui owns only a short inline composer at the
-// bottom.
+// Decision: keep the TUI surface tiny. Transcript output is published into the
+// native terminal scrollback; the renderer owns only a short footer at the
+// bottom — tuika's split-footer screen mode (see `tuika::screen`).
 
 use crate::exec::worktree::WorktreeManager;
 use crate::runtime::session::Session;
@@ -27,7 +27,7 @@ use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
@@ -44,7 +44,6 @@ pub(crate) mod fullscreen;
 mod keymap;
 mod render;
 mod setup;
-mod viewport;
 
 pub mod host_ui;
 pub mod input;
@@ -62,7 +61,7 @@ mod transcript_selection;
 // (the single boundary that interprets `everruns_core` events); re-export them
 // here so the TUI's own submodules keep referring to them as `crate::tui::*`.
 pub(crate) use self::keymap::{GlobalAction, global_keymap};
-pub(crate) use self::{render::*, viewport::*};
+pub(crate) use self::render::*;
 pub(crate) use crate::tui::presentation::*;
 pub(crate) use crate::tui::transcript::*;
 
@@ -101,8 +100,8 @@ const PANEL_BG: Color = Color::Rgb(28, 28, 34);
 /// Upper bound on retained transcript `ChatLine`s. A session that never stops
 /// producing output would otherwise grow `App::lines` — and the full-screen
 /// wrap cache built from it — without bound. Past this watermark the oldest
-/// lines are dropped from the front (see [`App::trim_transcript`]): in inline
-/// mode they have already been flushed to native scrollback, and in full-screen
+/// lines are dropped from the front (see [`App::trim_transcript`]): in
+/// split-footer mode they are already published to native scrollback, and in full-screen
 /// mode this bounds how far back the in-app scrollback reaches. The window is
 /// generous so only pathologically long sessions ever reach it.
 const MAX_RETAINED_TRANSCRIPT_LINES: usize = 50_000;
@@ -249,9 +248,9 @@ pub struct App {
     /// Large paste placeholders mapped to their full clipboard/terminal payloads.
     pending_pastes: Vec<(String, String)>,
     /// Which renderer this session drives. `Fullscreen` is the CLI default;
-    /// `Inline` is the scrollback-native composer selected by `--inline`.
+    /// `SplitFooter` is the scrollback-native composer selected by `--inline`.
     render_mode: RenderMode,
-    /// Full-screen transcript scroll position (unused in inline mode).
+    /// Full-screen transcript scroll position (unused in split-footer mode).
     scroll: ScrollState,
     /// Last (content_height, viewport_height) the full-screen transcript drew,
     /// so mouse/paging handlers can clamp scrolling without re-laying out.
@@ -310,13 +309,17 @@ pub(crate) struct HistorySearch {
     saved_lines: Vec<String>,
 }
 
-/// The renderer backing a TUI session.
+/// The renderer backing a TUI session — yolop's side of tuika's
+/// [`ScreenMode`](tuika::ScreenMode), which decides how much of the terminal
+/// the frame owns.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum RenderMode {
-    /// Scrollback-native inline composer.
+    /// Composer pinned to the terminal's last rows, transcript published above
+    /// it as ordinary scrollback (tuika's `ScreenMode::SplitFooter`).
     #[default]
-    Inline,
-    /// Full-screen alternate-screen renderer (`tuika`) and CLI default.
+    SplitFooter,
+    /// Full-screen alternate-screen renderer and CLI default
+    /// (tuika's `ScreenMode::Alternate`).
     Fullscreen,
 }
 
@@ -1293,8 +1296,8 @@ impl App {
     /// Drop transcript history beyond [`MAX_RETAINED_TRANSCRIPT_LINES`] so a very
     /// long session can't grow `lines` (and the wrap cache) without bound.
     ///
-    /// Only lines already flushed to native scrollback are dropped in inline
-    /// mode — dropping an unflushed line would erase it from scrollback entirely
+    /// Only lines already published to native scrollback are dropped in
+    /// split-footer mode — dropping an unpublished line would erase it entirely
     /// — so the cap is a soft target there. Full-screen mode has no native
     /// flush, so the drop bounds how far back its in-app scrollback reaches.
     /// Draining the front shifts the flush cursor and
@@ -1327,8 +1330,8 @@ impl App {
         // Terminal I/O fails transiently in the wild, so one failed loop
         // iteration must not end the session. The motivating case:
         // xterm.js-backed hosts (ttyd, vhs recordings) resize the PTY
-        // mid-session, ratatui re-anchors the inline viewport by querying
-        // the cursor position (`CSI 6n`), and crossterm abandons that query
+        // mid-session, re-pinning the footer re-anchors the viewport by
+        // querying the cursor position (`CSI 6n`), and crossterm abandons that query
         // after 2s if the emulator is too busy (reflowing scrollback,
         // screencasting) to answer in time. Propagating that error killed
         // the TUI right as turns completed, while tmux — which answers the
@@ -1393,23 +1396,25 @@ impl App {
         B: Backend,
         B::Error: std::error::Error + Send + Sync + 'static,
     {
-        // Inline mode streams finalized lines into native scrollback via
-        // `insert_before`; full-screen keeps the whole transcript in `lines`
+        // Split-footer mode publishes finalized lines into native scrollback
+        // above the footer; full-screen keeps the whole transcript in `lines`
         // and redraws it into the alternate screen each frame, so it skips both
-        // the flush and the inline-viewport re-anchoring.
+        // the flush and the footer pinning.
         if !self.render_mode.is_fullscreen() {
             self.flush_transcript(terminal)?;
         }
-        // Bound retained history now that inline mode has flushed this frame's
-        // lines, so `trim_transcript` can drop the freshly-flushed prefix.
+        // Bound retained history now that split-footer mode has flushed this
+        // frame's lines, so `trim_transcript` can drop the freshly-flushed prefix.
         self.trim_transcript();
         self.refresh_session_tasks_if_due();
         terminal.autoresize()?;
         if !self.render_mode.is_fullscreen() {
-            // Ratatui keeps an inline viewport's cursor offset across resizes
-            // and resets its origin on horizontal shrinks. Normalize the
-            // viewport to the terminal bottom before every draw.
-            maybe_reanchor_inline_viewport(terminal)?;
+            // Ratatui anchors an inline viewport to the cursor row it was
+            // created at and resets that origin on horizontal shrinks; tuika's
+            // `pin_footer` pushes it back onto the terminal's last rows. Cheap
+            // and idempotent once pinned, so it runs before every draw and is
+            // also what re-pins the footer after a resize.
+            tuika::screen::pin_footer(terminal)?;
         }
         terminal.draw(|f| draw(f, self))?;
 
@@ -1710,10 +1715,17 @@ impl App {
             return Ok(());
         }
 
-        for chunk in rendered.chunks(u16::MAX as usize) {
-            terminal.insert_before(chunk.len() as u16, |buf| {
-                Paragraph::new(chunk.to_vec()).render(buf.area, buf);
-            })?;
+        // Publishing goes through tuika's split-footer seam rather than a raw
+        // `insert_before`: `publish_block` commits one view above the footer,
+        // sized by what it measures, and paints without a background fill so a
+        // block reads as part of the surrounding terminal session. It borrows,
+        // so the block needs no `'static`/`Send` round-trip through
+        // `Scrollback` — this loop already owns the frame.
+        let theme = fullscreen::yolop_theme();
+        let ctx = tuika::RenderCtx::new(&theme);
+        for chunk in rendered.chunks(tuika::Scrollback::MAX_BLOCK_ROWS as usize) {
+            let block = tuika::components::Text::new(chunk.to_vec());
+            tuika::screen::publish_block(terminal, &block, &ctx)?;
         }
         self.printed_lines = self.lines.len();
         Ok(())
@@ -5119,19 +5131,17 @@ mod tests {
 
     use ratatui::Terminal;
     use ratatui::TerminalOptions;
-    use ratatui::Viewport;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
 
-    struct InlineComposerRender {
+    struct FooterComposerRender {
         lines: Vec<String>,
-        scrollback_height: u16,
         viewport_bottom: u16,
     }
 
-    /// Render the composer through the same inline viewport + bottom anchoring
-    /// path the real TUI uses (`Terminal::with_options` + `maybe_reanchor`).
-    fn inline_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
+    /// The split-footer viewport the real TUI runs in: tuika's `ScreenMode`
+    /// picks the viewport and `pin_footer` puts it on the terminal's last rows.
+    fn split_footer_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
         let mut backend = TestBackend::new(width, height);
         backend
             .set_cursor_position(Position { x: 0, y: 1 })
@@ -5139,15 +5149,15 @@ mod tests {
         let mut terminal = Terminal::with_options(
             backend,
             TerminalOptions {
-                viewport: Viewport::Inline(COMPOSER_VIEWPORT_HEIGHT),
+                viewport: tuika::ScreenMode::split_footer(COMPOSER_VIEWPORT_HEIGHT).viewport(),
             },
         )
         .expect("terminal");
-        maybe_reanchor_inline_viewport(&mut terminal).expect("anchor inline viewport");
+        tuika::screen::pin_footer(&mut terminal).expect("pin footer");
         terminal
     }
 
-    fn inline_transcript_rows(terminal: &mut Terminal<TestBackend>) -> Vec<String> {
+    fn footer_transcript_rows(terminal: &mut Terminal<TestBackend>) -> Vec<String> {
         let viewport_top = terminal.get_frame().area().y;
         let buffer = terminal.backend().buffer();
         let height = buffer.area.height;
@@ -5164,12 +5174,12 @@ mod tests {
             .collect()
     }
 
-    fn render_inline_composer(
+    fn render_footer_composer(
         app: &mut App,
         width: u16,
         terminal_height: u16,
         cursor_row: u16,
-    ) -> InlineComposerRender {
+    ) -> FooterComposerRender {
         let mut backend = TestBackend::new(width, terminal_height);
         backend
             .set_cursor_position(Position {
@@ -5180,11 +5190,11 @@ mod tests {
         let mut terminal = Terminal::with_options(
             backend,
             TerminalOptions {
-                viewport: Viewport::Inline(COMPOSER_VIEWPORT_HEIGHT),
+                viewport: tuika::ScreenMode::split_footer(COMPOSER_VIEWPORT_HEIGHT).viewport(),
             },
         )
         .expect("terminal");
-        maybe_reanchor_inline_viewport(&mut terminal).expect("anchor inline viewport");
+        tuika::screen::pin_footer(&mut terminal).expect("pin footer");
         terminal.draw(|f| draw(f, app)).expect("draw");
         let viewport = terminal.get_frame().area();
         let buffer = terminal.backend().buffer();
@@ -5197,9 +5207,8 @@ mod tests {
                 row.trim_end().to_string()
             })
             .collect();
-        InlineComposerRender {
+        FooterComposerRender {
             lines,
-            scrollback_height: terminal.backend().scrollback().area.height,
             viewport_bottom: viewport.y.saturating_add(viewport.height),
         }
     }
@@ -5346,7 +5355,7 @@ mod tests {
         // either mode.
         test.app.composer.set_text("draft reply");
 
-        test.app.set_render_mode(RenderMode::Inline);
+        test.app.set_render_mode(RenderMode::SplitFooter);
         let regular = render_app_lines(&mut test.app, 60, 20).join("\n");
         test.app.set_render_mode(RenderMode::Fullscreen);
         let fullscreen = render_app_lines(&mut test.app, 60, 20).join("\n");
@@ -5901,7 +5910,7 @@ mod tests {
         width: u16,
         height: u16,
     ) -> (Vec<String>, Vec<String>) {
-        app.set_render_mode(RenderMode::Inline);
+        app.set_render_mode(RenderMode::SplitFooter);
         let regular = render_app_lines(app, width, height);
         app.set_render_mode(RenderMode::Fullscreen);
         let fullscreen = render_app_lines(app, width, height);
@@ -6895,7 +6904,7 @@ mod tests {
             text: "first answer".into(),
         });
 
-        let mut terminal = inline_terminal(100, 60);
+        let mut terminal = split_footer_terminal(100, 60);
         app.flush_transcript(&mut terminal)
             .expect("flush prior turn");
         app.push_system("attached clipboard image #1 (640x480 PNG)".into());
@@ -6903,15 +6912,15 @@ mod tests {
             .expect("flush image notice");
         terminal.draw(|f| draw(f, app)).expect("draw after notice");
 
-        let inline_rows = inline_transcript_rows(&mut terminal);
-        let notice_row = inline_rows
+        let footer_rows = footer_transcript_rows(&mut terminal);
+        let notice_row = footer_rows
             .iter()
             .position(|row| row.contains("attached clipboard image #1"))
             .expect("image paste notice in inline viewport");
 
         assert!(
-            notice_row + 1 >= inline_rows.len().saturating_sub(1),
-            "incremental system notice should sit near the composer, not above a mirrored tail: inline={inline_rows:?}"
+            notice_row + 1 >= footer_rows.len().saturating_sub(1),
+            "incremental system notice should sit near the composer, not above a mirrored tail: inline={footer_rows:?}"
         );
     }
 
@@ -6927,7 +6936,7 @@ mod tests {
             text: "done".into(),
         });
 
-        let mut terminal = inline_terminal(100, 60);
+        let mut terminal = split_footer_terminal(100, 60);
         app.flush_transcript(&mut terminal)
             .expect("flush prior turn");
         app.push_system("turn failed: provider timeout".into());
@@ -6935,32 +6944,55 @@ mod tests {
             .expect("flush turn notice");
         terminal.draw(|f| draw(f, app)).expect("draw after notice");
 
-        let inline_rows = inline_transcript_rows(&mut terminal);
+        let footer_rows = footer_transcript_rows(&mut terminal);
         assert!(
-            inline_rows
+            footer_rows
                 .iter()
                 .any(|row| row.contains("turn failed: provider timeout")),
-            "turn-failed notice should mirror above the composer: {inline_rows:?}"
+            "turn-failed notice should mirror above the composer: {footer_rows:?}"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn inline_composer_anchor_leaves_scrollback_empty_in_tall_terminal() {
+    async fn split_footer_composer_sits_on_the_last_rows_of_a_tall_terminal() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.setup = None;
 
-        let rendered = render_inline_composer(app, 100, 60, 1);
+        let rendered = render_footer_composer(app, 100, 60, 1);
 
         assert_eq!(
             rendered.viewport_bottom, 60,
-            "inline viewport should sit flush with the terminal bottom"
+            "the footer should sit flush with the terminal bottom"
         );
+        // What makes the composer a footer rather than an inline panel: the
+        // rows it reserved are the terminal's last ones, and everything the
+        // session publishes lands above them.
         assert!(
-            rendered.scrollback_height < 20,
-            "cursor+resize anchoring should not push a tall blank band into scrollback (height={})",
-            rendered.scrollback_height
+            rendered.lines[(60 - COMPOSER_VIEWPORT_HEIGHT) as usize..]
+                .iter()
+                .any(|row| row.contains('›')),
+            "the composer prompt should be painted inside the footer rows: {:?}",
+            rendered.lines
         );
+    }
+
+    /// Pinning runs before every frame, so it has to be idempotent: a second
+    /// call on an already-pinned footer must not reserve another band of rows.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repinning_an_anchored_footer_reserves_no_further_rows() {
+        let mut terminal = split_footer_terminal(100, 60);
+        let scrollback_after_pin = terminal.backend().scrollback().area.height;
+
+        tuika::screen::pin_footer(&mut terminal).expect("re-pin footer");
+
+        assert_eq!(
+            terminal.backend().scrollback().area.height,
+            scrollback_after_pin,
+            "re-pinning an already-pinned footer should be a no-op"
+        );
+        let viewport = terminal.get_frame().area();
+        assert_eq!(viewport.y.saturating_add(viewport.height), 60);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6976,7 +7008,7 @@ mod tests {
         });
         app.printed_lines = app.lines.len();
 
-        let rendered = render_inline_composer(app, 100, 60, 1);
+        let rendered = render_footer_composer(app, 100, 60, 1);
         let answer_row = rendered
             .lines
             .iter()

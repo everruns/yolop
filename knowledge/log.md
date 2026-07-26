@@ -3,6 +3,18 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-26 — The scrollback renderer is tuika's split-footer mode
+
+- `--inline` now composes tuika's `ScreenMode::SplitFooter` instead of yolop's
+  own inline-viewport anchoring and `insert_before` publishing.
+  [Tuika](specs/tuika.md) gained the screen-mode boundary — the toolkit owns
+  pinning, publishing, and footer teardown; yolop owns which lines get
+  published — and [Presentation](specs/presentation.md) states what the mode
+  guarantees a user.
+- The same spec's dependency rule now allows tracking tuika's `main` branch
+  while a needed seam is unreleased, provided every tuika crate moves to the
+  same revision and the pin returns to a published version once one exists.
+
 ## 2026-07-25 — Host rendering advertised to the model
 
 - `<environment_context>` now carries `ui_capabilities` beside `client_ui` — an

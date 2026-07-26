@@ -39,12 +39,12 @@ use crossterm::{execute, queue};
 use everruns_core::command::ExecuteCommandRequest;
 use everruns_core::message::{ContentPart, MessageRole};
 use everruns_core::typed_id::SessionId;
-use ratatui::{Terminal, TerminalOptions, Viewport};
+use ratatui::{Terminal, TerminalOptions};
 use runtime::{BuiltRuntime, ProviderChoice, ResolvedProviderChoice, resolve_for_settings};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tui::{App, COMPOSER_VIEWPORT_HEIGHT, maybe_reanchor_inline_viewport};
+use tui::{App, COMPOSER_VIEWPORT_HEIGHT};
 use tuika::term::capabilities::Capabilities;
 use tuika::term::hyperlink::{HyperlinkBackend, LinkPolicy};
 
@@ -119,7 +119,8 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     trajectory_out: Option<PathBuf>,
 
-    /// Render the interactive TUI inline instead of using the default
+    /// Render the interactive TUI as a split footer — a composer pinned to the
+    /// bottom rows with the transcript above it — instead of using the default
     /// fullscreen alternate-screen renderer. Native terminal scrollback is
     /// available in this mode.
     #[arg(long)]
@@ -1040,6 +1041,7 @@ fn run_tuika_gallery() -> Result<()> {
     progress.indeterminate();
     let runner = tuika::Runner::new(tuika::RunnerConfig {
         tick_rate: Duration::from_millis(80),
+        ..tuika::RunnerConfig::default()
     });
     runner.run_with_backend(
         &theme,
@@ -1161,10 +1163,24 @@ async fn run_tui(
     let mut raw_mode = RawModeGuard::new()?;
     let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
     let mut bracketed_paste = BracketedPasteGuard::new();
+    // Which part of the terminal the renderer owns, in tuika's terms: the whole
+    // alternate screen, or a footer pinned to the bottom of the main screen with
+    // the transcript published above it as ordinary scrollback. `ScreenMode`
+    // then decides the viewport, the anchoring, and the teardown below, so the
+    // two renderers differ in one value rather than in scattered `if fullscreen`
+    // branches.
+    let screen_mode = if fullscreen {
+        tuika::ScreenMode::Alternate
+    } else {
+        // Mouse capture stays off (the `ScreenMode::split_footer` default): on
+        // the main screen it would take the wheel and drag-selection away from
+        // the terminal, which is the scrollback interaction this mode exists to
+        // preserve.
+        tuika::ScreenMode::split_footer(COMPOSER_VIEWPORT_HEIGHT)
+    };
     // In full-screen mode `tuika` owns the alternate screen + mouse capture via
-    // an RAII guard that restores them on drop. The viewport becomes the whole
-    // terminal instead of a short inline strip.
-    let alt_screen = if fullscreen {
+    // an RAII guard that restores them on drop.
+    let alt_screen = if screen_mode.is_alternate() {
         Some(tuika::host::AltScreen::enter()?)
     } else {
         None
@@ -1175,19 +1191,20 @@ async fn run_tui(
     // OSC 8 hyperlinks via HyperlinkBackend — see `hyperlink_policy` (auto-on
     // for Ghostty and other known OSC 8 terminals; override with YOLOP_HYPERLINKS).
     let backend = HyperlinkBackend::with_policy(stdout, hyperlink_policy());
-    let viewport = if fullscreen {
-        Viewport::Fullscreen
-    } else {
-        Viewport::Inline(COMPOSER_VIEWPORT_HEIGHT)
-    };
-    let mut terminal = Terminal::with_options(backend, TerminalOptions { viewport })?;
-    // Anchoring is cosmetic and inline-only. Since ratatui 0.30.1
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: screen_mode.viewport(),
+        },
+    )?;
+    // Pinning is cosmetic and split-footer-only. Since ratatui 0.30.1
     // `insert_before` snapshots the cursor (via `Terminal::clear`) with a
     // blocking `CSI 6n` query that slow emulators (ttyd / xterm.js) may not
-    // answer before crossterm's ~2s timeout. Start unanchored rather than
-    // dying.
-    if !fullscreen && let Err(err) = maybe_reanchor_inline_viewport(&mut terminal) {
-        tracing::warn!("inline viewport anchoring failed, starting unanchored: {err:#}");
+    // answer before crossterm's ~2s timeout. Start unpinned rather than dying.
+    if !screen_mode.is_alternate()
+        && let Err(err) = tuika::screen::pin_footer(&mut terminal)
+    {
+        tracing::warn!("footer pinning failed, starting unpinned: {err:#}");
     }
 
     let mut app = App::new(runtime, pending_images);
@@ -1200,14 +1217,19 @@ async fn run_tui(
     let session_id = app.session_id().to_string();
     let last_assistant_message = app.last_assistant_message().map(str::to_owned);
 
-    // Cosmetic cleanup must not turn a successful session into an error
-    // exit: since ratatui 0.30.1 `Terminal::clear` issues the same blocking
-    // cursor query as anchoring above. The two steps are independent —
-    // restoring the cursor is a plain escape write that should still happen
-    // when the clear's query times out. Raw-mode restore below still fails
-    // hard — leaving the terminal unusable is worth a nonzero exit.
-    if let Err(err) = terminal.clear() {
-        tracing::warn!("terminal clear failed: {err:#}");
+    // Hand the footer's rows back to the terminal so the shell prompt resumes
+    // directly below the published transcript instead of after — or on top of —
+    // the last frame. Against the full-screen viewport this degrades to a plain
+    // clear, which is what that mode wants anyway.
+    //
+    // Cosmetic cleanup must not turn a successful session into an error exit:
+    // since ratatui 0.30.1 `Terminal::clear` (which `close_footer` performs)
+    // issues the same blocking cursor query as pinning above. The two steps are
+    // independent — restoring the cursor is a plain escape write that should
+    // still happen when the clear's query times out. Raw-mode restore below
+    // still fails hard — leaving the terminal unusable is worth a nonzero exit.
+    if let Err(err) = tuika::screen::close_footer(&mut terminal) {
+        tracing::warn!("footer teardown failed: {err:#}");
     }
     if let Err(err) = terminal.show_cursor() {
         tracing::warn!("cursor restore failed: {err:#}");
@@ -1855,21 +1877,5 @@ mod tests {
         .expect("resolve");
 
         assert_eq!(resolved, explicit.path());
-    }
-
-    #[test]
-    fn inline_viewport_anchor_fills_space_above_bottom_target() {
-        assert_eq!(tui::rows_below_inline_viewport(4, 18, 60), 38);
-    }
-
-    #[test]
-    fn inline_viewport_anchor_does_not_scroll_when_already_low_enough() {
-        assert_eq!(tui::rows_below_inline_viewport(42, 18, 60), 0);
-        assert_eq!(tui::rows_below_inline_viewport(50, 18, 60), 0);
-    }
-
-    #[test]
-    fn inline_viewport_anchor_handles_small_terminals() {
-        assert_eq!(tui::rows_below_inline_viewport(0, 18, 10), 0);
     }
 }
