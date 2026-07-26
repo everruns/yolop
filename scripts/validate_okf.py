@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
-"""Validate an Open Knowledge Format bundle using only the standard library.
+"""Validate an Open Knowledge Format (OKF v0.2) bundle using only the standard library.
 
-Usage: python3 scripts/validate_okf.py <bundle-dir> [--strict] [--check-links]
+Usage: python3 validate_okf.py <bundle-dir> [--strict] [--check-links]
 
---strict requires title, description, and timestamp in addition to OKF's
-required type field. --check-links validates local Markdown link targets.
+Without flags this checks only OKF conformance: every non-reserved `.md` file
+has parseable YAML frontmatter with a non-empty `type`. Everything else in the
+format is soft guidance, so it lives behind the opt-in flags.
+
+--strict adds producer-side lint: `title`, `description`, and `generated`; the
+`runtime` an Attested Computation requires; the shapes of `status`, `stale_after`
+and `okf_version`; and the v0.1 fields v0.2 superseded. --check-links resolves
+intra-bundle Markdown link targets. Findings from either flag are reasons to
+improve a bundle you own, never to reject one you are only reading.
+
+Spec: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md
 """
 
 from __future__ import annotations
@@ -17,9 +26,18 @@ RESERVED = {"index.md", "log.md"}
 FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 LINK_RE = re.compile(r"\]\(([^)\s]+)(?:\s+['\"][^)]*['\"])?\)")
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+STATUSES = {"draft", "stable", "deprecated"}
+ATTESTED_COMPUTATION = "attested computation"
+# v0.1 fields v0.2 replaced. A bundle carrying them still conforms; --strict
+# reports them so a producer migrates instead of writing new legacy documents.
+SUPERSEDED = {"timestamp": "generated: { by, at }"}
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str | None]:
+    """Return (top-level fields, error). Nested structures are flattened to their
+    raw text, which is enough for presence and shape checks without a YAML
+    dependency."""
     match = FRONTMATTER_RE.match(text)
     if not match:
         return {}, "missing or malformed YAML frontmatter"
@@ -27,6 +45,8 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str | None]:
     for line in match.group(1).splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or line[:1].isspace():
+            continue
+        if stripped.startswith("- "):  # continuation of a block sequence
             continue
         if ":" not in line:
             return {}, f"malformed frontmatter line: {line!r}"
@@ -51,6 +71,38 @@ def local_link_target(root: Path, source: Path, target: str) -> Path | None:
     return source.parent / target
 
 
+def lint_concept(fields: dict[str, str]) -> list[str]:
+    """Soft guidance from the spec, reported only under --strict."""
+    findings: list[str] = []
+    for recommended in ("title", "description", "generated"):
+        if not fields.get(recommended):
+            findings.append(f"--strict requires `{recommended}`")
+    for legacy, replacement in SUPERSEDED.items():
+        if legacy in fields:
+            findings.append(f"`{legacy}` is superseded by `{replacement}`")
+    if fields.get("type", "").lower() == ATTESTED_COMPUTATION and not fields.get("runtime"):
+        findings.append("`type: Attested Computation` requires `runtime`")
+    status = fields.get("status")
+    if status and status not in STATUSES:
+        findings.append(f"`status` must be one of {sorted(STATUSES)}, got {status!r}")
+    stale_after = fields.get("stale_after")
+    if stale_after and not DATE_RE.match(stale_after):
+        findings.append(f"`stale_after` must be an absolute YYYY-MM-DD date, got {stale_after!r}")
+    return findings
+
+
+def lint_index(fields: dict[str, str], is_bundle_root: bool) -> list[str]:
+    """Index files carry no frontmatter, except `okf_version` at the bundle root."""
+    allowed = {"okf_version"} if is_bundle_root else set()
+    extra = sorted(set(fields) - allowed)
+    if extra:
+        return [f"index.md must not carry frontmatter keys {extra}"]
+    version = fields.get("okf_version")
+    if version and not re.match(r"^\d+\.\d+$", version):
+        return [f"`okf_version` must be `<major>.<minor>`, got {version!r}"]
+    return []
+
+
 def validate(root: Path, *, strict: bool = False, check_links: bool = False) -> tuple[list[str], int]:
     messages: list[str] = []
     concepts = 0
@@ -58,17 +110,21 @@ def validate(root: Path, *, strict: bool = False, check_links: bool = False) -> 
         rel = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8", errors="replace")
         if path.name not in RESERVED:
-            frontmatter, error = parse_frontmatter(text)
+            fields, error = parse_frontmatter(text)
             if error:
                 messages.append(f"{rel}: {error}")
                 continue
             concepts += 1
-            if not frontmatter.get("type"):
+            if not fields.get("type"):
                 messages.append(f"{rel}: frontmatter has no non-empty `type` field")
             if strict:
-                for required in ("title", "description", "timestamp"):
-                    if not frontmatter.get(required):
-                        messages.append(f"{rel}: --strict requires `{required}`")
+                messages.extend(f"{rel}: {finding}" for finding in lint_concept(fields))
+        elif strict and path.name == "index.md" and text.startswith("---"):
+            fields, error = parse_frontmatter(text)
+            if error:
+                messages.append(f"{rel}: {error}")
+            else:
+                messages.extend(f"{rel}: {f}" for f in lint_index(fields, rel == "index.md"))
         if check_links:
             for target in LINK_RE.findall(text):
                 local = local_link_target(root, path, target)
@@ -80,7 +136,7 @@ def validate(root: Path, *, strict: bool = False, check_links: bool = False) -> 
 def main() -> int:
     args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
     flags = {arg for arg in sys.argv[1:] if arg.startswith("--")}
-    if len(args) != 1:
+    if len(args) != 1 or flags - {"--strict", "--check-links"}:
         print(__doc__)
         return 2
     root = Path(args[0])

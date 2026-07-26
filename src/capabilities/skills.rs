@@ -737,6 +737,31 @@ mod tests {
             "yolop skill description should mention keyboard shortcuts: {:?}",
             yolop_parsed.description
         );
+
+        // The okf skill teaches a format from an external spec, so pin what it
+        // cites: `okf.md` is not normative and describes a superseded v0.1
+        // model, and the skill's documented validator command only works if the
+        // nested `scripts/` directory materializes with it.
+        let okf_md = std::fs::read_to_string(dest.join("okf").join("SKILL.md")).unwrap();
+        let okf_parsed = everruns_core::skill::parse_skill_md(&okf_md).unwrap();
+        assert!(okf_parsed.user_invocable);
+        assert!(
+            okf_md.contains(
+                "https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md"
+            ),
+            "okf skill must cite the authoritative spec"
+        );
+        assert!(
+            !okf_md.contains("okf.md/spec"),
+            "okf skill must not cite the non-normative okf.md site"
+        );
+        assert!(
+            dest.join("okf")
+                .join("scripts")
+                .join("validate_okf.py")
+                .is_file(),
+            "okf skill ships its validator"
+        );
     }
 
     // ---------- delete_skill ----------
