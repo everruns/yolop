@@ -130,6 +130,34 @@ the event stream was sufficient to build the whole terminal UI as a pure
 observer; and `RealDiskFileSystem` plus the write blocklist gave a safe default
 for free.
 
+## Live evidence
+
+Offline proof is the default here — the whole point of `--provider llmsim` —
+but a backend that has never made a real provider call has not been tested,
+only compiled. What live runs against Anthropic, GitHub's hosted MCP server,
+and a real image confirmed:
+
+- the filesystem tools (`grep_files`, `stat_file`, `read_file`, `edit_file`)
+  and the sandboxed shell, driving an actual bug fix end to end;
+- tool progress reaching the transcript **while** a command runs, and two
+  shell calls whose output interleaved — concurrent dispatch, observed;
+- an image opening a turn (`-i`) and being described correctly;
+- MCP over HTTP with a bearer token, calling a tool on GitHub's hosted server;
+- the model catalog rejecting `--reasoning-effort nonsense` at composition,
+  naming the supported values.
+
+Two defects surfaced that no offline test would have:
+
+1. **agentyk's HTTP drivers trusted only bundled roots**, so no provider was
+   reachable through this environment's inspecting proxy. Fixed upstream.
+2. **A failing MCP server took down the run.** One server missing its token
+   401'd, and because a capability's `tools()` error aborts the turn, the
+   session died with it. Fixed here: MCP capabilities are wrapped best-effort,
+   so an unreachable server costs its tools and announces itself, not the
+   session. The wrapper is the backend's own policy, not the library's —
+   agentyk failing loudly is defensible, and silently losing tools is its own
+   bug, which is why the loss is reported once per process.
+
 ## Constraints
 
 - The agentyk dependency tracks the library's `main` branch while agentyk is

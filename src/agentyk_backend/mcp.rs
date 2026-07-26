@@ -12,7 +12,14 @@
 //! in a backup. agentyk asks the provider per request, so a token that
 //! changes between turns is picked up without reconnecting.
 
-use agentyk::{Capability, McpAuthProvider, McpCapability, McpServer, Result as AgentykResult};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use agentyk::capability::{CommandContext, CommandDescriptor, SystemPromptContext};
+use agentyk::{
+    Capability, McpAuthProvider, McpCapability, McpServer, Result as AgentykResult, Tool,
+    ToolOutput,
+};
 use async_trait::async_trait;
 use everruns_core::{McpServerTransportType, ScopedMcpServer};
 
@@ -39,7 +46,10 @@ pub fn capabilities(workspace: &std::path::Path) -> (Vec<Box<dyn Capability>>, V
                     server: summary.name.clone(),
                     oauth_provider_id: summary.server.server.oauth_provider_id.clone(),
                 };
-                capabilities.push(Box::new(McpCapability::new(server).auth(auth)));
+                capabilities.push(Box::new(BestEffort::new(
+                    summary.name.clone(),
+                    McpCapability::new(server).auth(auth),
+                )));
             }
             Err(reason) => {
                 warnings.push(format!("mcp server `{}` skipped: {reason}", summary.name))
@@ -73,6 +83,82 @@ fn server(name: &str, configured: &ScopedMcpServer) -> Result<McpServer, String>
             }
             Ok(server)
         }
+    }
+}
+
+/// A capability whose tools are optional: if it cannot produce them, the turn
+/// runs without them instead of failing.
+///
+/// Attaching a server is a statement about configuration, not a promise the
+/// server is up. A remote MCP endpoint can be down, unreachable, or refuse a
+/// token that expired an hour ago — and none of that should cost an operator
+/// the session they are in the middle of. A live run proved the point: a
+/// server missing its token 401'd and took the whole run with it.
+///
+/// The failure is announced once per process rather than silently swallowed,
+/// because tools that vanish without explanation are their own kind of bug.
+struct BestEffort {
+    name: String,
+    inner: Arc<dyn Capability>,
+    reported: AtomicBool,
+}
+
+impl BestEffort {
+    fn new(name: String, inner: impl Capability + 'static) -> Self {
+        Self {
+            name,
+            inner: Arc::new(inner),
+            reported: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl Capability for BestEffort {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    async fn system_prompt_contribution(&self, context: &SystemPromptContext) -> Option<String> {
+        self.inner.system_prompt_contribution(context).await
+    }
+
+    async fn tools(&self) -> AgentykResult<Vec<Arc<dyn Tool>>> {
+        match self.inner.tools().await {
+            Ok(tools) => Ok(tools),
+            Err(error) => {
+                // Once per process: a turn loop would otherwise repeat this
+                // on every iteration of every turn.
+                if !self.reported.swap(true, Ordering::SeqCst) {
+                    eprintln!(
+                        "yolop: mcp server `{}` unavailable, continuing without its tools: {error}",
+                        self.name
+                    );
+                }
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    fn commands(&self) -> Vec<CommandDescriptor> {
+        self.inner.commands()
+    }
+
+    async fn execute_command(
+        &self,
+        name: &str,
+        args: &str,
+        context: &CommandContext,
+    ) -> Option<ToolOutput> {
+        self.inner.execute_command(name, args, context).await
     }
 }
 
@@ -210,5 +296,58 @@ mod tests {
             oauth_provider_id: None,
         };
         assert_eq!(provider.authorization("x").await.unwrap(), None);
+    }
+}
+
+#[cfg(test)]
+mod best_effort_tests {
+    use super::*;
+    use agentyk::{Agent, ModelSpec, SimDriver, SimTurn};
+
+    /// A capability that cannot produce its tools — a server that is down.
+    struct Unreachable;
+
+    #[async_trait]
+    impl Capability for Unreachable {
+        fn id(&self) -> &str {
+            "mcp:unreachable"
+        }
+
+        async fn tools(&self) -> AgentykResult<Vec<Arc<dyn Tool>>> {
+            Err(agentyk::Error::Mcp("connection refused".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_server_does_not_fail_the_turn() -> anyhow::Result<()> {
+        let agent = Agent::builder()
+            .model(ModelSpec::llmsim())
+            .driver(SimDriver::new([SimTurn::text("worked anyway")]))
+            .capability(BestEffort::new("unreachable".into(), Unreachable))
+            .build()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+
+        let turn = agent
+            .session()
+            .run("go")
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert_eq!(turn.response, "worked anyway");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_unwrapped_failure_would_have_failed_the_turn() -> anyhow::Result<()> {
+        // The behavior being guarded against, asserted so the wrapper's
+        // purpose stays legible if agentyk ever changes this.
+        let agent = Agent::builder()
+            .model(ModelSpec::llmsim())
+            .driver(SimDriver::new([SimTurn::text("never reached")]))
+            .capability(Unreachable)
+            .build()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+
+        assert!(agent.session().run("go").await.is_err());
+        Ok(())
     }
 }

@@ -23,6 +23,11 @@ wording, formatting, and link fixes do not need entries.
   profiles, steering from a stdin reader that tells a course correction from a
   new prompt, and `-i/--image` from the input half of multimodal — which the
   adoption itself turned up as the tenth finding.
+- First live provider runs (Anthropic, GitHub's hosted MCP server, a real
+  image) proved the backend end to end and turned up two defects offline tests
+  could not: agentyk's drivers trusted only bundled CA roots (fixed upstream),
+  and a failing MCP server aborted the whole run (fixed here with a
+  best-effort wrapper). The concept records what live coverage is for.
 
 ## 2026-07-25 — Mermaid fences in the transcript
 
