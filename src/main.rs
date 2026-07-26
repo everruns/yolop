@@ -1040,6 +1040,9 @@ fn run_tuika_gallery() -> Result<()> {
     progress.indeterminate();
     let runner = tuika::Runner::new(tuika::RunnerConfig {
         tick_rate: Duration::from_millis(80),
+        // The gallery owns the whole terminal; `ScreenMode::Alternate` is the
+        // default, and split-footer mode is for hosts that publish scrollback.
+        ..tuika::RunnerConfig::default()
     });
     runner.run_with_backend(
         &theme,
