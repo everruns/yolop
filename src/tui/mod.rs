@@ -92,6 +92,9 @@ const TEXT_PRIMARY: Color = Color::Rgb(230, 230, 232);
 const TEXT_MUTED: Color = Color::Rgb(140, 140, 145);
 const TEXT_DIM: Color = Color::Rgb(72, 72, 78);
 const ERROR_RED: Color = Color::Rgb(196, 78, 78);
+/// Warning tint for status fields that carry a level (extensions'
+/// `status/changed`). Brighter than `ACCENT_GOLD`, which is separator chrome.
+const WARN_AMBER: Color = Color::Rgb(198, 154, 58);
 const DIFF_ADD: Color = Color::Rgb(132, 166, 142);
 const DIFF_DELETE: Color = Color::Rgb(180, 132, 136);
 const DIFF_META: Color = Color::Rgb(108, 132, 188);
@@ -190,7 +193,10 @@ pub struct App {
     /// Live status-bar text per extension (`ext:<name>` → status), pushed by
     /// extension servers over `status/changed`. Rendered in the status bar via
     /// [`App::presentation_state`].
-    extension_status: std::collections::BTreeMap<String, String>,
+    /// Latest `status/changed` text per extension, with the level that tints
+    /// it. Keyed by capability id (`ext:<name>`).
+    extension_status:
+        std::collections::BTreeMap<String, (String, crate::extensions::protocol::StatusLevel)>,
     /// Turn-scoped status text set by the agent through the host UI.
     agent_status: Option<String>,
     /// Incoming extension `ui/ask` requests; each is prompted one at a time via
@@ -1080,10 +1086,10 @@ impl App {
             extension_status: self
                 .extension_status
                 .iter()
-                .map(|(ext, status)| {
+                .map(|(ext, (status, level))| {
                     // `ext:<name>` → `<name>` for a compact status-bar label.
                     let label = ext.strip_prefix("ext:").unwrap_or(ext).to_string();
-                    (label, status.clone())
+                    (label, status.clone(), *level)
                 })
                 .collect(),
         }
@@ -2495,12 +2501,13 @@ impl App {
                 let status = status.trim();
                 self.agent_status = (!status.is_empty()).then(|| status.to_string());
             }
-            UiCommand::SetExtensionStatus { ext, status } => {
+            UiCommand::SetExtensionStatus { ext, status, level } => {
                 let status = status.trim();
                 if status.is_empty() {
                     self.extension_status.remove(&ext);
                 } else {
-                    self.extension_status.insert(ext, status.to_string());
+                    self.extension_status
+                        .insert(ext, (status.to_string(), level));
                 }
             }
             UiCommand::SetExtensionActive {
@@ -5934,8 +5941,13 @@ mod tests {
             (
                 "extension status segment",
                 |app| {
-                    app.extension_status
-                        .insert("ext:lsp".to_string(), "indexing".to_string());
+                    app.extension_status.insert(
+                        "ext:lsp".to_string(),
+                        (
+                            "indexing".to_string(),
+                            crate::extensions::protocol::StatusLevel::Ok,
+                        ),
+                    );
                     app.push_user("hello from user".to_string());
                 },
                 "hello from user",

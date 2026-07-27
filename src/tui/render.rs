@@ -1960,7 +1960,7 @@ fn linear_status_layout(lines: &[StatusLine], width: u16) -> FullscreenStatusLay
             col = col.saturating_add(str_cols(&field.value));
             spans.push(Span::styled(
                 field.value.clone(),
-                Style::default().fg(TEXT_MUTED),
+                Style::default().fg(status_tone_color(field.tone)),
             ));
             if let Some(action) = field.action
                 && start < width
@@ -2078,7 +2078,10 @@ fn status_cell(section: &StatusSection, width: u16) -> StatusCell {
         if !label.is_empty() {
             spans.push(Span::styled(label, Style::default().fg(TEXT_DIM)));
         }
-        spans.push(Span::styled(value, Style::default().fg(TEXT_MUTED)));
+        spans.push(Span::styled(
+            value,
+            Style::default().fg(status_tone_color(field.tone)),
+        ));
         lines.push(Line::from(spans));
         if let Some(action) = field.action
             && end_col > 1
@@ -2117,6 +2120,17 @@ fn fit_status_text(text: &str, width: u16) -> String {
     format!("{}…", prefix.trim_end())
 }
 
+/// Colour for a status field's value. Severity is opt-in per field
+/// ([`StatusTone`]); everything without one keeps the muted default, so only a
+/// field that actually carries a level stands out.
+fn status_tone_color(tone: StatusTone) -> ratatui::style::Color {
+    match tone {
+        StatusTone::Neutral => TEXT_MUTED,
+        StatusTone::Warn => WARN_AMBER,
+        StatusTone::Error => ERROR_RED,
+    }
+}
+
 fn status_line(line: &StatusLine) -> Line<'static> {
     let mut spans = vec![Span::styled(" ", Style::default().fg(TEXT_MUTED))];
     let mut first = true;
@@ -2133,7 +2147,7 @@ fn status_line(line: &StatusLine) -> Line<'static> {
         }
         spans.push(Span::styled(
             field.value.clone(),
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(status_tone_color(field.tone)),
         ));
     }
     spans.push(Span::styled(" ", Style::default().fg(TEXT_MUTED)));

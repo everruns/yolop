@@ -52,8 +52,9 @@ pub(crate) struct PresentationState {
     /// Turn-scoped status text contributed by the agent through the TUI host.
     pub agent_status: Option<String>,
     /// Live status pushed by extensions over `status/changed`, as
-    /// `(extension_name, status_text)` pairs. Rendered as its own status field.
-    pub extension_status: Vec<(String, String)>,
+    /// `(extension_name, status_text, level)` triples. Rendered as its own
+    /// status field, tinted by level so a warning reads as one.
+    pub extension_status: Vec<(String, String, crate::extensions::protocol::StatusLevel)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +82,30 @@ pub(crate) struct StatusField {
     pub label: Option<&'static str>,
     pub value: String,
     pub action: Option<StatusAction>,
+    /// How the value is tinted. Almost every field is [`StatusTone::Neutral`];
+    /// severity exists because an extension's `status/changed` carries a level,
+    /// and a warning rendered in the same muted grey as a counter is not a
+    /// warning.
+    pub tone: StatusTone,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum StatusTone {
+    #[default]
+    Neutral,
+    Warn,
+    Error,
+}
+
+impl From<crate::extensions::protocol::StatusLevel> for StatusTone {
+    fn from(level: crate::extensions::protocol::StatusLevel) -> Self {
+        use crate::extensions::protocol::StatusLevel;
+        match level {
+            StatusLevel::Ok => Self::Neutral,
+            StatusLevel::Warn => Self::Warn,
+            StatusLevel::Error => Self::Error,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -340,7 +365,10 @@ fn extension_status_fields(state: &PresentationState) -> Vec<StatusField> {
     state
         .extension_status
         .iter()
-        .map(|(name, status)| status_value(format!("{name}: {status}")))
+        .map(|(name, status, level)| StatusField {
+            tone: (*level).into(),
+            ..status_value(format!("{name}: {status}"))
+        })
         .collect()
 }
 
@@ -375,6 +403,7 @@ fn status_value(value: impl Into<String>) -> StatusField {
         label: None,
         value: value.into(),
         action: None,
+        tone: StatusTone::Neutral,
     }
 }
 
@@ -383,6 +412,7 @@ fn status_field(label: &'static str, value: impl Into<String>) -> StatusField {
         label: Some(label),
         value: value.into(),
         action: None,
+        tone: StatusTone::Neutral,
     }
 }
 
@@ -391,6 +421,7 @@ fn status_value_action(value: impl Into<String>, action: StatusAction) -> Status
         label: None,
         value: value.into(),
         action: Some(action),
+        tone: StatusTone::Neutral,
     }
 }
 
@@ -403,6 +434,7 @@ fn status_field_action(
         label: Some(label),
         value: value.into(),
         action: Some(action),
+        tone: StatusTone::Neutral,
     }
 }
 
@@ -533,8 +565,13 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" · ")
         };
+        use crate::extensions::protocol::StatusLevel;
         let mut s = state();
-        s.extension_status = vec![("git-guard".to_string(), "1423 chars".to_string())];
+        s.extension_status = vec![(
+            "git-guard".to_string(),
+            "1423 chars".to_string(),
+            StatusLevel::Ok,
+        )];
 
         s.status_layout = StatusLayout::Compact;
         assert!(
@@ -551,6 +588,40 @@ mod tests {
         // No extensions → no stray field.
         s.extension_status.clear();
         assert!(!flatten(s.status_lines()).contains("git-guard"));
+    }
+
+    #[test]
+    fn extension_status_level_tints_the_field() {
+        use crate::extensions::protocol::StatusLevel;
+        let tone_of = |state: &PresentationState| {
+            state
+                .status_lines()
+                .iter()
+                .flat_map(|l| l.fields.clone())
+                .find(|f| f.value.starts_with("cache-break:"))
+                .expect("extension field present")
+                .tone
+        };
+
+        let mut s = state();
+        for (level, expected) in [
+            (StatusLevel::Ok, StatusTone::Neutral),
+            (StatusLevel::Warn, StatusTone::Warn),
+            (StatusLevel::Error, StatusTone::Error),
+        ] {
+            s.extension_status =
+                vec![("cache-break".to_string(), "cache break".to_string(), level)];
+            assert_eq!(tone_of(&s), expected, "level {level:?} must set the tone");
+        }
+
+        // Every other field stays neutral — severity is opt-in, not ambient.
+        assert!(
+            s.status_lines()
+                .iter()
+                .flat_map(|l| l.fields.clone())
+                .filter(|f| !f.value.starts_with("cache-break:"))
+                .all(|f| f.tone == StatusTone::Neutral)
+        );
     }
 
     #[test]

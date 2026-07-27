@@ -2884,21 +2884,34 @@ pub async fn build_with_options(
     // so extension `status/changed` pushes and `ClientCommandsCapability` share
     // one `UiRequest` stream that the `App` event loop drains.
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiRequest>();
-    // Status-bar sink for extensions, only when the host has a status bar (the
-    // TUI). Maps a server's `status/changed` into a `SetExtensionStatus`
-    // command; `None` in `--print`/ACP, where it logs instead.
-    let status_sink: Option<crate::extensions::StatusSink> =
-        matches!(options.client_ui, ClientUiContext::Tui).then(|| {
-            let tx = ui_tx.clone();
-            Arc::new(
-                move |ext: &str, params: crate::extensions::protocol::StatusChangedParams| {
-                    let _ = tx.send(UiRequest::fire(UiCommand::SetExtensionStatus {
-                        ext: ext.to_string(),
-                        status: params.status,
-                    }));
-                },
-            ) as crate::extensions::StatusSink
-        });
+    // Last-known status per extension, for `list_extensions`. Recorded in every
+    // client — the status bar is TUI-only and renders the short text alone, so
+    // this is the only place a push's `detail` and `level` survive.
+    let extension_status = crate::extensions::StatusRegistry::default();
+    // Status sink: always present so the registry is fed, but the status-bar
+    // push rides along only when the host has a status bar (the TUI).
+    let status_sink: Option<crate::extensions::StatusSink> = {
+        let registry = extension_status.clone();
+        let status_bar = matches!(options.client_ui, ClientUiContext::Tui).then(|| ui_tx.clone());
+        Some(Arc::new(
+            move |ext: &str, params: crate::extensions::protocol::StatusChangedParams| {
+                registry.record(ext, &params);
+                match &status_bar {
+                    Some(tx) => {
+                        let _ = tx.send(UiRequest::fire(UiCommand::SetExtensionStatus {
+                            ext: ext.to_string(),
+                            status: params.status,
+                            level: params.level,
+                        }));
+                    }
+                    // No status bar: the log is the whole surface, as before.
+                    None => tracing::info!(
+                        target: "yolop::ext", ext = %ext, "status: {}", params.status
+                    ),
+                }
+            },
+        ) as crate::extensions::StatusSink)
+    };
     // `ui/ask` handler channel: an extension's request rides `ask_tx` to the
     // App, which prompts the user and answers via a per-request oneshot. Only
     // wired for the TUI; `None` elsewhere refuses `ui/ask`.
@@ -3012,7 +3025,10 @@ pub async fn build_with_options(
             .with_secrets(extension_secrets.clone())
             // The `set_extension_secret` prompt reuses the extension `ui/ask`
             // surface (TUI only); `None` elsewhere refuses interactive setup.
-            .with_ask_sink(ask_sink.clone()),
+            .with_ask_sink(ask_sink.clone())
+            // Same registry the status sink writes, so `list_extensions`
+            // reports the level and `detail` the status bar drops.
+            .with_status_registry(extension_status.clone()),
         );
     }
     // Server name list for `/mcp` and StartupInfo, computed after extension

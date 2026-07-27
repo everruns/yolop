@@ -64,8 +64,15 @@ pub enum UiCommand {
     /// Set (or clear when empty) the agent's turn-scoped status contribution.
     SetAgentStatus { status: String },
     /// Set (or, when `status` is empty, clear) an extension's status-bar field.
-    /// Pushed by an extension server's `status/changed` notification.
-    SetExtensionStatus { ext: String, status: String },
+    /// Pushed by an extension server's `status/changed` notification. `level`
+    /// tints the field so a warning reads as one rather than as a counter; the
+    /// push's `detail` is not carried — it is too long for the bar and reaches
+    /// the user through `list_extensions` instead.
+    SetExtensionStatus {
+        ext: String,
+        status: String,
+        level: crate::extensions::protocol::StatusLevel,
+    },
     /// Activate (`activate = true`) or deactivate an extension capability on the
     /// live session so it takes effect this session, not just next. Pushed by
     /// `enable_extension`/`disable_extension` after the settings write.

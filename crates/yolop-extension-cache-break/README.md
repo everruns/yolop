@@ -27,7 +27,7 @@ Two facets, no tools:
   `metadata.model`. Because the notification is never awaited, a slow or crashed
   server can't stall a turn.
 - **`status`** — a `status/changed` push puts the warning in the status bar,
-  with the long form in `/extensions list`. Warnings are also pushed as `log`
+  with the long form and level in `/extensions list`. Warnings are also pushed as `log`
   notifications, so they land in `RUST_LOG` output where there is no status bar
   (`--print`, ACP).
 

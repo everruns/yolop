@@ -77,11 +77,21 @@ spawned exactly as the runtime spawns it — is covered by
 Status bar: an extension that declares `status` in its manifest (the D4 opt-in)
 may push `status/changed` notifications carrying a short string the host shows
 in its status bar (empty clears it). The wire type is `StatusChangedParams`; the
-notification routes through an optional `StatusSink` created in `runtime.rs`
+notification routes through a `StatusSink` created in `runtime.rs`
 into a `SetExtensionStatus` `UiCommand`, then `App.extension_status`, then
 `PresentationState`. It renders in the inline TUI (`status_contributions` /
-`expanded_status_lines`) and the full-screen renderer (`app/fullscreen.rs`); it
-is a no-op in `--print`/ACP, where the sink is `None` and the push only logs.
+`expanded_status_lines`) and the full-screen renderer (`app/fullscreen.rs`).
+All three fields of a push reach the user, by two different routes, because the
+status bar is a lossy surface and does not exist in every client:
+`status` and `level` ride the `UiCommand` — `level` becomes a `StatusTone` on
+the `StatusField`, the one severity input to an otherwise uniformly muted status
+bar, so a warning reads as one instead of as a counter. `detail` is too long for
+the bar and rides the **`StatusRegistry`** instead: a cloneable
+last-status-per-extension store (the `LiveProcessRegistry` shape) that the sink
+writes on every push and `list_extensions` reads. The registry is fed in every
+client, so in `--print`/ACP — where there is no status bar and the sink only
+logs — the full status, level, and detail are still recoverable through
+`list_extensions`.
 `scaffold_extension status=true` emits an `emit_status(text)` helper; the
 acceptance — a self-authored char-counter that pushes to the sink — is covered
 by `scaffolded_status_extension_pushes_to_the_sink`. ACP has no status surface

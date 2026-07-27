@@ -24,6 +24,7 @@ pub(crate) mod package;
 pub(crate) mod protocol;
 pub(crate) mod scaffold;
 pub(crate) mod secrets;
+pub(crate) mod status;
 pub(crate) mod store;
 pub(crate) mod trace;
 
@@ -35,6 +36,7 @@ pub(crate) use package::{
     discover_extensions, extension_capability_id, extension_skill_scopes, extensions_dir,
 };
 pub(crate) use secrets::ExtensionSecrets;
+pub(crate) use status::StatusRegistry;
 
 #[cfg(test)]
 mod spawn_tests {

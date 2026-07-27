@@ -10,6 +10,7 @@ use super::package::{discover_extensions, extension_capability_id};
 use super::protocol::UiAskParams;
 use super::scaffold::{self, HookSpec, Language, ScaffoldRequest, ToolSpec};
 use super::secrets::{ExtensionSecrets, Secret};
+use super::status::StatusRegistry;
 use super::store::{self, CrateFetcher, GitRunner, Source, SystemCrateFetcher, SystemGit};
 use crate::capabilities::narration::stable_labeled;
 use crate::config::SettingsStore;
@@ -43,6 +44,10 @@ pub struct ExtensionsCapability {
     secrets: Option<ExtensionSecrets>,
     /// Prompt surface for interactive secret entry; `None` refuses it (headless).
     ask_sink: Option<AskSink>,
+    /// Last `status/changed` each extension pushed. The status bar renders only
+    /// the short text (and only in the TUI), so this is where `list_extensions`
+    /// gets the level and the long-form `detail`.
+    status: StatusRegistry,
 }
 
 impl ExtensionsCapability {
@@ -63,6 +68,7 @@ impl ExtensionsCapability {
             ui_tx,
             secrets: None,
             ask_sink: None,
+            status: StatusRegistry::default(),
         }
     }
 
@@ -76,6 +82,13 @@ impl ExtensionsCapability {
     /// Wire the interactive prompt surface for secret entry (TUI only).
     pub fn with_ask_sink(mut self, ask_sink: Option<AskSink>) -> Self {
         self.ask_sink = ask_sink;
+        self
+    }
+
+    /// Share the live status registry the extension status sink writes to, so
+    /// `list_extensions` can report what each server last pushed.
+    pub fn with_status_registry(mut self, status: StatusRegistry) -> Self {
+        self.status = status;
         self
     }
 }
@@ -118,6 +131,7 @@ impl Capability for ExtensionsCapability {
             ui_tx: self.ui_tx.clone(),
             secrets: self.secrets.clone(),
             ask_sink: self.ask_sink.clone(),
+            status: self.status.clone(),
         });
         vec![
             Box::new(ManageTool::new(ctx.clone(), Verb::Scaffold)),
@@ -143,6 +157,7 @@ struct ManageCtx {
     ui_tx: Option<UnboundedSender<UiRequest>>,
     secrets: Option<ExtensionSecrets>,
     ask_sink: Option<AskSink>,
+    status: StatusRegistry,
 }
 
 #[derive(Clone, Copy)]
@@ -313,6 +328,14 @@ impl ManageTool {
                     // Setup fields with only their set/unset status — secret
                     // VALUES are never included (the agent-leak guard).
                     "config": self.config_status(&pkg.manifest, &ext_config),
+                    // What the server last pushed over `status/changed`, if
+                    // anything: the status bar shows only the short text, and
+                    // in `--print`/ACP there is no status bar at all.
+                    "status": self.ctx.status.get(&pkg.manifest.name).map(|s| json!({
+                        "text": s.status,
+                        "level": s.level,
+                        "detail": s.detail,
+                    })),
                 })
             })
             .collect();
@@ -938,6 +961,7 @@ mod tests {
             ui_tx: None,
             secrets: None,
             ask_sink: None,
+            status: StatusRegistry::default(),
         };
         (cap, settings, ext_dir)
     }
@@ -1173,6 +1197,7 @@ mod tests {
             ui_tx: None,
             secrets: Some(secrets.clone()),
             ask_sink: None,
+            status: StatusRegistry::default(),
         };
         let tools = cap.tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
@@ -1265,6 +1290,7 @@ mod tests {
             ui_tx: None,
             secrets: Some(secrets.clone()),
             ask_sink: Some(ask),
+            status: StatusRegistry::default(),
         };
         let tools = cap.tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
@@ -1343,6 +1369,7 @@ mod tests {
             ui_tx: Some(ui_tx),
             secrets: None,
             ask_sink: None,
+            status: StatusRegistry::default(),
         };
         let tools = cap.tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();

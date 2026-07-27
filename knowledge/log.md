@@ -15,6 +15,11 @@ wording, formatting, and link fixes do not need entries.
   per turn and warns when it collapses. It contributes no tools, establishing
   that a purely observational extension is a normal shape.
   See [Extensions](specs/extensions.md).
+- A `status/changed` push no longer loses two of its three fields. `level` now
+  reaches the renderer as a `StatusTone`, giving the status bar its only
+  severity input, and `detail` reaches `list_extensions` through a new
+  `StatusRegistry`. The registry is written in every client, so the full status
+  survives in `--print`/ACP where there is no status bar at all.
 
 ## 2026-07-26 — OKF skill tracks the authoritative v0.2 spec
 
