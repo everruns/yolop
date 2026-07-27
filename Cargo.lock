@@ -7740,6 +7740,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yolop-extension-cache-break"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "yolop-yep",
+]
+
+[[package]]
 name = "yolop-extension-logfire"
 version = "0.1.0"
 dependencies = [
@@ -7753,7 +7761,7 @@ dependencies = [
 
 [[package]]
 name = "yolop-yep"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "schemars 1.2.1",
  "serde",

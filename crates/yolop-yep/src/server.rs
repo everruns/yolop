@@ -4,12 +4,80 @@
 //! handshake, dispatch, and error shaping.
 
 use crate::protocol::{
-    ErrorObject, HookFireParams, PROTOCOL_VERSION, ToolCallParams, TraceEventParams, classify_line,
-    response_error_line, version_compatible,
+    ErrorObject, HookFireParams, PROTOCOL_VERSION, StatusChangedParams, ToolCallParams,
+    TraceEventParams, classify_line, response_error_line, version_compatible,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
+use std::sync::{Arc, Mutex};
+
+/// Sender for server → host *notifications* (`status/changed`, `log`), the
+/// reverse direction the serve loop has no response slot for: a handler is
+/// invoked with a borrowed event and returns nothing, so anything it wants to
+/// push travels through a [`Notifier`] instead.
+///
+/// Construct it *before* the [`Server`] — handlers are moved into the builder,
+/// so they must capture their (cloned) notifier first. Sends are
+/// fire-and-forget: a write failure means the host is gone and the serve loop
+/// is about to see EOF, so errors are dropped rather than surfaced into
+/// capability logic.
+#[derive(Clone)]
+pub struct Notifier {
+    sink: Arc<Mutex<Box<dyn Write + Send>>>,
+}
+
+impl Default for Notifier {
+    fn default() -> Self {
+        Self::to_stdout()
+    }
+}
+
+impl Notifier {
+    /// The real thing: notifications go out on the protocol pipe.
+    pub fn to_stdout() -> Self {
+        Self::to_writer(std::io::stdout())
+    }
+
+    /// Route notifications to an arbitrary sink — for tests, which assert on
+    /// the emitted lines without touching the process's stdout.
+    pub fn to_writer<W: Write + Send + 'static>(writer: W) -> Self {
+        Self {
+            sink: Arc::new(Mutex::new(Box::new(writer))),
+        }
+    }
+
+    /// Push a `status/changed` notification: short text for the host's status
+    /// bar, an empty `status` clearing the extension's field. Requires the
+    /// manifest to declare `status` — a non-declaring extension's push is
+    /// ignored by the host (D4).
+    pub fn status(&self, status: &StatusChangedParams) {
+        self.notify(
+            "status/changed",
+            serde_json::to_value(status).unwrap_or(Value::Null),
+        );
+    }
+
+    /// Push a `log` notification into the host's tracing layer (`RUST_LOG`).
+    pub fn log(&self, message: impl Into<String>) {
+        self.notify("log", json!({ "message": message.into() }));
+    }
+
+    /// Push an arbitrary notification. The vocabulary is open (forward-compat
+    /// rules), so this is the escape hatch for methods the SDK has no helper
+    /// for yet.
+    pub fn notify(&self, method: &str, params: Value) {
+        // One `write_all` per line: the serve loop writes responses to the same
+        // fd, and a single write keeps the two from interleaving mid-line.
+        let mut line = json!({ "method": method, "params": params }).to_string();
+        line.push('\n');
+        let Ok(mut sink) = self.sink.lock() else {
+            return;
+        };
+        let _ = sink.write_all(line.as_bytes());
+        let _ = sink.flush();
+    }
+}
 
 /// What a tool handler returns.
 pub enum ToolResponse {
@@ -149,9 +217,11 @@ impl Server {
             if line.trim().is_empty() {
                 continue;
             }
-            if let Some(out) = self.dispatch(&line) {
+            if let Some(mut out) = self.dispatch(&line) {
+                // Single write per line so a concurrent `Notifier` push can
+                // never land in the middle of a response.
+                out.push('\n');
                 stdout.write_all(out.as_bytes())?;
-                stdout.write_all(b"\n")?;
                 stdout.flush()?;
             }
         }
@@ -399,6 +469,47 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen["endpoint"], "https://x");
         assert_eq!(seen["region"], "eu");
+    }
+
+    /// A shared buffer standing in for the protocol pipe.
+    #[derive(Clone, Default)]
+    struct SharedBuf(std::sync::Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn notifier_emits_one_line_per_notification() {
+        let buf = SharedBuf::default();
+        let notifier = Notifier::to_writer(buf.clone());
+
+        notifier.status(&StatusChangedParams {
+            status: "cache break".into(),
+            level: crate::protocol::StatusLevel::Warn,
+            detail: Some("reuse fell by 12k".into()),
+        });
+        notifier.log("noticed a drop");
+
+        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "one newline-terminated line per push");
+
+        let status: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(status["method"], "status/changed");
+        assert_eq!(status["params"]["status"], "cache break");
+        assert_eq!(status["params"]["level"], "warn");
+        assert!(status.get("id").is_none(), "notifications carry no id");
+
+        let log: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(log["method"], "log");
+        assert_eq!(log["params"]["message"], "noticed a drop");
     }
 
     #[test]
