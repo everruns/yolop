@@ -10,6 +10,33 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.13.0] - 2026-07-27
+
+### Highlights
+
+- Mermaid fences in assistant messages render as Unicode terminal diagrams, falling back to the themed code block when a diagram would overflow the viewport.
+- Transcript links now activate through the terminal's own OSC 8 handling instead of opening the URL a second time inside yolop, with OSC 22 pointer feedback over clickable regions.
+- The system prompt stops restating tool descriptions on every turn and gates how-to on tool reveal, while telling the model which formatting the host can actually render.
+- The bundled OKF skill is rewritten against the authoritative OKF v0.2 spec, and its validator is now byte-identical to the one CI runs.
+- `tuika` and `tuika-codeformatters` have left this workspace for [everruns/tuika](https://github.com/everruns/tuika) and are consumed from crates.io like any other dependency.
+
+### What's Changed
+
+* chore(deps): bump everruns to 0.17.17 and tuika to 0.6.0 ([#493](https://github.com/everruns/yolop/pull/493)) by @chaliy
+* feat(okf): rewrite the bundled skill against the OKF v0.2 spec ([#492](https://github.com/everruns/yolop/pull/492)) by @chaliy
+* feat(prompt): tell the model what the host can render ([#491](https://github.com/everruns/yolop/pull/491)) by @chaliy
+* feat(tui): render mermaid fences as terminal diagrams ([#490](https://github.com/everruns/yolop/pull/490)) by @chaliy
+* refactor: consume tuika from its own repository ([#489](https://github.com/everruns/yolop/pull/489)) by @chaliy
+* chore(deps): upgrade ACP and ast-grep ([#488](https://github.com/everruns/yolop/pull/488)) by @chaliy
+* fix(prompt): restore the repo_map truncation rule ([#487](https://github.com/everruns/yolop/pull/487)) by @chaliy
+* refactor(prompt): cut per-turn prompt prose and gate how-to on reveal ([#486](https://github.com/everruns/yolop/pull/486)) by @chaliy
+* chore(agents): rightsize AGENTS.md, knowledge, and skills ([#485](https://github.com/everruns/yolop/pull/485)) by @chaliy
+* fix(tui): use native terminal links ([#484](https://github.com/everruns/yolop/pull/484)) by @chaliy
+* chore(tuika): exclude demo GIFs from published crate ([#483](https://github.com/everruns/yolop/pull/483)) by @chaliy
+* fix(crash): report active session id ([#481](https://github.com/everruns/yolop/pull/481)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.12.1...v0.13.0
+
 ## [0.12.1] - 2026-07-24
 
 ### Highlights
