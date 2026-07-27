@@ -3,6 +3,19 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-27 — Extensions can report, not just contribute
+
+- The Rust extension SDK gained `Notifier`, the server→host notification sender
+  (`status/changed`, `log`, open `notify`). Handlers are moved into the `Server`
+  builder and return nothing, so the reverse direction needed a sender the
+  author constructs first and captures — until now only raw-protocol servers
+  (the Python/TypeScript scaffolds) could push status.
+- Added `yolop-extension-cache-break`, the second `trace` consumer and the first
+  extension pairing `trace` with `status`: it samples prompt-cache reuse once
+  per turn and warns when it collapses. It contributes no tools, establishing
+  that a purely observational extension is a normal shape.
+  See [Extensions](specs/extensions.md).
+
 ## 2026-07-26 — OKF skill tracks the authoritative v0.2 spec
 
 - The bundled `okf` skill was rewritten against `SPEC.md` in

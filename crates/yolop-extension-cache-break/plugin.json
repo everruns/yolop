@@ -1,0 +1,22 @@
+{
+  "name": "cache-break",
+  "version": "0.1.0",
+  "description": "Warn in the status bar when prompt-cache reuse drops sharply between turns.",
+  "engines": { "yolop": ">=0.13" },
+  "yolop": {
+    "protocol_version": "1.0",
+    "capabilityServer": { "command": "yolop-extension-cache-break", "args": [] },
+    "trace": true,
+    "status": true,
+    "config_schema": {
+      "type": "object",
+      "properties": {
+        "drop_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How far cache reuse must fall between turn entries, in tokens, before it is reported (default: 4096)"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "yolop-extension-cache-break"
+version = "0.1.0"
+edition = "2024"
+authors = ["Everruns <support@everruns.com>"]
+license = "MIT"
+description = "yolop extension: warn when prompt-cache reuse drops sharply between turns."
+homepage = "https://github.com/everruns/yolop"
+repository = "https://github.com/everruns/yolop"
+keywords = ["yolop", "yolop-extension", "prompt-cache", "tokens", "cost"]
+categories = ["development-tools"]
+
+[[bin]]
+name = "yolop-extension-cache-break"
+path = "src/main.rs"
+
+[dependencies]
+yolop-yep = { path = "../yolop-yep", version = "0.3" }
+serde_json = "1.0"

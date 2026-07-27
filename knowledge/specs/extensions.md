@@ -85,7 +85,14 @@ is a no-op in `--print`/ACP, where the sink is `None` and the push only logs.
 `scaffold_extension status=true` emits an `emit_status(text)` helper; the
 acceptance — a self-authored char-counter that pushes to the sink — is covered
 by `scaffolded_status_extension_pushes_to_the_sink`. ACP has no status surface
-today, so extension status is intentionally TUI-only for now.
+today, so extension status is intentionally TUI-only for now. On the Rust SDK
+the same push is `Notifier` — the server→host *notification* sender
+(`status/changed`, `log`, and an open `notify` escape hatch). It exists because
+the serve loop has no response slot for the reverse direction: a handler is
+invoked with a borrowed event and returns nothing, so a notifier is constructed
+*before* the `Server` and captured by the handlers that need it. Sends are
+fire-and-forget (a write failure means the host is gone) and write one whole
+line per push, so a notification can never land inside a response.
 Skills: an extension that declares `skills` and ships a `skills/` directory
 contributes its `SKILL.md` files read-only, discovered by the same
 `ScopedSkillsCapability` scan as workspace/global/system skills. Each enabled,
@@ -171,7 +178,15 @@ that folds the events into OpenTelemetry spans and POSTs OTLP/HTTP to Logfire,
 configured by the same environment variables Logfire's onboarding checklist uses
 (`LOGFIRE_TOKEN`, `LOGFIRE_ENDPOINT`, `OTEL_SERVICE_NAME`). Covered by
 `trace_events_are_forwarded_to_a_declaring_server`; a non-declaring extension
-gets no forwarder (`non_declaring_extension_has_no_trace_process`).
+gets no forwarder (`non_declaring_extension_has_no_trace_process`). The second
+consumer, `yolop-extension-cache-break`, is the proof that the facet is useful
+without a backend: it reads one field of one event type
+(`llm.generation`'s `usage.cache_read_tokens`), samples it once per turn — gated
+on `context.turn_id`, since later generations in a turn are tool-call
+continuations whose reuse legitimately differs — and warns through the `status`
+facet when per-model reuse falls by a configured absolute amount. It pairs
+`trace` (the counters) with `status` (the surface) and contributes no tools,
+so an extension can be purely observational.
 Live reload: `reload_extension name=<name>` restarts an already-enabled
 extension's *server process* in place, so implementation edits take effect
 mid-session without a yolop restart — the self-writing inner loop. Each
