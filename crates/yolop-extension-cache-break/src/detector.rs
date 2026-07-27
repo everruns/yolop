@@ -104,6 +104,12 @@ pub struct Detector {
     per_model: HashMap<String, u64>,
     /// The turn whose entry sample has already been taken.
     current_turn: Option<String>,
+    /// Whether any turn has been sampled yet, on any model. The session's very
+    /// first generation always reads zero — nothing has been cached yet, the
+    /// provider is still writing the prefix — so reporting it would warn about
+    /// a cache that never existed. Once a turn has gone by, zero reuse is real:
+    /// it is what switching models mid-session looks like.
+    sampled: bool,
     /// Whether the last notice was a warning, so a recovery is reported once
     /// rather than on every healthy turn.
     warned: bool,
@@ -115,6 +121,7 @@ impl Detector {
             drop_tokens,
             per_model: HashMap::new(),
             current_turn: None,
+            sampled: false,
             warned: false,
         }
     }
@@ -150,6 +157,8 @@ impl Detector {
             .and_then(|v| v.as_u64())?;
 
         let previous = self.per_model.insert(model.clone(), current);
+        let had_a_prior_turn = self.sampled;
+        self.sampled = true;
 
         let notice = match previous {
             Some(previous) if previous.saturating_sub(current) >= self.drop_tokens => {
@@ -159,7 +168,9 @@ impl Detector {
                     current,
                 }
             }
-            _ if current == 0 => Notice::NoReuse { model },
+            // Zero reuse with no baseline for this model: real once the
+            // session is under way (a model switch), meaningless on turn one.
+            _ if current == 0 && had_a_prior_turn => Notice::NoReuse { model },
             _ => Notice::Healthy { model, current },
         };
 
@@ -246,12 +257,27 @@ mod tests {
     }
 
     #[test]
-    fn zero_reuse_is_reported_even_without_a_baseline() {
+    fn the_sessions_first_turn_never_warns_about_zero_reuse() {
         let mut detector = Detector::new(DEFAULT_DROP_TOKENS);
         assert_eq!(
             detector.observe(&generation("t1", "gpt-5", Some(0))),
+            None,
+            "nothing is cached yet on turn one — there is no break to report"
+        );
+    }
+
+    #[test]
+    fn zero_reuse_after_a_model_switch_is_reported() {
+        let mut detector = Detector::new(DEFAULT_DROP_TOKENS);
+        // A session under way on one model...
+        detector.observe(&generation("t1", "gpt-5.6-terra", Some(0)));
+        detector.observe(&generation("t2", "gpt-5.6-terra", Some(18_000)));
+        // ...switches to another, which shares no cached prefix. No baseline
+        // for the new model, but the session has history, so this is real.
+        assert_eq!(
+            detector.observe(&generation("t3", "claude-opus-4-5", Some(0))),
             Some(Notice::NoReuse {
-                model: "gpt-5".into()
+                model: "claude-opus-4-5".into()
             })
         );
     }

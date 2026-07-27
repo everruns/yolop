@@ -42,7 +42,11 @@ The detection rule, and why each part is there:
   normal; losing the prefix is not.
 - **Per model.** Switching models shares no prefix, so baselines are kept per
   model and a switch is never reported as a break.
-- **Zero reuse is always reported**, baseline or not.
+- **Zero reuse is reported once the session is under way**, baseline or not —
+  that is what switching models mid-session looks like. It is *not* reported on
+  the session's first turn, where nothing has been cached yet and the provider
+  is still writing the prefix; warning there would be warning about a cache that
+  never existed.
 - **The baseline self-heals.** It is updated on every sample, so a break is
   reported once, and the recovery clears the status field.
 - **Unknown is not zero.** A generation with no turn id, or with no cache
