@@ -6,6 +6,8 @@
 use super::*;
 use tuika::width::str_cols;
 
+pub(crate) const STATUS_SEPARATOR_HEIGHT: u16 = 1;
+
 // Color presentation for the transcript view-model types defined in
 // `crate::tui::transcript`. Labels and status semantics live in `crate::tui::presentation`
 // so they can be tested without a terminal renderer.
@@ -130,14 +132,13 @@ impl ChromeLayout {
         preview_visible: bool,
     ) -> Self {
         let preview_height = u16::from(input_height == 1 && preview_visible);
-        let status_height = u16::from(input_height < 3);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(preview_height),
                 Constraint::Length(1),
                 Constraint::Length(input_height),
-                Constraint::Length(status_height),
+                Constraint::Length(STATUS_SEPARATOR_HEIGHT),
                 Constraint::Length(status_rows),
             ])
             .split(area);
@@ -208,7 +209,7 @@ pub(crate) fn app_layout_for_frame(
 fn chrome_fixed_rows(input_height: u16, status_rows: u16, preview_visible: bool) -> u16 {
     u16::from(input_height == 1 && preview_visible)
         .saturating_add(1)
-        .saturating_add(u16::from(input_height < 3))
+        .saturating_add(STATUS_SEPARATOR_HEIGHT)
         .saturating_add(status_rows)
 }
 
