@@ -3,6 +3,14 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-27 — Herdr identifies concurrent Yolop sessions
+
+- [Herdr integration](specs/herdr.md) now forwards Yolop session titles to pane
+  metadata and uses them in display-agent labels, with a stable session suffix
+  before title generation, so concurrent Yolop agents remain distinguishable.
+  Lifecycle states also gain human-readable labels while retaining the `yolop`
+  machine identity for grouping and ownership.
+
 ## 2026-07-26 — OKF skill tracks the authoritative v0.2 spec
 
 - The bundled `okf` skill was rewritten against `SPEC.md` in
