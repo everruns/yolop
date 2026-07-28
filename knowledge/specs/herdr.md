@@ -23,7 +23,9 @@ present and valid:
 
 `HERDR_BIN_PATH` selects the CLI binary when present; otherwise Yolop invokes
 `herdr` from `PATH`. Commands are executed directly, never through a shell.
-Missing or incompatible Herdr installations are non-fatal.
+Missing or incompatible Herdr installations are non-fatal. Yolop also reports
+pane metadata so Herdr can follow the session title and distinguish concurrent
+sessions in its agent list.
 
 ## Lifecycle reporting
 
@@ -35,9 +37,12 @@ Yolop reports to the current pane with source `yolop:lifecycle` and agent label
 - an explicit user-ask evaluation that needs user input: `blocked`
 
 Reports include Yolop's session id and a process-independent monotonic sequence.
-They are best-effort, bounded by a short timeout, and never delay or fail a
-model turn. Herdr's attention layer may display a completed background `idle`
-transition as `done`.
+The machine agent remains `yolop` for grouping and ownership, while its display
+name is `Yolop · <session title>`. Before a title exists, Yolop uses a stable
+short session-id suffix. Yolop also forwards `session.title.updated` as the pane
+title and maps lifecycle states to readable labels. Reports are best-effort,
+bounded by a short timeout, and never delay or fail a model turn. Herdr's
+attention layer may display a completed background `idle` transition as `done`.
 
 When the last reporter owner is dropped, Yolop directly spawns Herdr's
 `release-agent` command for its own source and label. This exit-safe cleanup
@@ -61,7 +66,8 @@ Outside Herdr, the capability contributes no mount and performs no reporting.
 
 ## Ownership
 
-- `capabilities::herdr` owns environment validation, reports, and the skill mount.
+- `capabilities::herdr` owns environment validation, lifecycle and metadata
+  reports, and the skill mount.
 - The runtime event bus drives cross-host lifecycle transitions for TUI,
   `--print`, and ACP turns.
 - `ScopedSkillsCapability` owns discovery and activation of the mounted
