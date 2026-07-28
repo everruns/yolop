@@ -262,10 +262,13 @@ pub(crate) fn recent_transcript_lines(
     let mut total_lines = 0;
     let mut newer_author: Option<Author> = None;
 
-    // Keep the recent tail visible above the composer even after lines are
-    // flushed into native scrollback.
-    let mirror_lines: Vec<&ChatLine> = app
-        .lines
+    // Only what the terminal does not already own. In split-footer mode the
+    // published prefix sits directly above this region as real scrollback, so
+    // re-rendering it here would show every one of those lines twice; the flush
+    // holds back exactly the tail these rows can display (see
+    // `App::flush_transcript`). Full-screen publishes nothing, so `printed_lines`
+    // stays 0 and the whole tail is available.
+    let mirror_lines: Vec<&ChatLine> = app.lines[app.printed_lines.min(app.lines.len())..]
         .iter()
         .rev()
         .take(RECENT_TRANSCRIPT_SOURCE_LINES)

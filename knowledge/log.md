@@ -11,6 +11,10 @@ wording, formatting, and link fixes do not need entries.
   pinning, publishing, and footer teardown; yolop owns which lines get
   published — and [Presentation](specs/presentation.md) states what the mode
   guarantees a user.
+- A transcript entry now appears exactly once: the footer paints only what is
+  not yet published, and publishing holds back the tail those rows still show
+  (published at exit, or when a sheet takes the footer's rows).
+  [Presentation](specs/presentation.md) carries the rule.
 - The same spec's dependency rule now allows tracking tuika's `main` branch
   while a needed seam is unreleased, provided every tuika crate moves to the
   same revision and the pin returns to a published version once one exists.

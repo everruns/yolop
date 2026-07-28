@@ -1364,6 +1364,7 @@ impl App {
                     }
                     if self.should_quit {
                         self.deny_pending_sandbox_approval();
+                        self.publish_remaining_transcript(terminal);
                         return Ok(());
                     }
 
@@ -1378,8 +1379,28 @@ impl App {
             }
             if self.should_quit {
                 self.deny_pending_sandbox_approval();
+                self.publish_remaining_transcript(terminal);
                 return Ok(());
             }
+        }
+    }
+
+    /// Publish the tail the footer was holding back, on the way out. The
+    /// footer's rows are handed back to the terminal right after this (see
+    /// `tuika::screen::close_footer`), so an unpublished line would otherwise
+    /// be erased instead of left in the scrollback with the rest of the
+    /// session. Best-effort: a terminal that fails here is one the session is
+    /// leaving anyway, and losing the last lines is not worth a failed exit.
+    fn publish_remaining_transcript<B>(&mut self, terminal: &mut Terminal<B>)
+    where
+        B: Backend,
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
+        if self.render_mode.is_fullscreen() {
+            return;
+        }
+        if let Err(err) = self.flush_transcript(terminal, 0) {
+            tracing::warn!("publishing the final transcript lines failed: {err:#}");
         }
     }
 
@@ -1396,16 +1417,6 @@ impl App {
         B: Backend,
         B::Error: std::error::Error + Send + Sync + 'static,
     {
-        // Split-footer mode publishes finalized lines into native scrollback
-        // above the footer; full-screen keeps the whole transcript in `lines`
-        // and redraws it into the alternate screen each frame, so it skips both
-        // the flush and the footer pinning.
-        if !self.render_mode.is_fullscreen() {
-            self.flush_transcript(terminal)?;
-        }
-        // Bound retained history now that split-footer mode has flushed this
-        // frame's lines, so `trim_transcript` can drop the freshly-flushed prefix.
-        self.trim_transcript();
         self.refresh_session_tasks_if_due();
         terminal.autoresize()?;
         if !self.render_mode.is_fullscreen() {
@@ -1414,8 +1425,30 @@ impl App {
             // `pin_footer` pushes it back onto the terminal's last rows. Cheap
             // and idempotent once pinned, so it runs before every draw and is
             // also what re-pins the footer after a resize.
+            //
+            // Both this and the publish below insert rows above the viewport,
+            // which scrolls the terminal and clears the footer — hence the
+            // repaint that follows, every frame, before input is read again.
             tuika::screen::pin_footer(terminal)?;
+            // Split-footer mode publishes finalized lines into native
+            // scrollback above the footer, keeping back only what the footer
+            // still has room to show. Full-screen keeps the whole transcript in
+            // `lines` and redraws it into the alternate screen each frame, so it
+            // skips both the flush and the footer pinning.
+            //
+            // A failed publish is never fatal to the frame: the lines it could
+            // not commit stay retained and are still painted in the footer, so
+            // the session keeps rendering on a terminal too busy to answer the
+            // cursor query `insert_before` ends with — and the same lines are
+            // published on a later frame once it recovers.
+            let keep_rows = self.footer_transcript_rows(terminal.get_frame().area());
+            if let Err(err) = self.flush_transcript(terminal, keep_rows) {
+                tracing::warn!("publishing transcript lines to scrollback failed: {err:#}");
+            }
         }
+        // Bound retained history now that split-footer mode has flushed this
+        // frame's lines, so `trim_transcript` can drop the freshly-flushed prefix.
+        self.trim_transcript();
         terminal.draw(|f| draw(f, self))?;
 
         // 1) drain background turn events
@@ -1689,7 +1722,43 @@ impl App {
         }
     }
 
-    fn flush_transcript<B>(&mut self, terminal: &mut Terminal<B>) -> Result<()>
+    /// Rows the footer devotes to not-yet-published transcript this frame —
+    /// what is left of `area` once the composer chrome takes its share, and so
+    /// exactly what [`draw_recent_transcript`] will paint into.
+    fn footer_transcript_rows(&self, area: Rect) -> u16 {
+        // An overlay is a sheet that owns the whole footer (see `draw_shared`),
+        // so there is nothing to retain a tail for: publish everything instead,
+        // or the transcript would be invisible for as long as the sheet is up —
+        // most visibly the startup banner behind the first-run setup step.
+        if self.pending_ask.is_some() || self.setup.is_some() || self.background_panel.is_some() {
+            return 0;
+        }
+        let input_width = area.width.saturating_sub(2);
+        let state = self.view_state();
+        app_layout_for_frame(
+            area,
+            self.input_height(input_width),
+            state.status_row_count(),
+            chrome_preview_visible(&state),
+        )
+        .transcript
+        .height
+    }
+
+    /// Publish finalized transcript lines into the terminal scrollback above
+    /// the footer, holding back the tail that still fits in `keep_rows` rows.
+    ///
+    /// A line is shown in exactly one place: the footer paints what is not yet
+    /// published (see [`recent_transcript_lines`]), the terminal owns the rest.
+    /// Publishing the whole transcript eagerly and *also* mirroring its tail in
+    /// the footer would print every line twice on a screen tall enough to show
+    /// both — the footer reserves the same rows either way, so the retained
+    /// window costs nothing and reads as one continuous transcript.
+    ///
+    /// `keep_rows` is the footer's transcript region for this frame; pass 0 to
+    /// publish everything, which is what [`App::run`] does on the way out so no
+    /// line is lost when the footer's rows are handed back.
+    fn flush_transcript<B>(&mut self, terminal: &mut Terminal<B>, keep_rows: u16) -> Result<()>
     where
         B: Backend,
         B::Error: std::error::Error + Send + Sync + 'static,
@@ -1699,8 +1768,16 @@ impl App {
         }
 
         let width = terminal.size()?.width.saturating_sub(2).max(20) as usize;
+        let publish_upto = self.first_retained_line(width, keep_rows);
+        if publish_upto <= self.printed_lines {
+            return Ok(());
+        }
+
         let mut rendered: Vec<Line<'static>> = Vec::new();
-        for (index, chat) in self.lines[self.printed_lines..].iter().enumerate() {
+        for (index, chat) in self.lines[self.printed_lines..publish_upto]
+            .iter()
+            .enumerate()
+        {
             append_chat_lines(&mut rendered, chat, width);
             let absolute = self.printed_lines + index;
             if should_insert_chat_gap(
@@ -1711,7 +1788,7 @@ impl App {
             }
         }
         if rendered.is_empty() {
-            self.printed_lines = self.lines.len();
+            self.printed_lines = publish_upto;
             return Ok(());
         }
 
@@ -1727,8 +1804,36 @@ impl App {
             let block = tuika::components::Text::new(chunk.to_vec());
             tuika::screen::publish_block(terminal, &block, &ctx)?;
         }
-        self.printed_lines = self.lines.len();
+        self.printed_lines = publish_upto;
         Ok(())
+    }
+
+    /// Index of the first transcript entry the footer keeps: the oldest entry
+    /// of the newest run that still fits in `keep_rows` rendered rows.
+    /// Everything before it is ready to publish. Never smaller than
+    /// `printed_lines`, so an already-published entry is never retained.
+    fn first_retained_line(&self, width: usize, keep_rows: u16) -> usize {
+        if keep_rows == 0 {
+            return self.lines.len();
+        }
+        let mut rows = 0usize;
+        let mut first = self.lines.len();
+        for index in (self.printed_lines..self.lines.len()).rev() {
+            let mut chunk: Vec<Line<'static>> = Vec::new();
+            append_chat_lines(&mut chunk, &self.lines[index], width);
+            if should_insert_chat_gap(
+                &self.lines[index].author,
+                self.lines.get(index + 1).map(|line| &line.author),
+            ) {
+                chunk.push(Line::from(""));
+            }
+            rows += chunk.len();
+            if rows > keep_rows as usize {
+                break;
+            }
+            first = index;
+        }
+        first
     }
 
     async fn handle_key(&mut self, key: KeyEvent) {
@@ -5157,7 +5262,29 @@ mod tests {
         terminal
     }
 
-    fn footer_transcript_rows(terminal: &mut Terminal<TestBackend>) -> Vec<String> {
+    /// Publish through the same path the event loop uses: the footer keeps the
+    /// tail that fits in its transcript rows, the terminal takes the rest.
+    fn flush_for_frame(app: &mut App, terminal: &mut Terminal<TestBackend>) -> Result<()> {
+        let keep_rows = app.footer_transcript_rows(terminal.get_frame().area());
+        app.flush_transcript(terminal, keep_rows)
+    }
+
+    /// Every row of the footer viewport, top to bottom.
+    fn viewport_rows(terminal: &mut Terminal<TestBackend>) -> Vec<String> {
+        let viewport = terminal.get_frame().area();
+        let buffer = terminal.backend().buffer();
+        (viewport.y..viewport.bottom())
+            .map(|y| {
+                let mut row = String::with_capacity(viewport.width as usize);
+                for x in 0..buffer.area.width {
+                    row.push_str(buffer[(x, y)].symbol());
+                }
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    fn footer_rows_text(terminal: &mut Terminal<TestBackend>) -> Vec<String> {
         let viewport_top = terminal.get_frame().area().y;
         let buffer = terminal.backend().buffer();
         let height = buffer.area.height;
@@ -6905,14 +7032,12 @@ mod tests {
         });
 
         let mut terminal = split_footer_terminal(100, 60);
-        app.flush_transcript(&mut terminal)
-            .expect("flush prior turn");
+        flush_for_frame(app, &mut terminal).expect("flush prior turn");
         app.push_system("attached clipboard image #1 (640x480 PNG)".into());
-        app.flush_transcript(&mut terminal)
-            .expect("flush image notice");
+        flush_for_frame(app, &mut terminal).expect("flush image notice");
         terminal.draw(|f| draw(f, app)).expect("draw after notice");
 
-        let footer_rows = footer_transcript_rows(&mut terminal);
+        let footer_rows = footer_rows_text(&mut terminal);
         let notice_row = footer_rows
             .iter()
             .position(|row| row.contains("attached clipboard image #1"))
@@ -6937,14 +7062,12 @@ mod tests {
         });
 
         let mut terminal = split_footer_terminal(100, 60);
-        app.flush_transcript(&mut terminal)
-            .expect("flush prior turn");
+        flush_for_frame(app, &mut terminal).expect("flush prior turn");
         app.push_system("turn failed: provider timeout".into());
-        app.flush_transcript(&mut terminal)
-            .expect("flush turn notice");
+        flush_for_frame(app, &mut terminal).expect("flush turn notice");
         terminal.draw(|f| draw(f, app)).expect("draw after notice");
 
-        let footer_rows = footer_transcript_rows(&mut terminal);
+        let footer_rows = footer_rows_text(&mut terminal);
         assert!(
             footer_rows
                 .iter()
@@ -6996,7 +7119,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn inline_composer_keeps_transcript_adjacent_after_scrollback_flush() {
+    async fn split_footer_keeps_the_unpublished_tail_next_to_the_composer() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.setup = None;
@@ -7006,16 +7129,17 @@ mod tests {
             author: Author::Assistant,
             text: "Latest answer tail".into(),
         });
-        app.printed_lines = app.lines.len();
 
-        let rendered = render_footer_composer(app, 100, 60, 1);
-        let answer_row = rendered
-            .lines
+        let mut terminal = split_footer_terminal(100, 60);
+        flush_for_frame(app, &mut terminal).expect("publish what the footer cannot hold");
+        terminal.draw(|f| draw(f, app)).expect("draw");
+
+        let rows = viewport_rows(&mut terminal);
+        let answer_row = rows
             .iter()
             .position(|row| row.contains("Latest answer tail"))
-            .expect("recent answer rendered");
-        let separator_row = rendered
-            .lines
+            .expect("retained answer rendered");
+        let separator_row = rows
             .iter()
             .position(|row| row.contains("Enter to send"))
             .expect("message separator rendered");
@@ -7023,8 +7147,86 @@ mod tests {
         assert_eq!(
             answer_row + 1,
             separator_row,
-            "flushed transcript should stay adjacent to the composer chrome: {:?}",
-            rendered.lines
+            "the retained tail should sit against the composer chrome: {rows:?}"
+        );
+    }
+
+    /// The point of the retained window: a line the terminal already owns is
+    /// never repainted in the footer, so a tall screen shows it once, not twice.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn split_footer_does_not_repaint_published_lines() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        for index in 0..40 {
+            app.push_user(format!("question number {index}"));
+            app.lines.push(ChatLine {
+                author: Author::Assistant,
+                text: format!("answer number {index}"),
+            });
+        }
+
+        let mut terminal = split_footer_terminal(100, 60);
+        flush_for_frame(app, &mut terminal).expect("publish the overflow");
+        terminal.draw(|f| draw(f, app)).expect("draw");
+
+        assert!(
+            app.printed_lines > 0,
+            "a transcript this long must not fit the footer whole"
+        );
+        let rows = viewport_rows(&mut terminal);
+        assert!(
+            !rows.iter().any(|row| row.contains("question number 0")),
+            "a published line must not be repainted in the footer: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("answer number 39")),
+            "the unpublished tail should still be shown: {rows:?}"
+        );
+    }
+
+    /// A sheet covers the footer's transcript rows, so retaining a tail behind
+    /// it would leave the transcript with nowhere to show — the first-run setup
+    /// step would hide the startup banner it is supposed to sit under.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn split_footer_publishes_everything_while_an_overlay_owns_the_footer() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.push_system("workspace: /tmp".into());
+        app.start_setup();
+
+        let mut terminal = split_footer_terminal(100, 60);
+        flush_for_frame(app, &mut terminal).expect("flush with the overlay up");
+
+        assert_eq!(
+            app.printed_lines,
+            app.lines.len(),
+            "an overlay leaves no rows to retain a tail in"
+        );
+    }
+
+    /// The footer's rows are handed back at exit, so whatever it was holding
+    /// has to reach the scrollback first or it is simply erased.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn split_footer_publishes_the_retained_tail_on_exit() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.push_user("last question".into());
+
+        let mut terminal = split_footer_terminal(100, 60);
+        flush_for_frame(app, &mut terminal).expect("flush");
+        assert_eq!(app.printed_lines, 0, "the tail should still be retained");
+
+        app.publish_remaining_transcript(&mut terminal);
+
+        assert_eq!(
+            app.printed_lines,
+            app.lines.len(),
+            "every line should be published before the footer's rows go back"
         );
     }
 
@@ -7109,7 +7311,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn inline_viewport_mirrors_recent_tail_after_scrollback_flush() {
+    async fn inline_viewport_shows_the_tail_the_terminal_does_not_own_yet() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.setup = None;
@@ -7119,17 +7321,16 @@ mod tests {
             author: Author::Assistant,
             text: "Done.".into(),
         });
-        app.printed_lines = app.lines.len();
 
         let rows = render_app_lines(app, 96, COMPOSER_VIEWPORT_HEIGHT);
 
         assert!(
             rows.iter().any(|row| row.contains("Do something")),
-            "recent user transcript should stay visible above the composer: {rows:?}"
+            "unpublished user transcript should be visible above the composer: {rows:?}"
         );
         assert!(
             rows.iter().any(|row| row.contains("Done.")),
-            "recent assistant transcript should stay visible above the composer: {rows:?}"
+            "unpublished assistant transcript should be visible above the composer: {rows:?}"
         );
     }
 

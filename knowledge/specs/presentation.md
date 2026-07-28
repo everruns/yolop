@@ -46,7 +46,8 @@ history is preferred: a composer pinned to the terminal's last rows with
 finalized transcript entries published above it as ordinary scrollback, which
 the terminal keeps — selectable, scrollable, and still there after the session
 exits. A published entry is never repainted, so anything that changes during a
-turn belongs in the pinned rows.
+turn belongs in the pinned rows, and an entry the pinned rows still show must
+not also be published — a transcript entry appears once, never twice.
 
 Transcript links use OSC 8 targets and leave activation to the terminal
 emulator, including its platform-native modifier (`Ctrl` on Linux, `Command` on

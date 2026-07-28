@@ -100,14 +100,29 @@ impl TuiHarness {
     pub fn wait_for_output(&mut self, needle: &str, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            self.drain_output();
-            if self.output_text().contains(needle) {
+            if self.shows(needle) {
                 return true;
             }
             thread::sleep(Duration::from_millis(20));
         }
+        self.shows(needle)
+    }
+
+    /// Whether the session has shown `needle` — either in the raw byte stream
+    /// (which is how anything published into the terminal scrollback appears)
+    /// or on the reconstructed screen grid.
+    ///
+    /// Both are needed because the split-footer renderer produces text two ways:
+    /// a published transcript block is written as contiguous text, while the
+    /// footer is painted cell by cell through ratatui's diff, so its words are
+    /// separated by cursor-positioning escapes and never appear as a contiguous
+    /// run of bytes.
+    pub fn shows(&mut self, needle: &str) -> bool {
         self.drain_output();
-        self.output_text().contains(needle)
+        if self.output_text().contains(needle) {
+            return true;
+        }
+        self.screen_lines().iter().any(|line| line.contains(needle))
     }
 
     pub fn wait_or_kill(&mut self, timeout: Duration) -> ExitStatus {
