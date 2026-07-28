@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use everruns_core::atoms::{PostToolExecHook, PostToolExecHookPriority};
-use everruns_core::capabilities::{Capability, CapabilityStatus};
+use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_types::{ToolCall, ToolDefinition, ToolResult};
 use everruns_core::traits::ToolContext;
 use serde_json::{Map, Value, json};
@@ -64,10 +64,27 @@ impl Capability for ProgressGuardCapability {
         true
     }
 
-    // No system-prompt contribution. Every warning this capability emits already
-    // names the situation and the required next action, and it arrives in the
-    // tool result at the moment it applies. Pre-announcing the mechanism on every
-    // turn paid for a warning that usually never fires.
+    /// A one-line anticipatory rule, restored after the "no contribution" theory
+    /// regressed `evals/harness_basic`'s `zero-result-search-recovery` gate on
+    /// gpt-5.5: every nightly run since the deletion landed the candidate at
+    /// `tool_calls`/`llm_calls` exactly one call over budget, with the correct
+    /// answer already in the response. The warning names the situation and the
+    /// action, but it arrives inside the result the model is already reacting
+    /// to — by the time it reads the warning the next call is being formed, so
+    /// the model spends one extra call deciding what a warning it has never
+    /// been told about means before it acts. Carrying the rule ahead of time
+    /// collapses that decision into the same call. See "Reactive text does not
+    /// substitute for anticipatory text" in `knowledge/specs/system-prompt.md`.
+    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
+        Some(
+            "<capability id=\"progress_guard\">\n\
+             If a progress_guard warning appears in a tool result, stop broad exploration and \
+             act on it immediately: use the evidence already gathered, or make one targeted \
+             next call.\n\
+             </capability>"
+                .to_string(),
+        )
+    }
 
     fn system_prompt_preview(&self) -> Option<String> {
         Some(
