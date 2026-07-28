@@ -36,6 +36,36 @@ class PublishOrderTests(unittest.TestCase):
             ["yolop-yep-inner", "yolop-yep", "yolop"],
         )
 
+    def test_includes_independent_publishable_workspace_package(self) -> None:
+        metadata = {
+            "workspace_members": ["yolop-id", "sdk-id", "extension-id"],
+            "packages": [
+                {
+                    "id": "yolop-id",
+                    "name": "yolop",
+                    "publish": None,
+                    "dependencies": [{"name": "yolop-yep", "path": "sdk"}],
+                },
+                {
+                    "id": "sdk-id",
+                    "name": "yolop-yep",
+                    "publish": None,
+                    "dependencies": [],
+                },
+                {
+                    "id": "extension-id",
+                    "name": "yolop-extension-logfire",
+                    "publish": None,
+                    "dependencies": [],
+                },
+            ],
+        }
+
+        self.assertEqual(
+            publish_order(metadata),
+            ["yolop-extension-logfire", "yolop-yep", "yolop"],
+        )
+
     def test_excludes_non_publishable_dependency(self) -> None:
         metadata = {
             "workspace_members": ["yolop-id", "private-id"],

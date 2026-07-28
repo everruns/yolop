@@ -11,6 +11,13 @@ wording, formatting, and link fixes do not need entries.
   Lifecycle states also gain human-readable labels while retaining the `yolop`
   machine identity for grouping and ownership.
 
+## 2026-07-27 — First-party extension placement
+
+- First-party extension packages now live under `extensions/`, reserving
+  `crates/` for core libraries and workspace packages. Rust extension releases
+  package their manifest and README so crates.io installation can provision the
+  extension package. See [Extension system](specs/extensions.md).
+
 ## 2026-07-26 — OKF skill tracks the authoritative v0.2 spec
 
 - The bundled `okf` skill was rewritten against `SPEC.md` in
