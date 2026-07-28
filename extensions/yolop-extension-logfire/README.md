@@ -15,9 +15,14 @@ documents for Rust. No Logfire client library is required.
 ## Install
 
 ```bash
-# From this repo (dev): build the binary onto PATH, then install the package.
-cargo install --path crates/yolop-extension-logfire
-/extensions install <path-to>/crates/yolop-extension-logfire
+# Published package (installs the binary and extension manifest together).
+cargo install yolop-extension-logfire
+/extensions install crates.io:yolop-extension-logfire
+/extensions enable logfire
+
+# From this repo (development checkout).
+cargo install --path extensions/yolop-extension-logfire
+/extensions install <path-to>/extensions/yolop-extension-logfire
 /extensions enable logfire
 ```
 

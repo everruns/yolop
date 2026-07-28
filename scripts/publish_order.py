@@ -51,6 +51,13 @@ def publish_order(metadata: Mapping[str, Any], root_name: str = "yolop") -> list
         if package.get("publish") != []:
             ordered.append(name)
 
+    # Visit every publishable workspace package, including independent
+    # first-party extensions that are not dependencies of the yolop binary.
+    # Keep the root package last so a release publishes supporting packages
+    # before the primary binary.
+    for name in sorted(packages):
+        if name != root_name:
+            visit(name)
     visit(root_name)
     return ordered
 
