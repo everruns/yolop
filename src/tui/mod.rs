@@ -138,6 +138,11 @@ pub struct App {
     model: ModelState,
     pub lines: Vec<ChatLine>,
     printed_lines: usize,
+    /// Rendered rows of `lines[printed_lines]` already published, when a flush
+    /// cut an entry in half. Publishing is row-granular so the footer's
+    /// transcript rows stay exactly full: cutting only on entry boundaries
+    /// would leave a hole whenever one tall entry crossed the edge.
+    printed_rows: usize,
     /// The single composer model, shared by **both** renderers: a tuika
     /// [`TextInputState`](TextInputState) that owns the draft text and
     /// cursor and applies its own edits (emacs bindings, word movement, wrapping).
@@ -573,6 +578,7 @@ impl App {
             model: runtime.model,
             lines: Vec::new(),
             printed_lines: 0,
+            printed_rows: 0,
             composer: {
                 let mut composer = TextInputState::new();
                 composer.set_mode(tuika::components::TextInputMode::SubmitOnEnter);
@@ -1712,6 +1718,7 @@ impl App {
             Ok(lines) => {
                 self.lines = lines;
                 self.printed_lines = 0;
+                self.printed_rows = 0;
                 self.transcript_generation = self.transcript_generation.wrapping_add(1);
             }
             Err(error) => self.push_system(format!("refresh restored transcript: {error}")),
@@ -1726,13 +1733,11 @@ impl App {
     /// what is left of `area` once the composer chrome takes its share, and so
     /// exactly what [`draw_recent_transcript`] will paint into.
     fn footer_transcript_rows(&self, area: Rect) -> u16 {
-        // An overlay is a sheet that owns the whole footer (see `draw_shared`),
-        // so there is nothing to retain a tail for: publish everything instead,
-        // or the transcript would be invisible for as long as the sheet is up —
-        // most visibly the startup banner behind the first-run setup step.
-        if self.pending_ask.is_some() || self.setup.is_some() || self.background_panel.is_some() {
-            return 0;
-        }
+        // Deliberately not special-cased when an overlay owns the footer (see
+        // `draw_shared`): the sheet hides the retained tail while it is up, but
+        // publishing it instead would empty this region for the rest of the
+        // session — nothing would be left to paint here once the sheet closes,
+        // and the transcript would resume against a band of blank rows.
         let input_width = area.width.saturating_sub(2);
         let state = self.view_state();
         app_layout_for_frame(
@@ -1746,7 +1751,7 @@ impl App {
     }
 
     /// Publish finalized transcript lines into the terminal scrollback above
-    /// the footer, holding back the tail that still fits in `keep_rows` rows.
+    /// the footer, holding back the tail that fills its `keep_rows` rows.
     ///
     /// A line is shown in exactly one place: the footer paints what is not yet
     /// published (see [`recent_transcript_lines`]), the terminal owns the rest.
@@ -1768,27 +1773,9 @@ impl App {
         }
 
         let width = terminal.size()?.width.saturating_sub(2).max(20) as usize;
-        let publish_upto = self.first_retained_line(width, keep_rows);
-        if publish_upto <= self.printed_lines {
-            return Ok(());
-        }
-
-        let mut rendered: Vec<Line<'static>> = Vec::new();
-        for (index, chat) in self.lines[self.printed_lines..publish_upto]
-            .iter()
-            .enumerate()
-        {
-            append_chat_lines(&mut rendered, chat, width);
-            let absolute = self.printed_lines + index;
-            if should_insert_chat_gap(
-                &chat.author,
-                self.lines.get(absolute + 1).map(|line| &line.author),
-            ) {
-                rendered.push(Line::from(""));
-            }
-        }
-        if rendered.is_empty() {
-            self.printed_lines = publish_upto;
+        let (rendered, boundaries) = self.unpublished_rows(width);
+        let publish = rendered.len().saturating_sub(keep_rows as usize);
+        if publish == 0 {
             return Ok(());
         }
 
@@ -1800,40 +1787,51 @@ impl App {
         // `Scrollback` — this loop already owns the frame.
         let theme = fullscreen::yolop_theme();
         let ctx = tuika::RenderCtx::new(&theme);
-        for chunk in rendered.chunks(tuika::Scrollback::MAX_BLOCK_ROWS as usize) {
+        for chunk in rendered[..publish].chunks(tuika::Scrollback::MAX_BLOCK_ROWS as usize) {
             let block = tuika::components::Text::new(chunk.to_vec());
             tuika::screen::publish_block(terminal, &block, &ctx)?;
         }
-        self.printed_lines = publish_upto;
+        self.advance_publish_cursor(publish, &boundaries);
         Ok(())
     }
 
-    /// Index of the first transcript entry the footer keeps: the oldest entry
-    /// of the newest run that still fits in `keep_rows` rendered rows.
-    /// Everything before it is ready to publish. Never smaller than
-    /// `printed_lines`, so an already-published entry is never retained.
-    fn first_retained_line(&self, width: usize, keep_rows: u16) -> usize {
-        if keep_rows == 0 {
-            return self.lines.len();
-        }
-        let mut rows = 0usize;
-        let mut first = self.lines.len();
-        for index in (self.printed_lines..self.lines.len()).rev() {
-            let mut chunk: Vec<Line<'static>> = Vec::new();
-            append_chat_lines(&mut chunk, &self.lines[index], width);
+    /// The transcript rows the terminal does not own yet, oldest first, plus
+    /// how many rows each entry contributed. Rows already published out of the
+    /// entry the last flush cut in half are dropped from the front, so the
+    /// result is exactly what is still owed to the screen.
+    fn unpublished_rows(&self, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+        let mut rendered: Vec<Line<'static>> = Vec::new();
+        let mut boundaries: Vec<(usize, usize)> = Vec::new();
+        for index in self.printed_lines..self.lines.len() {
+            let before = rendered.len();
+            append_chat_lines(&mut rendered, &self.lines[index], width);
             if should_insert_chat_gap(
                 &self.lines[index].author,
                 self.lines.get(index + 1).map(|line| &line.author),
             ) {
-                chunk.push(Line::from(""));
+                rendered.push(Line::from(""));
             }
-            rows += chunk.len();
-            if rows > keep_rows as usize {
-                break;
-            }
-            first = index;
+            boundaries.push((index, rendered.len() - before));
         }
-        first
+        let skip = self.printed_rows.min(rendered.len());
+        (rendered.split_off(skip), boundaries)
+    }
+
+    /// Move the publish cursor forward by `rows` rendered rows, which may stop
+    /// part-way through an entry.
+    fn advance_publish_cursor(&mut self, rows: usize, boundaries: &[(usize, usize)]) {
+        let mut remaining = self.printed_rows + rows;
+        for (index, entry_rows) in boundaries {
+            if remaining >= *entry_rows {
+                remaining -= entry_rows;
+                self.printed_lines = index + 1;
+                self.printed_rows = 0;
+            } else {
+                self.printed_lines = *index;
+                self.printed_rows = remaining;
+                return;
+            }
+        }
     }
 
     async fn handle_key(&mut self, key: KeyEvent) {
@@ -2594,6 +2592,7 @@ impl App {
             UiCommand::ClearTranscript => {
                 self.lines.clear();
                 self.printed_lines = 0;
+                self.printed_rows = 0;
                 self.transcript_generation = self.transcript_generation.wrapping_add(1);
                 self.goal_store.clear_active(self.session.session_id());
                 self.user_ask_store.clear_active(self.session.session_id());
@@ -7186,24 +7185,45 @@ mod tests {
         );
     }
 
-    /// A sheet covers the footer's transcript rows, so retaining a tail behind
-    /// it would leave the transcript with nowhere to show — the first-run setup
-    /// step would hide the startup banner it is supposed to sit under.
+    /// The retained tail has to *fill* the footer's transcript rows: publishing
+    /// on entry boundaries alone would leave a hole between the scrollback and
+    /// the composer whenever one tall entry straddled the edge.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn split_footer_publishes_everything_while_an_overlay_owns_the_footer() {
+    async fn split_footer_retains_exactly_the_rows_it_can_show() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
+        app.setup = None;
         app.lines.clear();
-        app.push_system("workspace: /tmp".into());
-        app.start_setup();
+        // One entry far taller than the footer, so the cut can only land inside
+        // it, plus a short one after it.
+        app.push_system(
+            (0..60)
+                .map(|n| format!("line {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.push_user("after the wall of text".into());
 
         let mut terminal = split_footer_terminal(100, 60);
-        flush_for_frame(app, &mut terminal).expect("flush with the overlay up");
+        let keep_rows = app.footer_transcript_rows(terminal.get_frame().area());
+        app.flush_transcript(&mut terminal, keep_rows)
+            .expect("publish the overflow");
 
+        let width = terminal
+            .size()
+            .expect("size")
+            .width
+            .saturating_sub(2)
+            .max(20) as usize;
+        let (retained, _) = app.unpublished_rows(width);
         assert_eq!(
-            app.printed_lines,
-            app.lines.len(),
-            "an overlay leaves no rows to retain a tail in"
+            retained.len(),
+            keep_rows as usize,
+            "the retained tail should fill the footer's transcript rows exactly"
+        );
+        assert!(
+            app.printed_rows > 0,
+            "the cut should land inside the tall entry, not on its boundary"
         );
     }
 

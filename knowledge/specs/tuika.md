@@ -56,10 +56,10 @@ repainted, so anything live — the composer, the status bar, the busy
 indicator — belongs in the footer.
 
 A line is shown in exactly one place. The footer paints what has not been
-published yet and the flush holds back exactly the tail those rows can display,
-so nothing is both in the terminal's scrollback and on the footer at once. The
-retained tail is published when it no longer fits, when a sheet takes the
-footer's rows, and at exit — the footer's rows are handed back there, so an
+published yet, and the flush holds back exactly the rows those lines cover — a
+row-level cut, splitting an entry when one straddles the edge, so the region is
+neither doubled nor left half empty. The retained tail is published as it is
+pushed out, and in full at exit: the footer's rows are handed back there, so an
 unpublished line would be erased rather than left with the session.
 
 ## Where the boundary falls

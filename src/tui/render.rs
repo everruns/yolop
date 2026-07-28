@@ -258,45 +258,49 @@ pub(crate) fn recent_transcript_lines(
         return Vec::new();
     }
 
-    let mut chunks = Vec::new();
-    let mut total_lines = 0;
-    let mut newer_author: Option<Author> = None;
+    // Only what the terminal does not already own, and only the part of it the
+    // publisher has not already committed. In split-footer mode the published
+    // prefix sits directly above this region as real scrollback, so re-rendering
+    // it here would show those lines twice; the flush holds back exactly the
+    // rows these lines cover, cutting an entry in half when it straddles the
+    // edge (see `App::flush_transcript`). Full-screen publishes nothing, so the
+    // cursor stays at zero and the whole tail is available.
+    let start = app.printed_lines.min(app.lines.len());
+    // A burst can leave far more unpublished than these rows can ever show;
+    // rendering the whole backlog every frame would be wasted work, and the
+    // rows dropped here are older than anything that fits anyway. Skipping
+    // entries also skips the partial-entry offset, which belongs to the oldest
+    // of them.
+    let (entries, skip_rows) = if app.lines.len() - start > RECENT_TRANSCRIPT_SOURCE_LINES {
+        (
+            &app.lines[app.lines.len() - RECENT_TRANSCRIPT_SOURCE_LINES..],
+            0,
+        )
+    } else {
+        (&app.lines[start..], app.printed_rows)
+    };
 
-    // Only what the terminal does not already own. In split-footer mode the
-    // published prefix sits directly above this region as real scrollback, so
-    // re-rendering it here would show every one of those lines twice; the flush
-    // holds back exactly the tail these rows can display (see
-    // `App::flush_transcript`). Full-screen publishes nothing, so `printed_lines`
-    // stays 0 and the whole tail is available.
-    let mirror_lines: Vec<&ChatLine> = app.lines[app.printed_lines.min(app.lines.len())..]
-        .iter()
-        .rev()
-        .take(RECENT_TRANSCRIPT_SOURCE_LINES)
-        .collect();
-
-    for chat in mirror_lines {
-        let chat = bounded_recent_chat_line(chat);
-        let mut chunk = Vec::new();
-        append_chat_lines(&mut chunk, &chat, width);
-        if should_insert_chat_gap(&chat.author, newer_author.as_ref()) {
-            chunk.push(Line::from(""));
+    let mut rendered: Vec<Line<'static>> = Vec::new();
+    for (offset, chat) in entries.iter().enumerate() {
+        let bounded = bounded_recent_chat_line(chat);
+        append_chat_lines(&mut rendered, &bounded, width);
+        if should_insert_chat_gap(
+            &bounded.author,
+            entries.get(offset + 1).map(|next| &next.author),
+        ) {
+            rendered.push(Line::from(""));
         }
-
-        if total_lines + chunk.len() > max_lines {
-            let remaining = max_lines.saturating_sub(total_lines);
-            if remaining > 0 {
-                chunks.push(chunk.split_off(chunk.len().saturating_sub(remaining)));
-            }
-            break;
-        }
-
-        total_lines += chunk.len();
-        newer_author = Some(chat.author);
-        chunks.push(chunk);
     }
 
-    chunks.reverse();
-    chunks.into_iter().flatten().collect()
+    let skip = skip_rows.min(rendered.len());
+    rendered.drain(0..skip);
+    // Bottom-aligned: the newest rows are the ones that stay on screen, and an
+    // entry the publisher cut in half is clipped at the top, exactly as a
+    // scrolled transcript would show it.
+    if rendered.len() > max_lines {
+        rendered.drain(0..rendered.len() - max_lines);
+    }
+    rendered
 }
 
 /// Wrap the **full**-screen transcript for `lines[start..]` onto `out`,
