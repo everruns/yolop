@@ -929,6 +929,50 @@ fn tui_ghostty_shift_enter_sequence_inserts_newline() {
 }
 
 #[test]
+fn fullscreen_enables_modified_key_reporting_after_entering_alternate_screen() {
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            inline: false,
+            ..TuiSpawnOptions::default()
+        },
+    );
+    assert!(
+        tui.wait_for_output("Enter to send", Duration::from_secs(3)),
+        "TUI did not render the composer: {}",
+        tui.output_text()
+    );
+
+    let output = tui.output_text();
+    let alternate_screen = output
+        .find("\x1b[?1049h")
+        .expect("fullscreen must enter the alternate screen");
+    let keyboard_enhancement = output
+        .find("\x1b[>9u")
+        .expect("fullscreen must request modified-key reporting");
+    assert!(
+        alternate_screen < keyboard_enhancement,
+        "keyboard reporting is screen-local and must be enabled after entering the alternate screen"
+    );
+
+    tui.write_input(b"\x03\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(3));
+    assert!(status.success(), "TUI did not exit cleanly: {status:?}");
+
+    let output = tui.output_text();
+    let keyboard_restore = output
+        .rfind("\x1b[<1u")
+        .expect("fullscreen must restore modified-key reporting");
+    let leave_alternate_screen = output
+        .rfind("\x1b[?1049l")
+        .expect("fullscreen must leave the alternate screen");
+    assert!(
+        keyboard_restore < leave_alternate_screen,
+        "keyboard reporting must be restored before leaving its screen-local stack"
+    );
+}
+
+#[test]
 fn tui_raw_lf_shift_enter_inserts_newline() {
     // Terminals that lack the kitty keyboard protocol commonly map Shift+Enter
     // to a bare LF. In raw mode that arrives as Ctrl+J and must edit the

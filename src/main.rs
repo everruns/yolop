@@ -1162,16 +1162,18 @@ async fn run_tui(
     let trajectory_handles = runtime.handles.clone();
     let trajectory_model = runtime.model.clone();
     let mut raw_mode = RawModeGuard::new()?;
-    let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
-    let mut bracketed_paste = BracketedPasteGuard::new();
     // In full-screen mode `tuika` owns the alternate screen + mouse capture via
     // an RAII guard that restores them on drop. The viewport becomes the whole
     // terminal instead of a short inline strip.
-    let alt_screen = if fullscreen {
+    let mut alt_screen = if fullscreen {
         Some(tuika::host::AltScreen::enter()?)
     } else {
         None
     };
+    // Kitty keyboard modes are screen-local, so enable them only after entering
+    // the alternate screen and restore them before leaving it.
+    let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
+    let mut bracketed_paste = BracketedPasteGuard::new();
     let stdout = io::stdout();
     // Opt-in OSC 8 hyperlinks: wrap the crossterm backend so http(s) (and, with
     // YOLOP_HYPERLINK_MAILTO, mailto) URLs in rendered output become clickable.
@@ -1216,13 +1218,13 @@ async fn run_tui(
         tracing::warn!("cursor restore failed: {err:#}");
     }
     drop(terminal);
-    // Leave the alternate screen before any post-loop stdout (resume hint) so
-    // it lands on the user's normal screen, not the one about to be torn down.
-    if let Some(mut alt) = alt_screen {
-        alt.leave();
-    }
     bracketed_paste.disable();
     keyboard_enhancements.disable();
+    // Leave the alternate screen before any post-loop stdout (resume hint) so
+    // it lands on the user's normal screen, not the one about to be torn down.
+    if let Some(alt) = alt_screen.as_mut() {
+        alt.leave();
+    }
     raw_mode.disable()?;
 
     write_trajectory_if_requested(
