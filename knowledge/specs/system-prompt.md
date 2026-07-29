@@ -49,9 +49,13 @@ A fact belongs in exactly one place, chosen by what the fact is about:
 | Cross-cutting policy — safety, untrusted input, output shape | `system.md` |
 
 A capability block that names its own tools and explains how to call them is
-duplicating the tool description; delete it. `progress_guard` and `repo_map` are
-the reference cases for the second row: both emit their guidance inside the
-result, at the moment it applies, so neither needs a block.
+duplicating the tool description; delete it. `repo_map` is the reference case
+for the second row: it emits its guidance inside the result, at the moment it
+applies, and needs no block for that guidance. `progress_guard` also emits its
+guidance inside the result, but — see "Reactive text does not substitute for
+anticipatory text" below — the model still needs an anticipatory block carried
+ahead of the warning, because the warning names the *situation* but arrives too
+late to shape the *next call*.
 
 ### Discovery is always on; how-to is reveal-gated
 
@@ -110,13 +114,22 @@ numeric thresholds ("only for work with at least three steps"), counters ("if
 stuck twice, ask"), and habit instructions ("do not repeat passing checks").
 
 The prompt-specific caveat is that the preference is a default, not an absolute.
-Two blocks are directive on measured grounds:
+Three blocks are directive on measured grounds:
 
 - `lsp` — softer phrasing drove adoption to near zero in `evals/lsp_integration`.
 - `repo_map` — its truncation rule was deleted on the reasoning that the same
   words already ship inside the truncated result, and `repo-map-bounded`
   regressed on gpt-5.5: repeated exploration calls breached their zero bar in
   5/5 trials against 2/5 before.
+- `progress_guard` — its entire block was deleted on the same "the result
+  already says it" reasoning, and the nightly Search Efficiency Eval caught the
+  same shape of regression on `zero-result-search-recovery`: gpt-5.5 landed at
+  exactly one `tool_calls`/`llm_calls` call over budget every run, with the
+  correct answer already in the response. A shortened one-line replacement
+  (#498) was validated against the same eval and reproduced the identical
+  regression, so the block was restored verbatim rather than reworded — that is
+  the exact wording the eval's frozen baseline revision has always run with and
+  passed.
 
 Where an eval contradicts the preference, the eval wins — and a preference is
 not evidence.
@@ -128,14 +141,27 @@ above. Putting guidance in the tool result is right when it tells the model what
 a result *means*. It is not sufficient when the guidance must shape the choice
 the model makes *on seeing* that result: by then the next call is already being
 formed, and a rule it has been carrying is not the same as a rule it has just
-been handed. `progress_guard` remains result-only because its warnings interrupt
-a pattern rather than steer the next call.
+been handed.
+
+`progress_guard` was believed to be an exception — its warnings interrupt a
+pattern rather than steer the next call, so result-only seemed sufficient — but
+the nightly Search Efficiency Eval measured otherwise: every run after its
+block was deleted, `zero-result-search-recovery` put gpt-5.5 exactly one
+`tool_calls`/`llm_calls` call over budget, correct answer included, on
+`openai/gpt-5.5`. Interrupting a pattern still requires knowing, ahead of time,
+that the interruption means "act now" rather than "note this and continue as
+planned" — that framing is itself anticipatory. A shortened, reworded version
+of the block was tried first and did not close the gap, reproducing the same
+regression with the same margin; only restoring the original wording verbatim
+did.
 
 The distinction is also model-specific. The same deletion that cost gpt-5.5 an
 extra call per truncated map was free on claude-sonnet-4-5. Prompt content that
 looks redundant against one model's judgement can be load-bearing for another's,
 which is why composition changes get A/B'd on both providers rather than
-reasoned about.
+reasoned about — and why, absent a claude-sonnet-4-5 measurement of the
+`progress_guard` regression, the restored block is kept as the model already
+validated rather than trimmed further on judgement alone.
 
 ### The budget is a test
 
