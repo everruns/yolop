@@ -101,3 +101,12 @@ wording, formatting, and link fixes do not need entries.
 
 - Made the alternate-screen fullscreen renderer the default for interactive sessions.
 - Added `--inline` as the explicit opt-out for terminal-native scrollback.
+
+## 2026-07-30 — Terminal-Bench 2.1 eval study
+
+- Added `evals/terminal_bench/`: yolop on Terminal-Bench 2.1 (89 containerized
+  tasks), stacking the Mira host over Harbor — Mira owns the matrix and
+  reporting, Harbor owns the container, the agent run, and the task's verifier.
+- Realized the Harbor half of [Trajectory export](specs/trajectory.md): the
+  study's Harbor agent adapter hands `--trajectory-out` ATIF straight to Harbor
+  with no converter, so the export's stated consumer is now an actual one.

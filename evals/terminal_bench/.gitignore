@@ -1,0 +1,8 @@
+# Python virtualenv
+.venv/
+__pycache__/
+*.pyc
+
+# Local caches: the downloaded task tree and Harbor's per-case job dirs
+# (containers logs, trajectories, verifier output).
+.cache/

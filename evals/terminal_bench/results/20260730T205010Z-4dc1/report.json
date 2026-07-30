@@ -1,0 +1,185 @@
+{
+  "cases": [
+    {
+      "aggregate": 1.0,
+      "eval": "terminal_bench",
+      "passed": true,
+      "sample": "cobol-modernization",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "tests passed",
+          "scorer": "resolved",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "openrouter-gpt-5.6-terra",
+      "transcript": {
+        "final_response": "resolved=True",
+        "iterations": 16,
+        "metadata": {
+          "agent": "yolop",
+          "category": "software-engineering",
+          "difficulty": "easy",
+          "exception": null,
+          "model": "openrouter/openai/gpt-5.6-terra",
+          "provider": "openrouter",
+          "reasoning_effort": null,
+          "resolved": true,
+          "reward": 1.0,
+          "stop_reason": "completed",
+          "tools_used": {
+            "bash": 7,
+            "list_directory": 3,
+            "read_file": 5,
+            "write_session_title": 1,
+            "write_todos": 4
+          },
+          "yolop_version": "0.13.0"
+        },
+        "metrics": {
+          "cache_read_tokens": 109046.0,
+          "llm_calls": 16.0,
+          "reward": 1.0,
+          "tool_calls": 20.0
+        },
+        "timing": {
+          "duration_ms": 85146
+        },
+        "tool_calls": [
+          "write_session_title",
+          "write_todos",
+          "write_todos",
+          "write_todos",
+          "write_todos",
+          "list_directory",
+          "list_directory",
+          "list_directory",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "read_file",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 20,
+        "usage": {
+          "cache_read_tokens": 109046,
+          "cost_usd": 0.10587485,
+          "input_tokens": 59973,
+          "output_tokens": 3336
+        }
+      }
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "terminal_bench",
+      "passed": true,
+      "sample": "fix-git",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "tests passed",
+          "scorer": "resolved",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "openrouter-gpt-5.6-terra",
+      "transcript": {
+        "final_response": "resolved=True",
+        "iterations": 17,
+        "metadata": {
+          "agent": "yolop",
+          "category": "software-engineering",
+          "difficulty": "easy",
+          "exception": null,
+          "model": "openrouter/openai/gpt-5.6-terra",
+          "provider": "openrouter",
+          "reasoning_effort": null,
+          "resolved": true,
+          "reward": 1.0,
+          "stop_reason": "completed",
+          "tools_used": {
+            "bash": 12,
+            "write_session_title": 1,
+            "write_todos": 3
+          },
+          "yolop_version": "0.13.0"
+        },
+        "metrics": {
+          "cache_read_tokens": 112684.0,
+          "llm_calls": 17.0,
+          "reward": 1.0,
+          "tool_calls": 16.0
+        },
+        "timing": {
+          "duration_ms": 73489
+        },
+        "tool_calls": [
+          "write_session_title",
+          "write_todos",
+          "write_todos",
+          "write_todos",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 16,
+        "usage": {
+          "cache_read_tokens": 112684,
+          "cost_usd": 0.09120065,
+          "input_tokens": 54188,
+          "output_tokens": 2035
+        }
+      }
+    }
+  ],
+  "groups": {
+    "difficulty": {
+      "easy": {
+        "passed": 2,
+        "scored": 2
+      }
+    }
+  },
+  "summary": {
+    "failed": 0,
+    "na": 0,
+    "passed": 2,
+    "scored": 2,
+    "skipped": 0,
+    "total_cost_usd": 0.19707550000000001,
+    "total_duration_ms": 158635,
+    "total_tokens": 119532,
+    "total_tool_calls": 36
+  }
+}

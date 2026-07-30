@@ -1,0 +1,84 @@
+{
+  "eval": "terminal_bench",
+  "sample": "cobol-modernization",
+  "target": "openrouter-gpt-5.6-terra",
+  "passed": true,
+  "aggregate": 1.0,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 1.0,
+      "pass": true,
+      "reason": "tests passed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=True",
+    "iterations": 16,
+    "tool_calls_count": 20,
+    "tool_calls": [
+      "write_session_title",
+      "write_todos",
+      "write_todos",
+      "write_todos",
+      "write_todos",
+      "list_directory",
+      "list_directory",
+      "list_directory",
+      "read_file",
+      "read_file",
+      "read_file",
+      "read_file",
+      "read_file",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash"
+    ],
+    "usage": {
+      "input_tokens": 59973,
+      "output_tokens": 3336,
+      "cache_read_tokens": 109046,
+      "cost_usd": 0.10587485
+    },
+    "timing": {
+      "duration_ms": 85146
+    },
+    "metrics": {
+      "cache_read_tokens": 109046.0,
+      "llm_calls": 16.0,
+      "reward": 1.0,
+      "tool_calls": 20.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "category": "software-engineering",
+      "difficulty": "easy",
+      "exception": null,
+      "model": "openrouter/openai/gpt-5.6-terra",
+      "provider": "openrouter",
+      "reasoning_effort": null,
+      "resolved": true,
+      "reward": 1.0,
+      "stop_reason": "completed",
+      "tools_used": {
+        "bash": 7,
+        "list_directory": 3,
+        "read_file": 5,
+        "write_session_title": 1,
+        "write_todos": 4
+      },
+      "yolop_version": "0.13.0"
+    }
+  },
+  "skipped": false
+}

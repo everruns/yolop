@@ -1,0 +1,78 @@
+{
+  "eval": "terminal_bench",
+  "sample": "fix-git",
+  "target": "openrouter-gpt-5.6-terra",
+  "passed": true,
+  "aggregate": 1.0,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 1.0,
+      "pass": true,
+      "reason": "tests passed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=True",
+    "iterations": 17,
+    "tool_calls_count": 16,
+    "tool_calls": [
+      "write_session_title",
+      "write_todos",
+      "write_todos",
+      "write_todos",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash"
+    ],
+    "usage": {
+      "input_tokens": 54188,
+      "output_tokens": 2035,
+      "cache_read_tokens": 112684,
+      "cost_usd": 0.09120065
+    },
+    "timing": {
+      "duration_ms": 73489
+    },
+    "metrics": {
+      "cache_read_tokens": 112684.0,
+      "llm_calls": 17.0,
+      "reward": 1.0,
+      "tool_calls": 16.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "category": "software-engineering",
+      "difficulty": "easy",
+      "exception": null,
+      "model": "openrouter/openai/gpt-5.6-terra",
+      "provider": "openrouter",
+      "reasoning_effort": null,
+      "resolved": true,
+      "reward": 1.0,
+      "stop_reason": "completed",
+      "tools_used": {
+        "bash": 12,
+        "write_session_title": 1,
+        "write_todos": 3
+      },
+      "yolop_version": "0.13.0"
+    }
+  },
+  "skipped": false
+}
