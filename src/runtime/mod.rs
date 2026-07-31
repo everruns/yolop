@@ -51,10 +51,10 @@ use everruns_core::capabilities::{
     MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability,
     SESSION_CAPABILITY_ID, SESSION_FILE_SYSTEM_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID,
     SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID,
-    ScopedSkillsCapability, SessionCapability, SessionStorageCapability,
-    StatelessTodoListCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID,
-    ToolOutputPersistenceCapability, ToolSearchCapability, USER_HOOKS_CAPABILITY_ID,
-    UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
+    SUBAGENTS_CAPABILITY_ID, ScopedSkillsCapability, SessionCapability, SessionStorageCapability,
+    StatelessTodoListCapability, SubagentCapability, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID,
+    TOOL_SEARCH_CAPABILITY_ID, ToolOutputPersistenceCapability, ToolSearchCapability,
+    USER_HOOKS_CAPABILITY_ID, UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::driver_registry::{DriverRegistry, ProviderMetadata};
@@ -923,6 +923,7 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "ast_edit",
     "bash",
     "spawn_background",
+    "spawn_agent",
     "write_todos",
     "write_session_title",
     // Skill activation is a routing tool with required arguments; hiding its
@@ -2091,6 +2092,13 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new(TOOL_REVEAL_CAPABILITY_ID),
         AgentCapabilityConfig::new(TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID),
         AgentCapabilityConfig::new(SESSION_TASKS_CAPABILITY_ID),
+        // A two-level 4×4 swarm has 20 live descendants (four coordinators and
+        // sixteen workers). Keep that useful topology inside the default bound
+        // while the per-session fan-out and total-task ceilings remain intact.
+        AgentCapabilityConfig::with_config(
+            SUBAGENTS_CAPABILITY_ID,
+            serde_json::json!({ "max_active_descendant_tasks": 32 }),
+        ),
         AgentCapabilityConfig::new(DUCKDUCKGO_CAPABILITY_ID),
         AgentCapabilityConfig::new(ATTRIBUTION_CAPABILITY_ID),
         // enable_file_download=true: saved responses land on disk through
@@ -2838,16 +2846,16 @@ pub async fn build_with_options(
             .context("open local schedule store for task controls")?,
     );
     checkpoints.attach_task_registry(task_registry.clone());
-    // Install the wake seam: a `LocalPlatformStore` whose `send_message`
-    // enqueues everruns background-task completion signals onto `background_wake`
-    // for the host to run as a streamed turn (see `background_wake` and
-    // knowledge/specs/background.md). Without a platform store, `spawn_background`'s
-    // completion signal is a silent no-op and finished background work never
-    // reaches the agent.
+    // Install the local platform seam. Host-session messages are queued onto
+    // `background_wake`; child sub-agent messages run synchronously through the
+    // in-process runtime once it has been built below.
     let (background_wake_tx, background_wake_rx) = mpsc::unbounded_channel::<String>();
+    let runtime_cell = Arc::new(std::sync::OnceLock::new());
     let wake_runner = Arc::new(crate::runtime::background_wake::WakeRunner::new(
         session_id,
         background_wake_tx,
+        runtime_cell.clone(),
+        local_backends.runtime_backends.session_store.clone(),
     ));
     let schedule_runner = local_backends
         .start_schedule_runner(wake_runner.clone())
@@ -3115,6 +3123,7 @@ pub async fn build_with_options(
     capabilities.register(
         crate::capabilities::session_tasks_override::TruthfulSessionTasksCapability::new(),
     );
+    capabilities.register(SubagentCapability);
     capabilities.register(crate::capabilities::NarratedBackgroundExecutionCapability::new());
     capabilities.register(SessionStorageCapability);
     capabilities.register(DaytonaCapability);
@@ -3394,7 +3403,10 @@ pub async fn build_with_options(
         .with_model("llmsim-yolop")
     });
     builder = builder.llm_sim(llmsim_config);
-    let runtime = builder.build().await?;
+    let runtime = Arc::new(builder.build().await?);
+    runtime_cell
+        .set(Arc::downgrade(&runtime))
+        .map_err(|_| anyhow!("runtime initialized more than once"))?;
 
     let context = runtime.load_context(session_id).await?;
     let tool_names = context
@@ -3416,7 +3428,7 @@ pub async fn build_with_options(
 
     Ok(BuiltRuntime {
         handles: RuntimeHandles {
-            runtime: Arc::new(runtime),
+            runtime,
             session_id,
             events: event_bus_typed,
             checkpoints,
@@ -3927,6 +3939,91 @@ mod tests {
                 .expect("read workspace metadata")
                 .expect("workspace metadata present");
         assert_eq!(metadata.title.as_deref(), Some("Automatic session titles"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scripted_subagent_runs_in_a_real_child_session() {
+        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
+        use everruns_core::session_task::{SessionTaskState, TASK_KIND_SUBAGENT};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "spawn_agent".to_string(),
+                    arguments: serde_json::json!({
+                        "name": "Orbit Scout",
+                        "instructions": "Inspect the orbit subsystem and report briefly.",
+                        "target": { "type": "subagent" },
+                        "mode": "foreground",
+                        "seed": "fork"
+                    }),
+                    id: None,
+                }]),
+                SimTurn::Assistant("Orbit subsystem inspected.".to_string()),
+                SimTurn::Assistant("Scout completed.".to_string()),
+            ])),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "Delegate the orbit inspection.",
+                built.model.input_message("Delegate the orbit inspection."),
+            )
+            .await
+            .expect("run parent turn");
+        assert!(result.success, "parent turn: {result:?}");
+
+        let task = built
+            .task_registry
+            .list(built.handles.session_id, None)
+            .await
+            .expect("list subagent tasks")
+            .into_iter()
+            .find(|task| task.kind == TASK_KIND_SUBAGENT)
+            .expect("subagent task exists");
+        let mut task = task;
+        for _ in 0..100 {
+            if task.state.is_terminal() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            task = built
+                .task_registry
+                .get(built.handles.session_id, &task.id)
+                .await
+                .expect("get subagent task")
+                .expect("subagent task remains present");
+        }
+        assert_eq!(task.state, SessionTaskState::Succeeded);
+        let child_id = task
+            .links
+            .child_session_id
+            .expect("task links a child session");
+        let child_messages = built
+            .handles
+            .runtime
+            .messages(child_id)
+            .await
+            .expect("read child messages");
+        assert!(child_messages.iter().any(|message| {
+            message.role == MessageRole::Agent
+                && message.text() == Some("Orbit subsystem inspected.")
+        }));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6261,6 +6358,18 @@ mod tests {
             ids.iter()
                 .any(|cap| cap.capability_id() == TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID)
         );
+    }
+
+    #[test]
+    fn coding_harness_enables_bounded_subagent_swarms() {
+        let caps = coding_harness_capabilities(false, None, &Settings::default());
+        let subagents = caps
+            .iter()
+            .find(|cap| cap.capability_id() == SUBAGENTS_CAPABILITY_ID)
+            .expect("subagents capability must be enabled");
+
+        assert_eq!(subagents.config["max_active_descendant_tasks"], 32);
+        assert!(YOLOP_NEVER_DEFER_TOOLS.contains(&"spawn_agent"));
     }
 
     #[test]

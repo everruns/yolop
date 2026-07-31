@@ -118,6 +118,10 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   survive a restart. `spawn_background` can also schedule one-shot or recurring
   monitors; when a schedule fires or a task finishes while the session is idle,
   yolop proactively wakes the agent (disable with `proactive_wake`).
+- **Sub-agents** — `spawn_agent` delegates independent work into child context
+  windows. A two-level hierarchy supports broad swarms without exceeding the
+  per-session fan-out limit; `Ctrl+B` shows the live tree with branch token and
+  cost rollups. See [Parallel sub-agents](./docs/features/subagents/subagents.md).
 - **Web** — `free_web_search`, `web_fetch` (HTTP GET/HEAD with markdown/text
   conversion and DNS-pinned SSRF protection), and `duckduckgo_instant_answer`,
   all working without an API key. Set `EVERRUNS_SYSTEM_ALLOWLIST_ENABLED=true`
