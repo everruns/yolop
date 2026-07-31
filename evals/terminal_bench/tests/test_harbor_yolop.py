@@ -154,6 +154,38 @@ class TestRunningCost(unittest.TestCase):
             self.assertAlmostEqual(hy.running_cost(path), 1.0)
 
 
+class TestEffectiveModelMetadata(unittest.TestCase):
+    def test_latest_completed_response_values_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            events = [
+                {
+                    "type": "output.message.completed",
+                    "data": {"message": {"metadata": {
+                        "provider": "openai", "model": "gpt-5.6-terra",
+                        "reasoning_effort": "medium",
+                    }}},
+                },
+                {
+                    "type": "output.message.completed",
+                    "data": {"message": {"metadata": {
+                        "provider": "openai", "model": "gpt-5.6-terra",
+                        "reasoning_effort": "high",
+                    }}},
+                },
+            ]
+            path.write_text(
+                "\n".join(json.dumps(event) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(hy.effective_model_metadata(path), {
+                "provider": "openai",
+                "model": "gpt-5.6-terra",
+                "reasoning_effort": "high",
+            })
+
+
 class TestPostRun(unittest.TestCase):
     TRAJECTORY = {
         "schema_version": "ATIF-v1.7",
@@ -181,6 +213,14 @@ class TestPostRun(unittest.TestCase):
             (Path(tmp) / "trajectory.json").write_text(json.dumps(self.TRAJECTORY),
                                                        encoding="utf-8")
             agent = make_agent(Path(tmp))
+            agent._host_session_log.parent.mkdir(parents=True)
+            agent._host_session_log.write_text(json.dumps({
+                "type": "output.message.completed",
+                "data": {"message": {"metadata": {
+                    "provider": "openai", "model": "gpt-5.6-terra",
+                    "reasoning_effort": "medium",
+                }}},
+            }) + "\n", encoding="utf-8")
             context = AgentContext()
             agent.populate_context_post_run(context)
 
@@ -193,6 +233,9 @@ class TestPostRun(unittest.TestCase):
         self.assertEqual(context.metadata["tools_used"],
                          {"run_terminal_cmd": 1, "read_file": 1})
         self.assertEqual(context.metadata["stop_reason"], "completed")
+        self.assertEqual(context.metadata["provider"], "openai")
+        self.assertEqual(context.metadata["model"], "gpt-5.6-terra")
+        self.assertEqual(context.metadata["reasoning_effort"], "medium")
 
     def test_missing_trajectory_still_records_the_stop_reason(self):
         from harbor.models.agent.context import AgentContext

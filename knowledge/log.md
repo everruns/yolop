@@ -150,3 +150,12 @@ wording, formatting, and link fixes do not need entries.
 - Realized the Harbor half of [Trajectory export](specs/trajectory.md): the
   study's Harbor agent adapter hands `--trajectory-out` ATIF straight to Harbor
   with no converter, so the export's stated consumer is now an actual one.
+
+## 2026-07-31 — Terminal-Bench trajectories retained
+
+- Terminal-Bench now keeps Harbor job directories by default so ATIF
+  trajectories and Yolop event logs survive result summarization; constrained
+  runs can opt out with `TB_KEEP_JOBS=0`.
+- Eval metadata now distinguishes matrix-requested provider settings from the
+  effective provider, model, and reasoning effort recorded on completed model
+  responses.
