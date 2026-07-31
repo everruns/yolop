@@ -56,17 +56,14 @@ pub(super) fn draw_shared(f: &mut ratatui::Frame, app: &mut App) {
         draw_setup_overlay(f, area, app);
         return;
     }
-    if app.background_panel.is_some() {
-        draw_background_panel(f, area, app);
-        return;
-    }
+    let (main_area, sidebar) = background_sidebar_layout(area, app.background_panel.is_some());
 
     // Match `draw_input`: the `> ` prompt consumes two columns.
-    let input_width = area.width.saturating_sub(2);
+    let input_width = main_area.width.saturating_sub(2);
     let desired_input_height = app.input_height(input_width);
     let state = app.view_state();
     let layout = TuiLayout::new(
-        area,
+        main_area,
         desired_input_height,
         state.status_row_count(),
         chrome_preview_visible(&state),
@@ -78,6 +75,9 @@ pub(super) fn draw_shared(f: &mut ratatui::Frame, app: &mut App) {
     draw_recent_transcript(f, layout.transcript, app);
     draw_chrome_layout(f, layout.chrome, &state);
     draw_input(f, layout.chrome.input, app);
+    if let Some(sidebar) = sidebar {
+        draw_background_panel(f, sidebar, app);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -559,8 +559,8 @@ pub(crate) fn draw_ask_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 }
 
-/// Interactive task-tree panel overlay (toggled with Ctrl+B). Reuses the
-/// `/background` tree rendering, adding a selected row and cancellation key.
+/// Live agent sidebar. Automatic opening is passive; a manually focused panel
+/// adds selection and cancellation controls without covering the transcript.
 pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let Some(offset) = app.background_panel else {
         return;
@@ -568,21 +568,27 @@ pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &Ap
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let panel = setup_panel_rect(area);
-    if panel.width == 0 || panel.height == 0 {
-        return;
-    }
     f.render_widget(Clear, area);
-    f.render_widget(Clear, panel);
+    let title = match crate::tui::session_tasks_view::agent_panel(&app.session_tasks) {
+        Some(panel) => format!(" Agents {} ", panel.total),
+        None => format!(" Tasks {} ", app.session_tasks.rows.len()),
+    };
+    let footer = if app.background_panel_focused {
+        " ↑/↓ select · x cancel · Esc close "
+    } else {
+        " Ctrl+B close "
+    };
     let block = Block::default()
         .borders(Borders::ALL)
+        .title(title)
+        .title_bottom(Line::from(footer).right_aligned())
         .style(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
-    f.render_widget(block, panel);
+    f.render_widget(block, area);
     let inner = Rect {
-        x: panel.x.saturating_add(2),
-        y: panel.y.saturating_add(1),
-        width: panel.width.saturating_sub(4),
-        height: panel.height.saturating_sub(2),
+        x: area.x.saturating_add(2),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(2),
     };
     let body = app.background_panel_body();
     let texts = background_panel_lines(&body, offset, inner.height as usize);
@@ -592,6 +598,16 @@ pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &Ap
             lines.push(Line::from(Span::styled(
                 text,
                 Style::default().fg(DIFF_META).add_modifier(Modifier::BOLD),
+            )));
+        } else if text.contains("✓ ") {
+            lines.push(Line::from(Span::styled(
+                text,
+                Style::default().fg(DIFF_ADD),
+            )));
+        } else if text.contains("✕ ") {
+            lines.push(Line::from(Span::styled(
+                text,
+                Style::default().fg(ERROR_RED),
             )));
         } else {
             lines.push(Line::raw(text));
@@ -603,18 +619,40 @@ pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &Ap
     );
 }
 
-/// Lines for the background panel: a fixed header followed by the scrolled body
-/// (the `/background` text), clipped to `height` rows. Pure for testability.
+/// Scrolled sidebar body clipped to `height` rows. Pure for testability.
 pub(crate) fn background_panel_lines(body: &str, offset: usize, height: usize) -> Vec<String> {
     if height == 0 {
         return Vec::new();
     }
-    let mut out = vec!["Task tree — ↑/↓ select · x cancel · Ctrl+B/Esc close".to_string()];
-    let body_rows = height.saturating_sub(1);
-    for line in body.lines().skip(offset).take(body_rows) {
-        out.push(line.to_string());
+    body.lines()
+        .skip(offset)
+        .take(height)
+        .map(str::to_string)
+        .collect()
+}
+
+/// Split the frame into the main conversation and a bounded right sidebar.
+/// Very narrow terminals keep the main UI intact and hide the panel until the
+/// terminal is widened.
+pub(crate) fn background_sidebar_layout(area: Rect, visible: bool) -> (Rect, Option<Rect>) {
+    if !visible || area.width < 48 || area.height == 0 {
+        return (area, None);
     }
-    out
+    let sidebar_width = (area.width / 3).clamp(30, 48);
+    let main_width = area.width.saturating_sub(sidebar_width);
+    if main_width < 24 {
+        return (area, None);
+    }
+    let main = Rect {
+        width: main_width,
+        ..area
+    };
+    let sidebar = Rect {
+        x: main.right(),
+        width: sidebar_width,
+        ..area
+    };
+    (main, Some(sidebar))
 }
 
 pub(crate) fn setup_panel_rect(area: Rect) -> Rect {

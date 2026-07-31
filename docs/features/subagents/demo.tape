@@ -44,19 +44,12 @@ Sleep 3s
 
 Type "Restore Mission Control. Follow AGENTS.md exactly: create the 4x4 background swarm (exactly 20 sub-agents total). Critical: every spawn_agent call at both levels must contain only name, instructions, target.type=subagent, and mode=background; omit every optional field. Do not run the full suite or dashboard; the recorder owns final verification. No Git or network. Once all four leads have returned, finish with exactly SWARM DISPATCHED — WATCH THE BOARD."
 Enter
-Wait+Screen@3m /bg [1-9]/
-Ctrl+B
-Wait+Screen@5m /20 task\(s\):/
-Sleep 8s
-Down@500ms 6
-Sleep 3s
-Escape
+Wait+Screen@3m /Agents [1-9]/
+Wait+Screen@5m /20 agents/
+Sleep 12s
 
 Wait+Screen@8m /SWARM DISPATCHED — WATCH THE BOARD/
-Sleep 40s
-Ctrl+B
-Sleep 5s
-Ctrl+B
+Sleep 30s
 Ctrl+D
 Sleep 3s
 Type "until (cd /tmp/yolop-subagents-mission-control && node dashboard.mjs >/dev/null 2>&1); do sleep 1; done; clear; (cd /tmp/yolop-subagents-mission-control && node dashboard.mjs)"

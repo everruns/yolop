@@ -76,6 +76,20 @@ before the soft approval, sandbox, and hard approval-policy values. This keeps
 the selected execution bundle visible in compact and expanded layouts without
 conflating it with the provider or model name.
 
+### Agent Sidebar
+
+The interactive TUI projects linked sub-agent tasks into a right-hand sidebar.
+The sidebar opens once, when the first sub-agent appears, and stays passive so
+the composer retains focus. It shows the recursive agent hierarchy, a summary
+of active, successful, and failed agents, and each agent's current state and
+usage. `Ctrl+B` gives the panel focus or closes and reopens it; a user-closed
+automatic panel must not repeatedly reopen during the same session.
+
+The root transcript is session-scoped. Both live delivery and catch-up routing
+must discard child-session transcript and title events; child progress belongs
+in the agent sidebar. Catch-up may still advance its event-store cursor past
+foreign events so they are not reconsidered indefinitely.
+
 `--print` and ACP may project the model differently, but shared semantics should
 come from the same presentation model rather than parallel ad hoc formatting.
 

@@ -2,8 +2,10 @@
 
 Yolop can delegate independent work to background sub-agents. Each sub-agent
 gets its own context window and shares the parent session's workspace. Use the
-task tree (`Ctrl+B`) to watch the hierarchy, inspect completed summaries, and
-cancel a selected branch.
+agent sidebar to watch the hierarchy and live status of every delegated agent.
+It opens automatically when the first sub-agent starts without taking focus
+from the composer. Use `Ctrl+B` to focus, close, or reopen it, inspect completed
+summaries, and cancel a selected branch.
 
 ![Yolop coordinating a 20-agent mission-control repair swarm](./demo.gif)
 
