@@ -697,7 +697,7 @@ impl CodingCliSessionFileStore {
 #[async_trait]
 impl SessionFileSystem for CodingCliSessionFileStore {
     fn is_mount_resolver(&self) -> bool {
-        false
+        true
     }
 
     fn display_root(&self) -> String {
@@ -5959,7 +5959,7 @@ mod tests {
 
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = test_file_store(workspace.path(), session.path());
+        let store = MountFs::wrap_if_needed(test_file_store(workspace.path(), session.path()));
         let workspace_root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
         let narration = narrate_list_directory(
             &serde_json::json!({ "path": "/workspace/src" }),
