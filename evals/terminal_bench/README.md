@@ -127,6 +127,41 @@ fast enough to repeat.
 | `configure-git-webserver` | hard | system-administration | 900s |
 | `fix-code-vulnerability` | hard | security | 900s |
 
+### Baseline
+
+yolop · **gpt-5.6-terra** (OpenAI), run `20260731T014824Z-3c1e` — **6/8 for
+$1.34**, 22 minutes wall clock, every case ran to its own completion (no
+timeout, no budget stop, no infra N/A):
+
+| difficulty | resolved |
+|---|---|
+| easy | 3/3 |
+| medium | 2/3 |
+| hard | 1/2 |
+
+| task | | cost | wall | llm calls | tool calls |
+|---|---|---|---|---|---|
+| `cobol-modernization` | ✓ | $0.192 | 108s | 13 | 12 |
+| `fix-git` | ✓ | $0.156 | 100s | 16 | 15 |
+| `overfull-hbox` | ✓ | $0.198 | 318s | 15 | 14 |
+| `modernize-scientific-stack` | ✓ | $0.091 | 78s | 10 | 9 |
+| `count-dataset-tokens` | ✓ | $0.114 | 164s | 11 | 10 |
+| `chess-best-move` | ✗ | $0.267 | 343s | 18 | 17 |
+| `fix-code-vulnerability` | ✓ | $0.178 | 86s | 13 | 20 |
+| `configure-git-webserver` | ✗ | $0.149 | 116s | 11 | 10 |
+
+**Cost here is over-stated and not comparable across providers.** For providers
+that return no inline price (OpenAI, Anthropic), yolop estimates from a price
+table that bills full `prompt_tokens` — and OpenAI's `prompt_tokens` *includes*
+cache reads, which dominate an agentic run. The same `cobol-modernization` case
+cost $0.192 on this run and $0.106 through OpenRouter, where the figure is the
+provider's actual charge. Read OpenAI-direct costs as a ceiling; `swebench_verified`
+documents the same effect.
+
+Two failures worth watching rather than chasing: `chess-best-move` used the most
+turns and the most money of the eight, and `configure-git-webserver` gave up
+cheapest of the eight at 10 tool calls — an early stop, not an exhausted budget.
+
 It is selected deterministically by `suites/select_control.py` — no hand-picking:
 tasks needing a GPU or more than 4 GiB are excluded (so the suite runs
 concurrently on an ordinary box), each tier is ordered by `(agent timeout, name)`

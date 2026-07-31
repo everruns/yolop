@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mira eval report</title>
+<style>
+:root{color-scheme:light dark;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--mut:#57606a;--bg:#fff;--fg:#1f2328;--line:#d0d7de}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--line:#30363d;--mut:#8b949e}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:960px;margin:0 auto;padding:2rem 1.25rem}
+h1{font-size:1.6rem;margin:0 0 1rem}h2{font-size:1.15rem;margin:2rem 0 .75rem;border-bottom:1px solid var(--line);padding-bottom:.25rem}
+.cards{display:flex;flex-wrap:wrap;gap:.75rem}
+.card{flex:1;min-width:96px;border:1px solid var(--line);border-radius:8px;padding:.75rem 1rem;text-align:center}
+.card b{display:block;font-size:1.5rem}.card span{color:var(--mut);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+.card.ok b{color:var(--ok)}.card.bad b{color:var(--bad)}.card.warn b{color:var(--warn)}
+table.matrix{border-collapse:collapse;width:100%}table.matrix th,table.matrix td{border:1px solid var(--line);padding:.4rem .6rem;text-align:center}
+table.matrix td:first-child,table.matrix th:first-child{text-align:left}
+.case{border:1px solid var(--line);border-radius:8px;margin:.5rem 0;padding:.25rem .75rem}
+.case summary{cursor:pointer;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+.case code{font-size:.92rem}.metrics{color:var(--mut);font-size:.8rem;margin-left:auto}
+.badge{font-size:.7rem;font-weight:700;padding:.1rem .4rem;border-radius:4px;color:#fff}
+.badge.pass{background:var(--ok)}.badge.fail{background:var(--bad)}.badge.skip{background:var(--mut)}.badge.na{background:var(--warn)}
+.scores{list-style:none;padding:0;margin:.5rem 0}.scores li{padding:.15rem 0}.scores li.pass{color:var(--ok)}.scores li.fail{color:var(--bad)}.scores li.na{color:var(--mut)}
+.tools,.meta{font-size:.85rem;color:var(--mut)}
+pre{background:rgba(127,127,127,.1);border-radius:6px;padding:.6rem .75rem;overflow:auto;font-size:.85rem;white-space:pre-wrap}
+pre.error{color:var(--bad)}a{color:#0969da}
+</style>
+</head>
+<body>
+<main>
+<h1>Mira eval report</h1>
+<section class="cards">
+<div class="card bad"><b>6/8</b><span>passed</span></div>
+<div class="card"><b>2</b><span>failed</span></div>
+<div class="card"><b>0</b><span>n/a</span></div>
+<div class="card"><b>0</b><span>skipped</span></div>
+<div class="card"><b>223777</b><span>tokens</span></div>
+<div class="card"><b>$1.3436</b><span>cost</span></div>
+</section>
+<h2>Matrix</h2>
+<table class="matrix">
+<thead><tr><th>eval</th><th>openai-gpt-5.6-terra</th></tr></thead>
+<tbody>
+<tr><td>terminal_bench</td><td>6/8</td></tr>
+</tbody>
+</table>
+<h2>Resolve rate by difficulty</h2>
+<table class="matrix">
+<thead><tr><th>difficulty</th><th>passed</th><th>scored</th><th>rate</th></tr></thead>
+<tbody>
+<tr><td>easy</td><td>3</td><td>3</td><td>100%</td></tr>
+<tr><td>hard</td><td>1</td><td>2</td><td>50%</td></tr>
+<tr><td>medium</td><td>2</td><td>3</td><td>67%</td></tr>
+</tbody>
+</table>
+<h2>Cases</h2>
+<details class="case fail">
+<summary><span class="badge fail">FAIL</span> <code>terminal_bench/chess-best-move@openai-gpt-5.6-terra</code><span class="metrics">38351 tok · $0.2669 · 343633ms · 17 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="fail">✗ <b>resolved</b> — tests failed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, read_file</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=346719, llm_calls=18, reward=0, tool_calls=17</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=games, difficulty=medium, exception=null, model=openai/gpt-5.6-terra, provider=openai, reasoning_effort=null, resolved=false, reward=0.0, stop_reason=completed, tools_used={"bash":15,"read_file":1,"write_session_title":1}, yolop_version=0.13.0</p>
+<pre class="response">resolved=False</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/cobol-modernization@openai-gpt-5.6-terra</code><span class="metrics">30335 tok · $0.1924 · 108119ms · 12 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, write_todos, write_todos, write_todos, write_todos, bash, bash, bash, bash, bash, bash, bash</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=191687, llm_calls=13, reward=1, tool_calls=12</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=software-engineering, difficulty=easy, exception=null, model=openai/gpt-5.6-terra, provider=openai, reasoning_effort=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={"bash":7,"write_session_title":1,"write_todos":4}, yolop_version=0.13.0</p>
+<pre class="response">resolved=True</pre>
+</details>
+<details class="case fail">
+<summary><span class="badge fail">FAIL</span> <code>terminal_bench/configure-git-webserver@openai-gpt-5.6-terra</code><span class="metrics">26526 tok · $0.1485 · 116657ms · 10 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="fail">✗ <b>resolved</b> — tests failed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, write_todos, write_todos, write_todos, bash, bash, bash, bash, bash, bash</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=143290, llm_calls=11, reward=0, tool_calls=10</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=system-administration, difficulty=hard, exception=null, model=openai/gpt-5.6-terra, provider=openai, reasoning_effort=null, resolved=false, reward=0.0, stop_reason=completed, tools_used={"bash":6,"write_session_title":1,"write_todos":3}, yolop_version=0.13.0</p>
+<pre class="response">resolved=False</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/count-dataset-tokens@openai-gpt-5.6-terra</code><span class="metrics">20679 tok · $0.1137 · 164998ms · 10 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, write_todos, write_todos, write_todos, bash, bash, bash, bash, bash, bash</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=127710, llm_calls=11, reward=1, tool_calls=10</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=model-training, difficulty=medium, exception=null, model=openai/gpt-5.6-terra, provider=openai, reasoning_effort=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={"bash":6,"write_session_title":1,"write_todos":3}, yolop_version=0.13.0</p>
+<pre class="response">resolved=True</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/fix-code-vulnerability@openai-gpt-5.6-terra</code><span class="metrics">34994 tok · $0.1777 · 86147ms · 20 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, write_todos, write_todos, write_todos, write_todos, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=236989, llm_calls=13, reward=1, tool_calls=20</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=security, difficulty=hard, exception=null, model=openai/gpt-5.6-terra, provider=openai, reasoning_effort=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={"bash":15,"write_session_title":1,"write_todos":4}, yolop_version=0.13.0</p>
+<pre class="response">resolved=True</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/fix-git@openai-gpt-5.6-terra</code><span class="metrics">24195 tok · $0.1555 · 100734ms · 15 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, write_todos, write_todos, write_todos, write_todos, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=233438, llm_calls=16, reward=1, tool_calls=15</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=software-engineering, difficulty=easy, exception=null, model=openai/gpt-5.6-terra, provider=openai, reasoning_effort=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={"bash":10,"write_session_title":1,"write_todos":4}, yolop_version=0.13.0</p>
+<pre class="response">resolved=True</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/modernize-scientific-stack@openai-gpt-5.6-terra</code><span class="metrics">16643 tok · $0.0913 · 78228ms · 9 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, write_todos, write_todos, write_todos, write_todos, bash, bash, bash, bash</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=102205, llm_calls=10, reward=1, tool_calls=9</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=scientific-computing, difficulty=medium, exception=null, model=openai/gpt-5.6-terra, provider=openai, reasoning_effort=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={"bash":4,"write_session_title":1,"write_todos":4}, yolop_version=0.13.0</p>
+<pre class="response">resolved=True</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/overfull-hbox@openai-gpt-5.6-terra</code><span class="metrics">32054 tok · $0.1975 · 318508ms · 14 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, write_todos, write_todos, write_todos, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=236116, llm_calls=15, reward=1, tool_calls=14</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=debugging, difficulty=easy, exception=null, model=openai/gpt-5.6-terra, provider=openai, reasoning_effort=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={"bash":10,"write_session_title":1,"write_todos":3}, yolop_version=0.13.0</p>
+<pre class="response">resolved=True</pre>
+</details>
+<script type="application/json" id="mira-data">
+{"cases":[{"aggregate":0.5,"eval":"terminal_bench","passed":false,"sample":"chess-best-move","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":false,"reason":"tests failed","scorer":"resolved","value":0.0}],"skipped":false,"target":"openai-gpt-5.6-terra","transcript":{"final_response":"resolved=False","iterations":18,"metadata":{"agent":"yolop","category":"games","difficulty":"medium","exception":null,"model":"openai/gpt-5.6-terra","provider":"openai","reasoning_effort":null,"resolved":false,"reward":0.0,"stop_reason":"completed","tools_used":{"bash":15,"read_file":1,"write_session_title":1},"yolop_version":"0.13.0"},"metrics":{"cache_read_tokens":346719.0,"llm_calls":18.0,"reward":0.0,"tool_calls":17.0},"timing":{"duration_ms":343633},"tool_calls":["write_session_title","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","read_file"],"tool_calls_count":17,"usage":{"cache_read_tokens":346719,"cost_usd":0.26685725,"input_tokens":31607,"output_tokens":6744}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"cobol-modernization","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"openai-gpt-5.6-terra","transcript":{"final_response":"resolved=True","iterations":13,"metadata":{"agent":"yolop","category":"software-engineering","difficulty":"easy","exception":null,"model":"openai/gpt-5.6-terra","provider":"openai","reasoning_effort":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{"bash":7,"write_session_title":1,"write_todos":4},"yolop_version":"0.13.0"},"metrics":{"cache_read_tokens":191687.0,"llm_calls":13.0,"reward":1.0,"tool_calls":12.0},"timing":{"duration_ms":108119},"tool_calls":["write_session_title","write_todos","write_todos","write_todos","write_todos","bash","bash","bash","bash","bash","bash","bash"],"tool_calls_count":12,"usage":{"cache_read_tokens":191687,"cost_usd":0.19240925000000003,"input_tokens":24843,"output_tokens":5492}}},{"aggregate":0.5,"eval":"terminal_bench","passed":false,"sample":"configure-git-webserver","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":false,"reason":"tests failed","scorer":"resolved","value":0.0}],"skipped":false,"target":"openai-gpt-5.6-terra","transcript":{"final_response":"resolved=False","iterations":11,"metadata":{"agent":"yolop","category":"system-administration","difficulty":"hard","exception":null,"model":"openai/gpt-5.6-terra","provider":"openai","reasoning_effort":null,"resolved":false,"reward":0.0,"stop_reason":"completed","tools_used":{"bash":6,"write_session_title":1,"write_todos":3},"yolop_version":"0.13.0"},"metrics":{"cache_read_tokens":143290.0,"llm_calls":11.0,"reward":0.0,"tool_calls":10.0},"timing":{"duration_ms":116657},"tool_calls":["write_session_title","write_todos","write_todos","write_todos","bash","bash","bash","bash","bash","bash"],"tool_calls_count":10,"usage":{"cache_read_tokens":143290,"cost_usd":0.14853750000000002,"input_tokens":22814,"output_tokens":3712}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"count-dataset-tokens","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"openai-gpt-5.6-terra","transcript":{"final_response":"resolved=True","iterations":11,"metadata":{"agent":"yolop","category":"model-training","difficulty":"medium","exception":null,"model":"openai/gpt-5.6-terra","provider":"openai","reasoning_effort":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{"bash":6,"write_session_title":1,"write_todos":3},"yolop_version":"0.13.0"},"metrics":{"cache_read_tokens":127710.0,"llm_calls":11.0,"reward":1.0,"tool_calls":10.0},"timing":{"duration_ms":164998},"tool_calls":["write_session_title","write_todos","write_todos","write_todos","bash","bash","bash","bash","bash","bash"],"tool_calls_count":10,"usage":{"cache_read_tokens":127710,"cost_usd":0.113725,"input_tokens":18271,"output_tokens":2408}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"fix-code-vulnerability","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"openai-gpt-5.6-terra","transcript":{"final_response":"resolved=True","iterations":13,"metadata":{"agent":"yolop","category":"security","difficulty":"hard","exception":null,"model":"openai/gpt-5.6-terra","provider":"openai","reasoning_effort":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{"bash":15,"write_session_title":1,"write_todos":4},"yolop_version":"0.13.0"},"metrics":{"cache_read_tokens":236989.0,"llm_calls":13.0,"reward":1.0,"tool_calls":20.0},"timing":{"duration_ms":86147},"tool_calls":["write_session_title","write_todos","write_todos","write_todos","write_todos","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash"],"tool_calls_count":20,"usage":{"cache_read_tokens":236989,"cost_usd":0.17765724999999996,"input_tokens":32520,"output_tokens":2474}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"fix-git","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"openai-gpt-5.6-terra","transcript":{"final_response":"resolved=True","iterations":16,"metadata":{"agent":"yolop","category":"software-engineering","difficulty":"easy","exception":null,"model":"openai/gpt-5.6-terra","provider":"openai","reasoning_effort":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{"bash":10,"write_session_title":1,"write_todos":4},"yolop_version":"0.13.0"},"metrics":{"cache_read_tokens":233438.0,"llm_calls":16.0,"reward":1.0,"tool_calls":15.0},"timing":{"duration_ms":100734},"tool_calls":["write_session_title","write_todos","write_todos","write_todos","write_todos","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash"],"tool_calls_count":15,"usage":{"cache_read_tokens":233438,"cost_usd":0.15550950000000002,"input_tokens":21262,"output_tokens":2933}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"modernize-scientific-stack","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"openai-gpt-5.6-terra","transcript":{"final_response":"resolved=True","iterations":10,"metadata":{"agent":"yolop","category":"scientific-computing","difficulty":"medium","exception":null,"model":"openai/gpt-5.6-terra","provider":"openai","reasoning_effort":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{"bash":4,"write_session_title":1,"write_todos":4},"yolop_version":"0.13.0"},"metrics":{"cache_read_tokens":102205.0,"llm_calls":10.0,"reward":1.0,"tool_calls":9.0},"timing":{"duration_ms":78228},"tool_calls":["write_session_title","write_todos","write_todos","write_todos","write_todos","bash","bash","bash","bash"],"tool_calls_count":9,"usage":{"cache_read_tokens":102205,"cost_usd":0.09134625,"input_tokens":14708,"output_tokens":1935}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"overfull-hbox","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"openai-gpt-5.6-terra","transcript":{"final_response":"resolved=True","iterations":15,"metadata":{"agent":"yolop","category":"debugging","difficulty":"easy","exception":null,"model":"openai/gpt-5.6-terra","provider":"openai","reasoning_effort":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{"bash":10,"write_session_title":1,"write_todos":3},"yolop_version":"0.13.0"},"metrics":{"cache_read_tokens":236116.0,"llm_calls":15.0,"reward":1.0,"tool_calls":14.0},"timing":{"duration_ms":318508},"tool_calls":["write_session_title","write_todos","write_todos","write_todos","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash"],"tool_calls_count":14,"usage":{"cache_read_tokens":236116,"cost_usd":0.19753900000000005,"input_tokens":27384,"output_tokens":4670}}}],"groups":{"difficulty":{"easy":{"passed":3,"scored":3},"hard":{"passed":1,"scored":2},"medium":{"passed":2,"scored":3}}},"summary":{"failed":2,"na":0,"passed":6,"scored":8,"skipped":0,"total_cost_usd":1.3435810000000001,"total_duration_ms":1317024,"total_tokens":223777,"total_tool_calls":107}}
+</script>
+</main>
+</body>
+</html>

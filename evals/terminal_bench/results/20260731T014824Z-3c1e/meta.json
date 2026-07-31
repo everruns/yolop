@@ -4,7 +4,7 @@
   "study": "terminal_bench",
   "study_version": "0.1.0",
   "started_unix": 1785462504,
-  "finished_unix": 0,
+  "finished_unix": 1785463822,
   "environment": {
     "git": {
       "commit": "d871553a3d2fadd0da04de81d1a7c2b26e9b2116",
@@ -22,14 +22,14 @@
     }
   },
   "summary": {
-    "scored": 0,
-    "passed": 0,
-    "failed": 0,
+    "scored": 8,
+    "passed": 6,
+    "failed": 2,
     "na": 0,
     "skipped": 0,
-    "total_tokens": 0,
-    "total_cost_usd": 0.0,
-    "total_tool_calls": 0,
-    "total_duration_ms": 0
+    "total_tokens": 223777,
+    "total_cost_usd": 1.3435810000000001,
+    "total_tool_calls": 107,
+    "total_duration_ms": 1317024
   }
 }
