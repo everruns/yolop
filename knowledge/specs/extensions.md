@@ -579,6 +579,16 @@ runtime, so registration needs no upstream change.
 
 ## Packaging, install, trust
 
+### Repository placement
+
+First-party extension packages live under `extensions/<crate-name>/`, not
+`crates/`. The `crates/` directory is reserved for libraries and other core
+workspace packages. New first-party extensions must follow this layout and be
+listed as workspace members so normal checks and release tooling include them.
+A publishable Rust extension crate includes its `plugin.json` and README in the
+crate package, allowing crates.io installation to provision the extension
+manifest alongside the source package.
+
 The package is the everruns plugin directory — the declarative layer arrives
 upstream; yolop adds one facet:
 

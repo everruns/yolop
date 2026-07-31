@@ -149,9 +149,9 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let preview_visible = render::chrome_preview_visible(&state);
     // NOTE (layout policy, item 2): `chrome_dimensions` stays hand-rolled on
     // purpose. tuika's Flex solver places the rows of the `view!` tree below, but
-    // *how tall the composer may grow* and *whether the preview/status-separator
-    // rows appear at all* is yolop UX policy (shrink the composer to keep the
-    // transcript visible on a short viewport; mirror Codex's composer behavior) —
+    // *how tall the composer may grow* and *whether the preview row appears at
+    // all* is yolop UX policy (shrink the composer to keep the transcript
+    // visible on a short viewport; mirror Codex's composer behavior) —
     // not something a generic constraint solver can infer. We compute those
     // heights here and hand the solver fixed sizes; the solver still owns
     // placement, wrapping, and the transcript's `grow(1)` fill.
@@ -162,7 +162,6 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         preview_visible,
     );
     let preview_height = u16::from(input_height == 1 && preview_visible);
-    let status_sep_height = u16::from(input_height < 3);
     let transcript_height = area.height.saturating_sub(chrome_height).max(1);
 
     // Transcript and compact chrome share the inline renderer's pure builders.
@@ -210,7 +209,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             fixed(preview_height) { node(preview_view(preview_line)) }
             fixed(1) { node(message_rule(&state)) }
             fixed(input_height) { node(composer_row(&app.composer, &input_probe)) }
-            fixed(status_sep_height) { node(status_rule()) }
+            fixed(render::STATUS_SEPARATOR_HEIGHT) { node(status_rule()) }
             fixed(status_rows) { node(Text::new(status.lines.clone())) }
         }
     };

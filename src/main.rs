@@ -1041,6 +1041,8 @@ fn run_tuika_gallery() -> Result<()> {
     progress.indeterminate();
     let runner = tuika::Runner::new(tuika::RunnerConfig {
         tick_rate: Duration::from_millis(80),
+        // The gallery owns the whole terminal; `ScreenMode::Alternate` is the
+        // default, and split-footer mode is for hosts that publish scrollback.
         ..tuika::RunnerConfig::default()
     });
     runner.run_with_backend(
@@ -1161,12 +1163,10 @@ async fn run_tui(
     let trajectory_handles = runtime.handles.clone();
     let trajectory_model = runtime.model.clone();
     let mut raw_mode = RawModeGuard::new()?;
-    let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
-    let mut bracketed_paste = BracketedPasteGuard::new();
     // Which part of the terminal the renderer owns, in tuika's terms: the whole
     // alternate screen, or a footer pinned to the bottom of the main screen with
     // the transcript published above it as ordinary scrollback. `ScreenMode`
-    // then decides the viewport, the anchoring, and the teardown below, so the
+    // then decides the viewport, the pinning, and the teardown below, so the
     // two renderers differ in one value rather than in scattered `if fullscreen`
     // branches.
     let screen_mode = if fullscreen {
@@ -1180,11 +1180,15 @@ async fn run_tui(
     };
     // In full-screen mode `tuika` owns the alternate screen + mouse capture via
     // an RAII guard that restores them on drop.
-    let alt_screen = if screen_mode.is_alternate() {
+    let mut alt_screen = if screen_mode.is_alternate() {
         Some(tuika::host::AltScreen::enter()?)
     } else {
         None
     };
+    // Kitty keyboard modes are screen-local, so enable them only after entering
+    // the alternate screen and restore them before leaving it.
+    let mut keyboard_enhancements = KeyboardEnhancementGuard::new();
+    let mut bracketed_paste = BracketedPasteGuard::new();
     let stdout = io::stdout();
     // Opt-in OSC 8 hyperlinks: wrap the crossterm backend so http(s) (and, with
     // YOLOP_HYPERLINK_MAILTO, mailto) URLs in rendered output become clickable.
@@ -1235,13 +1239,13 @@ async fn run_tui(
         tracing::warn!("cursor restore failed: {err:#}");
     }
     drop(terminal);
-    // Leave the alternate screen before any post-loop stdout (resume hint) so
-    // it lands on the user's normal screen, not the one about to be torn down.
-    if let Some(mut alt) = alt_screen {
-        alt.leave();
-    }
     bracketed_paste.disable();
     keyboard_enhancements.disable();
+    // Leave the alternate screen before any post-loop stdout (resume hint) so
+    // it lands on the user's normal screen, not the one about to be torn down.
+    if let Some(alt) = alt_screen.as_mut() {
+        alt.leave();
+    }
     raw_mode.disable()?;
 
     write_trajectory_if_requested(

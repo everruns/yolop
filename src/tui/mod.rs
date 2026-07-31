@@ -4106,16 +4106,16 @@ mod tests {
         assert_eq!(chrome_height(1, 1, true), 5);
         assert_eq!(chrome_height(1, 4, false), 7);
         assert_eq!(chrome_height(1, 4, true), 8);
-        assert_eq!(chrome_height(3, 1, false), 5);
-        assert_eq!(chrome_height(3, 4, false), 8);
-        assert_eq!(chrome_height(4, 1, false), 6);
-        assert_eq!(chrome_height(4, 4, false), 9);
+        assert_eq!(chrome_height(3, 1, false), 6);
+        assert_eq!(chrome_height(3, 4, false), 9);
+        assert_eq!(chrome_height(4, 1, false), 7);
+        assert_eq!(chrome_height(4, 4, false), 10);
     }
 
     #[test]
     fn chrome_dimensions_clamp_input_to_visible_frame() {
         assert_eq!(chrome_dimensions(7, MAX_INPUT_HEIGHT, 4, false), (7, 1));
-        assert_eq!(chrome_dimensions(5, MAX_INPUT_HEIGHT, 1, false), (5, 3));
+        assert_eq!(chrome_dimensions(5, MAX_INPUT_HEIGHT, 1, false), (5, 2));
         assert_eq!(chrome_dimensions(0, MAX_INPUT_HEIGHT, 1, false), (0, 0));
     }
 
@@ -5534,6 +5534,36 @@ mod tests {
         assert!(
             gold_rule,
             "status separator should render in gold via tuika"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_keeps_gold_separator_after_two_newlines() {
+        use ratatui::backend::TestBackend;
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        for _ in 0..2 {
+            test.app
+                .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT))
+                .await;
+        }
+        assert_eq!(test.app.input_height(58), 3);
+
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut test.app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let gold_rule = (0..buffer.area.height).any(|y| {
+            (0..buffer.area.width).any(|x| {
+                let cell = &buffer[(x, y)];
+                cell.symbol() == "─" && cell.fg == ACCENT_GOLD
+            })
+        });
+
+        assert!(
+            gold_rule,
+            "status separator should remain visible after two composer newlines"
         );
     }
 

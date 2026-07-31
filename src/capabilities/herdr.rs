@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
-use everruns_core::{Event, TURN_CANCELLED, TURN_COMPLETED, TURN_FAILED, TURN_STARTED};
+use everruns_core::{Event, EventData, TURN_CANCELLED, TURN_COMPLETED, TURN_FAILED, TURN_STARTED};
 use std::ffi::OsString;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -17,6 +17,7 @@ use tokio::sync::broadcast;
 
 pub(crate) const HERDR_CAPABILITY_ID: &str = "herdr";
 const HERDR_SOURCE: &str = "yolop:lifecycle";
+const HERDR_METADATA_SOURCE: &str = "yolop:metadata";
 const REPORT_TIMEOUT: Duration = Duration::from_secs(2);
 
 const HERDR_SKILL_MD: &str = r#"---
@@ -121,6 +122,49 @@ impl HerdrContext {
             self.agent_session_id.clone().into(),
         ]
         .into()
+    }
+
+    fn display_agent(&self, title: Option<&str>) -> String {
+        let label = title
+            .filter(|title| !title.trim().is_empty())
+            .map(str::trim)
+            .unwrap_or_else(|| {
+                let id = self
+                    .agent_session_id
+                    .rsplit('_')
+                    .next()
+                    .unwrap_or(&self.agent_session_id);
+                &id[id.len().saturating_sub(8)..]
+            });
+        format!("Yolop · {label}")
+    }
+
+    fn metadata_args(&self, title: Option<&str>, sequence: u64) -> Vec<OsString> {
+        let mut args: Vec<OsString> = [
+            "pane".into(),
+            "report-metadata".into(),
+            self.pane_id.clone().into(),
+            "--source".into(),
+            HERDR_METADATA_SOURCE.into(),
+            "--agent".into(),
+            "yolop".into(),
+            "--applies-to-source".into(),
+            HERDR_SOURCE.into(),
+            "--display-agent".into(),
+            self.display_agent(title).into(),
+            "--state-label".into(),
+            "idle=Ready".into(),
+            "--state-label".into(),
+            "working=Working".into(),
+            "--state-label".into(),
+            "blocked=Needs input".into(),
+        ]
+        .into();
+        if let Some(title) = title {
+            args.extend([OsString::from("--title"), title.into()]);
+        }
+        args.extend([OsString::from("--seq"), sequence.to_string().into()]);
+        args
     }
 
     fn release_args(&self, sequence: u64) -> Vec<OsString> {
@@ -248,6 +292,29 @@ impl HerdrReporter {
         }
     }
 
+    async fn report_metadata(&self, title: Option<&str>) {
+        let Some(context) = self.context.clone() else {
+            return;
+        };
+        let sequence = context.sequence.fetch_add(1, Ordering::Relaxed);
+        let mut command = tokio::process::Command::new(&context.bin);
+        command
+            .args(context.metadata_args(title, sequence))
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", &context.pane_id)
+            .env("HERDR_SOCKET_PATH", &context.socket_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        match tokio::time::timeout(REPORT_TIMEOUT, command.status()).await {
+            Ok(Ok(status)) if status.success() => {}
+            Ok(Ok(status)) => tracing::debug!(%status, "Herdr metadata report failed"),
+            Ok(Err(error)) => tracing::debug!(%error, "Herdr metadata report failed"),
+            Err(_) => tracing::debug!("Herdr metadata report timed out"),
+        }
+    }
+
     pub(crate) fn start_monitor(
         &self,
         session_id: everruns_core::typed_id::SessionId,
@@ -258,18 +325,22 @@ impl HerdrReporter {
         }
         let reporter = self.clone();
         tokio::spawn(async move {
+            reporter.report_metadata(None).await;
             reporter.report(HerdrState::Idle).await;
             loop {
                 match events.recv().await {
-                    Ok(event) if event.session_id == session_id => {
-                        match event.event_type.as_str() {
+                    Ok(event) if event.session_id == session_id => match &event.data {
+                        EventData::SessionTitleUpdated(data) => {
+                            reporter.report_metadata(Some(&data.title)).await
+                        }
+                        _ => match event.event_type.as_str() {
                             TURN_STARTED => reporter.report(HerdrState::Working).await,
                             TURN_COMPLETED | TURN_FAILED | TURN_CANCELLED => {
                                 reporter.report(HerdrState::Idle).await
                             }
                             _ => {}
-                        }
-                    }
+                        },
+                    },
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -391,6 +462,54 @@ mod tests {
     }
 
     #[test]
+    fn metadata_distinguishes_sessions_with_title_or_stable_suffix() {
+        let reporter = reporter(&[
+            ("HERDR_ENV", "1"),
+            ("HERDR_PANE_ID", "w1:p2"),
+            ("HERDR_SOCKET_PATH", "/tmp/herdr.sock"),
+        ]);
+        let context = reporter.context.expect("active context");
+
+        assert_eq!(context.display_agent(None), "Yolop · test");
+        assert_eq!(
+            context.display_agent(Some("  Improve Herdr integration  ")),
+            "Yolop · Improve Herdr integration"
+        );
+
+        let args: Vec<String> = context
+            .metadata_args(Some("Improve Herdr integration"), 44)
+            .into_iter()
+            .map(|arg| arg.into_string().expect("utf-8 test argument"))
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "pane",
+                "report-metadata",
+                "w1:p2",
+                "--source",
+                "yolop:metadata",
+                "--agent",
+                "yolop",
+                "--applies-to-source",
+                "yolop:lifecycle",
+                "--display-agent",
+                "Yolop · Improve Herdr integration",
+                "--state-label",
+                "idle=Ready",
+                "--state-label",
+                "working=Working",
+                "--state-label",
+                "blocked=Needs input",
+                "--title",
+                "Improve Herdr integration",
+                "--seq",
+                "44",
+            ]
+        );
+    }
+
+    #[test]
     fn release_targets_only_yolops_own_agent_source() {
         let reporter = reporter(&[
             ("HERDR_ENV", "1"),
@@ -423,7 +542,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn monitor_reports_turn_lifecycle_and_releases_the_agent() {
-        use everruns_core::events::{EventContext, TurnCompletedData, TurnStartedData};
+        use everruns_core::events::{
+            EventContext, SessionTitleUpdatedData, TurnCompletedData, TurnStartedData,
+        };
         use everruns_core::typed_id::{MessageId, TurnId};
         use std::os::unix::fs::PermissionsExt;
 
@@ -449,6 +570,16 @@ mod tests {
         let turn_id = TurnId::from_seed(92);
         let (events, receiver) = broadcast::channel(8);
         reporter.start_monitor(session_id, receiver);
+        events
+            .send(Event::new(
+                session_id,
+                EventContext::default(),
+                SessionTitleUpdatedData {
+                    previous_title: None,
+                    title: "Improve Herdr integration".to_string(),
+                },
+            ))
+            .expect("send session title updated");
         events
             .send(Event::new(
                 session_id,
@@ -485,7 +616,7 @@ mod tests {
         let output = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let Ok(output) = std::fs::read_to_string(&calls)
-                    && output.lines().count() >= 4
+                    && output.lines().count() >= 6
                 {
                     break output;
                 }
@@ -496,10 +627,15 @@ mod tests {
         .expect("lifecycle reports and release should finish");
         let lines: Vec<&str> = output.lines().collect();
 
-        assert!(lines[0].contains("--state idle"));
-        assert!(lines[1].contains("--state working"));
-        assert!(lines[2].contains("--state idle"));
-        assert!(lines[3].contains("pane release-agent w1:p2"));
+        assert!(lines[0].contains("pane report-metadata w1:p2"));
+        assert!(lines[0].contains("--display-agent Yolop · test"));
+        assert!(lines[1].contains("--state idle"));
+        assert!(lines[2].contains("pane report-metadata w1:p2"));
+        assert!(lines[2].contains("--title Improve Herdr integration"));
+        assert!(lines[2].contains("--display-agent Yolop · Improve Herdr integration"));
+        assert!(lines[3].contains("--state working"));
+        assert!(lines[4].contains("--state idle"));
+        assert!(lines[5].contains("pane release-agent w1:p2"));
         let sequences: Vec<u64> = lines
             .iter()
             .map(|line| {

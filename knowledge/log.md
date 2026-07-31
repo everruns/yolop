@@ -3,6 +3,34 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-27 — Herdr identifies concurrent Yolop sessions
+
+- [Herdr integration](specs/herdr.md) now forwards Yolop session titles to pane
+  metadata and uses them in display-agent labels, with a stable session suffix
+  before title generation, so concurrent Yolop agents remain distinguishable.
+  Lifecycle states also gain human-readable labels while retaining the `yolop`
+  machine identity for grouping and ownership.
+
+## 2026-07-27 — First-party extension placement
+
+- First-party extension packages now live under `extensions/`, reserving
+  `crates/` for core libraries and workspace packages. Rust extension releases
+  package their manifest and README so crates.io installation can provision the
+  extension package. See [Extension system](specs/extensions.md).
+
+## 2026-07-26 — OKF skill tracks the authoritative v0.2 spec
+
+- The bundled `okf` skill was rewritten against `SPEC.md` in
+  `GoogleCloudPlatform/knowledge-catalog`, now named as the only authoritative
+  source; the `okf.md` site it previously cited is not normative and described a
+  superseded v0.1 model. [`okf`](specs/okf.md) gained the v0.2 families the skill
+  must teach — `sources` with credibility signals, `generated`/`verified` with
+  the actor convention and trust tiers, `status`/`stale_after`, and the
+  `Attested Computation` contract — plus the rule that validator lint stays
+  behind `--strict` so a permissive format is not taught as a strict one, and the
+  requirement that the skill's validator copy stay byte-identical to the one CI
+  runs.
+
 ## 2026-07-26 — The scrollback renderer is tuika's split-footer mode
 
 - `--inline` now composes tuika's `ScreenMode::SplitFooter` instead of yolop's
