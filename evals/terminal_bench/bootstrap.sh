@@ -80,6 +80,15 @@ if have uv; then
     || echo "  ! dataset download failed; the study will retry on first run"
 fi
 
+# --- Control suite integrity ------------------------------------------------ #
+# The committed suite must reproduce from the dataset it was selected against; a
+# silent drift would make periodic runs incomparable to their own history.
+note "control-v1 suite"
+if have uv; then
+  ( cd "$STUDY_DIR" && uv run suites/select_control.py --check ) \
+    || echo "  ! control-v1.json does not reproduce; re-run suites/select_control.py"
+fi
+
 cat <<'EOF'
 
 [bootstrap] Done. Before running the matrix:
@@ -99,4 +108,7 @@ cat <<'EOF'
 
   Cheap real run, capped at $5 across the whole run:
     TB_MAX_COST_USD=5 doppler run -- mira run --preset smoke
+
+  The periodic regression run (8 fixed tasks, 3 easy / 3 medium / 2 hard):
+    TB_MAX_COST_USD=10 doppler run -- mira run --preset control --group-by difficulty
 EOF

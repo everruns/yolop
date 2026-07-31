@@ -29,8 +29,7 @@ too, so yolop can be compared against them on identical tasks and scorer.
     ./bootstrap.sh                                    # yolop musl build + mira + dataset
     mira list                                         # eval, samples, targets
     mira run --samples fix-git --targets llmsim       # offline plumbing check
-    doppler run -- mira run --samples fix-git,cobol-modernization \\
-        --targets openai-gpt-5.6-terra
+    TB_MAX_COST_USD=10 doppler run -- mira run --preset control   # the periodic run
 
 Study-internal knobs come from the environment (the Mira host cannot pass study
 CLI flags): `TB_YOLOP_BIN` (yolop binary to upload; default the musl build),
@@ -48,6 +47,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -229,6 +229,34 @@ def load_task(path: Path) -> Task:
         tags=[str(t) for t in (metadata.get("tags") or [])],
         agent_timeout_sec=float((config.get("agent") or {}).get("timeout_sec") or 0.0),
     )
+
+
+# ---- Suites — curated task subsets under suites/*.json, surfaced as sample tags
+# so a set can be selected with `mira run --tag <suite>`. ---------------------- #
+SUITES_DIR = HERE / "suites"
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def load_suite(name: str) -> dict:
+    if not name or name in (".", "..") or not _SAFE_NAME.match(name):
+        raise SystemExit(f"invalid suite name {name!r}")
+    path = SUITES_DIR / f"{name}.json"
+    if not path.exists():
+        raise SystemExit(f"unknown suite {name!r}; available: {available_suites()}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def available_suites() -> list[str]:
+    return sorted(p.stem for p in SUITES_DIR.glob("*.json")) if SUITES_DIR.exists() else []
+
+
+def suite_membership() -> dict[str, list[str]]:
+    """task name -> the suites it belongs to."""
+    membership: dict[str, list[str]] = {}
+    for name in available_suites():
+        for task in load_suite(name).get("tasks", []):
+            membership.setdefault(task["name"], []).append(name)
+    return membership
 
 
 def load_tasks() -> list[Task]:
@@ -535,14 +563,17 @@ class Study:
         return build_transcript(task, case_spec, outcome, error_kind)
 
     def _build_samples(self) -> list[mira.Sample]:
+        membership = suite_membership()
         samples: list[mira.Sample] = []
         for task in self.tasks().values():
             tags = [t for t in (task.difficulty, task.category) if t]
             tags += [_sanitize(t) for t in task.tags]
+            tags += membership.get(task.name, [])
             samples.append(mira.Sample(
                 task.name, tags=tags,
                 metadata={"difficulty": task.difficulty, "category": task.category,
-                          "agent_timeout_sec": task.agent_timeout_sec},
+                          "agent_timeout_sec": task.agent_timeout_sec,
+                          "suites": membership.get(task.name, [])},
             ))
         return samples
 

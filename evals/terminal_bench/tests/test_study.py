@@ -203,6 +203,35 @@ class TestBudget(unittest.TestCase):
         self.assertNotIn("max_cost_usd", captured["spec"])
 
 
+class TestSuites(unittest.TestCase):
+    def test_control_v1_matches_its_declared_quotas(self):
+        suite = tb.load_suite("control-v1")
+        counts: dict[str, int] = {}
+        for task in suite["tasks"]:
+            counts[task["difficulty"]] = counts.get(task["difficulty"], 0) + 1
+        self.assertEqual(counts, suite["quotas"])
+
+    def test_control_v1_spreads_across_categories(self):
+        # Eight tasks cannot be representative of 89; distinct categories at
+        # least keep the suite from being a referendum on one kind of work.
+        tasks = tb.load_suite("control-v1")["tasks"]
+        categories = {task["category"] for task in tasks}
+        self.assertGreaterEqual(len(categories), len(tasks) - 1)
+
+    def test_membership_becomes_a_sample_tag(self):
+        study = tb.Study()
+        study._tasks = {"fix-git": make_task(), "nowhere": make_task("nowhere")}
+        samples = {sample.id: sample for sample in study._build_samples()}
+        self.assertIn("control-v1", samples["fix-git"].tags)
+        self.assertNotIn("control-v1", samples["nowhere"].tags)
+        self.assertEqual(samples["nowhere"].metadata["suites"], [])
+
+    def test_suite_names_are_validated(self):
+        for bad in ("", "..", "../../etc/passwd", "a/b"):
+            with self.assertRaises(SystemExit):
+                tb.load_suite(bad)
+
+
 class TestLoadTask(unittest.TestCase):
     def test_task_toml_metadata_becomes_sample_tags(self):
         import tempfile

@@ -37,6 +37,15 @@ benchmark = "terminal-bench-2-1"
 samples = ["fix-git", "cobol-modernization"]
 targets = "openai-gpt-5.6-terra"
 
+# CONTROL — the periodic regression set: the fixed 8-task `control-v1` suite
+# (3 easy / 3 medium / 2 hard, selected deterministically — see
+# suites/select_control.py) on the tracked config. This is the run to repeat on a
+# cadence; the whole 89 is for headline numbers, not for noticing movement.
+#   TB_MAX_COST_USD=10 mira run --preset control --group-by difficulty
+[presets.control]
+tag = "control-v1"
+targets = "openai-gpt-5.6-terra"
+
 # COMPARE — yolop against the other terminal agents on the same easy tasks, the
 # evidence for "how does yolop's harness bench against Terminus/Claude Code/Codex".
 #   mira run --preset compare --group-by agent

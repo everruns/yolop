@@ -109,6 +109,46 @@ A Harbor/Docker failure, a harness timeout, and a budget stop are all reported a
 **infra errors** (`error_kind`), so the host treats them as **N/A** and retries
 rather than counting them as the model failing the task.
 
+## Control suite
+
+`suites/control-v1.json` is the **periodic regression set**: 8 fixed tasks
+(3 easy / 3 medium / 2 hard) run on a cadence to notice yolop moving. The whole
+89 is for headline numbers; this is for noticing movement, and it is cheap and
+fast enough to repeat.
+
+| task | difficulty | category | agent timeout |
+|---|---|---|---|
+| `overfull-hbox` | easy | debugging | 750s |
+| `cobol-modernization` | easy | software-engineering | 900s |
+| `fix-git` | easy | software-engineering | 900s |
+| `modernize-scientific-stack` | medium | scientific-computing | 600s |
+| `chess-best-move` | medium | games | 900s |
+| `count-dataset-tokens` | medium | model-training | 900s |
+| `configure-git-webserver` | hard | system-administration | 900s |
+| `fix-code-vulnerability` | hard | security | 900s |
+
+It is selected deterministically by `suites/select_control.py` — no hand-picking:
+tasks needing a GPU or more than 4 GiB are excluded (so the suite runs
+concurrently on an ordinary box), each tier is ordered by `(agent timeout, name)`
+so the cheapest come first, and a task is taken only if its category is not
+already in the suite. Only `easy` needs the fallback — there are four easy tasks
+and three of them are `software-engineering`. Seven categories over eight tasks.
+
+```bash
+uv run suites/select_control.py --check    # verify the committed file reproduces
+mira run --preset control --group-by difficulty
+mira run --tag control-v1 --targets anthropic-claude-opus-4.8   # ad-hoc
+```
+
+Every sample is tagged with the suites it belongs to, so `--tag control-v1`
+selects it anywhere. Re-running the selector on the same dataset reproduces the
+committed set exactly; **bump to `control-v2` rather than editing v1**, so
+historical numbers stay comparable.
+
+Eight tasks is a regression signal, not a resolve rate — a one-task swing is
+12.5%. Read it as movement over time on a fixed set, and use the `full` preset
+when you need a number to quote.
+
 ## Cost cap
 
 Two nested caps, because a terminal task can loop for its full agent timeout:
@@ -176,6 +216,7 @@ targets.
 | Preset | Purpose | Samples | Targets |
 |--------|---------|---------|---------|
 | `smoke` | Integration check / validate a new config before a full run | `fix-git`, `cobol-modernization` | gpt-5.6-terra |
+| `control` | The periodic regression run ([Control suite](#control-suite)) | 8 (`control-v1`) | gpt-5.6-terra |
 | `compare` | yolop vs the other terminal agents on identical tasks | the `easy` tier | yolop ×2 + terminus-2 + claude-code + codex |
 | `full` | The headline number | all 89 | gpt-5.6-terra |
 
@@ -223,6 +264,7 @@ evals/terminal_bench/
                       #   per-case cost cap
   prompt_autonomous.md # instruction template: no user to ask, only disk is graded
   mira.toml           # host config: [results].dir -> ./results, presets
+  suites/             # curated task subsets (control-v1.json + its selector)
   bootstrap.sh        # uv deps + musl build + mira + task tree
   tests/              # unit tests (no Docker, no network, no key)
   results/            # mira run archives (<run_id>/)
