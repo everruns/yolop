@@ -57,6 +57,8 @@ Yolop uses ACP's standard session configuration mechanism for model selection. `
 - a `reasoning_effort` select option in the standard `thought_level` category when the selected model supports reasoning levels.
 
 Clients change either option with `session/set_config_option`. Yolop validates the selected provider, model, and reasoning effort, applies the change only to that live ACP session, and returns the complete refreshed `configOptions` list. Refreshing the full list allows clients to update dependent reasoning choices after the model changes. Invalid option IDs and unsupported values return ACP `InvalidParams`.
+When the process was launched with `--profile`, that profile supplies the
+initial model before any live ACP selection.
 
 ### Prompt content
 
@@ -100,10 +102,10 @@ vocabulary across every front end instead of an ACP-only taxonomy.
 
 - `session/new` and `session/load` responses carry a `modes` block listing the
   three levels (strictest first) with the current one selected.
-- `session/set_mode` maps the mode id back to a level and persists it. Because
-  yolop is a single-user CLI whose settings are shared across sessions, this
-  changes the level globally — exactly like `/setup approval` — rather than
-  per-session. An unknown mode id is rejected with `InvalidParams`.
+- `session/set_mode` maps the mode id back to a level and persists it. It writes
+  the selected profile when `--profile` is active and global settings otherwise,
+  exactly like `/setup approval`. An unknown mode id is rejected with
+  `InvalidParams`.
 - When the level changes out of band (the `set_approval_mode` tool, `/setup
   approval`), yolop emits a `current_mode_update` after the turn so the picker
   stays in sync.

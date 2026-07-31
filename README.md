@@ -304,6 +304,7 @@ act of consent. MCP tools run autonomously like the rest of yolop's tools.
 | -------------------------- | -------------------------------------------------------------------- |
 | `-C, --cwd <PATH>`         | Workspace root (default: current dir)                                |
 | `--provider <P>`           | Force `anthropic`, `codex`, `openai`, `google`, `openrouter`, `ollama`, `custom`, or `llmsim` |
+| `--profile <NAME>`         | Overlay a named execution profile from the platform config directory |
 | `-m, --model <ID>`         | Override the model id for the chosen provider                        |
 | `-p, --print <PROMPT>`     | Run one prompt non-interactively and print the result                |
 | `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
@@ -357,8 +358,33 @@ and edit the file itself through the `get_config` / `set_config` tools or the
 `yolop-config` skill (e.g. "use anthropic by default", "store my OpenAI key").
 Unknown keys are ignored, so the format stays forward-compatible.
 
+Named profiles are sparse execution overlays stored under
+`<config_dir>/yolop/profiles/<name>.toml` and selected explicitly with
+`--profile <name>`. They can bundle provider/model choices, endpoint base URLs,
+soft and hard approval settings, sandbox mode, and worktree behavior without
+duplicating global settings:
+
+```toml
+# profiles/deep-review.toml
+default_provider = "openai"
+approval_mode = "protective"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+worktrees = "always"
+
+[models]
+openai = "gpt-5.6 xhigh"
+```
+
+CLI and ACP live model choices override the selected profile; the profile
+overrides `settings.toml`. Credentials, MCP servers, capabilities, theme,
+attribution, and background-wake behavior remain global and are rejected in a
+profile. When a profile is active, `/setup` and `set_config` persist profileable
+changes back to that profile while credential changes still update the global
+settings file.
+
 **Provider resolution at startup:** `--provider` wins, then the saved
-`default_provider`, then auto-detect in the order **OpenAI → Codex → Anthropic →
+profile `default_provider`, then the global `default_provider`, then auto-detect in the order **OpenAI → Codex → Anthropic →
 OpenRouter → Google → Ollama → Custom** (first with a matching env var or saved
 credential), then a fall back to OpenAI's default with setup opened.
 

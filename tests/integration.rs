@@ -302,9 +302,103 @@ fn help_flag_succeeds() {
     assert!(stdout.contains("--print"), "help output missing --print");
     assert!(stdout.contains("--image"), "help output missing --image");
     assert!(
+        stdout.contains("--profile"),
+        "help output missing --profile"
+    );
+    assert!(
         stdout.contains("--sandbox"),
         "help output missing --sandbox"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn named_profile_drives_real_print_run_without_copying_global_secrets() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_root = if cfg!(target_os = "macos") {
+        tmp.path().join("Library/Application Support")
+    } else {
+        tmp.path().join(".config")
+    };
+    let yolop_config = config_root.join("yolop");
+    let profile_dir = yolop_config.join("profiles");
+    std::fs::create_dir_all(&profile_dir).expect("profile dir");
+    let base_path = yolop_config.join("settings.toml");
+    let profile_path = profile_dir.join("offline.toml");
+    std::fs::write(
+        &base_path,
+        "default_provider = 'anthropic'\n[tokens]\nopenai = 'global-secret'\n",
+    )
+    .expect("base settings");
+    std::fs::write(
+        &profile_path,
+        "default_provider = 'llmsim'\napproval_mode = 'protective'\n",
+    )
+    .expect("profile");
+
+    let output = Command::new(yolop_binary())
+        .args([
+            "--profile",
+            "offline",
+            "--session-dir",
+            tmp.path().join("sessions").to_str().unwrap(),
+            "-p",
+            "hi",
+        ])
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", &config_root)
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .output()
+        .expect("spawn yolop with profile");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "profile run failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("offline mode"), "stdout={stdout}");
+    assert!(
+        stderr.contains("profile `offline` loaded"),
+        "stderr={stderr}"
+    );
+    assert!(
+        std::fs::read_to_string(&base_path)
+            .unwrap()
+            .contains("global-secret")
+    );
+    assert!(
+        !std::fs::read_to_string(&profile_path)
+            .unwrap()
+            .contains("global-secret"),
+        "profile must never receive global credentials"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn missing_named_profile_fails_before_starting_a_session() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(yolop_binary())
+        .args([
+            "--profile",
+            "missing",
+            "--session-dir",
+            tmp.path().join("sessions").to_str().unwrap(),
+            "-p",
+            "hi",
+        ])
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path().join(".config"))
+        .output()
+        .expect("spawn yolop with missing profile");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "stdout={}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(stderr.contains("read profile `missing`"), "stderr={stderr}");
 }
 
 #[test]

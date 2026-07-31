@@ -6,6 +6,7 @@
 //! dependency so transcript wording and status values can be tested without a
 //! terminal buffer.
 
+use crate::config::{ApprovalMode, ApprovalPolicy, SandboxMode};
 use crate::tui::session_tasks_view::BackgroundCounts;
 use crate::tui::transcript::{Author, ChatLine, StreamKind, StreamPreview};
 use crate::version::VERSION_DETAILS;
@@ -204,6 +205,32 @@ impl PresentationState {
     pub(crate) fn activity_text(&self) -> Option<&str> {
         self.busy
             .then(|| self.turn_activity.as_deref().unwrap_or("thinking"))
+    }
+}
+
+pub(crate) fn safety_status_label(
+    profile: Option<&str>,
+    approval_mode: ApprovalMode,
+    sandbox: SandboxMode,
+    approval_policy: ApprovalPolicy,
+) -> String {
+    let safety = if sandbox == SandboxMode::DangerFullAccess {
+        format!(
+            "{} · {} · UNSAFE HOST",
+            approval_mode.as_str(),
+            approval_policy.as_str()
+        )
+    } else {
+        format!(
+            "{} · {} · {}",
+            approval_mode.as_str(),
+            sandbox.as_str(),
+            approval_policy.as_str()
+        )
+    };
+    match profile {
+        Some(profile) => format!("profile {profile} · {safety}"),
+        None => safety,
     }
 }
 
@@ -551,6 +578,19 @@ mod tests {
         // No extensions → no stray field.
         s.extension_status.clear();
         assert!(!flatten(s.status_lines()).contains("git-guard"));
+    }
+
+    #[test]
+    fn safety_status_identifies_the_active_profile() {
+        assert_eq!(
+            safety_status_label(
+                Some("deep-review"),
+                ApprovalMode::Protective,
+                SandboxMode::WorkspaceWrite,
+                ApprovalPolicy::OnRequest,
+            ),
+            "profile deep-review · protective · workspace-write · on-request"
+        );
     }
 
     #[test]

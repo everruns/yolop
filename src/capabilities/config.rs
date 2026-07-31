@@ -74,12 +74,18 @@ impl Capability for ConfigCapability {
         {
             return None;
         }
+        let profile = self
+            .settings
+            .active_profile_name()
+            .map(|name| format!(" Active profile: `{name}`."))
+            .unwrap_or_default();
         Some(format!(
             "<capability id=\"{}\">\nyolop's settings live at {}. Unknown keys are ignored, \
              never fatal. Provider/model and capability edits apply on the next run; use \
-             `/setup` to switch the live model now.\n</capability>",
+             `/setup` to switch the live model now.{}\n</capability>",
             self.id(),
-            self.settings.path().display()
+            self.settings.path().display(),
+            profile,
         ))
     }
 
@@ -185,6 +191,11 @@ impl Tool for GetConfigTool {
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
         let settings = self.settings.snapshot();
         let path = self.settings.path().display().to_string();
+        let active_profile = self.settings.active_profile_name();
+        let profile_path = self
+            .settings
+            .active_profile_path()
+            .map(|path| path.display().to_string());
 
         if let Some(key) = arguments.get("key").and_then(Value::as_str) {
             let key = key.trim();
@@ -200,6 +211,8 @@ impl Tool for GetConfigTool {
                         let field = target.field();
                         ToolExecutionResult::success(json!({
                             "settings_path": path,
+                            "active_profile": active_profile,
+                            "profile_path": profile_path,
                             "field": field_json(&settings, field),
                             "catalog": capability_catalog_list(&self.catalog),
                             "stored_overrides": overrides_to_json(&settings.capabilities),
@@ -236,6 +249,8 @@ impl Tool for GetConfigTool {
                         let field = target.field();
                         ToolExecutionResult::success(json!({
                             "settings_path": path,
+                            "active_profile": active_profile,
+                            "profile_path": profile_path,
                             "field": field_json(&settings, field),
                             "capability": catalog,
                             "stored_overrides": stored,
@@ -257,6 +272,9 @@ impl Tool for GetConfigTool {
                         entry["current"] = value;
                         ToolExecutionResult::success(json!({
                             "settings_path": path,
+                            "active_profile": active_profile,
+                            "profile_path": profile_path,
+                            "source": self.settings.source_for(&target),
                             "field": entry,
                         }))
                     }
@@ -267,6 +285,8 @@ impl Tool for GetConfigTool {
         let fields: Vec<Value> = schema().iter().map(|f| field_json(&settings, f)).collect();
         ToolExecutionResult::success(json!({
             "settings_path": path,
+            "active_profile": active_profile,
+            "profile_path": profile_path,
             "fields": fields,
             "note": "Set any key with `set_config`. Harness overrides: `set_config key=capabilities json=…`. \
                      Provider/model edits apply on the next run; use /setup to switch the live model now.",
@@ -279,6 +299,20 @@ impl Tool for GetConfigTool {
 struct SetConfigTool {
     settings: Arc<SettingsStore>,
     catalog: Arc<CapabilityCatalog>,
+}
+
+fn is_profileable_target(target: &KeyTarget) -> bool {
+    matches!(
+        target,
+        KeyTarget::DefaultProvider
+            | KeyTarget::DefaultModel
+            | KeyTarget::ApprovalMode
+            | KeyTarget::ApprovalPolicy
+            | KeyTarget::Worktrees
+            | KeyTarget::Sandbox
+            | KeyTarget::Model(_)
+            | KeyTarget::BaseUrl(_)
+    )
 }
 
 #[async_trait]
@@ -428,7 +462,11 @@ impl Tool for SetConfigTool {
                 "ok": true,
                 "key": key,
                 "message": message,
-                "settings_path": self.settings.path().display().to_string(),
+                "settings_path": if is_profileable_target(&target) {
+                    self.settings.active_config_path()
+                } else {
+                    self.settings.path().to_path_buf()
+                }.display().to_string(),
             })),
             Err(err) => ToolExecutionResult::tool_error(err),
         }
@@ -437,7 +475,12 @@ impl Tool for SetConfigTool {
 
 impl SetConfigTool {
     fn apply(&self, target: &KeyTarget, value: &str, clearing: bool) -> Result<String, String> {
-        let path = self.settings.path().display().to_string();
+        let path = if is_profileable_target(target) {
+            self.settings.active_config_path()
+        } else {
+            self.settings.path().to_path_buf()
+        };
+        let path = path.display().to_string();
         let saved = |what: String| format!("{what} (saved to {path})");
         let map_err = |e: anyhow::Error| format!("could not save settings: {e}");
 
@@ -503,6 +546,12 @@ impl SetConfigTool {
                 Ok(saved(format!("proactive_wake = {}", on_off(enabled))))
             }
             KeyTarget::ApprovalMode => {
+                if clearing {
+                    self.settings.clear_approval_mode().map_err(map_err)?;
+                    return Ok(saved(
+                        "cleared approval_mode; inherited/default value is active".to_string(),
+                    ));
+                }
                 let mode = ApprovalMode::parse(value).ok_or_else(|| {
                     "approval_mode expects protective, normal, or off".to_string()
                 })?;
@@ -513,6 +562,12 @@ impl SetConfigTool {
                 )))
             }
             KeyTarget::ApprovalPolicy => {
+                if clearing {
+                    self.settings.clear_approval_policy().map_err(map_err)?;
+                    return Ok(saved(
+                        "cleared approval_policy; inherited/default value is active".to_string(),
+                    ));
+                }
                 let policy = crate::config::ApprovalPolicy::parse(value).ok_or_else(|| {
                     "approval_policy expects untrusted, on-failure, on-request, or never"
                         .to_string()
@@ -525,10 +580,10 @@ impl SetConfigTool {
             }
             KeyTarget::Worktrees => {
                 if clearing {
-                    self.settings
-                        .set_worktrees_mode(crate::config::WorktreesMode::Auto)
-                        .map_err(map_err)?;
-                    return Ok(saved("cleared worktrees (default auto)".to_string()));
+                    self.settings.clear_worktrees_mode().map_err(map_err)?;
+                    return Ok(saved(
+                        "cleared worktrees; inherited/default value is active".to_string(),
+                    ));
                 }
                 let mode = crate::config::WorktreesMode::parse(value)
                     .ok_or_else(|| "worktrees expects auto, always, or off".to_string())?;
@@ -540,11 +595,9 @@ impl SetConfigTool {
             }
             KeyTarget::Sandbox => {
                 if clearing {
-                    self.settings
-                        .set_sandbox_mode(crate::config::SandboxMode::DangerFullAccess)
-                        .map_err(map_err)?;
+                    self.settings.clear_sandbox_mode().map_err(map_err)?;
                     return Ok(saved(
-                        "cleared sandbox_mode (default danger-full-access); applies next run"
+                        "cleared sandbox_mode; inherited/default value applies next run"
                             .to_string(),
                     ));
                 }

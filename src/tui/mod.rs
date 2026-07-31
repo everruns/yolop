@@ -1048,20 +1048,13 @@ impl App {
         let sandbox = self
             .sandbox_mode_override
             .unwrap_or_else(|| settings.sandbox_mode());
-        let approval_mode = if sandbox == crate::config::SandboxMode::DangerFullAccess {
-            format!(
-                "{} · {} · UNSAFE HOST",
-                settings.approval_mode().as_str(),
-                settings.approval_policy().as_str()
-            )
-        } else {
-            format!(
-                "{} · {} · {}",
-                settings.approval_mode().as_str(),
-                sandbox.as_str(),
-                settings.approval_policy().as_str()
-            )
-        };
+        let profile = self.settings.active_profile_name();
+        let approval_mode = presentation::safety_status_label(
+            profile.as_deref(),
+            settings.approval_mode(),
+            sandbox,
+            settings.approval_policy(),
+        );
         PresentationState {
             stream_preview: self.stream_preview.clone(),
             busy: self.busy,

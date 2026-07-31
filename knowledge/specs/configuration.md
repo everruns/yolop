@@ -10,8 +10,9 @@ Status: v1 implemented.
 
 ## Why
 
-yolop's settings live in one TOML file (`settings.toml` in the platform config
-dir). Loading is deliberately tolerant — unknown keys are ignored, never fatal
+yolop's global settings live in `settings.toml` in the platform config dir.
+Optional named profiles live below `profiles/` and form a sparse execution
+layer above global settings. Global loading is deliberately tolerant — unknown keys are ignored, never fatal
 (see `Settings::from_table`) — so a user or another tool can add keys without
 breaking yolop. The cost of that tolerance is that the file carries no
 *semantics*: nothing tells the agent (or the user) what a key means, what type
@@ -60,6 +61,42 @@ switches, yolop may also query the provider's models API (when credentials
 exist) and fall back with a warning if the resolved model is no longer offered.
 Per-provider `models.<provider>` picks are always trusted.
 
+### Named execution profiles
+
+`--profile <name>` loads
+`<config_dir>/yolop/profiles/<name>.toml`. Profile selection is explicit for
+each process; it is never persisted and has no environment-variable selector.
+Names contain 1–64 lowercase ASCII letters, numbers, hyphens, or underscores,
+start with a letter or number, and are validated before constructing the path.
+
+Profiles are sparse overlays. Scalars replace the global value and provider
+maps merge by provider key. Resolution order is CLI or ACP live selection,
+selected profile, global settings, and finally credential auto-detection or
+built-in defaults. Provider-specific environment variables keep their existing
+precedence where read (credentials and `CUSTOM_BASE_URL`). ACP's standard
+`session/set_config_option` model and reasoning changes remain local to that ACP
+session.
+
+The profileable v1 keys are `default_provider`, `default_model`, `models`,
+`base_urls`, `approval_mode`, `approval_policy`, `sandbox_mode`, and
+`worktrees`. Credentials (`tokens`, `codex_auth`) and structural or personal
+settings (`mcp`, `capabilities`, `theme`, `attribution`, `proactive_wake`) are
+global-only and make a selected profile fail validation. Invalid known values
+also fail startup; unknown keys produce a warning and are ignored for forward
+compatibility.
+
+`SettingsStore` retains the global document and sparse profile separately and
+only returns their merged effective `Settings` snapshot. It never serializes
+that merged snapshot into a profile, so inherited credentials cannot leak into
+the profile file. Profileable writes from `/setup`, ACP mode selection, and
+`set_config` target the active profile; global-only writes always target
+`settings.toml`. Clearing a profile override removes it and reveals the global
+value.
+
+The active profile is printed at startup, returned by `get_config`, and
+included in the terminal-independent safety status. Missing or malformed
+profiles fail before session construction.
+
 ### Tools
 
 The `config` capability (`src/capabilities/config.rs`) exposes two tools backed
@@ -94,8 +131,8 @@ The surface is kept minimal: `current(key)` covers arbitrary reads, so a
 capability adds a typed getter only when it grows a real need rather than
 carrying speculative methods.
 
-`SettingsStore` implements `ConfigService`, so the single shared handle that
-backs writes also serves reads. Read-only capabilities take only an
+`SettingsStore` implements `ConfigService`, so the shared layered handle that
+backs writes also serves effective reads. Read-only capabilities take only an
 `Arc<dyn ConfigService>`; write-coupled capabilities hold both — reads go
 through the service handle, writes through the concrete `SettingsStore` — so the
 read/write split is explicit at the type level. `AttributionCapability` reads
