@@ -15,9 +15,10 @@ wording, formatting, and link fixes do not need entries.
   not yet published, and publishing holds back the rows the footer still shows,
   cutting an entry in half when one straddles the edge. Everything is published
   at exit. [Presentation](specs/presentation.md) carries the rule.
-- The same spec's dependency rule now allows tracking tuika's `main` branch
-  while a needed seam is unreleased, provided every tuika crate moves to the
-  same revision and the pin returns to a published version once one exists.
+- The dependency rule in [Tuika](specs/tuika.md) now says *why* the crates.io
+  pin is a constraint rather than a preference: `cargo publish` rejects a
+  dependency without a version requirement, so a git dependency would leave
+  yolop unreleasable for as long as it stayed.
 
 ## 2026-07-25 — Host rendering advertised to the model
 

@@ -6662,8 +6662,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tuika"
-version = "0.5.0"
-source = "git+https://github.com/everruns/tuika?branch=main#6f6acba00a559c3cdd61472c486ddbe2ed544ff0"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d19d29f435a03a089f7a3842bbfc5b2b3a01fc4758cea0bb34bc9f6f0df99333"
 dependencies = [
  "crossterm",
  "pulldown-cmark",
@@ -6676,8 +6677,9 @@ dependencies = [
 
 [[package]]
 name = "tuika-codeformatters"
-version = "0.3.0"
-source = "git+https://github.com/everruns/tuika?branch=main#6f6acba00a559c3cdd61472c486ddbe2ed544ff0"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0091249e75f39c03aedb69555341d3ffb662c4693428d8b60b67497a64b585d7"
 dependencies = [
  "ratatui",
  "tree-sitter",
@@ -6700,8 +6702,9 @@ dependencies = [
 
 [[package]]
 name = "tuika-mermaid"
-version = "0.1.0"
-source = "git+https://github.com/everruns/tuika?branch=main#6f6acba00a559c3cdd61472c486ddbe2ed544ff0"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38fbe4d52e3e8e791d9d1f08b67d15b2d139c7542042306690638a590dc1acf1"
 dependencies = [
  "mmdflux",
  "ratatui-core",

@@ -23,22 +23,15 @@ than a one-line convenience.
 
 ## What
 
-Yolop depends on three crates from the tuika repository:
+Yolop depends on three crates from crates.io:
 
-- `tuika` — the toolkit. No path override and no fork.
+- `tuika` — the toolkit. Version-pinned like any other dependency, with no path
+  override.
 - `tuika-codeformatters` — the tree-sitter `Highlighter` implementation. Kept
   separate upstream so tuika core stays grammar-free.
 - `tuika-mermaid` — the `FencedBlockRenderer` that turns ` ```mermaid ` fences
   into Unicode cell diagrams. Kept separate upstream so tuika core takes on no
   diagram engine.
-
-All three normally resolve from crates.io, version-pinned like any other
-dependency. Yolop may instead track the toolkit's `main` branch while it depends
-on an unreleased seam — today, the split-footer screen mode both renderers are
-built on. Tracking `main` is a temporary state with two rules: every tuika crate
-moves to the same source and revision (a crates.io copy of a companion would
-pull a second, incompatible `tuika`), and the dependency returns to a published
-version as soon as one carries the seam.
 
 ## Screen modes
 
@@ -93,12 +86,11 @@ it receives, or a modifier-click opens the browser twice. See
 
 ## Constraints
 
-- **No path dependency, no fork.** If a change is needed in the toolkit, it
-  lands upstream first — then yolop either bumps the published version or, while
-  the change is unreleased, moves the dependency to the upstream revision that
-  carries it. Neither shortcut — vendoring the source, or pointing at a local
-  checkout — is acceptable, because both hide the change from the toolkit's own
-  review and CI.
+- **No path dependency, no git dependency, no fork.** If a change is needed in
+  the toolkit, it lands and releases upstream first, then the version is bumped
+  here. A git or path dependency is not a shortcut but a dead end: `cargo
+  publish` refuses a dependency without a version requirement, so it would make
+  yolop unreleasable for as long as it stayed.
 - **A yolop-only feature does not belong upstream.** If a proposed tuika change
   only makes sense for yolop, the right shape is a new seam (a trait, a state
   type, a callback) that yolop fills in.
@@ -128,8 +120,7 @@ because what it checks is how emulators paint *yolop's* output.
 
 ## Non-goals
 
-- No vendoring of tuika, and no git dependency on anything but the toolkit's
-  own upstream repository.
+- No vendoring or git dependency on tuika.
 - No yolop-specific fork of the toolkit.
 - No duplication of tuika's own design rationale in this bundle: the toolkit's
   specs live in its repository.
