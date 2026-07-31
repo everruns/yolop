@@ -3,6 +3,13 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-31 — Local sub-agents enabled
+
+- Yolop now drives linked child sessions through its local platform runner and
+  enables `spawn_agent` by default. A bounded two-level hierarchy can contain 20
+  active sub-agents, while each session retains the upstream five-background-run
+  ceiling. The `Ctrl+B` task tree presents the hierarchy and branch usage.
+
 ## 2026-07-31 — Named configuration profiles
 
 - [Configuration](specs/configuration.md) now defines explicit `--profile`
@@ -11,7 +18,6 @@ wording, formatting, and link fixes do not need entries.
   visibility. [ACP](specs/acp.md) records profile defaults below standard live
   model selection, while [Presentation](specs/presentation.md) makes the active
   profile part of safety status.
-
 ## 2026-07-30 — ACP model selection uses standard session configuration
 
 - [ACP integration](specs/acp.md) now exposes model and reasoning-effort choices

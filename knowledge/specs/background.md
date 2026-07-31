@@ -79,13 +79,27 @@ harness steers there at the three places poll loops start, on any repo:
   `spawn_background` instead of leaving the model to fall back to
   sleep-and-recheck turns.
 
-Sub-agents are intentionally **not enabled**. Everruns 0.17.7 can run linked
-sub-agents in the background and spawn detached peer sessions, but both require a
-local session runner that can create and drive child sessions. Yolop's runner is
-deliberately narrower: it only delivers completion wakes for background tools.
-Registering the upstream sub-agent capability without a real child-session host
-would advertise tools that fail at execution time. `spawn_background` therefore
-remains Yolop's detached-work primitive.
+### Sub-agents
+
+The `subagents` capability exposes the unified `spawn_agent` tool for linked
+child sessions. A child inherits the parent's harness, agent, model, workspace,
+and safety boundary but gets its own message history and context window. The
+local runner creates the child in the shared session store and drives its turns
+through the same `InProcessRuntime`; per-child turn locks serialize initial
+instructions and task-completion messages.
+
+Background fan-out is bounded twice: Everruns permits five active background
+runs per session, and Yolop configures at most 32 active descendants across a
+linked tree (with the upstream depth-two and total-task limits still applying).
+This supports a two-level `4 × 4` hierarchy — four coordinators with four
+workers each, 20 sub-agents total — without weakening the per-session guard.
+Users can tighten these limits through the `subagents` capability config.
+
+Concurrent children share the same working tree. Delegation prompts must assign
+non-overlapping files or read-only analysis; the coordinator owns edits to
+shared manifests, lockfiles, migrations, and final integration. Background
+sub-agents remain parent obligations: the parent uses the session-task tools to
+wait for every branch before it reports completion.
 
 ### Inspecting and controlling
 
@@ -124,12 +138,11 @@ and background completions.
 Yolop installs a platform store to close that gap (`crate::background_wake`):
 
 - `runtime.rs` wires a `LocalPlatformStore` backed by a `WakeRunner` via
-  `LocalBackends::with_platform_runner`. The runner's `send_message` does **not**
-  run a turn synchronously (the `LocalSessionRunner` contract's synchronous mode
-  only fits child sub-agent sessions; running a turn there would re-enter the
-  session from a detached task and bypass the host's streaming turn loop).
-  Instead it hands the completion message to the host over an unbounded channel
-  (`BuiltRuntime::background_wake`).
+  `LocalBackends::with_platform_runner`. For a session with a live terminal host,
+  the runner hands the message to that host over an unbounded channel
+  (`BuiltRuntime::background_wake`) so it can stream the turn normally. For a
+  child sub-agent with no terminal host, it runs the turn synchronously through
+  the in-process runtime.
 - The runner's `routable_session_ids` exposes only currently registered wake
   routes, which bounds local schedule claims to sessions this host process can
   actually wake.
