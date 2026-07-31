@@ -3,6 +3,14 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-31 — Live agent sidebar and session-scoped transcripts
+
+- The interactive TUI now opens a passive right-hand sidebar when sub-agents
+  appear and presents their hierarchy, live state, outcome, and usage. Root
+  transcript catch-up now filters child-session events just like live delivery,
+  preventing child title and tool narration from leaking into the coordinator's
+  transcript.
+
 ## 2026-07-31 — Local sub-agents enabled
 
 - Yolop now drives linked child sessions through its local platform runner and

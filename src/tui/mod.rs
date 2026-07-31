@@ -239,8 +239,13 @@ pub struct App {
     session_tasks_refresh:
         Option<tokio::task::JoinHandle<crate::tui::session_tasks_view::TaskTree>>,
     last_session_tasks_refresh: Option<Instant>,
-    /// Open task-tree panel overlay, holding its scroll offset in lines.
+    /// Open right-side task panel, holding its scroll offset in lines.
     background_panel: Option<usize>,
+    /// Manual panels capture navigation/cancellation keys; an automatically
+    /// opened panel stays passive so it never steals the composer.
+    background_panel_focused: bool,
+    /// Auto-open at most once per TUI session when the first subagent appears.
+    background_panel_auto_opened: bool,
     /// Selected task row while the task-tree panel is open.
     background_selected: usize,
     goal_store: Arc<GoalStore>,
@@ -629,6 +634,8 @@ impl App {
             session_tasks_refresh: None,
             last_session_tasks_refresh: None,
             background_panel: None,
+            background_panel_focused: false,
+            background_panel_auto_opened: false,
             background_selected: 0,
             goal_store,
             user_ask_store,
@@ -1112,22 +1119,33 @@ impl App {
     }
 
     fn background_panel_body(&self) -> String {
-        crate::tui::session_tasks_view::render_task_tree(
+        crate::tui::session_tasks_view::render_agent_panel(
             &self.session_tasks,
-            Some(self.background_selected),
+            self.background_panel_focused
+                .then_some(self.background_selected),
         )
     }
 
+    fn apply_session_tasks(&mut self, tasks: crate::tui::session_tasks_view::TaskTree) {
+        self.session_tasks = tasks;
+        self.background_selected = self
+            .background_selected
+            .min(self.session_tasks.rows.len().saturating_sub(1));
+        if !self.background_panel_auto_opened && self.session_tasks.has_subagents() {
+            self.background_panel = Some(0);
+            self.background_panel_focused = false;
+            self.background_panel_auto_opened = true;
+        }
+    }
+
     async fn refresh_session_tasks(&mut self) {
-        self.session_tasks = crate::tui::session_tasks_view::load_task_tree(
+        let tasks = crate::tui::session_tasks_view::load_task_tree(
             self.session.session_id(),
             self.task_registry.as_ref(),
             self.session_store.as_ref(),
         )
         .await;
-        self.background_selected = self
-            .background_selected
-            .min(self.session_tasks.rows.len().saturating_sub(1));
+        self.apply_session_tasks(tasks);
         self.last_session_tasks_refresh = Some(Instant::now());
     }
 
@@ -1139,7 +1157,7 @@ impl App {
         if let Some(result) = refresh_result {
             self.session_tasks_refresh = None;
             match result {
-                Ok(tasks) => self.session_tasks = tasks,
+                Ok(tasks) => self.apply_session_tasks(tasks),
                 Err(error) if error.is_cancelled() => {}
                 Err(error) => self
                     .session_tasks
@@ -1890,9 +1908,9 @@ impl App {
             return;
         }
 
-        // The background panel overlay captures navigation keys (even mid-turn,
-        // so you can watch tasks while a turn runs).
-        if self.background_panel.is_some() {
+        // A manually opened/focused sidebar captures task navigation keys. An
+        // automatically opened sidebar is passive and leaves the composer live.
+        if self.background_panel_focused {
             self.handle_background_panel_key(key).await;
             return;
         }
@@ -2026,7 +2044,7 @@ impl App {
     fn history_search_start(&mut self) {
         if self.busy
             || self.setup.is_some()
-            || self.background_panel.is_some()
+            || self.background_panel_focused
             || self.pending_ask.is_some()
             || self.history.is_empty()
         {
@@ -2223,7 +2241,7 @@ impl App {
     }
 
     fn handle_paste(&mut self, pasted: String) {
-        if self.setup.is_some() || self.background_panel.is_some() {
+        if self.setup.is_some() || self.background_panel_focused {
             return;
         }
         self.esc_pending_cancel = false;
@@ -2260,7 +2278,7 @@ impl App {
     }
 
     fn try_paste_clipboard(&mut self) {
-        if self.setup.is_some() || self.background_panel.is_some() {
+        if self.setup.is_some() || self.background_panel_focused {
             return;
         }
         match crate::tui::input::clipboard_paste::paste_image_content_part() {
@@ -2424,8 +2442,10 @@ impl App {
     fn toggle_background_panel(&mut self) {
         if self.background_panel.is_some() {
             self.background_panel = None;
+            self.background_panel_focused = false;
         } else if self.setup.is_none() {
             self.background_panel = Some(0);
+            self.background_panel_focused = true;
             self.background_selected = 0;
         }
     }
@@ -2436,7 +2456,10 @@ impl App {
             return;
         };
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.background_panel = None,
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.background_panel = None;
+                self.background_panel_focused = false;
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.background_selected = self.background_selected.saturating_sub(1);
                 self.background_panel = Some(offset.min(self.background_selected));
@@ -2989,7 +3012,10 @@ impl App {
                 StatusAction::ToggleLayout => self.set_status_layout(None),
                 StatusAction::OpenModel => self.start_model_setup(),
                 StatusAction::OpenEffort => self.start_effort_setup(""),
-                StatusAction::OpenBackground => self.background_panel = Some(0),
+                StatusAction::OpenBackground => {
+                    self.background_panel = Some(0);
+                    self.background_panel_focused = true;
+                }
             }
             return true;
         }
@@ -3616,6 +3642,7 @@ mod tests {
     use everruns_core::message::Message;
     use everruns_core::session_task::{
         CreateSessionTask, SessionTaskState, TASK_KIND_BACKGROUND_TOOL, TASK_KIND_MONITOR,
+        TASK_KIND_SUBAGENT,
     };
     use everruns_core::tool_types::ToolCall;
     use everruns_core::{MessageId, SessionId, TurnId};
@@ -6435,7 +6462,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn background_panel_renders_everruns_session_task_rows() {
+    async fn agent_panel_auto_opens_and_renders_subagent_status() {
         let mut test = app_with_llmsim().await;
         let app = &mut test.app;
         app.setup = None;
@@ -6443,9 +6470,9 @@ mod tests {
             .create(CreateSessionTask {
                 session_id: app.session.session_id(),
                 id: Some("task_panel".to_string()),
-                kind: TASK_KIND_BACKGROUND_TOOL.to_string(),
-                display_name: "write marker".to_string(),
-                spec: serde_json::json!({ "tool": "bash", "command": "echo hi" }),
+                kind: TASK_KIND_SUBAGENT.to_string(),
+                display_name: "Flight Lead".to_string(),
+                spec: serde_json::json!({ "instructions": "coordinate flight fixes" }),
                 state: SessionTaskState::Running,
                 links: Default::default(),
                 wake_policy: Default::default(),
@@ -6453,7 +6480,11 @@ mod tests {
             .await
             .expect("create session task");
         app.refresh_session_tasks().await;
-        app.background_panel = Some(0);
+        assert_eq!(app.background_panel, Some(0));
+        assert!(
+            !app.background_panel_focused,
+            "automatic panel must stay passive"
+        );
 
         assert_eq!(
             app.presentation_state().background,
@@ -6468,16 +6499,20 @@ mod tests {
             ("default", regular.join("\n")),
             ("fullscreen", fullscreen.join("\n")),
         ] {
-            assert!(lines.contains("Task tree"), "{mode} panel header: {lines}");
+            assert!(lines.contains("Agents 1"), "{mode} panel title: {lines}");
             assert!(
-                lines.contains("1 task(s): 1 running, 0 scheduled"),
-                "{mode} panel should summarize session tasks: {lines}"
+                lines.contains("1 agents · 1 active · 0 done"),
+                "{mode} panel should summarize agents: {lines}"
             );
             assert!(
-                lines.contains("[task_panel] background_tool running: write marker"),
-                "{mode} panel should list the session task row: {lines}"
+                lines.contains("Flight Lead — running"),
+                "{mode} panel should list the agent status: {lines}"
             );
         }
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::empty()))
+            .await;
+        assert_eq!(app.input_text(), "z", "passive panel must not steal typing");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6586,12 +6621,12 @@ mod tests {
     fn background_panel_lines_header_and_scroll() {
         let body = "row-a\nrow-b\nrow-c\nrow-d";
         let lines = render::background_panel_lines(body, 1, 3);
-        assert!(lines[0].contains("Task tree"));
-        // height 3 ⇒ 1 header + 2 body rows, starting at offset 1.
+        // The border owns title/help; all three interior rows come from body.
         assert_eq!(lines.len(), 3);
-        assert_eq!(lines[1], "row-b");
-        assert_eq!(lines[2], "row-c");
-        // A zero-height rect yields no lines (not even the header).
+        assert_eq!(lines[0], "row-b");
+        assert_eq!(lines[1], "row-c");
+        assert_eq!(lines[2], "row-d");
+        // A zero-height rect yields no lines.
         assert!(render::background_panel_lines(body, 0, 0).is_empty());
     }
 

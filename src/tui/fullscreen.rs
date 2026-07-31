@@ -133,18 +133,17 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         draw_setup_overlay(f, area, app);
         return;
     }
-    if app.background_panel.is_some() {
-        draw_background_overlay(f, area, app);
-        return;
-    }
     if area.width < 4 || area.height == 0 {
         return;
     }
 
+    let (main_area, sidebar_area) =
+        render::background_sidebar_layout(area, app.background_panel.is_some());
+
     let state = app.view_state();
-    let input_width = area.width.saturating_sub(2);
+    let input_width = main_area.width.saturating_sub(2);
     let desired_input_height = app.input_height(input_width);
-    let status = render::fullscreen_status_layout(&state, area.width);
+    let status = render::fullscreen_status_layout(&state, main_area.width);
     let status_rows = status.lines.len().try_into().unwrap_or(u16::MAX);
     let preview_visible = render::chrome_preview_visible(&state);
     // NOTE (layout policy, item 2): `chrome_dimensions` stays hand-rolled on
@@ -156,19 +155,19 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     // heights here and hand the solver fixed sizes; the solver still owns
     // placement, wrapping, and the transcript's `grow(1)` fill.
     let (chrome_height, input_height) = render::chrome_dimensions(
-        area.height,
+        main_area.height,
         desired_input_height,
         status_rows,
         preview_visible,
     );
     let preview_height = u16::from(input_height == 1 && preview_visible);
-    let transcript_height = area.height.saturating_sub(chrome_height).max(1);
+    let transcript_height = main_area.height.saturating_sub(chrome_height).max(1);
 
     // Transcript and compact chrome share the inline renderer's pure builders.
     // Expanded status is a fullscreen projection over the same presentation
     // fields so it can use responsive columns and typed hit targets.
-    let inner_w = area.width.saturating_sub(2) as usize;
-    let preview_line = render::preview_slot_line(&state, area.width);
+    let inner_w = main_area.width.saturating_sub(2) as usize;
+    let preview_line = render::preview_slot_line(&state, main_area.width);
 
     // The transcript is a real Scroll over the *full* history, bound to the
     // persisted ScrollState. Metrics + offset are reconciled before rendering so
@@ -203,7 +202,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     // The composer is a real tuika TextInput reading full-screen's own composer
     // model of record (`app.composer`) — no per-frame mirror from a
     // ratatui-textarea. `App` routes editing keys straight into it.
-    let root = view! {
+    let main = view! {
         col {
             grow(1) { node(transcript_view(transcript, &transcript_probe)) }
             fixed(preview_height) { node(preview_view(preview_line)) }
@@ -214,15 +213,26 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         }
     };
 
+    let root = if let Some(sidebar) = sidebar_area {
+        view! {
+            row {
+                grow(1) { node(main) }
+                fixed(sidebar.width) { node(agent_sidebar_view(app, sidebar.height)) }
+            }
+        }
+    } else {
+        main
+    };
+
     // yolop's own palette (see `yolop_theme`); a Reset background lets the
     // styled lines' own colors show through.
     let theme = yolop_theme();
     tuika::paint(f.buffer_mut(), area, &theme, root.as_ref(), &[]);
     app.set_status_hit_regions(
         Rect {
-            y: area.bottom().saturating_sub(status_rows),
+            y: main_area.bottom().saturating_sub(status_rows),
             height: status_rows,
-            ..area
+            ..main_area
         },
         &status.hits,
     );
@@ -312,13 +322,50 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
 
     // The composer remains editable while a turn runs so Enter can queue a
     // steering message for the next safe turn boundary.
-    if app.setup.is_none() {
+    if app.setup.is_none() && !app.background_panel_focused {
         let input_rect = input_probe.rect();
         if input_rect.width > 0 && input_rect.height > 0 {
             let (x, y) = app.composer.cursor_screen(input_rect);
             f.set_cursor_position((x, y));
         }
     }
+}
+
+fn agent_sidebar_view(app: &App, height: u16) -> Element {
+    let offset = app.background_panel.unwrap_or(0);
+    let body = app.background_panel_body();
+    let texts = render::background_panel_lines(&body, offset, height.saturating_sub(2) as usize);
+    let lines: Vec<Line<'static>> = texts
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let style = if index == 0 {
+                Style::default().fg(DIFF_META).add_modifier(Modifier::BOLD)
+            } else if text.contains("✓ ") {
+                Style::default().fg(DIFF_ADD)
+            } else if text.contains("✕ ") {
+                Style::default().fg(super::ERROR_RED)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    let title = match crate::tui::session_tasks_view::agent_panel(&app.session_tasks) {
+        Some(panel) => format!(" Agents {} ", panel.total),
+        None => format!(" Tasks {} ", app.session_tasks.rows.len()),
+    };
+    let footer = if app.background_panel_focused {
+        " ↑/↓ select · x cancel · Esc close "
+    } else {
+        " Ctrl+B close "
+    };
+    element(
+        Boxed::new(element(Text::new(lines)))
+            .title(title)
+            .title_bottom(Line::from(footer).right_aligned())
+            .background(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY)),
+    )
 }
 
 /// Top-pad `lines` with blanks so a history shorter than the viewport rests at
@@ -489,34 +536,6 @@ fn draw_ask_overlay(f: &mut Frame, area: Rect, app: &App) {
     }
     let (lines, cursor) = render::ask_overlay_content(ask);
     draw_panel_overlay(f, area, lines, Some(cursor));
-}
-
-fn draw_background_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let Some(offset) = app.background_panel else {
-        return;
-    };
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let panel = render::setup_panel_rect(area);
-    let inner_h = panel.height.saturating_sub(2) as usize;
-    let body = app.background_panel_body();
-    let texts = render::background_panel_lines(&body, offset, inner_h);
-    let lines: Vec<Line<'static>> = texts
-        .into_iter()
-        .enumerate()
-        .map(|(i, text)| {
-            if i == 0 {
-                Line::from(Span::styled(
-                    text,
-                    Style::default().fg(DIFF_META).add_modifier(Modifier::BOLD),
-                ))
-            } else {
-                Line::raw(text)
-            }
-        })
-        .collect();
-    draw_panel_overlay(f, area, lines, None);
 }
 
 #[cfg(test)]
