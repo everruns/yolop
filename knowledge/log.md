@@ -3,6 +3,14 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-30 — ACP model selection uses standard session configuration
+
+- [ACP integration](specs/acp.md) now exposes model and reasoning-effort choices
+  through standard `configOptions` and applies changes through
+  `session/set_config_option`. The earlier private `yolop.dev/acp`
+  `selectedModel` metadata contract was removed because editor clients cannot
+  discover or use private selection protocols without bespoke integration.
+
 ## 2026-07-27 — Herdr identifies concurrent Yolop sessions
 
 - [Herdr integration](specs/herdr.md) now forwards Yolop session titles to pane

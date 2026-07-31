@@ -32,7 +32,6 @@ use everruns_core::tool_types::{
 use everruns_core::typed_id::SessionId as RuntimeSessionId;
 use everruns_core::{InputMessage, ScopedMcpServers};
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{oneshot, watch};
@@ -43,7 +42,7 @@ use crate::capabilities::{ApprovalDecision, ToolApprover};
 use crate::config::{ApprovalMode, SettingsStore};
 use crate::exec::worktree::WorktreeManager;
 use crate::runtime::background_wake::{WakeReceiver, frame_wake_prompt};
-use crate::runtime::{BuiltRuntime, ModelState, ProviderChoice, RuntimeHandles};
+use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 
 use super::bridge::{Translator, tool_kind};
 use super::modes;
@@ -52,9 +51,12 @@ use super::protocol::{
     AvailableCommandInput, CurrentModeUpdate, InitializeParams, InitializeResult,
     LoadSessionParams, LoadSessionResult, McpCapabilities, McpServer, NewSessionParams,
     NewSessionResult, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptParams,
-    PromptResult, RequestPermissionOutcome, RequestPermissionParams, SessionNotification,
-    SessionUpdate, SetSessionModeParams, SetSessionModeResult, StopReason, ToolCall,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+    PromptResult, RequestPermissionOutcome, RequestPermissionParams, SessionConfigId,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, SetSessionModeParams, SetSessionModeResult, StopReason,
+    ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    UnstructuredCommandInput,
 };
 
 /// How often the prompt loop wakes to check whether the turn task finished,
@@ -71,75 +73,9 @@ pub trait RuntimeFactory: Send + Sync + 'static {
         &self,
         cwd: PathBuf,
         resume_session_id: Option<RuntimeSessionId>,
-        model_selection: Option<ProviderChoice>,
         client_mcp_servers: ScopedMcpServers,
         tool_approver: Option<Arc<dyn ToolApprover>>,
     ) -> Result<BuiltRuntime>;
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpSelectedModel {
-    #[serde(default)]
-    pub provider: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub reasoning_effort: Option<String>,
-}
-
-impl AcpSelectedModel {
-    fn is_empty(&self) -> bool {
-        self.provider.as_deref().is_none_or(str::is_empty)
-            && self.model.as_deref().is_none_or(str::is_empty)
-            && self.reasoning_effort.as_deref().is_none_or(str::is_empty)
-    }
-}
-
-fn selected_model_from_new_session(
-    params: &NewSessionParams,
-) -> Result<Option<ProviderChoice>, agent_client_protocol::Error> {
-    let meta = params.meta.as_ref().map(|meta| Value::Object(meta.clone()));
-    selected_model_from_meta(meta.as_ref())
-}
-
-fn selected_model_from_meta(
-    meta: Option<&Value>,
-) -> Result<Option<ProviderChoice>, agent_client_protocol::Error> {
-    let Some(yolop_meta) = meta.and_then(|meta| meta.get("yolop.dev/acp")) else {
-        return Ok(None);
-    };
-    let Some(model_meta) = yolop_meta
-        .get("model")
-        .or_else(|| yolop_meta.get("selectedModel"))
-    else {
-        return Ok(None);
-    };
-
-    let selected: AcpSelectedModel = serde_json::from_value(model_meta.clone())
-        .map_err(|err| invalid_params(format!("invalid yolop model selection metadata: {err}")))?;
-    if selected.is_empty() {
-        return Ok(None);
-    }
-    let provider = selected
-        .provider
-        .as_deref()
-        .ok_or_else(|| invalid_params("model selection requires `provider`"))
-        .and_then(|provider| {
-            ProviderChoice::default_for_provider_name(provider)
-                .map_err(|err| invalid_params(err.to_string()))
-        })?;
-    let model = selected
-        .model
-        .unwrap_or_else(|| provider.model_id().to_string());
-    let spec = match selected.reasoning_effort {
-        Some(effort) => format!("{model} {effort}"),
-        None => model,
-    };
-    provider
-        .resolve_model_spec(&spec)
-        .map(Some)
-        .map_err(|err| invalid_params(err.to_string()))
 }
 
 /// Translate the ACP `mcpServers` list into the runtime's scoped MCP config.
@@ -495,6 +431,19 @@ where
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            {
+                let server = server.clone();
+                async move |params: SetSessionConfigOptionRequest, responder, _cx| {
+                    match apply_set_config_option(&server, &params).await {
+                        Ok(result) => responder.respond(result)?,
+                        Err(err) => responder.respond_with_error(err)?,
+                    }
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .on_receive_notification(
             {
                 let server = server.clone();
@@ -579,11 +528,7 @@ fn handle_initialize(params: InitializeParams) -> InitializeResult {
                 "yolop.dev/acp": {
                     "commandMetadata": true,
                     "commandArgSuggestions": true,
-                    "commandToolLifecycle": true,
-                    "modelSelection": {
-                        "requestMetaKey": "selectedModel",
-                        "supportsReasoningEffort": true
-                    }
+                    "commandToolLifecycle": true
                 }
             }))),
     )
@@ -594,7 +539,6 @@ async fn handle_new_session<F: RuntimeFactory>(
     peer: &Arc<Peer>,
     params: NewSessionParams,
 ) -> std::result::Result<NewSessionResult, agent_client_protocol::Error> {
-    let model_selection = selected_model_from_new_session(&params)?;
     let cwd = params.cwd;
     let client_mcp_servers = scoped_mcp_servers_from_acp(&params.mcp_servers)?;
     let tool_approver: Option<Arc<dyn ToolApprover>> =
@@ -602,20 +546,19 @@ async fn handle_new_session<F: RuntimeFactory>(
 
     let built = server
         .factory
-        .build(
-            cwd,
-            None,
-            model_selection,
-            client_mcp_servers,
-            tool_approver,
-        )
+        .build(cwd, None, client_mcp_servers, tool_approver)
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
     let mode = built.settings.snapshot().approval_mode();
     let acp_id = register_session(server, peer, built);
+    let session = server
+        .session(&acp_id)
+        .ok_or_else(|| internal_error("new session was not registered"))?;
 
-    Ok(NewSessionResult::new(acp_id).modes(modes::session_mode_state(mode)))
+    Ok(NewSessionResult::new(acp_id)
+        .modes(modes::session_mode_state(mode))
+        .config_options(session_config_options(&session.model)))
 }
 
 async fn handle_load_session<F: RuntimeFactory>(
@@ -644,7 +587,6 @@ async fn handle_load_session<F: RuntimeFactory>(
                 .build(
                     params.cwd,
                     Some(resume_session_id),
-                    None,
                     client_mcp_servers,
                     tool_approver,
                 )
@@ -660,7 +602,9 @@ async fn handle_load_session<F: RuntimeFactory>(
     replay_session_history(peer, &session).await?;
     let mode = session.settings.snapshot().approval_mode();
     Ok((
-        LoadSessionResult::new().modes(modes::session_mode_state(mode)),
+        LoadSessionResult::new()
+            .modes(modes::session_mode_state(mode))
+            .config_options(session_config_options(&session.model)),
         session.acp_id.clone(),
     ))
 }
@@ -771,6 +715,79 @@ async fn replay_session_history(
         }
     }
     Ok(())
+}
+
+const MODEL_CONFIG_ID: &str = "model";
+const REASONING_EFFORT_CONFIG_ID: &str = "reasoning_effort";
+
+fn session_config_options(model: &ModelState) -> Vec<SessionConfigOption> {
+    let model_options = model
+        .model_options()
+        .into_iter()
+        .map(|(value, name, group)| {
+            SessionConfigSelectOption::new(value, format!("{group}: {name}"))
+        })
+        .collect::<Vec<_>>();
+    let selected_model = format!("{}:{}", model.provider_name(), model.model_id());
+    let mut options = vec![
+        SessionConfigOption::select(
+            SessionConfigId::new(MODEL_CONFIG_ID),
+            "Model",
+            selected_model,
+            model_options,
+        )
+        .category(SessionConfigOptionCategory::Model),
+    ];
+
+    let efforts = model.reasoning_effort_options();
+    if !efforts.is_empty() {
+        let selected = model
+            .reasoning_effort()
+            .or_else(|| model.default_reasoning_effort())
+            .unwrap_or_else(|| efforts[0].value.clone());
+        let effort_options = efforts
+            .into_iter()
+            .map(|effort| SessionConfigSelectOption::new(effort.value, effort.label))
+            .collect::<Vec<_>>();
+        options.push(
+            SessionConfigOption::select(
+                SessionConfigId::new(REASONING_EFFORT_CONFIG_ID),
+                "Reasoning effort",
+                selected,
+                effort_options,
+            )
+            .category(SessionConfigOptionCategory::ThoughtLevel),
+        );
+    }
+    options
+}
+
+async fn apply_set_config_option<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    params: &SetSessionConfigOptionRequest,
+) -> std::result::Result<SetSessionConfigOptionResponse, agent_client_protocol::Error> {
+    let session = server
+        .session(&params.session_id.to_string())
+        .ok_or_else(|| invalid_params("unknown session id"))?;
+    let value = params
+        .value
+        .as_value_id()
+        .ok_or_else(|| invalid_params("session config option requires a value id"))?;
+    match params.config_id.0.as_ref() {
+        MODEL_CONFIG_ID => session.model.select_model_id(value.0.as_ref()).await,
+        REASONING_EFFORT_CONFIG_ID => {
+            session
+                .model
+                .select_reasoning_effort(value.0.as_ref())
+                .await
+        }
+        other => Err(anyhow::anyhow!("unknown session config option `{other}`")),
+    }
+    .map_err(|err| invalid_params(err.to_string()))?;
+
+    Ok(SetSessionConfigOptionResponse::new(session_config_options(
+        &session.model,
+    )))
 }
 
 async fn handle_prompt<F: RuntimeFactory>(
@@ -1283,32 +1300,6 @@ mod tests {
         assert!(prompt_image_parts(&blocks).is_empty());
     }
     #[test]
-    fn new_session_request_selects_model() {
-        let params: NewSessionParams = serde_json::from_value(json!({
-            "cwd": "/tmp",
-            "mcpServers": [],
-            "_meta": {
-                "yolop.dev/acp": {
-                    "selectedModel": {
-                        "provider": "openai",
-                        "model": "gpt-5.2",
-                        "reasoningEffort": "high"
-                    }
-                }
-            }
-        }))
-        .expect("valid ACP new-session request");
-
-        let selected = selected_model_from_new_session(&params)
-            .expect("valid selection")
-            .expect("selection present");
-
-        assert_eq!(selected.provider_name(), "openai");
-        assert_eq!(selected.model_id(), "gpt-5.2");
-        assert_eq!(selected.reasoning_effort(), Some("high"));
-    }
-
-    #[test]
     fn translates_http_and_stdio_mcp_servers() {
         let servers: Vec<McpServer> = serde_json::from_value(json!([
             {
@@ -1352,34 +1343,6 @@ mod tests {
 
         let error =
             scoped_mcp_servers_from_acp(&servers).expect_err("sse transport must be rejected");
-        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
-    }
-
-    #[test]
-    fn rejects_selected_model_without_provider() {
-        let meta = json!({
-            "yolop.dev/acp": {
-                "selectedModel": { "model": "gpt-5.2" }
-            }
-        });
-
-        let error = selected_model_from_meta(Some(&meta))
-            .expect_err("provider-less selection must be rejected");
-
-        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
-    }
-
-    #[test]
-    fn rejects_unknown_selected_model_provider() {
-        let meta = json!({
-            "yolop.dev/acp": {
-                "model": { "provider": "unknown-provider", "model": "x" }
-            }
-        });
-
-        let error =
-            selected_model_from_meta(Some(&meta)).expect_err("unknown provider must be rejected");
-
         assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
     }
 }
