@@ -66,6 +66,10 @@ struct Cli {
     #[arg(long, value_enum)]
     provider: Option<ProviderArg>,
 
+    /// Load a named execution profile from `<config_dir>/yolop/profiles/<name>.toml`.
+    #[arg(long, value_name = "NAME")]
+    profile: Option<String>,
+
     /// Override the model id
     #[arg(short, long)]
     model: Option<String>,
@@ -545,7 +549,19 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
         );
         std::path::PathBuf::from("/dev/null/yolop/settings.toml")
     });
-    let settings = Arc::new(SettingsStore::open(settings_path));
+    let settings = Arc::new(match cli.profile.as_deref() {
+        Some(profile) => SettingsStore::open_with_profile(settings_path, profile)?,
+        None => SettingsStore::open(settings_path),
+    });
+    for warning in settings.profile_warnings() {
+        eprintln!("yolop: {warning}");
+    }
+    if let (Some(name), Some(path)) = (
+        settings.active_profile_name(),
+        settings.active_profile_path(),
+    ) {
+        eprintln!("yolop: profile `{name}` loaded from {}", path.display());
+    }
     let sandbox_mode_override = cli.sandbox.then_some(config::SandboxMode::WorkspaceWrite);
     let effective_sandbox_mode =
         sandbox_mode_override.unwrap_or_else(|| settings.snapshot().sandbox_mode());
@@ -1762,6 +1778,7 @@ mod tests {
             command: None,
             cwd: None,
             provider: Some(ProviderArg::Openrouter),
+            profile: None,
             model: Some("nvidia/nemotron-3-super-120b-a12b".to_string()),
             reasoning_effort: reasoning_effort.map(str::to_string),
             print: None,
@@ -1821,6 +1838,7 @@ mod tests {
             command: None,
             cwd: None,
             provider: None,
+            profile: None,
             model: None,
             reasoning_effort: None,
             print: None,

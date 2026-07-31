@@ -15,6 +15,7 @@
 pub mod capability_settings;
 pub mod hooks;
 pub mod mcp;
+pub mod profile;
 pub mod schema;
 pub mod service;
 
@@ -271,7 +272,7 @@ impl Default for Settings {
             approval_policy: ApprovalPolicy::OnRequest,
             proactive_wake: true,
             worktrees: WorktreesMode::Auto,
-            sandbox: SandboxMode::WorkspaceWrite,
+            sandbox: SandboxMode::DangerFullAccess,
             theme: None,
             mcp: McpSettings::default(),
             capabilities: Vec::new(),
@@ -594,6 +595,14 @@ pub fn load_from(path: &Path) -> Settings {
 /// created with mode 0o600 on Unix, so the resulting file is owner-only
 /// regardless of any prior file's permissions.
 fn save_to(path: &Path, settings: &Settings) -> Result<()> {
+    save_table_to(path, &settings.to_table())
+}
+
+fn save_profile_to(path: &Path, overlay: &profile::SettingsOverlay) -> Result<()> {
+    save_table_to(path, &overlay.to_table())
+}
+
+fn save_table_to(path: &Path, table: &Table) -> Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -601,7 +610,7 @@ fn save_to(path: &Path, settings: &Settings) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("."));
     std::fs::create_dir_all(&parent)
         .with_context(|| format!("create settings dir {}", parent.display()))?;
-    let toml_text = toml::to_string(&settings.to_table()).context("serialize settings")?;
+    let toml_text = toml::to_string(table).context("serialize settings")?;
 
     let file_name = path
         .file_name()
@@ -637,13 +646,27 @@ fn save_to(path: &Path, settings: &Settings) -> Result<()> {
     Ok(())
 }
 
-/// Thread-safe handle shared across capabilities. The cached `Settings`
-/// is the source of truth in memory; mutations flush to disk via an
-/// atomic temp-file + rename (see `save_to`), so readers and crashes
-/// never observe a partially written settings file.
+/// Thread-safe handle shared across capabilities. Global settings and an
+/// optional sparse profile stay separate in memory; snapshots merge them for
+/// reads, while mutations flush only their owning layer via atomic rename.
 pub struct SettingsStore {
     path: PathBuf,
-    inner: Mutex<Settings>,
+    inner: Mutex<SettingsState>,
+}
+
+struct SettingsState {
+    base: Settings,
+    profile: Option<profile::ActiveProfile>,
+}
+
+impl SettingsState {
+    fn effective(&self) -> Settings {
+        let mut settings = self.base.clone();
+        if let Some(profile) = &self.profile {
+            profile.overlay.apply_to(&mut settings);
+        }
+        settings
+    }
 }
 
 impl SettingsStore {
@@ -651,119 +674,274 @@ impl SettingsStore {
         let settings = load_from(&path);
         Self {
             path,
-            inner: Mutex::new(settings),
+            inner: Mutex::new(SettingsState {
+                base: settings,
+                profile: None,
+            }),
         }
     }
 
+    pub fn open_with_profile(path: PathBuf, profile_name: &str) -> Result<Self> {
+        let settings = load_from(&path);
+        let active_profile = profile::ActiveProfile::load(&path, profile_name)?;
+        Ok(Self {
+            path,
+            inner: Mutex::new(SettingsState {
+                base: settings,
+                profile: Some(active_profile),
+            }),
+        })
+    }
+
     pub fn snapshot(&self) -> Settings {
-        self.inner.lock().expect("settings lock poisoned").clone()
+        self.inner
+            .lock()
+            .expect("settings lock poisoned")
+            .effective()
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    pub fn set_default_provider(&self, provider: Option<String>) -> Result<()> {
+    pub fn active_profile_name(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .expect("settings lock poisoned")
+            .profile
+            .as_ref()
+            .map(|profile| profile.name.as_str().to_string())
+    }
+
+    pub fn active_profile_path(&self) -> Option<PathBuf> {
+        self.inner
+            .lock()
+            .expect("settings lock poisoned")
+            .profile
+            .as_ref()
+            .map(|profile| profile.path.clone())
+    }
+
+    pub fn active_config_path(&self) -> PathBuf {
+        self.active_profile_path()
+            .unwrap_or_else(|| self.path.clone())
+    }
+
+    pub fn source_for(&self, target: &schema::KeyTarget) -> String {
+        let guard = self.inner.lock().expect("settings lock poisoned");
+        let Some(active) = &guard.profile else {
+            return "global".to_string();
+        };
+        let overlay = &active.overlay;
+        let overridden = match target {
+            schema::KeyTarget::DefaultProvider => overlay.default_provider.is_some(),
+            schema::KeyTarget::DefaultModel => overlay.default_model.is_some(),
+            schema::KeyTarget::ApprovalMode => overlay.approval_mode.is_some(),
+            schema::KeyTarget::ApprovalPolicy => overlay.approval_policy.is_some(),
+            schema::KeyTarget::Worktrees => overlay.worktrees.is_some(),
+            schema::KeyTarget::Sandbox => overlay.sandbox.is_some(),
+            schema::KeyTarget::Model(provider) => overlay.models.contains_key(provider),
+            schema::KeyTarget::BaseUrl(provider) => overlay.base_urls.contains_key(provider),
+            _ => false,
+        };
+        if overridden {
+            format!("profile:{}", active.name.as_str())
+        } else {
+            "global".to_string()
+        }
+    }
+
+    pub fn profile_warnings(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .expect("settings lock poisoned")
+            .profile
+            .as_ref()
+            .map(|profile| profile.warnings.clone())
+            .unwrap_or_default()
+    }
+
+    fn update_profileable(
+        &self,
+        update_base: impl FnOnce(&mut Settings),
+        update_profile: impl FnOnce(&mut profile::SettingsOverlay),
+    ) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.default_provider = provider;
-        save_to(&self.path, &guard)
+        if let Some(active) = &mut guard.profile {
+            update_profile(&mut active.overlay);
+            save_profile_to(&active.path, &active.overlay)
+        } else {
+            update_base(&mut guard.base);
+            save_to(&self.path, &guard.base)
+        }
+    }
+
+    pub fn set_default_provider(&self, provider: Option<String>) -> Result<()> {
+        let base_provider = provider.clone();
+        self.update_profileable(
+            |settings| settings.default_provider = base_provider,
+            |profile| profile.default_provider = provider.map(Some),
+        )
     }
 
     pub fn set_attribution(&self, enabled: bool) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.attribution = enabled;
-        save_to(&self.path, &guard)
+        guard.base.attribution = enabled;
+        save_to(&self.path, &guard.base)
     }
 
     pub fn set_theme(&self, theme: Option<String>) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.theme = theme;
-        save_to(&self.path, &guard)
+        guard.base.theme = theme;
+        save_to(&self.path, &guard.base)
     }
 
     pub fn set_proactive_wake(&self, enabled: bool) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.proactive_wake = enabled;
-        save_to(&self.path, &guard)
+        guard.base.proactive_wake = enabled;
+        save_to(&self.path, &guard.base)
     }
 
     pub fn set_approval_mode(&self, mode: ApprovalMode) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.approval_mode = mode;
-        save_to(&self.path, &guard)
+        self.update_profileable(
+            |settings| settings.approval_mode = mode,
+            |profile| profile.approval_mode = Some(mode),
+        )
+    }
+
+    pub fn clear_approval_mode(&self) -> Result<()> {
+        self.update_profileable(
+            |settings| settings.approval_mode = ApprovalMode::Normal,
+            |profile| profile.approval_mode = None,
+        )
     }
 
     pub fn set_approval_policy(&self, policy: ApprovalPolicy) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.approval_policy = policy;
-        save_to(&self.path, &guard)
+        self.update_profileable(
+            |settings| settings.approval_policy = policy,
+            |profile| profile.approval_policy = Some(policy),
+        )
+    }
+
+    pub fn clear_approval_policy(&self) -> Result<()> {
+        self.update_profileable(
+            |settings| settings.approval_policy = ApprovalPolicy::OnRequest,
+            |profile| profile.approval_policy = None,
+        )
     }
 
     pub fn set_worktrees_mode(&self, mode: WorktreesMode) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.worktrees = mode;
-        save_to(&self.path, &guard)
+        self.update_profileable(
+            |settings| settings.worktrees = mode,
+            |profile| profile.worktrees = Some(mode),
+        )
+    }
+
+    pub fn clear_worktrees_mode(&self) -> Result<()> {
+        self.update_profileable(
+            |settings| settings.worktrees = WorktreesMode::Auto,
+            |profile| profile.worktrees = None,
+        )
     }
 
     pub fn set_sandbox_mode(&self, mode: SandboxMode) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.sandbox = mode;
-        save_to(&self.path, &guard)
+        self.update_profileable(
+            |settings| settings.sandbox = mode,
+            |profile| profile.sandbox = Some(mode),
+        )
+    }
+
+    pub fn clear_sandbox_mode(&self) -> Result<()> {
+        self.update_profileable(
+            |settings| settings.sandbox = SandboxMode::DangerFullAccess,
+            |profile| profile.sandbox = None,
+        )
     }
 
     pub fn set_token(&self, provider: String, token: String) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.tokens.insert(provider, token);
-        save_to(&self.path, &guard)
+        guard.base.tokens.insert(provider, token);
+        save_to(&self.path, &guard.base)
     }
 
     /// Returns whether a token was actually present before removal.
     pub fn clear_token(&self, provider: &str) -> Result<bool> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        let existed = guard.tokens.remove(provider).is_some();
-        save_to(&self.path, &guard)?;
+        let existed = guard.base.tokens.remove(provider).is_some();
+        save_to(&self.path, &guard.base)?;
         Ok(existed)
     }
 
     pub fn set_model(&self, provider: String, spec: String) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.models.insert(provider, spec);
-        save_to(&self.path, &guard)
+        let base_provider = provider.clone();
+        let base_spec = spec.clone();
+        self.update_profileable(
+            |settings| {
+                settings.models.insert(base_provider, base_spec);
+            },
+            |profile| {
+                profile.models.insert(provider, Some(spec));
+            },
+        )
     }
 
     /// Returns whether a per-provider model was actually present before removal.
     pub fn clear_model(&self, provider: &str) -> Result<bool> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        let existed = guard.models.remove(provider).is_some();
-        save_to(&self.path, &guard)?;
+        let existed = if let Some(active) = &mut guard.profile {
+            let existed = active.overlay.models.remove(provider).is_some();
+            save_profile_to(&active.path, &active.overlay)?;
+            existed
+        } else {
+            let existed = guard.base.models.remove(provider).is_some();
+            save_to(&self.path, &guard.base)?;
+            existed
+        };
         Ok(existed)
     }
 
     /// Set or clear the global fallback model spec (`default_model`).
     pub fn set_default_model(&self, spec: Option<String>) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.default_model = spec.filter(|s| !s.trim().is_empty());
-        save_to(&self.path, &guard)
+        let spec = spec.filter(|s| !s.trim().is_empty());
+        let base_spec = spec.clone();
+        self.update_profileable(
+            |settings| settings.default_model = base_spec,
+            |profile| profile.default_model = spec.map(Some),
+        )
     }
 
     pub fn set_base_url(&self, provider: String, url: String) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.base_urls.insert(provider, url);
-        save_to(&self.path, &guard)
+        let base_provider = provider.clone();
+        let base_url = url.clone();
+        self.update_profileable(
+            |settings| {
+                settings.base_urls.insert(base_provider, base_url);
+            },
+            |profile| {
+                profile.base_urls.insert(provider, Some(url));
+            },
+        )
     }
 
     /// Returns whether a base URL was actually present before removal.
     pub fn clear_base_url(&self, provider: &str) -> Result<bool> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        let existed = guard.base_urls.remove(provider).is_some();
-        save_to(&self.path, &guard)?;
+        let existed = if let Some(active) = &mut guard.profile {
+            let existed = active.overlay.base_urls.remove(provider).is_some();
+            save_profile_to(&active.path, &active.overlay)?;
+            existed
+        } else {
+            let existed = guard.base.base_urls.remove(provider).is_some();
+            save_to(&self.path, &guard.base)?;
+            existed
+        };
         Ok(existed)
     }
 
     pub fn set_codex_auth(&self, auth: CodexAuth) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.codex_auth = Some(auth);
-        save_to(&self.path, &guard)
+        guard.base.codex_auth = Some(auth);
+        save_to(&self.path, &guard.base)
     }
 
     /// Re-read `[codex_auth]` from disk and adopt it into the in-memory cache.
@@ -774,38 +952,38 @@ impl SettingsStore {
     pub fn refresh_codex_auth_from_disk(&self) -> Option<CodexAuth> {
         let from_disk = load_from(&self.path).codex_auth;
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.codex_auth = from_disk.clone();
+        guard.base.codex_auth = from_disk.clone();
         from_disk
     }
 
     /// Returns whether a Codex login was actually present before removal.
     pub fn clear_codex_auth(&self) -> Result<bool> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        let existed = guard.codex_auth.take().is_some();
-        save_to(&self.path, &guard)?;
+        let existed = guard.base.codex_auth.take().is_some();
+        save_to(&self.path, &guard.base)?;
         Ok(existed)
     }
 
     pub fn replace_mcp(&self, mcp: McpSettings) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.mcp = mcp;
-        save_to(&self.path, &guard)
+        guard.base.mcp = mcp;
+        save_to(&self.path, &guard.base)
     }
 
     /// Append a harness capability override to the ordered settings list.
     pub fn append_capability_override(&self, entry: CapabilityOverride) -> Result<usize> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.capabilities.push(entry);
-        let index = guard.capabilities.len() - 1;
-        save_to(&self.path, &guard)?;
+        guard.base.capabilities.push(entry);
+        let index = guard.base.capabilities.len() - 1;
+        save_to(&self.path, &guard.base)?;
         Ok(index)
     }
 
     /// Drop every stored `[[capabilities]]` override.
     pub fn clear_capability_overrides(&self) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        guard.capabilities.clear();
-        save_to(&self.path, &guard)
+        guard.base.capabilities.clear();
+        save_to(&self.path, &guard.base)
     }
 
     /// Enable or disable a capability by `ref`, idempotently. Enabling
@@ -818,6 +996,7 @@ impl SettingsStore {
     pub fn set_capability_enabled(&self, capability_ref: &str, enabled: bool) -> Result<bool> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         let already: Vec<usize> = guard
+            .base
             .capabilities
             .iter()
             .enumerate()
@@ -825,10 +1004,14 @@ impl SettingsStore {
             .map(|(index, _)| index)
             .collect();
         let changed = if enabled {
-            if already.iter().any(|&i| !guard.capabilities[i].is_remove()) {
+            if already
+                .iter()
+                .any(|&i| !guard.base.capabilities[i].is_remove())
+            {
                 false
             } else {
                 guard
+                    .base
                     .capabilities
                     .push(CapabilityOverride::enable(capability_ref));
                 true
@@ -837,12 +1020,13 @@ impl SettingsStore {
             false
         } else {
             guard
+                .base
                 .capabilities
                 .retain(|entry| entry.capability_ref != capability_ref);
             true
         };
         if changed {
-            save_to(&self.path, &guard)?;
+            save_to(&self.path, &guard.base)?;
         }
         Ok(changed)
     }
@@ -860,16 +1044,18 @@ impl SettingsStore {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         // The active (last non-remove) override for this ref, or a fresh one.
         let index = guard
+            .base
             .capabilities
             .iter()
             .rposition(|entry| entry.capability_ref == capability_ref && !entry.is_remove());
         let entry = match index {
-            Some(i) => &mut guard.capabilities[i],
+            Some(i) => &mut guard.base.capabilities[i],
             None => {
                 guard
+                    .base
                     .capabilities
                     .push(CapabilityOverride::enable(capability_ref));
-                guard.capabilities.last_mut().expect("just pushed")
+                guard.base.capabilities.last_mut().expect("just pushed")
             }
         };
         if !entry.config.is_object() {
@@ -878,7 +1064,7 @@ impl SettingsStore {
         if let serde_json::Value::Object(map) = &mut entry.config {
             map.insert(key.to_string(), value);
         }
-        save_to(&self.path, &guard)
+        save_to(&self.path, &guard.base)
     }
 }
 
@@ -933,6 +1119,56 @@ mod tests {
             reloaded.snapshot().default_provider.as_deref(),
             Some("anthropic")
         );
+    }
+
+    #[test]
+    fn active_profile_writes_only_profileable_values_to_profile() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let settings_path = tmp.path().join("settings.toml");
+        let profile_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        let profile_path = profile_dir.join("review.toml");
+        std::fs::write(
+            &settings_path,
+            "default_provider = 'anthropic'\napproval_policy = 'untrusted'\n[tokens]\nopenai = 'global-secret'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &profile_path,
+            "default_provider = 'openai'\napproval_policy = 'never'\nfuture_setting = 'preserved'\n",
+        )
+        .unwrap();
+
+        let store = SettingsStore::open_with_profile(settings_path.clone(), "review").unwrap();
+        assert_eq!(store.snapshot().default_provider.as_deref(), Some("openai"));
+        assert_eq!(store.snapshot().approval_policy(), ApprovalPolicy::Never);
+        assert_eq!(
+            store.source_for(&schema::KeyTarget::DefaultProvider),
+            "profile:review"
+        );
+
+        store
+            .set_model("openai".to_string(), "gpt-5.6 high".to_string())
+            .unwrap();
+        store.clear_approval_policy().unwrap();
+        assert_eq!(
+            store.snapshot().approval_policy(),
+            ApprovalPolicy::Untrusted
+        );
+
+        let profile = std::fs::read_to_string(&profile_path).unwrap();
+        assert!(profile.contains("openai = \"gpt-5.6 high\""));
+        assert!(!profile.contains("global-secret"));
+        assert!(!profile.contains("tokens"));
+        assert!(!profile.contains("approval_policy"));
+        assert!(profile.contains("future_setting = \"preserved\""));
+        assert_eq!(
+            store.source_for(&schema::KeyTarget::ApprovalPolicy),
+            "global"
+        );
+        let base = std::fs::read_to_string(settings_path).unwrap();
+        assert!(base.contains("global-secret"));
+        assert!(!base.contains("gpt-5.6 high"));
     }
 
     #[test]

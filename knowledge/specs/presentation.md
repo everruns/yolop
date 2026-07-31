@@ -29,7 +29,7 @@ The model must expose structured values for:
 3. **Stream previews** — assistant and tool delta previews while a turn is
    active.
 4. **Session status** — every value shown in the status bar, including provider
-   and model, approval mode, goal state, background-task counts, token counts,
+   and model, active configuration profile, approval mode, goal state, background-task counts, token counts,
    current session, worktree state, and busy/idle state when present.
 
 The TUI may still own layout, colors, wrapping, scrollback anchoring, input
@@ -70,6 +70,11 @@ The interactive TUI exposes a bounded, turn-scoped agent status contribution.
 The agent may update or clear that value while working; the host clears it when
 the turn finishes. Host-owned runtime, safety, session, and workspace values
 remain authoritative and cannot be replaced by the agent contribution.
+
+When a named configuration profile is active, the safety status identifies it
+before the soft approval, sandbox, and hard approval-policy values. This keeps
+the selected execution bundle visible in compact and expanded layouts without
+conflating it with the provider or model name.
 
 `--print` and ACP may project the model differently, but shared semantics should
 come from the same presentation model rather than parallel ad hoc formatting.

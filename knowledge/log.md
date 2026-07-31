@@ -3,6 +3,15 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-07-31 — Named configuration profiles
+
+- [Configuration](specs/configuration.md) now defines explicit `--profile`
+  selection, sparse execution overlays above global settings, global-only
+  credential and structural keys, active-layer persistence, and profile
+  visibility. [ACP](specs/acp.md) records profile defaults below standard live
+  model selection, while [Presentation](specs/presentation.md) makes the active
+  profile part of safety status.
+
 ## 2026-07-30 — ACP model selection uses standard session configuration
 
 - [ACP integration](specs/acp.md) now exposes model and reasoning-effort choices
