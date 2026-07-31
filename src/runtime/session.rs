@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use everruns_core::command::ExecuteCommandRequest;
+use everruns_core::events::Event;
 use everruns_core::message::ContentPart;
 use everruns_core::tools::Tool;
 use everruns_core::typed_id::SessionId;
@@ -229,6 +230,7 @@ impl Session {
                             live = handles.events.subscribe();
                             catch_up_events(
                                 &handles,
+                                session_id,
                                 &mut events_cursor,
                                 &mut emitted_events,
                                 &mut delta_router,
@@ -263,6 +265,7 @@ impl Session {
             // poll and the turn's actual completion.
             catch_up_events(
                 &handles,
+                session_id,
                 &mut events_cursor,
                 &mut emitted_events,
                 &mut delta_router,
@@ -379,16 +382,35 @@ impl Session {
 /// end-of-turn so the transcript is never missing tool/reason completion lines.
 async fn catch_up_events(
     handles: &RuntimeHandles,
+    session_id: SessionId,
     cursor: &mut usize,
     emitted_events: &mut HashSet<String>,
     router: &mut DeltaRouter,
     tx: &mpsc::UnboundedSender<TurnEvent>,
 ) {
     let events = handles.runtime.events().await.unwrap_or_default();
+    route_catch_up_events(&events, session_id, cursor, emitted_events, router, tx);
+}
+
+fn route_catch_up_events(
+    events: &[Event],
+    session_id: SessionId,
+    cursor: &mut usize,
+    emitted_events: &mut HashSet<String>,
+    router: &mut DeltaRouter,
+    tx: &mpsc::UnboundedSender<TurnEvent>,
+) {
     let mut lines = Vec::new();
     // Only scan the suffix persisted since the last catch-up; `emitted_events`
     // still de-dupes overlap with events already delivered live.
     for event in events.iter().skip(*cursor) {
+        // The runtime event store is shared by the root and every child
+        // session. Match the live broadcast path's boundary: child narration,
+        // titles, tokens, and activity belong in the agent panel, never the
+        // root transcript after a lagged-receiver catch-up.
+        if event.session_id != session_id {
+            continue;
+        }
         let event_id = event.id.to_string();
         if !emitted_events.insert(event_id) {
             continue;
@@ -405,5 +427,51 @@ async fn catch_up_events(
     *cursor = events.len();
     if !lines.is_empty() {
         let _ = tx.send(TurnEvent::Lines(lines));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use everruns_core::events::{EventContext, ToolCompletedData};
+
+    #[test]
+    fn catch_up_routes_only_the_active_session() {
+        let root = SessionId::new();
+        let child = SessionId::new();
+        let event = |session_id, call: &str, narration: &str| {
+            Event::new(
+                session_id,
+                EventContext::empty(),
+                ToolCompletedData::success(
+                    call.to_string(),
+                    "write_session_title".to_string(),
+                    vec![ContentPart::text("{}")],
+                    None,
+                )
+                .with_narration(Some(narration.to_string())),
+            )
+        };
+        let events = vec![
+            event(root, "root_title", "Updated session title: Root"),
+            event(child, "child_title", "Updated session title: Child"),
+        ];
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut cursor = 0;
+        let mut emitted = HashSet::new();
+        let mut router = DeltaRouter::default();
+
+        route_catch_up_events(&events, root, &mut cursor, &mut emitted, &mut router, &tx);
+
+        let mut lines = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let TurnEvent::Lines(batch) = event {
+                lines.extend(batch.into_iter().map(|line| line.text));
+            }
+        }
+        assert_eq!(cursor, 2, "foreign events still advance the shared cursor");
+        assert_eq!(emitted.len(), 1, "foreign event ids are not claimed");
+        assert!(lines.iter().any(|line| line.contains("Root")));
+        assert!(lines.iter().all(|line| !line.contains("Child")));
     }
 }
