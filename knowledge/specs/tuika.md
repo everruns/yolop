@@ -33,6 +33,28 @@ Yolop depends on three crates from crates.io:
   into Unicode cell diagrams. Kept separate upstream so tuika core takes on no
   diagram engine.
 
+## Screen modes
+
+Both renderers are tuika screen modes rather than two hand-rolled hosts:
+`ScreenMode::Alternate` for the fullscreen default, and
+`ScreenMode::SplitFooter` for `--inline`. The mode decides the viewport, and the
+toolkit owns the split-footer mechanics that yolop used to open-code — pinning
+the footer to the terminal's last rows across resizes (`pin_footer`), publishing
+a block above it (`publish_block`), and handing its rows back at exit
+(`close_footer`), so the shell prompt resumes below the transcript.
+
+What stays here is what yolop *publishes*: which transcript lines are final
+enough to leave the frame, and the fact that a published block is never
+repainted, so anything live — the composer, the status bar, the busy
+indicator — belongs in the footer.
+
+A line is shown in exactly one place. The footer paints what has not been
+published yet, and the flush holds back exactly the rows those lines cover — a
+row-level cut, splitting an entry when one straddles the edge, so the region is
+neither doubled nor left half empty. The retained tail is published as it is
+pushed out, and in full at exit: the footer's rows are handed back there, so an
+unpublished line would be erased rather than left with the session.
+
 ## Where the boundary falls
 
 tuika owns *presentation*; yolop owns *acquisition and meaning*. Concretely:
@@ -64,8 +86,11 @@ it receives, or a modifier-click opens the browser twice. See
 
 ## Constraints
 
-- **No path dependency, no fork.** If a change is needed in the toolkit, it
-  lands and releases upstream first, then the version is bumped here.
+- **No path dependency, no git dependency, no fork.** If a change is needed in
+  the toolkit, it lands and releases upstream first, then the version is bumped
+  here. A git or path dependency is not a shortcut but a dead end: `cargo
+  publish` refuses a dependency without a version requirement, so it would make
+  yolop unreleasable for as long as it stayed.
 - **A yolop-only feature does not belong upstream.** If a proposed tuika change
   only makes sense for yolop, the right shape is a new seam (a trait, a state
   type, a callback) that yolop fills in.

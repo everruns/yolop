@@ -803,7 +803,15 @@ fn tui_smoke(options: TuiSpawnOptions, mode: &str, fullscreen: bool) {
     );
 
     // Assert on the reconstructed grid (post-ANSI), which is what the user sees.
-    let screen = tui.screen_lines().join("\n");
+    // Poll it rather than snapshotting once: publishing a transcript block
+    // scrolls the terminal and clears the viewport, so a grid sampled between
+    // the publish and the repaint that follows it legitimately has no status
+    // bar on it. `wait_for_screen` returns the settled frame.
+    let screen = tui
+        .wait_for_screen(Duration::from_secs(5), |screen| {
+            screen.iter().any(|line| line.contains("llmsim"))
+        })
+        .join("\n");
     assert!(
         screen.contains("llmsim"),
         "{mode}: provider status bar should be on-screen:\n{screen}"
@@ -1804,7 +1812,6 @@ fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
         tui.output_text()
     );
 
-    tui.clear_output();
     tui.write_input(b"!shell printf second-session-command\r");
     assert!(
         tui.wait_for_output("second-session-command", Duration::from_secs(5))
@@ -1812,10 +1819,24 @@ fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
         "second shell command did not inherit session approval: {}",
         tui.output_text()
     );
-    let second = strip_ansi(&tui.output_text());
+    // The footer keeps the recent transcript on screen, so the first command's
+    // approval prompt is still painted somewhere above; what must not happen is
+    // a *new* prompt after the second command was submitted. Assert on order
+    // within the settled screen rather than on the raw byte stream.
+    let screen = tui.wait_for_screen(Duration::from_secs(5), |screen| {
+        screen
+            .iter()
+            .any(|line| line.contains("shell exited with code 0"))
+    });
+    let submitted = screen
+        .iter()
+        .position(|line| line.contains("second-session-command"))
+        .expect("second command echoed in the transcript");
     assert!(
-        !second.contains("approval needed"),
-        "same-scope session approval prompted again: {second}"
+        !screen[submitted..]
+            .iter()
+            .any(|line| line.contains("approval needed")),
+        "same-scope session approval prompted again: {screen:?}"
     );
 
     tui.write_input(b"\x03\x03");

@@ -31,6 +31,23 @@ wording, formatting, and link fixes do not need entries.
   requirement that the skill's validator copy stay byte-identical to the one CI
   runs.
 
+## 2026-07-26 — The scrollback renderer is tuika's split-footer mode
+
+- `--inline` now composes tuika's `ScreenMode::SplitFooter` instead of yolop's
+  own inline-viewport anchoring and `insert_before` publishing.
+  [Tuika](specs/tuika.md) gained the screen-mode boundary — the toolkit owns
+  pinning, publishing, and footer teardown; yolop owns which lines get
+  published — and [Presentation](specs/presentation.md) states what the mode
+  guarantees a user.
+- A transcript entry now appears exactly once: the footer paints only what is
+  not yet published, and publishing holds back the rows the footer still shows,
+  cutting an entry in half when one straddles the edge. Everything is published
+  at exit. [Presentation](specs/presentation.md) carries the rule.
+- The dependency rule in [Tuika](specs/tuika.md) now says *why* the crates.io
+  pin is a constraint rather than a preference: `cargo publish` rejects a
+  dependency without a version requirement, so a git dependency would leave
+  yolop unreleasable for as long as it stayed.
+
 ## 2026-07-25 — Host rendering advertised to the model
 
 - `<environment_context>` now carries `ui_capabilities` beside `client_ui` — an

@@ -20,10 +20,11 @@ both.
 - `crates/yolop-yep/` — the YEP extension protocol and server SDK, published
   separately for extension authors; the host depends on it for the wire types.
 
-The fullscreen renderer is built on [tuika](https://github.com/everruns/tuika),
-a terminal-UI toolkit that lives in its own repository and is consumed from
-crates.io along with its `tuika-codeformatters` highlighter. See
-[Tuika](#tuika).
+Both renderers are built on [tuika](https://github.com/everruns/tuika), a
+terminal-UI toolkit that lives in its own repository and is consumed from
+crates.io along with its `tuika-codeformatters` highlighter and `tuika-mermaid`
+renderer: the default renderer is tuika's alternate-screen mode, and `--inline`
+its split-footer mode. See [Tuika](#tuika).
 
 ## Gotchas
 
@@ -99,11 +100,11 @@ rebase onto `origin/main`. The merge bar (PR template, CI, squash) is owned by
 ## Tuika
 
 Toolkit-shaped work — layout, components, overlays, focus, keymap, markdown
-rendering, terminal escapes — belongs in
+rendering, terminal escapes, screen modes — belongs in
 [everruns/tuika](https://github.com/everruns/tuika), not here; what belongs here
 is how yolop *composes* it. Land a needed toolkit change there, release it, then
-bump the version. `tests/tuika_pty.rs` stays because it drives the `yolop`
-binary. See [`knowledge/specs/tuika.md`](knowledge/specs/tuika.md).
+bump the version — a git dependency would make yolop unpublishable.
+`tests/tuika_pty.rs` stays because it drives the `yolop` binary. See [`knowledge/specs/tuika.md`](knowledge/specs/tuika.md).
 
 ## Upstream relationship
 
