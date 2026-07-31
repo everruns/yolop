@@ -80,6 +80,7 @@ use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
 use everruns_mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
+use everruns_runtime::RuntimeProviderStore;
 use everruns_runtime::{
     AgentBuilder, CapabilityDelta, HarnessBuilder, InMemorySessionFileStore, InProcessRuntime,
     InProcessRuntimeBuilder, RealDiskFileStore, RuntimeBackends, RuntimeSessionStore,
@@ -2437,11 +2438,21 @@ pub struct ModelState {
     /// invocation through `runtime.execute_command` immediately updates the
     /// banner label.
     provider: Arc<RwLock<ProviderChoice>>,
+    provider_store: Arc<dyn RuntimeProviderStore>,
+    settings: Settings,
 }
 
 impl ModelState {
-    fn new(provider: Arc<RwLock<ProviderChoice>>) -> Self {
-        Self { provider }
+    fn new(
+        provider: Arc<RwLock<ProviderChoice>>,
+        provider_store: Arc<dyn RuntimeProviderStore>,
+        settings: Settings,
+    ) -> Self {
+        Self {
+            provider,
+            provider_store,
+            settings,
+        }
     }
 
     pub fn provider_label(&self) -> String {
@@ -2489,6 +2500,64 @@ impl ModelState {
             .default_reasoning_effort()
     }
 
+    pub(crate) async fn select_model_id(&self, value: &str) -> Result<()> {
+        let (provider, model) = value
+            .split_once(':')
+            .ok_or_else(|| anyhow!("model selection must be `provider:model`"))?;
+        let selected =
+            ProviderChoice::default_for_provider_name(provider)?.resolve_model_spec(model)?;
+        let resolved = selected.model_with_provider(&self.settings)?;
+        self.provider_store.set_default_model(resolved).await?;
+        *self.provider.write().expect("provider lock poisoned") = selected;
+        Ok(())
+    }
+
+    pub(crate) fn model_options(&self) -> Vec<(String, String, String)> {
+        const PROVIDERS: &[&str] = &[
+            "openai",
+            "anthropic",
+            "google",
+            "openrouter",
+            "codex",
+            "ollama",
+            "llmsim",
+        ];
+        let current = self.provider.read().expect("provider lock poisoned");
+        let mut options = PROVIDERS
+            .iter()
+            .filter_map(|provider| ProviderChoice::default_for_provider_name(provider).ok())
+            .map(|choice| {
+                (
+                    format!("{}:{}", choice.provider_name(), choice.model_id()),
+                    choice.model_id().to_owned(),
+                    choice.provider_name().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let current_option = (
+            format!("{}:{}", current.provider_name(), current.model_id()),
+            current.model_id().to_owned(),
+            current.provider_name().to_owned(),
+        );
+        if !options.iter().any(|option| option.0 == current_option.0) {
+            options.push(current_option);
+        }
+        options
+    }
+
+    pub(crate) async fn select_reasoning_effort(&self, effort: &str) -> Result<()> {
+        let current = self
+            .provider
+            .read()
+            .expect("provider lock poisoned")
+            .clone();
+        let selected = current.resolve_model_spec(&format!("{} {effort}", current.model_id()))?;
+        let resolved = selected.model_with_provider(&self.settings)?;
+        self.provider_store.set_default_model(resolved).await?;
+        *self.provider.write().expect("provider lock poisoned") = selected;
+        Ok(())
+    }
+
     /// Snapshot of the current provider choice (including any custom base
     /// URL), e.g. for model discovery against the live configuration.
     pub fn provider_choice(&self) -> ProviderChoice {
@@ -2525,7 +2594,6 @@ impl ModelState {
 /// existing behavior.
 pub struct BuildOptions {
     pub llmsim_override: Option<LlmSimConfig>,
-    pub(crate) provider_model: Option<ProviderChoice>,
     pub session_kind: SessionKind,
     pub initial_prompt: Option<String>,
     /// Per-process sandbox override. CLI flags use this instead of persisting
@@ -2554,7 +2622,6 @@ impl Default for BuildOptions {
     fn default() -> Self {
         Self {
             llmsim_override: None,
-            provider_model: None,
             session_kind: SessionKind::Interactive,
             initial_prompt: None,
             sandbox_mode_override: None,
@@ -2574,7 +2641,6 @@ pub async fn build_with_options(
     settings: Arc<SettingsStore>,
     options: BuildOptions,
 ) -> Result<BuiltRuntime> {
-    let provider = options.provider_model.clone().unwrap_or(provider);
     let canonical_root = std::fs::canonicalize(&workspace_root)
         .with_context(|| format!("canonicalize workspace: {}", workspace_root.display()))?;
     // Unit-test binaries are libtest harnesses and cannot service the Linux
@@ -3376,7 +3442,7 @@ pub async fn build_with_options(
             disabled_hook_contribution_count,
             hook_configured,
         },
-        model: ModelState::new(provider_state),
+        model: ModelState::new(provider_state, provider_store, settings_snapshot),
         settings,
         sandbox_mode_override: options.sandbox_mode_override,
         ui_rx,

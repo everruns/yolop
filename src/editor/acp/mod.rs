@@ -56,7 +56,6 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         &self,
         cwd: PathBuf,
         resume_session_id: Option<RuntimeSessionId>,
-        model_selection: Option<ProviderChoice>,
         client_mcp_servers: ScopedMcpServers,
         tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
     ) -> Result<BuiltRuntime> {
@@ -68,7 +67,6 @@ impl RuntimeFactory for ConfigRuntimeFactory {
             self.settings.clone(),
             BuildOptions {
                 client_ui: ClientUiContext::Acp,
-                provider_model: model_selection,
                 client_mcp_servers,
                 tool_approver,
                 sandbox_mode_override: self.sandbox_mode_override,
@@ -137,7 +135,6 @@ mod tests {
             &self,
             cwd: PathBuf,
             resume_session_id: Option<RuntimeSessionId>,
-            model_selection: Option<ProviderChoice>,
             client_mcp_servers: ScopedMcpServers,
             tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
         ) -> Result<BuiltRuntime> {
@@ -150,7 +147,6 @@ mod tests {
                 BuildOptions {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
                     client_ui: ClientUiContext::Acp,
-                    provider_model: model_selection,
                     client_mcp_servers,
                     tool_approver,
                     ..BuildOptions::default()
@@ -182,7 +178,6 @@ mod tests {
             &self,
             cwd: PathBuf,
             resume_session_id: Option<RuntimeSessionId>,
-            model_selection: Option<ProviderChoice>,
             client_mcp_servers: ScopedMcpServers,
             tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
         ) -> Result<BuiltRuntime> {
@@ -195,7 +190,6 @@ mod tests {
                 BuildOptions {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
                     client_ui: ClientUiContext::Acp,
-                    provider_model: model_selection,
                     client_mcp_servers,
                     tool_approver,
                     ..BuildOptions::default()
@@ -768,6 +762,94 @@ mod tests {
             }]),
             SimTurn::Assistant("done".to_string()),
         ])
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn standard_config_options_select_the_live_session_model() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let (mut w, mut reader, _server) =
+            start_raw_server(fixed("unused"), sessions.path().to_path_buf());
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd, "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId");
+        let options = new_session["result"]["configOptions"]
+            .as_array()
+            .expect("standard configOptions");
+        let model = options
+            .iter()
+            .find(|option| option["id"] == "model")
+            .expect("model config option");
+        assert_eq!(model["category"], "model");
+        assert_eq!(model["currentValue"], "llmsim:llmsim-yolop");
+        let selected_model = model["options"]
+            .as_array()
+            .expect("model options")
+            .iter()
+            .find_map(|option| {
+                option["value"]
+                    .as_str()
+                    .filter(|value| value.starts_with("ollama:"))
+            })
+            .expect("Ollama model option")
+            .to_owned();
+
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/set_config_option",
+                "params": {
+                    "sessionId": session_id,
+                    "configId": "model",
+                    "value": selected_model
+                }
+            }),
+        )
+        .await;
+        let (changed, _) = collect_until_response_id(&mut reader, 2).await;
+        assert!(
+            changed.get("error").is_none(),
+            "selection failed: {changed}"
+        );
+        let changed_model = changed["result"]["configOptions"]
+            .as_array()
+            .expect("updated configOptions")
+            .iter()
+            .find(|option| option["id"] == "model")
+            .expect("updated model config option");
+        assert_eq!(changed_model["currentValue"], selected_model);
+
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/set_config_option",
+                "params": {
+                    "sessionId": session_id,
+                    "configId": "model",
+                    "value": "unknown:model"
+                }
+            }),
+        )
+        .await;
+        let (invalid, _) = collect_until_response_id(&mut reader, 3).await;
+        assert_eq!(invalid["error"]["code"], -32602);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

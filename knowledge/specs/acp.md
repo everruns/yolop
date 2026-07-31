@@ -51,23 +51,12 @@ appending to the same session folder.
 
 ### Per-session model selection
 
-ACP clients may select the provider, model, and reasoning effort for a new Yolop session. Yolop advertises this extension in the `initialize` response under `_meta["yolop.dev/acp"].modelSelection`. Clients send the selection in `session/new` metadata:
+Yolop uses ACP's standard session configuration mechanism for model selection. `session/new` and `session/load` responses include `configOptions` containing:
 
-```json
-{
-  "_meta": {
-    "yolop.dev/acp": {
-      "selectedModel": {
-        "provider": "openai",
-        "model": "gpt-5.2",
-        "reasoningEffort": "high"
-      }
-    }
-  }
-}
-```
+- a `model` select option in the standard `model` category;
+- a `reasoning_effort` select option in the standard `thought_level` category when the selected model supports reasoning levels.
 
-`provider` is required when `selectedModel` is present. `model` and `reasoningEffort` are optional and use the selected provider's defaults when omitted. Yolop validates all supplied values before creating the runtime and returns ACP `InvalidParams` for unsupported selections. Requests without `selectedModel` keep Yolop's configured defaults.
+Clients change either option with `session/set_config_option`. Yolop validates the selected provider, model, and reasoning effort, applies the change only to that live ACP session, and returns the complete refreshed `configOptions` list. Refreshing the full list allows clients to update dependent reasoning choices after the model changes. Invalid option IDs and unsupported values return ACP `InvalidParams`.
 
 ### Prompt content
 
