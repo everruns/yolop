@@ -11,7 +11,6 @@ pub(crate) mod checkpoint;
 pub(crate) mod client_commands;
 pub(crate) mod config;
 pub(crate) mod context_cost_control;
-pub(crate) mod edit_file_override;
 pub(crate) mod free_search;
 pub(crate) mod goal;
 pub(crate) mod herdr;
@@ -64,3 +63,30 @@ pub(crate) use session_history::{SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCa
 pub(crate) use tool_approval::{ApprovalDecision, ToolApprovalCapability, ToolApprover};
 pub(crate) use user_ask::UserAskCapability;
 pub(crate) use worktree_cmd::WorktreeCapability;
+
+#[cfg(test)]
+mod tests {
+    use everruns_core::FileSystemCapability;
+    use everruns_core::capabilities::Capability;
+
+    #[test]
+    fn upstream_edit_file_schema_is_unambiguous() {
+        let definitions = FileSystemCapability.tool_definitions();
+        let edit_file = definitions
+            .iter()
+            .find(|definition| definition.name() == "edit_file")
+            .expect("upstream filesystem capability must define edit_file");
+        let properties = edit_file.parameters()["properties"]
+            .as_object()
+            .expect("edit_file properties must be an object");
+
+        assert!(properties.contains_key("edits"));
+        assert!(!properties.contains_key("old_text"));
+        assert!(!properties.contains_key("new_text"));
+        assert_eq!(edit_file.parameters()["additionalProperties"], false);
+        assert_eq!(
+            edit_file.parameters()["required"],
+            serde_json::json!(["path", "expected_hash", "edits"])
+        );
+    }
+}
