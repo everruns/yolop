@@ -152,6 +152,25 @@ class TestTranscript(unittest.TestCase):
         self.assertEqual(transcript.usage.cache_read_tokens, 400)
         self.assertTrue(transcript.metadata["resolved"])
 
+    def test_requested_and_effective_model_values_are_distinct(self):
+        outcome = tb.TrialOutcome(agent_metadata={
+            "provider": "openai",
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "medium",
+        })
+        transcript = tb.build_transcript(
+            make_task(), tb.MATRIX["openai-gpt-5.6-terra"], outcome, None,
+        )
+        self.assertEqual(transcript.metadata["provider_requested"], "openai")
+        self.assertEqual(
+            transcript.metadata["model_requested"], "openai/gpt-5.6-terra",
+        )
+        self.assertIsNone(transcript.metadata["reasoning_effort_requested"])
+        self.assertEqual(transcript.metadata["reasoning_effort_effective"], "medium")
+        self.assertEqual(transcript.metadata["reasoning_effort"], "medium")
+        self.assertEqual(transcript.metadata["model_effective"], "gpt-5.6-terra")
+        self.assertEqual(transcript.metadata["provider_effective"], "openai")
+
     def test_infra_error_kind_rides_through(self):
         outcome = tb.TrialOutcome(stop_reason="error", error="runner: boom")
         transcript = tb.build_transcript(make_task(), tb.MATRIX["llmsim"], outcome, "infra")
@@ -201,6 +220,20 @@ class TestBudget(unittest.TestCase):
             study._subject(mira_sample("fix-git"), run_cx("openai-gpt-5.6-terra"))
 
         self.assertNotIn("max_cost_usd", captured["spec"])
+
+
+class TestJobRetention(unittest.TestCase):
+    def test_harbor_jobs_are_kept_by_default(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertTrue(tb._build_study().keep_jobs)
+
+    def test_harbor_jobs_can_be_discarded_explicitly(self):
+        with mock.patch.dict("os.environ", {"TB_KEEP_JOBS": "0"}, clear=True):
+            self.assertFalse(tb._build_study().keep_jobs)
+
+    def test_invalid_retention_value_does_not_discard_jobs(self):
+        with mock.patch.dict("os.environ", {"TB_KEEP_JOBS": "maybe"}, clear=True):
+            self.assertTrue(tb._build_study().keep_jobs)
 
 
 class TestSuites(unittest.TestCase):

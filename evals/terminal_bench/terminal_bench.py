@@ -38,7 +38,7 @@ CLI flags): `TB_YOLOP_BIN` (yolop binary to upload; default the musl build),
 `KEY=VALUE` passed into the agent's resp. the verifier's environment),
 `TB_CA_CERT` (CA bundle to install in the container, for sandboxes behind a
 TLS-terminating proxy), `TB_JOB_TIMEOUT`,
-`TB_TIMEOUT_MULTIPLIER`, `TB_KEEP_JOBS=1` (keep Harbor job dirs for debugging).
+`TB_TIMEOUT_MULTIPLIER`, `TB_KEEP_JOBS=0` (discard retained Harbor job dirs).
 
 stdout carries ONLY protocol JSON (one object per line); logs go to stderr.
 """
@@ -99,6 +99,18 @@ def _float(name: str, default: float | None) -> float | None:
         return float(os.environ[name])
     except (KeyError, ValueError):
         return default
+
+
+def _bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in ("1", "true", "yes"):
+        return True
+    if normalized in ("0", "false", "no"):
+        return False
+    return default
 
 
 # ============================================================================ #
@@ -475,7 +487,13 @@ def build_transcript(task: Task, spec: dict, outcome: TrialOutcome,
             "agent": spec.get("agent", "yolop"),
             "provider": provider_of(spec),
             "model": spec.get("model") or "",
-            "reasoning_effort": spec.get("reasoning_effort"),
+            "reasoning_effort": outcome.agent_metadata.get("reasoning_effort"),
+            "provider_requested": provider_of(spec),
+            "model_requested": spec.get("model") or "",
+            "reasoning_effort_requested": spec.get("reasoning_effort"),
+            "provider_effective": outcome.agent_metadata.get("provider"),
+            "model_effective": outcome.agent_metadata.get("model"),
+            "reasoning_effort_effective": outcome.agent_metadata.get("reasoning_effort"),
             "stop_reason": outcome.stop_reason,
             "resolved": outcome.resolved,
             "reward": outcome.reward,
@@ -496,7 +514,7 @@ class Study:
     """Terminal-Bench study state: the task cache plus the run-wide USD budget."""
 
     def __init__(self, *, max_cost_usd: float | None = None, job_timeout: int = 5400,
-                 keep_jobs: bool = False):
+                 keep_jobs: bool = True):
         self.max_cost_usd = max_cost_usd
         self.job_timeout = job_timeout
         self.keep_jobs = keep_jobs
@@ -624,7 +642,7 @@ def _build_study() -> Study:
     return Study(
         max_cost_usd=_float("TB_MAX_COST_USD", None),
         job_timeout=_int("TB_JOB_TIMEOUT", 5400),
-        keep_jobs=os.environ.get("TB_KEEP_JOBS", "") in ("1", "true", "yes"),
+        keep_jobs=_bool("TB_KEEP_JOBS", True),
     )
 
 

@@ -115,6 +115,32 @@ def running_cost(session_log: Path) -> float | None:
     return total if seen else None
 
 
+def effective_model_metadata(session_log: Path) -> dict[str, str]:
+    """Resolved provider settings from the latest completed model response."""
+    if not session_log.exists():
+        return {}
+    effective: dict[str, str] = {}
+    try:
+        log = session_log.open("r", encoding="utf-8")
+    except OSError:
+        return {}
+    with log:
+        for line in log:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") != "output.message.completed":
+                continue
+            message = (event.get("data") or {}).get("message") or {}
+            metadata = message.get("metadata") or {}
+            for key in ("provider", "model", "reasoning_effort"):
+                value = metadata.get(key)
+                if value is not None:
+                    effective[key] = str(value)
+    return effective
+
+
 def _kill_command(signal: str) -> str:
     """Signal the in-container yolop process, without depending on `pkill`.
 
@@ -353,14 +379,18 @@ class Yolop(BaseInstalledAgent):
     # -- metrics ------------------------------------------------------------ #
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
+        metadata = {
+            "stop_reason": self._stop_reason,
+            **effective_model_metadata(self._host_session_log),
+        }
         trajectory_path = self.logs_dir / "trajectory.json"
         if not trajectory_path.exists():
-            context.metadata = {"stop_reason": self._stop_reason}
+            context.metadata = metadata
             return
         try:
             trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            context.metadata = {"stop_reason": self._stop_reason}
+            context.metadata = metadata
             return
 
         totals = trajectory.get("final_metrics") or {}
@@ -370,7 +400,7 @@ class Yolop(BaseInstalledAgent):
         context.n_cache_tokens = totals.get("total_cached_tokens")
         context.n_output_tokens = totals.get("total_completion_tokens")
         context.cost_usd = totals.get("total_cost_usd")
-        context.metadata = {"stop_reason": self._stop_reason, **summarize(trajectory)}
+        context.metadata = {**metadata, **summarize(trajectory)}
 
 
 def summarize(trajectory: dict[str, Any]) -> dict[str, Any]:

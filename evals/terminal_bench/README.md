@@ -270,7 +270,7 @@ from the environment:
 | `TB_CA_CERT` | CA bundle to install in the container; also sets the verifier's trust vars |
 | `TB_JOB_TIMEOUT` | wall-clock cap on one `harbor run` (default 5400s) |
 | `TB_TIMEOUT_MULTIPLIER` | scale the task's own agent/verifier timeouts |
-| `TB_KEEP_JOBS=1` | keep Harbor job dirs under `.cache/jobs/` for debugging |
+| `TB_KEEP_JOBS=0` | discard Harbor job dirs; by default trajectories and session events are retained under `.cache/jobs/` |
 
 `TB_AGENT_ENV` and `TB_CA_CERT` exist because the *sandbox*, not the benchmark,
 decides how a container reaches the model provider. On a box whose egress goes

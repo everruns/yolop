@@ -30,6 +30,12 @@ reasoning, tool calls, and tool results keyed by `source_call_id`, token usage
 into per-step and final metrics). Export is best-effort and never fails the
 run.
 
+The Terminal-Bench study retains each Harbor job directory by default, including
+the ATIF trajectory and Yolop session event log. `TB_KEEP_JOBS=0` opts out when
+storage matters. Its result metadata records requested and effective provider,
+model, and reasoning-effort values separately; the effective values come from
+completed-response metadata in the session log.
+
 ## Non-goals
 
 - Not a replay or resume format — the per-session JSONL log stays the local
