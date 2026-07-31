@@ -1,0 +1,72 @@
+{
+  "eval": "terminal_bench",
+  "sample": "configure-git-webserver",
+  "target": "openai-gpt-5.6-terra",
+  "passed": false,
+  "aggregate": 0.5,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 0.0,
+      "pass": false,
+      "reason": "tests failed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=False",
+    "iterations": 11,
+    "tool_calls_count": 10,
+    "tool_calls": [
+      "write_session_title",
+      "write_todos",
+      "write_todos",
+      "write_todos",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash"
+    ],
+    "usage": {
+      "input_tokens": 22814,
+      "output_tokens": 3712,
+      "cache_read_tokens": 143290,
+      "cost_usd": 0.14853750000000002
+    },
+    "timing": {
+      "duration_ms": 116657
+    },
+    "metrics": {
+      "cache_read_tokens": 143290.0,
+      "llm_calls": 11.0,
+      "reward": 0.0,
+      "tool_calls": 10.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "category": "system-administration",
+      "difficulty": "hard",
+      "exception": null,
+      "model": "openai/gpt-5.6-terra",
+      "provider": "openai",
+      "reasoning_effort": null,
+      "resolved": false,
+      "reward": 0.0,
+      "stop_reason": "completed",
+      "tools_used": {
+        "bash": 6,
+        "write_session_title": 1,
+        "write_todos": 3
+      },
+      "yolop_version": "0.13.0"
+    }
+  },
+  "skipped": false
+}

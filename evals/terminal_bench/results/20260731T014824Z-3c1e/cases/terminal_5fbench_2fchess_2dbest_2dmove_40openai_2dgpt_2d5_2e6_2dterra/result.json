@@ -1,0 +1,79 @@
+{
+  "eval": "terminal_bench",
+  "sample": "chess-best-move",
+  "target": "openai-gpt-5.6-terra",
+  "passed": false,
+  "aggregate": 0.5,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 0.0,
+      "pass": false,
+      "reason": "tests failed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=False",
+    "iterations": 18,
+    "tool_calls_count": 17,
+    "tool_calls": [
+      "write_session_title",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "read_file"
+    ],
+    "usage": {
+      "input_tokens": 31607,
+      "output_tokens": 6744,
+      "cache_read_tokens": 346719,
+      "cost_usd": 0.26685725
+    },
+    "timing": {
+      "duration_ms": 343633
+    },
+    "metrics": {
+      "cache_read_tokens": 346719.0,
+      "llm_calls": 18.0,
+      "reward": 0.0,
+      "tool_calls": 17.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "category": "games",
+      "difficulty": "medium",
+      "exception": null,
+      "model": "openai/gpt-5.6-terra",
+      "provider": "openai",
+      "reasoning_effort": null,
+      "resolved": false,
+      "reward": 0.0,
+      "stop_reason": "completed",
+      "tools_used": {
+        "bash": 15,
+        "read_file": 1,
+        "write_session_title": 1
+      },
+      "yolop_version": "0.13.0"
+    }
+  },
+  "skipped": false
+}

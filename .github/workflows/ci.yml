@@ -34,6 +34,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       docs: ${{ steps.filter.outputs.docs }}
       eval-analyzers: ${{ steps.filter.outputs.eval-analyzers }}
+      terminal-bench: ${{ steps.filter.outputs.terminal-bench }}
     steps:
       - uses: actions/checkout@v7
 
@@ -57,6 +58,13 @@ jobs:
             eval-analyzers:
               - 'evals/harness_basic/*.py'
               - 'evals/harness_basic/tests/**'
+              - '.github/workflows/ci.yml'
+            # The terminal_bench study and its Harbor agent adapter. Its tests
+            # need no Docker, network, or API key, but they do import the study's
+            # third-party deps, so they get their own uv leg rather than joining
+            # the stdlib-only analyzer job above.
+            terminal-bench:
+              - 'evals/terminal_bench/**'
               - '.github/workflows/ci.yml'
 
   # Cheap guard for the documentation boundary (README/docs must not link into
@@ -99,6 +107,27 @@ jobs:
         # Standard library only — no third-party deps, so the system python is
         # enough and there's nothing to install.
         run: python3 -m unittest discover -s evals/harness_basic/tests -v
+
+  terminal-bench-study:
+    name: Terminal-Bench study (Python)
+    needs: changes
+    if: needs.changes.outputs.terminal-bench == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Run study + adapter unit tests
+        working-directory: evals/terminal_bench
+        # Hermetic by design: no Docker, no network beyond the dependency
+        # install, no provider key. uv resolves the study's deps (mira-eval for
+        # the protocol types, harbor for the agent base class and ATIF models).
+        env:
+          PYTHONPATH: .
+        run: uv run --python 3.12 --with mira-eval --with harbor -m unittest discover -s tests -v
 
   lint:
     name: Format + Clippy

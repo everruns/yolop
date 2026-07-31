@@ -1,0 +1,59 @@
+{
+  "name": "control-v1",
+  "description": "Periodic regression set: 3 easy / 3 medium / 2 hard Terminal-Bench 2.1 tasks, chosen deterministically by suites/select_control.py. Cheapest eligible task per tier, one per category, no GPU and <= 4 GiB.",
+  "quotas": {
+    "easy": 3,
+    "medium": 3,
+    "hard": 2
+  },
+  "tasks": [
+    {
+      "name": "overfull-hbox",
+      "difficulty": "easy",
+      "category": "debugging",
+      "agent_timeout_sec": 750.0
+    },
+    {
+      "name": "cobol-modernization",
+      "difficulty": "easy",
+      "category": "software-engineering",
+      "agent_timeout_sec": 900.0
+    },
+    {
+      "name": "fix-git",
+      "difficulty": "easy",
+      "category": "software-engineering",
+      "agent_timeout_sec": 900.0
+    },
+    {
+      "name": "modernize-scientific-stack",
+      "difficulty": "medium",
+      "category": "scientific-computing",
+      "agent_timeout_sec": 600.0
+    },
+    {
+      "name": "chess-best-move",
+      "difficulty": "medium",
+      "category": "games",
+      "agent_timeout_sec": 900.0
+    },
+    {
+      "name": "count-dataset-tokens",
+      "difficulty": "medium",
+      "category": "model-training",
+      "agent_timeout_sec": 900.0
+    },
+    {
+      "name": "configure-git-webserver",
+      "difficulty": "hard",
+      "category": "system-administration",
+      "agent_timeout_sec": 900.0
+    },
+    {
+      "name": "fix-code-vulnerability",
+      "difficulty": "hard",
+      "category": "security",
+      "agent_timeout_sec": 900.0
+    }
+  ]
+}
