@@ -91,6 +91,21 @@ class ValidateOkfTests(unittest.TestCase):
                 messages, ["specs/index.md: index.md must not carry frontmatter keys ['type']"]
             )
 
+    def test_rejects_unresolved_conflict_markers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "index.md").write_text("# Index\n", encoding="utf-8")
+            bad = root / "broken.md"
+            bad.write_text(
+                "---\ntype: Note\ntitle: Broken\ndescription: x\n---\n\n<<<<<<< HEAD\nleft\n>>>>>>> other\n",
+                encoding="utf-8",
+            )
+            messages, _ = validate(root)
+            self.assertTrue(
+                any("unresolved merge conflict marker" in m for m in messages),
+                messages,
+            )
+
     def test_bundled_skill_copy_is_identical(self):
         bundled = (
             MODULE_PATH.parents[1]
