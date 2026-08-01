@@ -127,7 +127,47 @@ fast enough to repeat.
 | `configure-git-webserver` | hard | system-administration | 900s |
 | `fix-code-vulnerability` | hard | security | 900s |
 
-### Baseline
+### Baselines
+
+The tracked `control` preset uses yolop · **gpt-5.6-luna** (OpenAI). Run
+`20260801T001630Z-ec1b`, with the infrastructure-invalid `overfull-hbox` case
+replaced by CA-enabled run `20260801T004403Z-5be4`, resolved **5/8 for $0.55**
+in 29 minutes of summed case wall time. Every valid case used the model's
+effective default reasoning effort, `medium`; there were no timeouts or budget
+stops.
+
+| difficulty | resolved |
+|---|---|
+| easy | 3/3 |
+| medium | 1/3 |
+| hard | 1/2 |
+
+| task | | cost | wall | llm calls | tool calls |
+|---|---|---|---|---|---|
+| `cobol-modernization` | ✓ | $0.090 | 146s | 15 | 14 |
+| `fix-git` | ✓ | $0.068 | 153s | 16 | 23 |
+| `overfull-hbox` | ✓ | $0.090 | 301s | 17 | 20 |
+| `modernize-scientific-stack` | ✓ | $0.026 | 147s | 5 | 4 |
+| `count-dataset-tokens` | ✗ | $0.058 | 326s | 14 | 13 |
+| `chess-best-move` | ✗ | $0.088 | 173s | 14 | 13 |
+| `fix-code-vulnerability` | ✗ | $0.069 | 121s | 7 | 12 |
+| `configure-git-webserver` | ✓ | $0.063 | 347s | 12 | 11 |
+
+The initial `overfull-hbox` attempt never reached the model: that task image had
+no CA certificates, so reqwest failed during client construction. The
+replacement run supplied the host CA through `TB_CA_CERT` and passed. The three
+model failures have distinct causes in their retained trajectories:
+
+- `chess-best-move` could not interpret the board image directly, inferred the
+  pieces from pixel statistics, and wrote `g7f8`; the verifier requires both
+  `e2e4` and `g2g4`.
+- `count-dataset-tokens` calculated 63,841 reasoning tokens and 15,745 solution
+  tokens, but chose the reasoning-only value instead of their required 79,586
+  total.
+- `fix-code-vulnerability` fixed the CRLF injection and passed all 367 upstream
+  tests, but reported `CWE-113`; the benchmark requires `CWE-93`.
+
+The historical Terra baseline remains useful for comparison:
 
 yolop · **gpt-5.6-terra** (OpenAI), run `20260731T014824Z-3c1e` — **6/8 for
 $1.34**, 22 minutes wall clock, every case ran to its own completion (no
@@ -251,7 +291,7 @@ targets.
 | Preset | Purpose | Samples | Targets |
 |--------|---------|---------|---------|
 | `smoke` | Integration check / validate a new config before a full run | `fix-git`, `cobol-modernization` | gpt-5.6-terra |
-| `control` | The periodic regression run ([Control suite](#control-suite)) | 8 (`control-v1`) | gpt-5.6-terra |
+| `control` | The periodic regression run ([Control suite](#control-suite)) | 8 (`control-v1`) | gpt-5.6-luna |
 | `compare` | yolop vs the other terminal agents on identical tasks | the `easy` tier | yolop ×2 + terminus-2 + claude-code + codex |
 | `full` | The headline number | all 89 | gpt-5.6-terra |
 

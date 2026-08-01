@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mira eval report</title>
+<style>
+:root{color-scheme:light dark;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--mut:#57606a;--bg:#fff;--fg:#1f2328;--line:#d0d7de}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--line:#30363d;--mut:#8b949e}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:960px;margin:0 auto;padding:2rem 1.25rem}
+h1{font-size:1.6rem;margin:0 0 1rem}h2{font-size:1.15rem;margin:2rem 0 .75rem;border-bottom:1px solid var(--line);padding-bottom:.25rem}
+.cards{display:flex;flex-wrap:wrap;gap:.75rem}
+.card{flex:1;min-width:96px;border:1px solid var(--line);border-radius:8px;padding:.75rem 1rem;text-align:center}
+.card b{display:block;font-size:1.5rem}.card span{color:var(--mut);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+.card.ok b{color:var(--ok)}.card.bad b{color:var(--bad)}.card.warn b{color:var(--warn)}
+table.matrix{border-collapse:collapse;width:100%}table.matrix th,table.matrix td{border:1px solid var(--line);padding:.4rem .6rem;text-align:center}
+table.matrix td:first-child,table.matrix th:first-child{text-align:left}
+.case{border:1px solid var(--line);border-radius:8px;margin:.5rem 0;padding:.25rem .75rem}
+.case summary{cursor:pointer;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+.case code{font-size:.92rem}.metrics{color:var(--mut);font-size:.8rem;margin-left:auto}
+.badge{font-size:.7rem;font-weight:700;padding:.1rem .4rem;border-radius:4px;color:#fff}
+.badge.pass{background:var(--ok)}.badge.fail{background:var(--bad)}.badge.skip{background:var(--mut)}.badge.na{background:var(--warn)}
+.scores{list-style:none;padding:0;margin:.5rem 0}.scores li{padding:.15rem 0}.scores li.pass{color:var(--ok)}.scores li.fail{color:var(--bad)}.scores li.na{color:var(--mut)}
+.tools,.meta{font-size:.85rem;color:var(--mut)}
+pre{background:rgba(127,127,127,.1);border-radius:6px;padding:.6rem .75rem;overflow:auto;font-size:.85rem;white-space:pre-wrap}
+pre.error{color:var(--bad)}a{color:#0969da}
+</style>
+</head>
+<body>
+<main>
+<h1>Mira eval report</h1>
+<section class="cards">
+<div class="card ok"><b>1/1</b><span>passed</span></div>
+<div class="card"><b>0</b><span>failed</span></div>
+<div class="card"><b>0</b><span>n/a</span></div>
+<div class="card"><b>0</b><span>skipped</span></div>
+<div class="card"><b>34988</b><span>tokens</span></div>
+<div class="card"><b>$0.0904</b><span>cost</span></div>
+</section>
+<h2>Matrix</h2>
+<table class="matrix">
+<thead><tr><th>eval</th><th>openai-gpt-5.6-luna</th></tr></thead>
+<tbody>
+<tr><td>terminal_bench</td><td>1/1</td></tr>
+</tbody>
+</table>
+<h2>Cases</h2>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/overfull-hbox@openai-gpt-5.6-luna</code><span class="metrics">34988 tok · $0.0904 · 301177ms · 20 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, list_directory, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, bash, read_file, read_file, read_file</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=294038, llm_calls=17, reward=1, tool_calls=20</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=debugging, difficulty=easy, exception=null, model=openai/gpt-5.6-luna, model_effective=gpt-5.6-luna, model_requested=openai/gpt-5.6-luna, provider=openai, provider_effective=openai, provider_requested=openai, reasoning_effort=medium, reasoning_effort_effective=medium, reasoning_effort_requested=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={"bash":15,"list_directory":1,"read_file":3,"write_session_title":1}, yolop_version=0.13.0</p>
+<pre class="response">resolved=True</pre>
+</details>
+<script type="application/json" id="mira-data">
+{"cases":[{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"overfull-hbox","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"openai-gpt-5.6-luna","transcript":{"final_response":"resolved=True","iterations":17,"metadata":{"agent":"yolop","category":"debugging","difficulty":"easy","exception":null,"model":"openai/gpt-5.6-luna","model_effective":"gpt-5.6-luna","model_requested":"openai/gpt-5.6-luna","provider":"openai","provider_effective":"openai","provider_requested":"openai","reasoning_effort":"medium","reasoning_effort_effective":"medium","reasoning_effort_requested":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{"bash":15,"list_directory":1,"read_file":3,"write_session_title":1},"yolop_version":"0.13.0"},"metrics":{"cache_read_tokens":294038.0,"llm_calls":17.0,"reward":1.0,"tool_calls":20.0},"timing":{"duration_ms":301177},"tool_calls":["write_session_title","list_directory","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","bash","read_file","read_file","read_file"],"tool_calls_count":20,"usage":{"cache_read_tokens":294038,"cost_usd":0.0903818,"input_tokens":29790,"output_tokens":5198}}}],"summary":{"failed":0,"na":0,"passed":1,"scored":1,"skipped":0,"total_cost_usd":0.0903818,"total_duration_ms":301177,"total_tokens":34988,"total_tool_calls":20}}
+</script>
+</main>
+</body>
+</html>

@@ -1,0 +1,89 @@
+{
+  "eval": "terminal_bench",
+  "sample": "overfull-hbox",
+  "target": "openai-gpt-5.6-luna",
+  "passed": true,
+  "aggregate": 1.0,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 1.0,
+      "pass": true,
+      "reason": "tests passed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=True",
+    "iterations": 17,
+    "tool_calls_count": 20,
+    "tool_calls": [
+      "write_session_title",
+      "list_directory",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "read_file",
+      "read_file",
+      "read_file"
+    ],
+    "usage": {
+      "input_tokens": 29790,
+      "output_tokens": 5198,
+      "cache_read_tokens": 294038,
+      "cost_usd": 0.0903818
+    },
+    "timing": {
+      "duration_ms": 301177
+    },
+    "metrics": {
+      "cache_read_tokens": 294038.0,
+      "llm_calls": 17.0,
+      "reward": 1.0,
+      "tool_calls": 20.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "category": "debugging",
+      "difficulty": "easy",
+      "exception": null,
+      "model": "openai/gpt-5.6-luna",
+      "model_effective": "gpt-5.6-luna",
+      "model_requested": "openai/gpt-5.6-luna",
+      "provider": "openai",
+      "provider_effective": "openai",
+      "provider_requested": "openai",
+      "reasoning_effort": "medium",
+      "reasoning_effort_effective": "medium",
+      "reasoning_effort_requested": null,
+      "resolved": true,
+      "reward": 1.0,
+      "stop_reason": "completed",
+      "tools_used": {
+        "bash": 15,
+        "list_directory": 1,
+        "read_file": 3,
+        "write_session_title": 1
+      },
+      "yolop_version": "0.13.0"
+    }
+  },
+  "skipped": false
+}
