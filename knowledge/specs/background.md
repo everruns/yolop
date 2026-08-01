@@ -72,9 +72,11 @@ harness steers there at the three places poll loops start, on any repo:
   (CI, reviews, deploys) must not consume turns: detach one blocking watch,
   end the turn, let the completion wake continue — or `wait_task` it in
   one-shot mode, where there is no wake.
-- `progress_guard` classifies external-event probes (`gh pr checks`,
-  `gh run …`, bare/leading `sleep`) as *waiting* and, on consecutive repeats,
-  injects a warning that names `spawn_background` as the fix.
+- `progress_guard` classifies external-event and session-task probes
+  (`gh pr checks`, `gh run …`, `get_task`, bare/leading `sleep`) as *waiting*.
+  Four waiting signals in a bounded eight-observation window inject a warning
+  that names `spawn_background` as the fix. Mutations and validations clear the
+  window, so a legitimate one-off status check around real work stays quiet.
 - The `bash` tool's 120s-timeout error points foreground watches at
   `spawn_background` instead of leaving the model to fall back to
   sleep-and-recheck turns.
@@ -155,6 +157,9 @@ Yolop installs a platform store to close that gap (`crate::background_wake`):
 - Both frame the completion message as an `[automatic]` prompt
   (`frame_wake_prompt`): explicitly not a user message, pointing the model at the
   run's result before it continues.
+- Both coalesce completions already queued at the same idle boundary into one
+  automatic prompt. Result paths remain in that bounded prompt, and the durable
+  task registry remains authoritative if an unusually large burst is capped.
 - Opt-out: the `proactive_wake` setting (on by default) suppresses the auto-turn
   and surfaces a one-line notice instead.
 - `--print` is one-shot, so it does not auto-wake.

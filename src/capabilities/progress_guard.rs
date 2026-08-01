@@ -22,7 +22,8 @@ const REPEATED_EXPLORATION_THRESHOLD: usize = 5;
 const ZERO_EVIDENCE_SEARCH_THRESHOLD: usize = 3;
 const TRUNCATED_EXPLORATION_THRESHOLD: usize = 2;
 const REPEATED_STATUS_THRESHOLD: usize = 3;
-const REPEATED_WAITING_THRESHOLD: usize = 3;
+const WAITING_WINDOW_SIZE: usize = 8;
+const WAITING_WINDOW_THRESHOLD: usize = 4;
 const SEMANTIC_HISTORY_LIMIT: usize = 512;
 const TRACKED_PATH_LIMIT: usize = 1024;
 
@@ -96,7 +97,7 @@ struct SessionProgress {
     validation_count: usize,
     repeated_status_count: usize,
     last_status_command: Option<String>,
-    repeated_waiting_count: usize,
+    recent_waiting: VecDeque<bool>,
     repeated_exploration_count: usize,
     last_exploration_signature: Option<String>,
     consecutive_zero_evidence_searches: usize,
@@ -138,10 +139,8 @@ impl SessionProgress {
             ToolClass::Waiting => {
                 self.exploration_since_progress += 1;
                 self.reset_result_streaks();
-                self.repeated_waiting_count += 1;
-                if self.repeated_waiting_count >= REPEATED_WAITING_THRESHOLD {
+                if self.observe_waiting_signal(true) {
                     self.warning_count += 1;
-                    self.repeated_waiting_count = 0;
                     return Some(
                         "progress_guard: repeated checks of an external event (CI run, PR checks/reviews) without other progress. Do not poll across turns: run one blocking watch detached via spawn_background (e.g. `gh pr checks --watch` or an `until <check>; do sleep 30; done` loop) and end the turn — completion wakes the agent. In one-shot mode, block on the spawned task with wait_task instead."
                             .to_string(),
@@ -152,7 +151,7 @@ impl SessionProgress {
             ToolClass::Status(command) => {
                 self.exploration_since_progress += 1;
                 self.reset_result_streaks();
-                self.repeated_waiting_count = 0;
+                self.observe_waiting_signal(false);
                 if self.last_status_command.as_deref() == Some(command.as_str()) {
                     self.repeated_status_count += 1;
                 } else {
@@ -171,7 +170,7 @@ impl SessionProgress {
             }
             ToolClass::Exploration => {
                 self.exploration_since_progress += 1;
-                self.repeated_waiting_count = 0;
+                self.observe_waiting_signal(false);
                 if let Some(warning) = self.result_warning(tool_call, result) {
                     return Some(warning);
                 }
@@ -181,10 +180,7 @@ impl SessionProgress {
                 self.exploration_warning()
             }
             ToolClass::Other => {
-                // The waiting counter is strictly consecutive (any other tool
-                // resets it) so legitimate one-off PR/CI checks between real
-                // work never accumulate into a false poll warning.
-                self.repeated_waiting_count = 0;
+                self.observe_waiting_signal(false);
                 self.reset_result_streaks();
                 None
             }
@@ -247,10 +243,33 @@ impl SessionProgress {
         self.exploration_since_progress = 0;
         self.repeated_status_count = 0;
         self.last_status_command = None;
-        self.repeated_waiting_count = 0;
+        self.recent_waiting.clear();
         self.repeated_exploration_count = 0;
         self.last_exploration_signature = None;
         self.reset_result_streaks();
+    }
+
+    fn observe_waiting_signal(&mut self, waiting: bool) -> bool {
+        // A bounded semantic window catches heterogeneous check/read/task-probe
+        // cycles while mutations and validations still clear it. Transparently
+        // moving an already-started shell process would risk replaying side
+        // effects and weakening one-shot cancellation, so the guard steers the
+        // next wait onto the existing durable background-task path instead.
+        self.recent_waiting.push_back(waiting);
+        if self.recent_waiting.len() > WAITING_WINDOW_SIZE {
+            self.recent_waiting.pop_front();
+        }
+        if self
+            .recent_waiting
+            .iter()
+            .filter(|waiting| **waiting)
+            .count()
+            >= WAITING_WINDOW_THRESHOLD
+        {
+            self.recent_waiting.clear();
+            return true;
+        }
+        false
     }
 
     fn advance_opaque_mutation(&mut self) {
@@ -456,6 +475,7 @@ fn classify_tool_call(tool_call: &ToolCall) -> ToolClass {
             ToolClass::Exploration
         }
         "write_file" | "edit_file" | "delete_file" | "ast_edit" => ToolClass::Mutation,
+        "get_task" | "list_tasks" => ToolClass::Waiting,
         "bash" => classify_bash_command(
             tool_call
                 .arguments
@@ -1413,6 +1433,7 @@ mod tests {
             "gh pr checks 42",
             "sleep 30 && gh pr checks 42",
             "gh run list --limit 1",
+            "gh pr view 42",
         ];
         for command in polls {
             last = result();
@@ -1435,14 +1456,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interleaved_work_resets_waiting_counter() {
+    async fn semantic_polling_cycle_warns_across_heterogeneous_tools() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let cycle = [
+            call("bash", json!({ "command": "gh pr checks 42" })),
+            call("read_file", json!({ "path": "/tmp/synthetic-ci-note" })),
+            call("get_task", json!({ "task_id": "task_ci" })),
+            call("bash", json!({ "command": "gh run view 123" })),
+        ];
+        let mut warnings = Vec::new();
+
+        for tool_call in cycle.into_iter().cycle().take(8) {
+            let mut output = result();
+            hook.after_exec(
+                &tool_call,
+                &tool_def(&tool_call.name),
+                &mut output,
+                &context,
+            )
+            .await;
+            if let Some(warning) = output
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str)
+            {
+                warnings.push(warning.to_string());
+            }
+        }
+
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("spawn_background")),
+            "a semantic polling cycle must be caught even when unrelated reads and task probes separate external checks: {warnings:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_off_task_and_ci_status_checks_do_not_warn() {
         let state = Arc::new(Mutex::new(ProgressGuardState::default()));
         let hook = ProgressGuardHook { state };
         let context = ToolContext::new(SessionId::new());
 
-        // Check CI, fix something, check again — legitimate, never a poll
-        // warning because the counter is strictly consecutive.
-        for _ in 0..(REPEATED_WAITING_THRESHOLD * 2) {
+        for tool_call in [
+            call("list_tasks", json!({})),
+            call("get_task", json!({ "task_id": "task_once" })),
+            call("bash", json!({ "command": "gh pr checks 42" })),
+        ] {
+            let mut output = result();
+            hook.after_exec(
+                &tool_call,
+                &tool_def(&tool_call.name),
+                &mut output,
+                &context,
+            )
+            .await;
+            assert!(
+                output
+                    .result
+                    .as_ref()
+                    .and_then(|value| value.get("progress_guard_warning"))
+                    .is_none(),
+                "a one-off status check is legitimate"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn interleaved_work_resets_waiting_window() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+
+        // Check CI, fix something, check again — legitimate, because real
+        // progress clears the semantic window.
+        for _ in 0..(WAITING_WINDOW_THRESHOLD * 2) {
             let mut check = result();
             hook.after_exec(
                 &call("bash", json!({ "command": "gh pr checks 42" })),

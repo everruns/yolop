@@ -41,7 +41,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use crate::capabilities::{ApprovalDecision, ToolApprover};
 use crate::config::{ApprovalMode, SettingsStore};
 use crate::exec::worktree::WorktreeManager;
-use crate::runtime::background_wake::{WakeReceiver, frame_wake_prompt};
+use crate::runtime::background_wake::{WakeReceiver, coalesce_pending_wakes, frame_wake_prompt};
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 
 use super::bridge::{Translator, tool_kind};
@@ -673,6 +673,9 @@ fn spawn_background_wake_drain(
             }
             // Serialize with client prompts so two turns never overlap.
             let _turn = session.turn_lock.lock().await;
+            // Completions that accumulated while the foreground turn held the
+            // lock are one observation point, not separate model obligations.
+            let message = coalesce_pending_wakes(message, &mut wake_rx);
             if !session.settings.snapshot().proactive_wake_enabled() {
                 peer.session_update(
                     &session.acp_id,
