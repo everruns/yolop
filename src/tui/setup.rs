@@ -16,17 +16,17 @@ use super::*;
 /// (see the `draw_setup_picker` note in `fullscreen.rs`).
 fn select_up(selected: usize) -> usize {
     let mut state = tuika::components::SelectState::new();
-    state.select(selected);
+    state.select(Some(selected));
     state.move_up();
-    state.selected()
+    state.selected().unwrap_or(0)
 }
 
 /// Step a picker selection down one row, clamping at the last of `len` rows.
 fn select_down(selected: usize, len: usize) -> usize {
     let mut state = tuika::components::SelectState::new();
-    state.select(selected);
+    state.select(Some(selected));
     state.move_down(len);
-    state.selected()
+    state.selected().unwrap_or(0)
 }
 
 impl App {

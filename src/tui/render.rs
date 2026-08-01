@@ -1761,21 +1761,18 @@ pub(crate) fn diff_line_style(line: &str) -> Style {
 /// half a box, no way to read the rest. Falling back to `None` there hands the
 /// block back to tuika's themed code block, which keeps the Mermaid source
 /// itself on screen.
-struct MermaidFencedBlocks;
+struct MermaidBlocks;
 
-impl tuika::components::markdown::FencedBlockRenderer for MermaidFencedBlocks {
+impl tuika::components::MarkdownBlockRenderer for MermaidBlocks {
     fn render(
         &self,
-        language: &str,
-        source: &str,
-        width: u16,
-        theme: &tuika::style::Theme,
+        block: tuika::components::MarkdownBlock<'_>,
+        context: tuika::components::MarkdownBlockContext<'_>,
     ) -> Option<Vec<Line<'static>>> {
-        let rendered =
-            tuika_mermaid::MermaidRenderer::new().render(language, source, width, theme)?;
+        let rendered = tuika_mermaid::MermaidRenderer::new().render(block, context)?;
         rendered
             .iter()
-            .all(|line| line_width(line) <= width as usize)
+            .all(|line| line_width(line) <= context.width as usize)
             .then_some(rendered)
     }
 }
@@ -1784,9 +1781,11 @@ impl tuika::components::markdown::FencedBlockRenderer for MermaidFencedBlocks {
 /// renderer + tree-sitter code highlighting (see the `tuika` and
 /// `tuika-codeformatters` crates).
 ///
-/// ` ```mermaid ` fences go through [`MermaidFencedBlocks`], which paints them
-/// as Unicode cell diagrams; unsupported, malformed, or too-wide diagrams keep
-/// the ordinary code-block fallback so the source stays readable.
+/// ` ```mermaid ` fences go through [`MermaidBlocks`], which paints them as
+/// Unicode cell diagrams; unsupported, malformed, or too-wide diagrams keep the
+/// ordinary code-block fallback so the source stays readable. Safe block HTML
+/// is rendered as styled terminal text; unsafe elements and attributes are
+/// ignored by `tuika-html`.
 ///
 /// The tuika renderer word-wraps prose and lays code/tables out to a width; we
 /// render at `inner_width` minus the header prefix, then prepend the header to
@@ -1812,14 +1811,18 @@ pub(crate) fn append_markdown_lines<'a>(
     // Keeping it permanently underlined masks Ghostty's clickability feedback.
     sheet.link = tuika::style::StyleBundle::new().fg(theme.code.link);
     let highlighter = tuika_codeformatters::TreeSitterHighlighter::new();
-    let mermaid = MermaidFencedBlocks;
-    let (rendered, md_links) = tuika::components::markdown::to_linked_lines_with_renderer(
+    let mermaid = MermaidBlocks;
+    let html = tuika_html::HtmlRenderer::new();
+    let renderers = tuika::components::Renderers::new()
+        .renderer(&mermaid)
+        .renderer(&html);
+    let (rendered, md_links) = tuika::components::markdown::to_linked_lines_with(
         text,
         width,
         &theme,
         &sheet,
         tuika::highlight::CodeHighlighter::With(&highlighter),
-        &mermaid,
+        renderers,
     );
 
     let base_line = lines.len() as u16;

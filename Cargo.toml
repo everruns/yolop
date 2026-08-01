@@ -69,17 +69,15 @@ toml = "1"
 textwrap = "0.16"
 # The TUI toolkit behind both renderers. It lives in its own repository
 # (everruns/tuika) and is consumed from crates.io like any other dependency;
-# yolop gets no special treatment there. 0.6 is the release that carries the
-# split-footer screen mode the `--inline` renderer is built on.
-tuika = "0.6.0"
+# yolop gets no special treatment there.
+tuika = "0.7.0"
+# Optional structured-markdown renderers stay outside tuika core. Mermaid
+# fences become terminal diagrams; safe block HTML becomes styled text.
+tuika-mermaid = "0.2.0"
+tuika-html = "0.1.0"
 # Tree-sitter Highlighter impl for tuika's CodeBlock/Markdown; owns the grammar
-# deps so tuika core stays dependency-light. Published from the tuika repo, and
-# released with it — 0.3.1 is the 0.6-compatible one.
-tuika-codeformatters = "0.3.1"
-# FencedBlockRenderer impl that turns ```mermaid fences into Unicode diagrams
-# via mmdflux; keeps diagram layout out of tuika core. Published from the tuika
-# repo; 0.1.1 is the 0.6-compatible one.
-tuika-mermaid = "0.1.1"
+# deps so tuika core stays dependency-light. Published from the tuika repo.
+tuika-codeformatters = "0.4.0"
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tree-sitter = "0.26"

@@ -33,7 +33,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
-use tuika::components::{ScrollState, TextInputEvent, TextInputState};
+use tuika::InputOutcome;
+use tuika::components::{ScrollState, TextInputState};
 use tuika::keymap::Dispatch;
 use tuika::mouse::{SelectionRange, selected_text, word_at};
 use tuika::term::hyperlink::BufferLink;
@@ -1952,8 +1953,11 @@ impl App {
                 .composer
                 .handle_enter(key.modifiers == KeyModifiers::SHIFT)
             {
-                TextInputEvent::Changed => {}
-                TextInputEvent::Submit => self.submit_input().await,
+                InputOutcome::Submitted => self.submit_input().await,
+                InputOutcome::Ignored
+                | InputOutcome::Consumed
+                | InputOutcome::Changed
+                | InputOutcome::Cancelled => {}
             },
             KeyCode::Tab => {
                 if !self.busy
@@ -1994,7 +1998,7 @@ impl App {
     /// the event itself (component-driven input) after translation from crossterm.
     fn composer_edit_key(&mut self, key: KeyEvent) {
         if let Some(event) = tuika::translate_event(CrosstermEvent::Key(key)) {
-            self.composer.handle(&event);
+            let _ = self.composer.handle(&event);
         }
     }
 
@@ -3898,6 +3902,62 @@ mod tests {
         assert!(
             has_keyword_color,
             "rust fence should be syntax-highlighted: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn mermaid_fence_renders_as_terminal_diagram() {
+        let mut lines: Vec<Line> = Vec::new();
+        append_markdown_lines(
+            &mut lines,
+            "",
+            Style::default(),
+            "```mermaid\nflowchart LR\nA --> B\n```",
+            80,
+        );
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(
+            text.contains('A') && text.contains('B'),
+            "diagram labels: {text:?}"
+        );
+        assert!(
+            !text.contains("flowchart LR"),
+            "source should become a diagram: {text:?}"
+        );
+    }
+
+    #[test]
+    fn safe_html_block_renders_as_styled_text() {
+        let mut lines: Vec<Line> = Vec::new();
+        append_markdown_lines(
+            &mut lines,
+            "",
+            Style::default(),
+            "<p>Hello <strong>terminal</strong></p><script>alert(1)</script>",
+            80,
+        );
+        let spans: Vec<&Span> = lines.iter().flat_map(|line| line.spans.iter()).collect();
+        let terminal = spans
+            .iter()
+            .find(|span| span.content.contains("terminal"))
+            .expect("HTML text should render");
+
+        assert!(
+            terminal.style.add_modifier.contains(Modifier::BOLD),
+            "strong HTML should render bold: {lines:?}"
+        );
+        assert!(
+            spans.iter().all(|span| !span.content.contains("<strong>")),
+            "safe HTML markup should not render literally: {lines:?}"
+        );
+        assert!(
+            spans.iter().all(|span| !span.content.contains("alert(1)")),
+            "unsafe HTML content should be ignored: {lines:?}"
         );
     }
 
