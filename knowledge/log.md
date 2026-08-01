@@ -10,6 +10,18 @@ wording, formatting, and link fixes do not need entries.
   of a non-obvious bug, while preserving the one-read path for explicit local
   edits.
 
+## 2026-07-31 — Dependency-aware tool batching
+
+- Yolop now requests provider parallel tool calling and carries a measured
+  dependency-aware batching rule: independent calls share a model round,
+  dependent calls remain sequential, and title/todo/status bookkeeping
+  piggybacks on substantive work. The focused gpt-5.5 A/B kept 9/9 tasks correct
+  while reducing mean model calls by 27% and cumulative input including cache
+  reads by 26%; its dependent-read control never co-batched a call with the
+  result it needed.
+- Title and todo handling remains in runtime tools rather than a deterministic
+  host side channel, preserving event replay and presentation ownership.
+
 ## 2026-07-31 — Live agent sidebar and session-scoped transcripts
 
 - The interactive TUI now opens a passive right-hand sidebar when sub-agents

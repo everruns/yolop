@@ -3364,9 +3364,13 @@ pub async fn build_with_options(
     }
     let harness_id = harness_builder.harness_id();
 
+    // The orchestration A/B found that the prompt rule drove most round reduction;
+    // the provider hint improved combined batch width/latency without breaking the
+    // dependent-read control. Side-band bookkeeping would split replay ownership.
     let agent_builder = AgentBuilder::new("coding-agent", AGENT_PROMPT)
         .display_name("Coding Agent")
         .description("Reads, edits, and runs commands inside a project workspace.")
+        .parallel_tool_calls(true)
         .tag("example")
         .tag("coding");
     let agent_id = agent_builder.agent_id();
@@ -3942,6 +3946,114 @@ mod tests {
                 .expect("read workspace metadata")
                 .expect("workspace metadata present");
         assert_eq!(metadata.title.as_deref(), Some("Automatic session titles"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_turn_batches_independent_work_with_bookkeeping() {
+        use everruns_core::events::EventData;
+        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(workspace.path().join("alpha.txt"), "ALPHA\n").expect("seed alpha");
+        std::fs::write(workspace.path().join("beta.txt"), "BETA\n").expect("seed beta");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let options = BuildOptions {
+            llmsim_override: Some(
+                LlmSimConfig::scripted(vec![
+                    SimTurn::ToolCalls(vec![
+                        SimToolCall {
+                            name: "write_session_title".to_string(),
+                            arguments: serde_json::json!({ "title": "Batch independent work" }),
+                            id: None,
+                        },
+                        SimToolCall {
+                            name: "write_todos".to_string(),
+                            arguments: serde_json::json!({
+                                "todos": [{
+                                    "content": "Read fixtures",
+                                    "activeForm": "Reading fixtures",
+                                    "status": "in_progress"
+                                }]
+                            }),
+                            id: None,
+                        },
+                        SimToolCall {
+                            name: "read_file".to_string(),
+                            arguments: serde_json::json!({ "path": "alpha.txt" }),
+                            id: None,
+                        },
+                        SimToolCall {
+                            name: "read_file".to_string(),
+                            arguments: serde_json::json!({ "path": "beta.txt" }),
+                            id: None,
+                        },
+                    ]),
+                    SimTurn::Assistant("ALPHA:BETA".to_string()),
+                ])
+                .with_message_capture(messages.clone()),
+            ),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "Read both independent fixtures and keep progress visible.",
+                built
+                    .model
+                    .input_message("Read both independent fixtures and keep progress visible."),
+            )
+            .await
+            .expect("run turn");
+
+        assert!(result.success, "scripted batch turn: {result:?}");
+        assert_eq!(result.tool_calls_count, 4);
+        let events = built
+            .handles
+            .runtime
+            .events()
+            .await
+            .expect("runtime events");
+        let widths = events
+            .iter()
+            .filter_map(|event| match &event.data {
+                EventData::ReasonCompleted(data) if data.has_tool_calls => {
+                    Some(data.tool_call_count)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            widths,
+            vec![4],
+            "one model round should emit the full batch"
+        );
+        assert!(events.iter().any(|event| matches!(
+            &event.data,
+            EventData::SessionTitleUpdated(data) if data.title == "Batch independent work"
+        )));
+        let captured = messages.lock().expect("captured messages");
+        assert!(
+            captured
+                .first()
+                .is_some_and(|call| call.iter().any(|message| {
+                    let prompt = message.content_as_text();
+                    prompt.contains("Emit independent tool calls together")
+                        && prompt.contains("keep calls whose inputs depend")
+                        && prompt.contains("Piggyback title, todo, and status updates")
+                }))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
