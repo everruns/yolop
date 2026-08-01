@@ -3,7 +3,13 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
-<<<<<<< HEAD
+## 2026-08-01 — Conversational skills.sh search and install
+
+- [Skills](specs/skills.md) and [Conversational control](specs/conversational-control.md)
+  now cover `search_skills` / `install_skill`: query the public skills.sh
+  registry, ask which match to install, and write the snapshot into workspace
+  or global scope without restarting.
+
 ## 2026-08-01 — Owner evidence before non-obvious mutation
 
 - [System prompt composition](specs/system-prompt.md) now requires repository
@@ -22,14 +28,6 @@ wording, formatting, and link fixes do not need entries.
   result it needed.
 - Title and todo handling remains in runtime tools rather than a deterministic
   host side channel, preserving event replay and presentation ownership.
-=======
-## 2026-08-01 — Conversational skills.sh search and install
-
-- [Skills](specs/skills.md) and [Conversational control](specs/conversational-control.md)
-  now cover `search_skills` / `install_skill`: query the public skills.sh
-  registry, ask which match to install, and write the snapshot into workspace
-  or global scope without restarting.
->>>>>>> e57d458 (feat(skills): add conversational skills.sh search and install)
 
 ## 2026-07-31 — Discovery reuse and useful session admission
 
