@@ -116,7 +116,8 @@ yolop is an autonomous coding agent for the workspace it was started in.
 - **Background work** — detached shell commands with completion wakes
 - **Web** — `web_fetch`, `free_web_search`, and `duckduckgo_instant_answer`
 - **Memory** — durable cross-session notes via `remember` / `recall` / `forget`
-- **Skills** — `SKILL.md` packages in workspace, global, and bundled system scopes
+- **Skills** — `SKILL.md` packages in workspace, global, and bundled system scopes;
+  find/install from skills.sh via `search_skills` / `install_skill`
 - **MCP** — extra tools from `.mcp.json` / global `mcp.json`
 - **Hooks** — block, allow, or audit tool calls (see `yolop-hooks` skill)
 - **Goal loops** — `/goal` keeps working until an evaluator confirms the condition

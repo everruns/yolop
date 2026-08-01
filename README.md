@@ -139,8 +139,9 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   remember.
 - **Skills** — `SKILL.md` files discovered from workspace (`.agents/skills/`),
   global, ephemeral environment, and bundled scopes, exposed via `list_skills`,
-  `read_skill`, `write_skill`, and `activate_skill`. Skills installed after
-  startup are available immediately.
+  `read_skill`, `write_skill`, `activate_skill`, plus `search_skills` /
+  `install_skill` for the public skills.sh registry and `delete_skill` for
+  uninstall. Skills installed after startup are available immediately.
 - **OKF knowledge** — a bundled `okf` skill for the
   [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md):
   read, author, convert to, and
