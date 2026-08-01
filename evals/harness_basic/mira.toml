@@ -53,7 +53,16 @@ axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "no
 # Requires HARNESS_BASIC_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
 #   doppler run -- mira run --preset search-efficiency --trials 3 --group-by binary
 [presets.search-efficiency]
-samples = ["prior-session-reference", "grep-files-nested-glob", "missing-rg-recovery", "zero-result-search-recovery", "repo-map-bounded"]
+samples = ["prior-session-reference", "overlapping-recent-work", "unchanged-repeated-discovery", "grep-files-nested-glob", "missing-rg-recovery", "zero-result-search-recovery", "repo-map-bounded"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
+
+# DISCOVERY-REUSE — focused proof for unchanged repeated reads and useful
+# session recall behind newer empty/invalid shells. Captures duplicate calls,
+# recall/noise, result bytes, and whether the agent stops after the freshness
+# marker. Requires baseline and candidate binaries.
+[presets.discovery-reuse]
+samples = ["overlapping-recent-work", "unchanged-repeated-discovery"]
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 

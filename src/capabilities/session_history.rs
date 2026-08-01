@@ -228,16 +228,21 @@ fn search_sessions(
         .collect::<Vec<_>>();
     candidates.sort_by_key(|candidate| candidate.0);
 
-    let scanned_sessions = candidates.len().min(MAX_SCANNED_SESSIONS);
+    let mut scanned_sessions = 0;
+    let mut ignored_session_shells = 0;
     let mut matches = Vec::new();
-    for (_, session_id, session_dir) in candidates.into_iter().take(MAX_SCANNED_SESSIONS) {
+    for (_, session_id, session_dir) in candidates {
         let current = session_id == current_session_id.to_string();
         if current && !include_current {
             continue;
         }
-        if let Some(summary) =
-            summarize_session(&session_dir.join("events.jsonl"), query_lower.as_deref())
-        {
+        let scan = scan_session(&session_dir.join("events.jsonl"), query_lower.as_deref());
+        if !scan.valid {
+            ignored_session_shells += 1;
+            continue;
+        }
+        scanned_sessions += 1;
+        if let Some(summary) = scan.summary {
             let failure_source = summary.failure_source();
             let shell_command_used = summary.tool_names.iter().any(|name| name == "bash");
             matches.push(SessionMatch {
@@ -261,6 +266,9 @@ fn search_sessions(
                 break;
             }
         }
+        if scanned_sessions == MAX_SCANNED_SESSIONS {
+            break;
+        }
     }
 
     Ok(json!({
@@ -268,6 +276,7 @@ fn search_sessions(
         "sessions": matches,
         "count": matches.len(),
         "scanned_sessions": scanned_sessions,
+        "ignored_session_shells": ignored_session_shells,
         "truncated": scanned_sessions == MAX_SCANNED_SESSIONS || matches.len() == limit,
     }))
 }
@@ -298,8 +307,19 @@ impl SessionSummary {
     }
 }
 
-fn summarize_session(path: &Path, query_lower: Option<&str>) -> Option<SessionSummary> {
-    let reader = BufReader::new(File::open(path).ok()?);
+struct SessionScan {
+    valid: bool,
+    summary: Option<SessionSummary>,
+}
+
+fn scan_session(path: &Path, query_lower: Option<&str>) -> SessionScan {
+    let Ok(file) = File::open(path) else {
+        return SessionScan {
+            valid: false,
+            summary: None,
+        };
+    };
+    let reader = BufReader::new(file);
     let mut latest = None;
     let mut matched_message = None;
     let mut matched_failure = None;
@@ -308,6 +328,7 @@ fn summarize_session(path: &Path, query_lower: Option<&str>) -> Option<SessionSu
     let mut event_count = 0;
     let mut tool_names = BTreeSet::new();
     let mut failed_tool_names = BTreeSet::new();
+    let mut has_discoverable_content = false;
     for line in reader.lines().map_while(Result::ok) {
         let Ok(event) = serde_json::from_str::<Value>(&line) else {
             continue;
@@ -347,14 +368,15 @@ fn summarize_session(path: &Path, query_lower: Option<&str>) -> Option<SessionSu
                 == Some(false)
                 || error.is_some();
             failed |= reason_failed;
-            if let Some(error) = error
-                && query_lower.is_some_and(|query| error.to_lowercase().contains(query))
-            {
-                matched_failure = Some(MessageHit {
-                    timestamp: event.get("ts").and_then(Value::as_str).map(str::to_string),
-                    role: Some("diagnostic".to_string()),
-                    text: Some(error.to_string()),
-                });
+            if let Some(error) = error {
+                has_discoverable_content = true;
+                if query_lower.is_some_and(|query| error.to_lowercase().contains(query)) {
+                    matched_failure = Some(MessageHit {
+                        timestamp: event.get("ts").and_then(Value::as_str).map(str::to_string),
+                        role: Some("diagnostic".to_string()),
+                        text: Some(error.to_string()),
+                    });
+                }
             }
             continue;
         }
@@ -378,6 +400,7 @@ fn summarize_session(path: &Path, query_lower: Option<&str>) -> Option<SessionSu
         if text.is_empty() {
             continue;
         }
+        has_discoverable_content = true;
         let hit = MessageHit {
             timestamp: event.get("ts").and_then(Value::as_str).map(str::to_string),
             role: message
@@ -398,15 +421,18 @@ fn summarize_session(path: &Path, query_lower: Option<&str>) -> Option<SessionSu
         matched_failure.or(matched_message)
     } else {
         latest
-    }?;
-    Some(SessionSummary {
-        hit,
-        failed,
-        reason_failed,
-        event_count,
-        tool_names: tool_names.into_iter().collect(),
-        failed_tool_names: failed_tool_names.into_iter().collect(),
-    })
+    };
+    SessionScan {
+        valid: has_discoverable_content,
+        summary: hit.map(|hit| SessionSummary {
+            hit,
+            failed,
+            reason_failed,
+            event_count,
+            tool_names: tool_names.into_iter().collect(),
+            failed_tool_names: failed_tool_names.into_iter().collect(),
+        }),
+    }
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> String {
@@ -605,5 +631,51 @@ mod tests {
         };
         assert_eq!(result["count"], 2);
         assert_eq!(result["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn empty_and_invalid_shells_do_not_consume_the_scan_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = SessionId::new();
+        let useful_id = "session_ffffffffffffffffffffffffffffffff";
+        write_session(
+            dir.path(),
+            useful_id,
+            &[message_event(
+                "input.message",
+                "user",
+                "overlap marker nebula-4417",
+                "2026-01-01T00:00:00Z",
+            )],
+        );
+
+        // These shells are created later and therefore sort ahead of the useful
+        // session. They model interrupted startups without embedding real logs.
+        for index in 0..MAX_SCANNED_SESSIONS + 25 {
+            let session = dir.path().join(format!("session_{index:032x}"));
+            std::fs::create_dir_all(&session).unwrap();
+            let body = if index % 2 == 0 { "" } else { "not-json\n" };
+            std::fs::write(session.join("events.jsonl"), body).unwrap();
+        }
+
+        let tool = SearchSessionsTool {
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: current,
+        };
+        let ToolExecutionResult::Success(result) = tool
+            .execute(json!({"query":"nebula-4417", "limit": 10}))
+            .await
+        else {
+            panic!("expected success");
+        };
+        assert_eq!(result["count"], 1, "useful-match recall must remain 100%");
+        assert_eq!(result["sessions"][0]["session_id"], useful_id);
+        assert_eq!(result["scanned_sessions"], 1);
+        assert_eq!(result["ignored_session_shells"], MAX_SCANNED_SESSIONS + 25);
+        assert_eq!(
+            result["sessions"].as_array().unwrap().len(),
+            1,
+            "invalid shells must not create false-positive noise"
+        );
     }
 }

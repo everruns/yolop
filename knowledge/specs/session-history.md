@@ -19,8 +19,9 @@ The default harness includes the read-only `session_history` capability and its
 - excludes the current session by default so a reference repeated in the active
   prompt cannot shadow the historical match;
 - lists recent sessions when no query is supplied;
-- returns bounded snippets and at most 50 sessions from at most 500 scanned
-  session directories;
+- returns bounded snippets and at most 50 sessions from at most 500 useful
+  session logs; empty shells and logs without a valid user-visible message or
+  recorded model failure are skipped before that scan budget is consumed;
 - reports whether a matched session failed, its event count, and the names of
   tools it used so common failures can be diagnosed without reading the entire
   log. It also distinguishes model failures from tool failures and reports

@@ -22,6 +22,15 @@ wording, formatting, and link fixes do not need entries.
 - Title and todo handling remains in runtime tools rather than a deterministic
   host side channel, preserving event replay and presentation ownership.
 
+## 2026-07-31 — Discovery reuse and useful session admission
+
+- Repeated large read/search results on an unchanged target now return a compact
+  freshness marker, with reuse invalidated by workspace mutation; the first full
+  result remains available in context.
+- Local session discovery counts only logs with user-visible messages or a
+  recorded model failure toward its 500-session scan budget, so interrupted
+  empty/invalid shells cannot crowd useful overlapping work out.
+
 ## 2026-07-31 — Live agent sidebar and session-scoped transcripts
 
 - The interactive TUI now opens a passive right-hand sidebar when sub-agents
