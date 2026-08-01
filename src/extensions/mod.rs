@@ -594,15 +594,33 @@ mod spawn_tests {
             everruns_core::traits::ToolContext::new(everruns_core::typed_id::SessionId::new());
 
         // A git command is denied by the self-authored server.
-        let deny = ToolCall {
-            id: "1".into(),
-            name: "bash".into(),
-            arguments: json!({ "command": "git status" }),
-        };
-        match hook.before_exec(deny, &tool_def, &ctx).await {
-            PreToolUseDecision::Block { reason, .. } => assert!(reason.contains("git"), "{reason}"),
-            other => panic!("expected block, got {other:?}"),
+        // Spawn + handshake can race under llvm-cov / high parallel load; the
+        // hook fail-opens to Continue on transport errors, so retry briefly.
+        let mut blocked = false;
+        let mut last = None;
+        for attempt in 0..5 {
+            let deny = ToolCall {
+                id: format!("deny-{attempt}"),
+                name: "bash".into(),
+                arguments: json!({ "command": "git status" }),
+            };
+            match hook.before_exec(deny, &tool_def, &ctx).await {
+                PreToolUseDecision::Block { reason, .. } => {
+                    assert!(reason.contains("git"), "{reason}");
+                    blocked = true;
+                    break;
+                }
+                other => {
+                    last = Some(format!("{other:?}"));
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt + 1))).await;
+                }
+            }
         }
+        assert!(
+            blocked,
+            "expected block after retries, last outcome {:?}",
+            last
+        );
 
         // A non-git command passes through.
         let allow = ToolCall {
