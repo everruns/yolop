@@ -121,6 +121,20 @@ Two blocks are directive on measured grounds:
 Where an eval contradicts the preference, the eval wins — and a preference is
 not evidence.
 
+### Investigation earns an owner before mutation
+
+For a non-obvious bug, the model identifies the root cause and the abstraction
+that owns it from repository evidence before its first mutation. This is a
+semantic threshold, not a read counter: an explicit local edit can proceed after
+one targeted read, while an investigated bug must not stop at the first visible
+adapter boundary.
+
+This policy stays in the stable prompt because it must cover every mutation
+path, including arbitrary shell scripts whose target is not observable to a
+pre-tool hook. A runtime evidence counter was rejected after it added ceremony
+to simple local-edit controls without reliably recognizing ownership. The
+`owner-selection` harness study owns the positive and negative cases.
+
 ### Reactive text does not substitute for anticipatory text
 
 The `repo_map` regression refines the "fact is about a specific result" row
