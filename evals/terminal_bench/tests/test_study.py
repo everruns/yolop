@@ -55,6 +55,16 @@ class TestMatrix(unittest.TestCase):
             {"agent": "yolop", "model": "openai/gpt-5.6-luna"},
         )
 
+    def test_sonnet_5_targets_are_selectable(self):
+        self.assertEqual(
+            tb.MATRIX["anthropic-claude-sonnet-5"],
+            {"agent": "yolop", "model": "anthropic/claude-sonnet-5"},
+        )
+        self.assertEqual(
+            tb.MATRIX["openrouter-claude-sonnet-5"],
+            {"agent": "yolop", "model": "openrouter/anthropic/claude-sonnet-5"},
+        )
+
 
 class TestBuildCommand(unittest.TestCase):
     def _command(self, spec: dict, env: dict | None = None) -> list[str]:

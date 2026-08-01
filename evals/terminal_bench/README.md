@@ -131,10 +131,14 @@ fast enough to repeat.
 
 The tracked `control` preset remains yolop · **gpt-5.6-terra** (OpenAI), keeping
 the periodic signal continuous. Luna is a first-class matrix target for explicit
-comparisons:
+comparisons. Claude Sonnet 5 is available through Anthropic directly and through
+OpenRouter:
 
 ```bash
 mira run --preset control --targets openai-gpt-5.6-luna --group-by difficulty
+mira run --preset control --targets anthropic-claude-sonnet-5 --group-by difficulty
+# Same model through OpenRouter; useful when comparing provider routing/costs.
+mira run --preset control --targets openrouter-claude-sonnet-5 --group-by difficulty
 ```
 
 This comparison uses Terra run `20260731T014824Z-3c1e` and Luna run
@@ -261,8 +265,9 @@ brew install everruns/tap/mira           # the host CLI (prebuilt binary, recomm
 
 Requires a running **Docker** daemon (every task is a container) and provider
 keys in the environment: `OPENAI_API_KEY` (yolop openai configs, `codex`,
-`terminus-2`), `ANTHROPIC_API_KEY` (yolop anthropic configs, `claude-code`). Use
-`doppler run --` to inject them. A config whose key is missing is reported
+`terminus-2`), `ANTHROPIC_API_KEY` (yolop anthropic configs, `claude-code`), and
+`OPENROUTER_API_KEY` (OpenRouter targets). Use `doppler run --` to inject them.
+A config whose key is missing is reported
 `unavailable` and skipped, so a keyless run stays green.
 
 ## Usage

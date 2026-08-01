@@ -134,7 +134,11 @@ MATRIX: dict[str, dict[str, Any]] = {
     # OpenRouter returns an inline price, so `cost_usd` (and the cap that reads
     # it) is the real charge rather than yolop's price-table estimate.
     "openrouter-gpt-5.6-terra": {"agent": "yolop", "model": "openrouter/openai/gpt-5.6-terra"},
+    "openrouter-claude-sonnet-5": {
+        "agent": "yolop", "model": "openrouter/anthropic/claude-sonnet-5",
+    },
     # yolop x Anthropic (secondary provider)
+    "anthropic-claude-sonnet-5": {"agent": "yolop", "model": "anthropic/claude-sonnet-5"},
     "anthropic-claude-opus-4.8": {"agent": "yolop", "model": "anthropic/claude-opus-4-8"},
     "anthropic-claude-sonnet-4.5": {"agent": "yolop", "model": "anthropic/claude-sonnet-4-5"},
     # Offline plumbing check: exercises upload/run/verify with no API key. It
