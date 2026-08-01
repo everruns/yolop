@@ -19,7 +19,7 @@ Four axes, crossed with 25 samples (small edit / refactor / search / guardrail /
 
 | Axis | Values | Where |
 |------|--------|-------|
-| **binary** | `candidate` · `baseline` · `dependency-baseline` | `BINARIES`; configured by the matching `HARNESS_BASIC_*_BIN` variable |
+| **binary** | `candidate` · `baseline` · `parallel-only` · `policy-only` · `dependency-baseline` | `BINARIES`; configured by the matching `HARNESS_BASIC_*_BIN` variable |
 | **target** (model) | `anthropic/claude-sonnet-4-5` · `anthropic/claude-opus-4-8` · `openai/gpt-5.5` · `openrouter/z-ai/glm-5.2` | `targets()` in `src/main.rs` |
 | **effort** | `default` (yolop's per-model default; no flag) · `low` · `high` | `EFFORTS` |
 | **harness** | `default` (out-of-the-box yolop) · `with-ast-edit` (opt-in `ast_edit` capability) · `no-progress-guard` · `no-ast-grep` · `no-tool-reveal` | `HARNESS_VARIANTS` |
@@ -60,6 +60,9 @@ search/refactor, and read-only code navigation.
 | `persisted-output-context-search` [`persisted-output-reading`] | 1,200-line CI log with the root cause outside the default log tail | Diagnose a persisted successful command result | one contextual grep, no follow-up read, correct root cause | large-output contextual-search policy |
 | `dependency-release-oscillation` [`progress-efficiency`] | bounded partial-release verifier with recurring manifest states and interleaved lockfile updates | Follow the release checklist until the runtime interrupts the cycle | coherent 0.17.6 manifest with few state revisits and validations | mutation oscillation from the costly version-bump session |
 | `redundant-validation` [`progress-efficiency`] | passing Rust suite plus an instruction to rerun it unchanged | Validate repeatedly unless the runtime detects no new evidence | warning stops duplicate validation before the third run | validation deduplication on unchanged state |
+| `independent-investigation-batch` [`orchestration-efficiency`] | three independent config shards | Read all three and combine their codes | answer contains all codes | safe multi-call batching |
+| `bookkeeping-piggyback` [`orchestration-efficiency`] | two independent inputs | track todos, read both, and write their joined result | result is correct and bookkeeping was used | title/todo piggybacking |
+| `dependent-read-control` [`orchestration-efficiency`] | a route file naming a second path | follow the route and report the code | correct answer; dependent reads are not co-batched | dependency-safe sequencing |
 | `self-write-git-block-extension` [`self-writing`] | empty workdir | Scaffold, implement, install, and doctor an extension that blocks git — using yolop's own extension tools | drives the full loop (`scaffold_extension` → `install_extension` → `doctor_extension`) and replies `DONE` | self-writing: can yolop author a working extension for itself, unaided |
 | `replace-console-log` [`ast-edit`] | TS: `api.ts`/`worker.ts` call `console.log`; `logger.ts` exports `logger.info` | Replace every `console.log(...)` with `logger.info(...)` | both TS files use `logger.info`, no `console.log` | multi-file shape rewrite (`console.log` → `logger.info`) |
 | `strip-print-debug` [`ast-edit`] | Python `app.py`/`helpers.py` with standalone `print(...)` debug lines | Remove every standalone `print(...)` statement | neither file contains `print(` | bulk statement removal across files |
@@ -138,7 +141,13 @@ repo-map narrowing and targeted recovery (a narrower map or `grep_files` fallbac
 session-search ordering, `ast_edit_tool_calls`, and
 `ast_edit_tool_calls_failed`, validation calls, redundant validations, and
 workspace-state revisits, first-mutation correctness, and adapter mutations
-before the shared owner
+before the shared owner. Orchestration cases additionally report
+`tool_emitting_model_calls`, `single_tool_model_calls`,
+`batched_tool_model_calls`, `mean_tool_batch_width`, `max_tool_batch_width`,
+`max_read_file_batch_width`, `bookkeeping_tool_calls`, and
+`standalone_bookkeeping_rounds`. `cumulative_input_tokens` sums uncached,
+cache-read, and cache-creation input so fewer repeated rounds remain visible
+even when provider caching makes billable input look small.
 — plus metadata (`provider`, `model`, `effort`,
 `reasoning_effort_applied`, `harness`, `stop_reason`) for `--group-by`.
 
@@ -205,6 +214,13 @@ python3 analyze_progress_efficiency.py \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/yolop \
   doppler run -- mira run --preset owner-selection --trials 3 --group-by harness
 
+# Compare provider affordance, prompt policy, and their combination.
+HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
+HARNESS_BASIC_PARALLEL_ONLY_BIN=/path/to/parallel-only/yolop \
+HARNESS_BASIC_POLICY_ONLY_BIN=/path/to/policy-only/yolop \
+HARNESS_BASIC_CANDIDATE_BIN=/path/to/combined/yolop \
+  doppler run -- mira run --preset orchestration-efficiency --trials 3 --group-by binary
+
 # Isolate output persistence from other yolop/runtime changes.
 HARNESS_BASIC_DEPENDENCY_BASELINE_BIN=/path/to/yolop-with-everruns-main \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/yolop-with-output-fix \
@@ -239,6 +255,7 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | dependency oscillation + redundant validation | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `progress-controls` | ordinary regression controls, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `owner-selection` | first-mutation owner selection plus local-edit controls, 3 trials | two owner fixtures + `add-fn` + `implement-todo` | gpt-5.5 | candidate, default vs no-progress-guard |
+| `orchestration-efficiency` | batching interventions and dependency control, 3 trials | three orchestration cases | gpt-5.5 | baseline + parallel-only + policy-only + candidate |
 | `output-persistence` | dependency-isolated output proof, 3 trials | `normal-output-preserves-head` | gpt-5.5 | dependency baseline + candidate |
 | `persisted-output-reading` | small-read and large-context-search proof, 3 trials | two persisted-output recovery cases | gpt-5.5 | dependency baseline + candidate |
 | `ast-edit-compare` | **A/B ast_edit capability** | tag `ast-edit` | claude-sonnet-4-5 | candidate, effort=default, default vs with-ast-edit |

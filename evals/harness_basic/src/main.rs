@@ -34,7 +34,13 @@ use serde_json::{Value, json};
 /// `--reasoning-effort` values. `default` omits the flag so yolop applies the
 /// model profile's own default.
 const EFFORTS: &[&str] = &["default", "low", "high"];
-const BINARIES: &[&str] = &["candidate", "baseline", "dependency-baseline"];
+const BINARIES: &[&str] = &[
+    "candidate",
+    "baseline",
+    "parallel-only",
+    "policy-only",
+    "dependency-baseline",
+];
 
 /// One yolop configuration under test. `settings` is TOML appended to the
 /// study's base `settings.toml` (see [`settings_for_variant`]); `default` is
@@ -924,6 +930,69 @@ fn untrusted_file_content_sample() -> Sample {
     )
 }
 
+fn independent_investigation_sample() -> Sample {
+    Sample::new(
+        "independent-investigation-batch",
+        "Read config/alpha.txt, config/beta.txt, and config/gamma.txt. These reads are \
+         independent. Reply with only the three CODE values in alpha-beta-gamma order, \
+         separated by colons.",
+    )
+    .file("config/alpha.txt", "CODE=ALPHA-17\n")
+    .file("config/beta.txt", "CODE=BETA-28\n")
+    .file("config/gamma.txt", "CODE=GAMMA-39\n")
+    .tag("orchestration-efficiency")
+    .meta("kind", "independent-investigation")
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["ALPHA-17", "BETA-28", "GAMMA-39"]
+        }]),
+    )
+}
+
+fn bookkeeping_piggyback_sample() -> Sample {
+    Sample::new(
+        "bookkeeping-piggyback",
+        "Track this multi-step task with todos. Read inputs/left.txt and \
+         inputs/right.txt, which are independent, then create result.txt containing \
+         their VALUEs joined by ` + `. Keep the session title useful and finish the \
+         todo list. Make the edit directly.",
+    )
+    .file("inputs/left.txt", "VALUE=LEFT-41\n")
+    .file("inputs/right.txt", "VALUE=RIGHT-52\n")
+    .tag("orchestration-efficiency")
+    .meta("kind", "bookkeeping-piggyback")
+    .meta(
+        "checks",
+        json!([{
+            "file": "result.txt",
+            "contains": ["LEFT-41 + RIGHT-52"],
+            "metric_at_least": {"bookkeeping_tool_calls": 1.0}
+        }]),
+    )
+}
+
+fn dependent_read_control_sample() -> Sample {
+    Sample::new(
+        "dependent-read-control",
+        "Read route.txt. It names the only other file you should read. Then read that \
+         file and reply with only its FINAL_CODE. Do not list, grep, search, or guess \
+         the second path before route.txt tells you what it is.",
+    )
+    .file("route.txt", "NEXT_PATH=payload/answer-63.txt\n")
+    .file("payload/answer-63.txt", "FINAL_CODE=DEPEND-6307\n")
+    .tag("orchestration-efficiency")
+    .tag("orchestration-control")
+    .meta("kind", "dependent-investigation")
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["DEPEND-6307"],
+            "metric_at_most": {"max_read_file_batch_width": 1.0}
+        }]),
+    )
+}
+
 fn dataset() -> Dataset {
     let cargo_toml = "[package]\nname = \"seed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
     Dataset::new(vec![
@@ -1056,6 +1125,9 @@ fn dataset() -> Dataset {
         persisted_output_context_search_sample(),
         dependency_release_oscillation_sample(),
         redundant_validation_sample(),
+        independent_investigation_sample(),
+        bookkeeping_piggyback_sample(),
+        dependent_read_control_sample(),
         self_write_git_block_extension_sample(),
         Sample::new(
             "replace-console-log",
@@ -1332,6 +1404,8 @@ fn yolop_bin(binary: &str) -> Result<PathBuf, String> {
     let axis_override = match binary {
         "candidate" => "HARNESS_BASIC_CANDIDATE_BIN",
         "baseline" => "HARNESS_BASIC_BASELINE_BIN",
+        "parallel-only" => "HARNESS_BASIC_PARALLEL_ONLY_BIN",
+        "policy-only" => "HARNESS_BASIC_POLICY_ONLY_BIN",
         "dependency-baseline" => "HARNESS_BASIC_DEPENDENCY_BASELINE_BIN",
         other => return Err(format!("unknown binary axis value: {other}")),
     };
@@ -1400,6 +1474,14 @@ struct Mined {
     cache_creation_tokens: u64,
     cost_usd: f64,
     llm_calls: u64,
+    tool_emitting_model_calls: u64,
+    single_tool_model_calls: u64,
+    batched_tool_model_calls: u64,
+    total_model_emitted_tool_calls: u64,
+    max_tool_batch_width: u64,
+    max_read_file_batch_width: u64,
+    standalone_bookkeeping_rounds: u64,
+    bookkeeping_tool_calls: u64,
     iterations: u64,
     turns: u64,
     reason_ms: u64,
@@ -1774,6 +1856,45 @@ fn parse_events(jsonl: &str) -> Mined {
                         .unwrap_or(0.0);
                 }
                 if let Some(message) = data.get("message") {
+                    let tool_names = message
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|part| {
+                            part.get("type").and_then(Value::as_str) == Some("tool_call")
+                        })
+                        .filter_map(|part| part.get("name").and_then(Value::as_str))
+                        .collect::<Vec<_>>();
+                    if !tool_names.is_empty() {
+                        let width = tool_names.len() as u64;
+                        m.tool_emitting_model_calls += 1;
+                        m.total_model_emitted_tool_calls += width;
+                        m.max_tool_batch_width = m.max_tool_batch_width.max(width);
+                        if width == 1 {
+                            m.single_tool_model_calls += 1;
+                        } else {
+                            m.batched_tool_model_calls += 1;
+                        }
+                        let read_width = tool_names
+                            .iter()
+                            .filter(|name| **name == "read_file")
+                            .count() as u64;
+                        m.max_read_file_batch_width = m.max_read_file_batch_width.max(read_width);
+                        let bookkeeping = tool_names
+                            .iter()
+                            .filter(|name| {
+                                matches!(
+                                    **name,
+                                    "write_session_title" | "write_todos" | "set_status"
+                                )
+                            })
+                            .count() as u64;
+                        m.bookkeeping_tool_calls += bookkeeping;
+                        if bookkeeping == width {
+                            m.standalone_bookkeeping_rounds += 1;
+                        }
+                    }
                     let text: String = message
                         .get("content")
                         .and_then(Value::as_array)
@@ -2180,6 +2301,42 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     t.files = read_files_back(work.path());
 
     t.metrics.insert("llm_calls".into(), mined.llm_calls as f64);
+    t.metrics.insert(
+        "tool_emitting_model_calls".into(),
+        mined.tool_emitting_model_calls as f64,
+    );
+    t.metrics.insert(
+        "single_tool_model_calls".into(),
+        mined.single_tool_model_calls as f64,
+    );
+    t.metrics.insert(
+        "batched_tool_model_calls".into(),
+        mined.batched_tool_model_calls as f64,
+    );
+    t.metrics.insert(
+        "mean_tool_batch_width".into(),
+        if mined.tool_emitting_model_calls == 0 {
+            0.0
+        } else {
+            mined.total_model_emitted_tool_calls as f64 / mined.tool_emitting_model_calls as f64
+        },
+    );
+    t.metrics.insert(
+        "max_tool_batch_width".into(),
+        mined.max_tool_batch_width as f64,
+    );
+    t.metrics.insert(
+        "max_read_file_batch_width".into(),
+        mined.max_read_file_batch_width as f64,
+    );
+    t.metrics.insert(
+        "standalone_bookkeeping_rounds".into(),
+        mined.standalone_bookkeeping_rounds as f64,
+    );
+    t.metrics.insert(
+        "bookkeeping_tool_calls".into(),
+        mined.bookkeeping_tool_calls as f64,
+    );
     t.metrics
         .insert("tool_calls".into(), t.tool_calls_count as f64);
     t.metrics.insert("turns".into(), mined.turns as f64);
@@ -2192,6 +2349,10 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     t.metrics.insert(
         "cache_creation_tokens".into(),
         mined.cache_creation_tokens as f64,
+    );
+    t.metrics.insert(
+        "cumulative_input_tokens".into(),
+        (mined.input_tokens + mined.cache_read_tokens + mined.cache_creation_tokens) as f64,
     );
     t.metrics.insert(
         "exploration_tools_before_first_mutation".into(),
@@ -2453,14 +2614,15 @@ mod tests {
 {"type":"tool.completed","data":{"tool_name":"read_file","success":true,"result":[{"type":"text","text":"{\"progress_guard_warning\":\"progress_guard: checkpoint required\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"cargo test --all-features\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"edit_file","success":false}}
-{"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"text","text":"Done."}],"metadata":{"reasoning_effort":"high"}},"usage":{"input_tokens":100,"output_tokens":10,"cache_read_tokens":40,"cache_creation_tokens":5,"estimated_cost_usd":0.02}}}
+{"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"tool_call","name":"write_session_title","arguments":{},"id":"title"},{"type":"tool_call","name":"read_file","arguments":{},"id":"read-a"},{"type":"tool_call","name":"read_file","arguments":{},"id":"read-b"}],"metadata":{"reasoning_effort":"high"}},"usage":{"input_tokens":100,"output_tokens":10,"cache_read_tokens":40,"cache_creation_tokens":5,"estimated_cost_usd":0.02}}}
+{"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"tool_call","name":"write_todos","arguments":{},"id":"todos"}]}},"usage":{}}
 {"type":"reason.completed","data":{"success":true,"duration_ms":900,"usage":{"input_tokens":100,"output_tokens":10,"estimated_cost_usd":0.02}}}
 {"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"text","text":"All finished."}]},"usage":{"input_tokens":200,"output_tokens":20,"actual_cost_usd":0.05,"estimated_cost_usd":0.99}}}
 {"type":"reason.completed","data":{"success":true,"duration_ms":600}}
 {"type":"turn.completed","data":{"duration_ms":1500}}
 "#;
         let m = parse_events(jsonl);
-        assert_eq!(m.llm_calls, 2);
+        assert_eq!(m.llm_calls, 3);
         assert_eq!(m.input_tokens, 300);
         assert_eq!(m.output_tokens, 30);
         assert_eq!(m.cache_read_tokens, 40);
@@ -2483,6 +2645,13 @@ mod tests {
         assert_eq!(m.exploration_tools_before_first_mutation, 3);
         assert_eq!(m.max_exploration_tools_without_progress, 3);
         assert_eq!(m.progress_guard_warnings, 2);
+        assert_eq!(m.tool_emitting_model_calls, 2);
+        assert_eq!(m.single_tool_model_calls, 1);
+        assert_eq!(m.batched_tool_model_calls, 1);
+        assert_eq!(m.max_tool_batch_width, 3);
+        assert_eq!(m.max_read_file_batch_width, 2);
+        assert_eq!(m.bookkeeping_tool_calls, 2);
+        assert_eq!(m.standalone_bookkeeping_rounds, 1);
     }
 
     #[test]

@@ -151,6 +151,28 @@ looks redundant against one model's judgement can be load-bearing for another's,
 which is why composition changes get A/B'd on both providers rather than
 reasoned about.
 
+### Parallelism follows data dependencies
+
+Yolop asks providers for parallel tool calling and tells the agent to emit
+independent calls together. A call whose arguments depend on an earlier result
+stays in a later model round. Title, todo, and live-status updates piggyback on
+substantive tool batches when independent work is ready; they remain ordinary
+runtime tools, so event replay and every host keep the same semantics.
+
+The `orchestration-efficiency` study compares the provider affordance, the
+dependency-aware prompt policy, and their combination. On the initial gpt-5.5
+study, the combined arm preserved 9/9 task success, reduced mean model calls by
+27%, raised mean tool batch width from 1.27 to 1.89, cut standalone
+bookkeeping rounds from 20 to 6, and reduced cumulative input including cache
+reads by 26%. The dependent-read control never co-batched the read that
+discovers a path with the read of that path. Provider preference alone was
+neutral; the combination is retained because it improved width and latency
+beyond the policy-only arm without changing dependency safety.
+
+Deterministic host-side title or todo handling is not the shortcut: it would
+create a second owner for behavior currently recorded as runtime tool calls and
+would make session replay diverge from live execution.
+
 ### The budget is a test
 
 `always_on_capability_prompts_within_budget` sums the always-on static blocks
@@ -170,6 +192,10 @@ Lean-versus-verbose is a **binary** comparison, not a harness variant — the
 verbose prompt is an earlier revision of yolop, so it is the `baseline` arm
 against `candidate`. Reveal gating is a **harness** variant (`no-tool-reveal`),
 because it is a capability toggle on one binary.
+
+Tool-round orchestration uses the four binary arms in the
+`orchestration-efficiency` preset: unchanged baseline, provider preference
+only, prompt policy only, and the combined candidate.
 
 ## Non-goals
 
