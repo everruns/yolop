@@ -1029,4 +1029,46 @@ mod tests {
             "install_skill"
         );
     }
+
+    /// Live smoke against production skills.sh. Not part of default CI; run with
+    /// `cargo test -- --ignored live_skills_sh_search_and_install`.
+    #[tokio::test]
+    #[ignore = "hits production skills.sh"]
+    async fn live_skills_sh_search_and_install() {
+        let registry = SkillRegistryClient::production();
+        let search = SearchSkillsTool::new(registry.clone());
+        let search_out = match search
+            .execute(json!({"query": "find-skills", "limit": 3}))
+            .await
+        {
+            ToolExecutionResult::Success(v) => v,
+            other => panic!("live search failed: {other:?}"),
+        };
+        let first = &search_out["skills"][0];
+        let source = first["install_source"].as_str().expect("install_source");
+        assert!(source.contains('/'), "{source}");
+
+        let ws = tempfile::tempdir().unwrap();
+        let install = InstallSkillTool::new(
+            SkillDirs {
+                workspace: ws.path().to_path_buf(),
+                global: None,
+                system: None,
+            },
+            registry,
+        );
+        let install_out = match install
+            .execute(json!({"source": source, "scope": "workspace"}))
+            .await
+        {
+            ToolExecutionResult::Success(v) => v,
+            other => panic!("live install failed: {other:?}"),
+        };
+        let name = install_out["name"].as_str().expect("name");
+        assert!(
+            ws.path().join(name).join("SKILL.md").is_file(),
+            "expected installed skill at {}",
+            ws.path().join(name).display()
+        );
+    }
 }
