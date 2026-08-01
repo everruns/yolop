@@ -518,7 +518,7 @@ fn unchanged_repeated_discovery_sample() -> Sample {
                 },
                 "metric_at_most": {
                     "calls_after_progress_warning": 0.0,
-                    "total_tool_result_bytes": 18000.0
+                    "total_tool_result_bytes": 21000.0
                 }
             },
             {

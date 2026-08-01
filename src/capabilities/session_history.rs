@@ -193,6 +193,20 @@ fn search_sessions(
         .get("query")
         .and_then(Value::as_str)
         .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .map(|query| {
+            // Models commonly preserve the description's “quoted phrase” wording in the
+            // argument. Treat one balanced quote pair as syntax, while leaving unmatched
+            // quotes literal so normalization cannot broaden an accidental query.
+            if query.len() >= 2
+                && ((query.starts_with('"') && query.ends_with('"'))
+                    || (query.starts_with('\'') && query.ends_with('\'')))
+            {
+                query[1..query.len() - 1].trim()
+            } else {
+                query
+            }
+        })
         .filter(|query| !query.is_empty());
     let query_lower = query.map(str::to_lowercase);
     let include_current = arguments
@@ -491,6 +505,30 @@ mod tests {
         assert_eq!(result["count"], 1);
         assert_eq!(result["sessions"][0]["role"], "user");
         assert_eq!(result["sessions"][0]["timestamp"], "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn balanced_query_quotes_are_syntax_but_unmatched_quotes_remain_literal() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = SessionId::new();
+        write_session(
+            dir.path(),
+            "session_00000000000000000000000000000002",
+            &[message_event(
+                "input.message",
+                "user",
+                "Overlap marker QUASAR-9182",
+                "2026-01-01T00:00:00Z",
+            )],
+        );
+
+        let quoted =
+            search_sessions(dir.path(), current, &json!({"query":"\"QUASAR-9182\""})).unwrap();
+        assert_eq!(quoted["count"], 1);
+
+        let unmatched =
+            search_sessions(dir.path(), current, &json!({"query":"\"QUASAR-9182"})).unwrap();
+        assert_eq!(unmatched["count"], 0);
     }
 
     #[test]
