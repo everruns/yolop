@@ -35,7 +35,8 @@ commands: `/help`, `/tools`, `/mcp`, `/cwd`, `/status [compact|expanded|toggle]`
 The TUI may expose other slash commands, but only use `run_yolop_command` for this listed
 client-command set. When the user asks for one of these terminal
 actions — for example "exit", "clear the screen", "show tools", "switch model",
-"log in to an MCP server" (`/mcp login <name>`), or "expand the status bar" —
+"reload MCP servers" (`/mcp reload`), "log in to an MCP server"
+(`/mcp login <name>`), or "expand the status bar" —
 call `run_yolop_command` with the command and arguments; do not merely tell the
 user to type the slash command, and do not invent a manager window. The tool
 result includes the host's response text (server lists, tool lists, OAuth URLs).
@@ -262,7 +263,8 @@ impl Tool for RunYolopCommandTool {
     fn description(&self) -> &str {
         "Execute an interactive yolop slash command on behalf of a natural-language user request. \
          Use this when the user asks to exit, clear the transcript, show help/tools/MCP/cwd, \
-         show or change the status layout, or open/switch model or reasoning effort. Accepts command names with or without the leading \
+         reload MCP servers (`command: mcp`, `arguments: reload`), show or change the status \
+         layout, or open/switch model or reasoning effort. Accepts command names with or without the leading \
          slash; `exit` is accepted as an alias for `quit`."
     }
 
@@ -280,7 +282,7 @@ impl Tool for RunYolopCommandTool {
                 },
                 "arguments": {
                     "type": "string",
-                    "description": "Optional command arguments, e.g. a model id for /model or level for /effort."
+                    "description": "Optional command arguments, e.g. `reload` for /mcp, a model id for /model, or a level for /effort."
                 }
             },
             "required": ["command"],
@@ -613,6 +615,26 @@ mod tests {
             ui.take(),
             vec![UiCommand::SetStatusLayout {
                 arg: Some("expanded".to_string())
+            }]
+        );
+    }
+
+    /// MCP reload is directly callable from conversation; the host receives the
+    /// same typed command as interactive `/mcp reload` and returns its report.
+    #[tokio::test]
+    async fn run_yolop_command_dispatches_mcp_reload() {
+        let ui = Arc::new(RecordingUi::default());
+        let tool = RunYolopCommandTool { ui: ui.clone() };
+
+        let result = tool
+            .execute(json!({ "command": "mcp", "arguments": "reload" }))
+            .await;
+
+        assert!(result.is_success(), "tool should succeed: {result:?}");
+        assert_eq!(
+            ui.take(),
+            vec![UiCommand::ManageMcp {
+                arg: Some("reload".into()),
             }]
         );
     }
