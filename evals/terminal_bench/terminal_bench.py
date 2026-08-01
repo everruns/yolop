@@ -124,6 +124,7 @@ DEFAULTS: dict[str, Any] = {"max_cost_usd": 5.0}
 
 MATRIX: dict[str, dict[str, Any]] = {
     # yolop x OpenAI (default provider)
+    "openai-gpt-5.6-luna": {"agent": "yolop", "model": "openai/gpt-5.6-luna"},
     "openai-gpt-5.6-terra": {"agent": "yolop", "model": "openai/gpt-5.6-terra"},
     "openai-gpt-5.6-terra-high": {
         "agent": "yolop", "model": "openai/gpt-5.6-terra", "reasoning_effort": "high",

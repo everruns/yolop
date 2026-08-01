@@ -33,6 +33,42 @@ pub type WakeSender = mpsc::UnboundedSender<String>;
 /// Receiver half a host drains to react to finished background tasks.
 pub type WakeReceiver = mpsc::UnboundedReceiver<String>;
 
+const MAX_WAKE_BATCH_BYTES: usize = 32 * 1024;
+const MAX_WAKE_BATCH_MESSAGES: usize = 256;
+
+/// Drain the completions already queued for one idle host into one model turn.
+/// The task registry remains the durable source of truth when an unusually
+/// large burst exceeds the prompt cap.
+pub(crate) fn coalesce_pending_wakes(first: String, receiver: &mut WakeReceiver) -> String {
+    let mut messages = vec![first];
+    while messages.len() < MAX_WAKE_BATCH_MESSAGES
+        && let Ok(message) = receiver.try_recv()
+    {
+        messages.push(message);
+    }
+    let count = messages.len();
+    if count == 1 {
+        return messages.pop().expect("wake batch has first message");
+    }
+
+    let mut message = format!("{count} background tasks finished:");
+    let mut omitted = 0;
+    for (index, item) in messages.into_iter().enumerate() {
+        let section = format!("\n\n--- task {} ---\n{item}", index + 1);
+        if message.len() + section.len() <= MAX_WAKE_BATCH_BYTES {
+            message.push_str(&section);
+        } else {
+            omitted += 1;
+        }
+    }
+    if omitted > 0 {
+        message.push_str(&format!(
+            "\n\n{omitted} additional completion(s) omitted from this prompt; inspect list_tasks for their durable results."
+        ));
+    }
+    message
+}
+
 fn wake_routes() -> &'static Mutex<HashMap<SessionId, WakeSender>> {
     static ROUTES: OnceLock<Mutex<HashMap<SessionId, WakeSender>>> = OnceLock::new();
     ROUTES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -109,7 +145,7 @@ impl Drop for WakeRunner {
 /// message and point the model at the run's result before it continues.
 pub fn frame_wake_prompt(message: &str) -> String {
     format!(
-        "[automatic] A background task you started has finished:\n\n{message}\n\nThis is not a \
+        "[automatic] Background work you started has finished:\n\n{message}\n\nThis is not a \
          user message. Read the run's result if useful (its `result_path`/`log_path` are session \
          files you can read), then continue the work it was for or report the result."
     )
@@ -321,5 +357,31 @@ mod tests {
             .expect("wake runner must scope schedule claims");
         assert!(routable.contains(&session_a));
         assert!(!routable.contains(&session_b));
+    }
+
+    #[test]
+    fn queued_completion_burst_coalesces_without_losing_results() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send("task_2 result_path=/results/2".to_string())
+            .unwrap();
+        tx.send("task_3 result_path=/results/3".to_string())
+            .unwrap();
+
+        let batch = coalesce_pending_wakes("task_1 result_path=/results/1".to_string(), &mut rx);
+
+        assert!(
+            batch.starts_with("3 background tasks finished"),
+            "three wakes should cost one model turn"
+        );
+        for result_path in ["/results/1", "/results/2", "/results/3"] {
+            assert!(
+                batch.contains(result_path),
+                "every queued result must be delivered in the coalesced prompt"
+            );
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "the burst must be drained exactly once"
+        );
     }
 }

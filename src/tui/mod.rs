@@ -2528,6 +2528,10 @@ impl App {
         let Ok(message) = self.background_wake.try_recv() else {
             return false;
         };
+        let message = crate::runtime::background_wake::coalesce_pending_wakes(
+            message,
+            &mut self.background_wake,
+        );
         if !self.settings.snapshot().proactive_wake_enabled() {
             self.push_system(
                 "✓ background task finished — see /background (proactive wake off)".to_string(),
@@ -6325,6 +6329,33 @@ mod tests {
         assert!(
             app.lines.iter().any(|l| l.text.contains("waking")),
             "a notice explaining the auto-wake should be shown"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn proactive_wake_coalesces_queued_completions_into_one_turn() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.setup = None;
+        let tx = seed_background_wake(app, "task_1 result_path=/results/1");
+        tx.send("task_2 result_path=/results/2".to_string())
+            .unwrap();
+        tx.send("task_3 result_path=/results/3".to_string())
+            .unwrap();
+
+        assert!(app.maybe_wake_from_background_channel());
+        assert!(app.busy);
+        assert!(
+            app.lines
+                .iter()
+                .filter(|line| line.text.contains("waking"))
+                .count()
+                == 1,
+            "the host should present one wake notice"
+        );
+        assert!(
+            app.background_wake.try_recv().is_err(),
+            "queued completions must not create duplicate idle wakes"
         );
     }
 

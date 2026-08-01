@@ -1,0 +1,79 @@
+{
+  "eval": "terminal_bench",
+  "sample": "configure-git-webserver",
+  "target": "openai-gpt-5.6-luna",
+  "passed": true,
+  "aggregate": 1.0,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 1.0,
+      "pass": true,
+      "reason": "tests passed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=True",
+    "iterations": 12,
+    "tool_calls_count": 11,
+    "tool_calls": [
+      "write_session_title",
+      "list_directory",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash"
+    ],
+    "usage": {
+      "input_tokens": 29638,
+      "output_tokens": 3631,
+      "cache_read_tokens": 120684,
+      "cost_usd": 0.0634924
+    },
+    "timing": {
+      "duration_ms": 346537
+    },
+    "metrics": {
+      "cache_read_tokens": 120684.0,
+      "llm_calls": 12.0,
+      "reward": 1.0,
+      "tool_calls": 11.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "category": "system-administration",
+      "difficulty": "hard",
+      "exception": null,
+      "model": "openai/gpt-5.6-luna",
+      "model_effective": "gpt-5.6-luna",
+      "model_requested": "openai/gpt-5.6-luna",
+      "provider": "openai",
+      "provider_effective": "openai",
+      "provider_requested": "openai",
+      "reasoning_effort": "medium",
+      "reasoning_effort_effective": "medium",
+      "reasoning_effort_requested": null,
+      "resolved": true,
+      "reward": 1.0,
+      "stop_reason": "completed",
+      "tools_used": {
+        "bash": 9,
+        "list_directory": 1,
+        "write_session_title": 1
+      },
+      "yolop_version": "0.13.0"
+    }
+  },
+  "skipped": false
+}

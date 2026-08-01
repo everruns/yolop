@@ -13,6 +13,8 @@ import unittest
 import unittest.mock as mock
 from pathlib import Path
 
+import tomllib
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import terminal_bench as tb  # noqa: E402
@@ -42,6 +44,16 @@ class TestMatrix(unittest.TestCase):
     def test_openai_config_available_with_key(self):
         with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=True):
             self.assertTrue(tb.config_available(tb.MATRIX["openai-gpt-5.6-terra"]))
+
+    def test_control_preset_uses_luna(self):
+        config_path = Path(__file__).resolve().parents[1] / "mira.toml"
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(config["presets"]["control"]["targets"], "openai-gpt-5.6-luna")
+        self.assertEqual(
+            tb.MATRIX["openai-gpt-5.6-luna"],
+            {"agent": "yolop", "model": "openai/gpt-5.6-luna"},
+        )
 
 
 class TestBuildCommand(unittest.TestCase):

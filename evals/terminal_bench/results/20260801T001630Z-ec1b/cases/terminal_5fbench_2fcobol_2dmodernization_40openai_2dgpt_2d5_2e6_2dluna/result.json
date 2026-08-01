@@ -1,0 +1,81 @@
+{
+  "eval": "terminal_bench",
+  "sample": "cobol-modernization",
+  "target": "openai-gpt-5.6-luna",
+  "passed": true,
+  "aggregate": 1.0,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 1.0,
+      "pass": true,
+      "reason": "tests passed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=True",
+    "iterations": 15,
+    "tool_calls_count": 14,
+    "tool_calls": [
+      "write_session_title",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash"
+    ],
+    "usage": {
+      "input_tokens": 27157,
+      "output_tokens": 6324,
+      "cache_read_tokens": 249069,
+      "cost_usd": 0.0900079
+    },
+    "timing": {
+      "duration_ms": 145691
+    },
+    "metrics": {
+      "cache_read_tokens": 249069.0,
+      "llm_calls": 15.0,
+      "reward": 1.0,
+      "tool_calls": 14.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "category": "software-engineering",
+      "difficulty": "easy",
+      "exception": null,
+      "model": "openai/gpt-5.6-luna",
+      "model_effective": "gpt-5.6-luna",
+      "model_requested": "openai/gpt-5.6-luna",
+      "provider": "openai",
+      "provider_effective": "openai",
+      "provider_requested": "openai",
+      "reasoning_effort": "medium",
+      "reasoning_effort_effective": "medium",
+      "reasoning_effort_requested": null,
+      "resolved": true,
+      "reward": 1.0,
+      "stop_reason": "completed",
+      "tools_used": {
+        "bash": 13,
+        "write_session_title": 1
+      },
+      "yolop_version": "0.13.0"
+    }
+  },
+  "skipped": false
+}

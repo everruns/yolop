@@ -1,0 +1,81 @@
+{
+  "eval": "terminal_bench",
+  "sample": "chess-best-move",
+  "target": "openai-gpt-5.6-luna",
+  "passed": false,
+  "aggregate": 0.5,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 0.0,
+      "pass": false,
+      "reason": "tests failed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=False",
+    "iterations": 14,
+    "tool_calls_count": 13,
+    "tool_calls": [
+      "write_session_title",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "read_file"
+    ],
+    "usage": {
+      "input_tokens": 24669,
+      "output_tokens": 7480,
+      "cache_read_tokens": 182814,
+      "cost_usd": 0.08783039999999999
+    },
+    "timing": {
+      "duration_ms": 173028
+    },
+    "metrics": {
+      "cache_read_tokens": 182814.0,
+      "llm_calls": 14.0,
+      "reward": 0.0,
+      "tool_calls": 13.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "category": "games",
+      "difficulty": "medium",
+      "exception": null,
+      "model": "openai/gpt-5.6-luna",
+      "model_effective": "gpt-5.6-luna",
+      "model_requested": "openai/gpt-5.6-luna",
+      "provider": "openai",
+      "provider_effective": "openai",
+      "provider_requested": "openai",
+      "reasoning_effort": "medium",
+      "reasoning_effort_effective": "medium",
+      "reasoning_effort_requested": null,
+      "resolved": false,
+      "reward": 0.0,
+      "stop_reason": "completed",
+      "tools_used": {
+        "bash": 11,
+        "read_file": 1,
+        "write_session_title": 1
+      },
+      "yolop_version": "0.13.0"
+    }
+  },
+  "skipped": false
+}

@@ -174,3 +174,11 @@ wording, formatting, and link fixes do not need entries.
 - Eval metadata now distinguishes matrix-requested provider settings from the
   effective provider, model, and reasoning effort recorded on completed model
   responses.
+
+## 2026-07-31 — Durable monitoring without polling turns
+
+- [Background execution](specs/background.md) now defines semantic polling
+  detection across a bounded observation window, so heterogeneous status/task
+  cycles steer to one durable background watch without flagging one-off checks.
+- Background completions queued at one idle boundary are coalesced into one
+  TUI or ACP wake turn while retaining their durable task results.
