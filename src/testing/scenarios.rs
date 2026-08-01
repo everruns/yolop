@@ -213,6 +213,73 @@ async fn scripted_tool_call_executes_bash_then_assistant_completes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_read_reuse_runs_through_real_file_tools_and_invalidates_on_write() {
+    use everruns_core::events::EventData;
+
+    let original = "ORIGINAL-EVIDENCE\n".repeat(400);
+    let changed = "CHANGED-EVIDENCE\n".repeat(400);
+    let (runtime, _workspace) = build_scripted_runtime_with_workspace(
+        LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "read_file".to_string(),
+                arguments: json!({ "path": "evidence.txt" }),
+                id: None,
+            }]),
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "read_file".to_string(),
+                arguments: json!({ "path": "evidence.txt" }),
+                id: None,
+            }]),
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "write_file".to_string(),
+                arguments: json!({ "path": "evidence.txt", "content": changed }),
+                id: None,
+            }]),
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "read_file".to_string(),
+                arguments: json!({ "path": "evidence.txt" }),
+                id: None,
+            }]),
+            SimTurn::Assistant("used fresh evidence".to_string()),
+        ]),
+        |workspace| {
+            std::fs::write(workspace.join("evidence.txt"), &original).expect("seed evidence");
+        },
+    )
+    .await;
+
+    let result = run_single_turn(&runtime, "inspect, repeat, update, and inspect").await;
+    assert!(result.success, "scripted discovery turn: {result:?}");
+    assert_eq!(result.tool_calls_count, 4);
+
+    let events = runtime
+        .handles
+        .runtime
+        .events()
+        .await
+        .expect("runtime events");
+    let reads = events
+        .iter()
+        .filter_map(|event| match &event.data {
+            EventData::ToolCompleted(data) if data.tool_name == "read_file" => {
+                Some(serde_json::to_string(&data.result).expect("serialize read result"))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reads.len(), 3);
+    assert!(reads[0].contains("ORIGINAL-EVIDENCE"));
+    assert!(reads[1].contains("unchanged_since_last_read"));
+    assert!(!reads[1].contains("ORIGINAL-EVIDENCE"));
+    assert!(
+        reads[2].contains("CHANGED-EVIDENCE"),
+        "a real write must invalidate compact reuse: {}",
+        reads[2]
+    );
+    assert!(!reads[2].contains("unchanged_since_last_read"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scripted_spawn_background_runs_bash_detached() {
     let marker = "spawn_background_bash.marker";
     let cmd = format!("printf background-ok > {marker}");

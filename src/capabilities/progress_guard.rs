@@ -10,6 +10,7 @@ use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::tool_types::{ToolCall, ToolDefinition, ToolResult};
 use everruns_core::traits::ToolContext;
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -26,6 +27,7 @@ const WAITING_WINDOW_SIZE: usize = 8;
 const WAITING_WINDOW_THRESHOLD: usize = 4;
 const SEMANTIC_HISTORY_LIMIT: usize = 512;
 const TRACKED_PATH_LIMIT: usize = 1024;
+const MIN_REUSABLE_RESULT_BYTES: usize = 512;
 
 pub(crate) struct ProgressGuardCapability {
     state: Arc<Mutex<ProgressGuardState>>,
@@ -109,10 +111,12 @@ struct SessionProgress {
     seen_workspace_states: HashSet<u64>,
     recent_validations: VecDeque<(u64, String)>,
     seen_validations: HashSet<(u64, String)>,
+    recent_observations: VecDeque<String>,
+    observation_hashes: HashMap<String, [u8; 32]>,
 }
 
 impl SessionProgress {
-    fn observe(&mut self, tool_call: &ToolCall, result: &ToolResult) -> Option<String> {
+    fn observe(&mut self, tool_call: &ToolCall, result: &mut ToolResult) -> Option<String> {
         self.tool_count += 1;
         let class = classify_tool_call(tool_call);
 
@@ -174,6 +178,9 @@ impl SessionProgress {
                 if let Some(warning) = self.result_warning(tool_call, result) {
                     return Some(warning);
                 }
+                if let Some(warning) = self.reuse_unchanged_observation(tool_call, result) {
+                    return Some(warning);
+                }
                 if let Some(warning) = self.repetition_warning(tool_call) {
                     return Some(warning);
                 }
@@ -194,6 +201,11 @@ impl SessionProgress {
 
         self.mutation_count += 1;
         self.reset_activity_streaks();
+        // A mutation changes the meaning of later repository evidence even when
+        // a file happens to return to the same bytes. Clear reuse state instead
+        // of serving a compact marker across an edit boundary.
+        self.recent_observations.clear();
+        self.observation_hashes.clear();
 
         let Some(transition) = mutation_hash_transition(tool_call, result) else {
             // Shell, delete, and structural edits can touch an unknown set of
@@ -353,6 +365,54 @@ impl SessionProgress {
         self.consecutive_truncated_exploration = 0;
     }
 
+    fn reuse_unchanged_observation(
+        &mut self,
+        tool_call: &ToolCall,
+        result: &mut ToolResult,
+    ) -> Option<String> {
+        if result.error.is_some() {
+            return None;
+        }
+        let signature = exploration_signature(tool_call)?;
+        let value = result.result.as_ref()?;
+        let encoded = serde_json::to_vec(value).ok()?;
+        let result_hash: [u8; 32] = Sha256::digest(&encoded).into();
+
+        let unchanged = self.observation_hashes.get(&signature) == Some(&result_hash);
+        self.remember_observation(signature.clone(), result_hash);
+        if !unchanged || encoded.len() < MIN_REUSABLE_RESULT_BYTES {
+            return None;
+        }
+
+        // This won against generic oversized-result summarization in the focused
+        // discovery study: the first full result stays available, while an exact
+        // repeat becomes a small freshness proof instead of another lossy summary.
+        result.result = Some(json!({
+            "unchanged_since_last_read": true,
+            "tool": tool_call.name,
+        }));
+        self.warning_count += 1;
+        Some(
+            "progress_guard: this read/search result is unchanged since the same target was last inspected. Reuse the earlier full result; continue only if a different question or scope needs evidence."
+                .to_string(),
+        )
+    }
+
+    fn remember_observation(&mut self, signature: String, result_hash: [u8; 32]) {
+        if self.observation_hashes.contains_key(&signature) {
+            self.recent_observations
+                .retain(|candidate| candidate != &signature);
+        }
+        self.observation_hashes
+            .insert(signature.clone(), result_hash);
+        self.recent_observations.push_back(signature);
+        if self.recent_observations.len() > SEMANTIC_HISTORY_LIMIT
+            && let Some(expired) = self.recent_observations.pop_front()
+        {
+            self.observation_hashes.remove(&expired);
+        }
+    }
+
     fn exploration_warning(&mut self) -> Option<String> {
         if self.exploration_since_progress == EXPLORATION_WITHOUT_PROGRESS_THRESHOLD {
             self.warning_count += 1;
@@ -471,9 +531,8 @@ enum ToolClass {
 
 fn classify_tool_call(tool_call: &ToolCall) -> ToolClass {
     match tool_call.name.as_str() {
-        "read_file" | "grep_files" | "repo_map" | "ast_grep" | "list_directory" | "stat_file" => {
-            ToolClass::Exploration
-        }
+        "read_file" | "grep_files" | "repo_map" | "search_sessions" | "ast_grep"
+        | "list_directory" | "stat_file" => ToolClass::Exploration,
         "write_file" | "edit_file" | "delete_file" | "ast_edit" => ToolClass::Mutation,
         "get_task" | "list_tasks" => ToolClass::Waiting,
         "bash" => classify_bash_command(
@@ -613,11 +672,13 @@ fn exploration_signature(tool_call: &ToolCall) -> Option<String> {
                 .unwrap_or_default();
             Some(format!("grep_files:{path_pattern}:{pattern}"))
         }
-        "repo_map" | "ast_grep" | "list_directory" | "stat_file" => Some(format!(
-            "{}:{}",
-            tool_call.name,
-            normalize_value(&tool_call.arguments)
-        )),
+        "repo_map" | "search_sessions" | "ast_grep" | "list_directory" | "stat_file" => {
+            Some(format!(
+                "{}:{}",
+                tool_call.name,
+                normalize_value(&tool_call.arguments)
+            ))
+        }
         "bash" => {
             let command = tool_call
                 .arguments
@@ -774,6 +835,86 @@ mod tests {
         ToolResult {
             result: Some(value),
             ..result()
+        }
+    }
+
+    #[tokio::test]
+    async fn unchanged_large_read_returns_compact_marker_and_mutation_invalidates_it() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let read = call("read_file", json!({ "path": "/src/lib.rs" }));
+        let payload = json!({ "content": "discovery evidence\n".repeat(400) });
+
+        let mut first = result_value(payload.clone());
+        hook.after_exec(&read, &tool_def("read_file"), &mut first, &context)
+            .await;
+        let first_bytes = serde_json::to_vec(first.result.as_ref().unwrap())
+            .unwrap()
+            .len();
+
+        let mut repeated = result_value(payload.clone());
+        hook.after_exec(&read, &tool_def("read_file"), &mut repeated, &context)
+            .await;
+        let repeated_value = repeated.result.as_ref().unwrap();
+        let repeated_bytes = serde_json::to_vec(repeated_value).unwrap().len();
+        assert_eq!(repeated_value["unchanged_since_last_read"], true);
+        assert!(
+            repeated_value["progress_guard_warning"]
+                .as_str()
+                .is_some_and(|warning| warning.contains("earlier full result"))
+        );
+        assert!(
+            repeated_bytes * 10 < first_bytes,
+            "compact unchanged marker should materially cut context bytes: {repeated_bytes} vs {first_bytes}"
+        );
+
+        let mut write = result();
+        hook.after_exec(
+            &call(
+                "write_file",
+                json!({ "path": "/src/lib.rs", "content": "changed" }),
+            ),
+            &tool_def("write_file"),
+            &mut write,
+            &context,
+        )
+        .await;
+        let mut after_mutation = result_value(payload);
+        hook.after_exec(&read, &tool_def("read_file"), &mut after_mutation, &context)
+            .await;
+        assert!(after_mutation.result.unwrap().get("content").is_some());
+    }
+
+    #[tokio::test]
+    async fn reuse_requires_the_same_target_and_same_result() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let large = "x".repeat(2_000);
+
+        let cases = [
+            ("/a.rs", large.clone()),
+            ("/b.rs", large.clone()),
+            ("/a.rs", format!("{large} changed")),
+        ];
+        for (path, content) in cases {
+            let mut observed = result_value(json!({ "content": content }));
+            hook.after_exec(
+                &call("read_file", json!({ "path": path })),
+                &tool_def("read_file"),
+                &mut observed,
+                &context,
+            )
+            .await;
+            assert!(
+                observed
+                    .result
+                    .as_ref()
+                    .and_then(|value| value.get("unchanged_since_last_read"))
+                    .is_none(),
+                "different targets or changed bytes are not reusable"
+            );
         }
     }
 

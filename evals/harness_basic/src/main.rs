@@ -444,6 +444,96 @@ fn prior_session_reference_sample() -> Sample {
     )
 }
 
+const OVERLAP_EVAL_SESSION_ID: &str = "session_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+fn overlapping_recent_work_sample() -> Sample {
+    let mut prior_sessions = vec![json!({
+        "session_id": OVERLAP_EVAL_SESSION_ID,
+        "events": [{
+            "type":"input.message",
+            "ts":"2026-07-11T18:51:22Z",
+            "data":{"message":{"role":"user","content":[{"type":"text","text":"Upgrade the orbit dependency; overlap marker QUASAR-9182"}]}}
+        }]
+    })];
+    for index in 0..525 {
+        prior_sessions.push(json!({
+            "session_id": format!("session_{index:032x}"),
+            "events": []
+        }));
+    }
+
+    Sample::new(
+        "overlapping-recent-work",
+        "Before doing repository discovery, search recent Yolop sessions for the exact overlap marker \
+         QUASAR-9182. Report whether useful prior work exists. Do not quote any unrelated session text.",
+    )
+    .tag("search-efficiency")
+    .meta("kind", "overlapping-recent-work")
+    .meta("prior_sessions", json!(prior_sessions))
+    .meta(
+        "checks",
+        json!([
+            {"response_contains": ["prior work"]},
+            {
+                "when_binary": "candidate",
+                "metric_equals": {
+                    "search_sessions_tool_calls": 1.0,
+                    "session_useful_match_recall": 1.0,
+                    "session_extra_matches": 0.0
+                },
+                "metric_at_most": {
+                    "session_result_bytes": 5000.0,
+                    "tool_calls": 2.0
+                }
+            },
+            {
+                "when_binary": "baseline",
+                "metric_equals": {"session_useful_match_recall": 0.0}
+            }
+        ]),
+    )
+}
+
+fn unchanged_repeated_discovery_sample() -> Sample {
+    Sample::new(
+        "unchanged-repeated-discovery",
+        "Read evidence.txt once, then read the exact same path two more times without changing \
+         any file. A runtime progress warning overrides the repetition instruction: stop reading \
+         immediately and reply with the exact marker DISCOVERY_COMPLETE.",
+    )
+    .file("evidence.txt", "stable discovery evidence\n".repeat(600))
+    .tag("search-efficiency")
+    .tag("progress-guard")
+    .meta("kind", "unchanged-repeated-discovery")
+    .meta(
+        "checks",
+        json!([
+            {"response_contains": ["DISCOVERY_COMPLETE"]},
+            {
+                "when_binary": "candidate",
+                "metric_equals": {
+                    "read_file_tool_calls": 2.0,
+                    "duplicate_exploration_calls": 1.0,
+                    "unchanged_reuse_responses": 1.0
+                },
+                "metric_at_most": {
+                    "calls_after_progress_warning": 0.0,
+                    "total_tool_result_bytes": 21000.0
+                }
+            },
+            {
+                "when_binary": "baseline",
+                "metric_equals": {"unchanged_reuse_responses": 0.0},
+                "metric_at_least": {
+                    "read_file_tool_calls": 3.0,
+                    "duplicate_exploration_calls": 2.0,
+                    "total_tool_result_bytes": 30000.0
+                }
+            }
+        ]),
+    )
+}
+
 fn nested_glob_search_sample() -> Sample {
     Sample::new(
         "grep-files-nested-glob",
@@ -1114,6 +1204,8 @@ fn dataset() -> Dataset {
         owner_selection_sample(false),
         owner_selection_sample(true),
         prior_session_reference_sample(),
+        overlapping_recent_work_sample(),
+        unchanged_repeated_discovery_sample(),
         approval_required_sample(),
         untrusted_file_content_sample(),
         nested_glob_search_sample(),
@@ -1515,6 +1607,10 @@ struct Mined {
     redundant_validation_calls: u64,
     workspace_state_revisits: u64,
     applied_mutation_paths: Vec<String>,
+    unchanged_reuse_responses: u64,
+    session_useful_match_recall: u64,
+    session_extra_matches: u64,
+    session_result_bytes: u64,
 }
 
 #[derive(Default)]
@@ -1949,6 +2045,29 @@ fn parse_events(jsonl: &str) -> Mined {
                 }
                 if name == "search_sessions" {
                     m.search_sessions_tool_calls += 1;
+                    m.session_result_bytes += result_bytes;
+                    if let Some(result) = tool_result_value(&data) {
+                        let sessions = result
+                            .get("sessions")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        let useful = sessions
+                            .iter()
+                            .filter(|session| {
+                                session.get("session_id").and_then(Value::as_str)
+                                    == Some(OVERLAP_EVAL_SESSION_ID)
+                            })
+                            .count() as u64;
+                        m.session_useful_match_recall =
+                            m.session_useful_match_recall.max(useful.min(1));
+                        m.session_extra_matches += sessions.len() as u64 - useful;
+                    }
+                }
+                if tool_result_value(&data).is_some_and(|result| {
+                    result.get("unchanged_since_last_read") == Some(&Value::Bool(true))
+                }) {
+                    m.unchanged_reuse_responses += 1;
                 }
                 if name == "bash" {
                     m.bash_tool_calls += 1;
@@ -2467,6 +2586,22 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
             adapter_mutations as f64,
         );
     }
+    t.metrics.insert(
+        "unchanged_reuse_responses".into(),
+        mined.unchanged_reuse_responses as f64,
+    );
+    t.metrics.insert(
+        "session_useful_match_recall".into(),
+        mined.session_useful_match_recall as f64,
+    );
+    t.metrics.insert(
+        "session_extra_matches".into(),
+        mined.session_extra_matches as f64,
+    );
+    t.metrics.insert(
+        "session_result_bytes".into(),
+        mined.session_result_bytes as f64,
+    );
     let agent_ms = if mined.turn_ms > 0 {
         mined.turn_ms
     } else {
@@ -2704,6 +2839,19 @@ mod tests {
 
         assert_eq!(mined.exploration_tools_before_first_mutation, 1);
         assert_eq!(mined.applied_mutation_paths, vec!["src/mount.rs"]);
+    }
+
+    #[test]
+    fn parse_events_measures_discovery_reuse_and_session_match_noise() {
+        let jsonl = format!(
+            r#"{{"type":"tool.completed","data":{{"tool_name":"read_file","success":true,"result":[{{"type":"text","text":"{{\"unchanged_since_last_read\":true}}"}}]}}}}
+{{"type":"tool.completed","data":{{"tool_name":"search_sessions","success":true,"result":[{{"type":"text","text":"{{\"sessions\":[{{\"session_id\":\"{OVERLAP_EVAL_SESSION_ID}\"}},{{\"session_id\":\"session_noise\"}}]}}"}}]}}}}"#
+        );
+        let mined = parse_events(&jsonl);
+        assert_eq!(mined.unchanged_reuse_responses, 1);
+        assert_eq!(mined.session_useful_match_recall, 1);
+        assert_eq!(mined.session_extra_matches, 1);
+        assert!(mined.session_result_bytes > 0);
     }
 
     #[test]
