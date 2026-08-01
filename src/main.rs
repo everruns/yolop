@@ -1046,7 +1046,6 @@ pub(crate) fn hyperlink_policy() -> LinkPolicy {
 /// and a loader on the alternate screen, and drives the terminal's native
 /// OSC 9;4 progress indicator while running. Quits on `q`/`Esc`/`Ctrl-C`.
 fn run_tuika_gallery() -> Result<()> {
-    use std::ops::ControlFlow;
     use std::time::Duration;
 
     // Route through the same hyperlink-aware backend as the main TUI so the
@@ -1061,18 +1060,20 @@ fn run_tuika_gallery() -> Result<()> {
         // default, and split-footer mode is for hosts that publish scrollback.
         ..tuika::RunnerConfig::default()
     });
+    let mut state = ();
     runner.run_with_backend(
         &theme,
         backend,
-        |frame| build_gallery(frame, &theme),
-        |event| match event {
-            tuika::Event::Key(key)
+        &mut state,
+        |_state, frame| build_gallery(frame, &theme),
+        |_state, signal| match signal {
+            tuika::Signal::Event(tuika::Event::Key(key))
                 if matches!(key.code, tuika::KeyCode::Esc | tuika::KeyCode::Char('q'))
                     || (key.ctrl && matches!(key.code, tuika::KeyCode::Char('c'))) =>
             {
-                ControlFlow::Break(())
+                tuika::UpdateResult::Exit
             }
-            _ => ControlFlow::Continue(()),
+            _ => tuika::UpdateResult::Dirty,
         },
     )?;
     progress.clear();

@@ -23,15 +23,17 @@ than a one-line convenience.
 
 ## What
 
-Yolop depends on three crates from crates.io:
+Yolop depends on four crates from crates.io:
 
 - `tuika` — the toolkit. Version-pinned like any other dependency, with no path
   override.
 - `tuika-codeformatters` — the tree-sitter `Highlighter` implementation. Kept
   separate upstream so tuika core stays grammar-free.
-- `tuika-mermaid` — the `FencedBlockRenderer` that turns ` ```mermaid ` fences
+- `tuika-mermaid` — the `MarkdownBlockRenderer` that turns ` ```mermaid ` fences
   into Unicode cell diagrams. Kept separate upstream so tuika core takes on no
   diagram engine.
+- `tuika-html` — the safe block-HTML renderer. It maps supported semantic HTML
+  to styled terminal text and ignores unsafe elements and attributes.
 
 ## Screen modes
 
@@ -94,9 +96,9 @@ it receives, or a modifier-click opens the browser twice. See
 - **A yolop-only feature does not belong upstream.** If a proposed tuika change
   only makes sense for yolop, the right shape is a new seam (a trait, a state
   type, a callback) that yolop fills in.
-- **The companion crates move with tuika.** `tuika-codeformatters` and
-  `tuika-mermaid` pin a compatible `tuika` range, so bumping one usually means
-  bumping all three.
+- **The companion crates move with tuika.** `tuika-codeformatters`,
+  `tuika-mermaid`, and `tuika-html` pin a compatible `tuika` range, so bumping
+  one usually means bumping the full set.
 - **A fenced block that does not fit is not painted.** A companion renderer may
   lay content out at its natural size and ignore the offered width;
   `tuika-mermaid` does. The transcript falls back to the themed code block

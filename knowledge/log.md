@@ -3,6 +3,11 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-01 — Tuika structured-markdown renderers
+
+- [Tuika](specs/tuika.md) now records the HTML companion renderer and the
+  current structured-markdown renderer API alongside Mermaid diagrams.
+
 ## 2026-08-01 — Conversational skills.sh search and install
 
 - [Skills](specs/skills.md) and [Conversational control](specs/conversational-control.md)

@@ -1640,7 +1640,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3304,7 +3304,19 @@ dependencies = [
  "html5ever 0.27.0",
  "markup5ever 0.12.1",
  "tendril 0.4.3",
- "xml5ever",
+ "xml5ever 0.18.1",
+]
+
+[[package]]
+name = "markup5ever_rcdom"
+version = "0.39.0+unofficial"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ac010f19d6c4af81eeb4018a39d7a115de9d285af45c126a4ac02e6fc5716b7"
+dependencies = [
+ "html5ever 0.39.0",
+ "markup5ever 0.39.0",
+ "tendril 0.5.1",
+ "xml5ever 0.39.0",
 ]
 
 [[package]]
@@ -3791,7 +3803,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4502,7 +4514,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4544,7 +4556,7 @@ dependencies = [
  "anyhow",
  "clap",
  "html5ever 0.27.0",
- "markup5ever_rcdom",
+ "markup5ever_rcdom 0.3.0",
  "rquickjs",
  "scraper",
  "similar 2.7.0",
@@ -5041,7 +5053,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5109,7 +5121,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5698,6 +5710,7 @@ dependencies = [
  "parking_lot",
  "phf_shared 0.13.1",
  "precomputed-hash",
+ "serde",
 ]
 
 [[package]]
@@ -5863,7 +5876,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6667,9 +6680,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tuika"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d19d29f435a03a089f7a3842bbfc5b2b3a01fc4758cea0bb34bc9f6f0df99333"
+checksum = "342a82ee8016637ca1ac001a442e10cba08cd30230d9984f9a7d039b5c4d9c70"
 dependencies = [
  "crossterm",
  "pulldown-cmark",
@@ -6682,9 +6695,9 @@ dependencies = [
 
 [[package]]
 name = "tuika-codeformatters"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0091249e75f39c03aedb69555341d3ffb662c4693428d8b60b67497a64b585d7"
+checksum = "100174a0ba5b7ef8187403c4546682bfd16ddb70e3f0c458c73b10f2b386e730"
 dependencies = [
  "ratatui",
  "tree-sitter",
@@ -6706,10 +6719,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "tuika-mermaid"
-version = "0.1.1"
+name = "tuika-html"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38fbe4d52e3e8e791d9d1f08b67d15b2d139c7542042306690638a590dc1acf1"
+checksum = "11da3a2774cc913e90af87307f38152a9f26af10d5094f8fe70a34aaf228e9ea"
+dependencies = [
+ "html5ever 0.39.0",
+ "markup5ever_rcdom 0.39.0+unofficial",
+ "ratatui-core",
+ "tuika",
+]
+
+[[package]]
+name = "tuika-mermaid"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0077b474ae88da6606a63a4b3bfe837f658e35029d4d8cf37971b959292a75e"
 dependencies = [
  "mmdflux",
  "ratatui-core",
@@ -7301,7 +7326,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7641,6 +7666,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "xml5ever"
+version = "0.39.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ab627f34ff61b80d756180d556f9c68801d836d271b3b8c094504ceca69d221"
+dependencies = [
+ "log",
+ "markup5ever 0.39.0",
+]
+
+[[package]]
 name = "yoke"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7738,6 +7773,7 @@ dependencies = [
  "tree-sitter-zig",
  "tuika",
  "tuika-codeformatters",
+ "tuika-html",
  "tuika-mermaid",
  "urlencoding",
  "vt100",

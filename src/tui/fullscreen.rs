@@ -469,7 +469,7 @@ fn draw_setup_picker(f: &mut Frame, area: Rect, picker: render::SetupPicker) {
         viewport,
     } = picker;
     let mut state = SelectState::new();
-    state.select(selected);
+    state.select(Some(selected));
     let mut list = SelectList::new(options, &state);
     if let Some(rows) = viewport {
         list = list.viewport(rows);
