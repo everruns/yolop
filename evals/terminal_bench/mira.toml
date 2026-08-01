@@ -44,7 +44,7 @@ targets = "openai-gpt-5.6-terra"
 #   TB_MAX_COST_USD=10 mira run --preset control --group-by difficulty
 [presets.control]
 tag = "control-v1"
-targets = "openai-gpt-5.6-luna"
+targets = "openai-gpt-5.6-terra"
 
 # COMPARE — yolop against the other terminal agents on the same easy tasks, the
 # evidence for "how does yolop's harness bench against Terminus/Claude Code/Codex".

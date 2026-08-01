@@ -127,80 +127,83 @@ fast enough to repeat.
 | `configure-git-webserver` | hard | system-administration | 900s |
 | `fix-code-vulnerability` | hard | security | 900s |
 
-### Baselines
+### Terra vs Luna
 
-The tracked `control` preset uses yolop · **gpt-5.6-luna** (OpenAI). Run
-`20260801T001630Z-ec1b`, with the infrastructure-invalid `overfull-hbox` case
-replaced by CA-enabled run `20260801T004403Z-5be4`, resolved **5/8 for $0.55**
-in 29 minutes of summed case wall time. Every valid case used the model's
-effective default reasoning effort, `medium`; there were no timeouts or budget
-stops.
+The tracked `control` preset remains yolop · **gpt-5.6-terra** (OpenAI), keeping
+the periodic signal continuous. Luna is a first-class matrix target for explicit
+comparisons:
 
-| difficulty | resolved |
-|---|---|
-| easy | 3/3 |
-| medium | 1/3 |
-| hard | 1/2 |
+```bash
+mira run --preset control --targets openai-gpt-5.6-luna --group-by difficulty
+```
 
-| task | | cost | wall | llm calls | tool calls |
-|---|---|---|---|---|---|
-| `cobol-modernization` | ✓ | $0.090 | 146s | 15 | 14 |
-| `fix-git` | ✓ | $0.068 | 153s | 16 | 23 |
-| `overfull-hbox` | ✓ | $0.090 | 301s | 17 | 20 |
-| `modernize-scientific-stack` | ✓ | $0.026 | 147s | 5 | 4 |
-| `count-dataset-tokens` | ✗ | $0.058 | 326s | 14 | 13 |
-| `chess-best-move` | ✗ | $0.088 | 173s | 14 | 13 |
-| `fix-code-vulnerability` | ✗ | $0.069 | 121s | 7 | 12 |
-| `configure-git-webserver` | ✓ | $0.063 | 347s | 12 | 11 |
+This comparison uses Terra run `20260731T014824Z-3c1e` and Luna run
+`20260801T001630Z-ec1b`. Luna's `overfull-hbox` process initially failed before
+the first model call because that task image had no CA certificates; the table
+substitutes the valid CA-enabled case from `20260801T004403Z-5be4`. No valid
+case hit a timeout or budget stop. Both ran yolop 0.13.0 through OpenAI with
+reasoning effort unset at the CLI. Luna recorded its effective profile value as
+`medium`; the older Terra archive predates effective-value capture.
 
-The initial `overfull-hbox` attempt never reached the model: that task image had
-no CA certificates, so reqwest failed during client construction. The
-replacement run supplied the host CA through `TB_CA_CERT` and passed. The three
-model failures have distinct causes in their retained trajectories:
+| metric | Terra | Luna | Luna vs Terra |
+|---|---:|---:|---:|
+| resolved | 6/8 (75%) | 5/8 (62.5%) | -1 task (-12.5 pp) |
+| easy | 3/3 | 3/3 | — |
+| medium | 2/3 | 1/3 | -1 task |
+| hard | 1/2 | 1/2 | different task passed |
+| estimated cost | $1.344 | $0.552 | -58.9% |
+| summed case wall | 21m57s | 28m32s | +30.0% |
+| reported tokens | 223,777 | 244,834 | +9.4% |
+| cache-read tokens | 1,618,154 | 1,485,569 | -8.2% |
+| LLM calls | 107 | 100 | -6.5% |
+| tool calls | 107 | 110 | +2.8% |
 
-- `chess-best-move` could not interpret the board image directly, inferred the
-  pieces from pixel statistics, and wrote `g7f8`; the verifier requires both
-  `e2e4` and `g2g4`.
+Three outcomes flipped. Luna gained `configure-git-webserver`, while Terra kept
+`count-dataset-tokens` and `fix-code-vulnerability`; both failed the canonical
+`chess-best-move` trial.
+
+| task | Terra | Luna | outcome note |
+|---|---:|---:|---|
+| `cobol-modernization` | ✓ | ✓ | both pass |
+| `fix-git` | ✓ | ✓ | both pass |
+| `overfull-hbox` | ✓ | ✓ | Luna uses the valid CA-enabled replacement |
+| `modernize-scientific-stack` | ✓ | ✓ | both pass |
+| `count-dataset-tokens` | ✓ | ✗ | Terra advantage |
+| `chess-best-move` | ✗ | ✗ | shared canonical failure |
+| `fix-code-vulnerability` | ✓ | ✗ | Terra advantage |
+| `configure-git-webserver` | ✗ | ✓ | Luna advantage |
+
+| task | cost, Terra → Luna | wall, Terra → Luna | LLM calls | tool calls |
+|---|---:|---:|---:|---:|
+| `cobol-modernization` | $0.192 → $0.090 | 108s → 146s | 13 → 15 | 12 → 14 |
+| `fix-git` | $0.156 → $0.068 | 101s → 153s | 16 → 16 | 15 → 23 |
+| `overfull-hbox` | $0.198 → $0.090 | 319s → 301s | 15 → 17 | 14 → 20 |
+| `modernize-scientific-stack` | $0.091 → $0.026 | 78s → 147s | 10 → 5 | 9 → 4 |
+| `count-dataset-tokens` | $0.114 → $0.058 | 165s → 326s | 11 → 14 | 10 → 13 |
+| `chess-best-move` | $0.267 → $0.088 | 344s → 173s | 18 → 14 | 17 → 13 |
+| `fix-code-vulnerability` | $0.178 → $0.069 | 86s → 121s | 13 → 7 | 20 → 12 |
+| `configure-git-webserver` | $0.149 → $0.063 | 117s → 347s | 11 → 12 | 10 → 11 |
+
+Luna was cheaper on every task under yolop's estimator, but 30% slower overall
+despite 7 fewer LLM calls. The largest wall regressions were the token-count and
+webserver cases; the latter still changed from fail to pass. Luna's three
+failures were specific decision errors visible in the retained trajectories:
+
+- `chess-best-move` inferred pieces from pixel statistics and wrote `g7f8`; the
+  verifier requires both `e2e4` and `g2g4`.
 - `count-dataset-tokens` calculated 63,841 reasoning tokens and 15,745 solution
-  tokens, but chose the reasoning-only value instead of their required 79,586
-  total.
+  tokens, but submitted the reasoning-only value instead of their 79,586 total.
 - `fix-code-vulnerability` fixed the CRLF injection and passed all 367 upstream
   tests, but reported `CWE-113`; the benchmark requires `CWE-93`.
 
-The historical Terra baseline remains useful for comparison:
+Treat 6/8 versus 5/8 as a regression signal, not a model ranking: each task is
+12.5 points, and this comparison has one valid trial per model and task. Use
+repeated trials or the full benchmark before drawing a model-level conclusion.
 
-yolop · **gpt-5.6-terra** (OpenAI), run `20260731T014824Z-3c1e` — **6/8 for
-$1.34**, 22 minutes wall clock, every case ran to its own completion (no
-timeout, no budget stop, no infra N/A):
-
-| difficulty | resolved |
-|---|---|
-| easy | 3/3 |
-| medium | 2/3 |
-| hard | 1/2 |
-
-| task | | cost | wall | llm calls | tool calls |
-|---|---|---|---|---|---|
-| `cobol-modernization` | ✓ | $0.192 | 108s | 13 | 12 |
-| `fix-git` | ✓ | $0.156 | 100s | 16 | 15 |
-| `overfull-hbox` | ✓ | $0.198 | 318s | 15 | 14 |
-| `modernize-scientific-stack` | ✓ | $0.091 | 78s | 10 | 9 |
-| `count-dataset-tokens` | ✓ | $0.114 | 164s | 11 | 10 |
-| `chess-best-move` | ✗ | $0.267 | 343s | 18 | 17 |
-| `fix-code-vulnerability` | ✓ | $0.178 | 86s | 13 | 20 |
-| `configure-git-webserver` | ✗ | $0.149 | 116s | 11 | 10 |
-
-**Cost here is over-stated and not comparable across providers.** For providers
-that return no inline price (OpenAI, Anthropic), yolop estimates from a price
-table that bills full `prompt_tokens` — and OpenAI's `prompt_tokens` *includes*
-cache reads, which dominate an agentic run. The same `cobol-modernization` case
-cost $0.192 on this run and $0.106 through OpenRouter, where the figure is the
-provider's actual charge. Read OpenAI-direct costs as a ceiling; `swebench_verified`
-documents the same effect.
-
-Two failures worth watching rather than chasing: `chess-best-move` used the most
-turns and the most money of the eight, and `configure-git-webserver` gave up
-cheapest of the eight at 10 tool calls — an early stop, not an exhausted budget.
+**OpenAI-direct cost is an estimate, not the provider invoice.** Yolop's price
+table bills full `prompt_tokens`, including cache reads that dominate these
+agentic runs, and Terra and Luna have different configured rates. The absolute
+figures are ceilings; the 58.9% delta describes yolop's estimator.
 
 It is selected deterministically by `suites/select_control.py` — no hand-picking:
 tasks needing a GPU or more than 4 GiB are excluded (so the suite runs
@@ -291,7 +294,7 @@ targets.
 | Preset | Purpose | Samples | Targets |
 |--------|---------|---------|---------|
 | `smoke` | Integration check / validate a new config before a full run | `fix-git`, `cobol-modernization` | gpt-5.6-terra |
-| `control` | The periodic regression run ([Control suite](#control-suite)) | 8 (`control-v1`) | gpt-5.6-luna |
+| `control` | The periodic regression run ([Control suite](#control-suite)) | 8 (`control-v1`) | gpt-5.6-terra |
 | `compare` | yolop vs the other terminal agents on identical tasks | the `easy` tier | yolop ×2 + terminus-2 + claude-code + codex |
 | `full` | The headline number | all 89 | gpt-5.6-terra |
 

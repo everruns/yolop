@@ -45,11 +45,11 @@ class TestMatrix(unittest.TestCase):
         with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=True):
             self.assertTrue(tb.config_available(tb.MATRIX["openai-gpt-5.6-terra"]))
 
-    def test_control_preset_uses_luna(self):
+    def test_control_preset_uses_terra_and_luna_is_selectable(self):
         config_path = Path(__file__).resolve().parents[1] / "mira.toml"
         config = tomllib.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(config["presets"]["control"]["targets"], "openai-gpt-5.6-luna")
+        self.assertEqual(config["presets"]["control"]["targets"], "openai-gpt-5.6-terra")
         self.assertEqual(
             tb.MATRIX["openai-gpt-5.6-luna"],
             {"agent": "yolop", "model": "openai/gpt-5.6-luna"},
