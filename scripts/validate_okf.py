@@ -109,6 +109,10 @@ def validate(root: Path, *, strict: bool = False, check_links: bool = False) -> 
     for path in sorted(root.rglob("*.md")):
         rel = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8", errors="replace")
+        for marker in ("<<<<<<< ", ">>>>>>> "):
+            if any(line.startswith(marker) for line in text.splitlines()):
+                messages.append(f"{rel}: unresolved merge conflict marker `{marker.rstrip()}`")
+                break
         if path.name not in RESERVED:
             fields, error = parse_frontmatter(text)
             if error:
