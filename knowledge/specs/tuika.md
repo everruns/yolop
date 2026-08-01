@@ -71,7 +71,7 @@ tuika owns *presentation*; yolop owns *acquisition and meaning*. Concretely:
 
 Yolop's keymap adoption is the clearest case of the split: tuika resolves a
 translated key to a named command, and yolop decides that the resulting command
-interrupts a turn, opens the background panel, or starts a reverse search. The
+interrupts a turn, opens the activity rail, or starts a reverse search. The
 engine's precedence is yolop's choice too — the global layer is ungated and
 dispatched ahead of every modal guard, which reproduces the precedence the
 former inline `match` had: global chords fire in any mode, mid-turn, during

@@ -19,10 +19,8 @@
 //!   [`App`]'s persisted `ScrollState`, inside a probed region so full-screen
 //!   mouse text selection (see [`super::App`]) can be bounded to it.
 //!
-//! Crucially, the full-screen frame calls **no** `render::draw_*` painter — not
-//! for its chrome and not for the setup / ask / background overlays (which
-//! composite as tuika [`Overlay`]s, see below). It uses only the shared *content*
-//! builders, which return styled [`Line`]s.
+//! The activity rail is the one shared painter: it is itself a native tuika
+//! view, reused verbatim by inline mode so its dock/drawer chrome cannot drift.
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
@@ -39,8 +37,7 @@ use tuika::{Element, Overlay, Padding, element, view};
 
 use super::render;
 use super::{
-    ACCENT_BLUE, ACCENT_GOLD, App, CODE_BG, DIFF_ADD, DIFF_META, PANEL_BG, TEXT_DIM, TEXT_MUTED,
-    TEXT_PRIMARY,
+    ACCENT_BLUE, ACCENT_GOLD, App, CODE_BG, DIFF_ADD, PANEL_BG, TEXT_DIM, TEXT_MUTED, TEXT_PRIMARY,
 };
 
 /// Startup-selected theme override. `None` (the default) renders yolop's own
@@ -137,8 +134,12 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    let (main_area, sidebar_area) =
-        render::background_sidebar_layout(area, app.background_panel.is_some());
+    let rail_layout = render::activity_rail_layout(
+        area,
+        app.background_panel.is_some(),
+        app.background_panel_focused,
+    );
+    let main_area = rail_layout.main;
 
     let state = app.view_state();
     let input_width = main_area.width.saturating_sub(2);
@@ -213,21 +214,10 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         }
     };
 
-    let root = if let Some(sidebar) = sidebar_area {
-        view! {
-            row {
-                grow(1) { node(main) }
-                fixed(sidebar.width) { node(agent_sidebar_view(app, sidebar.height)) }
-            }
-        }
-    } else {
-        main
-    };
-
     // yolop's own palette (see `yolop_theme`); a Reset background lets the
     // styled lines' own colors show through.
     let theme = yolop_theme();
-    tuika::paint(f.buffer_mut(), area, &theme, root.as_ref(), &[]);
+    tuika::paint(f.buffer_mut(), main_area, &theme, main.as_ref(), &[]);
     app.set_status_hit_regions(
         Rect {
             y: main_area.bottom().saturating_sub(status_rows),
@@ -320,6 +310,10 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         );
     }
 
+    if let Some(rail) = rail_layout.rail {
+        render::draw_activity_rail(f, rail, app);
+    }
+
     // The composer remains editable while a turn runs so Enter can queue a
     // steering message for the next safe turn boundary.
     if app.setup.is_none() && !app.background_panel_focused {
@@ -329,43 +323,6 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             f.set_cursor_position((x, y));
         }
     }
-}
-
-fn agent_sidebar_view(app: &App, height: u16) -> Element {
-    let offset = app.background_panel.unwrap_or(0);
-    let body = app.background_panel_body();
-    let texts = render::background_panel_lines(&body, offset, height.saturating_sub(2) as usize);
-    let lines: Vec<Line<'static>> = texts
-        .into_iter()
-        .enumerate()
-        .map(|(index, text)| {
-            let style = if index == 0 {
-                Style::default().fg(DIFF_META).add_modifier(Modifier::BOLD)
-            } else if text.contains("✓ ") {
-                Style::default().fg(DIFF_ADD)
-            } else if text.contains("✕ ") {
-                Style::default().fg(super::ERROR_RED)
-            } else {
-                Style::default()
-            };
-            Line::from(Span::styled(text, style))
-        })
-        .collect();
-    let title = match crate::tui::session_tasks_view::agent_panel(&app.session_tasks) {
-        Some(panel) => format!(" Agents {} ", panel.total),
-        None => format!(" Tasks {} ", app.session_tasks.rows.len()),
-    };
-    let footer = if app.background_panel_focused {
-        " ↑/↓ select · x cancel · Esc close "
-    } else {
-        " Ctrl+B close "
-    };
-    element(
-        Boxed::new(element(Text::new(lines)))
-            .title(title)
-            .title_bottom(Line::from(footer).right_aligned())
-            .background(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY)),
-    )
 }
 
 /// Top-pad `lines` with blanks so a history shorter than the viewport rests at

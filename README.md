@@ -75,8 +75,9 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 - **TUI chat** (ratatui) — scrolling transcript with tree-sitter syntax
   highlighting of fenced code blocks, a multiline composer, a live status bar,
   slash commands (`/help`, `/tools`, `/mcp`, `/setup`, `/model`, `/goal`,
-  `/shell`, `/background`, …), a `Ctrl+B` task-tree panel with branch token/cost
-  rollups and cooperative cancellation, `!<command>` as a direct shell shortcut,
+  `/shell`, `/background`, …), a `Ctrl+B` activity rail for agents, background
+  commands, and monitors with branch usage and cooperative cancellation,
+  `!<command>` as a direct shell shortcut,
   `@`-triggered file-path completion, and shell-style
   history recall (`↑`/`↓`, `Ctrl+R`) persisted across sessions.
 - **Side questions** — `/btw <question>` answers out-of-band using the current
@@ -114,14 +115,14 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   the current turn (e.g. watching CI): it streams to a log, writes a
   `result.json`, and tracks a session task you inspect with `list_tasks`,
   `get_task`, and `cancel_task` (or the `/background` command and interactive
-  `Ctrl+B` tree). Detached commands may run up to 24 hours and their results
+  `Ctrl+B` activity rail). Detached commands may run up to 24 hours and their results
   survive a restart. `spawn_background` can also schedule one-shot or recurring
   monitors; when a schedule fires or a task finishes while the session is idle,
   yolop proactively wakes the agent (disable with `proactive_wake`).
 - **Sub-agents** — `spawn_agent` delegates independent work into child context
   windows. A two-level hierarchy supports broad swarms without exceeding the
-  per-session fan-out limit; `Ctrl+B` shows the live tree with branch token and
-  cost rollups. See [Parallel sub-agents](./docs/features/subagents/subagents.md).
+  per-session fan-out limit; `Ctrl+B` shows the live activity rail with branch
+  token and cost rollups. See [Parallel sub-agents](./docs/features/subagents/subagents.md).
 - **Web** — `free_web_search`, `web_fetch` (HTTP GET/HEAD with markdown/text
   conversion and DNS-pinned SSRF protection), and `duckduckgo_instant_answer`,
   all working without an API key. Set `EVERRUNS_SYSTEM_ALLOWLIST_ENABLED=true`

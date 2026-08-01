@@ -239,15 +239,21 @@ pub struct App {
     session_tasks_refresh:
         Option<tokio::task::JoinHandle<crate::tui::session_tasks_view::TaskTree>>,
     last_session_tasks_refresh: Option<Instant>,
-    /// Open right-side task panel, holding its scroll offset in lines.
+    /// Open right-side activity rail. The legacy option shape keeps visibility
+    /// separate from focus; scrolling lives in `activity_scroll`.
     background_panel: Option<usize>,
     /// Manual panels capture navigation/cancellation keys; an automatically
     /// opened panel stays passive so it never steals the composer.
     background_panel_focused: bool,
     /// Auto-open at most once per TUI session when the first subagent appears.
     background_panel_auto_opened: bool,
-    /// Selected task row while the task-tree panel is open.
+    /// Selected task row while the activity rail is focused.
     background_selected: usize,
+    /// Persisted activity-rail viewport. Passive rails stay pinned to new work;
+    /// manual navigation detaches until the user returns to the bottom.
+    activity_scroll: ScrollState,
+    /// Last (content_height, viewport_height) painted by either renderer.
+    activity_scroll_metrics: (usize, usize),
     goal_store: Arc<GoalStore>,
     user_ask_store: Arc<UserAskStore>,
     user_ask_enabled: bool,
@@ -637,6 +643,8 @@ impl App {
             background_panel_focused: false,
             background_panel_auto_opened: false,
             background_selected: 0,
+            activity_scroll: ScrollState::new(),
+            activity_scroll_metrics: (0, 0),
             goal_store,
             user_ask_store,
             user_ask_enabled,
@@ -1118,8 +1126,9 @@ impl App {
         self.session_tasks.counts()
     }
 
+    #[cfg(test)]
     fn background_panel_body(&self) -> String {
-        crate::tui::session_tasks_view::render_agent_panel(
+        crate::tui::session_tasks_view::render_activity_rail(
             &self.session_tasks,
             self.background_panel_focused
                 .then_some(self.background_selected),
@@ -1128,14 +1137,22 @@ impl App {
 
     fn apply_session_tasks(&mut self, tasks: crate::tui::session_tasks_view::TaskTree) {
         self.session_tasks = tasks;
-        self.background_selected = self
-            .background_selected
-            .min(self.session_tasks.rows.len().saturating_sub(1));
+        let selectable = self
+            .activity_rail()
+            .map(|rail| rail.selectable_task_indices())
+            .unwrap_or_default();
+        if !selectable.contains(&self.background_selected) {
+            self.background_selected = selectable.first().copied().unwrap_or(0);
+        }
         if !self.background_panel_auto_opened && self.session_tasks.has_subagents() {
             self.background_panel = Some(0);
             self.background_panel_focused = false;
             self.background_panel_auto_opened = true;
         }
+    }
+
+    fn activity_rail(&self) -> Option<crate::tui::session_tasks_view::ActivityRail> {
+        crate::tui::session_tasks_view::activity_rail(&self.session_tasks)
     }
 
     async fn refresh_session_tasks(&mut self) {
@@ -2437,38 +2454,119 @@ impl App {
         }
     }
 
-    /// Open the task-tree panel or close it if already open.
+    /// Focus a passive activity rail, close a focused one, or open it focused.
     /// Suppressed while the setup overlay is up so two modals never stack.
     fn toggle_background_panel(&mut self) {
-        if self.background_panel.is_some() {
+        if self.background_panel.is_some() && self.background_panel_focused {
             self.background_panel = None;
             self.background_panel_focused = false;
+        } else if self.background_panel.is_some() {
+            self.background_panel_focused = true;
+            self.select_first_visible_activity();
         } else if self.setup.is_none() {
             self.background_panel = Some(0);
             self.background_panel_focused = true;
-            self.background_selected = 0;
+            self.select_first_visible_activity();
         }
     }
 
-    /// Navigation and cooperative cancellation for the open task-tree panel.
-    async fn handle_background_panel_key(&mut self, key: KeyEvent) {
-        let Some(offset) = self.background_panel else {
+    fn select_first_visible_activity(&mut self) {
+        let offset = self.activity_scroll.offset();
+        if let Some(first) = self.activity_rail().and_then(|rail| {
+            rail.rows
+                .iter()
+                .skip(offset)
+                .find_map(|row| match row {
+                    crate::tui::session_tasks_view::ActivityRailRow::Task(task) => {
+                        Some(task.task_index)
+                    }
+                    _ => None,
+                })
+                .or_else(|| rail.selectable_task_indices().last().copied())
+        }) {
+            self.background_selected = first;
+            self.ensure_activity_selection_visible();
+        }
+    }
+
+    fn ensure_activity_selection_visible(&mut self) {
+        let Some(row) = self
+            .activity_rail()
+            .and_then(|rail| rail.body_row_for_task(self.background_selected))
+        else {
             return;
         };
+        let (content, viewport) = self.activity_scroll_metrics;
+        if viewport == 0 {
+            return;
+        }
+        let offset = self.activity_scroll.offset();
+        if row < offset {
+            self.activity_scroll.set_offset(row);
+        } else if row >= offset.saturating_add(viewport) {
+            self.activity_scroll
+                .set_offset(row.saturating_add(1).saturating_sub(viewport));
+        }
+        self.activity_scroll.clamp(content, viewport);
+    }
+
+    /// Navigation and cooperative cancellation for the focused activity rail.
+    async fn handle_background_panel_key(&mut self, key: KeyEvent) {
+        if self.background_panel.is_none() {
+            return;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.background_panel = None;
                 self.background_panel_focused = false;
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                self.background_selected = self.background_selected.saturating_sub(1);
-                self.background_panel = Some(offset.min(self.background_selected));
+                let selectable = self
+                    .activity_rail()
+                    .map(|rail| rail.selectable_task_indices())
+                    .unwrap_or_default();
+                if let Some(position) = selectable
+                    .iter()
+                    .position(|index| *index == self.background_selected)
+                    && position > 0
+                {
+                    self.background_selected = selectable[position - 1];
+                }
+                self.ensure_activity_selection_visible();
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let max = self.session_tasks.rows.len().saturating_sub(1);
-                self.background_selected = self.background_selected.saturating_add(1).min(max);
-                self.background_panel =
-                    Some(offset.max(self.background_selected.saturating_sub(1)));
+                let selectable = self
+                    .activity_rail()
+                    .map(|rail| rail.selectable_task_indices())
+                    .unwrap_or_default();
+                if let Some(position) = selectable
+                    .iter()
+                    .position(|index| *index == self.background_selected)
+                    && let Some(next) = selectable.get(position + 1)
+                {
+                    self.background_selected = *next;
+                }
+                self.ensure_activity_selection_visible();
+            }
+            KeyCode::PageUp => {
+                let (_, viewport) = self.activity_scroll_metrics;
+                self.activity_scroll.set_offset(
+                    self.activity_scroll
+                        .offset()
+                        .saturating_sub(viewport.saturating_sub(1).max(1)),
+                );
+            }
+            KeyCode::PageDown => {
+                let (content, viewport) = self.activity_scroll_metrics;
+                let next = self
+                    .activity_scroll
+                    .offset()
+                    .saturating_add(viewport.saturating_sub(1).max(1));
+                if next >= ScrollState::max_offset(content, viewport) {
+                    self.activity_scroll.jump_to_bottom(content, viewport);
+                } else {
+                    self.activity_scroll.set_offset(next);
+                }
             }
             KeyCode::Char('x') | KeyCode::Delete => {
                 self.cancel_selected_task().await;
@@ -3019,6 +3117,7 @@ impl App {
                 StatusAction::OpenBackground => {
                     self.background_panel = Some(0);
                     self.background_panel_focused = true;
+                    self.select_first_visible_activity();
                 }
             }
             return true;
@@ -3553,7 +3652,7 @@ fn help_command_line(descriptor: &CommandDescriptor) -> String {
 fn help_shortcut_lines() -> [&'static str; 5] {
     [
         "  Enter send · Shift-Enter newline · Tab complete (cmds, @files) · ↑/↓ history · Ctrl+R search",
-        "  Ctrl+V paste image/text · Ctrl+B background tasks · !<cmd> shell alias",
+        "  Ctrl+V paste image/text · Ctrl+B activity · !<cmd> shell alias",
         "  exit: Ctrl-C twice / Ctrl-D",
         "  steer while busy: type and Enter to queue · cancel turn: Esc twice",
         "  scroll: terminal scrollback (no in-app page keys)",
@@ -6493,7 +6592,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn agent_panel_auto_opens_and_renders_subagent_status() {
+    async fn activity_rail_auto_opens_passively_and_ctrl_b_focuses_it() {
         let mut test = app_with_llmsim().await;
         let app = &mut test.app;
         app.setup = None;
@@ -6510,6 +6609,24 @@ mod tests {
             })
             .await
             .expect("create session task");
+        for (id, kind, name) in [
+            ("task_tests", TASK_KIND_BACKGROUND_TOOL, "cargo test"),
+            ("task_ci_monitor", TASK_KIND_MONITOR, "CI monitor"),
+        ] {
+            app.task_registry
+                .create(CreateSessionTask {
+                    session_id: app.session.session_id(),
+                    id: Some(id.to_string()),
+                    kind: kind.to_string(),
+                    display_name: name.to_string(),
+                    spec: serde_json::json!({}),
+                    state: SessionTaskState::Running,
+                    links: Default::default(),
+                    wake_policy: Default::default(),
+                })
+                .await
+                .expect("create background activity");
+        }
         app.refresh_session_tasks().await;
         assert_eq!(app.background_panel, Some(0));
         assert!(
@@ -6520,9 +6637,9 @@ mod tests {
         assert_eq!(
             app.presentation_state().background,
             Some(crate::tui::session_tasks_view::BackgroundCounts {
-                running: 1,
-                scheduled: 0,
-                total: 1,
+                running: 2,
+                scheduled: 1,
+                total: 3,
             })
         );
         let (fullscreen, regular) = render_regular_and_fullscreen(app, 120, 20);
@@ -6530,20 +6647,150 @@ mod tests {
             ("default", regular.join("\n")),
             ("fullscreen", fullscreen.join("\n")),
         ] {
-            assert!(lines.contains("Agents 1"), "{mode} panel title: {lines}");
+            assert!(lines.contains("ACTIVITY"), "{mode} rail title: {lines}");
+            assert!(lines.contains("AGENTS 1"), "{mode} agent section: {lines}");
             assert!(
-                lines.contains("1 agents · 1 active · 0 done"),
-                "{mode} panel should summarize agents: {lines}"
+                lines.contains("Flight Lead") && lines.contains("running"),
+                "{mode} rail should list the agent status: {lines}"
             );
             assert!(
-                lines.contains("Flight Lead — running"),
-                "{mode} panel should list the agent status: {lines}"
+                lines.contains("BACKGROUND 2"),
+                "{mode} background section: {lines}"
+            );
+            assert!(
+                lines.contains("cargo test"),
+                "{mode} background command: {lines}"
+            );
+            assert!(
+                lines.contains("CI monitor") && lines.contains("waiting"),
+                "{mode} waiting monitor: {lines}"
+            );
+            assert!(
+                lines.contains("Ctrl+B focus"),
+                "{mode} passive hint: {lines}"
             );
         }
 
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::empty()))
             .await;
         assert_eq!(app.input_text(), "z", "passive panel must not steal typing");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL))
+            .await;
+        assert!(
+            app.background_panel.is_some(),
+            "Ctrl+B focuses a passive rail"
+        );
+        assert!(app.background_panel_focused);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL))
+            .await;
+        assert!(
+            app.background_panel.is_none(),
+            "Ctrl+B closes a focused rail"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn activity_rail_overflow_stays_pinned_to_newest_agents() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.setup = None;
+        for index in 0..20 {
+            app.task_registry
+                .create(CreateSessionTask {
+                    session_id: app.session.session_id(),
+                    id: Some(format!("task_agent_{index:02}")),
+                    kind: TASK_KIND_SUBAGENT.to_string(),
+                    display_name: format!("Agent {index:02}"),
+                    spec: serde_json::json!({ "instructions": "demo" }),
+                    state: SessionTaskState::Running,
+                    links: Default::default(),
+                    wake_policy: Default::default(),
+                })
+                .await
+                .expect("create session task");
+        }
+        app.refresh_session_tasks().await;
+
+        let (fullscreen, regular) = render_regular_and_fullscreen(app, 120, 12);
+        for (mode, lines) in [
+            ("default", regular.join("\n")),
+            ("fullscreen", fullscreen.join("\n")),
+        ] {
+            assert!(
+                lines.contains("Agent 19"),
+                "{mode} follows newest work: {lines}"
+            );
+            assert!(
+                !lines.contains("Agent 00"),
+                "{mode} clips rows outside the viewport: {lines}"
+            );
+            assert!(
+                lines.contains('█'),
+                "{mode} exposes overflow scrollbar: {lines}"
+            );
+        }
+        assert!(app.activity_scroll.offset() > 0);
+        assert!(app.activity_scroll.is_stuck_to_bottom());
+    }
+
+    #[test]
+    fn activity_rail_visual_hierarchy_is_flat_and_distinguishes_leads() {
+        use crate::tui::session_tasks_view::{
+            ActivityCounts, ActivityRail, ActivityRailRow, ActivitySection, ActivityStatus,
+            ActivityTaskKind, ActivityTaskRow,
+        };
+
+        let task = |task_index: usize, depth: usize, name: &str| {
+            ActivityRailRow::Task(ActivityTaskRow {
+                task_index,
+                depth,
+                name: name.to_string(),
+                kind: ActivityTaskKind::Agent,
+                status: ActivityStatus::Succeeded,
+                usage: None,
+                canceling: false,
+            })
+        };
+        let rail = ActivityRail {
+            agents: ActivityCounts {
+                total: 2,
+                succeeded: 2,
+                ..ActivityCounts::default()
+            },
+            background: ActivityCounts::default(),
+            rows: vec![
+                ActivityRailRow::Section {
+                    kind: ActivitySection::Agents,
+                    counts: ActivityCounts {
+                        total: 2,
+                        succeeded: 2,
+                        ..ActivityCounts::default()
+                    },
+                },
+                task(0, 0, "Flight Lead"),
+                task(1, 1, "F1 Orbit Clock"),
+            ],
+        };
+
+        let lines = render::activity_rail_lines(&rail, None, 38);
+        let lead = &lines[1];
+        let worker = &lines[2];
+        assert_eq!(lead.spans[3].style.fg, Some(ACCENT_GOLD));
+        assert!(
+            lead.spans[3].style.add_modifier.contains(Modifier::BOLD),
+            "lead names should anchor each agent group"
+        );
+        assert_eq!(worker.spans[3].style.fg, Some(TEXT_PRIMARY));
+        assert_eq!(worker.spans[1].content, "↳ ");
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .all(|span| span.style.bg != Some(PANEL_BG)),
+            "passive rows should inherit the terminal background"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6649,16 +6896,26 @@ mod tests {
     }
 
     #[test]
-    fn background_panel_lines_header_and_scroll() {
-        let body = "row-a\nrow-b\nrow-c\nrow-d";
-        let lines = render::background_panel_lines(body, 1, 3);
-        // The border owns title/help; all three interior rows come from body.
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "row-b");
-        assert_eq!(lines[1], "row-c");
-        assert_eq!(lines[2], "row-d");
-        // A zero-height rect yields no lines.
-        assert!(render::background_panel_lines(body, 0, 0).is_empty());
+    fn activity_rail_docks_hides_or_draws_without_trapping_focus() {
+        let wide = Rect::new(0, 0, 120, 24);
+        let docked = render::activity_rail_layout(wide, true, false);
+        assert_eq!(docked.placement, render::ActivityRailPlacement::Docked);
+        assert!(docked.main.width < wide.width);
+        assert!(docked.rail.is_some());
+
+        let narrow = Rect::new(0, 0, 70, 24);
+        let passive = render::activity_rail_layout(narrow, true, false);
+        assert_eq!(passive.placement, render::ActivityRailPlacement::Hidden);
+        assert_eq!(passive.main, narrow);
+
+        let focused = render::activity_rail_layout(narrow, true, true);
+        assert_eq!(focused.placement, render::ActivityRailPlacement::Drawer);
+        assert_eq!(focused.main, narrow, "drawer must overlay, not crush chat");
+        assert!(focused.rail.is_some(), "focused activity is always visible");
+
+        let tiny = render::activity_rail_layout(Rect::new(0, 0, 18, 8), true, true);
+        assert_eq!(tiny.placement, render::ActivityRailPlacement::Drawer);
+        assert_eq!(tiny.rail.expect("tiny drawer").width, 18);
     }
 
     impl App {

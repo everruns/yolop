@@ -16,6 +16,7 @@ pub(crate) struct BackgroundCounts {
 pub(crate) struct TaskTreeRow {
     pub(crate) task: SessionTask,
     pub(crate) prefix: String,
+    pub(crate) depth: usize,
     pub(crate) branch_usage: Option<TokenUsage>,
     parent: Option<usize>,
 }
@@ -42,29 +43,70 @@ impl TaskTree {
     }
 }
 
-/// Terminal-independent model for the live agent sidebar.
+/// Terminal-independent model for the live activity rail shared by both TUI
+/// renderers. It deliberately describes tasks rather than terminal chrome.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AgentPanel {
+pub(crate) struct ActivityRail {
+    pub(crate) agents: ActivityCounts,
+    pub(crate) background: ActivityCounts,
+    pub(crate) rows: Vec<ActivityRailRow>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ActivityCounts {
     pub(crate) total: usize,
     pub(crate) active: usize,
     pub(crate) succeeded: usize,
     pub(crate) failed: usize,
-    pub(crate) rows: Vec<AgentPanelRow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AgentPanelRow {
-    /// Index in [`TaskTree::rows`], retained so sidebar selection maps back to
-    /// the task registry without a second identity scheme.
-    pub(crate) task_index: usize,
-    pub(crate) prefix: String,
-    pub(crate) name: String,
-    pub(crate) status: AgentPanelStatus,
-    pub(crate) usage: Option<String>,
+pub(crate) enum ActivityRailRow {
+    Section {
+        kind: ActivitySection,
+        counts: ActivityCounts,
+    },
+    Task(ActivityTaskRow),
+    Warning(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AgentPanelStatus {
+pub(crate) enum ActivitySection {
+    Agents,
+    Background,
+}
+
+impl ActivitySection {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Agents => "AGENTS",
+            Self::Background => "BACKGROUND",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActivityTaskRow {
+    /// Index in [`TaskTree::rows`], retained so sidebar selection maps back to
+    /// the task registry without a second identity scheme.
+    pub(crate) task_index: usize,
+    pub(crate) depth: usize,
+    pub(crate) name: String,
+    pub(crate) kind: ActivityTaskKind,
+    pub(crate) status: ActivityStatus,
+    pub(crate) usage: Option<String>,
+    pub(crate) canceling: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActivityTaskKind {
+    Agent,
+    Background,
+    Monitor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActivityStatus {
     Queued,
     Running,
     AwaitingInput,
@@ -73,8 +115,13 @@ pub(crate) enum AgentPanelStatus {
     Canceled,
 }
 
-impl AgentPanelStatus {
-    pub(crate) fn icon(self) -> &'static str {
+impl ActivityStatus {
+    pub(crate) fn icon(self, kind: ActivityTaskKind) -> &'static str {
+        if kind == ActivityTaskKind::Monitor
+            && !matches!(self, Self::Succeeded | Self::Failed | Self::Canceled)
+        {
+            return "◷";
+        }
         match self {
             Self::Queued => "○",
             Self::Running => "●",
@@ -85,7 +132,12 @@ impl AgentPanelStatus {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
+    pub(crate) fn label(self, kind: ActivityTaskKind) -> &'static str {
+        if kind == ActivityTaskKind::Monitor
+            && !matches!(self, Self::Succeeded | Self::Failed | Self::Canceled)
+        {
+            return "waiting";
+        }
         match self {
             Self::Queued => "queued",
             Self::Running => "running",
@@ -97,7 +149,7 @@ impl AgentPanelStatus {
     }
 }
 
-impl From<SessionTaskState> for AgentPanelStatus {
+impl From<SessionTaskState> for ActivityStatus {
     fn from(value: SessionTaskState) -> Self {
         match value {
             SessionTaskState::Queued => Self::Queued,
@@ -110,94 +162,168 @@ impl From<SessionTaskState> for AgentPanelStatus {
     }
 }
 
-/// Project subagent tasks into the stable presentation consumed by both TUI
-/// renderers. Non-agent background work remains available through
-/// `/background` and the status drawer but does not dilute this panel.
-pub(crate) fn agent_panel(tree: &TaskTree) -> Option<AgentPanel> {
-    let rows: Vec<AgentPanelRow> = tree
+fn activity_task_row(task_index: usize, row: &TaskTreeRow) -> ActivityTaskRow {
+    let kind = if row.task.kind == TASK_KIND_SUBAGENT {
+        ActivityTaskKind::Agent
+    } else if row.task.kind == TASK_KIND_MONITOR {
+        ActivityTaskKind::Monitor
+    } else {
+        ActivityTaskKind::Background
+    };
+    ActivityTaskRow {
+        task_index,
+        depth: row.depth,
+        name: row.task.display_name.clone(),
+        status: row.task.state.into(),
+        kind,
+        usage: row.branch_usage.as_ref().map(|usage| {
+            let mut value = format!("{} tok", format_tokens(usage.total_tokens() as u64));
+            if let Some(cost) = usage.effective_cost_usd() {
+                value.push_str(&format!(" · ${cost:.4}"));
+            }
+            value
+        }),
+        canceling: row.task.cancel_requested_at.is_some() && !row.task.state.is_terminal(),
+    }
+}
+
+fn activity_counts<'a>(rows: impl Iterator<Item = &'a ActivityTaskRow>) -> ActivityCounts {
+    let mut counts = ActivityCounts::default();
+    for row in rows {
+        counts.total += 1;
+        if matches!(
+            row.status,
+            ActivityStatus::Queued | ActivityStatus::Running | ActivityStatus::AwaitingInput
+        ) {
+            counts.active += 1;
+        }
+        if row.status == ActivityStatus::Succeeded {
+            counts.succeeded += 1;
+        }
+        if row.status == ActivityStatus::Failed {
+            counts.failed += 1;
+        }
+    }
+    counts
+}
+
+/// Group sub-agents and every other session task into one stable activity
+/// model. Background commands and monitors remain visible while agents run.
+pub(crate) fn activity_rail(tree: &TaskTree) -> Option<ActivityRail> {
+    if tree.rows.is_empty() && tree.errors.is_empty() {
+        return None;
+    }
+    let task_rows: Vec<_> = tree
         .rows
         .iter()
         .enumerate()
-        .filter(|(_, row)| row.task.kind == TASK_KIND_SUBAGENT)
-        .map(|(task_index, row)| AgentPanelRow {
-            task_index,
-            prefix: row.prefix.clone(),
-            name: row.task.display_name.clone(),
-            status: row.task.state.into(),
-            usage: row.branch_usage.as_ref().map(|usage| {
-                let mut value = format!("{} tok", format_tokens(usage.total_tokens() as u64));
-                if let Some(cost) = usage.effective_cost_usd() {
-                    value.push_str(&format!(" · ${cost:.4}"));
-                }
-                value
-            }),
-        })
+        .map(|(index, row)| activity_task_row(index, row))
         .collect();
-    if rows.is_empty() {
-        return None;
+    let agents = activity_counts(
+        task_rows
+            .iter()
+            .filter(|row| row.kind == ActivityTaskKind::Agent),
+    );
+    let background = activity_counts(
+        task_rows
+            .iter()
+            .filter(|row| row.kind != ActivityTaskKind::Agent),
+    );
+    let mut rows = Vec::with_capacity(task_rows.len() + 2 + tree.errors.len());
+    for (section, counts, is_member) in [
+        (ActivitySection::Agents, agents, ActivityTaskKind::Agent),
+        (
+            ActivitySection::Background,
+            background,
+            ActivityTaskKind::Background,
+        ),
+    ] {
+        if counts.total == 0 {
+            continue;
+        }
+        rows.push(ActivityRailRow::Section {
+            kind: section,
+            counts,
+        });
+        rows.extend(task_rows.iter().filter_map(|row| {
+            let matches = match section {
+                ActivitySection::Agents => row.kind == is_member,
+                ActivitySection::Background => row.kind != ActivityTaskKind::Agent,
+            };
+            matches.then(|| ActivityRailRow::Task(row.clone()))
+        }));
     }
-    let active = rows
-        .iter()
-        .filter(|row| {
-            matches!(
-                row.status,
-                AgentPanelStatus::Queued
-                    | AgentPanelStatus::Running
-                    | AgentPanelStatus::AwaitingInput
-            )
-        })
-        .count();
-    let succeeded = rows
-        .iter()
-        .filter(|row| row.status == AgentPanelStatus::Succeeded)
-        .count();
-    let failed = rows
-        .iter()
-        .filter(|row| row.status == AgentPanelStatus::Failed)
-        .count();
-    Some(AgentPanel {
-        total: rows.len(),
-        active,
-        succeeded,
-        failed,
+    rows.extend(tree.errors.iter().cloned().map(ActivityRailRow::Warning));
+    Some(ActivityRail {
+        agents,
+        background,
         rows,
     })
 }
 
-/// Compact one-row-per-agent text for the sidebar. The richer structured model
-/// above remains the semantic contract; this is its plain-text projection.
-pub(crate) fn render_agent_panel(tree: &TaskTree, selected: Option<usize>) -> String {
-    let Some(panel) = agent_panel(tree) else {
-        // Ctrl+B and the status drawer still expose ordinary background work;
-        // only subagent discovery auto-opens the panel.
-        return render_task_tree(tree, selected);
-    };
-    let mut summary = format!(
-        "{} agents · {} active · {} done",
-        panel.total, panel.active, panel.succeeded
-    );
-    if panel.failed > 0 {
-        summary.push_str(&format!(" · {} failed", panel.failed));
+impl ActivityRail {
+    pub(crate) fn selectable_task_indices(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .filter_map(|row| match row {
+                ActivityRailRow::Task(row) => Some(row.task_index),
+                _ => None,
+            })
+            .collect()
     }
-    let mut out = format!("{summary}\n");
+
+    pub(crate) fn body_row_for_task(&self, task_index: usize) -> Option<usize> {
+        self.rows.iter().position(
+            |row| matches!(row, ActivityRailRow::Task(task) if task.task_index == task_index),
+        )
+    }
+
+    pub(crate) fn active(&self) -> usize {
+        self.agents.active + self.background.active
+    }
+}
+
+/// Plain-text projection used by tests and cancellation feedback. Terminal
+/// renderers consume the structured model so colors never depend on substrings.
+#[cfg(test)]
+pub(crate) fn render_activity_rail(tree: &TaskTree, selected: Option<usize>) -> String {
+    let Some(panel) = activity_rail(tree) else {
+        return "No activity in this session.".to_string();
+    };
+    let mut out = String::new();
     for row in panel.rows {
-        let cursor = if selected == Some(row.task_index) {
-            "> "
-        } else {
-            "  "
-        };
-        out.push_str(cursor);
-        out.push_str(&row.prefix);
-        out.push_str(row.status.icon());
-        out.push(' ');
-        out.push_str(&row.name);
-        out.push_str(" — ");
-        out.push_str(row.status.label());
-        if let Some(usage) = row.usage {
-            out.push_str(" · ");
-            out.push_str(&usage);
+        match row {
+            ActivityRailRow::Section { kind, counts } => {
+                out.push_str(&format!("{} {}\n", kind.label(), counts.total));
+            }
+            ActivityRailRow::Task(row) => {
+                out.push_str(if selected == Some(row.task_index) {
+                    "> "
+                } else {
+                    "  "
+                });
+                out.push_str(&"  ".repeat(row.depth));
+                out.push_str(row.status.icon(row.kind));
+                out.push(' ');
+                out.push_str(&row.name);
+                out.push_str(" — ");
+                out.push_str(if row.canceling {
+                    "canceling"
+                } else {
+                    row.status.label(row.kind)
+                });
+                if let Some(usage) = row.usage {
+                    out.push_str(" · ");
+                    out.push_str(&usage);
+                }
+                out.push('\n');
+            }
+            ActivityRailRow::Warning(warning) => {
+                out.push_str("! ");
+                out.push_str(&warning);
+                out.push('\n');
+            }
         }
-        out.push('\n');
     }
     out
 }
@@ -329,6 +455,7 @@ pub(crate) async fn load_task_tree(
                 tree.rows.push(TaskTreeRow {
                     task,
                     prefix,
+                    depth: ancestors_last.len(),
                     branch_usage,
                     parent,
                 });
@@ -510,6 +637,7 @@ mod tests {
                 .map(|(index, task)| TaskTreeRow {
                     task,
                     prefix: if index == 0 { "├─ " } else { "└─ " }.into(),
+                    depth: 0,
                     branch_usage: None,
                     parent: None,
                 })
@@ -569,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_panel_exposes_names_statuses_and_counts() {
+    fn activity_rail_groups_agents_background_work_and_monitors() {
         let tree = tree(vec![
             task_with_kind(
                 "task_lead",
@@ -583,28 +711,38 @@ mod tests {
                 SessionTaskState::Succeeded,
                 "Orbit Clock",
             ),
-            task(
-                "task_shell",
+            task("task_shell", SessionTaskState::Running, "cargo test"),
+            task_with_kind(
+                "task_monitor",
+                TASK_KIND_MONITOR,
                 SessionTaskState::Running,
-                "unrelated background command",
+                "CI monitor",
             ),
         ]);
 
-        let panel = agent_panel(&tree).expect("subagents produce a panel");
+        let panel = activity_rail(&tree).expect("tasks produce an activity rail");
         assert_eq!(
-            (panel.total, panel.active, panel.succeeded, panel.failed),
+            (
+                panel.agents.total,
+                panel.agents.active,
+                panel.agents.succeeded,
+                panel.agents.failed
+            ),
             (2, 1, 1, 0)
         );
-        assert_eq!(panel.rows[0].name, "Flight Lead");
-        assert_eq!(panel.rows[0].status, AgentPanelStatus::Running);
-        assert_eq!(panel.rows[1].status.label(), "done");
+        assert_eq!((panel.background.total, panel.background.active), (2, 2));
+        assert_eq!(panel.selectable_task_indices(), vec![0, 1, 2, 3]);
+        assert_eq!(panel.body_row_for_task(0), Some(1));
+        assert_eq!(panel.body_row_for_task(2), Some(4));
         assert!(tree.has_subagents());
 
-        let rendered = render_agent_panel(&tree, Some(0));
-        assert!(rendered.contains("2 agents · 1 active · 1 done"));
-        assert!(rendered.contains("> ├─ ● Flight Lead — running"));
+        let rendered = render_activity_rail(&tree, Some(0));
+        assert!(rendered.contains("AGENTS 2"));
+        assert!(rendered.contains("> ● Flight Lead — running"));
         assert!(rendered.contains("✓ Orbit Clock — done"));
-        assert!(!rendered.contains("unrelated background command"));
+        assert!(rendered.contains("BACKGROUND 2"));
+        assert!(rendered.contains("● cargo test — running"));
+        assert!(rendered.contains("◷ CI monitor — waiting"));
     }
 
     #[test]

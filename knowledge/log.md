@@ -40,20 +40,22 @@ wording, formatting, and link fixes do not need entries.
   recorded model failure toward its 500-session scan budget, so interrupted
   empty/invalid shells cannot crowd useful overlapping work out.
 
-## 2026-07-31 — Live agent sidebar and session-scoped transcripts
+## 2026-07-31 — Responsive activity rail and session-scoped transcripts
 
-- The interactive TUI now opens a passive right-hand sidebar when sub-agents
-  appear and presents their hierarchy, live state, outcome, and usage. Root
-  transcript catch-up now filters child-session events just like live delivery,
-  preventing child title and tool narration from leaking into the coordinator's
-  transcript.
+- The interactive TUI now opens a passive right-hand activity rail when
+  sub-agents appear. Its flat Yolop-native chrome groups agents separately from
+  background commands and waiting monitors; overflow scrolls and follows new
+  work, while narrow focused rails become visible drawers instead of trapping
+  focus off-screen. Root transcript catch-up filters child-session events just
+  like live delivery, preventing child title and tool narration from leaking
+  into the coordinator's transcript.
 
 ## 2026-07-31 — Local sub-agents enabled
 
 - Yolop now drives linked child sessions through its local platform runner and
   enables `spawn_agent` by default. A bounded two-level hierarchy can contain 20
   active sub-agents, while each session retains the upstream five-background-run
-  ceiling. The `Ctrl+B` task tree presents the hierarchy and branch usage.
+  ceiling. The `Ctrl+B` activity rail presents the hierarchy and branch usage.
 
 ## 2026-07-31 — Named configuration profiles
 

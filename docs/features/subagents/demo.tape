@@ -44,8 +44,8 @@ Sleep 3s
 
 Type "Restore Mission Control. Follow AGENTS.md exactly: create the 4x4 background swarm (exactly 20 sub-agents total). Critical: every spawn_agent call at both levels must contain only name, instructions, target.type=subagent, and mode=background; omit every optional field. Do not run the full suite or dashboard; the recorder owns final verification. No Git or network. Once all four leads have returned, finish with exactly SWARM DISPATCHED — WATCH THE BOARD."
 Enter
-Wait+Screen@3m /Agents [1-9]/
-Wait+Screen@5m /20 agents/
+Wait+Screen@3m /AGENTS [1-9]/
+Wait+Screen@5m /AGENTS 20/
 Sleep 12s
 
 Wait+Screen@8m /SWARM DISPATCHED — WATCH THE BOARD/

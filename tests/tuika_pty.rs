@@ -69,6 +69,10 @@ fn run_gallery(
     let mut cmd = CommandBuilder::new(BIN);
     cmd.arg("tuika-gallery");
     cmd.env("TERM", "xterm-256color");
+    // This matrix row specifically proves RGB output. Keep the child isolated
+    // from automation shells that export NO_COLOR for their own logs.
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env_remove("NO_COLOR");
     cmd.env("HOME", home.path());
     cmd.env("XDG_CONFIG_HOME", home.path().join(".config"));
     cmd.env("XDG_DATA_HOME", home.path().join(".local/share"));
