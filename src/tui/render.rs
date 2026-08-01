@@ -4,7 +4,12 @@
 //! mutation lives elsewhere.
 
 use super::*;
+use crate::tui::session_tasks_view::{
+    ActivityRail, ActivityRailRow, ActivityStatus, ActivityTaskKind,
+};
+use tuika::components::{Scroll, Text};
 use tuika::width::str_cols;
+use tuika::{Element, Padding, view};
 
 pub(crate) const STATUS_SEPARATOR_HEIGHT: u16 = 1;
 
@@ -56,7 +61,12 @@ pub(super) fn draw_shared(f: &mut ratatui::Frame, app: &mut App) {
         draw_setup_overlay(f, area, app);
         return;
     }
-    let (main_area, sidebar) = background_sidebar_layout(area, app.background_panel.is_some());
+    let rail_layout = activity_rail_layout(
+        area,
+        app.background_panel.is_some(),
+        app.background_panel_focused,
+    );
+    let main_area = rail_layout.main;
 
     // Match `draw_input`: the `> ` prompt consumes two columns.
     let input_width = main_area.width.saturating_sub(2);
@@ -75,8 +85,8 @@ pub(super) fn draw_shared(f: &mut ratatui::Frame, app: &mut App) {
     draw_recent_transcript(f, layout.transcript, app);
     draw_chrome_layout(f, layout.chrome, &state);
     draw_input(f, layout.chrome.input, app);
-    if let Some(sidebar) = sidebar {
-        draw_background_panel(f, sidebar, app);
+    if let Some(sidebar) = rail_layout.rail {
+        draw_activity_rail(f, sidebar, app);
     }
 }
 
@@ -559,100 +569,256 @@ pub(crate) fn draw_ask_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 }
 
-/// Live agent sidebar. Automatic opening is passive; a manually focused panel
-/// adds selection and cancellation controls without covering the transcript.
-pub(crate) fn draw_background_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let Some(offset) = app.background_panel else {
+/// Paint the flat activity rail shared by the inline and full-screen modes.
+pub(crate) fn draw_activity_rail(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    if app.background_panel.is_none() {
         return;
-    };
+    }
     if area.width == 0 || area.height == 0 {
         return;
     }
     f.render_widget(Clear, area);
-    let title = match crate::tui::session_tasks_view::agent_panel(&app.session_tasks) {
-        Some(panel) => format!(" Agents {} ", panel.total),
-        None => format!(" Tasks {} ", app.session_tasks.rows.len()),
-    };
-    let footer = if app.background_panel_focused {
-        " ↑/↓ select · x cancel · Esc close "
-    } else {
-        " Ctrl+B close "
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_bottom(Line::from(footer).right_aligned())
-        .style(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
-    f.render_widget(block, area);
-    let inner = Rect {
-        x: area.x.saturating_add(2),
-        y: area.y.saturating_add(1),
-        width: area.width.saturating_sub(4),
-        height: area.height.saturating_sub(2),
-    };
-    let body = app.background_panel_body();
-    let texts = background_panel_lines(&body, offset, inner.height as usize);
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(texts.len());
-    for (i, text) in texts.into_iter().enumerate() {
-        if i == 0 {
-            lines.push(Line::from(Span::styled(
-                text,
-                Style::default().fg(DIFF_META).add_modifier(Modifier::BOLD),
-            )));
-        } else if text.contains("✓ ") {
-            lines.push(Line::from(Span::styled(
-                text,
-                Style::default().fg(DIFF_ADD),
-            )));
-        } else if text.contains("✕ ") {
-            lines.push(Line::from(Span::styled(
-                text,
-                Style::default().fg(ERROR_RED),
-            )));
-        } else {
-            lines.push(Line::raw(text));
-        }
-    }
-    f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(PANEL_BG)),
-        inner,
-    );
+    let rail = activity_rail_view(app, area.width, area.height);
+    let theme = super::fullscreen::yolop_theme();
+    tuika::paint(f.buffer_mut(), area, &theme, rail.as_ref(), &[]);
 }
 
-/// Scrolled sidebar body clipped to `height` rows. Pure for testability.
-pub(crate) fn background_panel_lines(body: &str, offset: usize, height: usize) -> Vec<String> {
-    if height == 0 {
-        return Vec::new();
+pub(crate) fn activity_rail_view(app: &mut App, width: u16, height: u16) -> Element {
+    let content_width = width.saturating_sub(4) as usize;
+    let rail = app.activity_rail();
+    let lines = rail
+        .as_ref()
+        .map(|rail| {
+            activity_rail_lines(
+                rail,
+                app.background_panel_focused
+                    .then_some(app.background_selected),
+                content_width,
+            )
+        })
+        .unwrap_or_else(|| {
+            vec![Line::from(Span::styled(
+                "No activity",
+                Style::default().fg(TEXT_MUTED),
+            ))]
+        });
+    // Header and footer are the only fixed chrome. Keeping the body on the
+    // terminal's native surface makes this feel like part of the transcript,
+    // not a second application embedded beside it.
+    let viewport = height.saturating_sub(2) as usize;
+    app.activity_scroll_metrics = (lines.len(), viewport);
+    app.activity_scroll.clamp(lines.len(), viewport);
+
+    let active = rail.as_ref().map(ActivityRail::active).unwrap_or(0);
+    let header = aligned_pair(
+        "ACTIVITY",
+        &format!("{active} active"),
+        content_width,
+        Style::default()
+            .fg(ACCENT_GOLD)
+            .add_modifier(Modifier::BOLD),
+        Style::default().fg(if active > 0 { ACCENT_BLUE } else { TEXT_DIM }),
+    );
+    let footer_text = if app.background_panel_focused {
+        "↑↓ select · PgUp/PgDn · x cancel · Esc"
+    } else {
+        "Ctrl+B focus"
+    };
+    let footer = Line::from(Span::styled(
+        truncate_end_chars(footer_text, content_width),
+        Style::default().fg(TEXT_MUTED),
+    ));
+    let separator_style = Style::default().fg(if app.background_panel_focused {
+        ACCENT_BLUE
+    } else {
+        TEXT_DIM
+    });
+    let separator = vec![Line::from(Span::styled("│", separator_style)); height as usize];
+    let body = Scroll::new(lines, &app.activity_scroll);
+    let content = view! {
+        col(padding = Padding { left: 1, right: 1, top: 0, bottom: 0 }) {
+            fixed(1) { node(Text::new(vec![header])) }
+            grow(1) { node(body) }
+            fixed(1) { node(Text::new(vec![footer])) }
+        }
+    };
+    view! {
+        row {
+            fixed(1) { node(Text::new(separator)) }
+            grow(1) { node(content) }
+        }
     }
-    body.lines()
-        .skip(offset)
-        .take(height)
-        .map(str::to_string)
+}
+
+fn aligned_pair(
+    left: &str,
+    right: &str,
+    width: usize,
+    left_style: Style,
+    right_style: Style,
+) -> Line<'static> {
+    let left_width = usize::from(str_cols(left));
+    let right_width = usize::from(str_cols(right));
+    let gap = width.saturating_sub(left_width + right_width).max(1);
+    Line::from(vec![
+        Span::styled(left.to_string(), left_style),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(right.to_string(), right_style),
+    ])
+}
+
+pub(crate) fn activity_rail_lines(
+    rail: &ActivityRail,
+    selected: Option<usize>,
+    width: usize,
+) -> Vec<Line<'static>> {
+    rail.rows
+        .iter()
+        .map(|row| match row {
+            ActivityRailRow::Section { kind, counts } => Line::from(vec![
+                Span::styled(
+                    kind.label(),
+                    Style::default()
+                        .fg(ACCENT_GOLD)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" {}", counts.total), Style::default().fg(TEXT_DIM)),
+            ]),
+            ActivityRailRow::Warning(warning) => Line::from(Span::styled(
+                truncate_end_chars(&format!("! {warning}"), width),
+                Style::default().fg(ERROR_RED),
+            )),
+            ActivityRailRow::Task(task) => {
+                let is_selected = selected == Some(task.task_index);
+                let base = if is_selected {
+                    Style::default().fg(TEXT_PRIMARY).bg(ACCENT_BLUE)
+                } else {
+                    Style::default().fg(TEXT_PRIMARY)
+                };
+                let icon_style = match (is_selected, task.status) {
+                    (true, _) => base.fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD),
+                    (false, ActivityStatus::Succeeded) => base.fg(DIFF_ADD),
+                    (false, ActivityStatus::Failed) => base.fg(ERROR_RED),
+                    (false, ActivityStatus::AwaitingInput) => base.fg(ACCENT_GOLD),
+                    (false, ActivityStatus::Canceled) => base.fg(TEXT_DIM),
+                    (false, ActivityStatus::Queued | ActivityStatus::Running) => {
+                        base.fg(ACCENT_BLUE)
+                    }
+                };
+                let status = if task.canceling {
+                    "canceling"
+                } else {
+                    task.status.label(task.kind)
+                };
+                let indent = match task.depth.min(6) {
+                    0 => String::new(),
+                    depth => format!("{}↳ ", "  ".repeat(depth.saturating_sub(1))),
+                };
+                let cursor = if is_selected { "› " } else { "  " };
+                let lead = format!("{cursor}{indent}{} ", task.status.icon(task.kind));
+                let usage = task
+                    .usage
+                    .as_deref()
+                    .filter(|_| width >= 42)
+                    .map(|usage| format!(" · {usage}"))
+                    .unwrap_or_default();
+                let right = format!("{status}{usage}");
+                let budget = width
+                    .saturating_sub(usize::from(str_cols(&lead) + str_cols(&right)) + 1)
+                    .max(1);
+                let name = truncate_end_chars(&task.name, budget);
+                let gap = width
+                    .saturating_sub(usize::from(
+                        str_cols(&lead) + str_cols(&name) + str_cols(&right),
+                    ))
+                    .max(1);
+                let name_style = if is_selected {
+                    base.add_modifier(Modifier::BOLD)
+                } else if task.kind == ActivityTaskKind::Agent && task.depth == 0 {
+                    base.fg(ACCENT_GOLD).add_modifier(Modifier::BOLD)
+                } else {
+                    base
+                };
+                Line::from(vec![
+                    Span::styled(cursor.to_string(), base),
+                    Span::styled(indent, base.fg(TEXT_DIM)),
+                    Span::styled(format!("{} ", task.status.icon(task.kind)), icon_style),
+                    Span::styled(name, name_style),
+                    Span::styled(" ".repeat(gap), base),
+                    Span::styled(
+                        right,
+                        base.fg(if is_selected {
+                            TEXT_PRIMARY
+                        } else if task.status == ActivityStatus::Failed {
+                            ERROR_RED
+                        } else {
+                            TEXT_MUTED
+                        }),
+                    ),
+                ])
+            }
+        })
         .collect()
 }
 
-/// Split the frame into the main conversation and a bounded right sidebar.
-/// Very narrow terminals keep the main UI intact and hide the panel until the
-/// terminal is widened.
-pub(crate) fn background_sidebar_layout(area: Rect, visible: bool) -> (Rect, Option<Rect>) {
-    if !visible || area.width < 48 || area.height == 0 {
-        return (area, None);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActivityRailPlacement {
+    Hidden,
+    Docked,
+    Drawer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ActivityRailLayout {
+    pub(crate) main: Rect,
+    pub(crate) rail: Option<Rect>,
+    pub(crate) placement: ActivityRailPlacement,
+}
+
+/// Dock on wide terminals, hide passive activity on narrow terminals, and use
+/// a right-side drawer when the user focuses the rail. Focus is never trapped
+/// in an invisible panel.
+pub(crate) fn activity_rail_layout(area: Rect, visible: bool, focused: bool) -> ActivityRailLayout {
+    if !visible || area.height == 0 || area.width == 0 {
+        return ActivityRailLayout {
+            main: area,
+            rail: None,
+            placement: ActivityRailPlacement::Hidden,
+        };
     }
-    let sidebar_width = (area.width / 3).clamp(30, 48);
-    let main_width = area.width.saturating_sub(sidebar_width);
-    if main_width < 24 {
-        return (area, None);
+    if area.width >= 90 {
+        let rail_width = (area.width / 3).clamp(34, 44);
+        let main = Rect {
+            width: area.width.saturating_sub(rail_width),
+            ..area
+        };
+        return ActivityRailLayout {
+            main,
+            rail: Some(Rect {
+                x: main.right(),
+                width: rail_width,
+                ..area
+            }),
+            placement: ActivityRailPlacement::Docked,
+        };
     }
-    let main = Rect {
-        width: main_width,
-        ..area
-    };
-    let sidebar = Rect {
-        x: main.right(),
-        width: sidebar_width,
-        ..area
-    };
-    (main, Some(sidebar))
+    if focused {
+        let rail_width = area.width.min(42);
+        return ActivityRailLayout {
+            main: area,
+            rail: Some(Rect {
+                x: area.right().saturating_sub(rail_width),
+                width: rail_width,
+                ..area
+            }),
+            placement: ActivityRailPlacement::Drawer,
+        };
+    }
+    ActivityRailLayout {
+        main: area,
+        rail: None,
+        placement: ActivityRailPlacement::Hidden,
+    }
 }
 
 pub(crate) fn setup_panel_rect(area: Rect) -> Rect {

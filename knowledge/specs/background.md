@@ -108,15 +108,17 @@ wait for every branch before it reports completion.
 The Everruns `session_tasks` capability exposes the model-facing tools:
 `list_tasks`, `get_task` (returns state, summary, and `result_path` — read it
 with the file tools), `cancel_task`, `message_task`, and `wait_task`. Yolop adds
-one host-facing surface: the `/background` command (and the `Ctrl+B` TUI panel /
-status-bar count) lists the session's task tree. Subagent-shaped task records
-link their child sessions, so descendants are nested and each branch rolls up
-the child sessions' token usage and best-effort USD cost. The panel is shared by
-the default and fullscreen renderers; arrow keys select a row and `x` requests
+one host-facing surface: the `/background` command (and the `Ctrl+B` TUI
+activity rail / status-bar count) lists the session's task tree. Subagent-shaped
+task records link their child sessions, so descendants are nested and each
+branch rolls up the child sessions' token usage and best-effort USD cost. The
+rail groups those agents separately from every other session task, including
+detached commands and scheduled monitors, and is shared by both renderers. Arrow
+keys select task rows, Page Up/Down moves through overflow, and `x` requests
 cooperative cancellation. Status counts distinguish executing tools from
-scheduled monitors so an armed schedule is not presented as a running command.
-Monitors still use `cancel_task`, because cancellation must also disarm their
-durable schedule.
+scheduled monitors, and the rail labels armed monitors as waiting rather than
+running commands. Monitors still use `cancel_task`, because cancellation must
+also disarm their durable schedule.
 
 Scheduled monitors remain owned obligations after creation. Before reporting
 that their parent work is complete, the agent cancels monitors whose purpose is

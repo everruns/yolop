@@ -2,7 +2,7 @@
 //! engine](tuika::keymap).
 //!
 //! yolop's always-on chord shortcuts (reverse-history search, interrupt, quit,
-//! the background task panel, image paste) used to live as a hand-rolled
+//! the activity rail, image paste) used to live as a hand-rolled
 //! `match` at the top of [`App::handle_key`](super::App::handle_key). They now
 //! resolve through a single [`tuika::keymap::Keymap`], so the bindings are declarative
 //! and discoverable in one place — and yolop dogfoods the toolkit's own keymap.
@@ -10,7 +10,7 @@
 //! These bindings are deliberately *global*: they fire regardless of the app's
 //! mode (mid-turn, during setup, or with an overlay open), which is why they sit
 //! in one always-active layer with no [`when`](tuika::keymap::Layer::when) gate. Modal
-//! key handling (setup steps, the background panel, `ui/ask` prompts) stays with
+//! key handling (setup steps, the activity rail, `ui/ask` prompts) stays with
 //! the owning handler, which the engine's mode-gated layers could absorb later.
 
 use tuika::keymap::{Keymap, Layer};
@@ -25,7 +25,7 @@ pub(crate) enum GlobalAction {
     Interrupt,
     /// Ctrl+D: quit the session.
     Quit,
-    /// Ctrl+B: toggle the background task-tree panel.
+    /// Ctrl+B: focus or close the activity rail.
     ToggleBackground,
     /// Ctrl+V: paste an image (or large text) from the clipboard into the composer.
     PasteImage,
@@ -42,7 +42,7 @@ pub(crate) fn global_keymap() -> Keymap<GlobalAction> {
             .bind_labeled("ctrl+r", "search history", GlobalAction::ReverseSearch)
             .bind_labeled("ctrl+c", "interrupt", GlobalAction::Interrupt)
             .bind_labeled("ctrl+d", "quit", GlobalAction::Quit)
-            .bind_labeled("ctrl+b", "background tasks", GlobalAction::ToggleBackground)
+            .bind_labeled("ctrl+b", "activity", GlobalAction::ToggleBackground)
             .bind_labeled("ctrl+v", "paste image", GlobalAction::PasteImage),
     )
 }

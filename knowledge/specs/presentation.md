@@ -76,14 +76,26 @@ before the soft approval, sandbox, and hard approval-policy values. This keeps
 the selected execution bundle visible in compact and expanded layouts without
 conflating it with the provider or model name.
 
-### Agent Sidebar
+### Activity Rail
 
-The interactive TUI projects linked sub-agent tasks into a right-hand sidebar.
-The sidebar opens once, when the first sub-agent appears, and stays passive so
-the composer retains focus. It shows the recursive agent hierarchy, a summary
-of active, successful, and failed agents, and each agent's current state and
-usage. `Ctrl+B` gives the panel focus or closes and reopens it; a user-closed
-automatic panel must not repeatedly reopen during the same session.
+The interactive TUI projects session tasks into a flat right-hand activity rail.
+Linked sub-agents form the `AGENTS` section; ordinary background commands and
+scheduled monitors remain visible in `BACKGROUND`, even while agents exist.
+Monitors are described as waiting rather than executing commands. Each task has
+a semantic state marker, name, right-aligned state, and branch usage when space
+permits.
+
+The rail opens once, when the first sub-agent appears, and stays passive so the
+composer retains focus. `Ctrl+B` focuses a passive rail and closes a focused
+one; a user-closed automatic rail must not repeatedly reopen during the same
+session. The body has a persisted scroll viewport and scrollbar. Passive mode
+follows newly appended work; focused mode supports task selection, paging, and
+cooperative cancellation without selecting section headers.
+
+Wide terminals dock the rail beside the transcript. A passive rail hides below
+the responsive breakpoint, while a focused rail becomes a right-side drawer
+over the full-width conversation. A focused rail must always have a visible
+rectangle, including on degenerate terminal sizes.
 
 The root transcript is session-scoped. Both live delivery and catch-up routing
 must discard child-session transcript and title events; child progress belongs
