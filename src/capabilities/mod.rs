@@ -26,6 +26,7 @@ pub(crate) mod progress_guard;
 pub(crate) mod repo_map;
 pub(crate) mod session_history;
 pub(crate) mod session_tasks_override;
+pub(crate) mod skill_registry;
 pub mod skills;
 pub(crate) mod tool_approval;
 pub(crate) mod tool_reveal;

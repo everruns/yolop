@@ -104,14 +104,23 @@ a labeled VFS root that yolop's file store maps to a **real on-disk directory**:
     so parallel processes do not race on the shared cache directory.
 11. **Management guidance is bundled.** Yolop ships a `skill-management` system
     skill that tells the agent how to inspect, install, search for, and upgrade
-    skills, including reconstructing `npx skill add ...` style installs by
+    skills. Prefer the yolop-owned `search_skills` / `install_skill` tools for
+    the public skills.sh registry (search → ask which to install → install).
+    Reconstruct `npx skill add ...` style installs that are not on skills.sh by
     fetching source files directly and writing them with `write_skill`.
-12. **User guide is bundled.** Yolop ships a `yolop` system skill from the
+12. **Registry search and install.** `search_skills` queries skills.sh and
+    returns structured matches (id, source, installs, URL). `install_skill`
+    downloads a skills.sh snapshot into a writable scope (`workspace` or
+    `global`), validates `SKILL.md` and relative paths, and makes the skill
+    available immediately. Both are conversational control surfaces (see
+    [`conversational-control.md`](./conversational-control.md)): present search
+    results and ask before installing. System skills remain read-only.
+13. **User guide is bundled.** Yolop ships a `yolop` system skill from the
     private bundled asset tree as the durable reference for slash commands,
     keyboard shortcuts, CLI flags, and session controls. `/help` in the TUI
     summarizes the live command registry and shortcuts; the skill carries the
     full guide for conversational help.
-13. **Environment skills are ephemeral.** An environment integration may mount
+14. **Environment skills are ephemeral.** An environment integration may mount
     a read-only, VFS-only skill scope for the current session. Herdr does this
     only when its inherited pane/socket contract is present. Precedence is
     workspace, global, environment, then system; the mount never writes any
@@ -125,7 +134,9 @@ a labeled VFS root that yolop's file store maps to a **real on-disk directory**:
 - `crate::capabilities::skills` owns the yolop wiring: the scope set, the
   host-path `SkillDirResolver`, the embedded system skills + materialization, the
   VFS-root constants the file store routes on, and the `SkillManagementCapability`
-  that contributes the `delete_skill` (uninstall) tool.
+  that contributes `search_skills`, `install_skill`, and `delete_skill`.
+- `crate::capabilities::skill_registry` owns the skills.sh HTTP client used by
+  `search_skills` / `install_skill`.
 - `crate::runtime` (`CodingCliSessionFileStore`) owns mapping the scope VFS roots
   to real on-disk directories.
 - `everruns_core::skill` owns the `SKILL.md` format, parsing, validation, and

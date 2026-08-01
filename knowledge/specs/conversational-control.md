@@ -64,7 +64,9 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 | Model | `set_model` | `/model` overlay, `/setup model` |
 | Provider | `set_provider` | `/setup provider` |
 | Skills — list | `list_skills` (upstream) | system-prompt listing |
-| Skills — install/update | `write_skill` (upstream) | — |
+| Skills — search (skills.sh) | `search_skills` | — |
+| Skills — install from registry | `install_skill` | — |
+| Skills — install/update by content | `write_skill` (upstream) | — |
 | Skills — uninstall | `delete_skill` | — |
 | Settings (provider/model/tokens/urls/capabilities, next-run) | `get_config` / `set_config` | `/setup`, `yolop-config` skill |
 | Terminal/UI actions (help, tools, mcp, cwd, status, model, effort, clear, quit) | `run_yolop_command` (TUI only) | the slash commands themselves |
@@ -89,8 +91,9 @@ Notes:
 
 - This spec owns the conversational-control contract and the inventory above.
 - `crate::capabilities::host` owns `SetupController` and the `set_*` tools.
-- `crate::capabilities::skills` owns `delete_skill`; the upstream
-  `ScopedSkillsCapability` owns `list_skills` / `write_skill` (see [`skills.md`](./skills.md)).
+- `crate::capabilities::skills` owns `delete_skill`; `crate::capabilities::skill_registry`
+  owns `search_skills` / `install_skill`; the upstream `ScopedSkillsCapability`
+  owns `list_skills` / `write_skill` (see [`skills.md`](./skills.md)).
 - `crate::capabilities::config` owns `get_config` / `set_config` (see
   [`configuration.md`](./configuration.md)).
 - The command registry and `run_yolop_command` are owned by [`commands.md`](./commands.md).

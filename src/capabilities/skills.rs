@@ -356,11 +356,15 @@ pub(crate) const SKILL_MANAGEMENT_CAPABILITY_ID: &str = "yolop_skill_management"
 /// of shelling out to `rm`.
 pub(crate) struct SkillManagementCapability {
     dirs: SkillDirs,
+    registry: crate::capabilities::skill_registry::SkillRegistryClient,
 }
 
 impl SkillManagementCapability {
     pub(crate) fn new(dirs: SkillDirs) -> Self {
-        Self { dirs }
+        Self {
+            dirs,
+            registry: crate::capabilities::skill_registry::SkillRegistryClient::production(),
+        }
     }
 }
 
@@ -373,7 +377,7 @@ impl Capability for SkillManagementCapability {
         "Skill Management"
     }
     fn description(&self) -> &str {
-        "Uninstall workspace or global skills (delete_skill)."
+        "Search skills.sh, install registry skills, and uninstall workspace/global skills."
     }
     fn status(&self) -> CapabilityStatus {
         CapabilityStatus::Available
@@ -382,15 +386,23 @@ impl Capability for SkillManagementCapability {
         Some("Examples")
     }
     fn system_prompt_addition(&self) -> Option<&str> {
-        // `delete_skill`'s description already states the scope argument, that
-        // system skills are read-only, and that install/update go through
-        // `write_skill`.
+        // Tool descriptions already cover search → ask → install, and that
+        // system skills are read-only.
         None
     }
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![Box::new(DeleteSkillTool {
-            dirs: self.dirs.clone(),
-        })]
+        vec![
+            Box::new(crate::capabilities::skill_registry::SearchSkillsTool::new(
+                self.registry.clone(),
+            )),
+            Box::new(crate::capabilities::skill_registry::InstallSkillTool::new(
+                self.dirs.clone(),
+                self.registry.clone(),
+            )),
+            Box::new(DeleteSkillTool {
+                dirs: self.dirs.clone(),
+            }),
+        ]
     }
 }
 
@@ -421,8 +433,8 @@ impl DeleteSkillTool {
 }
 
 /// A skill name must be a single, plain path component — no separators, no `.`
-/// or `..`. This keeps `delete_skill` from escaping the scope directory.
-fn validate_skill_name(name: &str) -> Result<(), String> {
+/// or `..`. This keeps skill install/uninstall from escaping the scope directory.
+pub(crate) fn validate_skill_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("'name' is required".to_string());
     }
@@ -767,7 +779,7 @@ mod tests {
     // ---------- delete_skill ----------
 
     #[test]
-    fn skill_management_capability_exposes_delete_skill() {
+    fn skill_management_capability_exposes_search_install_delete() {
         let dirs = SkillDirs {
             workspace: PathBuf::from("/ws/.agents/skills"),
             global: None,
@@ -779,15 +791,17 @@ mod tests {
             .iter()
             .map(|t| t.name().to_string())
             .collect();
-        assert!(
-            names.iter().any(|n| n == "delete_skill"),
-            "delete_skill should be exposed: {names:?}"
-        );
-        // Uninstall guidance belongs to the tool, not to a per-turn prompt block:
-        // the description is already in context whenever the tool is offered.
+        for expected in ["search_skills", "install_skill", "delete_skill"] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "{expected} should be exposed: {names:?}"
+            );
+        }
+        // Guidance belongs to the tools, not to a per-turn prompt block:
+        // the descriptions are already in context whenever the tools are offered.
         assert!(
             capability.system_prompt_addition().is_none(),
-            "skill removal guidance lives in `delete_skill`'s description"
+            "skill management guidance lives in the tool descriptions"
         );
         let description = capability
             .tools()

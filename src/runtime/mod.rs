@@ -931,9 +931,12 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "spawn_agent",
     "write_todos",
     "write_session_title",
-    // Skill activation is a routing tool with required arguments; hiding its
-    // tiny schema makes malformed calls like activate_skill({}) more likely.
+    // Skill activation/search/install are routing tools with required arguments;
+    // hiding their schemas makes malformed calls more likely and adds friction
+    // to the conversational "find a skill → install it" loop.
     "activate_skill",
+    "search_skills",
+    "install_skill",
     "run_yolop_command",
     // LSP tools exist only when the optional `lsp` capability is enabled
     // (absent names are ignored by the allowlist). When they exist, stub
@@ -2885,6 +2888,7 @@ pub async fn build_with_options(
     //   * skills               — discovers SKILL.md across workspace / global /
     //                            environment / system scopes via the session file store;
     //                            list_skills + activate_skill + read/write_skill
+    //   * skill_management     — search_skills / install_skill (skills.sh) + delete_skill
     //
     // Non-filesystem, but useful for a coding agent:
     //   * repo_map            - on-demand multi-language symbol map for broad codebase orientation
@@ -2927,8 +2931,9 @@ pub async fn build_with_options(
     // Herdr contributes a conditional, read-only skill mount. Outside a Herdr
     // pane it has no mounts and the reporter is inert.
     capabilities.register(HerdrCapability::new(herdr.is_active()));
-    // yolop-owned skill uninstall (`delete_skill`); the upstream capability has
-    // no removal. Shares the same resolved scope directories.
+    // yolop-owned skill registry + uninstall (`search_skills`, `install_skill`,
+    // `delete_skill`); the upstream capability has list/activate/read/write only.
+    // Shares the same resolved scope directories.
     capabilities.register(crate::capabilities::skills::SkillManagementCapability::new(
         skill_dirs.clone(),
     ));
@@ -4946,13 +4951,14 @@ mod tests {
     }
 
     // The live-config tools (`set_provider` / `set_model` / `set_reasoning_effort`)
-    // and `delete_skill` are registered via SetupCapability / SkillManagementCapability
+    // and skill management tools (`search_skills` / `install_skill` / `delete_skill`)
+    // are registered via SetupCapability / SkillManagementCapability
     // in `build_with_options`. Because ToolSearchCapability defers the long tail
-    // behind `tool_search`, they are not in the immediate `runtime_agent.tools`
-    // snapshot, so their presence is asserted at the capability level
-    // (`capabilities::host::tests::setup_capability_exposes_live_config_tools`,
-    // `capabilities::skills::tests::skill_management_capability_exposes_delete_skill`)
-    // and their behavior by the SetupController / DeleteSkillTool unit tests.
+    // behind `tool_search`, only the never-defer allowlist keeps search/install
+    // schemas loaded; `delete_skill` remains deferred. Presence is asserted at
+    // the capability level
+    // (`capabilities::skills::tests::skill_management_capability_exposes_search_install_delete`)
+    // and behavior by the SkillRegistry / DeleteSkillTool unit tests.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn setup_url_and_custom_model_persist_through_settings() {
@@ -6602,6 +6608,36 @@ mod tests {
                 hints: ToolHints::default(),
                 full_parameters: None,
             }),
+            ToolDefinition::Builtin(BuiltinTool {
+                name: "search_skills".to_string(),
+                display_name: None,
+                description: "search skills".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "query": { "type": "string" } },
+                    "required": ["query"]
+                }),
+                policy: ToolPolicy::Auto,
+                category: None,
+                deferrable: DeferrablePolicy::Automatic,
+                hints: ToolHints::default(),
+                full_parameters: None,
+            }),
+            ToolDefinition::Builtin(BuiltinTool {
+                name: "install_skill".to_string(),
+                display_name: None,
+                description: "install skill".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "source": { "type": "string" } },
+                    "required": ["source"]
+                }),
+                policy: ToolPolicy::Auto,
+                category: None,
+                deferrable: DeferrablePolicy::Automatic,
+                hints: ToolHints::default(),
+                full_parameters: None,
+            }),
             fake_tool("write_session_title"),
         ];
         tools
@@ -6632,6 +6668,21 @@ mod tests {
             activate_skill.parameters().get("properties").is_some(),
             "activate_skill must keep its full schema so models pass the required name field"
         );
+
+        for name in ["search_skills", "install_skill"] {
+            assert!(
+                YOLOP_NEVER_DEFER_TOOLS.contains(&name),
+                "{name} must stay on the never-defer allowlist"
+            );
+            let tool = transformed
+                .iter()
+                .find(|tool| tool.name() == name)
+                .unwrap_or_else(|| panic!("{name} definition"));
+            assert!(
+                tool.parameters().get("properties").is_some(),
+                "{name} must keep its full schema for the conversational find→install loop"
+            );
+        }
 
         let write_session_title = transformed
             .iter()
