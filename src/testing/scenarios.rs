@@ -19,9 +19,10 @@
 //! specifically about the agent control flow.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use everruns_core::llmsim_driver::{LlmSimConfig, OnExhausted, SimError, SimToolCall, SimTurn};
+use everruns_core::session_task::SessionTaskState;
 use serde_json::json;
 
 use crate::config::SettingsStore;
@@ -263,6 +264,76 @@ async fn scripted_spawn_background_runs_bash_detached() {
         .await
         .expect("read marker");
     assert_eq!(marker_text, "background-ok");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn predictable_long_command_returns_immediately_and_terminal_result_is_durable() {
+    let (runtime, _workspace) = build_scripted_runtime(LlmSimConfig::scripted(vec![
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "spawn_background".to_string(),
+            arguments: json!({
+                "tool": "bash",
+                "args": { "command": "sleep 1; printf durable-result" },
+                "title": "synthetic long validation",
+                "signal_on_completion": false
+            }),
+            id: None,
+        }]),
+        SimTurn::Assistant("background validation started".to_string()),
+    ]))
+    .await;
+
+    let started = Instant::now();
+    let turn = run_single_turn(&runtime, "run the predictable long validation").await;
+    let foreground_elapsed = started.elapsed();
+    assert!(
+        turn.success,
+        "background launch turn must succeed: {turn:?}"
+    );
+    assert!(
+        foreground_elapsed < Duration::from_millis(750),
+        "the one-second command must not consume foreground time: {foreground_elapsed:?}"
+    );
+
+    let session_id = runtime.handles.session_id;
+    let task = runtime
+        .task_registry
+        .list(session_id, None)
+        .await
+        .expect("list real session tasks")
+        .into_iter()
+        .find(|task| task.kind == "background_tool")
+        .expect("spawn_background must create a session task");
+    let terminal = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let current = runtime
+                .task_registry
+                .get(session_id, &task.id)
+                .await
+                .expect("retrieve task while it runs")
+                .expect("task must remain retrievable");
+            if current.state.is_terminal() {
+                break current;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("background command should finish");
+
+    assert_eq!(terminal.state, SessionTaskState::Succeeded);
+    assert!(
+        terminal.result_path.is_some(),
+        "terminal result path is delivered"
+    );
+    let retrieved = runtime
+        .task_registry
+        .get(session_id, &task.id)
+        .await
+        .expect("retrieve completed task")
+        .expect("completed tasks must not disappear before wait_task/get_task");
+    assert_eq!(retrieved.id, task.id);
+    assert_eq!(retrieved.result_path, terminal.result_path);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
