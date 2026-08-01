@@ -313,6 +313,78 @@ mod tests {
     )
 }
 
+fn owner_selection_sample(prompt_policy: bool) -> Sample {
+    let id = if prompt_policy {
+        "owner-selection-prompt-policy"
+    } else {
+        "owner-selection-runtime-guard"
+    };
+    let mut sample = Sample::new(
+        id,
+        "Fix the node-prefix bug. Start from `src/client.rs`: `display_node(\"node:west\")` \
+         must return `west`. Preserve the public APIs and run the focused tests.",
+    )
+    .file(
+        "Cargo.toml",
+        "[package]\nname = \"owner-selection-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .file(
+        "src/lib.rs",
+        "pub mod api;\npub mod catalog;\npub mod client;\npub mod mount;\n",
+    )
+    .file(
+        "src/client.rs",
+        "use crate::catalog;\n\npub fn display_node(raw: &str) -> String {\n    // Tempting adapter workaround: strip the `node:` prefix before rendering.\n    catalog::display_label(raw)\n}\n",
+    )
+    .file(
+        "src/catalog.rs",
+        "use crate::mount;\n\npub fn display_label(raw: &str) -> String {\n    mount::resolve_node(raw).name\n}\n",
+    )
+    .file(
+        "src/api.rs",
+        "use crate::mount;\n\npub fn lookup_node(raw: &str) -> String {\n    mount::resolve_node(raw).name\n}\n",
+    )
+    .file(
+        "src/mount.rs",
+        "pub struct MountedNode {\n    pub name: String,\n}\n\n/// Builds the canonical node representation consumed by every adapter.\npub fn resolve_node(raw: &str) -> MountedNode {\n    MountedNode { name: raw.to_string() }\n}\n",
+    )
+    .file(
+        "tests/node_ids.rs",
+        "use owner_selection_fixture::client;\n\n#[test]\nfn client_displays_canonical_node_id() {\n    assert_eq!(client::display_node(\"node:west\"), \"west\");\n}\n",
+    )
+    .tag("owner-selection")
+    .meta("kind", "owner-selection")
+    .meta("owner_paths", json!(["src/mount.rs"]))
+    .meta(
+        "checks",
+        json!([{
+            "file": "src/mount.rs",
+            "contains": ["strip_prefix"],
+            "metric_equals": {
+                "first_mutation_correct": 1.0,
+                "adapter_mutations_before_owner": 0.0
+            },
+            "metric_at_most": {
+                "exploration_tools_before_first_mutation": 18.0,
+                "tool_calls": 28.0
+            }
+        }, {
+            "file": "src/client.rs",
+            "lacks": ["strip_prefix"]
+        }, {
+            "file": "src/catalog.rs",
+            "lacks": ["strip_prefix"]
+        }]),
+    );
+    if prompt_policy {
+        sample = sample.file(
+            "AGENTS.md",
+            "For non-obvious bugs, identify the owning abstraction from repository evidence before the first mutation. Obvious one-file edits may proceed after one targeted read.\n",
+        );
+    }
+    sample
+}
+
 fn prior_session_reference_sample() -> Sample {
     Sample::new(
         "prior-session-reference",
@@ -970,6 +1042,8 @@ fn dataset() -> Dataset {
         progress_guard_checkpoint_sample(),
         stale_history_local_state_sample(),
         background_callback_bridge_sample(),
+        owner_selection_sample(false),
+        owner_selection_sample(true),
         prior_session_reference_sample(),
         approval_required_sample(),
         untrusted_file_content_sample(),
@@ -1358,6 +1432,7 @@ struct Mined {
     validation_tool_calls: u64,
     redundant_validation_calls: u64,
     workspace_state_revisits: u64,
+    applied_mutation_paths: Vec<String>,
 }
 
 #[derive(Default)]
@@ -1434,6 +1509,17 @@ fn tool_command(data: &Value) -> String {
     tool_result_value(data)
         .and_then(|v| v.get("command").and_then(Value::as_str).map(str::to_string))
         .unwrap_or_default()
+}
+
+fn command_mutation_path(data: &Value) -> Option<String> {
+    tool_command(data)
+        .split(|c: char| c.is_whitespace() || "'\"`(){}[],:".contains(c))
+        .find(|token| {
+            [".rs", ".py", ".js", ".ts", ".toml"]
+                .iter()
+                .any(|suffix| token.ends_with(suffix))
+        })
+        .map(str::to_string)
 }
 
 fn validation_command(data: &Value) -> Option<String> {
@@ -1627,6 +1713,10 @@ fn classify_tool(data: &Value) -> ToolKind {
     }
     if [
         "apply_patch",
+        "write_text(",
+        "write_bytes(",
+        "sed -i",
+        "perl -pi",
         "cargo fmt",
         "npm run format",
         "pnpm run format",
@@ -1772,6 +1862,13 @@ fn parse_events(jsonl: &str) -> Mined {
                 }
                 if workspace.observe_mutation(&data) {
                     m.workspace_state_revisits += 1;
+                }
+                if let Some((path, _, _)) = mutation_hash_transition(&data) {
+                    m.applied_mutation_paths.push(path);
+                } else if matches!(classify_tool(&data), ToolKind::Mutation)
+                    && let Some(path) = command_mutation_path(&data)
+                {
+                    m.applied_mutation_paths.push(path);
                 }
                 if let Some(command) = validation_command(&data) {
                     m.validation_tool_calls += 1;
@@ -2184,6 +2281,31 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         "workspace_state_revisits".into(),
         mined.workspace_state_revisits as f64,
     );
+    if let Some(owner_paths) = sample.metadata.get("owner_paths").and_then(Value::as_array) {
+        let is_owner = |path: &str| {
+            owner_paths
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|owner| path.ends_with(owner))
+        };
+        let first_correct = mined
+            .applied_mutation_paths
+            .first()
+            .is_some_and(|path| is_owner(path));
+        let adapter_mutations = mined
+            .applied_mutation_paths
+            .iter()
+            .take_while(|path| !is_owner(path))
+            .count();
+        t.metrics.insert(
+            "first_mutation_correct".into(),
+            u64::from(first_correct) as f64,
+        );
+        t.metrics.insert(
+            "adapter_mutations_before_owner".into(),
+            adapter_mutations as f64,
+        );
+    }
     let agent_ms = if mined.turn_ms > 0 {
         mined.turn_ms
     } else {
@@ -2400,6 +2522,19 @@ mod tests {
         assert_eq!(m.read_file_tool_calls, 1);
         assert_eq!(m.leading_marker_in_bash_result, 1);
         assert!(m.total_tool_result_bytes >= m.max_tool_result_bytes);
+    }
+
+    #[test]
+    fn parse_events_tracks_shell_script_mutation_paths() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"read_file","success":true,"result":[{"type":"text","text":"{\"path\":\"/src/client.rs\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"python3 -c \\\"from pathlib import Path; Path('src/mount.rs').write_text('fixed')\\\"\",\"exit_code\":0,\"success\":true}"}]}}
+"#;
+
+        let mined = parse_events(jsonl);
+
+        assert_eq!(mined.exploration_tools_before_first_mutation, 1);
+        assert_eq!(mined.applied_mutation_paths, vec!["src/mount.rs"]);
     }
 
     #[test]

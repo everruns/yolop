@@ -85,6 +85,14 @@ samples = ["add-fn", "find-constant"]
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
+# OWNER-SELECTION — compare the existing runtime guard with no guard, and
+# the same task carrying prompt-only policy. The ordinary edit controls measure
+# false positives and ceremony on intentionally local work.
+[presets.owner-selection]
+samples = ["owner-selection-runtime-guard", "owner-selection-prompt-policy", "add-fn", "implement-todo"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "no-progress-guard"] }
+
 # OUTPUT-PERSISTENCE — isolates the Everruns output-persistence change from
 # yolop's other improvements. The dependency baseline is yolop candidate code
 # built against Everruns main without the output-persistence PR.

@@ -3,6 +3,13 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-01 — Owner evidence before non-obvious mutation
+
+- [System prompt composition](specs/system-prompt.md) now requires repository
+  evidence for the root cause and owning abstraction before the first mutation
+  of a non-obvious bug, while preserving the one-read path for explicit local
+  edits.
+
 ## 2026-07-31 — Live agent sidebar and session-scoped transcripts
 
 - The interactive TUI now opens a passive right-hand sidebar when sub-agents
