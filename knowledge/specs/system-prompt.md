@@ -102,6 +102,27 @@ resize and cost the cached prefix that `AGENTS.md`'s placement exists to
 protect. A capability that only holds at some widths still advertises `true`;
 degrading gracefully at the narrow end is the renderer's job, not the prompt's.
 
+### Live model identity rides the conversation, not the prefix
+
+The effective provider, model, and reasoning effort can change while a session
+is open through ACP configuration or Yolop's live-config tools. The provider
+receives reasoning effort as a request control, but that control is not visible
+to the model as conversation content; asking the model which effort it uses can
+therefore produce an answer based on stale dialogue.
+
+`model_runtime_context` adds a trusted `<runtime_context>` annotation to the
+prompt-facing view of the newest user message on the first turn and whenever
+one of those values changes. Stored messages and rendered transcripts remain
+untouched. Each annotation is retained against its stable message id in later
+model views, so unchanged turns extend the same provider-cache prefix instead
+of rewriting the system prompt. If compaction or checkpoint rewind removes the
+last annotated message, the capability re-emits the current values on the
+newest surviving user message.
+
+The request control remains present on every turn; only the model-visible
+annotation is change-triggered. This separates execution correctness from
+conversational awareness.
+
 ### Judgement yields to measurement
 
 Judgment over ritual applies here as it does everywhere

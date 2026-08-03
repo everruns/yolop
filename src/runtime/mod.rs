@@ -24,7 +24,8 @@ use crate::capabilities::{
     CodingCliEnvironmentCapability, ConfigCapability, ContextCostControlCapability,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry, GOAL_CAPABILITY_ID,
     GoalCapability, HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability,
-    LspCapability, PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
+    LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, ModelRuntimeContextCapability,
+    PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
     RepoMapCapability, SESSION_HISTORY_CAPABILITY_ID, SETUP_CAPABILITY_ID,
     SessionHistoryCapability, SetupCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
     WorktreeCapability,
@@ -2099,6 +2100,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         // without deferral.
         AgentCapabilityConfig::new(TOOL_REVEAL_CAPABILITY_ID),
         AgentCapabilityConfig::new(TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID),
+        AgentCapabilityConfig::new(MODEL_RUNTIME_CONTEXT_CAPABILITY_ID),
         AgentCapabilityConfig::new(SESSION_TASKS_CAPABILITY_ID),
         // A two-level 4×4 swarm has 20 live descendants (four coordinators and
         // sixteen workers). Keep that useful topology inside the default bound
@@ -3137,6 +3139,7 @@ pub async fn build_with_options(
     capabilities.register(crate::capabilities::FreeSearchCapability::new());
     capabilities.register(WebFetchCapability::from_env());
     capabilities.register(MessageMetadataCapability);
+    capabilities.register(ModelRuntimeContextCapability::new(provider_state.clone()));
     capabilities.register(CodingCliEnvironmentCapability::new(
         repo_root.clone().unwrap_or_else(|| canonical_root.clone()),
         shared_workspace_root.clone(),
@@ -4059,6 +4062,73 @@ mod tests {
                         && prompt.contains("Piggyback title, todo, and status updates")
                 }))
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_turn_exposes_model_runtime_context_without_persisting_it() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let options = BuildOptions {
+            llmsim_override: Some(
+                LlmSimConfig::fixed("done").with_message_capture(messages.clone()),
+            ),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+
+        let result = built
+            .handles
+            .run_checkpointed_turn("hello", built.model.input_message("hello"))
+            .await
+            .expect("run turn");
+        assert!(result.success);
+
+        let provider_text = {
+            let captured = messages.lock().expect("captured messages");
+            captured
+                .first()
+                .and_then(|call| {
+                    call.iter().find(|message| {
+                        message.role == everruns_core::LlmMessageRole::User
+                            && message.content_as_text().contains("<runtime_context>")
+                    })
+                })
+                .expect("provider-visible runtime context")
+                .content_as_text()
+        };
+        assert!(provider_text.contains("<provider>llmsim</provider>"));
+        assert!(provider_text.contains("<model>llmsim-yolop</model>"));
+        assert!(provider_text.contains("<reasoning_effort>none</reasoning_effort>"));
+
+        let events = built
+            .handles
+            .runtime
+            .events()
+            .await
+            .expect("runtime events");
+        let stored_input = events
+            .iter()
+            .find_map(|event| match &event.data {
+                everruns_core::EventData::InputMessage(data) => Some(&data.message),
+                _ => None,
+            })
+            .expect("stored input message");
+        assert_eq!(stored_input.text(), Some("hello"));
+        assert!(!stored_input.content.iter().any(|part| {
+            part.as_text()
+                .is_some_and(|text| text.contains("<runtime_context>"))
+        }));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
