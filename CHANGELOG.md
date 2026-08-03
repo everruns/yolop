@@ -10,6 +10,54 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.14.0] - 2026-08-03
+
+### Highlights
+
+- Local sub-agent swarms can now run concurrent delegated work, with a live agent sidebar and redesigned activity rail exposing task state without consuming monitoring turns.
+- Named configuration profiles make provider and model setups reusable, while ACP model selection now follows the standard configuration path.
+- Skills can be searched and installed conversationally from skills.sh, and MCP servers can be reloaded directly from the conversation.
+- Filesystem edits safely rebase stale non-overlapping changes, preserve native workspace paths, and reuse the upstream edit capability.
+- Markdown rendering now supports both Mermaid diagrams and sanitized HTML in the terminal.
+- The Logfire extension is now published for opt-in observability.
+
+### Breaking Changes
+
+- No intentional breaking changes. The minor version reflects the substantial new agent, configuration, extension, and terminal capabilities added since v0.13.0.
+
+### What's Changed
+
+* feat(tui): render Mermaid and HTML markdown ([#525](https://github.com/everruns/yolop/pull/525)) by @chaliy
+* feat(evals): add claude sonnet 5 targets ([#524](https://github.com/everruns/yolop/pull/524)) by @chaliy
+* fix: clear knowledge log conflict markers after skills merge ([#523](https://github.com/everruns/yolop/pull/523)) by @chaliy
+* fix(fs): safely rebase stale edits ([#522](https://github.com/everruns/yolop/pull/522)) by @chaliy
+* fix(evals): keep terra as control default ([#521](https://github.com/everruns/yolop/pull/521)) by @chaliy
+* fix(mcp): expose reload to conversation ([#520](https://github.com/everruns/yolop/pull/520)) by @chaliy
+* feat(tui): redesign live activity rail ([#519](https://github.com/everruns/yolop/pull/519)) by @chaliy
+* fix(runtime): batch independent tool calls ([#518](https://github.com/everruns/yolop/pull/518)) by @chaliy
+* feat(skills): conversational skills.sh search and install ([#517](https://github.com/everruns/yolop/pull/517)) by @chaliy
+* feat(evals): run control-v1 on gpt-5.6-luna ([#516](https://github.com/everruns/yolop/pull/516)) by @chaliy
+* fix(prompt): require owner evidence before mutation ([#515](https://github.com/everruns/yolop/pull/515)) by @chaliy
+* fix(discovery): reuse unchanged observations ([#514](https://github.com/everruns/yolop/pull/514)) by @chaliy
+* fix(background): make long monitoring turn-free ([#513](https://github.com/everruns/yolop/pull/513)) by @chaliy
+* refactor(fs): use upstream edit file capability ([#512](https://github.com/everruns/yolop/pull/512)) by @chaliy
+* feat(tui): add live agent sidebar ([#511](https://github.com/everruns/yolop/pull/511)) by @chaliy
+* fix(evals): retain terminal-bench trajectories ([#510](https://github.com/everruns/yolop/pull/510)) by @chaliy
+* fix(runtime): preserve native workspace paths ([#509](https://github.com/everruns/yolop/pull/509)) by @chaliy
+* feat(runtime): enable local sub-agent swarms ([#508](https://github.com/everruns/yolop/pull/508)) by @chaliy
+* feat(config): add named profiles ([#507](https://github.com/everruns/yolop/pull/507)) by @chaliy
+* fix(acp): use standard model configuration ([#506](https://github.com/everruns/yolop/pull/506)) by @chaliy
+* chore(deps): refresh dependency lockfile ([#505](https://github.com/everruns/yolop/pull/505)) by @chaliy
+* feat(evals): add the Terminal-Bench 2.1 eval study ([#504](https://github.com/everruns/yolop/pull/504)) by @chaliy
+* refactor(tui): render --inline as tuika's split-footer screen mode ([#503](https://github.com/everruns/yolop/pull/503)) by @chaliy
+* chore(deps): bump base64 from 0.22.1 to 0.23.0 ([#502](https://github.com/everruns/yolop/pull/502)) by @dependabot[bot]
+* chore(deps): bump the cargo-minor-and-patch group with 3 updates ([#501](https://github.com/everruns/yolop/pull/501)) by @dependabot[bot]
+* fix(tui): restore fullscreen composer behavior ([#497](https://github.com/everruns/yolop/pull/497)) by @chaliy
+* feat(extensions): publish Logfire extension ([#496](https://github.com/everruns/yolop/pull/496)) by @chaliy
+* feat(herdr): distinguish concurrent yolop sessions ([#495](https://github.com/everruns/yolop/pull/495)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.13.0...v0.14.0
+
 ## [0.13.0] - 2026-07-27
 
 ### Highlights
