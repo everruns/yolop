@@ -3,6 +3,14 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-03 — Cache-stable live model context
+
+- [System prompt composition](specs/system-prompt.md) now exposes the effective
+  provider, model, and reasoning effort through prompt-only conversation
+  annotations on the first turn and when the values change. Stable message-id
+  placement preserves provider prompt-cache prefixes; compaction and rewind
+  re-emit the current state when they remove the last marker.
+
 ## 2026-08-01 — Tuika structured-markdown renderers
 
 - [Tuika](specs/tuika.md) now records the HTML companion renderer and the
