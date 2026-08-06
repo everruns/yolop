@@ -7401,6 +7401,78 @@ mod tests {
         );
     }
 
+    /// Measures the model-visible cold-start context through the same assembled
+    /// runtime entry point used before a turn. Keep this diagnostic focused on
+    /// stable composition components so prompt/tool budget changes are explicit.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cold_start_prompt_composition_is_measured_by_component() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let context = built
+            .handles
+            .runtime
+            .load_context(built.handles.session_id)
+            .await
+            .expect("assemble cold-start context");
+
+        let prompt_bytes = context.runtime_agent.system_prompt.len();
+        let schema_bytes: usize = context
+            .runtime_agent
+            .tools
+            .iter()
+            .map(|tool| serde_json::to_vec(tool.parameters()).expect("serialize schema").len())
+            .sum();
+        let tool_definition_bytes: usize = context
+            .runtime_agent
+            .tools
+            .iter()
+            .map(|tool| {
+                serde_json::to_vec(&serde_json::json!({
+                    "name": tool.name(),
+                    "description": tool.description(),
+                    "parameters": tool.parameters(),
+                }))
+                .expect("serialize provider-visible tool definition")
+                .len()
+            })
+            .sum();
+        let mut schemas: Vec<_> = context
+            .runtime_agent
+            .tools
+            .iter()
+            .map(|tool| {
+                (
+                    tool.name().to_string(),
+                    serde_json::to_vec(tool.parameters())
+                        .expect("serialize schema")
+                        .len(),
+                )
+            })
+            .collect();
+        schemas.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
+
+        eprintln!(
+            "cold-start composition: prompt={prompt_bytes} bytes, tool_definitions={tool_definition_bytes} bytes, schemas={schema_bytes} bytes, tools={}, largest_schemas={:?}",
+            context.runtime_agent.tools.len(),
+            &schemas[..schemas.len().min(20)],
+        );
+
+        assert!(prompt_bytes > SYSTEM_PROMPT.len());
+        assert!(!context.runtime_agent.tools.is_empty());
+        assert!(schema_bytes > 0);
+    }
+
     #[test]
     fn coding_harness_enables_loop_detection() {
         let ids = coding_harness_capabilities(false, None, &Settings::default());
