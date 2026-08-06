@@ -3,6 +3,17 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-05 — Cumulative-cost context checkpoints
+
+- [Checkpointing](specs/checkpointing.md) now defines cumulative uncached input
+  and accumulated raw tool-result bytes as early proactive-compaction signals.
+  Cost pressure shares the existing durable replacement, history retrieval,
+  rewind lineage, retry bounds, and failure fallback; a marginal prompt floor
+  keeps short follow-ups out of the compaction path.
+- Active turns now admit already-persisted event boundaries for durable context
+  checkpoints while rejecting future boundaries, so proactive replacement can
+  install before the turn closes without weakening rewind lineage.
+
 ## 2026-08-05 — Default bounded task completion
 
 - [User ask](specs/user-ask.md) is now the default host completion safety net

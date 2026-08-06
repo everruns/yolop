@@ -7387,6 +7387,14 @@ mod tests {
         assert_eq!(compaction.config["strategy"], "auto");
         assert_eq!(compaction.config["proactive"], true);
         assert_eq!(compaction.config["budget_percent"], serde_json::json!(0.85));
+        let config: everruns_core::capabilities::CompactionConfig =
+            serde_json::from_value(compaction.config.clone()).expect("valid compaction config");
+        assert_eq!(
+            config.cost_control.compact_after_tool_result_bytes,
+            256 * 1024
+        );
+        assert_eq!(config.cost_control.compact_min_input_tokens, 8 * 1024);
+        assert_eq!(config.cost_control.max_uncached_input_tokens, 100_000);
     }
 
     #[test]

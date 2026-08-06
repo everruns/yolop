@@ -133,6 +133,23 @@ event sequence, format version, and provider-opaque replacement to
 latest compatible checkpoint on the active timeline plus raw messages after its
 source boundary. The raw events are never rewritten or deleted.
 
+Proactive replacement is triggered by either context-window pressure or prompt
+cost pressure. Cost pressure combines bounded cumulative uncached input with
+the saturating byte count of raw tool results accumulated since the compatible
+checkpoint, and requires a non-trivial current prompt so short follow-ups do not
+compact unnecessarily. Both triggers use the same provider-native replacement,
+lineage-aware retry watermark, suffix re-arming, and atomic failure fallback;
+there is no cost-only checkpoint format or replay path. Cold bulky evidence can
+therefore leave the live model view while remaining lossless and retrievable
+through `query_history`, with the active raw suffix retaining recent asks,
+decisions, edits, and validation.
+
+A durable model-context checkpoint may use an event boundary already persisted
+inside the currently open turn. That pending turn is the active head extension
+until completion, but the timeline rejects boundaries beyond the event log's
+current maximum; finishing, rewinding, and redoing then apply the ordinary
+closed-node lineage rules.
+
 Rewind and redo select checkpoints by the active timeline. A checkpoint on an
 abandoned suffix remains append-only data but cannot shadow the latest surviving
 ancestor. Installation is monotonic for each provider/model/version, and a
