@@ -63,7 +63,7 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 | Surface | Conversational tool | Front-ends sharing the logic |
 |---|---|---|
 | Reasoning effort | `set_reasoning_effort` | `/effort` overlay, `/setup effort` |
-| Model | `set_model` | `/model` overlay, `/setup model` |
+| Model | `search_models` / `set_model` | `/model` overlay, `/setup model` |
 | Provider | `set_provider` | `/setup provider` |
 | Skills — list | `list_skills` (upstream) | system-prompt listing |
 | Skills — search (skills.sh) | `search_skills` | — |
@@ -71,16 +71,19 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 | Skills — install/update by content | `write_skill` (upstream) | — |
 | Skills — uninstall | `delete_skill` | — |
 | Settings (provider/model/tokens/urls/capabilities, next-run) | `get_config` / `set_config` | `/setup`, `yolop-config` skill |
-| Terminal/UI actions (help, tools, mcp, cwd, status, model, effort, clear, quit) | `run_yolop_command` (TUI only) | the slash commands themselves |
+| Terminal/UI actions (help, tools, mcp, cwd, status, model, effort, clear, quit) | `run_command` (TUI only) | the slash commands themselves |
 
 Notes:
 
 - `set_model` / `set_provider` / `set_reasoning_effort` apply to the live session; the
   `/model` and `/effort` overlays still exist for humans, but the agent no longer
   needs them (it does not pre-seed an overlay the user must confirm).
+- `search_models` queries usable providers through the runtime driver registry and
+  returns provider-qualified matches. `set_model` rejects a partial name when it
+  matches discovered models but is not an exact ID for the current provider.
 - `set_config` is intentionally next-run for provider/model edits — it edits the
   settings file. The *live* equivalents are the `set_*` tools above.
-- `run_yolop_command` is gated to the interactive TUI because its effects (clearing
+- `run_command` is gated to the interactive TUI because its effects (clearing
   the transcript, quitting) only exist there; see [`commands.md`](./commands.md).
 
 ## Known gap
@@ -98,7 +101,7 @@ Notes:
   owns `list_skills` / `write_skill` (see [`skills.md`](./skills.md)).
 - `crate::capabilities::config` owns `get_config` / `set_config` (see
   [`configuration.md`](./configuration.md)).
-- The command registry and `run_yolop_command` are owned by [`commands.md`](./commands.md).
+- The command registry and `run_command` are owned by [`commands.md`](./commands.md).
 
 ## Related
 

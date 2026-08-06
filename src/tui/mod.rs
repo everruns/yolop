@@ -213,7 +213,7 @@ pub struct App {
     sandbox_approval_rx: crate::sandbox_approval::ApprovalReceiver,
     pending_sandbox_approval: Option<PendingSandboxApproval>,
     /// Settings store shared with the runtime (same instance
-    /// `SetupCapability` writes). Used to resolve credentials when querying
+    /// `ModelsCapability` writes). Used to resolve credentials when querying
     /// provider models APIs and to show per-provider connection status in
     /// the setup overlay.
     settings: Arc<crate::config::SettingsStore>,
@@ -2701,7 +2701,7 @@ impl App {
     /// declare commands and request effects, the host performs them.
     ///
     /// Returns the system transcript lines produced while applying the command
-    /// so agent-facing `HostUi::request` callers (e.g. `run_yolop_command`) can
+    /// so agent-facing `HostUi::request` callers (e.g. `run_command`) can
     /// surface `/mcp` / `/tools` output conversationally.
     async fn apply_ui_command(&mut self, command: UiCommand) -> Vec<String> {
         let clearing = matches!(&command, UiCommand::ClearTranscript);

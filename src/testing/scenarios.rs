@@ -151,7 +151,7 @@ async fn scripted_prompt_command_tool_queues_quit_ui_command() {
     let (mut runtime, _ws) = build_scripted_runtime_with_workspace_and_options(
         LlmSimConfig::scripted(vec![
             SimTurn::ToolCalls(vec![SimToolCall {
-                name: "run_yolop_command".to_string(),
+                name: "run_command".to_string(),
                 arguments: json!({ "command": "exit" }),
                 id: None,
             }]),

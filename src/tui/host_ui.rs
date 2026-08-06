@@ -10,7 +10,7 @@
 //! forwards a typed [`UiCommand`] to the terminal event loop over a channel.
 //! The loop is the only thing that can perform the effect, so it applies it.
 //!
-//! Agent-facing tools ([`crate::capabilities::client_commands::RunYolopCommandTool`])
+//! Agent-facing tools ([`crate::capabilities::client_commands::RunCommandTool`])
 //! use [`HostUi::request`] so the host can return the transcript lines it
 //! produced — making `/mcp` and `/tools` conversational instead of
 //! fire-and-forget.
@@ -102,7 +102,7 @@ pub trait HostUi: Send + Sync {
     fn send(&self, command: UiCommand);
 
     /// Apply `command` and return the system transcript lines the host produced.
-    /// Used by `run_yolop_command` so the agent sees `/mcp` / `/tools` output.
+    /// Used by `run_command` so the agent sees `/mcp` / `/tools` output.
     fn request(&self, command: UiCommand) -> oneshot::Receiver<Vec<String>>;
 }
 

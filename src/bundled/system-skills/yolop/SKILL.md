@@ -28,7 +28,7 @@ the following; `--print` and ACP omit the terminal-only client commands.
 ### Terminal client commands
 
 These act on the TUI itself (clear transcript, open overlays, quit). The agent
-can also run them via `run_yolop_command` when the user asks in plain language.
+can also run them via `run_command` when the user asks in plain language.
 
 | Command | Description |
 | --- | --- |
@@ -159,6 +159,6 @@ When the user asks what yolop can do or how to use it:
 1. Summarize the relevant section from this skill (commands, shortcuts, or
    features — match what they asked).
 2. For the **live** command or tool list, prefer `/help`, `/tools`, or
-   `run_yolop_command` / `list_skills` rather than guessing.
+   `run_command` / `list_skills` rather than guessing.
 3. Point power users at `README.md` and `knowledge/specs/` for protocol and configuration
    depth; keep conversational answers short.
