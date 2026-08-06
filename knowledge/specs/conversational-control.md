@@ -39,7 +39,9 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
    Adding a tool must not fork the logic — it shares the command's code path so
    validation, persistence, and live application are identical. (`SetupController` is
    the reference: `/setup`, the model picker overlay, and the `set_*` tools all call
-   its `change_*` methods.)
+   its `change_*` methods.) Model selection applies immediately but is persisted only
+   after that model completes a successful turn, so an inaccessible or unsupported
+   model does not become the next session's default.
 
 3. **Errors are recoverable.** A bad argument (unknown effort, unknown provider,
    missing skill) returns a tool error whose message names the valid options or the

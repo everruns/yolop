@@ -9684,7 +9684,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn setup_model_picker_preset_selection_applies_and_persists() {
+    async fn setup_model_picker_preset_selection_applies_without_persisting() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.lines.clear();
@@ -9721,11 +9721,10 @@ mod tests {
             "completion line should report the picked model: {:?}",
             app.lines
         );
-        // The pick persists, so the next run restores it (see
-        // pick_provider_applies_saved_model_for_saved_provider in main.rs).
+        // Persistence waits until the selected model completes a turn.
         let snapshot = app.settings.snapshot();
         assert_eq!(snapshot.default_provider.as_deref(), Some("openai"));
-        assert_eq!(snapshot.model_for("openai"), Some("gpt-5.4 none"));
+        assert_eq!(snapshot.model_for("openai"), None);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

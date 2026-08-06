@@ -533,6 +533,8 @@ pub(crate) struct SetupCapability {
     pub(crate) config: Arc<dyn ConfigService>,
     /// …and writes provider/token/model choices through the concrete store.
     pub(crate) settings: Arc<SettingsStore>,
+    /// Model choice awaiting proof that the next model turn succeeds.
+    pub(crate) pending_model_choice: Arc<RwLock<Option<ProviderChoice>>>,
 }
 
 impl SetupCapability {
@@ -546,6 +548,7 @@ impl SetupCapability {
             provider_store: self.provider_store.clone(),
             config: self.config.clone(),
             settings: self.settings.clone(),
+            pending_model_choice: self.pending_model_choice.clone(),
         }
     }
 }
@@ -562,6 +565,7 @@ pub(crate) struct SetupController {
     provider_store: Arc<dyn RuntimeProviderStore>,
     config: Arc<dyn ConfigService>,
     settings: Arc<SettingsStore>,
+    pending_model_choice: Arc<RwLock<Option<ProviderChoice>>>,
 }
 
 #[async_trait]
@@ -863,11 +867,16 @@ impl SetupController {
             return Ok(failed_result(format!("setup model failed: {err}")));
         }
         let label = next.label();
-        let persist_note = self.persist_model_choice(&next);
-        *self.provider.write().expect("provider lock poisoned") = next;
+        *self.provider.write().expect("provider lock poisoned") = next.clone();
+        *self
+            .pending_model_choice
+            .write()
+            .expect("pending model lock poisoned") = Some(next);
         Ok(CommandResult {
             success: true,
-            message: format!("setup model changed: {label}{persist_note}"),
+            message: format!(
+                "setup model changed: {label}; applies to this session until a turn succeeds"
+            ),
             error_code: None,
             error_fields: None,
         })
@@ -875,15 +884,30 @@ impl SetupController {
 
     /// Persist a model switch: the provider preference and the
     /// provider-relative `model [effort]` spec, so both survive a restart
-    /// (the model picker promises "future sessions"). Best-effort — a failed
-    /// save is reported in the message but never blocks the in-session
-    /// switch.
-    fn persist_model_choice(&self, next: &ProviderChoice) -> String {
+    /// (the model picker promises "future sessions"). A failed save is kept
+    /// pending so a later successful turn can retry it.
+    pub(crate) fn persist_pending_model_choice(
+        settings: &SettingsStore,
+        pending_model_choice: &RwLock<Option<ProviderChoice>>,
+    ) -> String {
+        let mut pending = pending_model_choice
+            .write()
+            .expect("pending model lock poisoned");
+        let Some(next) = pending.as_ref() else {
+            return String::new();
+        };
+        let warning = Self::persist_model_choice(settings, next);
+        if warning.is_empty() {
+            pending.take();
+        }
+        warning
+    }
+
+    fn persist_model_choice(settings: &SettingsStore, next: &ProviderChoice) -> String {
         let provider_name = next.provider_name().to_string();
-        let result = self
-            .settings
+        let result = settings
             .set_default_provider(Some(provider_name.clone()))
-            .and_then(|()| self.settings.set_model(provider_name, next.model_spec()));
+            .and_then(|()| settings.set_model(provider_name, next.model_spec()));
         match result {
             Ok(()) => String::new(),
             Err(err) => format!(" (warning: settings not saved: {err})"),
@@ -962,7 +986,7 @@ impl SetupController {
             Err(err) => return Ok(failed_result(format!("setup effort failed: {err}"))),
         };
         let label = next.label();
-        let persist_note = self.persist_model_choice(&next);
+        let persist_note = Self::persist_model_choice(&self.settings, &next);
         *self.provider.write().expect("provider lock poisoned") = next;
         Ok(CommandResult {
             success: true,
@@ -1498,6 +1522,7 @@ mod tests {
             provider_store: Arc::new(StubProviderStore),
             config: settings.clone(),
             settings,
+            pending_model_choice: Arc::new(RwLock::new(None)),
         };
         (controller, provider, dir)
     }
@@ -1528,6 +1553,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_choice_is_persisted_only_after_a_successful_turn() {
+        let (controller, _provider, _dir) = test_controller(ProviderChoice::OpenAi {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: None,
+        });
+
+        controller
+            .change_model("gpt-5.4")
+            .await
+            .expect("change model");
+        let before = controller.settings.snapshot();
+        assert_eq!(before.models.get("openai"), None);
+        assert_eq!(before.default_provider, None);
+
+        let warning = SetupController::persist_pending_model_choice(
+            &controller.settings,
+            &controller.pending_model_choice,
+        );
+        assert!(warning.is_empty(), "unexpected warning: {warning}");
+        let after = controller.settings.snapshot();
+        assert_eq!(
+            after.models.get("openai").map(String::as_str),
+            Some("gpt-5.4 none")
+        );
+        assert_eq!(after.default_provider.as_deref(), Some("openai"));
+    }
+
+    #[tokio::test]
     async fn set_model_tool_switches_model_and_optional_effort() {
         let (controller, provider, _dir) = test_controller(ProviderChoice::OpenAi {
             model: "gpt-5.5".to_string(),
@@ -1554,6 +1607,7 @@ mod tests {
             provider_store: controller.provider_store.clone(),
             config: controller.config.clone(),
             settings: controller.settings.clone(),
+            pending_model_choice: controller.pending_model_choice.clone(),
         };
         let names: Vec<String> = capability
             .tools()

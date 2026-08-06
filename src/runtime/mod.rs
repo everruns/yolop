@@ -89,6 +89,7 @@ use everruns_runtime::{
     SessionBuilder, WriteBlocklistFileStore,
 };
 
+use crate::capabilities::host::SetupController;
 use crate::exec::workspace_host::WorkspaceHost;
 use crate::exec::worktree::{WorktreeManager, detect_repo_root, restore_worktree_from_metadata};
 use crate::runtime::session_log::{
@@ -2276,6 +2277,8 @@ pub struct BuiltRuntime {
 #[derive(Clone)]
 pub struct RuntimeHandles {
     pub runtime: Arc<InProcessRuntime>,
+    settings: Arc<SettingsStore>,
+    pending_model_choice: Arc<RwLock<Option<ProviderChoice>>>,
     pub session_id: SessionId,
     /// Typed handle to the JSONL event emitter. The runtime sees it
     /// through the `EventBus` trait object; we keep a direct reference
@@ -2319,6 +2322,15 @@ impl RuntimeHandles {
         let result = self.runtime.run_turn(self.session_id, input).await;
         let success = result.as_ref().is_ok_and(|turn| turn.success);
         checkpoint.finish(success)?;
+        if success {
+            let warning = SetupController::persist_pending_model_choice(
+                &self.settings,
+                &self.pending_model_choice,
+            );
+            if !warning.is_empty() {
+                tracing::warn!("{warning}");
+            }
+        }
         self.checkpoints.apply_queued_confirmation().await;
         Ok(result?)
     }
@@ -3178,11 +3190,13 @@ pub async fn build_with_options(
     });
     // `/setup` (below) is the capability-sourced slash command. It implements
     // `Capability::execute_command` end to end.
+    let pending_model_choice = Arc::new(RwLock::new(None));
     capabilities.register(SetupCapability {
         provider: provider_state.clone(),
         provider_store: provider_store.clone(),
         config: settings.clone(),
         settings: settings.clone(),
+        pending_model_choice: pending_model_choice.clone(),
     });
     // Schema-described, human-friendly config editing (`get_config` /
     // `set_config`, including `key=capabilities`) plus an always-on pointer
@@ -3441,6 +3455,8 @@ pub async fn build_with_options(
     Ok(BuiltRuntime {
         handles: RuntimeHandles {
             runtime,
+            settings: settings.clone(),
+            pending_model_choice,
             session_id,
             events: event_bus_typed,
             checkpoints,
