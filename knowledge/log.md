@@ -13,6 +13,17 @@ wording, formatting, and link fixes do not need entries.
   task-authored free-form content is marked as untrusted execution data rather
   than instructions.
 
+## 2026-08-05 — Progress guard became a trajectory controller
+
+- Added [Progress guard trajectory control](specs/progress-guard.md): warnings
+  are one-shot per unchanged evidence state, exact repeated reads reuse compact
+  freshness markers, and post-budget exploration is host-blocked until a
+  bounded structured checkpoint records facts, hypothesis, missing evidence,
+  and one decisive action.
+- Guard state is bounded and resumes only against a matching active tool
+  trajectory; mutation, validation, new scopes, and externally changed result
+  bytes reset only the state they invalidate.
+
 ## 2026-08-05 — Non-blocking repository pulse at startup
 
 - [Presentation](specs/presentation.md) now defines startup as a transient empty

@@ -5,17 +5,26 @@
 // spending many tools on investigation without edits or validation.
 
 use async_trait::async_trait;
-use everruns_core::atoms::{PostToolExecHook, PostToolExecHookPriority};
+use everruns_core::atoms::{
+    PostToolExecHook, PostToolExecHookPriority, PreToolUseDecision, PreToolUseHook,
+};
 use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::tool_types::{ToolCall, ToolDefinition, ToolResult};
+use everruns_core::tools::{Tool, ToolExecutionResult};
 use everruns_core::traits::ToolContext;
+use everruns_core::typed_id::SessionId;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher};
+use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub(crate) const PROGRESS_GUARD_CAPABILITY_ID: &str = "progress_guard";
+const PROGRESS_CHECKPOINT_TOOL: &str = "progress_checkpoint";
 
 const EXPLORATION_WITHOUT_PROGRESS_THRESHOLD: usize = 24;
 const CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD: usize = 48;
@@ -28,15 +37,32 @@ const WAITING_WINDOW_THRESHOLD: usize = 4;
 const SEMANTIC_HISTORY_LIMIT: usize = 512;
 const TRACKED_PATH_LIMIT: usize = 1024;
 const MIN_REUSABLE_RESULT_BYTES: usize = 512;
+const SESSION_STATE_LIMIT: usize = 32;
+const STORED_STATE_VERSION: u8 = 1;
 
 pub(crate) struct ProgressGuardCapability {
     state: Arc<Mutex<ProgressGuardState>>,
 }
 
 impl ProgressGuardCapability {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn open(
+        session_dir: &Path,
+        session_id: SessionId,
+        active_tool_count: usize,
+    ) -> Self {
+        let store = Arc::new(ProgressGuardStore::new(
+            session_dir.join("progress-guard.json"),
+        ));
+        let mut state = ProgressGuardState {
+            store: store.clone(),
+            ..ProgressGuardState::default()
+        };
+        if let Some(progress) = store.load(session_id, active_tool_count) {
+            state.sessions.insert(session_id.to_string(), progress);
+            state.recent_sessions.push_back(session_id.to_string());
+        }
         Self {
-            state: Arc::new(Mutex::new(ProgressGuardState::default())),
+            state: Arc::new(Mutex::new(state)),
         }
     }
 }
@@ -52,7 +78,7 @@ impl Capability for ProgressGuardCapability {
     }
 
     fn description(&self) -> &str {
-        "Warns the coding agent when tool usage suggests investigation without progress."
+        "Compacts unchanged evidence and requires a structured checkpoint when investigation stops making progress."
     }
 
     fn status(&self) -> CapabilityStatus {
@@ -84,14 +110,40 @@ impl Capability for ProgressGuardCapability {
             state: self.state.clone(),
         })]
     }
+
+    fn pre_tool_use_hooks(&self) -> Vec<Arc<dyn PreToolUseHook>> {
+        vec![Arc::new(ProgressGuardGate {
+            state: self.state.clone(),
+        })]
+    }
+
+    fn tools(&self) -> Vec<Box<dyn Tool>> {
+        vec![Box::new(ProgressCheckpointTool)]
+    }
 }
 
 #[derive(Default)]
 struct ProgressGuardState {
     sessions: HashMap<String, SessionProgress>,
+    recent_sessions: VecDeque<String>,
+    store: Arc<ProgressGuardStore>,
 }
 
-#[derive(Default)]
+impl ProgressGuardState {
+    fn session_mut(&mut self, session_id: &str) -> &mut SessionProgress {
+        self.recent_sessions
+            .retain(|candidate| candidate != session_id);
+        self.recent_sessions.push_back(session_id.to_string());
+        while self.recent_sessions.len() > SESSION_STATE_LIMIT {
+            if let Some(expired) = self.recent_sessions.pop_front() {
+                self.sessions.remove(&expired);
+            }
+        }
+        self.sessions.entry(session_id.to_string()).or_default()
+    }
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct SessionProgress {
     tool_count: usize,
     exploration_since_progress: usize,
@@ -105,34 +157,63 @@ struct SessionProgress {
     consecutive_zero_evidence_searches: usize,
     consecutive_truncated_exploration: usize,
     warning_count: usize,
+    checkpoint_required: bool,
+    checkpoint_count: usize,
     workspace_epoch: u64,
     workspace_hashes: HashMap<String, String>,
     recent_workspace_states: VecDeque<u64>,
     seen_workspace_states: HashSet<u64>,
     recent_validations: VecDeque<(u64, String)>,
     seen_validations: HashSet<(u64, String)>,
+    recent_warned_validations: VecDeque<(u64, String)>,
+    warned_validations: HashSet<(u64, String)>,
     recent_observations: VecDeque<String>,
     observation_hashes: HashMap<String, [u8; 32]>,
+    warned_observation_hashes: HashMap<String, [u8; 32]>,
+    warned_repetition_signatures: HashSet<String>,
+    recent_warned_workspace_states: VecDeque<u64>,
+    warned_workspace_states: HashSet<u64>,
+    warned_zero_evidence: bool,
+    warned_truncated_exploration: bool,
+    waiting_warning_emitted: bool,
+    recent_warned_status_commands: VecDeque<String>,
+    warned_status_commands: HashSet<String>,
+    recent_checkpoints: VecDeque<String>,
+    seen_checkpoints: HashSet<String>,
 }
 
 impl SessionProgress {
     fn observe(&mut self, tool_call: &ToolCall, result: &mut ToolResult) -> Option<String> {
         self.tool_count += 1;
+        if tool_call.name == PROGRESS_CHECKPOINT_TOOL {
+            self.observe_checkpoint(tool_call, result);
+            return None;
+        }
         let class = classify_tool_call(tool_call);
 
         match class {
             ToolClass::Mutation => self.observe_mutation(tool_call, result),
             ToolClass::Validation(command) => {
                 self.validation_count += 1;
-                self.reset_activity_streaks();
                 let validation = (self.validation_state_signature(), command);
                 if self.seen_validations.contains(&validation) {
-                    self.warning_count += 1;
-                    return Some(
-                        "progress_guard: repeated the same validation command on an unchanged workspace state. The result adds no new code evidence; use the existing result, change the relevant state, or explain why an external retry is necessary before running it again."
-                            .to_string(),
-                    );
+                    if !self.warned_validations.contains(&validation) {
+                        self.warning_count += 1;
+                        remember_bounded(
+                            &mut self.warned_validations,
+                            &mut self.recent_warned_validations,
+                            validation,
+                        );
+                        return Some(
+                            "progress_guard: repeated the same validation command on an unchanged workspace state. The result adds no new code evidence; use the existing result, change the relevant state, or explain why an external retry is necessary before running it again."
+                                .to_string(),
+                        );
+                    }
+                    return None;
                 }
+                self.reset_activity_streaks();
+                self.seen_checkpoints.clear();
+                self.recent_checkpoints.clear();
                 remember_bounded(
                     &mut self.seen_validations,
                     &mut self.recent_validations,
@@ -143,7 +224,8 @@ impl SessionProgress {
             ToolClass::Waiting => {
                 self.exploration_since_progress += 1;
                 self.reset_result_streaks();
-                if self.observe_waiting_signal(true) {
+                if self.observe_waiting_signal(true) && !self.waiting_warning_emitted {
+                    self.waiting_warning_emitted = true;
                     self.warning_count += 1;
                     return Some(
                         "progress_guard: repeated checks of an external event (CI run, PR checks/reviews) without other progress. Do not poll across turns: run one blocking watch detached via spawn_background (e.g. `gh pr checks --watch` or an `until <check>; do sleep 30; done` loop) and end the turn — completion wakes the agent. In one-shot mode, block on the spawned task with wait_task instead."
@@ -163,12 +245,20 @@ impl SessionProgress {
                     self.last_status_command = Some(command);
                 }
                 if self.repeated_status_count >= REPEATED_STATUS_THRESHOLD {
-                    self.warning_count += 1;
                     self.repeated_status_count = 0;
-                    return Some(
-                        "progress_guard: repeated git status/diff checks without an intervening edit or validation. Use the latest result, make a targeted change, run a decisive check, or explain why no change is needed."
-                            .to_string(),
-                    );
+                    let command = self.last_status_command.clone().unwrap_or_default();
+                    if !self.warned_status_commands.contains(&command) {
+                        remember_bounded(
+                            &mut self.warned_status_commands,
+                            &mut self.recent_warned_status_commands,
+                            command,
+                        );
+                        self.warning_count += 1;
+                        return Some(
+                            "progress_guard: repeated git status/diff checks without an intervening edit or validation. Use the latest result, make a targeted change, run a decisive check, or explain why no change is needed."
+                                .to_string(),
+                        );
+                    }
                 }
                 self.exploration_warning()
             }
@@ -194,6 +284,37 @@ impl SessionProgress {
         }
     }
 
+    fn observe_checkpoint(&mut self, tool_call: &ToolCall, result: &mut ToolResult) {
+        if result.error.is_some() {
+            return;
+        }
+        if !self.checkpoint_required {
+            reject_checkpoint(result, "no progress checkpoint is currently required");
+            return;
+        }
+        let fingerprint = checkpoint_fingerprint(&tool_call.arguments);
+        if self.seen_checkpoints.contains(&fingerprint) {
+            reject_checkpoint(
+                result,
+                "this checkpoint is unchanged; add new evidence or take the stated decisive action",
+            );
+            return;
+        }
+        remember_bounded(
+            &mut self.seen_checkpoints,
+            &mut self.recent_checkpoints,
+            fingerprint,
+        );
+        self.checkpoint_count += 1;
+        self.checkpoint_required = false;
+        self.reset_activity_streaks();
+        result.result = Some(json!({
+            "accepted": true,
+            "exploration_resumed": true,
+            "message": "checkpoint accepted; execute the stated decisive action or gather only evidence that tests it"
+        }));
+    }
+
     fn observe_mutation(&mut self, tool_call: &ToolCall, result: &ToolResult) -> Option<String> {
         if result.error.is_some() || !mutation_was_applied(tool_call, result) {
             return None;
@@ -206,6 +327,9 @@ impl SessionProgress {
         // of serving a compact marker across an edit boundary.
         self.recent_observations.clear();
         self.observation_hashes.clear();
+        self.warned_observation_hashes.clear();
+        self.seen_checkpoints.clear();
+        self.recent_checkpoints.clear();
 
         let Some(transition) = mutation_hash_transition(tool_call, result) else {
             // Shell, delete, and structural edits can touch an unknown set of
@@ -241,7 +365,14 @@ impl SessionProgress {
         self.workspace_hashes
             .insert(transition.path, transition.content_hash);
         let current_state = self.tracked_state_signature();
-        if self.remember_workspace_state(current_state) {
+        if self.remember_workspace_state(current_state)
+            && !self.warned_workspace_states.contains(&current_state)
+        {
+            remember_bounded(
+                &mut self.warned_workspace_states,
+                &mut self.recent_warned_workspace_states,
+                current_state,
+            );
             self.warning_count += 1;
             return Some(
                 "progress_guard: this mutation returned to a recently seen workspace state (the same tracked content hashes). Confirm the revert is intentional; if this is an edit/validate cycle, keep the coherent state, report the blocker, and stop repeating the cycle."
@@ -258,6 +389,11 @@ impl SessionProgress {
         self.recent_waiting.clear();
         self.repeated_exploration_count = 0;
         self.last_exploration_signature = None;
+        self.checkpoint_required = false;
+        self.warned_repetition_signatures.clear();
+        self.warned_status_commands.clear();
+        self.recent_warned_status_commands.clear();
+        self.waiting_warning_emitted = false;
         self.reset_result_streaks();
     }
 
@@ -288,12 +424,16 @@ impl SessionProgress {
         self.workspace_epoch = self.workspace_epoch.wrapping_add(1);
         self.recent_validations.clear();
         self.seen_validations.clear();
+        self.recent_warned_validations.clear();
+        self.warned_validations.clear();
     }
 
     fn reset_tracked_history(&mut self) {
         self.workspace_hashes.clear();
         self.recent_workspace_states.clear();
         self.seen_workspace_states.clear();
+        self.warned_workspace_states.clear();
+        self.recent_warned_workspace_states.clear();
         self.advance_opaque_mutation();
     }
 
@@ -334,24 +474,30 @@ impl SessionProgress {
             self.consecutive_zero_evidence_searches += 1;
         } else {
             self.consecutive_zero_evidence_searches = 0;
+            self.warned_zero_evidence = false;
         }
         if evidence.truncated {
             self.consecutive_truncated_exploration += 1;
         } else {
             self.consecutive_truncated_exploration = 0;
+            self.warned_truncated_exploration = false;
         }
 
-        if self.consecutive_zero_evidence_searches >= ZERO_EVIDENCE_SEARCH_THRESHOLD {
+        if self.consecutive_zero_evidence_searches >= ZERO_EVIDENCE_SEARCH_THRESHOLD
+            && !self.warned_zero_evidence
+        {
             self.warning_count += 1;
-            self.consecutive_zero_evidence_searches = 0;
+            self.warned_zero_evidence = true;
             return Some(
                 "progress_guard: three consecutive searches returned zero matches. Stop varying broad terms: verify the path/scope and search contract, then use one targeted alternative or state that no evidence was found."
                     .to_string(),
             );
         }
-        if self.consecutive_truncated_exploration >= TRUNCATED_EXPLORATION_THRESHOLD {
+        if self.consecutive_truncated_exploration >= TRUNCATED_EXPLORATION_THRESHOLD
+            && !self.warned_truncated_exploration
+        {
             self.warning_count += 1;
-            self.consecutive_truncated_exploration = 0;
+            self.warned_truncated_exploration = true;
             return Some(
                 "progress_guard: repeated exploration results were truncated. Narrow the query or path before requesting more output, then inspect the owning module and a small number of call sites."
                     .to_string(),
@@ -363,6 +509,8 @@ impl SessionProgress {
     fn reset_result_streaks(&mut self) {
         self.consecutive_zero_evidence_searches = 0;
         self.consecutive_truncated_exploration = 0;
+        self.warned_zero_evidence = false;
+        self.warned_truncated_exploration = false;
     }
 
     fn reuse_unchanged_observation(
@@ -378,7 +526,20 @@ impl SessionProgress {
         let encoded = serde_json::to_vec(value).ok()?;
         let result_hash: [u8; 32] = Sha256::digest(&encoded).into();
 
-        let unchanged = self.observation_hashes.get(&signature) == Some(&result_hash);
+        let previous_hash = self.observation_hashes.get(&signature).copied();
+        let unchanged = previous_hash == Some(result_hash);
+        if previous_hash.is_some() && !unchanged {
+            // The same read contract returning different bytes is direct
+            // evidence of an external writer. Keep exploration accounting, but
+            // make workspace-keyed validation evidence fresh.
+            self.advance_opaque_mutation();
+            self.seen_checkpoints.clear();
+            self.recent_checkpoints.clear();
+        }
+        if !unchanged {
+            self.warned_observation_hashes.remove(&signature);
+            self.warned_repetition_signatures.remove(&signature);
+        }
         self.remember_observation(signature.clone(), result_hash);
         if !unchanged || encoded.len() < MIN_REUSABLE_RESULT_BYTES {
             return None;
@@ -391,6 +552,11 @@ impl SessionProgress {
             "unchanged_since_last_read": true,
             "tool": tool_call.name,
         }));
+        if self.warned_observation_hashes.get(&signature) == Some(&result_hash) {
+            return None;
+        }
+        self.warned_observation_hashes
+            .insert(signature, result_hash);
         self.warning_count += 1;
         Some(
             "progress_guard: this read/search result is unchanged since the same target was last inspected. Reuse the earlier full result; continue only if a different question or scope needs evidence."
@@ -410,6 +576,8 @@ impl SessionProgress {
             && let Some(expired) = self.recent_observations.pop_front()
         {
             self.observation_hashes.remove(&expired);
+            self.warned_observation_hashes.remove(&expired);
+            self.warned_repetition_signatures.remove(&expired);
         }
     }
 
@@ -420,10 +588,11 @@ impl SessionProgress {
                 "progress_guard: {EXPLORATION_WITHOUT_PROGRESS_THRESHOLD} investigation tools have run without an edit or validation. Narrow the hypothesis now: identify the exact missing evidence, make the smallest relevant change, or run one decisive verification command."
             ));
         }
-        if self.exploration_since_progress >= CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+        if self.exploration_since_progress == CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+            self.checkpoint_required = true;
             self.warning_count += 1;
             return Some(format!(
-                "progress_guard: checkpoint required after {count} investigation tools without an edit or validation. Stop reading broadly and produce a checkpoint before more exploration: facts learned, current hypothesis, and the next decisive action (edit, validation, or no-change diagnosis).",
+                "progress_guard: checkpoint required after {count} investigation tools without an edit or validation. Further exploration is host-blocked until you call progress_checkpoint with bounded facts, hypothesis, missing evidence, and one next decisive action (mutation, validation, or no-change diagnosis). If its schema is deferred, load it with tool_search first.",
                 count = self.exploration_since_progress
             ));
         }
@@ -440,15 +609,17 @@ impl SessionProgress {
             self.repeated_exploration_count += 1;
         } else {
             self.repeated_exploration_count = 1;
-            self.last_exploration_signature = Some(signature);
+            self.last_exploration_signature = Some(signature.clone());
         }
         if self.repeated_exploration_count >= REPEATED_EXPLORATION_THRESHOLD {
-            self.warning_count += 1;
             self.repeated_exploration_count = 0;
-            return Some(
-                "progress_guard: repeated the same investigation target without an intervening edit or validation. Use the evidence already gathered, state the hypothesis, or switch to a decisive test/change."
-                    .to_string(),
-            );
+            if self.warned_repetition_signatures.insert(signature) {
+                self.warning_count += 1;
+                return Some(
+                    "progress_guard: repeated the same investigation target without an intervening edit or validation. Use the evidence already gathered, state the hypothesis, or switch to a decisive test/change."
+                        .to_string(),
+                );
+            }
         }
         None
     }
@@ -471,19 +642,284 @@ impl PostToolExecHook for ProgressGuardHook {
         result: &mut ToolResult,
         context: &ToolContext,
     ) {
-        let warning = {
+        let (warning, store, progress) = {
             let mut state = self.state.lock().expect("progress guard state poisoned");
-            let progress = state
-                .sessions
-                .entry(context.session_id.to_string())
-                .or_default();
-            progress.observe(tool_call, result)
+            let session_id = context.session_id.to_string();
+            let store = state.store.clone();
+            let progress = state.session_mut(&session_id);
+            let warning = progress.observe(tool_call, result);
+            (warning, store, progress.clone())
         };
+
+        store.save(context.session_id, &progress);
 
         if let Some(warning) = warning {
             inject_warning(result, warning);
         }
     }
+}
+
+struct ProgressGuardGate {
+    state: Arc<Mutex<ProgressGuardState>>,
+}
+
+#[async_trait]
+impl PreToolUseHook for ProgressGuardGate {
+    async fn before_exec(
+        &self,
+        tool_call: ToolCall,
+        _tool_def: &ToolDefinition,
+        context: &ToolContext,
+    ) -> PreToolUseDecision {
+        if tool_call.name == PROGRESS_CHECKPOINT_TOOL {
+            return PreToolUseDecision::Continue(tool_call);
+        }
+        let blocked = self
+            .state
+            .lock()
+            .expect("progress guard state poisoned")
+            .sessions
+            .get(&context.session_id.to_string())
+            .is_some_and(|progress| {
+                progress.checkpoint_required
+                    && matches!(
+                        classify_tool_call(&tool_call),
+                        ToolClass::Exploration | ToolClass::Status(_) | ToolClass::Waiting
+                    )
+            });
+        if blocked {
+            PreToolUseDecision::Block {
+                reason: "progress checkpoint required: call progress_checkpoint with facts, hypothesis, missing_evidence, and next_decisive_action before more exploration"
+                    .to_string(),
+                user_message: None,
+                tool_call,
+            }
+        } else {
+            PreToolUseDecision::Continue(tool_call)
+        }
+    }
+}
+
+struct ProgressCheckpointTool;
+
+#[async_trait]
+impl Tool for ProgressCheckpointTool {
+    fn name(&self) -> &str {
+        PROGRESS_CHECKPOINT_TOOL
+    }
+
+    fn description(&self) -> &str {
+        "Submit the bounded trajectory checkpoint required by progress_guard before further exploration. State concise facts already established, one current hypothesis, the specific missing evidence, and one decisive next action. Use only when progress_guard requires it."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "facts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+                },
+                "hypothesis": { "type": "string", "minLength": 1, "maxLength": 600 },
+                "missing_evidence": {
+                    "type": "array",
+                    "maxItems": 6,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+                },
+                "next_decisive_action": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["mutation", "validation", "no_change"]
+                        },
+                        "description": { "type": "string", "minLength": 1, "maxLength": 500 }
+                    },
+                    "required": ["kind", "description"],
+                    "additionalProperties": false
+                }
+            },
+            "required": ["facts", "hypothesis", "missing_evidence", "next_decisive_action"],
+            "additionalProperties": false
+        })
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        match validate_checkpoint_arguments(&arguments) {
+            Ok(()) => ToolExecutionResult::success(json!({ "submitted": true })),
+            Err(error) => ToolExecutionResult::tool_error(error),
+        }
+    }
+}
+
+fn validate_checkpoint_arguments(arguments: &Value) -> Result<(), String> {
+    let facts = bounded_string_array(arguments, "facts", 1, 8, 300)?;
+    let _missing = bounded_string_array(arguments, "missing_evidence", 0, 6, 300)?;
+    if facts.is_empty() {
+        return Err("facts must contain at least one established fact".to_string());
+    }
+    bounded_string(arguments, "hypothesis", 600)?;
+    let action = arguments
+        .get("next_decisive_action")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "next_decisive_action must be an object".to_string())?;
+    let kind = action
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "next_decisive_action.kind is required".to_string())?;
+    if !matches!(kind, "mutation" | "validation" | "no_change") {
+        return Err(
+            "next_decisive_action.kind must be mutation, validation, or no_change".to_string(),
+        );
+    }
+    bounded_string(&Value::Object(action.clone()), "description", 500)?;
+    Ok(())
+}
+
+fn bounded_string<'a>(value: &'a Value, field: &str, max_chars: usize) -> Result<&'a str, String> {
+    let text = value
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{field} must be a string"))?;
+    let chars = text.chars().count();
+    if chars == 0 || chars > max_chars {
+        return Err(format!("{field} must contain 1..={max_chars} characters"));
+    }
+    Ok(text)
+}
+
+fn bounded_string_array<'a>(
+    value: &'a Value,
+    field: &str,
+    min_items: usize,
+    max_items: usize,
+    max_chars: usize,
+) -> Result<Vec<&'a str>, String> {
+    let items = value
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{field} must be an array"))?;
+    if items.len() < min_items || items.len() > max_items {
+        return Err(format!(
+            "{field} must contain {min_items}..={max_items} items"
+        ));
+    }
+    items
+        .iter()
+        .map(|item| {
+            let text = item
+                .as_str()
+                .ok_or_else(|| format!("{field} entries must be strings"))?;
+            let chars = text.chars().count();
+            if chars == 0 || chars > max_chars {
+                return Err(format!(
+                    "{field} entries must contain 1..={max_chars} characters"
+                ));
+            }
+            Ok(text)
+        })
+        .collect()
+}
+
+fn checkpoint_fingerprint(arguments: &Value) -> String {
+    Sha256::digest(normalize_value(arguments).as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn reject_checkpoint(result: &mut ToolResult, reason: &str) {
+    result.result = None;
+    result.error = Some(format!("progress_checkpoint rejected: {reason}"));
+}
+
+#[derive(Default)]
+struct ProgressGuardStore {
+    path: Option<PathBuf>,
+    last_saved_tool_count: Mutex<usize>,
+}
+
+impl ProgressGuardStore {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            last_saved_tool_count: Mutex::new(0),
+        }
+    }
+
+    fn load(&self, session_id: SessionId, active_tool_count: usize) -> Option<SessionProgress> {
+        let path = self.path.as_ref()?;
+        let encoded = std::fs::read(path).ok()?;
+        let stored: StoredProgress = serde_json::from_slice(&encoded).ok()?;
+        let progress = (stored.version == STORED_STATE_VERSION
+            && stored.session_id == session_id.to_string()
+            && stored.progress.tool_count <= active_tool_count)
+            .then_some(stored.progress)?;
+        *self.last_saved_tool_count.lock().unwrap() = progress.tool_count;
+        Some(progress)
+    }
+
+    fn save(&self, session_id: SessionId, progress: &SessionProgress) {
+        let Some(path) = self.path.as_ref() else {
+            return;
+        };
+        let mut last_saved = self.last_saved_tool_count.lock().unwrap();
+        if progress.tool_count < *last_saved {
+            return;
+        }
+        let stored = StoredProgress {
+            version: STORED_STATE_VERSION,
+            session_id: session_id.to_string(),
+            progress: progress.clone(),
+        };
+        let Ok(encoded) = serde_json::to_vec(&stored) else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        let temporary_path = parent.join(format!(
+            ".progress-guard-{}-{:016x}.tmp",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let persisted = options.open(&temporary_path).and_then(|mut file| {
+            file.write_all(&encoded)?;
+            file.flush()?;
+            replace_state_file(&temporary_path, path)
+        });
+        match persisted {
+            Ok(()) => *last_saved = progress.tool_count,
+            Err(error) => {
+                let _ = std::fs::remove_file(&temporary_path);
+                tracing::warn!(%error, path = %path.display(), "persist progress guard state")
+            }
+        }
+    }
+}
+
+fn replace_state_file(temporary_path: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    if std::fs::symlink_metadata(destination).is_ok() {
+        std::fs::remove_file(destination)?;
+    }
+    std::fs::rename(temporary_path, destination)
+}
+
+#[derive(Deserialize, Serialize)]
+struct StoredProgress {
+    version: u8,
+    session_id: String,
+    progress: SessionProgress,
 }
 
 #[derive(Clone, Copy)]
@@ -838,6 +1274,18 @@ mod tests {
         }
     }
 
+    fn checkpoint_arguments(label: &str) -> Value {
+        json!({
+            "facts": [format!("fact {label}")],
+            "hypothesis": format!("hypothesis {label}"),
+            "missing_evidence": [format!("missing {label}")],
+            "next_decisive_action": {
+                "kind": "validation",
+                "description": format!("validate {label}")
+            }
+        })
+    }
+
     #[tokio::test]
     async fn unchanged_large_read_returns_compact_marker_and_mutation_invalidates_it() {
         let state = Arc::new(Mutex::new(ProgressGuardState::default()));
@@ -884,6 +1332,270 @@ mod tests {
         hook.after_exec(&read, &tool_def("read_file"), &mut after_mutation, &context)
             .await;
         assert!(after_mutation.result.unwrap().get("content").is_some());
+    }
+
+    #[tokio::test]
+    async fn unchanged_large_read_warns_once_but_every_repeat_stays_compact() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let read = call("read_file", json!({ "path": "/src/lib.rs" }));
+        let payload = json!({ "content": "stable evidence\n".repeat(400) });
+        let mut warning_count = 0;
+
+        for _ in 0..4 {
+            let mut out = result_value(payload.clone());
+            hook.after_exec(&read, &tool_def("read_file"), &mut out, &context)
+                .await;
+            let value = out.result.as_ref().unwrap();
+            warning_count += usize::from(value.get("progress_guard_warning").is_some());
+            if value.get("content").is_none() {
+                assert_eq!(value["unchanged_since_last_read"], true);
+            }
+        }
+
+        assert_eq!(warning_count, 1);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_gate_blocks_exploration_then_accepts_a_bounded_transition() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook {
+            state: state.clone(),
+        };
+        let gate = ProgressGuardGate { state };
+        let context = ToolContext::new(SessionId::new());
+
+        for i in 0..CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+            hook.after_exec(
+                &call("read_file", json!({ "path": format!("/src/{i}.rs") })),
+                &tool_def("read_file"),
+                &mut result(),
+                &context,
+            )
+            .await;
+        }
+
+        let blocked = gate
+            .before_exec(
+                call("read_file", json!({ "path": "/src/blocked.rs" })),
+                &tool_def("read_file"),
+                &context,
+            )
+            .await;
+        assert!(matches!(blocked, PreToolUseDecision::Block { .. }));
+
+        let arguments = checkpoint_arguments("owner");
+        let executed = ProgressCheckpointTool.execute(arguments.clone()).await;
+        assert!(executed.is_success());
+        let mut checkpoint_result = result_value(json!({ "submitted": true }));
+        hook.after_exec(
+            &call(PROGRESS_CHECKPOINT_TOOL, arguments),
+            &tool_def(PROGRESS_CHECKPOINT_TOOL),
+            &mut checkpoint_result,
+            &context,
+        )
+        .await;
+        assert_eq!(checkpoint_result.result.unwrap()["accepted"], true);
+
+        let resumed = gate
+            .before_exec(
+                call("read_file", json!({ "path": "/src/decisive.rs" })),
+                &tool_def("read_file"),
+                &context,
+            )
+            .await;
+        assert!(matches!(resumed, PreToolUseDecision::Continue(_)));
+    }
+
+    #[tokio::test]
+    async fn resumed_session_preserves_the_gate_and_accepted_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = SessionId::new();
+        let context = ToolContext::new(session_id);
+        let first = ProgressGuardCapability::open(dir.path(), session_id, 0);
+        let post = first.post_tool_exec_hooks().pop().unwrap();
+
+        for i in 0..CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+            post.after_exec(
+                &call("read_file", json!({ "path": format!("/src/{i}.rs") })),
+                &tool_def("read_file"),
+                &mut result(),
+                &context,
+            )
+            .await;
+        }
+        drop(first);
+
+        let resumed = ProgressGuardCapability::open(
+            dir.path(),
+            session_id,
+            CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD,
+        );
+        let gate = resumed.pre_tool_use_hooks().pop().unwrap();
+        assert!(matches!(
+            gate.before_exec(
+                call("read_file", json!({ "path": "/src/blocked.rs" })),
+                &tool_def("read_file"),
+                &context,
+            )
+            .await,
+            PreToolUseDecision::Block { .. }
+        ));
+
+        let arguments = checkpoint_arguments("resume");
+        let mut checkpoint_result = result_value(json!({ "submitted": true }));
+        resumed.post_tool_exec_hooks()[0]
+            .after_exec(
+                &call(PROGRESS_CHECKPOINT_TOOL, arguments),
+                &tool_def(PROGRESS_CHECKPOINT_TOOL),
+                &mut checkpoint_result,
+                &context,
+            )
+            .await;
+        drop(resumed);
+
+        let after_checkpoint = ProgressGuardCapability::open(
+            dir.path(),
+            session_id,
+            CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD + 1,
+        );
+        let gate = after_checkpoint.pre_tool_use_hooks().pop().unwrap();
+        assert!(matches!(
+            gate.before_exec(
+                call("read_file", json!({ "path": "/src/resumed.rs" })),
+                &tool_def("read_file"),
+                &context,
+            )
+            .await,
+            PreToolUseDecision::Continue(_)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisted_state_replaces_a_symlink_without_overwriting_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let session_dir = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let state_path = session_dir.path().join("progress-guard.json");
+        let outside_path = outside_dir.path().join("outside.txt");
+        std::fs::write(&outside_path, "do not overwrite").unwrap();
+        symlink(&outside_path, &state_path).unwrap();
+
+        let store = ProgressGuardStore::new(state_path.clone());
+        store.save(SessionId::new(), &SessionProgress::default());
+
+        assert_eq!(
+            std::fs::read_to_string(outside_path).unwrap(),
+            "do not overwrite"
+        );
+        assert!(std::fs::symlink_metadata(state_path).unwrap().is_file());
+    }
+
+    #[tokio::test]
+    async fn deterministic_baseline_candidate_trajectory_study() {
+        #[derive(Default)]
+        struct Metrics {
+            calls: usize,
+            result_bytes: usize,
+            complete: bool,
+        }
+
+        async fn run(advisory_only: bool) -> Metrics {
+            let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+            let hook = ProgressGuardHook {
+                state: state.clone(),
+            };
+            let gate = ProgressGuardGate { state };
+            let context = ToolContext::new(SessionId::new());
+            let mut metrics = Metrics::default();
+
+            for index in 0..160 {
+                let read = call(
+                    "read_file",
+                    json!({ "path": format!("/src/{}.rs", index.min(40)) }),
+                );
+                if !advisory_only
+                    && matches!(
+                        gate.before_exec(read.clone(), &tool_def("read_file"), &context)
+                            .await,
+                        PreToolUseDecision::Block { .. }
+                    )
+                {
+                    let arguments = checkpoint_arguments("no-change diagnosis");
+                    let mut checkpoint = result_value(json!({ "submitted": true }));
+                    hook.after_exec(
+                        &call(PROGRESS_CHECKPOINT_TOOL, arguments),
+                        &tool_def(PROGRESS_CHECKPOINT_TOOL),
+                        &mut checkpoint,
+                        &context,
+                    )
+                    .await;
+                    metrics.calls += 1;
+                    metrics.result_bytes += serde_json::to_vec(&checkpoint.result).unwrap().len();
+                    break;
+                }
+
+                let payload = if index < 40 {
+                    json!({ "content": format!("scope {index}") })
+                } else {
+                    json!({ "content": "root-cause evidence\n".repeat(35) })
+                };
+                let mut out = result_value(payload);
+                hook.after_exec(&read, &tool_def("read_file"), &mut out, &context)
+                    .await;
+                metrics.calls += 1;
+                metrics.result_bytes += serde_json::to_vec(&out.result).unwrap().len();
+                metrics.complete |= index >= 40;
+            }
+            metrics
+        }
+
+        // The baseline is deliberately conservative: it has the same compact
+        // cache as the candidate, but checkpoint prose remains advisory and is
+        // ignored. The candidate follows the host-enforced transition and ends
+        // with the already-complete no-change diagnosis.
+        let baseline = run(true).await;
+        let candidate = run(false).await;
+        assert!(baseline.complete && candidate.complete);
+        assert!(
+            candidate.calls * 2 <= baseline.calls,
+            "success criterion: at least 50% fewer calls ({} -> {})",
+            baseline.calls,
+            candidate.calls
+        );
+        assert!(
+            candidate.result_bytes * 2 <= baseline.result_bytes,
+            "success criterion: at least 50% fewer result bytes ({} -> {})",
+            baseline.result_bytes,
+            candidate.result_bytes
+        );
+    }
+
+    #[test]
+    fn checkpoint_payload_is_strictly_bounded() {
+        assert!(validate_checkpoint_arguments(&checkpoint_arguments("ok")).is_ok());
+        let mut oversized = checkpoint_arguments("large");
+        oversized["hypothesis"] = json!("x".repeat(601));
+        assert!(validate_checkpoint_arguments(&oversized).is_err());
+    }
+
+    #[test]
+    fn session_and_evidence_state_are_bounded() {
+        let mut state = ProgressGuardState::default();
+        for index in 0..(SESSION_STATE_LIMIT * 2) {
+            state.session_mut(&format!("session-{index}"));
+        }
+        assert_eq!(state.sessions.len(), SESSION_STATE_LIMIT);
+
+        let progress = state.session_mut("active");
+        for index in 0..(SEMANTIC_HISTORY_LIMIT * 2) {
+            progress.remember_observation(format!("read:{index}"), [index as u8; 32]);
+        }
+        assert_eq!(progress.observation_hashes.len(), SEMANTIC_HISTORY_LIMIT);
+        assert_eq!(progress.recent_observations.len(), SEMANTIC_HISTORY_LIMIT);
     }
 
     #[tokio::test]
@@ -1018,29 +1730,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hook_keeps_warning_after_checkpoint_until_progress() {
+    async fn checkpoint_warning_fires_once_for_the_unchanged_state() {
         let state = Arc::new(Mutex::new(ProgressGuardState::default()));
-        let hook = ProgressGuardHook { state };
+        let hook = ProgressGuardHook {
+            state: state.clone(),
+        };
         let context = ToolContext::new(SessionId::new());
-        let mut last = result();
+        let mut warning_count = 0;
 
-        for i in 0..=CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
-            last = result();
+        for i in 0..(CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD + 12) {
+            let mut out = result();
             hook.after_exec(
                 &call("grep_files", json!({ "pattern": format!("needle{i}") })),
                 &tool_def("grep_files"),
-                &mut last,
+                &mut out,
                 &context,
             )
             .await;
+            warning_count += usize::from(
+                out.result
+                    .as_ref()
+                    .and_then(|value| value.get("progress_guard_warning"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|warning| warning.contains("checkpoint required")),
+            );
         }
 
+        assert_eq!(warning_count, 1);
         assert!(
-            last.result
-                .as_ref()
-                .and_then(|value| value.get("progress_guard_warning"))
-                .and_then(Value::as_str)
-                .is_some_and(|warning| warning.contains("checkpoint required"))
+            state
+                .lock()
+                .unwrap()
+                .sessions
+                .get(&context.session_id.to_string())
+                .is_some_and(|progress| progress.checkpoint_required)
         );
     }
 
@@ -1122,6 +1845,82 @@ mod tests {
 
         assert!(
             last.result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_unchanged_validation_does_not_unlock_checkpoint_gate() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook {
+            state: state.clone(),
+        };
+        let context = ToolContext::new(SessionId::new());
+        let validation = call("bash", json!({ "command": "cargo test" }));
+
+        hook.after_exec(&validation, &tool_def("bash"), &mut result(), &context)
+            .await;
+        for i in 0..CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+            hook.after_exec(
+                &call("read_file", json!({ "path": format!("/src/{i}.rs") })),
+                &tool_def("read_file"),
+                &mut result(),
+                &context,
+            )
+            .await;
+        }
+        hook.after_exec(&validation, &tool_def("bash"), &mut result(), &context)
+            .await;
+
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .sessions
+                .get(&context.session_id.to_string())
+                .is_some_and(|progress| progress.checkpoint_required),
+            "an unchanged validation is not decisive progress"
+        );
+    }
+
+    #[tokio::test]
+    async fn externally_changed_read_makes_validation_fresh() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let validation = call("bash", json!({ "command": "cargo test" }));
+        let read = call("read_file", json!({ "path": "/src/lib.rs" }));
+
+        hook.after_exec(&validation, &tool_def("bash"), &mut result(), &context)
+            .await;
+        hook.after_exec(
+            &read,
+            &tool_def("read_file"),
+            &mut result_value(json!({ "content": "before".repeat(200) })),
+            &context,
+        )
+        .await;
+        hook.after_exec(
+            &read,
+            &tool_def("read_file"),
+            &mut result_value(json!({ "content": "after".repeat(200) })),
+            &context,
+        )
+        .await;
+        let mut after_external_change = result();
+        hook.after_exec(
+            &validation,
+            &tool_def("bash"),
+            &mut after_external_change,
+            &context,
+        )
+        .await;
+
+        assert!(
+            after_external_change
+                .result
                 .as_ref()
                 .and_then(|value| value.get("progress_guard_warning"))
                 .is_none()

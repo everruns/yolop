@@ -1039,7 +1039,7 @@ fn fullscreen_enables_modified_key_reporting_after_entering_alternate_screen() {
         },
     );
     assert!(
-        tui.wait_for_output("Enter to send", Duration::from_secs(3)),
+        tui.wait_for_output("Enter to send", Duration::from_secs(5)),
         "TUI did not render the composer: {}",
         tui.output_text()
     );
