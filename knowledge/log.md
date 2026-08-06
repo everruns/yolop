@@ -244,3 +244,11 @@ wording, formatting, and link fixes do not need entries.
   cycles steer to one durable background watch without flagging one-off checks.
 - Background completions queued at one idle boundary are coalesced into one
   TUI or ACP wake turn while retaining their durable task results.
+
+## 2026-08-05 — Lazy session materialization
+
+- Fresh runtimes no longer create discoverable session directories or empty
+  event logs until a durable event, checkpoint, worktree, or other persisted
+  artifact exists.
+- Non-discoverable owner-private coordination locks preserve fail-fast
+  simultaneous-open safety before the event log is materialized.

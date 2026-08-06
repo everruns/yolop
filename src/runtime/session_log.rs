@@ -49,10 +49,10 @@
 // Concurrency:
 // * Intra-process: the file handle sits behind a `tokio::Mutex` so emits
 //   serialize even when tools fire events from many tasks.
-// * Inter-process: an advisory exclusive flock (`File::try_lock`) is
-//   acquired on open. A second `yolop --session <same-id>` against the
-//   same JSONL file fails fast with a clear error instead of silently
-//   interleaving appends.
+// * Inter-process: an advisory exclusive flock (`File::try_lock`) is acquired
+//   in the sessions root's non-discoverable `.locks/` directory before the
+//   lazy event log exists. Existing event logs are locked directly as well. A
+//   second `yolop --session <same-id>` fails fast instead of interleaving.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -72,8 +72,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, RwLock, broadcast};
 
 /// Capacity of the live event broadcast. Sized to absorb a few hundred
@@ -113,6 +113,38 @@ pub fn session_log_path(session_dir: &Path) -> PathBuf {
 
 fn session_workspace_path(session_dir: &Path) -> PathBuf {
     session_dir.join("workspace.json")
+}
+
+pub(crate) struct SessionMaterializer {
+    session_dir: PathBuf,
+    initial_workspace: StdMutex<Option<SessionWorkspaceMetadata>>,
+}
+
+impl SessionMaterializer {
+    pub(crate) fn new(
+        session_dir: PathBuf,
+        initial_workspace: Option<SessionWorkspaceMetadata>,
+    ) -> Self {
+        Self {
+            session_dir,
+            initial_workspace: StdMutex::new(initial_workspace),
+        }
+    }
+
+    pub(crate) fn ensure(&self) -> Result<()> {
+        if session_workspace_path(&self.session_dir).exists() {
+            return Ok(());
+        }
+        let mut initial = self
+            .initial_workspace
+            .lock()
+            .expect("session materializer lock poisoned");
+        if let Some(metadata) = initial.as_ref() {
+            write_session_workspace(&self.session_dir, metadata)?;
+            initial.take();
+        }
+        Ok(())
+    }
 }
 
 pub fn legacy_session_log_path(sessions_dir: &Path, session_id: SessionId) -> PathBuf {
@@ -465,7 +497,10 @@ pub struct JsonlEventEmitter {
     events: Arc<RwLock<Vec<Event>>>,
     sequence: Arc<AtomicI32>,
     persisted_sequence: Arc<AtomicI32>,
-    file: Arc<Mutex<File>>,
+    file: Arc<Mutex<Option<File>>>,
+    path: PathBuf,
+    _session_lock: File,
+    materializer: Arc<SessionMaterializer>,
     session_dir: PathBuf,
     /// Live fan-out of every emitted event (including deltas) for in-process
     /// subscribers like the TUI's streaming renderer. Filesystem persistence
@@ -478,112 +513,57 @@ impl JsonlEventEmitter {
     /// `start_sequence` is the value `Event.sequence` should take on
     /// the next emitted event (1 for a fresh session, max_replayed + 1
     /// for a resume).
+    #[cfg(test)]
     pub fn open(path: &Path, start_sequence: i32) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                AgentLoopError::config(format!("create session log dir {}: {e}", parent.display()))
-            })?;
-            // Per-session folder is owner-only on Unix. The events.jsonl
-            // file gets `0o600` below, but the folder may also hold tool
-            // outputs (`/outputs/`) and other per-session artifacts;
-            // tightening the directory keeps every file inside private
-            // even if a caller later creates one without an explicit
-            // mode. Idempotent — set on every open so a session folder
-            // that pre-dates this change gets corrected next resume.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(
-                    |e| {
-                        AgentLoopError::config(format!(
-                            "tighten session dir permissions on {}: {e}",
-                            parent.display()
-                        ))
-                    },
-                )?;
-            }
-        }
-        let mut opts = OpenOptions::new();
-        // `read(true)` is required so we can read the file's last byte
-        // for the half-written tail repair below; `append(true)` keeps
-        // every write at end-of-file even with concurrent appends.
-        opts.create(true).append(true).read(true);
-        #[cfg(unix)]
-        {
-            // Owner-only: session logs contain prompts and tool output
-            // we don't want world-readable. `mode()` only applies on
-            // create; existing files keep their mode.
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut file = opts.open(path).map_err(|e| {
-            AgentLoopError::config(format!("open session log {}: {e}", path.display()))
-        })?;
+        let session_dir = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        Self::open_with_materializer(
+            path,
+            start_sequence,
+            Arc::new(SessionMaterializer::new(session_dir, None)),
+        )
+    }
 
-        // Re-tighten the file mode on every open. `OpenOptionsExt::mode`
-        // only applies on create, so a legacy `events.jsonl` written
-        // before the owner-only contract — or one whose mode was loosened
-        // out-of-band — would otherwise keep its prior permissions on
-        // resume. Mirrors the directory tightening above.
+    pub(crate) fn open_with_materializer(
+        path: &Path,
+        start_sequence: i32,
+        materializer: Arc<SessionMaterializer>,
+    ) -> Result<Self> {
+        let session_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let sessions_dir = session_dir.parent().unwrap_or_else(|| Path::new("."));
+        let lock_dir = sessions_dir.join(".locks");
+        std::fs::create_dir_all(&lock_dir).map_err(|e| {
+            AgentLoopError::config(format!(
+                "create session lock dir {}: {e}",
+                lock_dir.display()
+            ))
+        })?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+            std::fs::set_permissions(&lock_dir, std::fs::Permissions::from_mode(0o700)).map_err(
                 |e| {
                     AgentLoopError::config(format!(
-                        "tighten session log permissions on {}: {e}",
-                        path.display()
+                        "tighten session lock dir permissions on {}: {e}",
+                        lock_dir.display()
                     ))
                 },
             )?;
         }
+        let lock_name = session_dir
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("session"));
+        let lock_path = lock_dir.join(lock_name);
+        let session_lock = open_private_append(&lock_path)?;
+        try_lock_session_file(&session_lock, &lock_path)?;
 
-        // Advisory exclusive flock: prevents two `yolop --session <id>`
-        // processes from interleaving writes on the same JSONL file.
-        // Advisory only — another process that doesn't lock can still
-        // write — but every JSONL writer here goes through this path.
-        // The lock is released when the underlying `File` is dropped
-        // (i.e. when the emitter is dropped at session end).
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => {
-                return Err(AgentLoopError::config(format!(
-                    "another yolop process is already writing {}; \
-                     refusing to share a session log",
-                    path.display()
-                )));
-            }
-            Err(TryLockError::Error(e)) => {
-                return Err(AgentLoopError::config(format!(
-                    "lock session log {}: {e}",
-                    path.display()
-                )));
-            }
-        }
-
-        // Repair half-written tail: if the file is non-empty and does
-        // NOT end with '\n', the previous process crashed after writing
-        // a partial JSON object. A naive append would concatenate the
-        // new line onto that partial tail and produce a corrupt entry.
-        // Add a leading '\n' so the partial tail becomes its own
-        // (malformed, skipped) line and our new line stays clean.
-        let len = file
-            .seek(SeekFrom::End(0))
-            .map_err(|e| AgentLoopError::config(format!("stat session log: {e}")))?;
-        if len > 0 {
-            let mut last = [0u8; 1];
-            file.seek(SeekFrom::Start(len - 1))
-                .and_then(|_| std::io::Read::read_exact(&mut file, &mut last))
-                .map_err(|e| AgentLoopError::config(format!("read session log tail: {e}")))?;
-            if last[0] != b'\n' {
-                tracing::warn!(
-                    "session log {} ends without newline; repairing tail before append",
-                    path.display()
-                );
-                writeln!(file)
-                    .map_err(|e| AgentLoopError::config(format!("repair session log tail: {e}")))?;
-            }
-        }
+        let file = if path.exists() {
+            Some(open_session_log(path)?)
+        } else {
+            None
+        };
 
         let (live, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
         Ok(Self {
@@ -591,12 +571,21 @@ impl JsonlEventEmitter {
             sequence: Arc::new(AtomicI32::new(start_sequence.saturating_sub(1))),
             persisted_sequence: Arc::new(AtomicI32::new(start_sequence.saturating_sub(1))),
             file: Arc::new(Mutex::new(file)),
-            session_dir: path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf(),
+            path: path.to_path_buf(),
+            _session_lock: session_lock,
+            materializer,
+            session_dir: session_dir.to_path_buf(),
             live,
         })
+    }
+
+    async fn ensure_log_file(&self) -> Result<tokio::sync::MutexGuard<'_, Option<File>>> {
+        let mut file = self.file.lock().await;
+        if file.is_none() {
+            self.materializer.ensure()?;
+            *file = Some(open_session_log(&self.path)?);
+        }
+        Ok(file)
     }
 
     /// Subscribe to live events as they are emitted. Returns a receiver
@@ -631,6 +620,124 @@ impl JsonlEventEmitter {
     pub fn last_sequence(&self) -> i32 {
         self.persisted_sequence.load(Ordering::Acquire)
     }
+
+    pub(crate) fn materializer(&self) -> Arc<SessionMaterializer> {
+        self.materializer.clone()
+    }
+}
+
+fn open_private_append(path: &Path) -> Result<File> {
+    let mut opts = OpenOptions::new();
+    // Windows' file-locking API rejects an append-only handle. Match the
+    // event-log handle's read + append access so `File::try_lock` works on
+    // every supported platform.
+    opts.create(true).append(true).read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(path).map_err(|e| {
+        AgentLoopError::config(format!("open private file {}: {e}", path.display()))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+            AgentLoopError::config(format!(
+                "tighten private file permissions on {}: {e}",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(file)
+}
+
+fn try_lock_session_file(file: &File, path: &Path) -> Result<()> {
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => {
+            return Err(AgentLoopError::config(format!(
+                "another yolop process is already writing {}; \
+                     refusing to share a session log",
+                path.display()
+            )));
+        }
+        Err(TryLockError::Error(e)) => {
+            return Err(AgentLoopError::config(format!(
+                "lock session log {}: {e}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn open_session_log(path: &Path) -> Result<File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            AgentLoopError::config(format!("create session log dir {}: {e}", parent.display()))
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(
+                |e| {
+                    AgentLoopError::config(format!(
+                        "tighten session dir permissions on {}: {e}",
+                        parent.display()
+                    ))
+                },
+            )?;
+        }
+    }
+    let mut opts = OpenOptions::new();
+    opts.create(true).append(true).read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts
+        .open(path)
+        .map_err(|e| AgentLoopError::config(format!("open session log {}: {e}", path.display())))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+            AgentLoopError::config(format!(
+                "tighten session log permissions on {}: {e}",
+                path.display()
+            ))
+        })?;
+    }
+    try_lock_session_file(&file, path)?;
+
+    // Repair half-written tail: if the file is non-empty and does
+    // NOT end with '\n', the previous process crashed after writing
+    // a partial JSON object. A naive append would concatenate the
+    // new line onto that partial tail and produce a corrupt entry.
+    // Add a leading '\n' so the partial tail becomes its own
+    // (malformed, skipped) line and our new line stays clean.
+    let len = file
+        .seek(SeekFrom::End(0))
+        .map_err(|e| AgentLoopError::config(format!("stat session log: {e}")))?;
+    if len > 0 {
+        let mut last = [0u8; 1];
+        file.seek(SeekFrom::Start(len - 1))
+            .and_then(|_| std::io::Read::read_exact(&mut file, &mut last))
+            .map_err(|e| AgentLoopError::config(format!("read session log tail: {e}")))?;
+        if last[0] != b'\n' {
+            tracing::warn!(
+                "session log {} ends without newline; repairing tail before append",
+                path.display()
+            );
+            writeln!(file)
+                .map_err(|e| AgentLoopError::config(format!("repair session log tail: {e}")))?;
+        }
+    }
+
+    Ok(file)
 }
 
 #[async_trait]
@@ -665,7 +772,8 @@ impl EventEmitter for JsonlEventEmitter {
             let line = serde_json::to_string(&event).map_err(|e| {
                 AgentLoopError::config(format!("serialize event for session log: {e}"))
             })?;
-            let mut file = self.file.lock().await;
+            let mut file = self.ensure_log_file().await?;
+            let file = file.as_mut().expect("session log initialized");
             writeln!(file, "{line}")
                 .map_err(|e| AgentLoopError::config(format!("write session log line: {e}")))?;
             file.flush()
@@ -872,12 +980,11 @@ mod tests {
         assert_eq!(collected[1].id, prior[1].id);
 
         // Acceptance: seeding must NOT re-write to the JSONL file.
-        // The file was opened fresh and nothing was emitted; it should
-        // still be empty on disk.
-        let on_disk = std::fs::read_to_string(&path).expect("read");
+        // The file was opened fresh and nothing was emitted; lazy persistence
+        // should not materialize it at all.
         assert!(
-            on_disk.is_empty(),
-            "seed_replayed must not re-persist; found: {on_disk:?}"
+            !path.exists(),
+            "seed_replayed must not create or re-persist the event log"
         );
     }
 
@@ -1041,14 +1148,23 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn open_tightens_session_dir_to_owner_only_on_unix() {
+    async fn first_event_materializes_owner_only_session_storage_on_unix() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let session_id = SessionId::from_seed(48222);
         let session_dir = session_dir_path(dir.path(), session_id);
         let path = session_log_path(&session_dir);
 
-        let _emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+        let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+        assert!(!session_dir.exists(), "open must stay filesystem-lazy");
+        emitter
+            .emit(EventRequest::new(
+                session_id,
+                EventContext::default(),
+                InputMessageData::new(Message::user("persist me")),
+            ))
+            .await
+            .expect("emit first event");
 
         let mode = std::fs::metadata(&session_dir)
             .expect("session dir exists")
@@ -1108,6 +1224,7 @@ mod tests {
         let path = session_log_path(&session_dir);
 
         std::fs::create_dir_all(&session_dir).expect("pre-create");
+        std::fs::write(&path, "").expect("pre-create log");
         std::fs::set_permissions(&session_dir, std::fs::Permissions::from_mode(0o755))
             .expect("loosen for test");
 
@@ -1122,6 +1239,53 @@ mod tests {
             mode, 0o700,
             "resume must re-tighten an existing loose session folder, got {mode:o}"
         );
+    }
+
+    #[test]
+    fn simultaneous_fresh_opens_fail_without_creating_a_session_shell() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(48225);
+        let session_dir = session_dir_path(dir.path(), session_id);
+        let path = session_log_path(&session_dir);
+
+        let first = JsonlEventEmitter::open(&path, 1).expect("first open");
+        let error = JsonlEventEmitter::open(&path, 1)
+            .err()
+            .expect("second open must fail");
+        assert!(error.to_string().contains("already writing"), "{error}");
+        assert!(
+            !session_dir.exists(),
+            "coordination locks must not create a discoverable session shell"
+        );
+
+        drop(first);
+        JsonlEventEmitter::open(&path, 1).expect("lock released after close");
+    }
+
+    #[tokio::test]
+    async fn first_event_after_crash_tail_is_replayable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(48226);
+        let session_dir = session_dir_path(dir.path(), session_id);
+        let path = session_log_path(&session_dir);
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        std::fs::write(&path, "{\"partial\"").expect("partial crash tail");
+
+        let emitter = JsonlEventEmitter::open(&path, 8).expect("resume open");
+        emitter
+            .emit(EventRequest::new(
+                session_id,
+                EventContext::default(),
+                InputMessageData::new(Message::user("after crash")),
+            ))
+            .await
+            .expect("emit after tail repair");
+        drop(emitter);
+
+        let replayed = replay(&path, session_id).expect("replay repaired log");
+        assert_eq!(replayed.events.len(), 1);
+        assert_eq!(replayed.events[0].sequence, Some(8));
+        assert_eq!(replayed.messages[0].text(), Some("after crash"));
     }
 
     #[tokio::test]
@@ -1313,11 +1477,10 @@ mod tests {
         assert_eq!(first.event_type, OUTPUT_MESSAGE_DELTA);
         assert_eq!(second.event_type, TOOL_OUTPUT_DELTA);
 
-        // Streaming events should NOT have hit the JSONL file.
-        let on_disk = std::fs::read_to_string(&path).expect("read");
+        // Streaming events should not materialize the JSONL file.
         assert!(
-            on_disk.is_empty(),
-            "delta events must not be persisted: {on_disk:?}"
+            !path.exists(),
+            "delta-only activity must not create a session log"
         );
     }
 

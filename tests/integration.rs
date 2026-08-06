@@ -741,6 +741,8 @@ fn llmsim_resume_replays_prior_events() {
         "first run failed: stdout={first_stdout} stderr={first_stderr}"
     );
     let session_id = single_session_id(tmp.path());
+    let persisted_session = tmp.path().join(&session_id);
+    assert!(persisted_session.join("workspace.json").is_file());
     let first_log_lines = session_log_line_count(tmp.path(), &session_id);
     assert!(first_log_lines > 0, "first run should write a session log");
 
@@ -775,6 +777,49 @@ fn llmsim_resume_replays_prior_events() {
     );
     let second_log_lines = session_log_line_count(tmp.path(), &session_id);
     assert!(second_log_lines > first_log_lines);
+}
+
+#[test]
+fn failed_post_build_startup_leaves_no_session_shell() {
+    const EAGER_BASELINE_SHELLS_PER_STARTUP: usize = 1;
+    let sessions = tempfile::tempdir().expect("sessions tempdir");
+    let output = Command::new(yolop_binary())
+        .args([
+            "--provider",
+            "llmsim",
+            "--session-dir",
+            sessions.path().to_str().unwrap(),
+            "--theme",
+            "definitely-not-a-theme",
+        ])
+        .output()
+        .expect("spawn failed startup");
+
+    assert!(!output.status.success(), "unknown theme must fail startup");
+    let shells = session_ids(sessions.path()).len();
+    assert_eq!(
+        shells,
+        EAGER_BASELINE_SHELLS_PER_STARTUP - 1,
+        "lazy startup must eliminate the eager baseline shell"
+    );
+}
+
+#[test]
+fn immediate_tui_exit_leaves_no_session_shell() {
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(10)),
+        "TUI did not finish startup: {}",
+        tui.output_text()
+    );
+    let sessions = tui.sessions_path();
+    tui.write_input(b"\x03\x03");
+    assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
+
+    assert!(
+        session_ids(&sessions).is_empty(),
+        "immediate exit must not create a discoverable empty session"
+    );
 }
 
 #[test]
