@@ -196,6 +196,29 @@ Deterministic host-side title or todo handling is not the shortcut: it would
 create a second owner for behavior currently recorded as runtime tool calls and
 would make session replay diverge from live execution.
 
+### Tool schemas follow the task without rewriting the prefix
+
+The stable prompt and tool catalogue always disclose every capability name and
+description. Only parameter schemas are progressive: the first-turn profile
+keeps repository discovery and bookkeeping schemas eager, while mutation,
+background, release/control, and specialized schemas load through
+`tool_search`. An explicitly enabled host profile may add eager schemas (LSP is
+the measured case), and extension manifests may opt individual tools out of
+deferral.
+
+This policy is static for a host/session. A model classifier must not rewrite
+the system prefix from the wording of each new task; that would make cache
+behavior volatile and could trap a turn in an incapable profile. Deferred tools
+remain discoverable and executable after reveal on every provider, including
+providers that require registered structured-call schemas.
+
+The composition regression records the pre-change baseline and candidate
+through the assembled runtime entry point. On the default 62-tool surface, the
+stable prompt stayed at 12,888 bytes, provider-visible tool definitions fell
+from 28,901 to 21,701 bytes (24.9%), and parameter schemas fell from 13,414 to
+6,214 bytes (53.7%). The gate requires at least 24% and 53% reductions
+respectively without prompt growth.
+
 ### The budget is a test
 
 `always_on_capability_prompts_within_budget` sums the always-on static blocks

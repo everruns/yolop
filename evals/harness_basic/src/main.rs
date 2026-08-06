@@ -201,6 +201,7 @@ fn background_callback_bridge_sample() -> Sample {
          background wake behavior working. Add or keep a focused regression test. \
          Make the edits directly; do not ask questions.",
     )
+    .tag("capability-disclosure")
     .tag("progress-guard")
     .meta("kind", "realistic-guardrail")
     .file("Cargo.toml", "[package]\nname = \"callback_bridge\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
@@ -1083,6 +1084,83 @@ fn dependent_read_control_sample() -> Sample {
     )
 }
 
+fn capability_disclosure_exact_reply_sample() -> Sample {
+    Sample::new(
+        "capability-disclosure-exact-reply",
+        "Reply with exactly DISCLOSURE_OK. Do not use any tool.",
+    )
+    .tag("capability-disclosure")
+    .meta("kind", "exact-reply")
+    .meta(
+        "checks",
+        json!([{
+            "response_equals": "DISCLOSURE_OK",
+            "metric_equals": {"tool_calls": 0.0},
+            "metric_at_most": {"llm_calls": 1.0}
+        }]),
+    )
+}
+
+fn capability_disclosure_release_control_sample() -> Sample {
+    Sample::new(
+        "capability-disclosure-release-control",
+        "Activate the installed release skill so its instructions are available. \
+         Do not change files or run shell commands. Then reply with exactly RELEASE_READY.",
+    )
+    .file(
+        ".agents/skills/release/SKILL.md",
+        "---\nname: release\ndescription: Prepare and verify a repository release.\n---\n\n# Release\n\nPreserve version lockstep and verify before publishing.\n",
+    )
+    .tag("capability-disclosure")
+    .meta("kind", "release-control")
+    .meta(
+        "checks",
+        json!([{
+            "response_equals": "RELEASE_READY",
+            "tool_called": ["activate_skill"],
+            "tool_not_called": ["bash", "edit_file", "write_file"]
+        }]),
+    )
+}
+
+fn capability_disclosure_deferred_tool_sample() -> Sample {
+    Sample::new(
+        "capability-disclosure-deferred-tool",
+        "Use search_sessions exactly once to find the exact marker \
+         DISCLOSURE_DEFERRED_READY. The returned snippet is the complete evidence: \
+         do not read its path or use any second tool. Then reply with exactly \
+         DISCLOSURE_DEFERRED_READY.",
+    )
+    .tag("capability-disclosure")
+    .meta("kind", "deferred-tool")
+    .meta(
+        "prior_sessions",
+        json!([{
+            "session_id": "session_000000000000000000000000000000cc",
+            "events": [{
+                "type":"input.message",
+                "ts":"2026-07-12T12:00:00Z",
+                "data":{"message":{"role":"user","content":[{"type":"text","text":"DISCLOSURE_DEFERRED_READY"}]}}
+            }]
+        }]),
+    )
+    .meta(
+        "checks",
+        json!([{
+            "response_equals": "DISCLOSURE_DEFERRED_READY",
+            "tool_called": ["search_sessions"],
+            "metric_equals": {
+                "search_sessions_tool_calls": 1.0,
+                "tool_calls_failed": 0.0
+            },
+            "metric_at_most": {
+                "tool_calls": 2.0,
+                "llm_calls": 3.0
+            }
+        }]),
+    )
+}
+
 fn dataset() -> Dataset {
     let cargo_toml = "[package]\nname = \"seed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
     Dataset::new(vec![
@@ -1095,6 +1173,7 @@ fn dataset() -> Dataset {
         .file("Cargo.toml", cargo_toml)
         .file("src/lib.rs", "// Library entry point.\n")
         .tag("smoke")
+        .tag("capability-disclosure")
         .meta("kind", "edit")
         .meta(
             "checks",
@@ -1157,6 +1236,7 @@ fn dataset() -> Dataset {
         )
         .file("settings/net.py", "KEEPALIVE_S = 45\nPOOL_SIZE = 8\n")
         .tag("smoke")
+        .tag("capability-disclosure")
         .meta("kind", "search")
         .meta("checks", json!([{"response_contains": ["7321"]}])),
         Sample::new(
@@ -1197,6 +1277,9 @@ fn dataset() -> Dataset {
                 {"file": "src/lib.rs", "contains": ["pub mod util"]}
             ]),
         ),
+        capability_disclosure_exact_reply_sample(),
+        capability_disclosure_release_control_sample(),
+        capability_disclosure_deferred_tool_sample(),
         progress_guard_probe_sample(),
         progress_guard_checkpoint_sample(),
         stale_history_local_state_sample(),
@@ -1412,6 +1495,17 @@ fn run_check(spec: &Value, t: &Transcript, passed: &mut usize, failures: &mut Ve
             failures.push(format!("response missing {needle:?}"));
         }
     }
+    if let Some(expected) = spec.get("response_equals").and_then(Value::as_str) {
+        if t.final_response.trim() == expected {
+            *passed += 1;
+        } else {
+            failures.push(format!(
+                "response {:?} != {:?}",
+                t.final_response.trim(),
+                expected
+            ));
+        }
+    }
     let alternatives = strings("response_contains_any");
     if !alternatives.is_empty() {
         let response = t.final_response.to_ascii_lowercase();
@@ -1561,6 +1655,8 @@ fn fresh_session_id() -> String {
 #[derive(Default)]
 struct Mined {
     input_tokens: u64,
+    first_request_input_tokens: u64,
+    first_request_total_input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
     cache_creation_tokens: u64,
@@ -1954,6 +2050,12 @@ fn parse_events(jsonl: &str) -> Mined {
             "output.message.completed" => {
                 m.llm_calls += 1;
                 if let Some(usage) = data.get("usage") {
+                    if m.llm_calls == 1 {
+                        m.first_request_input_tokens = num(usage, "input_tokens");
+                        m.first_request_total_input_tokens = m.first_request_input_tokens
+                            + num(usage, "cache_read_tokens")
+                            + num(usage, "cache_creation_tokens");
+                    }
                     m.input_tokens += num(usage, "input_tokens");
                     m.output_tokens += num(usage, "output_tokens");
                     m.cache_read_tokens += num(usage, "cache_read_tokens");
@@ -2438,6 +2540,14 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
 
     t.metrics.insert("llm_calls".into(), mined.llm_calls as f64);
     t.metrics.insert(
+        "first_request_input_tokens".into(),
+        mined.first_request_input_tokens as f64,
+    );
+    t.metrics.insert(
+        "first_request_total_input_tokens".into(),
+        mined.first_request_total_input_tokens as f64,
+    );
+    t.metrics.insert(
         "tool_emitting_model_calls".into(),
         mined.tool_emitting_model_calls as f64,
     );
@@ -2719,6 +2829,28 @@ mod tests {
     }
 
     #[test]
+    fn capability_disclosure_suite_covers_required_task_shapes() {
+        let ds = dataset();
+        let kinds = ds
+            .samples
+            .iter()
+            .filter(|sample| sample.tags.iter().any(|tag| tag == "capability-disclosure"))
+            .filter_map(|sample| sample.metadata.get("kind").and_then(Value::as_str))
+            .collect::<BTreeSet<_>>();
+
+        for required in [
+            "exact-reply",
+            "search",
+            "edit",
+            "realistic-guardrail",
+            "release-control",
+            "deferred-tool",
+        ] {
+            assert!(kinds.contains(required), "missing task shape {required}");
+        }
+    }
+
+    #[test]
     fn parse_events_counts_contextual_grep() {
         let jsonl = r#"{"type":"tool.completed","data":{"tool_name":"grep_files","success":true,"result":[{"type":"text","text":"{\"pattern\":\"Error|failed\",\"blocks\":[{\"path\":\"/outputs/call.stdout\",\"start_line\":10,\"end_line\":12,\"lines\":[]}],\"match_count\":1}"}]}}"#;
         let mined = parse_events(jsonl);
@@ -2779,6 +2911,8 @@ mod tests {
 "#;
         let m = parse_events(jsonl);
         assert_eq!(m.llm_calls, 3);
+        assert_eq!(m.first_request_input_tokens, 100);
+        assert_eq!(m.first_request_total_input_tokens, 145);
         assert_eq!(m.input_tokens, 300);
         assert_eq!(m.output_tokens, 30);
         assert_eq!(m.cache_read_tokens, 40);
@@ -3007,6 +3141,20 @@ mod tests {
             .await;
         assert!(!score.pass);
         assert!(score.reason.contains("no such file"));
+    }
+
+    #[tokio::test]
+    async fn checks_scorer_grades_exact_response() {
+        let sample =
+            Sample::new("exact", "x").meta("checks", json!([{"response_equals": "DISCLOSURE_OK"}]));
+        let mut transcript = graded_transcript();
+        transcript.final_response = " DISCLOSURE_OK\n".into();
+        let score = checks_scorer().score(&sample, &transcript).await;
+        assert!(score.pass, "{}", score.reason);
+
+        transcript.final_response = "DISCLOSURE_OK plus commentary".into();
+        let score = checks_scorer().score(&sample, &transcript).await;
+        assert!(!score.pass);
     }
 
     #[tokio::test]
