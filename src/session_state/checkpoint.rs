@@ -287,6 +287,9 @@ impl CheckpointManager {
         let Ok(sequence) = i32::try_from(sequence) else {
             return false;
         };
+        if sequence > self.events.last_sequence() {
+            return false;
+        }
         let state = self.state.lock().expect("checkpoint state lock");
         event_sequence_is_active(&state, sequence)
     }
@@ -903,10 +906,16 @@ fn event_sequence_is_active(state: &TimelineState, sequence: i32) -> bool {
     if sequence <= state.baseline_end {
         return true;
     }
+    if state.pending.as_ref().is_some_and(|id| {
+        state.nodes.get(id).is_some_and(|node| {
+            sequence >= node.event_start && node.event_end.is_none_or(|end| sequence <= end)
+        })
+    }) {
+        return true;
+    }
     active_path(state).into_iter().any(|id| {
         state.nodes.get(&id).is_some_and(|node| {
-            node.event_end
-                .is_some_and(|end| sequence >= node.event_start && sequence <= end)
+            sequence >= node.event_start && node.event_end.is_none_or(|end| sequence <= end)
         })
     })
 }
@@ -1272,6 +1281,33 @@ mod tests {
             ))
             .await
             .expect("emit user");
+    }
+
+    #[tokio::test]
+    async fn current_turn_event_boundary_is_active_before_turn_finishes() {
+        let (_root, _session, manager) = manager().await;
+        let current = manager.begin_turn("current prompt").expect("checkpoint");
+        emit_user(&manager, "current prompt").await;
+        let current_sequence = manager
+            .events
+            .collected_events()
+            .await
+            .into_iter()
+            .filter_map(|event| event.sequence)
+            .max()
+            .expect("current turn event sequence");
+
+        assert!(
+            manager.is_event_sequence_active(i64::from(current_sequence)),
+            "durable context checkpoints must be installable during the active turn"
+        );
+        assert!(
+            !manager.is_event_sequence_active(i64::from(current_sequence) + 1),
+            "an open turn must not make a future event boundary active"
+        );
+        manager
+            .finish_turn(&current, true)
+            .expect("finish current turn");
     }
 
     #[tokio::test]
