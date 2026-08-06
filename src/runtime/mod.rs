@@ -97,9 +97,10 @@ use crate::runtime::session_log::{
     migrate_legacy_session_log, read_session_workspace_metadata, replay, session_dir_path,
     session_log_path, update_session_workspace_title,
 };
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, RwLock};
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock as AsyncRwLock, mpsc};
 
 // The harness prompt is the durable instruction surface — borrowed in shape
 // from `crates/server/src/harnesses/coding_container.rs` and trimmed for
@@ -2638,6 +2639,8 @@ pub struct ModelState {
     provider: Arc<RwLock<ProviderChoice>>,
     provider_store: Arc<dyn RuntimeProviderStore>,
     settings: Settings,
+    driver_registry: DriverRegistry,
+    validated_models: Arc<AsyncRwLock<HashSet<(String, String)>>>,
 }
 
 impl ModelState {
@@ -2645,12 +2648,56 @@ impl ModelState {
         provider: Arc<RwLock<ProviderChoice>>,
         provider_store: Arc<dyn RuntimeProviderStore>,
         settings: Settings,
+        driver_registry: DriverRegistry,
     ) -> Self {
         Self {
             provider,
             provider_store,
             settings,
+            driver_registry,
+            validated_models: Arc::new(AsyncRwLock::new(HashSet::new())),
         }
+    }
+
+    /// Reject a model the provider's discovery API does not advertise before
+    /// the runtime persists or sends the next user turn. Providers without a
+    /// models API remain supported, and successful checks are cached per
+    /// process/model so tool continuations do not add network round trips.
+    pub(crate) async fn validate_model_available(&self) -> Result<()> {
+        let resolved = self
+            .provider_store
+            .get_default_model()
+            .await?
+            .ok_or_else(|| anyhow!("no provider model is configured; run `/setup`"))?;
+        let provider_name = resolved.provider_type.to_string();
+        let model_id = resolved.model.clone();
+        let cache_key = (provider_name.clone(), model_id.clone());
+        if self.validated_models.read().await.contains(&cache_key) {
+            return Ok(());
+        }
+        if !self.driver_registry.has_driver(&resolved.provider_type) {
+            // Runtime-builder-owned drivers (notably llmsim) and compatible
+            // custom providers do not expose discovery through this registry.
+            self.validated_models.write().await.insert(cache_key);
+            return Ok(());
+        }
+
+        let config = everruns_core::llm_conversions::provider_config_from_resolved_model(&resolved);
+        let driver = self.driver_registry.create_chat_driver(&config)?;
+        let discovered = tokio::time::timeout(std::time::Duration::from_secs(10), driver.list_models())
+            .await
+            .map_err(|_| anyhow!("{provider_name} model availability check timed out; the turn was not started and is safe to resume"))??;
+
+        if let Some(models) = discovered
+            && !models.iter().any(|model| model.model_id == model_id)
+        {
+            return Err(anyhow!(
+                "model `{model_id}` is not available from {provider_name}; choose an advertised model and resume the turn"
+            ));
+        }
+
+        self.validated_models.write().await.insert(cache_key);
+        Ok(())
     }
 
     pub fn provider_label(&self) -> String {
@@ -3513,6 +3560,7 @@ pub async fn build_with_options(
             base_url: None,
         },
     };
+    let model_driver_registry = driver_registry.clone();
 
     let platform = PlatformDefinition::builder()
         .capability_registry(capabilities)
@@ -3669,7 +3717,12 @@ pub async fn build_with_options(
             disabled_hook_contribution_count,
             hook_configured,
         },
-        model: ModelState::new(provider_state, provider_store, settings_snapshot),
+        model: ModelState::new(
+            provider_state,
+            provider_store,
+            settings_snapshot,
+            model_driver_registry,
+        ),
         settings,
         sandbox_mode_override: options.sandbox_mode_override,
         ui_rx,

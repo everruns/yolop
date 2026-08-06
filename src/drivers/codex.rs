@@ -8,7 +8,7 @@ use everruns_core::driver_registry::{
     ProviderMetadata, ProviderOpaqueContext,
 };
 use everruns_core::driver_registry::{DiscoveredModel, DriverRegistry};
-use everruns_core::error::{AgentLoopError, Result as EverrunsResult};
+use everruns_core::error::{AgentLoopError, LlmErrorKind, Result as EverrunsResult};
 use everruns_core::tool_types::{ToolCall, ToolDefinition};
 use everruns_core::{
     CompactContent, CompactContentPart, CompactOutputItem, CompactRequest, CompactResponse,
@@ -63,15 +63,18 @@ pub struct CodexChatDriver {
     client: reqwest::Client,
     responses_url: String,
     tokens: Arc<tokio::sync::Mutex<CodexTokens>>,
+    refresh_gate: Arc<tokio::sync::Mutex<()>>,
     auth_store: Option<Arc<dyn CodexAuthStore>>,
 }
 
 pub fn register_driver(registry: &mut DriverRegistry, settings: Arc<SettingsStore>) {
     let auth_store: Arc<dyn CodexAuthStore> = settings;
+    let refresh_gate = Arc::new(tokio::sync::Mutex::new(()));
     registry.register_external(CODEX_DRIVER_ID, move |config| {
-        Box::new(CodexChatDriver::from_config(
+        Box::new(CodexChatDriver::from_config_with_refresh_gate(
             config,
             Some(auth_store.clone()),
+            refresh_gate.clone(),
         ))
     });
 }
@@ -81,7 +84,11 @@ pub(crate) fn model_profile(model_id: &str) -> Option<ModelProfile> {
 }
 
 impl CodexChatDriver {
-    fn from_config(config: &DriverConfig, auth_store: Option<Arc<dyn CodexAuthStore>>) -> Self {
+    fn from_config_with_refresh_gate(
+        config: &DriverConfig,
+        auth_store: Option<Arc<dyn CodexAuthStore>>,
+        refresh_gate: Arc<tokio::sync::Mutex<()>>,
+    ) -> Self {
         let access_token = config
             .api_key
             .clone()
@@ -109,18 +116,28 @@ impl CodexChatDriver {
                 account_id,
                 email,
             })),
+            refresh_gate,
             auth_store,
         }
     }
 
     async fn token_snapshot(&self) -> EverrunsResult<CodexTokens> {
+        self.refresh_tokens_with(|refresh_token| async move {
+            crate::auth::codex::refresh_with_token(&refresh_token).await
+        })
+        .await
+    }
+
+    async fn refresh_tokens_with<F, Fut>(&self, refresh: F) -> EverrunsResult<CodexTokens>
+    where
+        F: Fn(String) -> Fut,
+        Fut: Future<Output = anyhow::Result<CodexAuth>>,
+    {
+        // Refresh tokens are single-use. Factories can create multiple driver
+        // instances, so serialize the disk reload + rotation across all of them.
+        let _refresh_guard = self.refresh_gate.lock().await;
         let mut guard = self.tokens.lock().await;
-        ensure_fresh_tokens(
-            &mut guard,
-            self.auth_store.as_deref(),
-            |refresh_token| async move { crate::auth::codex::refresh_with_token(&refresh_token).await },
-        )
-        .await?;
+        ensure_fresh_tokens(&mut guard, self.auth_store.as_deref(), refresh).await?;
         Ok(guard.clone())
     }
 }
@@ -143,7 +160,8 @@ where
     Fut: Future<Output = anyhow::Result<CodexAuth>>,
 {
     if tokens.access_token.is_empty() {
-        return Err(AgentLoopError::llm(
+        return Err(AgentLoopError::llm_kind(
+            LlmErrorKind::Authentication,
             "Codex provider requires a saved OAuth access token",
         ));
     }
@@ -169,9 +187,7 @@ where
         Err(err) if crate::auth::codex::is_refresh_token_reused(&err) => {
             recover_from_refresh_token_reused(tokens, store, refresh, &refresh_token).await
         }
-        Err(err) => Err(AgentLoopError::llm(format!(
-            "Codex token refresh failed: {err:#}"
-        ))),
+        Err(err) => Err(classified_refresh_error(&err)),
     }
 }
 
@@ -203,9 +219,7 @@ where
                     // Fall through to clear + re-auth message.
                 }
                 Err(err) => {
-                    return Err(AgentLoopError::llm(format!(
-                        "Codex token refresh failed: {err:#}"
-                    )));
+                    return Err(classified_refresh_error(&err));
                 }
             }
         }
@@ -213,7 +227,27 @@ where
             tracing::warn!(error = %clear_err, "failed to clear invalid Codex auth");
         }
     }
-    Err(AgentLoopError::llm(REAUTH_MESSAGE))
+    Err(AgentLoopError::llm_kind(
+        LlmErrorKind::Authentication,
+        REAUTH_MESSAGE,
+    ))
+}
+
+fn classified_refresh_error(error: &anyhow::Error) -> AgentLoopError {
+    let message = format!("{error:#}");
+    let lower = message.to_ascii_lowercase();
+    let kind = if lower.contains("(429") {
+        LlmErrorKind::RateLimited
+    } else if lower.contains("refresh codex token")
+        || ["(500", "(502", "(503", "(504"]
+            .iter()
+            .any(|status| lower.contains(status))
+    {
+        LlmErrorKind::Unavailable
+    } else {
+        LlmErrorKind::Authentication
+    };
+    AgentLoopError::llm_kind(kind, format!("Codex token refresh failed: {message}"))
 }
 
 fn adopt_disk_auth(tokens: &mut CodexTokens, store: &dyn CodexAuthStore) {
@@ -1070,6 +1104,7 @@ mod tests {
                 account_id: Some("account-test".to_string()),
                 email: None,
             })),
+            refresh_gate: Arc::new(tokio::sync::Mutex::new(())),
             auth_store: None,
         }
     }
@@ -1281,6 +1316,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_refresh_gate_prevents_duplicate_single_use_rotation() {
+        let store = Arc::new(MemoryAuthStore::default());
+        store
+            .save(CodexAuth {
+                access_token: "access-old".to_string(),
+                refresh_token: Some("refresh-once".to_string()),
+                expires_at: Some(crate::auth::codex::now_epoch_millis() - 1_000),
+                account_id: Some("acc".to_string()),
+                email: Some("user@example.com".to_string()),
+            })
+            .unwrap();
+        let auth_store: Arc<dyn CodexAuthStore> = store.clone();
+        let refresh_gate = Arc::new(tokio::sync::Mutex::new(()));
+        let make_driver = || CodexChatDriver {
+            client: reqwest::Client::new(),
+            responses_url: CODEX_RESPONSES_URL.to_string(),
+            tokens: Arc::new(tokio::sync::Mutex::new(expired_tokens("refresh-once"))),
+            refresh_gate: refresh_gate.clone(),
+            auth_store: Some(auth_store.clone()),
+        };
+        let first = make_driver();
+        let second = make_driver();
+        let refresh_calls = Arc::new(StdMutex::new(0usize));
+
+        let first_calls = refresh_calls.clone();
+        let second_calls = refresh_calls.clone();
+        let (first_result, second_result) = tokio::join!(
+            first.refresh_tokens_with(move |_refresh_token| {
+                let calls = first_calls.clone();
+                async move {
+                    *calls.lock().expect("calls") += 1;
+                    tokio::task::yield_now().await;
+                    Ok(CodexAuth {
+                        access_token: "access-new".to_string(),
+                        refresh_token: Some("refresh-next".to_string()),
+                        expires_at: Some(crate::auth::codex::now_epoch_millis() + 3_600_000),
+                        account_id: Some("acc".to_string()),
+                        email: None,
+                    })
+                }
+            }),
+            second.refresh_tokens_with(move |_refresh_token| {
+                let calls = second_calls.clone();
+                async move {
+                    *calls.lock().expect("calls") += 1;
+                    Ok(CodexAuth {
+                        access_token: "unexpected-second-refresh".to_string(),
+                        refresh_token: Some("unexpected".to_string()),
+                        expires_at: Some(crate::auth::codex::now_epoch_millis() + 3_600_000),
+                        account_id: Some("acc".to_string()),
+                        email: None,
+                    })
+                }
+            })
+        );
+
+        assert_eq!(*refresh_calls.lock().unwrap(), 1);
+        assert_eq!(first_result.unwrap().access_token, "access-new");
+        assert_eq!(second_result.unwrap().access_token, "access-new");
+        assert_eq!(store.load_from_disk().unwrap().access_token, "access-new");
+    }
+
+    #[tokio::test]
     async fn refresh_token_reused_recovers_from_disk_winner() {
         // First load looks like memory (stale); after reuse failure the disk
         // has another process's winner that no longer needs refresh.
@@ -1358,8 +1456,35 @@ mod tests {
 
         assert!(err.to_string().contains("/setup"));
         assert!(err.to_string().contains("refresh token already used"));
+        assert_eq!(err.llm_error_kind(), Some(LlmErrorKind::Authentication));
         assert!(store.load_from_disk().is_none());
         assert_eq!(*store.clears.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn refresh_failures_keep_transient_and_permanent_classification() {
+        let unavailable = classified_refresh_error(&anyhow::anyhow!(
+            "Codex token refresh failed (503 Service Unavailable)"
+        ));
+        let rate_limited = classified_refresh_error(&anyhow::anyhow!(
+            "Codex token refresh failed (429 Too Many Requests)"
+        ));
+        let authentication = classified_refresh_error(&anyhow::anyhow!(
+            "Codex token refresh failed (401 Unauthorized)"
+        ));
+
+        assert_eq!(
+            unavailable.llm_error_kind(),
+            Some(LlmErrorKind::Unavailable)
+        );
+        assert_eq!(
+            rate_limited.llm_error_kind(),
+            Some(LlmErrorKind::RateLimited)
+        );
+        assert_eq!(
+            authentication.llm_error_kind(),
+            Some(LlmErrorKind::Authentication)
+        );
     }
 
     #[test]

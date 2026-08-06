@@ -173,6 +173,7 @@ impl Session {
     /// attach provenance metadata without letting display text forge it.
     pub fn run_turn_input(&self, prompt: String, input: InputMessage) -> TurnHandle {
         let handles = self.handles.clone();
+        let model = self.model.clone();
         let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
         let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
 
@@ -183,6 +184,13 @@ impl Session {
 
         tokio::spawn(async move {
             let session_id = handles.session_id;
+            if let Err(error) = model.validate_model_available().await {
+                let _ = tx.send(TurnEvent::Failed(format!(
+                    "model availability check: {error:#}"
+                )));
+                let _ = tx.send(TurnEvent::Done(None));
+                return;
+            }
             let before = match handles.runtime.messages(session_id).await {
                 Ok(m) => m.len(),
                 Err(e) => {
@@ -443,7 +451,13 @@ fn route_catch_up_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use everruns_core::driver_registry::{
+        ChatDriver, DiscoveredModel, LlmCallConfig, LlmMessage, LlmResponseStream,
+    };
     use everruns_core::events::{EventContext, ToolCompletedData};
+    use everruns_core::{DriverId, error::Result as EverrunsResult};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn catch_up_routes_only_the_active_session() {
@@ -483,5 +497,88 @@ mod tests {
         assert_eq!(emitted.len(), 1, "foreign event ids are not claimed");
         assert!(lines.iter().any(|line| line.contains("Root")));
         assert!(lines.iter().all(|line| !line.contains("Child")));
+    }
+
+    #[tokio::test]
+    async fn unavailable_discovered_model_fails_before_turn_is_persisted_or_sent() {
+        struct ModelListingDriver {
+            chat_calls: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl ChatDriver for ModelListingDriver {
+            async fn chat_completion_stream(
+                &self,
+                _messages: Vec<LlmMessage>,
+                _config: &LlmCallConfig,
+            ) -> EverrunsResult<LlmResponseStream> {
+                self.chat_calls.fetch_add(1, Ordering::SeqCst);
+                panic!("unavailable model must be rejected before provider send")
+            }
+
+            async fn list_models(&self) -> EverrunsResult<Option<Vec<DiscoveredModel>>> {
+                Ok(Some(vec![DiscoveredModel {
+                    model_id: "different-model".to_string(),
+                    display_name: None,
+                    created_at: None,
+                    owned_by: None,
+                    discovered_profile: None,
+                }]))
+            }
+        }
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(crate::config::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
+        let built = crate::runtime::build_with_options(
+            workspace.path().to_path_buf(),
+            crate::runtime::ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            crate::runtime::BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let chat_calls = Arc::new(AtomicUsize::new(0));
+        let mut model = built.model;
+        let captured_calls = chat_calls.clone();
+        model
+            .driver_registry
+            .register_or_replace(DriverId::LlmSim, move |_config| {
+                Box::new(ModelListingDriver {
+                    chat_calls: captured_calls.clone(),
+                })
+            });
+        let runtime = built.handles.runtime.clone();
+        let session_id = built.handles.session_id;
+        let session = Session::new(built.handles, model);
+
+        let mut turn = session.run_turn("keep this ask".to_string(), Vec::new());
+        let mut failure = None;
+        while let Some(event) = turn.events.recv().await {
+            match event {
+                TurnEvent::Failed(message) => failure = Some(message),
+                TurnEvent::Done(_) => break,
+                _ => {}
+            }
+        }
+
+        assert_eq!(chat_calls.load(Ordering::SeqCst), 0);
+        assert!(
+            failure
+                .as_deref()
+                .is_some_and(|message| message.contains("not available"))
+        );
+        assert!(
+            runtime
+                .messages(session_id)
+                .await
+                .expect("messages")
+                .is_empty(),
+            "the rejected ask must remain resumable instead of entering history"
+        );
     }
 }
