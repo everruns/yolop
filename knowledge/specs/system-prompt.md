@@ -163,8 +163,10 @@ above. Putting guidance in the tool result is right when it tells the model what
 a result *means*. It is not sufficient when the guidance must shape the choice
 the model makes *on seeing* that result: by then the next call is already being
 formed, and a rule it has been carrying is not the same as a rule it has just
-been handed. `progress_guard` remains result-only because its warnings interrupt
-a pattern rather than steer the next call.
+been handed. `progress_guard` still earns no stable prompt block: its result
+warning activates a host-enforced pre-tool gate, and the bounded checkpoint's
+how-to lives in the `progress_checkpoint` tool schema. See
+[progress guard trajectory control](progress-guard.md).
 
 The distinction is also model-specific. The same deletion that cost gpt-5.5 an
 extra call per truncated map was free on claude-sonnet-4-5. Prompt content that

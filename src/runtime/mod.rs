@@ -3013,6 +3013,10 @@ pub async fn build_with_options(
         )?);
     let active_events = checkpoints.filter_active_events(replayed.events);
     let replayed_events_count = active_events.len();
+    let replayed_tool_count = active_events
+        .iter()
+        .filter(|event| matches!(&event.data, everruns_core::EventData::ToolCompleted(_)))
+        .count();
     let active_messages = crate::runtime::session_log::messages_from_events(&active_events);
     if let Some(title) = latest_session_title(&active_events) {
         update_session_workspace_title(&session_dir, &title)?;
@@ -3406,7 +3410,11 @@ pub async fn build_with_options(
     });
     // `progress_guard` — runtime-visible warnings when tool use stops making
     // observable progress.
-    capabilities.register(ProgressGuardCapability::new());
+    capabilities.register(ProgressGuardCapability::open(
+        &session_dir,
+        session_id,
+        replayed_tool_count,
+    ));
     // Soft approval — spoken-consent guidance + audit tool, gated by the
     // central `approval_mode` setting (read live each turn).
     capabilities.register(ApprovalCapability {
@@ -4257,6 +4265,187 @@ mod tests {
                         && prompt.contains("Piggyback title, todo, and status updates")
                 }))
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_tool_hooks_compact_runaway_reads_and_enforce_one_checkpoint() {
+        use everruns_core::events::EventData;
+        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(
+            workspace.path().join("large.txt"),
+            "evidence\n".repeat(1_000),
+        )
+        .expect("seed large evidence");
+        for index in 0..43 {
+            std::fs::write(
+                workspace.path().join(format!("scope-{index}.txt")),
+                format!("scope {index}\n"),
+            )
+            .expect("seed scope");
+        }
+        std::fs::write(workspace.path().join("decisive.txt"), "decisive evidence\n")
+            .expect("seed decisive evidence");
+
+        let mut runaway = (0..5)
+            .map(|_| SimToolCall {
+                name: "read_file".to_string(),
+                arguments: serde_json::json!({ "path": "large.txt" }),
+                id: None,
+            })
+            .collect::<Vec<_>>();
+        runaway.extend((0..43).map(|index| SimToolCall {
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({ "path": format!("scope-{index}.txt") }),
+            id: None,
+        }));
+
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::ToolCalls(runaway),
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({ "path": "decisive.txt" }),
+                    id: None,
+                }]),
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "progress_checkpoint".to_string(),
+                    arguments: serde_json::json!({
+                        "facts": ["The repeated large read is unchanged", "The owner scopes are enumerated"],
+                        "hypothesis": "The decisive file distinguishes the remaining owners",
+                        "missing_evidence": ["Contents of decisive.txt"],
+                        "next_decisive_action": {
+                            "kind": "validation",
+                            "description": "Read decisive.txt once"
+                        }
+                    }),
+                    id: None,
+                }]),
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({ "path": "decisive.txt" }),
+                    id: None,
+                }]),
+                SimTurn::Assistant("Diagnosis complete.".to_string()),
+            ])),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "Diagnose the owner without changing files.",
+                built
+                    .model
+                    .input_message("Diagnose the owner without changing files."),
+            )
+            .await
+            .expect("run guarded trajectory");
+        assert!(result.success, "guarded trajectory: {result:?}");
+
+        let events = built
+            .handles
+            .runtime
+            .events()
+            .await
+            .expect("runtime events");
+        let completed = events
+            .iter()
+            .filter_map(|event| match &event.data {
+                EventData::ToolCompleted(data) => Some(data),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let warnings = completed
+            .iter()
+            .filter_map(|data| crate::tui::transcript::result_value(data))
+            .filter_map(|value| {
+                value
+                    .get("progress_guard_warning")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|warning| warning.contains("checkpoint required"))
+                .count(),
+            1,
+            "checkpoint escalation must not spam: {warnings:?}"
+        );
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|warning| warning.contains("unchanged since"))
+                .count(),
+            1,
+            "unchanged evidence warning must be one-shot: {warnings:?}"
+        );
+
+        let repeated_fingerprint = completed
+            .iter()
+            .filter(|data| data.tool_name == "read_file")
+            .filter_map(|data| data.tool_call_fingerprint.as_ref())
+            .find(|fingerprint| {
+                completed
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.tool_call_fingerprint.as_ref() == Some(*fingerprint)
+                    })
+                    .count()
+                    == 5
+            })
+            .expect("repeated read fingerprint")
+            .clone();
+        let repeated_results = completed
+            .iter()
+            .filter(|data| {
+                data.tool_call_fingerprint.as_deref() == Some(repeated_fingerprint.as_str())
+            })
+            .filter_map(|data| crate::tui::transcript::result_value(data))
+            .collect::<Vec<_>>();
+        let first_bytes = repeated_results
+            .iter()
+            .map(|value| serde_json::to_vec(value).unwrap().len())
+            .max()
+            .unwrap();
+        let candidate_bytes = repeated_results
+            .iter()
+            .map(|value| serde_json::to_vec(value).unwrap().len())
+            .sum::<usize>();
+        let baseline_bytes = first_bytes * repeated_results.len();
+        assert!(
+            candidate_bytes * 2 < baseline_bytes,
+            "compact cache should cut repeated payload bytes materially: {candidate_bytes} vs {baseline_bytes}"
+        );
+        assert_eq!(
+            completed
+                .iter()
+                .filter(|data| data.tool_name == "progress_checkpoint" && data.success)
+                .count(),
+            1
+        );
+        assert!(completed.iter().any(|data| {
+            data.tool_name == "read_file"
+                && !data.success
+                && data
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("progress checkpoint required"))
+        }));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
