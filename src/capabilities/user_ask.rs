@@ -123,13 +123,12 @@ impl Capability for UserAskCapability {
     }
 
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        Some(system_prompt_block(&self.store.status(self.session_id)))
+        let block = system_prompt_block(&self.store.status(self.session_id));
+        (!block.is_empty()).then_some(block)
     }
 
     fn system_prompt_preview(&self) -> Option<String> {
-        Some(system_prompt_block(
-            &crate::session_state::user_ask::UserAskStatus { active: None },
-        ))
+        None
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {

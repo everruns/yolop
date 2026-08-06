@@ -1486,6 +1486,7 @@ async fn run_print_mode(
         goal_store,
         user_ask_store,
         user_ask_enabled,
+        task_registry,
         worktree,
         ..
     } = runtime;
@@ -1521,33 +1522,100 @@ async fn run_print_mode(
         eprintln!("user ask: {err}");
     }
 
-    let turn = collect_print_turn(&handles, &worktree, &model, trimmed, images).await?;
-    print_final_output(&turn.output);
-    if !turn.result.success {
-        write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
-        std::process::exit(1);
-    }
-    if user_ask_enabled && user_ask_store.is_active(handles.session_id) {
-        let evaluation = handles
-            .runtime
-            .execute_command(
-                handles.session_id,
-                ExecuteCommandRequest {
-                    name: "ask".to_string(),
-                    arguments: Some(session_state::user_ask::USER_ASK_EVALUATE_ARG.to_string()),
-                    controls: None,
-                },
-            )
-            .await?;
-        if evaluation.success {
-            if let Ok(parsed) =
-                session_state::user_ask::parse_evaluation_response(&evaluation.message)
-                && parsed.outcome == session_state::user_ask::AskOutcome::Blocked
+    let mut prompt = trimmed.to_string();
+    let mut turn_images = images;
+    let mut automatic = false;
+    let mut budget = session_state::task_completion::CompletionBudget::default();
+    loop {
+        let turn =
+            match collect_print_turn(&handles, &worktree, &model, &prompt, turn_images, automatic)
+                .await
             {
-                handles.report_herdr_state(capabilities::herdr::HerdrState::Blocked);
+                Ok(turn) => turn,
+                Err(err) => {
+                    if user_ask_enabled && user_ask_store.is_active(handles.session_id) {
+                        let evaluation = session_state::task_completion::evaluation_for_state(
+                            session_state::task_completion::CompletionState::Failed,
+                        );
+                        user_ask_store.record_evaluation(handles.session_id, &evaluation)?;
+                    }
+                    return Err(err);
+                }
+            };
+        print_final_output(&turn.output);
+        if !turn.result.success {
+            if user_ask_enabled && user_ask_store.is_active(handles.session_id) {
+                let evaluation = session_state::task_completion::evaluation_for_state(
+                    session_state::task_completion::CompletionState::Failed,
+                );
+                user_ask_store.record_evaluation(handles.session_id, &evaluation)?;
+                eprintln!(
+                    "{}",
+                    session_state::user_ask::evaluation_status_message(&evaluation)
+                );
             }
-        } else {
-            eprintln!("user ask evaluation failed: {}", evaluation.message);
+            write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
+            std::process::exit(1);
+        }
+        if !user_ask_enabled || !user_ask_store.is_active(handles.session_id) {
+            break;
+        }
+
+        let tokens = handles.turn_tokens(turn.result.turn_id).await;
+        if !budget.observe_turn(tokens) {
+            eprintln!("user ask budget exhausted; use --session to resume");
+            break;
+        }
+        let has_background = task_registry
+            .list(handles.session_id, None)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|task| !task.state.is_terminal());
+        let (outcome, reason) =
+            match session_state::task_completion::gate_turn(&turn.result, has_background) {
+                session_state::task_completion::GateDecision::Conclusive(state) => {
+                    let evaluation = session_state::task_completion::evaluation_for_state(state);
+                    user_ask_store.record_evaluation(handles.session_id, &evaluation)?;
+                    (evaluation.outcome, evaluation.reason)
+                }
+                session_state::task_completion::GateDecision::Evaluate => {
+                    let evaluation = handles
+                        .runtime
+                        .execute_command(
+                            handles.session_id,
+                            ExecuteCommandRequest {
+                                name: "ask".to_string(),
+                                arguments: Some(
+                                    session_state::user_ask::USER_ASK_EVALUATE_ARG.to_string(),
+                                ),
+                                controls: None,
+                            },
+                        )
+                        .await?;
+                    if !evaluation.success {
+                        eprintln!("user ask evaluation failed: {}", evaluation.message);
+                        break;
+                    }
+                    let parsed =
+                        session_state::user_ask::parse_evaluation_response(&evaluation.message)?;
+                    (parsed.outcome, parsed.reason)
+                }
+            };
+
+        match outcome {
+            session_state::user_ask::AskOutcome::InProgress => {
+                prompt = session_state::task_completion::continuation_prompt(&reason);
+                turn_images = Vec::new();
+                automatic = true;
+            }
+            session_state::user_ask::AskOutcome::Blocked => {
+                handles.report_herdr_state(capabilities::herdr::HerdrState::Blocked);
+                break;
+            }
+            session_state::user_ask::AskOutcome::Achieved
+            | session_state::user_ask::AskOutcome::Failed
+            | session_state::user_ask::AskOutcome::WaitingOnBackground => break,
         }
     }
     write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
@@ -1592,7 +1660,8 @@ async fn run_print_goal(
     };
 
     loop {
-        let turn = collect_print_turn(handles, worktree, model, &turn_prompt, vec![]).await?;
+        let turn =
+            collect_print_turn(handles, worktree, model, &turn_prompt, vec![], false).await?;
         if !turn.result.success {
             print_final_output(&turn.output);
             return Ok(false);
@@ -1639,6 +1708,7 @@ async fn collect_print_turn(
     model: &runtime::ModelState,
     prompt: &str,
     images: Vec<ContentPart>,
+    automatic: bool,
 ) -> Result<PrintTurn> {
     if let Err(err) = worktree.ensure_before_turn(prompt) {
         eprintln!("worktree: {err}");
@@ -1650,7 +1720,10 @@ async fn collect_print_turn(
         .map(|m| m.len())
         .unwrap_or(0);
 
-    let input = model.input_message_with_images(prompt, images);
+    let mut input = model.input_message_with_images(prompt, images);
+    if automatic {
+        input = session_state::task_completion::tag_continuation(input);
+    }
     let result = handles.run_checkpointed_turn(prompt, input).await?;
     if let Some(notice) = handles.checkpoints.take_notice() {
         eprintln!("{notice}");

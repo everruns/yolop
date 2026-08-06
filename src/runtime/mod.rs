@@ -2128,6 +2128,9 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         // `/btw` — ephemeral side question, answered out-of-band with the
         // session's context (upstream `BtwCapability`).
         AgentCapabilityConfig::new(BTW_CAPABILITY_ID),
+        // Host-side completion tracking is cheap while inactive and prevents
+        // tool/commentary-only turns from silently ending a user request.
+        AgentCapabilityConfig::new(USER_ASK_CAPABILITY_ID),
         // `/goal` — keep working across turns until a model-evaluated condition holds.
         AgentCapabilityConfig::new(GOAL_CAPABILITY_ID),
         // Soft approval: injects spoken-consent guidance for critical actions,
@@ -2235,7 +2238,7 @@ pub struct BuiltRuntime {
     pub model: ModelState,
     pub goal_store: Arc<GoalStore>,
     pub user_ask_store: Arc<UserAskStore>,
-    /// Whether `yolop_user_ask` is on the session harness (off by default).
+    /// Whether `yolop_user_ask` is on the session harness (on by default).
     pub user_ask_enabled: bool,
     pub worktree: Arc<WorktreeManager>,
     /// Settings store shared with the runtime capabilities. The TUI uses it
@@ -2333,6 +2336,31 @@ impl RuntimeHandles {
         }
         self.checkpoints.apply_queued_confirmation().await;
         Ok(result?)
+    }
+
+    /// Provider-reported tokens consumed by one agent turn. Completion gates
+    /// use the durable event stream so TUI, print, and ACP share one budget
+    /// accounting rule.
+    pub(crate) async fn turn_tokens(&self, turn_id: everruns_core::typed_id::TurnId) -> u64 {
+        self.runtime
+            .events()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|event| event.context.turn_id == Some(turn_id))
+            .filter_map(|event| match &event.data {
+                everruns_core::events::EventData::LlmGeneration(data) => {
+                    data.metadata.usage.as_ref()
+                }
+                _ => None,
+            })
+            .map(|usage| {
+                u64::from(usage.input_tokens)
+                    + u64::from(usage.output_tokens)
+                    + u64::from(usage.cache_read_tokens.unwrap_or(0))
+                    + u64::from(usage.cache_creation_tokens.unwrap_or(0))
+            })
+            .sum()
     }
 
     /// Re-read the merged MCP server config (global settings + workspace
@@ -4753,12 +4781,12 @@ mod tests {
     }
 
     #[test]
-    fn coding_harness_excludes_user_ask_by_default() {
+    fn coding_harness_enables_user_ask_by_default() {
         let ids = coding_harness_capabilities(false, None, &Settings::default());
         assert!(
-            !ids.iter()
+            ids.iter()
                 .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID),
-            "user ask should be opt-in via settings"
+            "user ask completion tracking should be on by default"
         );
     }
 

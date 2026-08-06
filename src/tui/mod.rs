@@ -264,6 +264,7 @@ pub struct App {
     goal_store: Arc<GoalStore>,
     user_ask_store: Arc<UserAskStore>,
     user_ask_enabled: bool,
+    completion_budget: crate::session_state::task_completion::CompletionBudget,
     worktree: Arc<WorktreeManager>,
     workspace_host: Arc<crate::exec::workspace_host::WorkspaceHost>,
     /// Images from `--image` / `-i` on the CLI, consumed on the first turn.
@@ -657,6 +658,7 @@ impl App {
             goal_store,
             user_ask_store,
             user_ask_enabled,
+            completion_budget: Default::default(),
             worktree: runtime.worktree,
             workspace_host: runtime.workspace_host,
             pending_images,
@@ -1498,7 +1500,7 @@ impl App {
                     self.context_used_tokens = Some(used);
                     return Ok(());
                 }
-                Ok(TurnEvent::Done) => {
+                Ok(TurnEvent::Done(result)) => {
                     self.finish_busy();
                     if let Some(notice) = self.session.take_checkpoint_notice() {
                         self.refresh_after_checkpoint_restore(notice).await;
@@ -1517,12 +1519,17 @@ impl App {
                         return Ok(());
                     }
                     self.after_turn_goal_check().await;
-                    self.after_turn_user_ask_check().await;
+                    if !self.busy {
+                        self.after_turn_user_ask_check(result).await;
+                    }
                     return Ok(());
                 }
                 Ok(TurnEvent::Failed(err)) => {
                     self.finish_busy();
                     self.push_system(format!("turn failed: {err}"));
+                    self.record_completion_state(
+                        crate::session_state::task_completion::CompletionState::Failed,
+                    );
                     self.start_next_queued_turn();
                     return Ok(());
                 }
@@ -2440,13 +2447,6 @@ impl App {
         let image_count = self.pending_images.len();
         let display = crate::tui::input::image_input::user_display_text(&display_text, image_count);
         self.push_user(display.clone());
-        if self.user_ask_enabled
-            && let Err(err) = self
-                .user_ask_store
-                .record_user_prompt(self.session.session_id(), &text)
-        {
-            self.push_system(format!("user ask: {err}"));
-        }
         let images = std::mem::take(&mut self.pending_images);
         if self.busy {
             self.queued_messages.push_back(QueuedMessage {
@@ -2455,6 +2455,7 @@ impl App {
                 images,
             });
         } else {
+            self.begin_user_request(&text);
             self.start_turn_with_images(text, images);
         }
     }
@@ -2635,7 +2636,8 @@ impl App {
             message,
             &mut self.background_wake,
         )
-        .with_active_goal(self.goal_store.active_condition(self.session.session_id()));
+        .with_active_goal(self.goal_store.active_condition(self.session.session_id()))
+        .with_active_ask(self.user_ask_store.active_text(self.session.session_id()));
         if !self.settings.snapshot().proactive_wake_enabled() {
             self.push_system(
                 "✓ background task finished — see /background (proactive wake off)".to_string(),
@@ -3239,8 +3241,39 @@ impl App {
         let Some(message) = self.queued_messages.pop_front() else {
             return false;
         };
+        self.begin_user_request(&message.prompt);
         self.start_turn_with_images(message.prompt, message.images);
         true
+    }
+
+    fn begin_user_request(&mut self, prompt: &str) {
+        self.completion_budget.reset();
+        if self.user_ask_enabled
+            && let Err(err) = self
+                .user_ask_store
+                .record_user_prompt(self.session.session_id(), prompt)
+        {
+            self.push_system(format!("user ask: {err}"));
+        }
+    }
+
+    fn record_completion_state(
+        &mut self,
+        state: crate::session_state::task_completion::CompletionState,
+    ) {
+        let session_id = self.session.session_id();
+        if !self.user_ask_enabled || !self.user_ask_store.is_active(session_id) {
+            return;
+        }
+        let evaluation = crate::session_state::task_completion::evaluation_for_state(state);
+        if let Err(err) = self
+            .user_ask_store
+            .record_evaluation(session_id, &evaluation)
+        {
+            self.push_system(format!("user ask: {err}"));
+            return;
+        }
+        self.push_system(evaluation_status_message(&evaluation));
     }
 
     fn maybe_start_goal_turn(&mut self) {
@@ -3297,12 +3330,52 @@ impl App {
         self.start_turn(prompt);
     }
 
-    async fn after_turn_user_ask_check(&mut self) {
+    async fn after_turn_user_ask_check(&mut self, result: Option<everruns_runtime::TurnResult>) {
         if !self.user_ask_enabled {
             return;
         }
         let session_id = self.session.session_id();
         if !self.user_ask_store.is_active(session_id) {
+            return;
+        }
+        let Some(result) = result else { return };
+        let tokens = self.session.turn_tokens(result.turn_id).await;
+        if !self.completion_budget.observe_turn(tokens) {
+            self.push_system("user ask budget exhausted; send a message to resume".into());
+            return;
+        }
+        let has_background = self
+            .task_registry
+            .list(session_id, None)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|task| !task.state.is_terminal());
+        if let crate::session_state::task_completion::GateDecision::Conclusive(state) =
+            crate::session_state::task_completion::gate_turn(&result, has_background)
+        {
+            let evaluation = crate::session_state::task_completion::evaluation_for_state(state);
+            let outcome = evaluation.outcome;
+            let reason = evaluation.reason.clone();
+            if let Err(err) = self
+                .user_ask_store
+                .record_evaluation(session_id, &evaluation)
+            {
+                self.push_system(format!("user ask: {err}"));
+                return;
+            }
+            self.push_system(evaluation_status_message(&evaluation));
+            match outcome {
+                AskOutcome::InProgress => {
+                    let prompt =
+                        crate::session_state::task_completion::continuation_prompt(&reason);
+                    self.start_continuation_turn(prompt);
+                }
+                AskOutcome::Blocked => self
+                    .session
+                    .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked),
+                AskOutcome::Achieved | AskOutcome::Failed | AskOutcome::WaitingOnBackground => {}
+            }
             return;
         }
         let result = match self
@@ -3332,6 +3405,11 @@ impl App {
                 .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
         }
         self.push_system(evaluation_status_message(&evaluation));
+        if evaluation.outcome == AskOutcome::InProgress {
+            let prompt =
+                crate::session_state::task_completion::continuation_prompt(&evaluation.reason);
+            self.start_continuation_turn(prompt);
+        }
     }
 
     /// Dispatch a capability-provided slash command.
@@ -3438,6 +3516,13 @@ impl App {
     fn start_turn(&mut self, prompt: String) {
         let images = std::mem::take(&mut self.pending_images);
         self.start_turn_with_images(prompt, images);
+    }
+
+    fn start_continuation_turn(&mut self, prompt: String) {
+        let input = crate::session_state::task_completion::tag_continuation(
+            self.model.input_message(prompt.clone()),
+        );
+        self.start_turn_input(prompt, input);
     }
 
     fn start_turn_with_images(&mut self, prompt: String, images: Vec<ContentPart>) {
@@ -6405,6 +6490,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn blocked_completion_state_is_in_presentation_transcript() {
+        use everruns_core::turn::TurnStopReason;
+        use everruns_core::typed_id::TurnId;
+
+        let mut test = app_with_llmsim().await;
+        let session_id = test.app.session.session_id();
+        test.app
+            .user_ask_store
+            .record_user_prompt(session_id, "edit the file")
+            .expect("record ask");
+        test.app
+            .after_turn_user_ask_check(Some(everruns_runtime::TurnResult {
+                response: "I need the path. Which file should I edit?".to_string(),
+                iterations: 1,
+                tool_calls_count: 0,
+                success: true,
+                error: None,
+                stop_reason: TurnStopReason::EndTurn,
+                turn_id: TurnId::new(),
+            }))
+            .await;
+
+        assert!(test.app.lines.iter().any(|line| {
+            line.author == Author::System && line.text.contains("user ask blocked")
+        }));
+        assert!(!test.app.busy, "blocked state must not auto-continue");
+    }
+
+    #[tokio::test]
     async fn completed_session_task_refresh_is_applied_without_panicking() {
         let mut test = app_with_llmsim().await;
         let mut expected = crate::tui::session_tasks_view::TaskTree::default();
@@ -7058,7 +7172,7 @@ mod tests {
                         Ok(TurnEvent::ContextUsed(used)) => {
                             self.context_used_tokens = Some(used);
                         }
-                        Ok(TurnEvent::Done) => {
+                        Ok(TurnEvent::Done(_)) => {
                             self.finish_busy();
                             self.start_next_queued_turn();
                         }
@@ -8228,6 +8342,13 @@ mod tests {
         app.submit_input().await;
 
         assert_eq!(app.queued_messages.len(), 2);
+        assert_eq!(
+            app.user_ask_store
+                .active_text(app.session.session_id())
+                .as_deref(),
+            Some("first turn"),
+            "queued pivots must not replace the ask before their turn starts"
+        );
         assert!(app.input_text().is_empty());
         assert!(app.busy, "queueing must not interrupt the active turn");
 

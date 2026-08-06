@@ -2,7 +2,7 @@
 //!
 //! Records what the user is asking for, allows updates when they change direction,
 //! and evaluates after each turn whether the ask was achieved, blocked, or still
-//! in progress. Independent of `/goal` — no auto-continuation loop.
+//! in progress. The default host completion gate may selectively continue it.
 
 use anyhow::{Context, Result, bail};
 use everruns_core::command::{CommandExecutionContext, ExecuteCommandRequest};
@@ -21,6 +21,7 @@ pub(crate) const USER_ASK_EVALUATE_ARG: &str = "\x00evaluate";
 
 pub(crate) const MAX_USER_ASK_LEN: usize = 4_000;
 pub(crate) const MAX_USER_ASK_REVISIONS: usize = 8;
+const MAX_EVALUATION_REASON_CHARS: usize = 1_000;
 
 const USER_ASK_FILE: &str = "user_ask.json";
 
@@ -30,11 +31,13 @@ transcript below. You cannot run commands or read files independently — judge 
 only what the agent has already surfaced in the conversation.\n\
 \n\
 Respond with exactly one JSON object and no other text:\n\
-{\"outcome\": \"achieved\"|\"blocked\"|\"in_progress\", \"reason\": \"short explanation\"}\n\
+{\"outcome\": \"achieved\"|\"blocked\"|\"failed\"|\"waiting_on_background\"|\"in_progress\", \"reason\": \"short explanation\"}\n\
 \n\
 - `achieved`: the user's request is clearly satisfied from the transcript.\n\
 - `blocked`: the agent hit a blocker that needs user input, permission, or an \
 external dependency before work can continue.\n\
+- `failed`: a permanent error ended the work; retrying will not help.\n\
+- `waiting_on_background`: detached work is running and its completion will wake the agent.\n\
 - `in_progress`: work is underway but not finished and no hard blocker is evident.";
 
 const CLEAR_ALIASES: &[&str] = &["clear", "stop", "off", "reset", "none", "cancel"];
@@ -44,6 +47,8 @@ const CLEAR_ALIASES: &[&str] = &["clear", "stop", "off", "reset", "none", "cance
 pub(crate) enum AskOutcome {
     Achieved,
     Blocked,
+    Failed,
+    WaitingOnBackground,
     InProgress,
 }
 
@@ -52,6 +57,8 @@ impl AskOutcome {
         match value.trim().to_ascii_lowercase().as_str() {
             "achieved" | "done" | "complete" | "completed" => Some(Self::Achieved),
             "blocked" | "blocker" | "stuck" => Some(Self::Blocked),
+            "failed" | "failure" | "permanent_error" => Some(Self::Failed),
+            "waiting_on_background" | "waiting" | "background" => Some(Self::WaitingOnBackground),
             "in_progress" | "in-progress" | "progress" | "ongoing" | "pending" => {
                 Some(Self::InProgress)
             }
@@ -63,6 +70,8 @@ impl AskOutcome {
         match self {
             Self::Achieved => "achieved",
             Self::Blocked => "blocked",
+            Self::Failed => "failed",
+            Self::WaitingOnBackground => "waiting_on_background",
             Self::InProgress => "in_progress",
         }
     }
@@ -276,7 +285,7 @@ impl UserAskStore {
         runtime.persisted.last_reason = Some(evaluation.reason.clone());
         if matches!(
             evaluation.outcome,
-            AskOutcome::Achieved | AskOutcome::Blocked
+            AskOutcome::Achieved | AskOutcome::Blocked | AskOutcome::Failed
         ) {
             runtime.persisted.active = false;
         }
@@ -351,25 +360,7 @@ pub(crate) fn format_status(status: &UserAskStatus) -> String {
 
 pub(crate) fn system_prompt_block(status: &UserAskStatus) -> String {
     let Some(active) = &status.active else {
-        return "<capability id=\"yolop_user_ask\">\n\
-When the user states or changes what they want, call `set_user_ask` with a concise \
-summary of their request. The host also records raw user messages, but refine or \
-replace the tracked ask when the user pivots or clarifies. Use `clear_user_ask` only \
-when the user explicitly abandons the request.\n\
-After each turn the host evaluates whether the ask was achieved, blocked, or still \
-in progress — keep working until achieved or a blocker is clear.\n\
-</capability>"
-            .to_string();
-    };
-    let revisions = if active.revisions.is_empty() {
-        String::new()
-    } else {
-        let lines: Vec<String> = active
-            .revisions
-            .iter()
-            .map(|revision| format!("- {}", revision.text))
-            .collect();
-        format!("\nPrevious asks (superseded):\n{}\n", lines.join("\n"))
+        return String::new();
     };
     let evaluation = active
         .last_reason
@@ -387,7 +378,6 @@ in progress — keep working until achieved or a blocker is clear.\n\
         "<capability id=\"yolop_user_ask\">\n\
 Track and satisfy the user's request. Call `set_user_ask` when they change direction; \
 `clear_user_ask` only when they abandon it.\n\
-{revisions}\
 Current user ask: {}\n\
 {evaluation}\
 </capability>",
@@ -469,7 +459,7 @@ pub(crate) fn parse_evaluation_response(text: &str) -> everruns_core::Result<Use
     }
     Ok(UserAskEvaluation {
         outcome: AskOutcome::InProgress,
-        reason: trimmed.to_string(),
+        reason: bounded_reason(trimmed),
     })
 }
 
@@ -491,9 +481,13 @@ fn parse_evaluation_value(value: &serde_json::Value) -> everruns_core::Result<Us
         .get("reason")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
-        .trim()
-        .to_string();
+        .trim();
+    let reason = bounded_reason(reason);
     Ok(UserAskEvaluation { outcome, reason })
+}
+
+fn bounded_reason(reason: &str) -> String {
+    reason.chars().take(MAX_EVALUATION_REASON_CHARS).collect()
 }
 
 pub(crate) fn evaluation_result_message(evaluation: &UserAskEvaluation) -> String {
@@ -508,6 +502,10 @@ pub(crate) fn evaluation_status_message(evaluation: &UserAskEvaluation) -> Strin
     match evaluation.outcome {
         AskOutcome::Achieved => format!("user ask achieved: {}", evaluation.reason),
         AskOutcome::Blocked => format!("user ask blocked: {}", evaluation.reason),
+        AskOutcome::Failed => format!("user ask failed: {}", evaluation.reason),
+        AskOutcome::WaitingOnBackground => {
+            format!("user ask waiting on background: {}", evaluation.reason)
+        }
         AskOutcome::InProgress => format!("user ask in progress: {}", evaluation.reason),
     }
 }
@@ -563,6 +561,34 @@ mod tests {
     }
 
     #[test]
+    fn resumed_store_restores_actual_ask_and_pivot_history() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::new();
+        let store = UserAskStore::open(dir.path().to_path_buf());
+        store
+            .record_user_prompt(session_id, "wait for CI then merge")
+            .expect("record original ask");
+
+        let resumed = UserAskStore::open(dir.path().to_path_buf());
+        resumed.load_session(session_id).expect("resume ask");
+        assert_eq!(
+            resumed.active_text(session_id).as_deref(),
+            Some("wait for CI then merge")
+        );
+        resumed
+            .record_user_prompt(session_id, "do not merge; only report CI")
+            .expect("record pivot");
+        let active = resumed.status(session_id).active.expect("active pivot");
+        assert_eq!(active.text, "do not merge; only report CI");
+        assert_eq!(active.revisions[0].text, "wait for CI then merge");
+    }
+
+    #[test]
+    fn inactive_tracking_adds_no_system_prompt_text() {
+        assert!(system_prompt_block(&UserAskStatus { active: None }).is_empty());
+    }
+
+    #[test]
     fn evaluation_marks_achieved_inactive() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = UserAskStore::open(dir.path().to_path_buf());
@@ -594,7 +620,9 @@ mod tests {
             active: Some(PersistedUserAsk {
                 text: "upgrade dependencies".into(),
                 active: true,
-                revisions: Vec::new(),
+                revisions: vec![AskRevision {
+                    text: "obsolete request must stay out of the prompt".into(),
+                }],
                 evaluated_turns: 0,
                 last_outcome: None,
                 last_reason: None,
@@ -602,5 +630,6 @@ mod tests {
         });
         assert!(block.contains("upgrade dependencies"));
         assert!(block.contains("set_user_ask"));
+        assert!(!block.contains("obsolete request"));
     }
 }

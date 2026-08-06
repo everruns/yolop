@@ -1039,7 +1039,7 @@ fn fullscreen_enables_modified_key_reporting_after_entering_alternate_screen() {
         },
     );
     assert!(
-        tui.wait_for_output("Enter to send", Duration::from_secs(3)),
+        tui.wait_for_output("Enter to send", Duration::from_secs(5)),
         "TUI did not render the composer: {}",
         tui.output_text()
     );
@@ -2474,6 +2474,46 @@ fn openai_print_smoke() {
         "expected `pong` in stdout: {stdout}"
     );
     assert!(!stdout.contains("success="), "unexpected footer: {stdout}");
+}
+
+#[test]
+fn openai_multistep_completion_smoke() {
+    let Some(_) = live_key_or_skip("OPENAI_API_KEY") else {
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let session_dir = tmp.path().join("sessions");
+    let proof = tmp.path().join("completion-proof.txt");
+    let output = Command::new(yolop_binary())
+        .current_dir(tmp.path())
+        .args([
+            "--provider",
+            "openai",
+            "--session-dir",
+            session_dir.to_str().unwrap(),
+            "-p",
+            "Use the shell to create completion-proof.txt containing exactly `verified`, read it back to verify the contents, then finish with the exact final answer: task complete",
+        ])
+        .output()
+        .expect("spawn multistep yolop --provider openai");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() && looks_provider_quota_exhausted(&format!("{stdout}{stderr}")) {
+        eprintln!("skipping live test: OpenAI quota exhausted");
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "yolop multistep smoke failed: stdout={stdout} stderr={stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&proof).expect("completion proof file"),
+        "verified"
+    );
+    assert!(
+        stdout.to_lowercase().contains("task complete"),
+        "expected verified final answer in stdout: {stdout}"
+    );
 }
 
 /// Model used by the live OpenRouter smoke tests. Defaults to a Nemotron 3

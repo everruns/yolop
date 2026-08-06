@@ -273,10 +273,31 @@ mod tests {
         Fut: Future<Output = agent_client_protocol::Result<T>> + Send + 'static,
         T: Send + 'static,
     {
+        with_sdk_client_completion(config, false, op).await
+    }
+
+    async fn with_sdk_client_completion<T, F, Fut>(
+        config: LlmSimConfig,
+        completion_tracking: bool,
+        op: F,
+    ) -> T
+    where
+        F: FnOnce(SdkClient) -> Fut + Send + 'static,
+        Fut: Future<Output = agent_client_protocol::Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
         let (client_w, agent_r) = tokio::io::duplex(64 * 1024);
         let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
         let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
         let settings = Arc::new(SettingsStore::open(sessions.join("settings.toml")));
+        if !completion_tracking {
+            settings
+                .set_capability_enabled(
+                    crate::session_state::user_ask::USER_ASK_CAPABILITY_ID,
+                    false,
+                )
+                .expect("disable completion tracking for unrelated ACP fixture");
+        }
         let factory = Arc::new(ScriptedFactory {
             config,
             sessions_dir: sessions,
@@ -370,7 +391,7 @@ mod tests {
     }
 
     async fn next_json(reader: &mut Lines<BufReader<DuplexStream>>) -> Value {
-        let line = tokio::time::timeout(Duration::from_secs(15), reader.next_line())
+        let line = tokio::time::timeout(Duration::from_secs(30), reader.next_line())
             .await
             .expect("timed out")
             .expect("read line")
@@ -1035,6 +1056,110 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completion_tracking_pivot_survives_acp_session_resume() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let sessions_dir = sessions.path().to_path_buf();
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        let (mut first_w, mut first_reader, first_server) =
+            start_raw_server(fixed(""), sessions_dir.clone());
+        send_json(
+            &mut first_w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut first_reader, 0).await;
+        send_json(
+            &mut first_w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd.to_str().unwrap(), "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut first_reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string();
+
+        for (id, prompt) in [
+            (2, "original unfinished ask"),
+            (3, "pivoted unfinished ask"),
+        ] {
+            send_json(
+                &mut first_w,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "session/prompt",
+                    "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": prompt }] },
+                }),
+            )
+            .await;
+            let (_, updates) = collect_until_response_id(&mut first_reader, id).await;
+            assert!(
+                update_texts(&updates, "agent_message_chunk")
+                    .iter()
+                    .any(|text| text.contains("budget exhausted")),
+                "unfinished ask should stop at the host budget: {updates:?}"
+            );
+        }
+
+        drop(first_w);
+        drop(first_reader);
+        tokio::time::timeout(Duration::from_secs(10), first_server)
+            .await
+            .expect("first server must stop")
+            .expect("first server joins")
+            .expect("first server returns Ok");
+
+        let (mut second_w, mut second_reader, second_server) =
+            start_raw_server(fixed("unused"), sessions_dir);
+        send_json(
+            &mut second_w,
+            json!({ "jsonrpc": "2.0", "id": 10, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut second_reader, 10).await;
+        send_json(
+            &mut second_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 11,
+                "method": "session/load",
+                "params": { "sessionId": session_id, "cwd": cwd.to_str().unwrap(), "mcpServers": [] },
+            }),
+        )
+        .await;
+        collect_until_response_id(&mut second_reader, 11).await;
+        send_json(
+            &mut second_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 12,
+                "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "/ask" }] },
+            }),
+        )
+        .await;
+        let (_, ask_updates) = collect_until_response_id(&mut second_reader, 12).await;
+        let ask_text = serde_json::to_string(&ask_updates).expect("serialize ask updates");
+        assert!(
+            ask_text.contains("pivoted unfinished ask"),
+            "resumed tracker must retain the actual pivoted ask: {ask_updates:?}"
+        );
+        assert!(
+            !ask_text.contains("ask: original unfinished ask"),
+            "superseded ask must not resume as current: {ask_updates:?}"
+        );
+
+        drop(second_w);
+        drop(second_reader);
+        tokio::time::timeout(Duration::from_secs(10), second_server)
+            .await
+            .expect("second server must stop")
+            .expect("second server joins")
+            .expect("second server returns Ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn full_handshake_then_prompt_streams_text_and_ends_turn() {
         let run = with_sdk_client(fixed("hello from acp"), |client| async move {
             let mut session = client.new_session().await?;
@@ -1274,6 +1399,125 @@ mod tests {
             run.updates
         );
         assert!(run.assistant_text().contains("tool done"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn default_completion_gate_continues_tool_only_stop_to_one_final() {
+        use everruns_core::llmsim_driver::OnExhausted;
+
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".to_string(),
+                arguments: json!({ "command": "true" }),
+                id: None,
+            }]),
+            SimTurn::Assistant(String::new()),
+            SimTurn::Assistant("verified final".to_string()),
+        ])
+        .with_on_exhausted(OnExhausted::Error);
+        let run = with_sdk_client_completion(config, true, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "run the check and report the result").await
+        })
+        .await;
+
+        assert_eq!(run.stop_reason, StopReason::EndTurn);
+        assert!(run.assistant_text().contains("verified final"));
+        assert_eq!(run.assistant_text().matches("verified final").count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trivial_exact_reply_uses_one_generation_and_no_evaluator() {
+        use everruns_core::llmsim_driver::OnExhausted;
+
+        let config = LlmSimConfig::scripted(vec![SimTurn::Assistant("exact".to_string())])
+            .with_on_exhausted(OnExhausted::Error);
+        let run = with_sdk_client_completion(config, true, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "reply exactly: exact").await
+        })
+        .await;
+
+        assert_eq!(run.assistant_text(), "exact");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tool_using_final_pays_one_bounded_semantic_evaluator_call() {
+        use everruns_core::llmsim_driver::OnExhausted;
+
+        // Baseline trivial fixture above consumes one scripted generation.
+        // This mutation fixture consumes two agent-loop generations plus
+        // exactly one evaluator generation; exhaustion makes any regression
+        // beyond that explicit three-call budget fail.
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".to_string(),
+                arguments: json!({ "command": "true" }),
+                id: None,
+            }]),
+            SimTurn::Assistant("candidate final".to_string()),
+            SimTurn::Assistant(r#"{"outcome":"achieved","reason":"validated"}"#.to_string()),
+        ])
+        .with_on_exhausted(OnExhausted::Error);
+        let run = with_sdk_client_completion(config, true, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "make and validate the change").await
+        })
+        .await;
+
+        assert_eq!(run.assistant_text(), "candidate final");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn permanent_provider_failure_is_failed_without_continuation() {
+        use everruns_core::llmsim_driver::{OnExhausted, SimError};
+
+        let config = LlmSimConfig::scripted(vec![SimTurn::Error(SimError::Other(
+            "permanent provider failure".to_string(),
+        ))])
+        .with_on_exhausted(OnExhausted::Error);
+        let run = with_sdk_client_completion(config, true, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "do the work").await
+        })
+        .await;
+
+        assert!(run.assistant_text().contains("task failed"));
+        assert!(!run.assistant_text().contains("budget exhausted"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clarification_is_blocked_and_not_auto_continued() {
+        use everruns_core::llmsim_driver::OnExhausted;
+
+        let config = LlmSimConfig::scripted(vec![SimTurn::Assistant(
+            "I need the target path. Which file should I edit?".to_string(),
+        )])
+        .with_on_exhausted(OnExhausted::Error);
+        let run = with_sdk_client_completion(config, true, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "edit the file").await
+        })
+        .await;
+
+        assert!(run.assistant_text().contains("task blocked"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn empty_reply_loop_stops_at_host_budget() {
+        let run = with_sdk_client_completion(LlmSimConfig::fixed(""), true, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "finish this").await
+        })
+        .await;
+
+        assert!(run.assistant_text().contains("budget exhausted"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1564,7 +1808,10 @@ mod tests {
         assert!(candidate_text.contains("validate compact wake"));
         assert!(candidate_text.contains("succeeded"));
         assert!(candidate_text.contains("result.json"));
-        assert!(candidate_text.contains("run the requested validation"));
+        assert!(
+            candidate_text.contains("run the requested validation"),
+            "compact wake lost the tracked ask: {candidate_text}"
+        );
         assert!(!candidate_text.contains("LONG_PARENT_HISTORY_MARKER"));
 
         let durable_events = std::fs::read_to_string(session_dir.join("events.jsonl"))

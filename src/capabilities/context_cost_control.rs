@@ -89,12 +89,26 @@ fn compact_background_wake_view(messages: Vec<Message>) -> Vec<Message> {
     }
 
     let prefix = &messages[..wake_index];
-    let Some(active_ask) = prefix
-        .iter()
-        .rev()
-        .find(|message| message.role == MessageRole::User && !is_handoff_message(message))
-        .and_then(Message::text)
+    let Some(active_ask) = handoff
+        .active_ask
+        .as_deref()
         .map(|value| truncate(value, MAX_ACTIVE_ASK_BYTES))
+        .or_else(|| {
+            prefix
+                .iter()
+                .rev()
+                .find(|message| {
+                    message.role == MessageRole::User
+                        && !is_handoff_message(message)
+                        && !message.metadata.as_ref().is_some_and(|metadata| {
+                            metadata.contains_key(
+                                crate::session_state::task_completion::CONTINUATION_METADATA_KEY,
+                            )
+                        })
+                })
+                .and_then(Message::text)
+                .map(|value| truncate(value, MAX_ACTIVE_ASK_BYTES))
+        })
     else {
         return messages;
     };
@@ -273,6 +287,7 @@ mod tests {
             HANDOFF_METADATA_KEY.to_string(),
             serde_json::to_value(WakeHandoff {
                 version: 1,
+                active_ask: None,
                 active_goal: Some("ship after green CI".to_string()),
                 tasks,
                 omitted_tasks: 0,
@@ -369,6 +384,7 @@ mod tests {
 
         let missing_summary = WakeHandoff {
             version: 1,
+            active_ask: None,
             active_goal: None,
             tasks: vec![],
             omitted_tasks: 0,
