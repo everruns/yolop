@@ -78,6 +78,10 @@ justification.
 Write the body around functional change and impact — what changed, why, how it
 was validated, notable risks — using
 [`.github/pull_request_template.md`](../../../.github/pull_request_template.md).
+
+Attach a Before / After with proof a reviewer can check — CLI output or a terminal
+recording (asciinema/VHS) of the agent run, and screenshots for any TUI change.
+State explicitly when a change has no observable behavior.
 Two sections are never omitted: **Security** (above) and **Follow-ups**
 (everything deferred, one line of rationale each, or "No follow-ups."). Default
 to implementing in-scope work rather than deferring it.
