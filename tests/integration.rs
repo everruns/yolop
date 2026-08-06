@@ -878,8 +878,7 @@ fn tui_inline_renders_and_responds_smoke() {
 fn tui_smoke(options: TuiSpawnOptions, mode: &str, fullscreen: bool) {
     let mut tui = spawn_tui_llmsim_with(&yolop_binary(), options);
     // Wait on the composer hint from the shared chrome, which both renderers
-    // draw (unlike the startup banner, which inline flushes to scrollback that
-    // the fullscreen alternate screen does not have).
+    // draw independently of the transient startup empty state.
     assert!(
         tui.wait_for_output("Enter to send", Duration::from_secs(5)),
         "{mode}: composer never rendered: {}",

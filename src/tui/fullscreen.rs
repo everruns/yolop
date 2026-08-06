@@ -176,7 +176,14 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     // correctly. Content height is `usize`: a long transcript wraps past
     // u16::MAX rows (see `ScrollState`).
     let viewport_h = transcript_height as usize;
-    let content_h = app.refresh_transcript_cache(inner_w);
+    let startup = app
+        .lines
+        .is_empty()
+        .then(|| render::startup_screen_lines(&state.presentation, inner_w));
+    let content_h = startup
+        .as_ref()
+        .map(Vec::len)
+        .unwrap_or_else(|| app.refresh_transcript_cache(inner_w));
     app.scroll_metrics = (content_h, viewport_h);
     app.scroll.clamp(content_h, viewport_h);
 
@@ -186,7 +193,9 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     // out of the cache instead of the whole transcript, so a frame stays
     // O(viewport) rather than cloning (and dropping) every retained row.
     // stick-to-bottom keeps the newest line visible as the turn streams.
-    let transcript = if content_h <= viewport_h {
+    let transcript = if let Some(startup) = startup {
+        Scroll::new(pad_to_bottom(startup, transcript_height), &app.scroll)
+    } else if content_h <= viewport_h {
         let all = pad_to_bottom(app.transcript_window(0, content_h), transcript_height);
         Scroll::new(all, &app.scroll)
     } else {
@@ -258,18 +267,21 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
             (selection.y, app.scroll.offset())
         };
         let last_line = first_line.saturating_add(viewport_h);
-        let visible: Vec<BufferLink> = app
-            .transcript_links()
-            .iter()
-            .filter(|l| (l.line as usize) >= first_line && (l.line as usize) < last_line)
-            .map(|l| {
-                let mut v = l.clone();
-                v.line = (l.line as usize)
-                    .saturating_sub(first_line)
-                    .min(u16::MAX as usize) as u16;
-                v
-            })
-            .collect();
+        let visible: Vec<BufferLink> = if app.lines.is_empty() {
+            Vec::new()
+        } else {
+            app.transcript_links()
+                .iter()
+                .filter(|l| (l.line as usize) >= first_line && (l.line as usize) < last_line)
+                .map(|l| {
+                    let mut v = l.clone();
+                    v.line = (l.line as usize)
+                        .saturating_sub(first_line)
+                        .min(u16::MAX as usize) as u16;
+                    v
+                })
+                .collect()
+        };
         let policy = crate::hyperlink_policy();
         hyperlink::apply_buffer_links(
             f.buffer_mut(),

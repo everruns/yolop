@@ -20,6 +20,7 @@ pub(crate) struct PresentedTranscriptLine {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PresentationState {
+    pub startup: StartupPresentation,
     pub stream_preview: Option<StreamPreview>,
     pub busy: bool,
     /// Messages accepted by the composer while the active turn is running.
@@ -55,6 +56,35 @@ pub(crate) struct PresentationState {
     /// Live status pushed by extensions over `status/changed`, as
     /// `(extension_name, status_text)` pairs. Rendered as its own status field.
     pub extension_status: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StartupPresentation {
+    pub workspace: String,
+    pub repository: Option<RepositoryPulse>,
+    pub safety_warning: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RepositoryPulse {
+    pub name: String,
+    pub branch: String,
+    pub changed_paths: usize,
+    pub last_commit: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartupLineTone {
+    Primary,
+    Good,
+    Warning,
+    Muted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PresentedStartupLine {
+    pub text: String,
+    pub tone: StartupLineTone,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,6 +154,62 @@ impl StreamKind {
 }
 
 impl PresentationState {
+    pub(crate) fn startup_lines(&self) -> Vec<PresentedStartupLine> {
+        let mut lines = Vec::new();
+        if let Some(repository) = &self.startup.repository {
+            lines.push(PresentedStartupLine {
+                text: format!("{} on {}", repository.name, repository.branch),
+                tone: StartupLineTone::Primary,
+            });
+            lines.push(PresentedStartupLine {
+                text: if repository.changed_paths == 0 {
+                    "● clean".to_string()
+                } else {
+                    format!(
+                        "● {} changed {}",
+                        repository.changed_paths,
+                        if repository.changed_paths == 1 {
+                            "path"
+                        } else {
+                            "paths"
+                        }
+                    )
+                },
+                tone: if repository.changed_paths == 0 {
+                    StartupLineTone::Good
+                } else {
+                    StartupLineTone::Warning
+                },
+            });
+            if let Some(commit) = &repository.last_commit {
+                lines.push(PresentedStartupLine {
+                    text: format!("last commit  {commit}"),
+                    tone: StartupLineTone::Muted,
+                });
+            }
+            lines.push(PresentedStartupLine {
+                text: String::new(),
+                tone: StartupLineTone::Muted,
+            });
+        }
+        lines.push(PresentedStartupLine {
+            text: format!("Ready in {}", self.startup.workspace),
+            tone: StartupLineTone::Muted,
+        });
+        if let Some(warning) = &self.startup.safety_warning {
+            lines.push(PresentedStartupLine {
+                text: warning.clone(),
+                tone: StartupLineTone::Warning,
+            });
+        }
+        lines.push(PresentedStartupLine {
+            text: "type /help for commands · Ctrl+V to paste an image · Ctrl-C twice (or Ctrl-D) to exit"
+                .to_string(),
+            tone: StartupLineTone::Muted,
+        });
+        lines
+    }
+
     pub(crate) fn status_row_count(&self) -> u16 {
         self.status_layout.base_row_count() + self.worktree_extra_status_rows()
     }
@@ -523,6 +609,11 @@ mod tests {
 
     fn state() -> PresentationState {
         PresentationState {
+            startup: StartupPresentation {
+                workspace: "/work/yolop".to_string(),
+                repository: None,
+                safety_warning: None,
+            },
             stream_preview: None,
             busy: false,
             queued_messages: 0,
@@ -548,6 +639,38 @@ mod tests {
             agent_status: None,
             extension_status: Vec::new(),
         }
+    }
+
+    #[test]
+    fn startup_presentation_enriches_workspace_readiness_with_repository_pulse() {
+        let mut model = state();
+        assert_eq!(
+            model
+                .startup_lines()
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Ready in /work/yolop",
+                "type /help for commands · Ctrl+V to paste an image · Ctrl-C twice (or Ctrl-D) to exit",
+            ]
+        );
+
+        model.startup.repository = Some(RepositoryPulse {
+            name: "everruns/yolop".to_string(),
+            branch: "main".to_string(),
+            changed_paths: 2,
+            last_commit: Some("feat(tui): add repo pulse".to_string()),
+        });
+        let lines = model
+            .startup_lines()
+            .into_iter()
+            .map(|line| line.text)
+            .collect::<Vec<_>>();
+        assert_eq!(lines[0], "everruns/yolop on main");
+        assert_eq!(lines[1], "● 2 changed paths");
+        assert_eq!(lines[2], "last commit  feat(tui): add repo pulse");
+        assert_eq!(lines[4], "Ready in /work/yolop");
     }
 
     #[test]

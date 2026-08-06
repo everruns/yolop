@@ -269,6 +269,14 @@ pub(crate) fn recent_transcript_lines(
         return Vec::new();
     }
 
+    if app.lines.is_empty() {
+        let mut rendered = startup_screen_lines(&app.presentation_state(), width);
+        if rendered.len() > max_lines {
+            rendered.drain(0..rendered.len() - max_lines);
+        }
+        return rendered;
+    }
+
     // Only what the terminal does not already own, and only the part of it the
     // publisher has not already committed. In split-footer mode the published
     // prefix sits directly above this region as real scrollback, so re-rendering
@@ -310,6 +318,36 @@ pub(crate) fn recent_transcript_lines(
     // scrolled transcript would show it.
     if rendered.len() > max_lines {
         rendered.drain(0..rendered.len() - max_lines);
+    }
+    rendered
+}
+
+pub(crate) fn startup_screen_lines(state: &PresentationState, width: usize) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    for line in state.startup_lines() {
+        if line.text.is_empty() {
+            rendered.push(Line::from(""));
+            continue;
+        }
+        let style = match line.tone {
+            StartupLineTone::Primary => Style::default()
+                .fg(TEXT_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+            StartupLineTone::Good => Style::default().fg(DIFF_ADD),
+            StartupLineTone::Warning if line.text.starts_with("DANGER:") => {
+                Style::default().fg(ERROR_RED)
+            }
+            StartupLineTone::Warning => Style::default().fg(ACCENT_GOLD),
+            StartupLineTone::Muted => Style::default().fg(TEXT_MUTED),
+        };
+        append_wrapped_styled(
+            &mut rendered,
+            "",
+            Style::default(),
+            &line.text,
+            width,
+            style,
+        );
     }
     rendered
 }

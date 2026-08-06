@@ -44,6 +44,7 @@ use tuika::term::progress::TerminalProgress;
 pub(crate) mod fullscreen;
 mod keymap;
 mod render;
+mod repo_pulse;
 mod setup;
 
 pub mod host_ui;
@@ -138,6 +139,11 @@ pub struct App {
     startup: StartupInfo,
     model: ModelState,
     pub lines: Vec<ChatLine>,
+    /// Fullscreen repository context for the empty state. Collection runs on a
+    /// blocking worker so Git never delays drawing or composer input. Inline
+    /// leaves this disabled because adding rows would reflow its pinned footer.
+    repo_pulse: Option<RepositoryPulse>,
+    repo_pulse_rx: Option<mpsc::UnboundedReceiver<Option<RepositoryPulse>>>,
     printed_lines: usize,
     /// Rendered rows of `lines[printed_lines]` already published, when a flush
     /// cut an entry in half. Publishing is row-granular so the footer's
@@ -589,6 +595,8 @@ impl App {
             startup: runtime.startup,
             model: runtime.model,
             lines: Vec::new(),
+            repo_pulse: None,
+            repo_pulse_rx: None,
             printed_lines: 0,
             printed_rows: 0,
             composer: {
@@ -678,7 +686,6 @@ impl App {
             turn_started_at: None,
             context_used_tokens: None,
         };
-        app.emit_system_banner();
         if should_setup {
             app.start_first_run_setup();
         } else if app.goal_store.is_paused(session_id)
@@ -701,6 +708,9 @@ impl App {
     /// unless `--inline` is set.
     pub(crate) fn set_render_mode(&mut self, mode: RenderMode) {
         self.render_mode = mode;
+        if mode.is_fullscreen() && self.repo_pulse.is_none() && self.repo_pulse_rx.is_none() {
+            self.repo_pulse_rx = Some(repo_pulse::spawn(self.startup.workspace_root.clone()));
+        }
     }
 
     /// Resolve a queued double-click into a word selection against the freshly
@@ -1072,6 +1082,15 @@ impl App {
             settings.approval_policy(),
         );
         PresentationState {
+            startup: StartupPresentation {
+                workspace: self.startup.workspace_root.display().to_string(),
+                repository: if self.render_mode.is_fullscreen() {
+                    self.repo_pulse.clone()
+                } else {
+                    None
+                },
+                safety_warning: crate::exec::sandbox::danger_warning(sandbox).map(str::to_string),
+            },
             stream_preview: self.stream_preview.clone(),
             busy: self.busy,
             queued_messages: self.queued_messages.len(),
@@ -1216,39 +1235,6 @@ impl App {
         } else {
             Some(format!("◎ goal ({})", turns.0))
         }
-    }
-
-    fn emit_system_banner(&mut self) {
-        self.push_system(format!(
-            "workspace: {}",
-            self.startup.workspace_root.display()
-        ));
-        self.push_system(format!("model: {}", self.model.provider_label()));
-        let sandbox_mode = self
-            .sandbox_mode_override
-            .unwrap_or_else(|| self.settings.snapshot().sandbox_mode());
-        self.push_system(format!("sandbox: {}", sandbox_mode.as_str()));
-        self.push_system(format!(
-            "approval policy: {}",
-            self.settings.snapshot().approval_policy().as_str()
-        ));
-        if let Some(warning) = crate::exec::sandbox::danger_warning(sandbox_mode) {
-            self.push_system(warning.to_string());
-        }
-        self.push_system(format!("tools: {}", self.startup.tool_names.join(", ")));
-        if !self.startup.capability_commands.is_empty() {
-            let names: Vec<String> = self
-                .startup
-                .capability_commands
-                .iter()
-                .map(capability_command_display_usage)
-                .collect();
-            self.push_system(format!("commands: {}", names.join(", ")));
-        }
-        self.push_system(
-            "type /help for commands, Ctrl+V to paste an image, large pastes attach as placeholders, press Ctrl-C twice (or Ctrl-D) to exit"
-                .into(),
-        );
     }
 
     fn push_user(&mut self, text: String) {
@@ -1606,7 +1592,22 @@ impl App {
             return Ok(());
         }
 
-        // 3) drain finished models API fetches so an open picker refreshes.
+        // 3) apply repository context collected off the event-loop thread.
+        if let Some(rx) = self.repo_pulse_rx.as_mut() {
+            match rx.try_recv() {
+                Ok(pulse) => {
+                    self.repo_pulse = pulse;
+                    self.repo_pulse_rx = None;
+                    return Ok(());
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.repo_pulse_rx = None;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {}
+            }
+        }
+
+        // 3a) drain finished models API fetches so an open picker refreshes.
         let mut applied_model_discovery = false;
         while let Ok(discovery) = self.models_rx.try_recv() {
             self.apply_model_discovery(discovery);
@@ -1616,7 +1617,7 @@ impl App {
             return Ok(());
         }
 
-        // 3a) Codex login is intentionally a background operation so a browser
+        // 3b) Codex login is intentionally a background operation so a browser
         // close or an abandoned device flow cannot stop terminal input.
         if self.apply_codex_login_events().await {
             return Ok(());
@@ -1625,7 +1626,7 @@ impl App {
             return Ok(());
         }
 
-        // 3b) proactive wake: when an everruns `spawn_background` task finishes
+        // 3c) proactive wake: when an everruns `spawn_background` task finishes
         // while the session is idle, auto-start a turn so the agent reacts
         // without a user prompt.
         if self.maybe_wake_from_background_channel() {
@@ -2718,7 +2719,6 @@ impl App {
                 self.transcript_generation = self.transcript_generation.wrapping_add(1);
                 self.goal_store.clear_active(self.session.session_id());
                 self.user_ask_store.clear_active(self.session.session_id());
-                self.emit_system_banner();
             }
             UiCommand::RunShell { command } => self.start_shell_command(command),
             UiCommand::Quit => self.should_quit = true,
@@ -5524,6 +5524,11 @@ mod tests {
 
     fn presentation_state_idle() -> PresentationState {
         PresentationState {
+            startup: StartupPresentation {
+                workspace: "/work/yolop".to_string(),
+                repository: None,
+                safety_warning: None,
+            },
             stream_preview: None,
             busy: false,
             queued_messages: 0,
@@ -7338,26 +7343,95 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn startup_banner_names_ctrl_c_and_ctrl_d_as_exit_keys() {
+    async fn startup_screen_is_ready_without_adding_transcript_messages() {
         let fixture = app_with_llmsim().await;
+        let startup = fixture.app.presentation_state().startup_lines();
 
         assert!(
-            fixture
-                .app
-                .lines
-                .iter()
-                .any(|line| line.text.contains("Ctrl+V to paste an image")),
-            "startup banner should mention image paste: {:?}",
-            fixture.app.lines
+            fixture.app.lines.is_empty(),
+            "startup context must not become transcript history"
         );
         assert!(
-            fixture
-                .app
-                .lines
+            startup
                 .iter()
-                .any(|line| line.text.contains("press Ctrl-C twice (or Ctrl-D) to exit")),
-            "startup banner should name Ctrl-C/Ctrl-D exits: {:?}",
-            fixture.app.lines
+                .any(|line| line.text.contains("Ctrl+V to paste an image")),
+            "startup screen should mention image paste: {startup:?}"
+        );
+        assert!(
+            startup
+                .iter()
+                .any(|line| line.text.contains("Ctrl-C twice (or Ctrl-D) to exit")),
+            "startup screen should name Ctrl-C/Ctrl-D exits: {startup:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repository_pulse_only_occupies_the_empty_state() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.set_render_mode(RenderMode::Fullscreen);
+        app.repo_pulse = Some(RepositoryPulse {
+            name: "everruns/yolop".to_string(),
+            branch: "main".to_string(),
+            changed_paths: 0,
+            last_commit: Some("feat(tui): add repo pulse".to_string()),
+        });
+
+        let startup = recent_transcript_lines(app, 100, 12)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+        assert!(
+            startup
+                .iter()
+                .any(|line| line.contains("everruns/yolop on main"))
+        );
+        assert!(startup.iter().any(|line| line.contains("● clean")));
+
+        app.push_user("start immediately".to_string());
+        let transcript = recent_transcript_lines(app, 100, 12)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+        assert!(
+            transcript
+                .iter()
+                .any(|line| line.contains("start immediately"))
+        );
+        assert!(
+            transcript
+                .iter()
+                .all(|line| !line.contains("everruns/yolop on main")),
+            "repository pulse must disappear once the transcript starts: {transcript:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_startup_stays_stable_when_repository_context_exists() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.repo_pulse = Some(RepositoryPulse {
+            name: "everruns/yolop".to_string(),
+            branch: "main".to_string(),
+            changed_paths: 0,
+            last_commit: Some("feat(tui): add repo pulse".to_string()),
+        });
+
+        let rendered = recent_transcript_lines(app, 100, 12)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("Ready in")));
+        assert!(
+            rendered.iter().all(|line| !line.contains("everruns/yolop")),
+            "inline startup must not reflow when repository context arrives: {rendered:?}"
+        );
+        assert!(
+            app.repo_pulse_rx.is_none(),
+            "inline mode must not start repository inspection"
         );
     }
 
@@ -7499,7 +7573,7 @@ mod tests {
         assert!(
             rendered.lines[(60 - COMPOSER_VIEWPORT_HEIGHT) as usize..]
                 .iter()
-                .any(|row| row.contains('›')),
+                .any(|row| row.trim_start().starts_with('>')),
             "the composer prompt should be painted inside the footer rows: {:?}",
             rendered.lines
         );
@@ -8671,7 +8745,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn clear_command_wipes_transcript_and_re_emits_banner() {
+    async fn clear_command_wipes_transcript_and_reveals_startup_screen() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.push_system("sentinel line that must be cleared".into());
@@ -8690,13 +8764,17 @@ mod tests {
             app.lines
         );
         assert_eq!(app.printed_lines, 0, "clear should reset the print cursor");
-        // The banner is re-emitted so the cleared screen still shows context.
         assert!(
-            app.lines
-                .iter()
-                .any(|line| line.text.contains("type /help")),
-            "clear should re-emit the startup banner: {:?}",
-            app.lines
+            app.lines.is_empty(),
+            "clear should leave no synthetic history"
+        );
+        let rendered = recent_transcript_lines(app, 100, 12)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+        assert!(
+            rendered.iter().any(|line| line.contains("type /help")),
+            "clear should reveal the startup screen: {rendered:?}"
         );
     }
 

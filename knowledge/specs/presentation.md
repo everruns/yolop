@@ -31,6 +31,22 @@ The model must expose structured values for:
 4. **Session status** — every value shown in the status bar, including provider
    and model, active configuration profile, approval mode, goal state, background-task counts, token counts,
    current session, worktree state, and busy/idle state when present.
+5. **Startup empty state** — immediate workspace readiness plus optional
+   repository name, branch, worktree cleanliness, and latest commit context.
+   Fullscreen repository inspection runs asynchronously and may enrich the
+   empty state after the composer is already interactive; it must never extend
+   time to first input. Inline mode does not inspect or show repository pulse
+   data, because changing the height of its pinned footer would visibly reflow
+   the scrollback-adjacent surface.
+
+The startup empty state is not transcript history. It appears only while there
+are no transcript messages, disappears on the first real message, and returns
+after `/clear`. Its initial workspace and help text require no repository
+inspection. In fullscreen mode, Git metadata replaces that minimal state when
+the background result arrives; a non-repository workspace simply keeps the
+initial state. Inline mode keeps the minimal state stable for the whole empty
+session. A danger-full-access warning remains visible in the empty state in
+addition to the compact safety status.
 
 The TUI may still own layout, colors, wrapping, scrollback anchoring, input
 widgets, overlays, and terminal-specific affordances. It must not be the only
@@ -122,6 +138,10 @@ Required coverage examples:
   events.
 - Status-bar segments must be asserted through the presentation model whenever a
   feature adds or changes a visible status value.
+- Startup empty-state wording must be asserted through the presentation model;
+  TUI tests cover its responsive wrapping and disappearance when the transcript
+  begins. Repository inspection tests must prove the worker can remain blocked
+  without delaying construction of the interactive TUI.
 - TUI tests should focus on terminal-only concerns: geometry, wrapping, colors,
   scrollback, overlays, key handling, and input behavior.
 
