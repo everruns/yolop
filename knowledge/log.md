@@ -3,6 +3,16 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-05 — Compact background completion handoffs
+
+- Automatic background-completion turns now replace the provider-visible parent
+  transcript prefix with a bounded, host-provenance handoff assembled from the
+  durable task snapshot. Active intent, scope, outcome, validation, and artifact
+  references survive while full session history and raw logs remain queryable.
+- Missing or invalid task summaries fall back to the lossless history path, and
+  task-authored free-form content is marked as untrusted execution data rather
+  than instructions.
+
 ## 2026-08-05 — Non-blocking repository pulse at startup
 
 - [Presentation](specs/presentation.md) now defines startup as a transient empty

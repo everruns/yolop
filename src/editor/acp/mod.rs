@@ -1422,19 +1422,23 @@ mod tests {
         // Turn 1: spawn_background wrapping bash `true`. Turn 2 closes the user
         // turn. Turn 3 is what the seam-driven wake turn asks for once the run
         // completes and signals the session.
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let config = LlmSimConfig::scripted(vec![
+            SimTurn::Assistant("recorded long parent context".to_string()),
             SimTurn::ToolCalls(vec![SimToolCall {
                 name: "spawn_background".to_string(),
                 arguments: json!({
                     "tool": "bash",
-                    "args": { "command": "true" },
+                    "args": { "command": "printf decisive-validation" },
+                    "title": "validate compact wake",
                     "signal_on_completion": true,
                 }),
                 id: None,
             }]),
             SimTurn::Assistant("spawned background bash".to_string()),
             SimTurn::Assistant("reviewed spawn_background result".to_string()),
-        ]);
+        ])
+        .with_message_capture(captured.clone());
 
         let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
         let (mut client_w, mut reader, _server) = start_raw_server(config, sessions.clone());
@@ -1458,17 +1462,33 @@ mod tests {
             .expect("sessionId")
             .to_string();
 
+        let long_parent = format!(
+            "Primary ask: prove compact background continuation. {}",
+            "LONG_PARENT_HISTORY_MARKER".repeat(32_000)
+        );
         send_json(
             &mut client_w,
             json!({
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "session/prompt",
-                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "run something in the background" }] },
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": long_parent.clone() }] },
             }),
         )
         .await;
-        let (_prompt_response, prompt_updates) = collect_until_response_id(&mut reader, 2).await;
+        collect_until_response_id(&mut reader, 2).await;
+
+        send_json(
+            &mut client_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "run the requested validation in the background, then finish the primary ask" }] },
+            }),
+        )
+        .await;
+        let (_prompt_response, prompt_updates) = collect_until_response_id(&mut reader, 3).await;
         assert!(
             update_texts(&prompt_updates, "agent_message_chunk")
                 .iter()
@@ -1506,6 +1526,56 @@ mod tests {
         assert!(
             !cwd.join(".background").exists(),
             "background execution must not create .background in the workspace"
+        );
+        let session_dir = sessions.join(&session_id);
+        let run_dir = std::fs::read_dir(session_dir.join(".background"))
+            .expect("list durable background artifacts")
+            .next()
+            .expect("one background run")
+            .expect("read background run entry")
+            .path();
+        assert!(
+            std::fs::read_to_string(run_dir.join("output.log"))
+                .expect("retrieve full raw background log on demand")
+                .contains("decisive-validation")
+        );
+        assert!(run_dir.join("result.json").is_file());
+
+        let calls = captured.lock().expect("captured provider messages");
+        let candidate = calls.last().expect("automatic wake provider call");
+        let candidate_bytes: usize = candidate
+            .iter()
+            .map(|message| message.content_as_text().len())
+            .sum();
+        // Explicit old-path baseline: the automatic turn received the stored
+        // parent conversation, whose dominant fixture message is long_parent.
+        // The candidate is the exact provider-visible wake request capture.
+        let baseline_bytes = long_parent.len();
+        let candidate_text = candidate
+            .iter()
+            .map(|message| message.content_as_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            candidate_bytes * 4 < baseline_bytes,
+            "compact wake should reduce provider-visible bytes by at least 75%: {baseline_bytes} -> {candidate_bytes}"
+        );
+        assert!(candidate_text.contains("<background_handoff"));
+        assert!(candidate_text.contains("validate compact wake"));
+        assert!(candidate_text.contains("succeeded"));
+        assert!(candidate_text.contains("result.json"));
+        assert!(candidate_text.contains("run the requested validation"));
+        assert!(!candidate_text.contains("LONG_PARENT_HISTORY_MARKER"));
+
+        let durable_events = std::fs::read_to_string(session_dir.join("events.jsonl"))
+            .expect("read durable parent history");
+        assert!(
+            durable_events.contains("LONG_PARENT_HISTORY_MARKER"),
+            "compaction must not rewrite durable parent history"
+        );
+        assert!(
+            durable_events.contains("yolop.background_handoff"),
+            "authenticated handoff provenance must survive session replay"
         );
     }
 

@@ -2634,7 +2634,8 @@ impl App {
         let message = crate::runtime::background_wake::coalesce_pending_wakes(
             message,
             &mut self.background_wake,
-        );
+        )
+        .with_active_goal(self.goal_store.active_condition(self.session.session_id()));
         if !self.settings.snapshot().proactive_wake_enabled() {
             self.push_system(
                 "✓ background task finished — see /background (proactive wake off)".to_string(),
@@ -2642,7 +2643,9 @@ impl App {
             return false;
         }
         self.push_system("↻ background task finished — waking agent to review".to_string());
-        self.start_turn(crate::runtime::background_wake::frame_wake_prompt(&message));
+        let prompt = crate::runtime::background_wake::frame_wake_prompt(&message);
+        let input = crate::runtime::background_wake::input_for_wake(&message);
+        self.start_turn_input(prompt, input);
         true
     }
 
@@ -3438,7 +3441,23 @@ impl App {
     }
 
     fn start_turn_with_images(&mut self, prompt: String, images: Vec<ContentPart>) {
-        match self.worktree.ensure_before_turn(&prompt) {
+        self.prepare_turn(&prompt);
+        let handle = self.session.run_turn(prompt, images);
+        self.begin_turn(handle, None);
+    }
+
+    fn start_turn_input(
+        &mut self,
+        prompt: String,
+        input: everruns_core::message_retriever::InputMessage,
+    ) {
+        self.prepare_turn(&prompt);
+        let handle = self.session.run_turn_input(prompt, input);
+        self.begin_turn(handle, None);
+    }
+
+    fn prepare_turn(&mut self, prompt: &str) {
+        match self.worktree.ensure_before_turn(prompt) {
             Ok(true) => {
                 self.startup.workspace_root = self.worktree.active_root();
                 if let Some(notice) = self.worktree.switch_notice() {
@@ -3450,9 +3469,6 @@ impl App {
             }
             Err(err) => self.push_system(format!("worktree: {err}")),
         }
-
-        let handle = self.session.run_turn(prompt, images);
-        self.begin_turn(handle, None);
     }
 }
 
@@ -6464,10 +6480,16 @@ mod tests {
     /// standing in for the platform-store `send_message` a finished
     /// `spawn_background` run makes. Returns the sender so the caller can push
     /// more (or drop it to close the channel).
-    fn seed_background_wake(app: &mut App, message: &str) -> mpsc::UnboundedSender<String> {
-        let (tx, rx) = mpsc::unbounded_channel::<String>();
+    fn seed_background_wake(
+        app: &mut App,
+        message: &str,
+    ) -> crate::runtime::background_wake::WakeSender {
+        let (tx, rx) = mpsc::unbounded_channel();
         app.background_wake = rx;
-        tx.send(message.to_string()).expect("seed wake");
+        tx.send(crate::runtime::background_wake::WakeMessage::unstructured(
+            message,
+        ))
+        .expect("seed wake");
         tx
     }
 
@@ -6502,10 +6524,14 @@ mod tests {
         let app = &mut test.app;
         app.setup = None;
         let tx = seed_background_wake(app, "task_1 result_path=/results/1");
-        tx.send("task_2 result_path=/results/2".to_string())
-            .unwrap();
-        tx.send("task_3 result_path=/results/3".to_string())
-            .unwrap();
+        tx.send(crate::runtime::background_wake::WakeMessage::unstructured(
+            "task_2 result_path=/results/2",
+        ))
+        .unwrap();
+        tx.send(crate::runtime::background_wake::WakeMessage::unstructured(
+            "task_3 result_path=/results/3",
+        ))
+        .unwrap();
 
         assert!(app.maybe_wake_from_background_channel());
         assert!(app.busy);

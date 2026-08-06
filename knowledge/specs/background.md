@@ -158,10 +158,23 @@ Yolop installs a platform store to close that gap (`crate::background_wake`):
   prompts so a wake turn never overlaps one, and joins on connection teardown.
 - Both frame the completion message as an `[automatic]` prompt
   (`frame_wake_prompt`): explicitly not a user message, pointing the model at the
-  run's result before it continues.
+  run's result before it continues. The host resolves the matching durable task
+  snapshot and attaches provenance metadata that ordinary prompt text cannot
+  forge.
+- A completion turn receives a bounded model-view handoff instead of replaying
+  the parent transcript prefix. It contains the active ask and goal, task
+  identity and requested scope, terminal state, concise execution/validation
+  summary, and result/log/artifact references. The suffix created during the
+  wake turn remains intact across later reason/act iterations. Task summaries
+  and specs are explicitly untrusted execution data, never new instructions.
+- The lossless parent history, task record, `result.json`, and `output.log`
+  remain durable and queryable through `query_history`, task tools, and session
+  file reads. If task resolution, summary validation, or handoff decoding fails,
+  the provider view falls back to ordinary full history rather than guessing.
 - Both coalesce completions already queued at the same idle boundary into one
-  automatic prompt. Result paths remain in that bounded prompt, and the durable
-  task registry remains authoritative if an unusually large burst is capped.
+  automatic prompt in notification order. All resolved task snapshots share
+  one bounded handoff; a mixed or unusually large burst falls back safely and
+  the durable task registry remains authoritative.
 - Opt-out: the `proactive_wake` setting (on by default) suppresses the auto-turn
   and surfaces a one-line notice instead.
 - `--print` is one-shot, so it does not auto-wake.
