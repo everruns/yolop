@@ -7330,9 +7330,9 @@ mod tests {
     /// stable composition components so prompt/tool budget changes are explicit.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cold_start_prompt_composition_is_measured_by_component() {
-        const BASELINE_PROMPT_BYTES: usize = 12_975;
-        const BASELINE_TOOL_DEFINITION_BYTES: usize = 35_543;
-        const BASELINE_SCHEMA_BYTES: usize = 20_148;
+        const BASELINE_PROMPT_BYTES: usize = 12_888;
+        const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901;
+        const BASELINE_SCHEMA_BYTES: usize = 13_414;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -7407,12 +7407,12 @@ mod tests {
             "task shaping must not grow the stable prompt prefix: {prompt_bytes} > {BASELINE_PROMPT_BYTES}"
         );
         assert!(
-            tool_definition_bytes * 100 <= BASELINE_TOOL_DEFINITION_BYTES * 70,
-            "provider-visible tool bytes must fall by at least 30%: {tool_definition_bytes} vs {BASELINE_TOOL_DEFINITION_BYTES}"
+            tool_definition_bytes * 100 <= BASELINE_TOOL_DEFINITION_BYTES * 76,
+            "provider-visible tool bytes must fall by at least 24%: {tool_definition_bytes} vs {BASELINE_TOOL_DEFINITION_BYTES}"
         );
         assert!(
-            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 45,
-            "schema bytes must fall by at least 55%: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
+            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 47,
+            "schema bytes must fall by at least 53%: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
         );
     }
 

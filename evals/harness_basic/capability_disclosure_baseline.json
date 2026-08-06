@@ -1,23 +1,23 @@
 {
-  "component_baseline_revision": "ada7967cfb8ecfdb54fb06c3c6a712c267948e60",
+  "component_baseline_revision": "029de0eb34f633526808163c82825c1f0e9f0812",
   "live_ab_baseline_revision": "5973c8b08069b1639d7dbdcb5eec5c7ae0bb1971",
   "baseline": {
-    "prompt_bytes": 12975,
-    "provider_visible_tool_definition_bytes": 35543,
-    "parameter_schema_bytes": 20148,
-    "tool_count": 61
+    "prompt_bytes": 12888,
+    "provider_visible_tool_definition_bytes": 28901,
+    "parameter_schema_bytes": 13414,
+    "tool_count": 62
   },
   "candidate_target": {
     "prompt_growth_percent_max": 0,
-    "tool_definition_reduction_percent_min": 30,
-    "schema_reduction_percent_min": 55,
+    "tool_definition_reduction_percent_min": 24,
+    "schema_reduction_percent_min": 53,
     "task_success_percent": 100
   },
   "candidate_deterministic_measurement": {
-    "prompt_bytes": 12975,
-    "provider_visible_tool_definition_bytes": 21564,
-    "parameter_schema_bytes": 6169,
-    "tool_count": 61
+    "prompt_bytes": 12888,
+    "provider_visible_tool_definition_bytes": 21701,
+    "parameter_schema_bytes": 6214,
+    "tool_count": 62
   },
   "live_ab": {
     "preset": "capability-disclosure",

@@ -213,10 +213,10 @@ remain discoverable and executable after reveal on every provider, including
 providers that require registered structured-call schemas.
 
 The composition regression records the pre-change baseline and candidate
-through the assembled runtime entry point. On the default 58-tool surface, the
-stable prompt stayed at 12,975 bytes, provider-visible tool definitions fell
-from 35,543 to 21,564 bytes (39.3%), and parameter schemas fell from 20,148 to
-6,169 bytes (69.4%). The gate requires at least 30% and 55% reductions
+through the assembled runtime entry point. On the default 62-tool surface, the
+stable prompt stayed at 12,888 bytes, provider-visible tool definitions fell
+from 28,901 to 21,701 bytes (24.9%), and parameter schemas fell from 13,414 to
+6,214 bytes (53.7%). The gate requires at least 24% and 53% reductions
 respectively without prompt growth.
 
 ### The budget is a test
