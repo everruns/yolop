@@ -3,6 +3,15 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-05 — Non-blocking repository pulse at startup
+
+- [Presentation](specs/presentation.md) now defines startup as a transient empty
+  state rather than synthetic transcript history. Workspace readiness and the
+  composer appear immediately; fullscreen Git-derived repository, branch,
+  cleanliness, and latest-commit context arrive from a background worker
+  without extending time to first input. Inline mode keeps the minimal state
+  stable and skips repository inspection to avoid footer reflow.
+
 ## 2026-08-03 — Cache-stable live model context
 
 - [System prompt composition](specs/system-prompt.md) now exposes the effective
