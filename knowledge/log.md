@@ -30,6 +30,17 @@ wording, formatting, and link fixes do not need entries.
   candidate finals pay for semantic evaluation. In-progress work continues from
   compact state inside six-turn, 64k-token, and ten-minute budgets.
 
+## 2026-08-05 — Task-shaped capability disclosure
+
+- [Tool search](specs/tool-search.md) now keeps only first-turn repository
+  discovery and bookkeeping schemas eager. Mutation, background,
+  release/control, and specialized tools remain visible and load their schemas
+  progressively; opt-in host profiles and extension manifests can retain eager
+  schemas where measured or explicitly requested.
+- [System prompt composition](specs/system-prompt.md) records the cache-stable
+  profile and its default-surface result: unchanged prompt bytes, 39.3% fewer
+  provider-visible tool-definition bytes, and 69.4% fewer schema bytes.
+
 ## 2026-08-05 — Compact background completion handoffs
 
 - Automatic background-completion turns now replace the provider-visible parent

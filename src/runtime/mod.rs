@@ -1062,30 +1062,15 @@ const DEFAULT_OLLAMA_API_KEY: &str = "ollama";
 const DEFAULT_CUSTOM_API_KEY: &str = "unused";
 const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "read_file",
-    "write_file",
-    "edit_file",
     "list_directory",
     "grep_files",
-    "search_sessions",
-    "ast_grep",
-    "ast_edit",
-    "bash",
-    "spawn_background",
-    "spawn_agent",
     "write_todos",
     "write_session_title",
-    // Skill activation/search/install are routing tools with required arguments;
-    // hiding their schemas makes malformed calls more likely and adds friction
-    // to the conversational "find a skill → install it" loop.
-    "activate_skill",
-    "search_skills",
-    "install_skill",
-    "run_command",
     // LSP tools exist only when the optional `lsp` capability is enabled
-    // (absent names are ignored by the allowlist). When they exist, stub
-    // schemas behind `tool_search` add enough friction that models fall back
-    // to grep instead of adopting them (measured in evals/lsp_integration),
-    // so keep their real schemas loaded.
+    // (absent names are ignored by the allowlist). Enabling that host profile
+    // is an explicit task-shaped signal, and the LSP adoption eval showed that
+    // stubbing its schemas makes models fall back to grep, so those opt-in
+    // schemas stay eager.
     "lsp_definition",
     "lsp_references",
     "lsp_hover",
@@ -3350,10 +3335,13 @@ pub async fn build_with_options(
     // Provider-agnostic deferred tool loading (upstream `everruns-core`, 0.11.0+).
     // Defers the long tail behind a `tool_search` tool and restores real schemas
     // progressively (per-session reveal set). The `never_defer` allowlist keeps
-    // hot-path file/shell/planning tools fully loaded so the agent never needs a
-    // `tool_search` round-trip before its first read/edit/run/todo call — yolop does not
-    // own those tool definitions, so it sets the policy by name here. Works on
-    // every provider/model, unlike the native `openai_tool_search` (EVE-521).
+    // only first-turn discovery and bookkeeping eager. Mutation, background,
+    // control, release, and specialized tools retain visible names/descriptions
+    // but load schemas through `tool_search`. This static host profile preserves
+    // a stable provider-cache prefix; there is no volatile per-turn classifier.
+    // Yolop does not own the eager tool definitions, so it sets the policy by
+    // name here. Works on every provider/model, unlike the native
+    // `openai_tool_search` (EVE-521).
     // Progressive disclosure + this allowlist landed upstream in EVE-527 (#2130),
     // which retired the previously vendored copy.
     capabilities.register(
@@ -5497,9 +5485,9 @@ mod tests {
     // and skill management tools (`search_skills` / `install_skill` / `delete_skill`)
     // are registered via ModelsCapability / SkillManagementCapability
     // in `build_with_options`. Because ToolSearchCapability defers the long tail
-    // behind `tool_search`, only the never-defer allowlist keeps search/install
-    // schemas loaded; `delete_skill` remains deferred. Presence is asserted at
-    // the capability level
+    // behind `tool_search`, all three skill-management schemas remain deferred
+    // but discoverable until the model reveals them. Presence is asserted at the
+    // capability level
     // (`capabilities::skills::tests::skill_management_capability_exposes_search_install_delete`)
     // and behavior by the SkillRegistry / DeleteSkillTool unit tests.
 
@@ -7045,7 +7033,7 @@ mod tests {
             .expect("subagents capability must be enabled");
 
         assert_eq!(subagents.config["max_active_descendant_tasks"], 32);
-        assert!(YOLOP_NEVER_DEFER_TOOLS.contains(&"spawn_agent"));
+        assert!(!YOLOP_NEVER_DEFER_TOOLS.contains(&"spawn_agent"));
     }
 
     #[test]
@@ -7108,7 +7096,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_search_keeps_routing_tool_schemas_loaded() {
+    fn tool_search_keeps_only_first_turn_profile_schemas_loaded() {
         use everruns_core::capabilities::{Capability, DEFAULT_TOOL_SEARCH_THRESHOLD};
         use everruns_core::tool_types::{
             BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy,
@@ -7132,69 +7120,32 @@ mod tests {
             })
         }
 
-        let mut tools = vec![
-            ToolDefinition::Builtin(BuiltinTool {
-                name: "write_todos".to_string(),
-                display_name: None,
-                description: "write todos".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": { "todos": { "type": "array" } },
-                    "required": ["todos"]
-                }),
-                policy: ToolPolicy::Auto,
-                category: None,
-                deferrable: DeferrablePolicy::Automatic,
-                hints: ToolHints::default(),
-                full_parameters: None,
-            }),
-            ToolDefinition::Builtin(BuiltinTool {
-                name: "activate_skill".to_string(),
-                display_name: None,
-                description: "activate skill".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": { "name": { "type": "string" } },
-                    "required": ["name"]
-                }),
-                policy: ToolPolicy::Auto,
-                category: None,
-                deferrable: DeferrablePolicy::Automatic,
-                hints: ToolHints::default(),
-                full_parameters: None,
-            }),
-            ToolDefinition::Builtin(BuiltinTool {
-                name: "search_skills".to_string(),
-                display_name: None,
-                description: "search skills".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": { "query": { "type": "string" } },
-                    "required": ["query"]
-                }),
-                policy: ToolPolicy::Auto,
-                category: None,
-                deferrable: DeferrablePolicy::Automatic,
-                hints: ToolHints::default(),
-                full_parameters: None,
-            }),
-            ToolDefinition::Builtin(BuiltinTool {
-                name: "install_skill".to_string(),
-                display_name: None,
-                description: "install skill".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": { "source": { "type": "string" } },
-                    "required": ["source"]
-                }),
-                policy: ToolPolicy::Auto,
-                category: None,
-                deferrable: DeferrablePolicy::Automatic,
-                hints: ToolHints::default(),
-                full_parameters: None,
-            }),
-            fake_tool("write_session_title"),
+        let eager = [
+            "read_file",
+            "list_directory",
+            "grep_files",
+            "write_todos",
+            "write_session_title",
         ];
+        let deferred = [
+            "write_file",
+            "edit_file",
+            "bash",
+            "spawn_background",
+            "spawn_agent",
+            "search_sessions",
+            "activate_skill",
+            "search_skills",
+            "install_skill",
+            "run_command",
+            "search_models",
+            "ast_grep",
+        ];
+        let mut tools = eager
+            .iter()
+            .chain(deferred.iter())
+            .map(|name| fake_tool(*name))
+            .collect::<Vec<_>>();
         tools
             .extend((0..DEFAULT_TOOL_SEARCH_THRESHOLD).map(|idx| fake_tool(format!("fake_{idx}"))));
 
@@ -7206,56 +7157,29 @@ mod tests {
             .expect("tool_search hook");
         let transformed = hook.transform(tools);
 
-        let write_todos = transformed
-            .iter()
-            .find(|tool| tool.name() == "write_todos")
-            .expect("write_todos definition");
-        assert!(
-            write_todos.parameters().get("properties").is_some(),
-            "write_todos must keep its full schema so models pass the required todos field"
-        );
-
-        let activate_skill = transformed
-            .iter()
-            .find(|tool| tool.name() == "activate_skill")
-            .expect("activate_skill definition");
-        assert!(
-            activate_skill.parameters().get("properties").is_some(),
-            "activate_skill must keep its full schema so models pass the required name field"
-        );
-
-        for name in ["search_skills", "install_skill"] {
-            assert!(
-                YOLOP_NEVER_DEFER_TOOLS.contains(&name),
-                "{name} must stay on the never-defer allowlist"
-            );
+        for name in eager {
             let tool = transformed
                 .iter()
                 .find(|tool| tool.name() == name)
                 .unwrap_or_else(|| panic!("{name} definition"));
             assert!(
                 tool.parameters().get("properties").is_some(),
-                "{name} must keep its full schema for the conversational find→install loop"
+                "{name} must keep its full schema in the first-turn profile"
             );
         }
 
-        let write_session_title = transformed
-            .iter()
-            .find(|tool| tool.name() == "write_session_title")
-            .expect("write_session_title definition");
-        assert!(
-            write_session_title.parameters().get("properties").is_some(),
-            "write_session_title must be callable on the first substantive turn"
-        );
-
-        let fake = transformed
-            .iter()
-            .find(|tool| tool.name() == "fake_0")
-            .expect("fake tool definition");
-        assert!(
-            fake.parameters().get("properties").is_none(),
-            "precondition: deferral should be active for non-allowlisted tools"
-        );
+        for name in deferred {
+            let tool = transformed
+                .iter()
+                .find(|tool| tool.name() == name)
+                .unwrap_or_else(|| panic!("{name} definition"));
+            assert_eq!(tool.description(), "fake tool", "{name} stays discoverable");
+            assert_eq!(
+                tool.parameters(),
+                &serde_json::json!({"type": "object", "additionalProperties": true}),
+                "{name} must use the compact revealable schema"
+            );
+        }
     }
 
     #[test]
@@ -7406,6 +7330,9 @@ mod tests {
     /// stable composition components so prompt/tool budget changes are explicit.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cold_start_prompt_composition_is_measured_by_component() {
+        const BASELINE_PROMPT_BYTES: usize = 12_975;
+        const BASELINE_TOOL_DEFINITION_BYTES: usize = 35_543;
+        const BASELINE_SCHEMA_BYTES: usize = 20_148;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -7431,7 +7358,11 @@ mod tests {
             .runtime_agent
             .tools
             .iter()
-            .map(|tool| serde_json::to_vec(tool.parameters()).expect("serialize schema").len())
+            .map(|tool| {
+                serde_json::to_vec(tool.parameters())
+                    .expect("serialize schema")
+                    .len()
+            })
             .sum();
         let tool_definition_bytes: usize = context
             .runtime_agent
@@ -7471,6 +7402,120 @@ mod tests {
         assert!(prompt_bytes > SYSTEM_PROMPT.len());
         assert!(!context.runtime_agent.tools.is_empty());
         assert!(schema_bytes > 0);
+        assert!(
+            prompt_bytes <= BASELINE_PROMPT_BYTES,
+            "task shaping must not grow the stable prompt prefix: {prompt_bytes} > {BASELINE_PROMPT_BYTES}"
+        );
+        assert!(
+            tool_definition_bytes * 100 <= BASELINE_TOOL_DEFINITION_BYTES * 70,
+            "provider-visible tool bytes must fall by at least 30%: {tool_definition_bytes} vs {BASELINE_TOOL_DEFINITION_BYTES}"
+        );
+        assert!(
+            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 45,
+            "schema bytes must fall by at least 55%: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_turn_reveals_deferred_mutation_without_dropping_agent_policy() {
+        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(
+            workspace.path().join("AGENTS.md"),
+            "MANDATORY_DISCLOSURE_POLICY: keep repository policy loaded.\n",
+        )
+        .expect("seed AGENTS.md");
+        std::fs::write(workspace.path().join("note.txt"), "before\n").expect("seed note");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "tool_search".to_string(),
+                    arguments: serde_json::json!({"query": "write_file"}),
+                    id: None,
+                }]),
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "write_file".to_string(),
+                    arguments: serde_json::json!({
+                        "path": "note.txt",
+                        "content": "after\n"
+                    }),
+                    id: None,
+                }]),
+                SimTurn::Assistant("DONE".to_string()),
+            ])),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+
+        let initial = built
+            .handles
+            .runtime
+            .load_context(built.handles.session_id)
+            .await
+            .expect("initial context");
+        assert!(
+            initial
+                .runtime_agent
+                .system_prompt
+                .contains("MANDATORY_DISCLOSURE_POLICY"),
+            "AGENTS.md must remain in the model-visible prompt"
+        );
+        let initial_write = initial
+            .runtime_agent
+            .tools
+            .iter()
+            .find(|tool| tool.name() == "write_file")
+            .expect("write_file definition");
+        assert_eq!(
+            initial_write.parameters(),
+            &serde_json::json!({"type": "object", "additionalProperties": true})
+        );
+
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "Change note.txt from before to after.",
+                built
+                    .model
+                    .input_message("Change note.txt from before to after."),
+            )
+            .await
+            .expect("run turn");
+        assert!(result.success, "scripted disclosure turn: {result:?}");
+        assert_eq!(result.tool_calls_count, 2);
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("note.txt")).expect("read note"),
+            "after\n"
+        );
+
+        let revealed = built
+            .handles
+            .runtime
+            .load_context(built.handles.session_id)
+            .await
+            .expect("revealed context");
+        let revealed_write = revealed
+            .runtime_agent
+            .tools
+            .iter()
+            .find(|tool| tool.name() == "write_file")
+            .expect("revealed write_file definition");
+        assert!(
+            revealed_write.parameters().get("properties").is_some(),
+            "tool_search must restore the authoritative structured-call schema"
+        );
     }
 
     #[test]

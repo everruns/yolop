@@ -44,6 +44,8 @@ search/refactor, and read-only code navigation.
 | `find-constant` [smoke] | 3 Python files; `MAGIC_TIMEOUT_MS = 7321` buried in `settings/defaults.py` | Answer its value, number only | final response contains `7321` | read-only navigation/search, no edits |
 | `implement-todo` | JS `clamp()` stub that throws, with a TODO spec comment | Implement per the TODO, remove the comment | `utils.js` has `function clamp` + `module.exports`, no `TODO`/`not implemented` | spec-comment comprehension, stub completion |
 | `add-module` | Rust lib with one existing fn | Create `src/util.rs` with `pub fn double`, wire `pub mod util;` into lib.rs | both files contain the required items | new-file creation + wiring across files |
+| `capability-disclosure-exact-reply` [`capability-disclosure`] | empty workdir | Return one exact token without tools | exact response and one model call | trivial first-request baseline |
+| `capability-disclosure-release-control` [`capability-disclosure`] | repository-local release skill | Activate release instructions without mutation | exact response, `activate_skill` called, no mutation tool called | deferred release/control discovery |
 | `progress-guard-sequential-read` [`progress-guard`] | 24 numbered notes; answer in `notes/24.txt` | Read notes sequentially and answer the final code | final response contains `KITE-7429` | long exploration streak that should trigger `progress_guard` |
 | `progress-guard-checkpoint-read` [`progress-guard`] | 50 numbered notes; answer in `checkpoint/50.txt` | Read notes sequentially and answer the final code | final response contains `WREN-5081` | escalation from first warning to checkpoint warnings |
 | `background-callback-bridge` [`progress-guard`] | Rust crate where `spawn_background` completions land in `SessionTaskRegistry`, but app wake only drains legacy background state | Fix the callback bridge while keeping the legacy wake test passing | source drains session-task completions and keeps focused regression tests | realistic investigation based on the background-callback failure mode |
@@ -154,7 +156,10 @@ task counters exclude bookkeeping tools and bookkeeping-only model rounds so
 automatic title and status maintenance do not consume focused task budgets.
 `cumulative_input_tokens` sums uncached,
 cache-read, and cache-creation input so fewer repeated rounds remain visible
-even when provider caching makes billable input look small. All cases also
+even when provider caching makes billable input look small.
+`first_request_input_tokens` records the provider's uncached input on the first
+model call, while `first_request_total_input_tokens` adds cache-read and
+cache-creation input for an apples-to-apples cold-start comparison. All cases also
 expose metadata (`provider`, `model`, `effort`,
 `reasoning_effort_applied`, `harness`, `stop_reason`) for `--group-by`.
 
@@ -204,6 +209,22 @@ HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
 HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
   doppler run -- mira run --preset search-controls --trials 5 --group-by binary
+
+# Cold-start disclosure A/B across both structured-call provider families and
+# all six required task shapes.
+HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
+HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
+  doppler run -- mira run --preset capability-disclosure --trials 5 --group-by binary,target
+
+The shipping baseline is recorded in `capability_disclosure_baseline.json`.
+Run `20260806T040901Z-9145` completed 120 live trials: every candidate task
+succeeded (60/60), while one baseline Anthropic complex-coding trial hit a
+provider stream stall. Median first-request tokens fell 27.7% on Anthropic and
+25.5% on OpenAI. The exact-reply case kept one LLM call on both binaries. The
+read-only case kept cumulative calls unchanged while reducing median cumulative
+input from 34,044 to 24,703 tokens on Anthropic and from 27,621 to 20,739 on
+OpenAI. Provider-visible schema bytes are measured separately by the runtime
+regression test and recorded in the same JSON file.
 
 # Gate both saved trial distributions, not only aggregate pass count.
 python3 analyze_search_efficiency.py \
@@ -264,6 +285,7 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `progress-guard` | focused warning-behavior check | tag `progress-guard` | claude-sonnet-4-5 | candidate, effort=default, default vs no-progress-guard |
 | `search-efficiency` | baseline/candidate session/search proof, 3 trials | 5 focused cases | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `search-controls` | ordinary regression controls, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
+| `capability-disclosure` | first-request token and reveal-path proof, 5 trials | exact reply, read-only search, simple edit, complex coding, release/control, deferred history | gpt-5.5 + claude-sonnet-4-5 | baseline + candidate, harness=default, effort=default |
 | `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | dependency oscillation + redundant validation | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `progress-controls` | ordinary regression controls, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `owner-selection` | first-mutation owner selection plus local-edit controls, 3 trials | two owner fixtures + `add-fn` + `implement-todo` | gpt-5.5 | candidate, default vs no-progress-guard |
@@ -343,6 +365,7 @@ evals/harness_basic/
   analyze_search_efficiency.py  # baseline/candidate distribution gates
   search_efficiency_baseline.json  # immutable pre-fix revision + evidence
   prompt_composition_baseline.json # immutable pre-trim revision + evidence
+  capability_disclosure_baseline.json # cold-start byte baseline + A/B contract
   analyze_progress_efficiency.py  # state-progress distribution gates
   tests/         # analyzer unit tests
   Cargo.toml    # standalone crate (outside the yolop package), mira-eval SDK

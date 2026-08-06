@@ -40,22 +40,33 @@ vendor was deleted and yolop now consumes upstream directly:
    *registered* definition and the model can pass real arguments. Tool execution
    always uses the real tools; only the advertised schema changes.
 
-2. **Never-defer allowlist.** Yolop passes its hot-path tools to
-   `ToolSearchCapability::new().with_never_defer([...])` so they always keep full
-   schemas and common work needs no `tool_search` round-trip: the file/shell
-   tools (`read_file`, `write_file`, `edit_file`, `list_directory`,
-   `grep_files`, `bash`), the planning tool (`write_todos`), plus
-   `run_command` (the client-command dispatch tool, which requires a
-   `command` argument and so must never be called against a stub). Yolop does
-   not own those tool definitions (they come from `FileSystemCapability`,
-   `StatelessTodoListCapability`, yolop's `bash` tool, and the
-   `client_commands` capability), so it sets the policy by name rather than via
-   each tool's `DeferrablePolicy`. The long tail (search, web fetch, memory,
-   skills, history) defers until requested. **MCP server tools defer on the same
-   footing** — with many configured servers their schemas are the largest,
-   least-used part of the surface, so only names and descriptions ride each turn
-   until `tool_search` loads a schema (execution still routes through the real
-   registry proxy, so a stubbed MCP tool call works once revealed).
+2. **Static host-shaped eager profile.** Yolop passes only first-turn repository
+   discovery (`read_file`, `list_directory`, `grep_files`) and bookkeeping
+   (`write_todos`, `write_session_title`) to
+   `ToolSearchCapability::new().with_never_defer([...])`. Mutation, shell,
+   background, release/control, skills, session history, web, and other
+   specialized tools keep their names and descriptions visible but reveal their
+   authoritative schemas through `tool_search` when the task calls for them.
+   This is host/task shaped without a volatile classifier: the allowlist is
+   stable for the session and provider-cache prefix. Opt-in LSP tools stay eager
+   because enabling the host profile is itself an explicit task signal and the
+   LSP adoption eval showed that stubbing those schemas drives adoption toward
+   zero. Extension tools explicitly marked `never_defer` retain their manifest
+   contract. Yolop does not own the built-in definitions, so it sets this policy
+   by name rather than changing each tool's `DeferrablePolicy`.
+
+   **MCP server tools defer on the same footing** — with many configured servers
+   their schemas are the largest, least-used part of the surface, so only names
+   and descriptions ride each turn until `tool_search` loads a schema (execution
+   still routes through the real registry proxy, so a stubbed MCP tool call works
+   once revealed).
+
+3. **Compact deferred schemas.** `everruns-core` 0.17.21 reduced every deferred
+   definition to the permissive JSON object stub `{type: object,
+   additionalProperties: true}`. The single capability prompt owns the reveal
+   instruction instead of repeating prose inside every tool schema. Full
+   descriptions remain visible, and a reveal restores the same authoritative
+   schema used for execution and structured tool calling.
 
 Deferral activates only once the total tool count crosses
 `DEFAULT_TOOL_SEARCH_THRESHOLD` (15); below that, full schemas fit comfortably.

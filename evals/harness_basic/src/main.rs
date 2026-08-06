@@ -400,7 +400,6 @@ fn prior_session_reference_sample() -> Sample {
          then report the exact failure and whether a shell command caused it. \
          Do not inspect project source before locating the session.",
     )
-    .tag("capability-disclosure")
     .tag("search-efficiency")
     .meta("kind", "session-discovery")
     .meta(
@@ -1124,6 +1123,44 @@ fn capability_disclosure_release_control_sample() -> Sample {
     )
 }
 
+fn capability_disclosure_deferred_tool_sample() -> Sample {
+    Sample::new(
+        "capability-disclosure-deferred-tool",
+        "Use search_sessions exactly once to find the exact marker \
+         DISCLOSURE_DEFERRED_READY. The returned snippet is the complete evidence: \
+         do not read its path or use any second tool. Then reply with exactly \
+         DISCLOSURE_DEFERRED_READY.",
+    )
+    .tag("capability-disclosure")
+    .meta("kind", "deferred-tool")
+    .meta(
+        "prior_sessions",
+        json!([{
+            "session_id": "session_000000000000000000000000000000cc",
+            "events": [{
+                "type":"input.message",
+                "ts":"2026-07-12T12:00:00Z",
+                "data":{"message":{"role":"user","content":[{"type":"text","text":"DISCLOSURE_DEFERRED_READY"}]}}
+            }]
+        }]),
+    )
+    .meta(
+        "checks",
+        json!([{
+            "response_equals": "DISCLOSURE_DEFERRED_READY",
+            "tool_called": ["search_sessions"],
+            "metric_equals": {
+                "search_sessions_tool_calls": 1.0,
+                "tool_calls_failed": 0.0
+            },
+            "metric_at_most": {
+                "tool_calls": 2.0,
+                "llm_calls": 3.0
+            }
+        }]),
+    )
+}
+
 fn dataset() -> Dataset {
     let cargo_toml = "[package]\nname = \"seed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
     Dataset::new(vec![
@@ -1242,6 +1279,7 @@ fn dataset() -> Dataset {
         ),
         capability_disclosure_exact_reply_sample(),
         capability_disclosure_release_control_sample(),
+        capability_disclosure_deferred_tool_sample(),
         progress_guard_probe_sample(),
         progress_guard_checkpoint_sample(),
         stale_history_local_state_sample(),
@@ -2806,7 +2844,7 @@ mod tests {
             "edit",
             "realistic-guardrail",
             "release-control",
-            "session-discovery",
+            "deferred-tool",
         ] {
             assert!(kinds.contains(required), "missing task shape {required}");
         }
@@ -3107,8 +3145,8 @@ mod tests {
 
     #[tokio::test]
     async fn checks_scorer_grades_exact_response() {
-        let sample = Sample::new("exact", "x")
-            .meta("checks", json!([{"response_equals": "DISCLOSURE_OK"}]));
+        let sample =
+            Sample::new("exact", "x").meta("checks", json!([{"response_equals": "DISCLOSURE_OK"}]));
         let mut transcript = graded_transcript();
         transcript.final_response = " DISCLOSURE_OK\n".into();
         let score = checks_scorer().score(&sample, &transcript).await;
