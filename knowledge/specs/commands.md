@@ -56,7 +56,7 @@ The runtime's `execute_command` can only return a `CommandResult` string; it has
 no way to clear a transcript or open an overlay. Rather than add a second,
 non-capability command path in the host, yolop injects a host UI port
 (`HostUi`) into the capability at construction — the same dependency-injection
-pattern `SetupCapability` already uses for its settings/provider stores. The
+pattern `ModelsCapability` already uses for its settings/provider stores. The
 capability requests an effect (`UiCommand`); the host — the only thing that can
 — performs it. This keeps all commands in one registry, keeps them pluggable
 (remove the capability and its commands disappear from the UI; swap it and they
@@ -85,7 +85,7 @@ portable case ever arises.
    is the shared contract between client capabilities and the host — a genuinely
    new on-screen effect is a host change, not a drop-in.
 4. **Natural-language dispatch.** In the interactive TUI, the same client
-   capability exposes a model-facing `run_yolop_command` tool and a prompt
+   capability exposes a model-facing `run_command` tool and a prompt
    contribution listing the terminal commands. When the user asks for a
    terminal-side action in ordinary prose (for example, "exit"), the model
    invokes that tool; the tool emits the same `UiCommand` as the slash-command

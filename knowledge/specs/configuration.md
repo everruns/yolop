@@ -139,7 +139,7 @@ read/write split is explicit at the type level. `AttributionCapability` reads
 whether attribution is enabled through the service; `ApprovalCapability` reads
 its soft-approval paranoia level through `ConfigService::approval_mode()` each
 turn; the `config` capability's `get_config` reads single values through
-`ConfigService::current`; and `SetupCapability` reads provider/token/model state
+`ConfigService::current`; and `ModelsCapability` reads provider/token/model state
 through its config handle while persisting `/setup` changes through the store.
 `approval_mode` is also a first-class schema key, so `get_config`/`set_config`
 manage it alongside everything else.

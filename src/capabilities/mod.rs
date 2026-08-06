@@ -56,7 +56,7 @@ pub(crate) use hooks::{HOOKS_CAPABILITY_ID, HooksCapability};
 pub(crate) use host::{
     CODING_BASH_CAPABILITY_ID, ClientUiContext, CodingBashCapability,
     CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry,
-    SETUP_CAPABILITY_ID, SetupCapability,
+    MODELS_CAPABILITY_ID, ModelsCapability,
 };
 pub(crate) use lsp::LspCapability;
 pub(crate) use model_runtime_context::{

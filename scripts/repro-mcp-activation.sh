@@ -21,7 +21,7 @@ echo "Expected gap: no transcript line carries the authorize URL before wait_for
 echo "== repro: /tools uses frozen startup.tool_names ==" | tee "$OUT/02-tools-frozen.txt"
 rg -n "ShowTools|startup.tool_names" "$ROOT/src/tui/mod.rs" | tee -a "$OUT/02-tools-frozen.txt"
 
-echo "== repro: run_yolop_command queues without host output ==" | tee "$OUT/03-queued.txt"
+echo "== repro: run_command queues without host output ==" | tee "$OUT/03-queued.txt"
 rg -n "queued for the interactive terminal host|ManageMcp" \
   "$ROOT/src/capabilities/client_commands.rs" \
   "$ROOT/src/tui/host_ui.rs" | tee -a "$OUT/03-queued.txt"

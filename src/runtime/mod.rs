@@ -24,11 +24,11 @@ use crate::capabilities::{
     CodingCliEnvironmentCapability, ConfigCapability, ContextCostControlCapability,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry, GOAL_CAPABILITY_ID,
     GoalCapability, HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability,
-    LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, ModelRuntimeContextCapability,
-    PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
-    RepoMapCapability, SESSION_HISTORY_CAPABILITY_ID, SETUP_CAPABILITY_ID,
-    SessionHistoryCapability, SetupCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
-    WorktreeCapability,
+    LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID,
+    ModelRuntimeContextCapability, ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID,
+    ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
+    SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCapability, USER_ASK_CAPABILITY_ID,
+    UserAskCapability, WorktreeCapability,
 };
 use crate::config::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::config::mcp::McpConfigStore;
@@ -1079,7 +1079,7 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "activate_skill",
     "search_skills",
     "install_skill",
-    "run_yolop_command",
+    "run_command",
     // LSP tools exist only when the optional `lsp` capability is enabled
     // (absent names are ignored by the allowlist). When they exist, stub
     // schemas behind `tool_search` add enough friction that models fall back
@@ -2258,7 +2258,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
             WEB_FETCH_CAPABILITY_ID,
             serde_json::json!({ "enable_file_download": true }),
         ),
-        AgentCapabilityConfig::new(SETUP_CAPABILITY_ID),
+        AgentCapabilityConfig::new(MODELS_CAPABILITY_ID),
         AgentCapabilityConfig::new(CONFIG_CAPABILITY_ID),
         AgentCapabilityConfig::new(CONNECTORS_CAPABILITY_ID),
         AgentCapabilityConfig::new(crate::extensions::manage::EXTENSIONS_CAPABILITY_ID),
@@ -2632,7 +2632,7 @@ impl StartupInfo {
 
 #[derive(Clone)]
 pub struct ModelState {
-    /// Shared with [`crate::capabilities::SetupCapability`] so a successful `/setup`
+    /// Shared with [`crate::capabilities::ModelsCapability`] so a successful `/setup`
     /// invocation through `runtime.execute_command` immediately updates the
     /// banner label.
     provider: Arc<RwLock<ProviderChoice>>,
@@ -3067,7 +3067,7 @@ pub async fn build_with_options(
     let local_backends = local_backends.with_platform_runner(wake_runner);
     let backends = local_backends.runtime_backends;
     // Shared between `ModelState` (for banner labels) and
-    // `SetupCapability` (which mutates it on a successful `/setup`).
+    // `ModelsCapability` (which mutates it on a successful `/setup`).
     let provider_state = Arc::new(RwLock::new(provider.clone()));
     let provider_store = backends.provider_store.clone();
 
@@ -3373,7 +3373,7 @@ pub async fn build_with_options(
     // `/setup` (below) is the capability-sourced slash command. It implements
     // `Capability::execute_command` end to end.
     let pending_model_choice = Arc::new(RwLock::new(None));
-    capabilities.register(SetupCapability {
+    capabilities.register(ModelsCapability {
         provider: provider_state.clone(),
         provider_store: provider_store.clone(),
         config: settings.clone(),
@@ -3476,7 +3476,7 @@ pub async fn build_with_options(
     everruns_openrouter::register_driver(&mut driver_registry);
     crate::drivers::codex::register_driver(&mut driver_registry, settings.clone());
     let settings_snapshot = settings.snapshot();
-    let mut setup_recommended = SetupCapability::needs_onboarding(&settings_snapshot);
+    let mut setup_recommended = ModelsCapability::needs_onboarding(&settings_snapshot);
     let default_model = match &provider {
         ProviderChoice::Anthropic { .. }
         | ProviderChoice::OpenAi { .. }
@@ -5442,7 +5442,7 @@ mod tests {
 
     // The live-config tools (`set_provider` / `set_model` / `set_reasoning_effort`)
     // and skill management tools (`search_skills` / `install_skill` / `delete_skill`)
-    // are registered via SetupCapability / SkillManagementCapability
+    // are registered via ModelsCapability / SkillManagementCapability
     // in `build_with_options`. Because ToolSearchCapability defers the long tail
     // behind `tool_search`, only the never-defer allowlist keeps search/install
     // schemas loaded; `delete_skill` remains deferred. Presence is asserted at
@@ -7555,7 +7555,7 @@ mod tests {
         use crate::capabilities::attribution::yolop_attribution_prompt;
         use crate::capabilities::background::BACKGROUND_SYSTEM_PROMPT;
         use crate::capabilities::client_commands::CLIENT_COMMANDS_PROMPT;
-        use crate::capabilities::host::SETUP_TOOLS_PROMPT;
+        use crate::capabilities::host::MODELS_PROMPT;
         use crate::config::ApprovalMode;
 
         // Current total is 5,657; the headroom is deliberately thin.
@@ -7567,7 +7567,7 @@ mod tests {
             ("approval", approval.len()),
             ("background", BACKGROUND_SYSTEM_PROMPT.len()),
             ("client_commands", CLIENT_COMMANDS_PROMPT.len()),
-            ("setup", SETUP_TOOLS_PROMPT.len()),
+            ("setup", MODELS_PROMPT.len()),
             ("attribution", yolop_attribution_prompt().len()),
         ];
 

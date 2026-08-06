@@ -1,6 +1,7 @@
 // Host/example capabilities for yolop: local environment context, bash, and
 // TUI-facing slash commands that mutate this process's provider selection.
 
+use crate::capabilities::model_discovery::search_configured_models;
 use crate::capabilities::narration::stable_labeled;
 use crate::config::service::ConfigService;
 use crate::config::{ApprovalMode, SettingsStore};
@@ -508,7 +509,7 @@ fn format_shell_output(value: &serde_json::Value) -> String {
 // that wizard mutate runtime state without exposing `/provider`, `/token`, and
 // `/model` as separate commands.
 
-pub(crate) const SETUP_CAPABILITY_ID: &str = "yolop_setup";
+pub(crate) const MODELS_CAPABILITY_ID: &str = "models";
 
 /// Providers that meaningfully consume an API token. `llmsim` is excluded
 /// (no key needed); `ollama` and `custom` are included for completeness even
@@ -526,7 +527,7 @@ const TOKEN_PROVIDERS: &[&str] = &[
 /// settings (vs. a compiled-in default with env override).
 const BASE_URL_PROVIDERS: &[&str] = &["custom"];
 
-pub(crate) struct SetupCapability {
+pub(crate) struct ModelsCapability {
     pub(crate) provider: Arc<RwLock<ProviderChoice>>,
     pub(crate) provider_store: Arc<dyn RuntimeProviderStore>,
     /// Reads current configuration through the shared config service…
@@ -537,7 +538,7 @@ pub(crate) struct SetupCapability {
     pub(crate) pending_model_choice: Arc<RwLock<Option<ProviderChoice>>>,
 }
 
-impl SetupCapability {
+impl ModelsCapability {
     /// The shared, cloneable handle the `/setup` command and the model-facing
     /// `set_*` tools both drive. Everything that mutates the live provider/model
     /// lives on [`SetupController`] so the slash command and the agent tools
@@ -554,7 +555,7 @@ impl SetupCapability {
 }
 
 /// Live provider/model/effort controller. Holds the same handles as
-/// [`SetupCapability`] and owns every mutation (`change_provider`,
+/// [`ModelsCapability`] and owns every mutation (`change_provider`,
 /// `change_model`, `change_effort`, tokens, urls, attribution, approval). The
 /// slash command (`execute_command`) and the agent-facing `set_*` tools both
 /// call these methods, so a natural-language request and a typed `/setup`
@@ -569,15 +570,15 @@ pub(crate) struct SetupController {
 }
 
 #[async_trait]
-impl Capability for SetupCapability {
+impl Capability for ModelsCapability {
     fn id(&self) -> &str {
-        SETUP_CAPABILITY_ID
+        MODELS_CAPABILITY_ID
     }
     fn name(&self) -> &str {
-        "Coding CLI Setup"
+        "Models"
     }
     fn description(&self) -> &str {
-        "Configure provider, API key, and model."
+        "Discover and control models, providers, reasoning, and provider credentials."
     }
     fn status(&self) -> CapabilityStatus {
         CapabilityStatus::Available
@@ -586,7 +587,7 @@ impl Capability for SetupCapability {
         Some("Examples")
     }
     fn system_prompt_addition(&self) -> Option<&str> {
-        Some(SETUP_TOOLS_PROMPT)
+        Some(MODELS_PROMPT)
     }
     fn commands(&self) -> Vec<CommandDescriptor> {
         vec![CommandDescriptor {
@@ -606,6 +607,9 @@ impl Capability for SetupCapability {
         vec![
             Box::new(SetReasoningEffortTool {
                 controller: self.controller(),
+            }),
+            Box::new(SearchModelsTool {
+                settings: self.settings.clone(),
             }),
             Box::new(SetModelTool {
                 controller: self.controller(),
@@ -658,11 +662,10 @@ impl Capability for SetupCapability {
 // Discovery, not how-to: without this the model does not know it may retune the
 // live session at all. When to escalate effort, and not thrashing the model
 // mid-task, are judgement calls left to the model.
-pub(crate) const SETUP_TOOLS_PROMPT: &str = "<capability id=\"yolop_setup\">\n\
-    You can reconfigure the live session yourself when it helps the task: \
-    `set_reasoning_effort`, `set_model`, and `set_provider` all apply on the next \
-    turn of this session — no restart. Effort levels are model-specific; if one is \
-    unknown, `set_reasoning_effort` returns the accepted values.\n\
+pub(crate) const MODELS_PROMPT: &str = "<capability id=\"models\">\n\
+    `set_reasoning_effort`, `set_model`, and `set_provider` apply next turn. For partial \
+    model names, call `search_models`, show ambiguous matches, and never guess an ID. \
+    Unknown effort levels return accepted values.\n\
     </capability>";
 
 fn setup_command_arg() -> CommandArg {
@@ -1303,6 +1306,38 @@ impl Tool for SetReasoningEffortTool {
     }
 }
 
+struct SearchModelsTool {
+    settings: Arc<SettingsStore>,
+}
+
+#[async_trait]
+impl Tool for SearchModelsTool {
+    fn name(&self) -> &str {
+        "search_models"
+    }
+    fn display_name(&self) -> Option<&str> {
+        Some("Search models")
+    }
+    fn description(&self) -> &str {
+        "Search model IDs and display names across all currently usable providers. Use this before set_model for a partial or unqualified model name."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false})
+    }
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let Some(query) = arguments.get("query").and_then(Value::as_str) else {
+            return ToolExecutionResult::tool_error("missing required string 'query'");
+        };
+        if query.trim().is_empty() {
+            return ToolExecutionResult::tool_error("'query' must not be empty");
+        }
+        let result = search_configured_models(&self.settings.snapshot(), query).await;
+        ToolExecutionResult::success(
+            json!({"query":query,"matches":result.matches.into_iter().map(|item| json!({"provider":item.provider,"model":item.model_id,"display_name":item.display_name})).collect::<Vec<_>>(),"providers_searched":result.providers_searched,"provider_errors":result.provider_errors}),
+        )
+    }
+}
+
 struct SetModelTool {
     controller: SetupController,
 }
@@ -1328,9 +1363,7 @@ impl Tool for SetModelTool {
         Some("Set model")
     }
     fn description(&self) -> &str {
-        "Switch the model used for this session. Applies on the next turn — no restart. The id is \
-         resolved against the current provider; an optional reasoning effort can be set at the same \
-         time. Avoid switching mid-task unless it clearly helps."
+        "Switch to an exact model ID for the current provider. For a partial name, call search_models first; never pass an unresolved fragment."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -1354,6 +1387,31 @@ impl Tool for SetModelTool {
             Ok(value) => value,
             Err(err) => return err,
         };
+        let search = search_configured_models(&self.controller.settings.snapshot(), model).await;
+        let current_provider = self
+            .controller
+            .provider
+            .read()
+            .expect("provider lock poisoned")
+            .provider_name()
+            .to_string();
+        let exact_current = search
+            .matches
+            .iter()
+            .any(|item| item.provider == current_provider && item.model_id == model);
+        if !search.matches.is_empty() && !exact_current {
+            let choices = search
+                .matches
+                .iter()
+                .take(20)
+                .map(|item| format!("{}: {}", item.provider, item.model_id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return ToolExecutionResult::tool_error(format!(
+                "`{model}` is not an exact model ID for provider `{current_provider}`. Matching models: {choices}. Select an exact result; call set_provider first for another provider."
+            ));
+        }
+
         // `change_model` accepts the `model [reasoning-effort]` spec the
         // `/setup model` command takes, so join the optional effort onto it.
         let spec = match arguments.get("reasoning_effort").and_then(Value::as_str) {
@@ -1426,7 +1484,7 @@ impl Tool for SetProviderTool {
     }
 }
 
-impl SetupCapability {
+impl ModelsCapability {
     /// True when no provider preference is saved and no API token is set —
     /// either via env var or in the settings file. Used by the TUI at
     /// startup to auto-open the wizard on a fresh install.
@@ -1600,9 +1658,9 @@ mod tests {
     }
 
     #[test]
-    fn setup_capability_exposes_live_config_tools() {
+    fn models_capability_exposes_live_config_tools() {
         let (controller, _provider, _dir) = test_controller(ProviderChoice::Sim);
-        let capability = SetupCapability {
+        let capability = ModelsCapability {
             provider: controller.provider.clone(),
             provider_store: controller.provider_store.clone(),
             config: controller.config.clone(),
@@ -1614,10 +1672,15 @@ mod tests {
             .iter()
             .map(|t| t.name().to_string())
             .collect();
-        for expected in ["set_reasoning_effort", "set_model", "set_provider"] {
+        for expected in [
+            "set_reasoning_effort",
+            "search_models",
+            "set_model",
+            "set_provider",
+        ] {
             assert!(
                 names.iter().any(|n| n == expected),
-                "{expected} should be exposed by SetupCapability: {names:?}"
+                "{expected} should be exposed by ModelsCapability: {names:?}"
             );
         }
         // The agent is told these tools exist so it uses them instead of asking
@@ -1625,6 +1688,7 @@ mod tests {
         let prompt = capability.system_prompt_addition().expect("setup prompt");
         assert!(prompt.contains("set_reasoning_effort"));
         assert!(prompt.contains("set_model"));
+        assert!(prompt.contains("search_models"));
         assert!(prompt.contains("set_provider"));
     }
 
@@ -1658,7 +1722,7 @@ mod tests {
             std::env::remove_var("CUSTOM_API_KEY");
         }
         let settings = crate::config::Settings::default();
-        assert!(SetupCapability::needs_onboarding(&settings));
+        assert!(ModelsCapability::needs_onboarding(&settings));
     }
 
     #[test]
@@ -1678,12 +1742,12 @@ mod tests {
             std::env::set_var("CUSTOM_API_KEY", "sk-orphan");
         }
         let settings = crate::config::Settings::default();
-        assert!(SetupCapability::needs_onboarding(&settings));
+        assert!(ModelsCapability::needs_onboarding(&settings));
 
         unsafe {
             std::env::set_var("CUSTOM_BASE_URL", "http://localhost:8000/v1");
         }
-        assert!(!SetupCapability::needs_onboarding(&settings));
+        assert!(!ModelsCapability::needs_onboarding(&settings));
         unsafe {
             std::env::remove_var("CUSTOM_BASE_URL");
             std::env::remove_var("CUSTOM_API_KEY");
@@ -1696,7 +1760,7 @@ mod tests {
             default_provider: Some("anthropic".to_string()),
             ..Default::default()
         };
-        assert!(!SetupCapability::needs_onboarding(&settings));
+        assert!(!ModelsCapability::needs_onboarding(&settings));
     }
 
     #[test]
@@ -1708,7 +1772,7 @@ mod tests {
             tokens,
             ..Default::default()
         };
-        assert!(!SetupCapability::needs_onboarding(&settings));
+        assert!(!ModelsCapability::needs_onboarding(&settings));
     }
 
     #[test]

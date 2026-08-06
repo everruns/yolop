@@ -45,7 +45,7 @@ vendor was deleted and yolop now consumes upstream directly:
    schemas and common work needs no `tool_search` round-trip: the file/shell
    tools (`read_file`, `write_file`, `edit_file`, `list_directory`,
    `grep_files`, `bash`), the planning tool (`write_todos`), plus
-   `run_yolop_command` (the client-command dispatch tool, which requires a
+   `run_command` (the client-command dispatch tool, which requires a
    `command` argument and so must never be called against a stub). Yolop does
    not own those tool definitions (they come from `FileSystemCapability`,
    `StatelessTodoListCapability`, yolop's `bash` tool, and the

@@ -29,15 +29,15 @@ use std::sync::Arc;
 pub(crate) const CLIENT_COMMANDS_CAPABILITY_ID: &str = "yolop_client_commands";
 
 pub(crate) const CLIENT_COMMANDS_PROMPT: &str = r#"<capability id="yolop_client_commands">
-For natural-language requests, `run_yolop_command` can perform these TUI client
+For natural-language requests, `run_command` can perform these TUI client
 commands: `/help`, `/tools`, `/mcp`, `/cwd`, `/status [compact|expanded|toggle]`,
 `/model [id]`, `/effort [level]`, `/clear`, and `/quit` (`/exit` is an alias).
-The TUI may expose other slash commands, but only use `run_yolop_command` for this listed
+The TUI may expose other slash commands, but only use `run_command` for this listed
 client-command set. When the user asks for one of these terminal
 actions — for example "exit", "clear the screen", "show tools", "switch model",
 "reload MCP servers" (`/mcp reload`), "log in to an MCP server"
 (`/mcp login <name>`), or "expand the status bar" —
-call `run_yolop_command` with the command and arguments; do not merely tell the
+call `run_command` with the command and argument array; do not merely tell the
 user to type the slash command, and do not invent a manager window. The tool
 result includes the host's response text (server lists, tool lists, OAuth URLs).
 Use `set_status` for a concise live description of meaningful turn progress.
@@ -82,7 +82,7 @@ impl Capability for ClientCommandsCapability {
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
-            Box::new(RunYolopCommandTool {
+            Box::new(RunCommandTool {
                 ui: self.ui.clone(),
             }),
             Box::new(SetStatusTool {
@@ -168,7 +168,7 @@ fn ui_command_for(name: &str, arg: Option<String>) -> Option<UiCommand> {
     }
 }
 
-struct RunYolopCommandTool {
+struct RunCommandTool {
     ui: Arc<dyn HostUi>,
 }
 
@@ -239,7 +239,7 @@ impl Tool for SetStatusTool {
 }
 
 #[async_trait]
-impl Tool for RunYolopCommandTool {
+impl Tool for RunCommandTool {
     fn narrate(
         &self,
         tool_call: &ToolCall,
@@ -253,7 +253,7 @@ impl Tool for RunYolopCommandTool {
     }
 
     fn name(&self) -> &str {
-        "run_yolop_command"
+        "run_command"
     }
 
     fn display_name(&self) -> Option<&str> {
@@ -263,7 +263,7 @@ impl Tool for RunYolopCommandTool {
     fn description(&self) -> &str {
         "Execute an interactive yolop slash command on behalf of a natural-language user request. \
          Use this when the user asks to exit, clear the transcript, show help/tools/MCP/cwd, \
-         reload MCP servers (`command: mcp`, `arguments: reload`), show or change the status \
+         reload MCP servers (`command: mcp`, `args: [reload]`), show or change the status \
          layout, or open/switch model or reasoning effort. Accepts command names with or without the leading \
          slash; `exit` is accepted as an alias for `quit`."
     }
@@ -280,9 +280,10 @@ impl Tool for RunYolopCommandTool {
                         "/help", "/tools", "/mcp", "/cwd", "/status", "/model", "/effort", "/clear", "/quit", "/exit"
                     ]
                 },
-                "arguments": {
-                    "type": "string",
-                    "description": "Optional command arguments, e.g. `reload` for /mcp, a model id for /model, or a level for /effort."
+                "args": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Ordered command arguments, e.g. [`reload`] for /mcp or [`openai/gpt-5.4`] for /model."
                 }
             },
             "required": ["command"],
@@ -302,12 +303,23 @@ impl Tool for RunYolopCommandTool {
                 "shell commands must be typed directly as !shell <command> or /shell <command>",
             );
         }
-        let arg = arguments
-            .get("arguments")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
+        let args = match arguments.get("args") {
+            None => Vec::new(),
+            Some(Value::Array(args)) => {
+                let mut parsed = Vec::with_capacity(args.len());
+                for value in args {
+                    let Some(value) = value.as_str() else {
+                        return ToolExecutionResult::tool_error("'args' must contain only strings");
+                    };
+                    parsed.push(value.to_string());
+                }
+                parsed
+            }
+            Some(_) => {
+                return ToolExecutionResult::tool_error("'args' must be an array of strings");
+            }
+        };
+        let arg = (!args.is_empty()).then(|| args.join(" "));
 
         let Some(command) = ui_command_for(name, arg.clone()) else {
             return ToolExecutionResult::tool_error(format!("unknown yolop command: /{stripped}"));
@@ -347,7 +359,7 @@ impl Tool for RunYolopCommandTool {
     }
 }
 
-/// Whether `run_yolop_command` should wait for host transcript lines.
+/// Whether `run_command` should wait for host transcript lines.
 fn command_awaits_host_reply(name: &str) -> bool {
     matches!(name, "mcp" | "tools" | "help" | "cwd")
 }
@@ -436,10 +448,10 @@ mod tests {
         let capability = ClientCommandsCapability::new(ui);
         let prompt = capability.system_prompt_addition().expect("prompt");
 
-        assert!(prompt.contains("run_yolop_command"));
+        assert!(prompt.contains("run_command"));
         assert!(prompt.contains("TUI client"));
         // The prompt wraps this guidance across two lines — check each side.
-        assert!(prompt.contains("only use `run_yolop_command` for this listed"));
+        assert!(prompt.contains("only use `run_command` for this listed"));
         assert!(prompt.contains("client-command set"));
         assert!(prompt.contains("/quit"));
         assert!(prompt.contains("/exit"));
@@ -447,16 +459,16 @@ mod tests {
     }
 
     #[test]
-    fn run_yolop_command_narration_includes_command() {
+    fn run_command_narration_includes_command() {
         use everruns_core::tool_narration::ToolNarrationPhase;
         use everruns_core::tool_types::ToolCall;
 
-        let tool = RunYolopCommandTool {
+        let tool = RunCommandTool {
             ui: Arc::new(RecordingUi::default()),
         };
         let tool_call = ToolCall {
             id: "call-1".to_string(),
-            name: "run_yolop_command".to_string(),
+            name: "run_command".to_string(),
             arguments: json!({ "command": "/model" }),
         };
 
@@ -497,8 +509,8 @@ mod tests {
     }
 
     #[test]
-    fn run_yolop_command_schema_accepts_slashed_aliases() {
-        let tool = RunYolopCommandTool {
+    fn run_command_schema_accepts_slashed_aliases() {
+        let tool = RunCommandTool {
             ui: Arc::new(RecordingUi::default()),
         };
         let schema = tool.parameters_schema();
@@ -513,9 +525,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_yolop_command_exit_alias_queues_quit() {
+    async fn run_command_exit_alias_queues_quit() {
         let ui = Arc::new(RecordingUi::default());
-        let tool = RunYolopCommandTool { ui: ui.clone() };
+        let tool = RunCommandTool { ui: ui.clone() };
 
         let result = tool.execute(json!({ "command": "/exit" })).await;
 
@@ -562,14 +574,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_yolop_command_rejects_shell_dispatch() {
+    async fn run_command_rejects_shell_dispatch() {
         let ui = Arc::new(RecordingUi::default());
-        let tool = RunYolopCommandTool { ui: ui.clone() };
+        let tool = RunCommandTool { ui: ui.clone() };
 
         let result = tool
             .execute(json!({
                 "command": "shell",
-                "arguments": "echo should-not-run"
+                "args": ["echo", "should-not-run"]
             }))
             .await;
 
@@ -578,14 +590,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_yolop_command_preserves_model_argument() {
+    async fn run_command_preserves_model_argument() {
         let ui = Arc::new(RecordingUi::default());
-        let tool = RunYolopCommandTool { ui: ui.clone() };
+        let tool = RunCommandTool { ui: ui.clone() };
 
         let result = tool
             .execute(json!({
                 "command": "model",
-                "arguments": "openai/gpt-5.4"
+                "args": ["openai/gpt-5.4"]
             }))
             .await;
 
@@ -599,14 +611,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_yolop_command_preserves_status_layout_argument() {
+    async fn run_command_preserves_status_layout_argument() {
         let ui = Arc::new(RecordingUi::default());
-        let tool = RunYolopCommandTool { ui: ui.clone() };
+        let tool = RunCommandTool { ui: ui.clone() };
 
         let result = tool
             .execute(json!({
                 "command": "status",
-                "arguments": "expanded"
+                "args": ["expanded"]
             }))
             .await;
 
@@ -622,12 +634,12 @@ mod tests {
     /// MCP reload is directly callable from conversation; the host receives the
     /// same typed command as interactive `/mcp reload` and returns its report.
     #[tokio::test]
-    async fn run_yolop_command_dispatches_mcp_reload() {
+    async fn run_command_dispatches_mcp_reload() {
         let ui = Arc::new(RecordingUi::default());
-        let tool = RunYolopCommandTool { ui: ui.clone() };
+        let tool = RunCommandTool { ui: ui.clone() };
 
         let result = tool
-            .execute(json!({ "command": "mcp", "arguments": "reload" }))
+            .execute(json!({ "command": "mcp", "args": ["reload"] }))
             .await;
 
         assert!(result.is_success(), "tool should succeed: {result:?}");
@@ -639,16 +651,14 @@ mod tests {
         );
     }
 
-    /// `run_yolop_command` for `/mcp` returns the host listing so the agent
+    /// `run_command` for `/mcp` returns the host listing so the agent
     /// can act conversationally (login/reload) without inventing a manager window.
     #[tokio::test]
-    async fn repro_run_yolop_command_mcp_returns_host_output() {
+    async fn repro_run_command_mcp_returns_host_output() {
         let ui = Arc::new(RecordingUi::default());
-        let tool = RunYolopCommandTool { ui: ui.clone() };
+        let tool = RunCommandTool { ui: ui.clone() };
 
-        let result = tool
-            .execute(json!({ "command": "mcp", "arguments": "" }))
-            .await;
+        let result = tool.execute(json!({ "command": "mcp", "args": [] })).await;
         assert!(result.is_success(), "tool should succeed: {result:?}");
 
         let payload = match result {

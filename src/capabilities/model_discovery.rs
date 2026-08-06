@@ -8,7 +8,7 @@
 // names and descriptions even when the provider's API returns bare ids.
 
 use crate::config::Settings;
-use crate::runtime::ProviderChoice;
+use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS};
 use anyhow::{Context, Result, anyhow};
 use everruns_core::DriverId;
 use everruns_core::driver_registry::{DiscoveredModel, DriverRegistry, ProviderConfig};
@@ -247,6 +247,101 @@ async fn list_openai_compatible_models(
         })
         .collect();
     Ok(Some(models))
+}
+
+fn provider_is_usable(settings: &Settings, provider: &str) -> bool {
+    match provider {
+        "llmsim" | "ollama" => true,
+        "custom" => crate::runtime::custom_base_url(settings).is_some(),
+        "codex" => provider_env_present("codex") || settings.has_codex_auth(),
+        _ => provider_env_present(provider) || settings.has_token(provider),
+    }
+}
+
+fn provider_env_present(provider: &str) -> bool {
+    let names: &[&str] = match provider {
+        "openai" => &["OPENAI_API_KEY"],
+        "codex" => &["CODEX_ACCESS_TOKEN"],
+        "anthropic" => &["ANTHROPIC_API_KEY"],
+        "google" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        "openrouter" => &["OPENROUTER_API_KEY"],
+        "ollama" => &["OLLAMA_BASE_URL", "OLLAMA_API_KEY"],
+        "custom" => &["CUSTOM_API_KEY"],
+        _ => &[],
+    };
+    names.iter().any(|name| {
+        std::env::var(name)
+            .map(|value| !value.is_empty())
+            .unwrap_or(false)
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelSearchMatch {
+    pub(crate) provider: String,
+    pub(crate) model_id: String,
+    pub(crate) display_name: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ModelSearchResult {
+    pub(crate) matches: Vec<ModelSearchMatch>,
+    pub(crate) providers_searched: Vec<String>,
+    pub(crate) provider_errors: Vec<String>,
+}
+
+/// Search driver-provided model catalogs across every currently usable provider.
+/// A provider failure is isolated so successful catalogs still contribute results.
+pub(crate) async fn search_configured_models(
+    settings: &Settings,
+    query: &str,
+) -> ModelSearchResult {
+    let needle = query.trim().to_lowercase();
+    let mut result = ModelSearchResult::default();
+    if needle.is_empty() {
+        return result;
+    }
+    for provider_name in SUPPORTED_PROVIDERS {
+        if !provider_is_usable(settings, provider_name) {
+            continue;
+        }
+        let choice = match ProviderChoice::default_for_provider_name(provider_name) {
+            Ok(choice) => choice,
+            Err(error) => {
+                result
+                    .provider_errors
+                    .push(format!("{provider_name}: {error}"));
+                continue;
+            }
+        };
+        result.providers_searched.push((*provider_name).to_string());
+        match discover_provider_models(&choice, settings).await {
+            Ok(Some(models)) => result
+                .matches
+                .extend(models.into_iter().filter_map(|model| {
+                    let display_name = model.display_name.clone();
+                    let display = display_name.as_deref().unwrap_or("");
+                    (model.model_id.to_lowercase().contains(&needle)
+                        || display.to_lowercase().contains(&needle))
+                    .then(|| ModelSearchMatch {
+                        provider: (*provider_name).to_string(),
+                        model_id: model.model_id,
+                        display_name,
+                    })
+                })),
+            Ok(None) => {}
+            Err(error) => result
+                .provider_errors
+                .push(format!("{provider_name}: {error}")),
+        }
+    }
+    result
+        .matches
+        .sort_by(|a, b| (&a.provider, &a.model_id).cmp(&(&b.provider, &b.model_id)));
+    result
+        .matches
+        .dedup_by(|a, b| a.provider == b.provider && a.model_id == b.model_id);
+    result
 }
 
 #[cfg(test)]

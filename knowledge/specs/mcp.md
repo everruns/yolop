@@ -94,7 +94,7 @@ browser is invisible), and the wait runs in the background so the event loop is
 not blocked. The token endpoint and client id are persisted alongside the tokens
 so refresh is self-contained. Because credentials are resolved per turn, a fresh
 login takes effect on the next message — no restart (composes with live reload
-above). Agent-driven `/mcp` and `/tools` via `run_yolop_command` return the
+above). Agent-driven `/mcp` and `/tools` via `run_command` return the
 host's response text in the tool result; `/tools` includes live discovered
 `mcp_*` names from the session's scoped servers.
 
