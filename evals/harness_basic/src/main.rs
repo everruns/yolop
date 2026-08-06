@@ -618,8 +618,8 @@ fn zero_result_search_sample() -> Sample {
                 "metric_at_least": {"progress_guard_warnings": 1.0},
                 "metric_at_most": {
                     "calls_after_progress_warning": 1.0,
-                    "tool_calls": 4.0,
-                    "llm_calls": 5.0
+                    "task_tool_calls": 4.0,
+                    "task_llm_calls": 5.0
                 },
                 "metric_equals": {"duplicate_exploration_calls": 0.0}
             },
@@ -1613,6 +1613,21 @@ struct Mined {
     session_result_bytes: u64,
 }
 
+// Bookkeeping-only rounds are tracked independently from the work an eval asks
+// the agent to perform. This keeps product features such as automatic session
+// titles from consuming a task's search or reasoning budget.
+fn task_tool_calls(mined: &Mined) -> u64 {
+    mined
+        .total_model_emitted_tool_calls
+        .saturating_sub(mined.bookkeeping_tool_calls)
+}
+
+fn task_llm_calls(mined: &Mined) -> u64 {
+    mined
+        .llm_calls
+        .saturating_sub(mined.standalone_bookkeeping_rounds)
+}
+
 #[derive(Default)]
 struct WorkspaceTrajectory {
     current_hashes: BTreeMap<String, String>,
@@ -2407,6 +2422,8 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         t.error = Some(format!("no events at {}", events_path.display()));
         stop_reason = "error";
     }
+    let task_tool_calls = task_tool_calls(&mined);
+    let task_llm_calls = task_llm_calls(&mined);
 
     t.final_response = mined.final_response;
     t.iterations = mined.iterations as usize;
@@ -2456,6 +2473,10 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         "bookkeeping_tool_calls".into(),
         mined.bookkeeping_tool_calls as f64,
     );
+    t.metrics
+        .insert("task_tool_calls".into(), task_tool_calls as f64);
+    t.metrics
+        .insert("task_llm_calls".into(), task_llm_calls as f64);
     t.metrics
         .insert("tool_calls".into(), t.tool_calls_count as f64);
     t.metrics.insert("turns".into(), mined.turns as f64);
@@ -2787,6 +2808,8 @@ mod tests {
         assert_eq!(m.max_read_file_batch_width, 2);
         assert_eq!(m.bookkeeping_tool_calls, 2);
         assert_eq!(m.standalone_bookkeeping_rounds, 1);
+        assert_eq!(task_tool_calls(&m), 2);
+        assert_eq!(task_llm_calls(&m), 2);
     }
 
     #[test]
@@ -3050,6 +3073,29 @@ mod tests {
         transcript.metrics.insert("warnings".into(), 0.0);
         let score = checks_scorer().score(&sample, &transcript).await;
         assert!(!score.pass);
+    }
+
+    #[tokio::test]
+    async fn zero_result_search_budget_ignores_standalone_bookkeeping() {
+        let mut transcript = graded_transcript();
+        transcript.final_response = "GUARD-203".into();
+        transcript
+            .metadata
+            .insert("binary".into(), json!("candidate"));
+        transcript.metrics.extend([
+            ("progress_guard_warnings".into(), 1.0),
+            ("calls_after_progress_warning".into(), 1.0),
+            ("duplicate_exploration_calls".into(), 0.0),
+            ("tool_calls".into(), 5.0),
+            ("llm_calls".into(), 6.0),
+            ("task_tool_calls".into(), 4.0),
+            ("task_llm_calls".into(), 5.0),
+        ]);
+
+        let score = checks_scorer()
+            .score(&zero_result_search_sample(), &transcript)
+            .await;
+        assert!(score.pass, "{}", score.reason);
     }
 
     #[test]

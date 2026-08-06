@@ -148,8 +148,11 @@ the shared owner, unchanged-reuse responses, session useful-match recall/extra
 matches, and session-search result bytes. Orchestration cases additionally report
 `tool_emitting_model_calls`, `single_tool_model_calls`,
 `batched_tool_model_calls`, `mean_tool_batch_width`, `max_tool_batch_width`,
-`max_read_file_batch_width`, `bookkeeping_tool_calls`, and
-`standalone_bookkeeping_rounds`. `cumulative_input_tokens` sums uncached,
+`max_read_file_batch_width`, `bookkeeping_tool_calls`,
+`standalone_bookkeeping_rounds`, `task_tool_calls`, and `task_llm_calls`. The
+task counters exclude bookkeeping tools and bookkeeping-only model rounds so
+automatic title and status maintenance do not consume focused task budgets.
+`cumulative_input_tokens` sums uncached,
 cache-read, and cache-creation input so fewer repeated rounds remain visible
 even when provider caching makes billable input look small. All cases also
 expose metadata (`provider`, `model`, `effort`,
