@@ -15,6 +15,7 @@ use anyhow::Result;
 use everruns_core::command::ExecuteCommandRequest;
 use everruns_core::events::Event;
 use everruns_core::message::ContentPart;
+use everruns_core::message_retriever::InputMessage;
 use everruns_core::tools::Tool;
 use everruns_core::typed_id::SessionId;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -160,8 +161,14 @@ impl Session {
     /// turn task and returns a [`TurnHandle`]; the task emits `TurnEvent`s and
     /// finishes with `Done` (or `Failed`).
     pub fn run_turn(&self, prompt: String, images: Vec<ContentPart>) -> TurnHandle {
+        let input = self.model.input_message_with_images(prompt.clone(), images);
+        self.run_turn_input(prompt, input)
+    }
+
+    /// Run a turn with a host-constructed input. Automatic wakeups use this to
+    /// attach provenance metadata without letting display text forge it.
+    pub fn run_turn_input(&self, prompt: String, input: InputMessage) -> TurnHandle {
         let handles = self.handles.clone();
-        let model = self.model.clone();
         let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
         let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
 
@@ -185,7 +192,6 @@ impl Session {
                 Err(_) => 0,
             };
 
-            let input = model.input_message_with_images(prompt.clone(), images);
             let turn_handles = handles.clone();
             let mut turn =
                 tokio::spawn(

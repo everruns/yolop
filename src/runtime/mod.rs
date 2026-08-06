@@ -2871,13 +2871,14 @@ pub async fn build_with_options(
     // Install the local platform seam. Host-session messages are queued onto
     // `background_wake`; child sub-agent messages run synchronously through the
     // in-process runtime once it has been built below.
-    let (background_wake_tx, background_wake_rx) = mpsc::unbounded_channel::<String>();
+    let (background_wake_tx, background_wake_rx) = mpsc::unbounded_channel();
     let runtime_cell = Arc::new(std::sync::OnceLock::new());
     let wake_runner = Arc::new(crate::runtime::background_wake::WakeRunner::new(
         session_id,
         background_wake_tx,
         runtime_cell.clone(),
         local_backends.runtime_backends.session_store.clone(),
+        Some(task_registry.clone()),
     ));
     let schedule_runner = local_backends
         .start_schedule_runner(wake_runner.clone())

@@ -243,6 +243,7 @@ struct Session {
     /// Settings source, read for the `proactive_wake` opt-out and the
     /// approval-level ↔ session-mode mapping.
     settings: Arc<SettingsStore>,
+    goal_store: Arc<crate::session_state::goal::GoalStore>,
     /// Last approval level reported to the client as the current session mode.
     /// Compared after each turn so a level changed out of band (the
     /// `set_approval_mode` tool, `/setup approval`) surfaces as a
@@ -625,6 +626,7 @@ fn register_session<F: RuntimeFactory>(
         cancel: StdMutex::new(None),
         last_mode: StdMutex::new(built.settings.snapshot().approval_mode()),
         settings: built.settings,
+        goal_store: built.goal_store,
         _schedule_runner: built.schedule_runner,
         turn_lock: tokio::sync::Mutex::new(()),
     });
@@ -675,7 +677,11 @@ fn spawn_background_wake_drain(
             let _turn = session.turn_lock.lock().await;
             // Completions that accumulated while the foreground turn held the
             // lock are one observation point, not separate model obligations.
-            let message = coalesce_pending_wakes(message, &mut wake_rx);
+            let message = coalesce_pending_wakes(message, &mut wake_rx).with_active_goal(
+                session
+                    .goal_store
+                    .active_condition(session.handles.session_id),
+            );
             if !session.settings.snapshot().proactive_wake_enabled() {
                 peer.session_update(
                     &session.acp_id,
@@ -692,7 +698,7 @@ fn spawn_background_wake_drain(
                 )),
             );
             let prompt = frame_wake_prompt(&message);
-            let input = session.model.input_message(prompt.clone());
+            let input = crate::runtime::background_wake::input_for_wake(&message);
             run_prompt(peer.clone(), session.clone(), prompt, input).await;
         }
     })
