@@ -165,11 +165,17 @@ describes which event ranges form the active branch.
 
 On a new turn, Yolop:
 
-1. creates and flushes the checkpoint;
-2. records its parent as the current conversation head;
-3. runs the turn and appends events normally;
-4. records the turn's final sequence and status;
-5. advances the active head.
+1. validates the requested model when its provider exposes model discovery;
+2. creates and flushes the checkpoint;
+3. records its parent as the current conversation head;
+4. runs the turn and appends events normally;
+5. records the turn's final sequence and status;
+6. advances the active head.
+
+A failed model preflight does not create a checkpoint or append the ask. Once a
+provider request begins, everruns-runtime owns bounded transient recovery inside
+the active reason phase. Retries reuse the persisted ask and completed tool
+outputs; they never create another checkpoint or re-run a completed tool.
 
 On resume, Yolop validates the timeline, walks parents from the active head, and
 replays only those event ranges into the event bus, message store, and transcript.

@@ -57,9 +57,12 @@ key is still read (and accepted as an alias) so pre-rename settings files keep
 working. `default_model` is applied as a cross-provider fallback in
 `ProviderChoice::resolve_for_settings`, but only when the model id is
 recognized for the active provider. At startup and on `/setup provider`
-switches, yolop may also query the provider's models API (when credentials
-exist) and fall back with a warning if the resolved model is no longer offered.
-Per-provider `models.<provider>` picks are always trusted.
+switches, yolop may also query the provider's models API when credentials
+exist. Before a turn is checkpointed or sent, Yolop validates the selected model
+once per process against that API when it is available. Unavailable models fail
+without persisting the ask, so the user can select an advertised model and
+submit the same turn. Providers without discovery support (including custom
+compatible endpoints) continue without preflight.
 
 ### Named execution profiles
 

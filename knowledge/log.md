@@ -3,6 +3,15 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-05 — Bounded provider-turn recovery
+
+- Provider stalls, transport failures, overload, and retryable server failures
+  recover inside the active everruns reason phase under shared attempt and time
+  budgets, preserving completed tool outputs and checkpoint identity.
+- Yolop serializes single-use Codex token rotation across driver instances and
+  rejects models absent from an available provider catalog before persisting the
+  ask.
+
 ## 2026-08-05 — Cumulative-cost context checkpoints
 
 - [Checkpointing](specs/checkpointing.md) now defines cumulative uncached input
@@ -13,7 +22,6 @@ wording, formatting, and link fixes do not need entries.
 - Active turns now admit already-persisted event boundaries for durable context
   checkpoints while rejecting future boundaries, so proactive replacement can
   install before the turn closes without weakening rewind lineage.
-
 ## 2026-08-05 — Default bounded task completion
 
 - [User ask](specs/user-ask.md) is now the default host completion safety net
