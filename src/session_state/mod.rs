@@ -6,4 +6,5 @@
 pub mod atif;
 pub mod checkpoint;
 pub mod goal;
+pub mod task_completion;
 pub mod user_ask;

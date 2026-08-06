@@ -3,6 +3,14 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-05 — Default bounded task completion
+
+- [User ask](specs/user-ask.md) is now the default host completion safety net
+  across TUI, `--print`, and ACP. Cheap deterministic evidence closes trivial,
+  failed, blocked, and background-waiting turns; only ambiguous tool-using
+  candidate finals pay for semantic evaluation. In-progress work continues from
+  compact state inside six-turn, 64k-token, and ten-minute budgets.
+
 ## 2026-08-05 — Compact background completion handoffs
 
 - Automatic background-completion turns now replace the provider-visible parent

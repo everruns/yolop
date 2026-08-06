@@ -62,6 +62,8 @@ pub(crate) struct TaskHandoff {
 pub(crate) struct WakeHandoff {
     pub version: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_ask: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_goal: Option<String>,
     pub tasks: Vec<TaskHandoff>,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -91,6 +93,13 @@ impl WakeMessage {
         }
         self
     }
+
+    pub(crate) fn with_active_ask(mut self, ask: Option<String>) -> Self {
+        if let Some(handoff) = self.handoff.as_mut() {
+            handoff.active_ask = ask.map(|value| truncate_field(&value));
+        }
+        self
+    }
 }
 
 /// Drain the completions already queued for one idle host into one model turn.
@@ -117,6 +126,7 @@ pub(crate) fn coalesce_pending_wakes(
     let mut task_bytes = 0usize;
     let mut omitted_tasks = 0usize;
     let mut compact = true;
+    let mut active_ask = None;
     let mut active_goal = None;
     for (index, item) in messages.into_iter().enumerate() {
         let section = format!("\n\n--- task {} ---\n{}", index + 1, item.raw);
@@ -127,6 +137,7 @@ pub(crate) fn coalesce_pending_wakes(
         }
         match item.handoff {
             Some(handoff) => {
+                active_ask = active_ask.or(handoff.active_ask);
                 active_goal = active_goal.or(handoff.active_goal);
                 omitted_tasks = omitted_tasks.saturating_add(handoff.omitted_tasks);
                 for task in handoff.tasks {
@@ -151,6 +162,7 @@ pub(crate) fn coalesce_pending_wakes(
         raw,
         handoff: compact.then_some(WakeHandoff {
             version: 1,
+            active_ask,
             active_goal,
             tasks,
             omitted_tasks,
@@ -265,6 +277,7 @@ impl WakeRunner {
             raw: truncate_bytes(content, MAX_WAKE_BATCH_BYTES),
             handoff: task.and_then(task_handoff).map(|task| WakeHandoff {
                 version: 1,
+                active_ask: None,
                 active_goal,
                 tasks: vec![task],
                 omitted_tasks: 0,
@@ -740,6 +753,7 @@ mod tests {
             raw: "completion".to_string(),
             handoff: Some(WakeHandoff {
                 version: 1,
+                active_ask: None,
                 active_goal: None,
                 tasks: vec![task],
                 omitted_tasks: 0,

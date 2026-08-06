@@ -43,6 +43,8 @@ use crate::config::{ApprovalMode, SettingsStore};
 use crate::exec::worktree::WorktreeManager;
 use crate::runtime::background_wake::{WakeReceiver, coalesce_pending_wakes, frame_wake_prompt};
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
+use crate::session_state::task_completion::{CompletionBudget, GateDecision};
+use crate::session_state::user_ask::{AskOutcome, UserAskStore};
 
 use super::bridge::{Translator, tool_kind};
 use super::modes;
@@ -251,6 +253,10 @@ struct Session {
     last_mode: StdMutex<ApprovalMode>,
     /// Retained for the ACP session lifetime so due local schedules keep polling.
     _schedule_runner: everruns_local::LocalScheduleRunnerHandle,
+    user_ask_store: Arc<UserAskStore>,
+    user_ask_enabled: bool,
+    task_registry: Arc<dyn everruns_core::session_task::SessionTaskRegistry>,
+    completion_budget: StdMutex<CompletionBudget>,
     /// Serializes turns for this session. Both a client prompt and a background
     /// wake turn take it, so two `run_turn`s never overlap.
     turn_lock: tokio::sync::Mutex<()>,
@@ -617,6 +623,9 @@ fn register_session<F: RuntimeFactory>(
 ) -> String {
     let acp_id = built.handles.session_id.to_string();
     let commands = built.startup.capability_commands.clone();
+    let user_ask_store = built.user_ask_store.clone();
+    let user_ask_enabled = built.user_ask_enabled;
+    let task_registry = built.task_registry.clone();
     let session = Arc::new(Session {
         acp_id: acp_id.clone(),
         handles: built.handles,
@@ -628,6 +637,10 @@ fn register_session<F: RuntimeFactory>(
         settings: built.settings,
         goal_store: built.goal_store,
         _schedule_runner: built.schedule_runner,
+        user_ask_store,
+        user_ask_enabled,
+        task_registry,
+        completion_budget: StdMutex::new(CompletionBudget::default()),
         turn_lock: tokio::sync::Mutex::new(()),
     });
     server
@@ -677,11 +690,17 @@ fn spawn_background_wake_drain(
             let _turn = session.turn_lock.lock().await;
             // Completions that accumulated while the foreground turn held the
             // lock are one observation point, not separate model obligations.
-            let message = coalesce_pending_wakes(message, &mut wake_rx).with_active_goal(
-                session
-                    .goal_store
-                    .active_condition(session.handles.session_id),
-            );
+            let message = coalesce_pending_wakes(message, &mut wake_rx)
+                .with_active_goal(
+                    session
+                        .goal_store
+                        .active_condition(session.handles.session_id),
+                )
+                .with_active_ask(
+                    session
+                        .user_ask_store
+                        .active_text(session.handles.session_id),
+                );
             if !session.settings.snapshot().proactive_wake_enabled() {
                 peer.session_update(
                     &session.acp_id,
@@ -817,7 +836,17 @@ async fn handle_prompt<F: RuntimeFactory>(
     // reuse it under its own guard.
     let _turn = session.turn_lock.lock().await;
     let mode_peer = peer.clone();
-    let stop_reason = match parse_command_prompt(&prompt) {
+    let parsed_command = parse_command_prompt(&prompt);
+    if parsed_command.is_none() && session.user_ask_enabled {
+        if let Err(err) = session
+            .user_ask_store
+            .record_user_prompt(session.handles.session_id, &prompt)
+        {
+            tracing::warn!(%err, "acp: record user ask failed");
+        }
+        session.completion_budget.lock().unwrap().reset();
+    }
+    let stop_reason = match parsed_command {
         Some(command) => run_slash_command(peer, session.clone(), command).await,
         None => run_prompt(peer, session.clone(), prompt, input).await,
     };
@@ -1155,9 +1184,47 @@ fn prompt_image_parts(blocks: &[protocol::ContentBlock]) -> Vec<ContentPart> {
 async fn run_prompt(
     peer: Arc<Peer>,
     session: Arc<Session>,
+    mut prompt: String,
+    mut input: InputMessage,
+) -> StopReason {
+    loop {
+        let (stop, result) = run_prompt_once(peer.clone(), session.clone(), prompt, input).await;
+        if stop == StopReason::Cancelled {
+            return stop;
+        }
+        let Some(result) = result else {
+            if session.user_ask_enabled
+                && session.user_ask_store.is_active(session.handles.session_id)
+            {
+                let evaluation = crate::session_state::task_completion::evaluation_for_state(
+                    crate::session_state::task_completion::CompletionState::Failed,
+                );
+                let _ = session
+                    .user_ask_store
+                    .record_evaluation(session.handles.session_id, &evaluation);
+                peer.session_update(
+                    &session.acp_id,
+                    SessionUpdate::AgentMessageChunk(protocol::text_chunk("task failed")),
+                );
+            }
+            return stop;
+        };
+        let Some(next) = completion_followup(&peer, &session, &result).await else {
+            return stop;
+        };
+        prompt = next;
+        input = crate::session_state::task_completion::tag_continuation(
+            session.model.input_message(prompt.clone()),
+        );
+    }
+}
+
+async fn run_prompt_once(
+    peer: Arc<Peer>,
+    session: Arc<Session>,
     prompt: String,
     input: InputMessage,
-) -> StopReason {
+) -> (StopReason, Option<everruns_runtime::TurnResult>) {
     let handles = session.handles.clone();
     let session_id = handles.session_id;
     let acp_id = session.acp_id.clone();
@@ -1219,7 +1286,7 @@ async fn run_prompt(
         // remaining events are ignored.
         turn.abort();
         handles.report_herdr_state(crate::capabilities::herdr::HerdrState::Idle);
-        return StopReason::Cancelled;
+        return (StopReason::Cancelled, None);
     }
 
     let outcome = turn.await;
@@ -1230,9 +1297,9 @@ async fn run_prompt(
         );
     }
     match outcome {
-        Ok(Ok(result)) if result.success => StopReason::EndTurn,
+        Ok(Ok(result)) if result.success => (StopReason::EndTurn, Some(result)),
         Ok(Ok(result)) => {
-            if let Some(error) = result.error {
+            if let Some(error) = &result.error {
                 peer.session_update(
                     &acp_id,
                     SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
@@ -1240,7 +1307,7 @@ async fn run_prompt(
                     ))),
                 );
             }
-            StopReason::EndTurn
+            (StopReason::EndTurn, Some(result))
         }
         Ok(Err(err)) => {
             peer.session_update(
@@ -1249,9 +1316,111 @@ async fn run_prompt(
                     "turn failed: {err}"
                 ))),
             );
-            StopReason::EndTurn
+            (StopReason::EndTurn, None)
         }
-        Err(_) => StopReason::Cancelled,
+        Err(_) => (StopReason::Cancelled, None),
+    }
+}
+
+async fn completion_followup(
+    peer: &Arc<Peer>,
+    session: &Arc<Session>,
+    result: &everruns_runtime::TurnResult,
+) -> Option<String> {
+    let session_id = session.handles.session_id;
+    if !session.user_ask_enabled || !session.user_ask_store.is_active(session_id) {
+        return None;
+    }
+    let tokens = session.handles.turn_tokens(result.turn_id).await;
+    if !session
+        .completion_budget
+        .lock()
+        .unwrap()
+        .observe_turn(tokens)
+    {
+        peer.session_update(
+            &session.acp_id,
+            SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                "user ask budget exhausted; send another prompt to resume",
+            )),
+        );
+        return None;
+    }
+    let has_background = session
+        .task_registry
+        .list(session_id, None)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .any(|task| !task.state.is_terminal());
+
+    let evaluation = match crate::session_state::task_completion::gate_turn(result, has_background)
+    {
+        GateDecision::Evaluate => {
+            let command = session
+                .handles
+                .runtime
+                .execute_command(
+                    session_id,
+                    ExecuteCommandRequest {
+                        name: "ask".to_string(),
+                        arguments: Some(
+                            crate::session_state::user_ask::USER_ASK_EVALUATE_ARG.to_string(),
+                        ),
+                        controls: None,
+                    },
+                )
+                .await
+                .ok()?;
+            if !command.success {
+                return None;
+            }
+            crate::session_state::user_ask::parse_evaluation_response(&command.message).ok()?
+        }
+        GateDecision::Conclusive(state) => {
+            let evaluation = crate::session_state::task_completion::evaluation_for_state(state);
+            if session
+                .user_ask_store
+                .record_evaluation(session_id, &evaluation)
+                .is_err()
+            {
+                return None;
+            }
+            evaluation
+        }
+    };
+
+    match evaluation.outcome {
+        AskOutcome::InProgress => Some(crate::session_state::task_completion::continuation_prompt(
+            &evaluation.reason,
+        )),
+        AskOutcome::Blocked => {
+            session
+                .handles
+                .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
+            peer.session_update(
+                &session.acp_id,
+                SessionUpdate::AgentMessageChunk(protocol::text_chunk("task blocked")),
+            );
+            None
+        }
+        AskOutcome::Failed => {
+            peer.session_update(
+                &session.acp_id,
+                SessionUpdate::AgentMessageChunk(protocol::text_chunk("task failed")),
+            );
+            None
+        }
+        AskOutcome::WaitingOnBackground => {
+            peer.session_update(
+                &session.acp_id,
+                SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                    "task waiting on background",
+                )),
+            );
+            None
+        }
+        AskOutcome::Achieved => None,
     }
 }
 

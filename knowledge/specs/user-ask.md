@@ -6,8 +6,7 @@ description: Defines the user ask — request tracking and turn-end validation c
 
 # User ask — request tracking and turn-end validation
 
-Status: implemented in yolop (`yolop_user_ask` capability). **Disabled by default** —
-enable via `[[capabilities]]` in `settings.toml` or `set_config key=capabilities`.
+Status: implemented in yolop (`yolop_user_ask` capability) and enabled by default.
 
 ## Why
 
@@ -16,16 +15,15 @@ over several turns. The agent needs a durable record of the current request,
 independent of `/goal` completion loops, so it can stay aligned and the host can
 judge whether the latest turn actually addressed what was asked.
 
-`/goal` is for autonomous multi-turn work toward a verifiable end state with
-auto-continuation. User ask is lighter: one tracked request per session, revision
-history when the user pivots, and a post-turn evaluator that reports achieved,
-blocked, or in progress — without starting another turn automatically.
+`/goal` remains the explicit user-authored completion condition. User ask is the
+default safety net: one tracked request per session, revision history on pivots,
+and selective bounded continuation when a turn stops without finishing.
 
 ## Behavior
 
 | Surface | Effect |
 | --- | --- |
-| User message (TUI / `--print`) | Host records the message as the active user ask (superseding the previous ask in revision history). |
+| User message (TUI / `--print` / ACP) | Host records the message as the active user ask (superseding the previous ask in revision history). |
 | `set_user_ask` tool | Agent records or replaces the tracked ask (for refinement or when the user pivots in conversation). |
 | `clear_user_ask` tool | Clears the tracked ask when the user abandons the request. |
 | `/ask <text>` | Set or replace the tracked ask manually. |
@@ -33,61 +31,69 @@ blocked, or in progress — without starting another turn automatically.
 | `/ask clear` | Clear the tracked ask (`stop`, `off`, `reset`, `none`, `cancel` are aliases). |
 | `/clear` | Also clears the tracked user ask (new conversation). |
 
-After each agent turn while a user ask is active:
+After each agent turn while a user ask is active, every host applies the same
+cheap deterministic gate. A successful no-tool final is achieved without an
+evaluator call. Tool/commentary activity with no final is in progress and
+continues automatically. Active detached work is waiting-on-background and does
+not consume turns; its wake continues the same actual ask. Provider errors,
+refusals, and cancellation become failed or blocked and never retry blindly.
 
-1. The host calls an internal evaluator through `CommandHost::completion` — no
-   tools, nothing extra persisted beyond the evaluation result.
-2. The evaluator returns JSON
-   `{"outcome": "achieved"|"blocked"|"in_progress", "reason": "..."}` judged only
-   from the conversation transcript.
-3. The host surfaces the result as a system message (`user ask achieved`, `user ask
-   blocked`, or `user ask in progress`).
-4. Achieved and blocked outcomes deactivate the ask; a new user message starts a
-   fresh ask. In-progress keeps the ask active for the next turn.
+A tool-using turn that produced a candidate final is semantically ambiguous, so
+only then the host calls the tool-less evaluator through `CommandHost::completion`.
+It returns `achieved`, `blocked`, `failed`, `waiting_on_background`, or
+`in_progress`. In-progress work continues from a compact automatic prompt.
 
-Unlike `/goal`, there is no auto-continuation loop.
+Automatic work is capped per user ask at six agent turns, 64,000 provider-reported
+tokens, and ten minutes. Exhaustion leaves the ask active for an explicit user
+resume. A fresh user message resets the budget; automatic wakes do not. Achieved,
+blocked, and failed deactivate the ask. Waiting remains active for its wake.
 
-## Enabling
+## Configuration
 
-Off the default harness. Opt in with:
+The capability is on by default. It can be removed from the harness with:
 
 ```toml
 [[capabilities]]
 ref = "yolop_user_ask"
+enabled = false
 ```
 
-Or conversationally via `set_config key=capabilities json={"ref":"yolop_user_ask"}`.
-Takes effect on the next run.
+The ordinary capability override path takes effect on the next run.
 
 ## System prompt
 
-The capability contributes a `<capability id="yolop_user_ask">` block each turn
-with the current ask, optional revision history, and last evaluation. It instructs
-the model to call `set_user_ask` when the user changes direction.
+An inactive tracker contributes no system-prompt text. While active, it contributes
+only the current compact ask and last evaluation; revision history stays available
+through `/ask` instead of bloating each prompt. Tool schemas remain discoverable
+through the ordinary tool-search path.
 
 ## Hosts
 
 | Host | Support |
 | --- | --- |
-| Interactive TUI | Records user prompts, end-of-turn evaluation, `? ask (N)` status indicator. |
-| `--print` | Records the prompt, evaluates after the turn. |
-| ACP | Tools and `/ask` are listed; end-of-turn evaluation requires the TUI/print host today. |
+| Interactive TUI | Streams each bounded continuation, surfaces state, and shows `? ask (N)`. |
+| `--print` | Runs bounded continuations synchronously; waiting work remains one-shot and requires resume/wake in a live host. |
+| ACP | Streams the same continuation loop; prompt resolves only at a terminal/waiting/budget state. |
 
 ## Persistence
 
 Active asks are stored in `<session_dir>/user_ask.json` so a resumed session
-(`--session`) restores the ask. Evaluated-turn counters reset on resume.
+(`--session`) restores the actual ask and pivot history. Host continuation budgets
+restart on process resume.
 
 ## Independence from `/goal`
 
 - Separate store, capability id, tools, and evaluator.
 - Either capability can be disabled in `[[capabilities]]` without affecting the other.
-- `/goal` may auto-continue turns; user ask only records and evaluates.
+- `/goal` uses the user's explicit completion condition; default continuation uses
+  the latest conversational ask and a smaller fixed budget.
 
 ## Ownership
 
 - `UserAskCapability` and `UserAskStore` live in yolop (`src/capabilities/user_ask.rs`,
   `src/session_state/user_ask.rs`).
+- The shared deterministic gate and budgets live in
+  `src/session_state/task_completion.rs`; hosts own only streaming/projection.
 - Evaluator calls use upstream `CommandHost::completion` (everruns-core).
 
 ## Related

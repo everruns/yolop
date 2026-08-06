@@ -171,6 +171,9 @@ Yolop installs a platform store to close that gap (`crate::background_wake`):
   remain durable and queryable through `query_history`, task tools, and session
   file reads. If task resolution, summary validation, or handoff decoding fails,
   the provider view falls back to ordinary full history rather than guessing.
+- Automatic prompts never replace the tracked user ask or reset its completion
+  budget. A tool-using turn with active detached work is classified
+  waiting-on-background; the eventual wake resumes that same ask.
 - Both coalesce completions already queued at the same idle boundary into one
   automatic prompt in notification order. All resolved task snapshots share
   one bounded handoff; a mixed or unusually large burst falls back safely and

@@ -65,6 +65,10 @@ impl Session {
         self.handles.report_herdr_state(state);
     }
 
+    pub(crate) async fn turn_tokens(&self, turn_id: everruns_core::typed_id::TurnId) -> u64 {
+        self.handles.turn_tokens(turn_id).await
+    }
+
     /// Re-read the merged MCP server config and swap it into the live session
     /// so add / remove / enable / disable apply on the next turn without a
     /// restart. Returns the sorted names now active. See
@@ -183,7 +187,7 @@ impl Session {
                 Ok(m) => m.len(),
                 Err(e) => {
                     let _ = tx.send(TurnEvent::Failed(format!("load history: {e}")));
-                    let _ = tx.send(TurnEvent::Done);
+                    let _ = tx.send(TurnEvent::Done(None));
                     return;
                 }
             };
@@ -263,7 +267,7 @@ impl Session {
                     author: Author::System,
                     text: "turn cancelled".into(),
                 }]));
-                let _ = tx.send(TurnEvent::Done);
+                let _ = tx.send(TurnEvent::Done(None));
                 return;
             }
 
@@ -291,7 +295,7 @@ impl Session {
                 Ok(result) => result,
                 Err(e) => {
                     let _ = tx.send(TurnEvent::Failed(format!("turn task: {e}")));
-                    let _ = tx.send(TurnEvent::Done);
+                    let _ = tx.send(TurnEvent::Done(None));
                     return;
                 }
             };
@@ -299,7 +303,7 @@ impl Session {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = tx.send(TurnEvent::Failed(format!("{e}")));
-                    let _ = tx.send(TurnEvent::Done);
+                    let _ = tx.send(TurnEvent::Done(None));
                     return;
                 }
             };
@@ -315,11 +319,11 @@ impl Session {
             if out.is_empty() && !response.response.is_empty() {
                 out.push(ChatLine {
                     author: Author::Assistant,
-                    text: response.response,
+                    text: response.response.clone(),
                 });
             }
             if !response.success
-                && let Some(err) = response.error
+                && let Some(err) = &response.error
             {
                 out.push(ChatLine {
                     author: Author::System,
@@ -327,7 +331,7 @@ impl Session {
                 });
             }
             let _ = tx.send(TurnEvent::Lines(out));
-            let _ = tx.send(TurnEvent::Done);
+            let _ = tx.send(TurnEvent::Done(Some(response)));
         });
 
         TurnHandle {
@@ -373,7 +377,7 @@ impl Session {
                     }]));
                 }
             }
-            let _ = tx.send(TurnEvent::Done);
+            let _ = tx.send(TurnEvent::Done(None));
         });
 
         TurnHandle {

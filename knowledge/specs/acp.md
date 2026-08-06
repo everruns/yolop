@@ -161,8 +161,10 @@ refresh any state-sensitive command UI.
 
 `session/prompt` resolves with:
 
-- `end_turn` — the turn completed (success, or a recoverable failure whose
-  error text is also streamed as an `agent_message_chunk`).
+- `end_turn` — the tracked user ask reached achieved, blocked, failed,
+  waiting-on-background, or the bounded continuation budget. In-progress turns
+  are continued and streamed before the original prompt resolves. Recoverable
+  failure text is streamed as an `agent_message_chunk`.
 - `cancelled` — a `session/cancel` arrived, or the turn task was dropped.
 
 The runtime does not expose token-limit or refusal outcomes distinctly, so

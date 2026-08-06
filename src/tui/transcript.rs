@@ -69,7 +69,7 @@ pub(crate) enum TurnEvent {
     /// Prompt tokens the latest LLM generation consumed — the current fill of
     /// the model's context window. Replaces (not accumulates) the prior value.
     ContextUsed(u32),
-    Done,
+    Done(Option<everruns_runtime::TurnResult>),
     Failed(String),
 }
 
