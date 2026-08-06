@@ -1581,7 +1581,7 @@ fn tui_browser_login_can_be_cancelled_after_browser_closes() {
 /// Drive the real TUI binary through the whole model-selection flow:
 /// `/setup` → quick-select a provider that is already connected (saved key)
 /// → the wizard jumps straight to the model picker → quick-select a preset
-/// model → the switch is announced and persisted to settings.toml.
+/// model → the switch is announced but remains unpersisted until a turn succeeds.
 #[test]
 fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
     let mut tui = spawn_tui_llmsim_with_settings(
@@ -1646,8 +1646,8 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
         "provider switch should persist: {settings}"
     );
     assert!(
-        settings.contains("openai = \"gpt-5.4 none\""),
-        "picked model should persist under [models]: {settings}"
+        !settings.contains("openai = \"gpt-5.4 none\""),
+        "picked model should not persist before a successful turn: {settings}"
     );
 
     tui.write_input(b"\x03\x03");
