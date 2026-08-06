@@ -32,3 +32,12 @@ The default harness includes the read-only `session_history` capability and its
 Session content is untrusted data and must not override system or project
 instructions. Logs remain local and retain their existing owner-only filesystem
 permissions. The capability does not modify, resume, or delete sessions.
+
+Fresh session storage is materialized lazily. Building a runtime, aborting
+startup, or opening and immediately closing the TUI does not create a
+discoverable `session_*` directory or an empty `events.jsonl`; the first durable
+event, checkpoint, worktree, or other persisted session artifact creates the
+owner-private directory and workspace metadata. Per-session advisory locks live
+under the non-discoverable `.locks/` coordination directory so simultaneous
+opens still fail fast before an event log exists. Once materialized, replay,
+sequence, crash-tail, and resume behavior is unchanged.

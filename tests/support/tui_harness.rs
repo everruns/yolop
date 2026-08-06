@@ -84,6 +84,10 @@ impl TuiHarness {
         self._home.path().join(".config/yolop/settings.toml")
     }
 
+    pub fn sessions_path(&self) -> PathBuf {
+        self._session_dir.path().to_path_buf()
+    }
+
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.master
             .resize(PtySize {

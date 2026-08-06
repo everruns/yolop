@@ -6,7 +6,9 @@
 //! user's branch, HEAD, or index.
 
 use crate::exec::worktree::WorktreeManager;
-use crate::runtime::session_log::{JsonlEventEmitter, messages_from_events, replay};
+use crate::runtime::session_log::{
+    JsonlEventEmitter, SessionMaterializer, messages_from_events, replay,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use everruns_core::events::Event;
@@ -191,6 +193,7 @@ pub struct CheckpointManager {
     timeline_path: PathBuf,
     worktree: Arc<WorktreeManager>,
     events: Arc<JsonlEventEmitter>,
+    materializer: Arc<SessionMaterializer>,
     messages: Arc<InMemoryMessageRetriever>,
     state: Mutex<TimelineState>,
     prepared: Mutex<Option<PreparedRestore>>,
@@ -238,13 +241,6 @@ impl CheckpointManager {
         let timeline_path = session_dir.join(TIMELINE_FILE);
         let mut state = load_timeline(&timeline_path)?;
         if !timeline_path.exists() {
-            append_record(
-                &timeline_path,
-                &TimelineRecord::Initialized {
-                    baseline_end: max_sequence,
-                    created_at: Utc::now(),
-                },
-            )?;
             state.baseline_end = max_sequence;
         } else if state.nodes.is_empty() && max_sequence > state.baseline_end {
             // Older/internal callers can write a turn through the raw runtime
@@ -263,6 +259,7 @@ impl CheckpointManager {
             log_path,
             timeline_path,
             worktree,
+            materializer: events.materializer(),
             events,
             messages,
             state: Mutex::new(state),
@@ -295,13 +292,21 @@ impl CheckpointManager {
     }
 
     pub fn begin_turn(&self, prompt: &str) -> Result<String> {
+        self.materializer.ensure()?;
         self.close_interrupted_turn()?;
         if let Some(prepared) = self.prepared.lock().expect("prepared restore lock").take() {
             self.delete_snapshot_ref(prepared.recovery_snapshot.as_ref());
         }
         let mut state = self.state.lock().expect("checkpoint state lock");
         let persisted_sequence = self.events.last_sequence();
-        if state.nodes.is_empty() && persisted_sequence > state.baseline_end {
+        if !self.timeline_path.exists() {
+            let record = TimelineRecord::Initialized {
+                baseline_end: state.baseline_end.max(persisted_sequence),
+                created_at: Utc::now(),
+            };
+            append_record(&self.timeline_path, &record)?;
+            apply_record(&mut state, record);
+        } else if state.nodes.is_empty() && persisted_sequence > state.baseline_end {
             let record = TimelineRecord::Initialized {
                 baseline_end: persisted_sequence,
                 created_at: Utc::now(),
@@ -1334,6 +1339,19 @@ mod tests {
         assert_eq!(texts, vec!["first prompt", "second prompt"]);
         assert!(manager.is_event_sequence_active(i64::from(second_sequence)));
         assert!(manager.prepare_redo(RestoreMode::Both).is_err());
+    }
+
+    #[tokio::test]
+    async fn first_checkpoint_persists_a_preexisting_event_baseline() {
+        let (_root, session, manager) = manager().await;
+        emit_user(&manager, "event before checkpointing").await;
+
+        manager.begin_turn("first checkpoint").expect("begin turn");
+
+        let state = load_timeline(&session.path().join(TIMELINE_FILE)).expect("load timeline");
+        assert_eq!(state.baseline_end, 1);
+        let active = manager.filter_active_events(manager.events.collected_events().await);
+        assert_eq!(active.len(), 1, "pre-checkpoint history must remain active");
     }
 
     #[tokio::test]
