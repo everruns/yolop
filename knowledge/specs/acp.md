@@ -172,10 +172,12 @@ The runtime does not expose token-limit or refusal outcomes distinctly, so
 
 ### Permissions
 
-The session mode (approval level) drives a hard gate. Before a tool runs, a
-native pre-tool hook (`src/capabilities/tool_approval.rs`) checks whether the
-current level requires approval for that tool, classified by the runtime's own
-`ToolHints`:
+The session mode (approval level) drives a hard gate. Before a tool runs, the
+upstream `everruns-core` tool-approval capability checks whether the current
+level requires approval for that tool, classified by the runtime's own
+`ToolHints`. Yolop's thin adapter supplies the live central setting on every
+call so `session/set_mode`, `/setup approval`, and `set_approval_mode` take
+effect without rebuilding the session:
 
 - `off` — never asks; tools run autonomously (unchanged behaviour).
 - `normal` — asks before `destructive` or `open_world` (outward-facing) tools.
@@ -281,5 +283,7 @@ same way.
   runtime's `ContentPart` has no audio variant, so there is no path to forward
   it to the model even if advertised. Embedded/linked **resource** context and
   image content are supported (see Prompt content); MCP-server pass-through too.
-- In-flight turn interruption beyond abandoning the task — the runtime has no
-  mid-turn cancellation hook yet.
+- Provider calls stop when their turn task is aborted. Active tools additionally
+  receive the runtime's cooperative `ToolContext` cancellation token; Yolop
+  awaits task teardown before returning ACP's `cancelled` stop reason so
+  detached child work observes cancellation before the client continues.

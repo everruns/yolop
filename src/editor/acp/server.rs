@@ -1281,10 +1281,11 @@ async fn run_prompt_once(
     drain_events(&peer, &handles, events_before, &mut translator, &acp_id).await;
 
     if cancelled {
-        // run_turn has no in-flight cancellation hook; abandon the task and
-        // report cancelled. The runtime may finish in the background but its
-        // remaining events are ignored.
+        // Dropping the runtime's active act future cancels its per-tool
+        // ToolContext token. Await teardown before replying so child work has
+        // observed cooperative cancellation when the client sees `cancelled`.
         turn.abort();
+        let _ = turn.await;
         handles.report_herdr_state(crate::capabilities::herdr::HerdrState::Idle);
         return (StopReason::Cancelled, None);
     }
