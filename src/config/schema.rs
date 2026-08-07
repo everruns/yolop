@@ -97,20 +97,6 @@ pub fn schema() -> &'static [ConfigField] {
             provider_scoped: false,
         },
         ConfigField {
-            key: "default_model",
-            aliases: &["model"],
-            title: "Default model",
-            description: "Global fallback model spec applied to the active provider when that \
-                          provider has no per-provider entry under `models`. Provider-relative, \
-                          same `model [reasoning-effort]` form `/setup model` accepts. A \
-                          per-provider `models.<provider>` pick always wins over this. Applied \
-                          only when the model id is recognized for the active provider.",
-            kind: ValueKind::Text,
-            default: Some("the active provider's built-in default model"),
-            examples: &["claude-sonnet-4-5", "gpt-5.5 high", "gemini-2.5-pro"],
-            provider_scoped: false,
-        },
-        ConfigField {
             key: "models",
             aliases: &["model_for"],
             title: "Per-provider model",
@@ -270,7 +256,6 @@ pub fn schema() -> &'static [ConfigField] {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeyTarget {
     DefaultProvider,
-    DefaultModel,
     Attribution,
     ApprovalMode,
     ApprovalPolicy,
@@ -298,7 +283,6 @@ impl KeyTarget {
     pub fn field(&self) -> &'static ConfigField {
         let key = match self {
             KeyTarget::DefaultProvider => "default_provider",
-            KeyTarget::DefaultModel => "default_model",
             KeyTarget::Attribution => "attribution",
             KeyTarget::ApprovalMode => "approval_mode",
             KeyTarget::ApprovalPolicy => "approval_policy",
@@ -354,7 +338,6 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
 
     match head {
         "default_provider" | "provider" => scalar(KeyTarget::DefaultProvider),
-        "default_model" | "model" => scalar(KeyTarget::DefaultModel),
         "attribution" => scalar(KeyTarget::Attribution),
         "approval_mode" | "approval" => scalar(KeyTarget::ApprovalMode),
         "approval_policy" | "sandbox_approval" => scalar(KeyTarget::ApprovalPolicy),
@@ -406,8 +389,6 @@ mod tests {
             parse_key("default_provider").unwrap(),
             KeyTarget::DefaultProvider
         );
-        assert_eq!(parse_key("model").unwrap(), KeyTarget::DefaultModel);
-        assert_eq!(parse_key("default_model").unwrap(), KeyTarget::DefaultModel);
         assert_eq!(parse_key("approval").unwrap(), KeyTarget::ApprovalMode);
         assert_eq!(parse_key("approval_mode").unwrap(), KeyTarget::ApprovalMode);
     }
@@ -431,7 +412,7 @@ mod tests {
     #[test]
     fn scalar_key_rejects_provider_segment() {
         assert!(parse_key("attribution.openai").is_err());
-        assert!(parse_key("default_model.openai").is_err());
+        assert!(parse_key("default_provider.openai").is_err());
     }
 
     #[test]
@@ -446,6 +427,7 @@ mod tests {
 
     #[test]
     fn unknown_key_lists_known_keys() {
+        assert!(parse_key("default_model").is_err());
         let err = parse_key("frobnicate").unwrap_err();
         assert!(err.contains("default_provider"));
         assert!(err.contains("tokens.<provider>"));
@@ -464,7 +446,6 @@ mod tests {
     fn every_target_maps_to_a_field() {
         for target in [
             KeyTarget::DefaultProvider,
-            KeyTarget::DefaultModel,
             KeyTarget::Attribution,
             KeyTarget::ApprovalMode,
             KeyTarget::Model("openai".into()),

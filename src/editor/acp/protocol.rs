@@ -7,10 +7,10 @@ pub use agent_client_protocol::schema::ProtocolVersion;
 #[cfg(test)]
 pub(crate) use agent_client_protocol::schema::v1::ImageContent;
 pub use agent_client_protocol::schema::v1::{
-    AgentCapabilities, AuthenticateRequest as AuthenticateParams,
+    AgentCapabilities, AuthMethod, AuthenticateRequest as AuthenticateParams,
     AuthenticateResponse as AuthenticateResult, AvailableCommand, AvailableCommandInput,
-    AvailableCommandsUpdate, CancelNotification, Content, ContentBlock, ContentChunk,
-    CurrentModeUpdate, EmbeddedResource, EmbeddedResourceResource,
+    AvailableCommandsUpdate, CancelNotification, ConfigOptionUpdate, Content, ContentBlock,
+    ContentChunk, CurrentModeUpdate, EmbeddedResource, EmbeddedResourceResource,
     InitializeRequest as InitializeParams, InitializeResponse as InitializeResult,
     LoadSessionRequest as LoadSessionParams, LoadSessionResponse as LoadSessionResult,
     McpCapabilities, McpServer, NewSessionRequest as NewSessionParams,

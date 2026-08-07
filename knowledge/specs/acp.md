@@ -35,7 +35,7 @@ ACP protocol version: **1** (integer).
 | Method | Direction | Behaviour |
 |--------|-----------|-----------|
 | `initialize` | client → agent | Negotiates protocol version and advertises agent capabilities. Echoes the client's version when supported, else advertises v1. |
-| `authenticate` | client → agent | No-op success: credentials come from the environment/settings the process already inherits, so `authMethods` is empty. |
+| `authenticate` | client → agent | Runs an advertised agent-handled login. Yolop currently advertises browser-based ChatGPT/Codex OAuth; API-key providers continue to use inherited environment variables or `/setup token`. |
 | `session/new` | client → agent | Builds a fresh runtime rooted at the client-supplied `cwd`; returns the everruns session id as the ACP `sessionId`. |
 | `session/load` | client → agent | Rehydrates an existing yolop JSONL session for the supplied `sessionId` and `cwd`, replays persisted conversation history as `session/update` notifications, and then returns success. |
 | `session/prompt` | client → agent | Runs one turn, or executes a recognised `/command`; streams `session/update`s, and resolves a `stopReason`. |
@@ -56,9 +56,26 @@ Yolop uses ACP's standard session configuration mechanism for model selection. `
 - a `model` select option in the standard `model` category;
 - a `reasoning_effort` select option in the standard `thought_level` category when the selected model supports reasoning levels.
 
-Clients change either option with `session/set_config_option`. Yolop validates the selected provider, model, and reasoning effort, applies the change only to that live ACP session, and returns the complete refreshed `configOptions` list. Refreshing the full list allows clients to update dependent reasoning choices after the model changes. Invalid option IDs and unsupported values return ACP `InvalidParams`.
+The model list contains only currently usable providers; a stale preference is
+never presented as a connected model. If the preferred provider is unusable,
+ACP starts with another usable provider and falls back to local `llmsim` when
+none is connected. Session creation therefore never fails only because a saved
+provider lost its credentials, while one-shot print mode remains fail-fast.
+
+Clients change either option with `session/set_config_option`. Yolop validates the selected provider, model, and reasoning effort, applies the change only to that live ACP session, and returns the complete refreshed `configOptions` list. After authentication or a `/setup` command changes provider connectivity or selection, Yolop also pushes ACP's standard `config_option_update` to every affected open session. Invalid option IDs and unsupported values return ACP `InvalidParams`.
 When the process was launched with `--profile`, that profile supplies the
 initial model before any live ACP selection.
+
+### Authentication
+
+`initialize.authMethods` advertises `codex_browser`, an agent-handled method
+that opens the ChatGPT OAuth flow and stores the resulting refreshable Codex
+credentials in Yolop settings. `authenticate` rejects unknown method ids. A
+successful login refreshes open sessions' model options, so clients can expose
+the newly connected Codex models without restarting the ACP process. Stable ACP
+does not define secure API-key entry; those providers remain connectable only
+through the agent process environment. Yolop rejects `/setup token` over ACP
+without echoing or persisting the supplied value.
 
 ### Prompt content
 

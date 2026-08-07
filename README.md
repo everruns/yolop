@@ -243,6 +243,14 @@ session, and sends turns; yolop streams back assistant text, reasoning, tool
 calls, and plans. Editors can also load an existing session with `session/load`,
 replaying the same persisted history used by CLI `--session`.
 
+ACP model pickers list only providers that are currently connected. A stale
+saved provider no longer prevents session creation: yolop starts with another
+usable provider (or local `llmsim`) and updates the picker live after `/setup`
+or authentication changes. Clients that support ACP authentication can launch
+Yolop's browser-based ChatGPT/Codex sign-in directly from the agent UI. API-key
+providers must receive their keys through the ACP process environment; Yolop
+does not accept secrets through ACP prompt text.
+
 To set up Zed:
 
 ```bash

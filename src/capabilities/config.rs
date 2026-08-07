@@ -24,9 +24,7 @@ use crate::config::capability_settings::{
 use crate::config::schema::{KeyTarget, ValueKind, known_keys, parse_key, schema};
 use crate::config::service::{ConfigService, current_value, scoped_current};
 use crate::config::{ApprovalMode, Settings, SettingsStore};
-use crate::runtime::{
-    ProviderChoice, SUPPORTED_PROVIDERS, coding_harness_defaults, resolve_for_settings,
-};
+use crate::runtime::{SUPPORTED_PROVIDERS, coding_harness_defaults, resolve_for_settings};
 use async_trait::async_trait;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::ToolNarrationPhase;
@@ -182,7 +180,7 @@ impl Tool for GetConfigTool {
             "properties": {
                 "key": {
                     "type": "string",
-                    "description": "Optional single key to describe, e.g. `default_model` or `models.anthropic`."
+                    "description": "Optional single key to describe, e.g. `default_provider` or `models.anthropic`."
                 }
             },
             "additionalProperties": false
@@ -305,7 +303,6 @@ fn is_profileable_target(target: &KeyTarget) -> bool {
     matches!(
         target,
         KeyTarget::DefaultProvider
-            | KeyTarget::DefaultModel
             | KeyTarget::ApprovalMode
             | KeyTarget::ApprovalPolicy
             | KeyTarget::Worktrees
@@ -508,23 +505,6 @@ impl SetConfigTool {
                     .unwrap_or_else(|err| format!("→ next run: could not resolve model: {err}"));
                 Ok(saved(format!(
                     "default_provider = {provider}; applies on the next run (use /setup to switch now)\n{preview}"
-                )))
-            }
-            KeyTarget::DefaultModel => {
-                if clearing {
-                    self.settings.set_default_model(None).map_err(map_err)?;
-                    return Ok(saved("cleared default_model".to_string()));
-                }
-                self.settings
-                    .set_default_model(Some(value.to_string()))
-                    .map_err(map_err)?;
-                let preview_provider =
-                    ProviderChoice::preview_provider_name(&self.settings.snapshot());
-                let preview = resolve_for_settings(&preview_provider, &self.settings.snapshot())
-                    .map(|resolved| resolved.next_run_preview())
-                    .unwrap_or_else(|err| format!("→ next run: could not resolve model: {err}"));
-                Ok(saved(format!(
-                    "default_model = {value}; applies on the next run (use /setup to switch now)\n{preview}"
                 )))
             }
             KeyTarget::Attribution => {
@@ -777,7 +757,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_config_persists_default_provider_and_model() {
+    async fn set_config_persists_default_provider_and_per_provider_model() {
         let (_tmp, settings) = store();
         let tool = set_config_tool(settings.clone());
 
@@ -797,33 +777,12 @@ mod tests {
             Some("anthropic")
         );
 
-        // Alias `model` routes to default_model.
-        tool.execute(json!({ "key": "model", "value": "claude-opus-4-5" }))
+        tool.execute(json!({ "key": "models.anthropic", "value": "claude-opus-4-5" }))
             .await;
-        assert_eq!(settings.snapshot().default_model(), Some("claude-opus-4-5"));
-    }
-
-    #[tokio::test]
-    async fn set_config_warns_when_default_model_mismatches_provider() {
-        let (_tmp, settings) = store();
-        settings
-            .set_default_model(Some("gpt-5.5".to_string()))
-            .expect("seed default_model");
-        let tool = set_config_tool(settings.clone());
-
-        let r = tool
-            .execute(json!({ "key": "default_provider", "value": "anthropic" }))
-            .await;
-        match &r {
-            ToolExecutionResult::Success(msg) => {
-                let text = msg.to_string();
-                assert!(
-                    text.contains("default_model") && text.contains("ignored"),
-                    "{text}"
-                );
-            }
-            other => panic!("expected success, got {other:?}"),
-        }
+        assert_eq!(
+            settings.snapshot().model_for("anthropic"),
+            Some("claude-opus-4-5")
+        );
     }
 
     #[tokio::test]

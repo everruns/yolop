@@ -40,7 +40,6 @@ Keys are addressed the way a human would name them:
 | Key                       | Type   | Meaning                                                        |
 |---------------------------|--------|----------------------------------------------------------------|
 | `default_provider`        | text   | Provider used when no `--provider` flag is given; takes precedence over env auto-detection. |
-| `default_model`           | text   | Global fallback model spec for the active provider when no per-provider pick exists; only applied when the id is recognized for that provider. |
 | `models.<provider>`       | text   | Per-provider model spec, survives provider switches.           |
 | `tokens.<provider>`       | secret | Provider API token (owner-only on disk; env vars override).    |
 | `base_urls.<provider>`    | text   | Endpoint base URL (used by the `custom` provider).             |
@@ -54,9 +53,8 @@ Keys are addressed the way a human would name them:
 
 `default_provider` is persisted under that name on disk; the legacy `provider`
 key is still read (and accepted as an alias) so pre-rename settings files keep
-working. `default_model` is applied as a cross-provider fallback in
-`ProviderChoice::resolve_for_settings`, but only when the model id is
-recognized for the active provider. At startup and on `/setup provider`
+working. Model preferences are provider-scoped; a disconnected provider's
+preference is never treated as a usable active model. At startup and on `/setup provider`
 switches, yolop may also query the provider's models API when credentials
 exist. Before a turn is checkpointed or sent, Yolop validates the selected model
 once per process against that API when it is available. Unavailable models fail
@@ -80,7 +78,7 @@ precedence where read (credentials and `CUSTOM_BASE_URL`). ACP's standard
 `session/set_config_option` model and reasoning changes remain local to that ACP
 session.
 
-The profileable v1 keys are `default_provider`, `default_model`, `models`,
+The profileable v1 keys are `default_provider`, `models`,
 `base_urls`, `approval_mode`, `approval_policy`, `sandbox_mode`, and
 `worktrees`. Credentials (`tokens`, `codex_auth`) and structural or personal
 settings (`mcp`, `capabilities`, `theme`, `attribution`, `proactive_wake`) are

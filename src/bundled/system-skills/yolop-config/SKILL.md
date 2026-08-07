@@ -36,7 +36,7 @@ Call `set_config` with a `key` and a `value` for scalar settings:
 
 - `set_config key=default_provider value=anthropic` — the default provider when
   neither `--provider` nor an env credential forces a choice.
-- `set_config key=default_model value="claude-sonnet-4-5"` — global fallback
+- `set_config key=models.anthropic value="claude-sonnet-4-5"` — provider preference
   model for the active provider. A per-provider pick wins over it.
 - `set_config key=models.openai value="gpt-5.5 high"` — remember a model for one
   provider (survives provider switches). The spec is `model [reasoning-effort]`.

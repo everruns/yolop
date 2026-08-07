@@ -7,7 +7,6 @@ use toml::{Table, Value};
 
 const PROFILEABLE_KEYS: &[&str] = &[
     "default_provider",
-    "default_model",
     "models",
     "base_urls",
     "approval_mode",
@@ -54,7 +53,6 @@ impl ProfileName {
 #[derive(Clone, Debug, Default)]
 pub struct SettingsOverlay {
     pub default_provider: Option<Option<String>>,
-    pub default_model: Option<Option<String>>,
     pub models: BTreeMap<String, Option<String>>,
     pub base_urls: BTreeMap<String, Option<String>>,
     pub approval_mode: Option<ApprovalMode>,
@@ -68,9 +66,6 @@ impl SettingsOverlay {
     pub fn apply_to(&self, settings: &mut Settings) {
         if let Some(provider) = &self.default_provider {
             settings.default_provider.clone_from(provider);
-        }
-        if let Some(model) = &self.default_model {
-            settings.default_model.clone_from(model);
         }
         apply_map(&mut settings.models, &self.models);
         apply_map(&mut settings.base_urls, &self.base_urls);
@@ -107,7 +102,6 @@ impl SettingsOverlay {
             .collect();
 
         let default_provider = optional_string(table, "default_provider")?.map(Some);
-        let default_model = optional_string(table, "default_model")?.map(Some);
         let models = optional_string_map(table, "models")?;
         let base_urls = optional_string_map(table, "base_urls")?;
         if let Some(Some(provider)) = &default_provider
@@ -154,7 +148,6 @@ impl SettingsOverlay {
         Ok((
             Self {
                 default_provider,
-                default_model,
                 models,
                 base_urls,
                 approval_mode,
@@ -170,7 +163,6 @@ impl SettingsOverlay {
     pub fn to_table(&self) -> Table {
         let mut table = self.unknown.clone();
         insert_optional_string(&mut table, "default_provider", &self.default_provider);
-        insert_optional_string(&mut table, "default_model", &self.default_model);
         insert_map(&mut table, "models", &self.models);
         insert_map(&mut table, "base_urls", &self.base_urls);
         if let Some(mode) = self.approval_mode {

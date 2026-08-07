@@ -1345,22 +1345,12 @@ impl ProviderChoice {
             Provider::Sim => Ok(Self::Sim),
         }
     }
-
-    /// Provider name used when previewing config changes before the next run.
-    pub fn preview_provider_name(settings: &Settings) -> String {
-        settings.default_provider.clone().unwrap_or_else(|| {
-            Self::from_env_or_settings(settings)
-                .provider_name()
-                .to_string()
-        })
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelResolutionSource {
     ProviderDefault,
     PerProviderModel,
-    DefaultModel,
     EnvOverride,
 }
 
@@ -1379,9 +1369,6 @@ impl ResolvedProviderChoice {
                 let provider = self.choice.provider_name();
                 format!("→ next run: {label} (from models.{provider})")
             }
-            ModelResolutionSource::DefaultModel => {
-                format!("→ next run: {label} (from default_model)")
-            }
             ModelResolutionSource::EnvOverride => {
                 format!("→ next run: {label} (EVERRUNS_CLI_MODEL env)")
             }
@@ -1398,55 +1385,10 @@ impl ResolvedProviderChoice {
     }
 }
 
-fn bare_model_id_from_spec(spec: &str) -> &str {
-    spec.split_whitespace().next().unwrap_or(spec)
-}
-
-fn driver_id_for_provider_name(provider: &str) -> Option<DriverId> {
-    Provider::from_name(provider).and_then(Provider::driver_id)
-}
-
-/// Whether a bare model id plausibly belongs to the given provider. Used to
-/// gate the cross-provider `default_model` fallback so an OpenAI pick is not
-/// silently applied after switching to Anthropic.
-pub fn model_compatible_with_provider(model_id: &str, provider: &str) -> bool {
-    match provider {
-        "openrouter" | "ollama" | "custom" => true,
-        "llmsim" => model_id == "llmsim-yolop",
-        "anthropic" | "openai" | "google" => {
-            let bare = model_id.strip_suffix("[1m]").unwrap_or(model_id);
-            if ProviderChoice::model_suggestions_for_provider(provider)
-                .iter()
-                .any(|s| bare_model_id_from_spec(s) == bare)
-            {
-                return true;
-            }
-            if let Some(driver) = driver_id_for_provider_name(provider)
-                && get_model_profile(&driver, bare).is_some()
-            {
-                return true;
-            }
-            match provider {
-                "anthropic" => bare.starts_with("claude-"),
-                "openai" => {
-                    bare.starts_with("gpt-")
-                        || bare.starts_with("o1")
-                        || bare.starts_with("o3")
-                        || bare.starts_with("o4")
-                        || bare.starts_with("codex")
-                }
-                "google" => bare.starts_with("gemini-"),
-                _ => false,
-            }
-        }
-        _ => false,
-    }
-}
-
 /// Resolve a provider plus its model from persisted settings.
 ///
-/// Priority: `EVERRUNS_CLI_MODEL` env → `models.<provider>` → compatible
-/// `default_model` → the provider's built-in default.
+/// Priority: `EVERRUNS_CLI_MODEL` env → `models.<provider>` → the provider's
+/// built-in default.
 pub fn resolve_for_settings(provider: &str, settings: &Settings) -> Result<ResolvedProviderChoice> {
     let base = ProviderChoice::default_for_provider_name(provider)?;
     let base_label = base.label();
@@ -1472,35 +1414,6 @@ pub fn resolve_for_settings(provider: &str, settings: &Settings) -> Result<Resol
                 source: ModelResolutionSource::ProviderDefault,
                 notes: vec![format!(
                     "ignored models.{provider_name} \"{spec}\": {err}; using {base_label}"
-                )],
-            }),
-        };
-    }
-
-    if let Some(spec) = settings.default_model() {
-        let model_id = bare_model_id_from_spec(spec);
-        if !model_compatible_with_provider(model_id, provider_name) {
-            return Ok(ResolvedProviderChoice {
-                choice: base,
-                source: ModelResolutionSource::ProviderDefault,
-                notes: vec![format!(
-                    "default_model \"{spec}\" ignored for {provider_name} (not a recognized \
-                     {provider_name} model); using {base_label}"
-                )],
-            });
-        }
-        return match base.resolve_model_spec(spec) {
-            Ok(choice) => Ok(ResolvedProviderChoice {
-                choice,
-                source: ModelResolutionSource::DefaultModel,
-                notes: vec![],
-            }),
-            Err(err) => Ok(ResolvedProviderChoice {
-                choice: base,
-                source: ModelResolutionSource::ProviderDefault,
-                notes: vec![format!(
-                    "default_model \"{spec}\" ignored for {provider_name}: {err}; using \
-                     {base_label}"
                 )],
             }),
         };
@@ -2598,7 +2511,7 @@ pub struct ModelState {
     /// banner label.
     provider: Arc<RwLock<ProviderChoice>>,
     provider_store: Arc<dyn RuntimeProviderStore>,
-    settings: Settings,
+    settings: Arc<SettingsStore>,
     driver_registry: DriverRegistry,
     validated_models: Arc<AsyncRwLock<HashSet<(String, String)>>>,
 }
@@ -2607,7 +2520,7 @@ impl ModelState {
     fn new(
         provider: Arc<RwLock<ProviderChoice>>,
         provider_store: Arc<dyn RuntimeProviderStore>,
-        settings: Settings,
+        settings: Arc<SettingsStore>,
         driver_registry: DriverRegistry,
     ) -> Self {
         Self {
@@ -2711,26 +2624,26 @@ impl ModelState {
             .ok_or_else(|| anyhow!("model selection must be `provider:model`"))?;
         let selected =
             ProviderChoice::default_for_provider_name(provider)?.resolve_model_spec(model)?;
-        let resolved = selected.model_with_provider(&self.settings)?;
+        let resolved = selected.model_with_provider(&self.settings.snapshot())?;
         self.provider_store.set_default_model(resolved).await?;
         *self.provider.write().expect("provider lock poisoned") = selected;
         Ok(())
     }
 
     pub(crate) fn model_options(&self) -> Vec<(String, String, String)> {
-        const PROVIDERS: &[&str] = &[
-            "openai",
-            "anthropic",
-            "google",
-            "openrouter",
-            "codex",
-            "ollama",
-            "llmsim",
-        ];
+        let settings = self.settings.snapshot();
         let current = self.provider.read().expect("provider lock poisoned");
-        let mut options = PROVIDERS
+        let mut options = SUPPORTED_PROVIDERS
             .iter()
-            .filter_map(|provider| ProviderChoice::default_for_provider_name(provider).ok())
+            .filter(|provider| {
+                crate::capabilities::model_discovery::provider_is_usable(&settings, provider)
+            })
+            .filter_map(|provider| {
+                resolve_for_settings(provider, &settings)
+                    .ok()
+                    .map(|resolved| resolved.choice)
+            })
+            .filter(|choice| !choice.model_id().trim().is_empty())
             .map(|choice| {
                 (
                     format!("{}:{}", choice.provider_name(), choice.model_id()),
@@ -2744,6 +2657,11 @@ impl ModelState {
             current.model_id().to_owned(),
             current.provider_name().to_owned(),
         );
+        // The installed session model remains usable even if its credential is
+        // later removed from persistent settings; the runtime already owns the
+        // resolved credential for this session. Startup never installs a stale
+        // disconnected provider in ACP, so the current option is connection
+        // truth rather than a persisted preference.
         if !options.iter().any(|option| option.0 == current_option.0) {
             options.push(current_option);
         }
@@ -2757,7 +2675,7 @@ impl ModelState {
             .expect("provider lock poisoned")
             .clone();
         let selected = current.resolve_model_spec(&format!("{} {effort}", current.model_id()))?;
-        let resolved = selected.model_with_provider(&self.settings)?;
+        let resolved = selected.model_with_provider(&self.settings.snapshot())?;
         self.provider_store.set_default_model(resolved).await?;
         *self.provider.write().expect("provider lock poisoned") = selected;
         Ok(())
@@ -3489,34 +3407,80 @@ pub async fn build_with_options(
     crate::drivers::codex::register_driver(&mut driver_registry, settings.clone());
     let settings_snapshot = settings.snapshot();
     let mut setup_recommended = ModelsCapability::needs_onboarding(&settings_snapshot);
-    let default_model = match &provider {
+    let active_provider = provider_state
+        .read()
+        .expect("provider lock poisoned")
+        .clone();
+    let default_model = match &active_provider {
         ProviderChoice::Anthropic { .. }
         | ProviderChoice::OpenAi { .. }
         | ProviderChoice::Codex { .. }
         | ProviderChoice::Google { .. }
         | ProviderChoice::OpenRouter { .. }
         | ProviderChoice::Ollama { .. }
-        | ProviderChoice::Custom { .. } => match provider.model_with_provider(&settings_snapshot) {
-            Ok(model) => model,
-            Err(err) if matches!(options.client_ui, ClientUiContext::Tui) => {
-                // Preferred provider is set but credentials are missing
-                // (e.g. Codex login cleared after refresh_token_reused).
-                // Interactive sessions open `/setup` instead of exiting.
-                tracing::warn!(
-                    error = %err,
-                    provider = provider.provider_name(),
-                    "provider credentials missing; opening setup"
-                );
-                setup_recommended = true;
-                provider.model_without_stored_key()
-            }
-            Err(_) if setup_recommended => provider.model_without_stored_key(),
-            Err(err) => {
-                return Err(err.context(
+        | ProviderChoice::Custom { .. } => {
+            match active_provider.model_with_provider(&settings_snapshot) {
+                Ok(model) => model,
+                Err(err) if matches!(options.client_ui, ClientUiContext::Acp) => {
+                    // ACP must return a session before the client can present its
+                    // model picker. Never install a disconnected provider as the
+                    // live runtime model: choose another usable provider, with the
+                    // always-local simulator as the final fallback.
+                    let fallback = SUPPORTED_PROVIDERS
+                        .iter()
+                        .filter(|name| **name != active_provider.provider_name())
+                        .filter(|name| {
+                            crate::capabilities::model_discovery::provider_is_usable(
+                                &settings_snapshot,
+                                name,
+                            )
+                        })
+                        .filter_map(|name| resolve_for_settings(name, &settings_snapshot).ok())
+                        .filter(|resolved| !resolved.choice.model_id().trim().is_empty())
+                        .find_map(|resolved| {
+                            resolved
+                                .choice
+                                .model_with_provider(&settings_snapshot)
+                                .ok()
+                                .map(|model| (resolved.choice, model))
+                        })
+                        .unwrap_or_else(|| {
+                            let choice = ProviderChoice::Sim;
+                            let model = choice
+                                .model_with_provider(&settings_snapshot)
+                                .expect("llmsim provider is always available");
+                            (choice, model)
+                        });
+                    tracing::warn!(
+                        error = %err,
+                        provider = active_provider.provider_name(),
+                        fallback = fallback.0.provider_name(),
+                        "provider unavailable; starting ACP with a usable fallback"
+                    );
+                    setup_recommended = true;
+                    *provider_state.write().expect("provider lock poisoned") = fallback.0;
+                    fallback.1
+                }
+                Err(err) if matches!(options.client_ui, ClientUiContext::Tui) => {
+                    // Preferred provider is set but credentials are missing
+                    // (e.g. Codex login cleared after refresh_token_reused).
+                    // Interactive sessions open `/setup` instead of exiting.
+                    tracing::warn!(
+                        error = %err,
+                        provider = active_provider.provider_name(),
+                        "provider credentials missing; opening setup"
+                    );
+                    setup_recommended = true;
+                    active_provider.model_without_stored_key()
+                }
+                Err(_) if setup_recommended => active_provider.model_without_stored_key(),
+                Err(err) => {
+                    return Err(err.context(
                     "provider credentials missing; run `yolop` interactively and complete /setup",
                 ));
+                }
             }
-        },
+        }
         ProviderChoice::Sim => ResolvedModel {
             model: "llmsim-yolop".into(),
             provider_type: DriverId::LlmSim,
@@ -3685,7 +3649,7 @@ pub async fn build_with_options(
         model: ModelState::new(
             provider_state,
             provider_store,
-            settings_snapshot,
+            settings.clone(),
             model_driver_registry,
         ),
         settings,
@@ -3964,6 +3928,9 @@ mod tests {
         settings
             .set_default_provider(Some("codex".to_string()))
             .expect("save provider");
+        settings
+            .set_base_url("custom".to_string(), "http://localhost:8000/v1".to_string())
+            .expect("save incomplete custom endpoint");
 
         let built = build_with_options(
             workspace.path().to_path_buf(),
@@ -3988,6 +3955,59 @@ mod tests {
             "missing Codex login should recommend setup"
         );
         assert_eq!(built.model.provider_name(), "codex");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)]
+    async fn acp_build_exposes_model_configuration_when_default_credentials_missing() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::remove_var("CODEX_ACCESS_TOKEN");
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+        }
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        settings
+            .set_default_provider(Some("codex".to_string()))
+            .expect("save provider");
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Codex {
+                model: "gpt-5.5".to_string(),
+                reasoning_effort: None,
+            },
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions {
+                client_ui: ClientUiContext::Acp,
+                ..BuildOptions::default()
+            },
+        )
+        .await
+        .expect("ACP must build far enough to expose model configuration");
+
+        assert!(built.startup.setup_recommended);
+        assert_eq!(built.model.provider_name(), "llmsim");
+        assert!(
+            built
+                .model
+                .model_options()
+                .iter()
+                .any(|(id, _, _)| id == "llmsim:llmsim-yolop")
+        );
+        assert!(
+            !built
+                .model
+                .model_options()
+                .iter()
+                .any(|(_, _, provider)| provider == "codex"),
+            "disconnected providers must not be exposed to ACP"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5919,55 +5939,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_for_settings_falls_back_to_global_default_model() {
-        let _guard = crate::testing::test_env::lock();
-        unsafe {
-            std::env::remove_var("EVERRUNS_CLI_MODEL");
-        }
-        let mut settings = Settings {
-            default_model: Some("claude-opus-4-5".to_string()),
-            ..Default::default()
-        };
-
-        // No per-provider entry, so the global default_model is applied.
-        let anthropic = resolve_for_settings("anthropic", &settings)
-            .expect("resolve")
-            .choice;
-        assert_eq!(anthropic.label(), "anthropic/claude-opus-4-5 medium");
-
-        // A per-provider pick still wins over the global default.
-        settings
-            .models
-            .insert("anthropic".to_string(), "claude-haiku-4-5".to_string());
-        let anthropic = resolve_for_settings("anthropic", &settings)
-            .expect("resolve")
-            .choice;
-        assert_eq!(anthropic.label(), "anthropic/claude-haiku-4-5 medium");
-    }
-
-    #[test]
-    fn resolve_for_settings_ignores_cross_provider_default_model() {
-        let _guard = crate::testing::test_env::lock();
-        unsafe {
-            std::env::remove_var("EVERRUNS_CLI_MODEL");
-        }
-        let settings = Settings {
-            default_provider: Some("anthropic".to_string()),
-            default_model: Some("gpt-5.5".to_string()),
-            ..Default::default()
-        };
-
-        let resolved = resolve_for_settings("anthropic", &settings).expect("resolve");
-        assert_eq!(resolved.choice.label(), "anthropic/claude-opus-4-8 high");
-        assert_eq!(resolved.source, ModelResolutionSource::ProviderDefault);
-        assert!(
-            resolved.notes.iter().any(|n| n.contains("default_model")),
-            "expected warning about ignored default_model, got {:?}",
-            resolved.notes
-        );
-    }
-
-    #[test]
     fn resolve_for_settings_uses_per_provider_model() {
         let _guard = crate::testing::test_env::lock();
         unsafe {
@@ -5984,17 +5955,21 @@ mod tests {
     }
 
     #[test]
-    fn model_compatible_with_provider_rejects_obvious_mismatches() {
-        assert!(model_compatible_with_provider(
-            "claude-opus-4-5",
-            "anthropic"
-        ));
-        assert!(model_compatible_with_provider("gpt-5.5", "openai"));
-        assert!(!model_compatible_with_provider("gpt-5.5", "anthropic"));
-        assert!(model_compatible_with_provider(
-            "anthropic/claude-sonnet-4-5",
-            "openrouter"
-        ));
+    fn legacy_global_default_model_is_not_resolution_state() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::remove_var("EVERRUNS_CLI_MODEL");
+        }
+        let table: toml::Table =
+            toml::from_str("default_provider = 'anthropic'\ndefault_model = 'claude-haiku-4-5'\n")
+                .expect("legacy settings parse");
+        let settings = Settings::from_table(&table);
+
+        let resolved = resolve_for_settings("anthropic", &settings).expect("resolve");
+
+        assert_eq!(resolved.source, ModelResolutionSource::ProviderDefault);
+        assert_ne!(resolved.choice.model_id(), "claude-haiku-4-5");
+        assert!(!Settings::to_table(&settings).contains_key("default_model"));
     }
 
     #[test]
@@ -6002,11 +5977,11 @@ mod tests {
         let resolved = ResolvedProviderChoice {
             choice: ProviderChoice::default_for_provider_name("anthropic").unwrap(),
             source: ModelResolutionSource::ProviderDefault,
-            notes: vec!["default_model \"gpt-5.5\" ignored for anthropic".to_string()],
+            notes: vec!["ignored invalid models.anthropic value".to_string()],
         };
         let preview = resolved.next_run_preview();
         assert!(preview.contains("provider default"));
-        assert!(preview.contains("default_model"));
+        assert!(preview.contains("models.anthropic"));
     }
 
     #[test]

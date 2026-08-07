@@ -3,6 +3,16 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-07 — Connected ACP model catalog and authentication
+
+- ACP session creation now falls back from a stale disconnected preference to
+  a usable provider, exposes only connected providers, advertises agent-handled
+  Codex browser authentication, and pushes standard `config_option_update`
+  notifications after authentication or `/setup` changes.
+- The cross-provider `default_model` setting was removed. Durable model choices
+  are provider-scoped under `models.<provider>`; connection state determines
+  which choices ACP exposes.
+
 ## 2026-08-07 — Shared completion and host wake routing
 
 - [User ask](specs/user-ask.md) now delegates deterministic turn completion and
