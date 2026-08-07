@@ -6599,7 +6599,7 @@ mod tests {
         message: &str,
     ) -> crate::runtime::background_wake::WakeSender {
         let (tx, rx) = mpsc::unbounded_channel();
-        app.background_wake = rx;
+        app.background_wake = crate::runtime::background_wake::WakeReceiver::unrouted(rx);
         tx.send(crate::runtime::background_wake::WakeMessage::unstructured(
             message,
         ))

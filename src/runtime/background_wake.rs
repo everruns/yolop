@@ -8,11 +8,10 @@
 //! reached the yolop agent.
 //!
 //! yolop installs a [`LocalPlatformStore`](everruns_local::LocalPlatformStore)
-//! backed by [`WakeRunner`]. For a live host session the runner routes the
-//! completion message to the host's unbounded channel; the host (TUI event loop
-//! or ACP session loop) runs it as an ordinary streamed turn when idle. Child
-//! sub-agent sessions have no terminal host, so the same runner creates and
-//! drives those turns synchronously through the in-process runtime.
+//! backed by Everruns' [`HostRoutedRunner`](everruns_local::HostRoutedRunner).
+//! Its inner [`WakeRunner`] enriches host wakes with Yolop's authenticated task
+//! handoff and drives child sessions synchronously through the in-process
+//! runtime.
 
 use async_trait::async_trait;
 use everruns_core::error::{AgentLoopError, Result};
@@ -23,7 +22,7 @@ use everruns_core::session::Session;
 use everruns_core::session_task::{SessionTask, SessionTaskRegistry};
 use everruns_core::typed_id::{AgentId, HarnessId, SessionId};
 use everruns_core::{TaskTransition, wake_text_for};
-use everruns_local::LocalSessionRunner;
+use everruns_local::{HostRoutedRunner, LocalSessionRunner, WakeRoutes};
 use everruns_runtime::{InProcessRuntime, RuntimeSessionStore, SessionBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -34,9 +33,45 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 /// Sender half of a session's wake channel. The `LocalPlatformStore`'s
 /// `send_message` pushes a background-completion message here; the host drains
 /// the paired [`WakeReceiver`] and runs a turn.
+#[cfg(test)]
 pub type WakeSender = mpsc::UnboundedSender<WakeMessage>;
 /// Receiver half a host drains to react to finished background tasks.
-pub type WakeReceiver = mpsc::UnboundedReceiver<WakeMessage>;
+pub struct WakeReceiver {
+    inner: mpsc::UnboundedReceiver<WakeMessage>,
+    _route: Option<HostWakeRoute>,
+}
+
+impl WakeReceiver {
+    pub async fn recv(&mut self) -> Option<WakeMessage> {
+        self.inner.recv().await
+    }
+
+    pub fn try_recv(&mut self) -> std::result::Result<WakeMessage, mpsc::error::TryRecvError> {
+        self.inner.try_recv()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unrouted(inner: mpsc::UnboundedReceiver<WakeMessage>) -> Self {
+        Self {
+            inner,
+            _route: None,
+        }
+    }
+}
+
+/// Owns one upstream host route and the task that enriches its raw messages.
+pub struct HostWakeRoute {
+    routes: WakeRoutes,
+    session_id: SessionId,
+    bridge: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for HostWakeRoute {
+    fn drop(&mut self) {
+        self.routes.unregister(self.session_id);
+        self.bridge.abort();
+    }
+}
 
 const MAX_WAKE_BATCH_BYTES: usize = 32 * 1024;
 const MAX_WAKE_BATCH_MESSAGES: usize = 256;
@@ -170,19 +205,9 @@ pub(crate) fn coalesce_pending_wakes(
     }
 }
 
-fn wake_routes() -> &'static Mutex<HashMap<SessionId, WakeSender>> {
-    static ROUTES: OnceLock<Mutex<HashMap<SessionId, WakeSender>>> = OnceLock::new();
-    ROUTES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 /// Local platform runner for host wakes and child sub-agent sessions.
-///
-/// Every terminal-host session registers a wake sender for its lifetime.
-/// Messages targeting one of those sessions are queued for the host. All other
-/// messages target child sessions and run synchronously through `runtime`.
+/// Host routing itself is owned by Everruns' [`HostRoutedRunner`].
 pub struct WakeRunner {
-    session_id: SessionId,
-    wake_tx: WakeSender,
     runtime: Arc<OnceLock<Weak<InProcessRuntime>>>,
     sessions: Arc<dyn RuntimeSessionStore>,
     tasks: Option<Arc<dyn SessionTaskRegistry>>,
@@ -191,19 +216,11 @@ pub struct WakeRunner {
 
 impl WakeRunner {
     pub fn new(
-        session_id: SessionId,
-        wake_tx: WakeSender,
         runtime: Arc<OnceLock<Weak<InProcessRuntime>>>,
         sessions: Arc<dyn RuntimeSessionStore>,
         tasks: Option<Arc<dyn SessionTaskRegistry>>,
     ) -> Self {
-        wake_routes()
-            .lock()
-            .unwrap()
-            .insert(session_id, wake_tx.clone());
         Self {
-            session_id,
-            wake_tx,
             runtime,
             sessions,
             tasks,
@@ -286,15 +303,34 @@ impl WakeRunner {
     }
 }
 
-impl Drop for WakeRunner {
-    fn drop(&mut self) {
-        let mut routes = wake_routes().lock().unwrap();
-        if routes
-            .get(&self.session_id)
-            .is_some_and(|current| current.same_channel(&self.wake_tx))
-        {
-            routes.remove(&self.session_id);
+/// Register a live host session with Everruns' route registry and translate
+/// raw route messages into Yolop's authenticated wake representation.
+pub fn register_host_route(
+    runner: Arc<HostRoutedRunner<WakeRunner>>,
+    session_id: SessionId,
+) -> WakeReceiver {
+    let routes = runner.routes().clone();
+    let mut raw = routes.register(session_id);
+    let (wake_tx, wake_rx) = mpsc::unbounded_channel();
+    let bridge_runner = runner.clone();
+    let bridge = tokio::spawn(async move {
+        while let Some(content) = raw.recv().await {
+            let wake = bridge_runner
+                .inner()
+                .wake_message(session_id, &content)
+                .await;
+            if wake_tx.send(wake).is_err() {
+                break;
+            }
         }
+    });
+    WakeReceiver {
+        inner: wake_rx,
+        _route: Some(HostWakeRoute {
+            routes,
+            session_id,
+            bridge,
+        }),
     }
 }
 
@@ -437,29 +473,11 @@ fn is_zero(value: &usize) -> bool {
 #[async_trait]
 impl LocalSessionRunner for WakeRunner {
     async fn routable_session_ids(&self) -> Result<Option<Vec<SessionId>>> {
-        Ok(Some(
-            wake_routes().lock().unwrap().keys().copied().collect(),
-        ))
+        Ok(Some(Vec::new()))
     }
 
     async fn send_message(&self, session_id: SessionId, content: &str) -> Result<()> {
         let wake = self.wake_message(session_id, content).await;
-        let sender = wake_routes().lock().unwrap().get(&session_id).cloned();
-        if let Some(sender) = sender {
-            return sender.send(wake).map_err(|_| {
-                let mut routes = wake_routes().lock().unwrap();
-                if routes
-                    .get(&session_id)
-                    .is_some_and(|current| current.same_channel(&sender))
-                {
-                    routes.remove(&session_id);
-                }
-                AgentLoopError::tool(format!(
-                    "session {session_id} wake receiver is closed; wake remains retryable"
-                ))
-            });
-        }
-
         if self.sessions.get_session(session_id).await?.is_none() {
             return Err(AgentLoopError::session_not_found(session_id));
         }
@@ -580,41 +598,32 @@ mod tests {
     };
     use everruns_runtime::RuntimeBackends;
 
-    fn runner(session_id: SessionId, tx: WakeSender) -> WakeRunner {
+    fn runner() -> WakeRunner {
         let backends = RuntimeBackends::in_memory();
-        WakeRunner::new(
-            session_id,
-            tx,
-            Arc::new(OnceLock::new()),
-            backends.session_store,
-            None,
-        )
+        WakeRunner::new(Arc::new(OnceLock::new()), backends.session_store, None)
     }
 
     #[tokio::test]
-    async fn routes_wakes_to_the_target_session() {
-        let session_a = SessionId::from_seed(910_001);
-        let session_b = SessionId::from_seed(910_002);
-        let (tx_a, mut rx_a) = mpsc::unbounded_channel();
-        let (tx_b, mut rx_b) = mpsc::unbounded_channel();
-        let runner_a = runner(session_a, tx_a);
-        let _runner_b = runner(session_b, tx_b);
+    async fn upstream_router_delivers_an_enriched_host_wake() {
+        let session_id = SessionId::from_seed(910_001);
+        let runner = Arc::new(HostRoutedRunner::new(runner(), WakeRoutes::new()));
+        let mut wakes = register_host_route(runner.clone(), session_id);
 
-        runner_a
-            .send_message(session_b, "for b")
+        runner
+            .send_message(session_id, "for host")
             .await
-            .expect("route to active session b");
+            .expect("route to active host");
 
-        assert_eq!(rx_b.recv().await.map(|wake| wake.raw), Some("for b".into()));
-        assert!(rx_a.try_recv().is_err());
+        assert_eq!(
+            wakes.recv().await.map(|wake| wake.raw),
+            Some("for host".into())
+        );
     }
 
     #[tokio::test]
     async fn inactive_session_wakes_remain_retryable() {
-        let active = SessionId::from_seed(910_003);
         let inactive = SessionId::from_seed(910_004);
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let runner = runner(active, tx);
+        let runner = runner();
 
         let error = runner
             .send_message(inactive, "later")
@@ -628,12 +637,11 @@ mod tests {
     async fn reports_only_live_host_sessions_as_routable() {
         let session_a = SessionId::from_seed(910_005);
         let session_b = SessionId::from_seed(910_006);
-        let (tx_a, _rx_a) = mpsc::unbounded_channel();
-        let (tx_b, _rx_b) = mpsc::unbounded_channel();
-        let runner_a = runner(session_a, tx_a);
-        let runner_b = runner(session_b, tx_b);
+        let runner = Arc::new(HostRoutedRunner::new(runner(), WakeRoutes::new()));
+        let rx_a = register_host_route(runner.clone(), session_a);
+        let rx_b = register_host_route(runner.clone(), session_b);
 
-        let routable = runner_a
+        let routable = runner
             .routable_session_ids()
             .await
             .expect("read routable sessions")
@@ -641,19 +649,21 @@ mod tests {
         assert!(routable.contains(&session_a));
         assert!(routable.contains(&session_b));
 
-        drop(runner_b);
-        let routable = runner_a
+        drop(rx_b);
+        let routable = runner
             .routable_session_ids()
             .await
             .expect("read routable sessions after route closes")
             .expect("wake runner must scope schedule claims");
         assert!(routable.contains(&session_a));
         assert!(!routable.contains(&session_b));
+        drop(rx_a);
     }
 
     #[test]
     fn queued_completion_burst_coalesces_without_losing_results() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut rx = WakeReceiver::unrouted(rx);
         tx.send(WakeMessage::unstructured("task_2 result_path=/results/2"))
             .unwrap();
         tx.send(WakeMessage::unstructured("task_3 result_path=/results/3"))
@@ -759,7 +769,8 @@ mod tests {
                 omitted_tasks: 0,
             }),
         };
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut rx = WakeReceiver::unrouted(rx);
         tx.send(structured(second)).unwrap();
         let batch = coalesce_pending_wakes(structured(first), &mut rx);
         let ids = batch

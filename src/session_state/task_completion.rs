@@ -1,12 +1,8 @@
-//! Cheap end-of-turn completion gate shared by TUI, print, and ACP hosts.
+//! Yolop policy around Everruns' shared end-of-turn completion gate.
 
-use std::time::{Duration, Instant};
-
-use everruns_core::turn::TurnStopReason;
-
-pub(crate) const MAX_TASK_TURNS: u32 = 6;
-pub(crate) const MAX_TASK_TOKENS: u64 = 64_000;
-pub(crate) const MAX_TASK_ELAPSED: Duration = Duration::from_secs(10 * 60);
+pub(crate) use everruns_core::turn_completion::{
+    CompletionState, ContinuationBudget as CompletionBudget, GateDecision,
+};
 pub(crate) const CONTINUATION_TAG: &str = "automatic_task_continuation";
 pub(crate) const CONTINUATION_METADATA_KEY: &str = "yolop.task_continuation";
 
@@ -21,105 +17,17 @@ pub(crate) fn tag_continuation(
     input
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CompletionState {
-    Achieved,
-    Blocked,
-    Failed,
-    WaitingOnBackground,
-    InProgress,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum GateDecision {
-    Conclusive(CompletionState),
-    /// Tool-using work produced a candidate final answer. Mutations and
-    /// multi-step work are ambiguous enough to justify semantic evaluation.
-    Evaluate,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct CompletionBudget {
-    started: Instant,
-    turns: u32,
-    tokens: u64,
-}
-
-impl Default for CompletionBudget {
-    fn default() -> Self {
-        Self {
-            started: Instant::now(),
-            turns: 0,
-            tokens: 0,
-        }
-    }
-}
-
-impl CompletionBudget {
-    pub(crate) fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    pub(crate) fn observe_turn(&mut self, tokens: u64) -> bool {
-        self.turns = self.turns.saturating_add(1);
-        self.tokens = self.tokens.saturating_add(tokens);
-        self.turns <= MAX_TASK_TURNS
-            && self.tokens <= MAX_TASK_TOKENS
-            && self.started.elapsed() <= MAX_TASK_ELAPSED
-    }
-
-    #[cfg(test)]
-    pub(crate) fn usage(&self) -> (u32, u64) {
-        (self.turns, self.tokens)
-    }
-}
-
 pub(crate) fn gate_turn(
     result: &everruns_runtime::TurnResult,
     has_active_background: bool,
 ) -> GateDecision {
-    if !result.success {
-        return GateDecision::Conclusive(match result.stop_reason {
-            TurnStopReason::Cancelled => CompletionState::Blocked,
-            _ => CompletionState::Failed,
-        });
-    }
-
-    match result.stop_reason {
-        TurnStopReason::Error | TurnStopReason::Refusal => {
-            return GateDecision::Conclusive(CompletionState::Failed);
-        }
-        TurnStopReason::Cancelled => {
-            return GateDecision::Conclusive(CompletionState::Blocked);
-        }
-        TurnStopReason::MaxTokens | TurnStopReason::MaxTurnRequests => {
-            return GateDecision::Conclusive(CompletionState::InProgress);
-        }
-        TurnStopReason::EndTurn => {}
-    }
-
-    if has_active_background && result.tool_calls_count > 0 {
-        return GateDecision::Conclusive(CompletionState::WaitingOnBackground);
-    }
-
-    if result.response.trim().is_empty() {
-        return GateDecision::Conclusive(CompletionState::InProgress);
-    }
-
-    let normalized = result.response.trim().to_ascii_lowercase();
-    if normalized.ends_with('?')
-        && ["need", "which", "what", "could you", "please provide"]
-            .iter()
-            .any(|marker| normalized.contains(marker))
-    {
-        return GateDecision::Conclusive(CompletionState::Blocked);
-    }
-
-    if result.tool_calls_count == 0 {
-        GateDecision::Conclusive(CompletionState::Achieved)
-    } else {
-        GateDecision::Evaluate
-    }
+    everruns_core::turn_completion::gate_turn(&everruns_core::turn_completion::TurnSummary {
+        success: result.success,
+        stop_reason: result.stop_reason,
+        response: &result.response,
+        tool_calls_count: result.tool_calls_count,
+        has_active_background,
+    })
 }
 
 pub(crate) fn continuation_prompt(reason: &str) -> String {
@@ -161,6 +69,7 @@ pub(crate) fn evaluation_for_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_core::turn::TurnStopReason;
     use everruns_core::typed_id::TurnId;
 
     fn result(response: &str, tools: usize, success: bool) -> everruns_runtime::TurnResult {
@@ -218,13 +127,14 @@ mod tests {
     #[test]
     fn budget_is_strict_for_turns_and_tokens() {
         let mut budget = CompletionBudget::default();
-        for _ in 0..MAX_TASK_TURNS {
+        for _ in 0..everruns_core::turn_completion::DEFAULT_MAX_CONTINUATION_TURNS {
             assert!(budget.observe_turn(1));
         }
         assert!(!budget.observe_turn(1));
 
         budget.reset();
-        assert!(!budget.observe_turn(MAX_TASK_TOKENS + 1));
-        assert_eq!(budget.usage(), (1, MAX_TASK_TOKENS + 1));
+        let over_limit = everruns_core::turn_completion::DEFAULT_MAX_CONTINUATION_TOKENS + 1;
+        assert!(!budget.observe_turn(over_limit));
+        assert_eq!(budget.usage(), (1, over_limit));
     }
 }
