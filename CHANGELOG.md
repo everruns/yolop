@@ -10,6 +10,42 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.15.0] - 2026-08-06
+
+### Highlights
+
+- Models now receive cache-stable live provider, model, and reasoning-effort context, and provider catalogs can be searched conversationally before a selection is persisted.
+- Long-running tasks continue automatically under bounded completion budgets, with cumulative-cost compaction, stronger progress checkpoints, and compact background-completion handoffs.
+- Repository context loads asynchronously at startup, keeping the composer responsive while branch and workspace details arrive in the background.
+- Interrupted provider turns recover without losing completed tool work, while lazy session storage avoids creating empty session state.
+- Yolop now shares completion, wake routing, interactive approval, cancellation, and MCP OAuth primitives with Everruns 0.17.23, reducing duplicated policy while preserving host behavior.
+
+### Breaking Changes
+
+- No intentional breaking changes. The minor version reflects the new model-context, conversational discovery, bounded continuation, and startup capabilities added since v0.14.0.
+
+### What's Changed
+
+* refactor(runtime): adopt everruns 0.17.23 primitives ([#544](https://github.com/everruns/yolop/pull/544)) by @chaliy
+* refactor(runtime): adopt upstream tool approval ([#543](https://github.com/everruns/yolop/pull/543)) by @chaliy
+* chore(ship): prompt for PR evidence in the ship skill ([#542](https://github.com/everruns/yolop/pull/542)) by @chaliy
+* fix(runtime): recover interrupted provider turns ([#541](https://github.com/everruns/yolop/pull/541)) by @chaliy
+* feat(models): search provider catalogs conversationally ([#540](https://github.com/everruns/yolop/pull/540)) by @chaliy
+* perf(runtime): shape first-turn tool disclosure ([#539](https://github.com/everruns/yolop/pull/539)) by @chaliy
+* feat(runtime): compact context from cumulative cost ([#538](https://github.com/everruns/yolop/pull/538)) by @chaliy
+* feat(runtime): continue incomplete user tasks ([#537](https://github.com/everruns/yolop/pull/537)) by @chaliy
+* fix(agent): enforce progress checkpoints ([#536](https://github.com/everruns/yolop/pull/536)) by @chaliy
+* fix(session): materialize storage lazily ([#535](https://github.com/everruns/yolop/pull/535)) by @chaliy
+* fix(background): compact completion wake context ([#534](https://github.com/everruns/yolop/pull/534)) by @chaliy
+* fix(evals): exclude bookkeeping from search budgets ([#533](https://github.com/everruns/yolop/pull/533)) by @chaliy
+* feat(tui): add async repository startup pulse ([#532](https://github.com/everruns/yolop/pull/532)) by @chaliy
+* fix(models): defer persistence until successful turn ([#531](https://github.com/everruns/yolop/pull/531)) by @chaliy
+* chore(deps): bump the cargo-minor-and-patch group across 1 directory with 4 updates ([#530](https://github.com/everruns/yolop/pull/530)) by @dependabot[bot]
+* feat(runtime): expose live model context ([#528](https://github.com/everruns/yolop/pull/528)) by @chaliy
+* fix(deps): revert toml and schemars to fix repo-map-bounded nightly regression ([#526](https://github.com/everruns/yolop/pull/526)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.14.0...v0.15.0
+
 ## [0.14.0] - 2026-08-03
 
 ### Highlights
