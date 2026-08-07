@@ -53,15 +53,16 @@ For delayed or recurring work, `spawn_background` accepts a `schedule` instead
 of starting the wrapped tool immediately. Everruns persists the monitor and its
 payload in the local SQLite store. Yolop starts one `LocalScheduleRunner` per
 live host session; when a schedule becomes due, the runner sends the stored
-monitor prompt through the same `WakeRunner` used by background completions.
+monitor prompt through the same upstream `HostRoutedRunner` used by background
+completions.
 The resulting turn starts the wrapped tool, and that tool's eventual completion
 produces the ordinary second wake. The TUI and ACP session objects retain the
 runner handle for their lifetimes, preventing polling from outliving its host.
-Before each poll, `WakeRunner` reports the live session routes in this process;
-`everruns-local` scopes claims to that set. This prevents inactive sessions'
-overdue schedules from being claimed and rejected on every poll. Delivery is
-still routed by `SessionId`, and a route that closes after the claim rejects the
-wake so the occurrence remains durable and retryable.
+Before each poll, `everruns-local::WakeRoutes` reports the live session routes
+in this process; the local scheduler scopes claims to that set. This prevents
+inactive sessions' overdue schedules from being claimed and rejected on every
+poll. Delivery is still routed by `SessionId`, and a route that closes after the
+claim rejects the wake so the occurrence remains durable and retryable.
 
 ### Steering (poll-proofing)
 
@@ -141,12 +142,12 @@ and background completions.
 
 Yolop installs a platform store to close that gap (`crate::background_wake`):
 
-- `runtime.rs` wires a `LocalPlatformStore` backed by a `WakeRunner` via
-  `LocalBackends::with_platform_runner`. For a session with a live terminal host,
-  the runner hands the message to that host over an unbounded channel
-  (`BuiltRuntime::background_wake`) so it can stream the turn normally. For a
-  child sub-agent with no terminal host, it runs the turn synchronously through
-  the in-process runtime.
+- `runtime.rs` wires a `LocalPlatformStore` backed by
+  `everruns-local::HostRoutedRunner` via `LocalBackends::with_platform_runner`.
+  The upstream route registry hands live-host messages to Yolop's enrichment
+  bridge and then `BuiltRuntime::background_wake`, so the host can stream the
+  turn normally. Its inner Yolop runner resolves authenticated task handoffs and
+  runs child sub-agent turns synchronously when no live host owns the session.
 - The runner's `routable_session_ids` exposes only currently registered wake
   routes, which bounds local schedule claims to sessions this host process can
   actually wake.

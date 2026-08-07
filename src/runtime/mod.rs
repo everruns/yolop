@@ -167,14 +167,17 @@ fn env_key_prefix(value: &str) -> String {
 /// environment-provided bearer credentials. The stored connection is keyed by
 /// the server's `oauth_provider_id` when set, otherwise its name.
 pub(crate) struct StoredMcpAuthProvider {
-    connections: Arc<ConnectionStore>,
+    oauth: everruns_mcp::oauth::OAuthAuthProvider<crate::auth::mcp_oauth::ConnectionTokenStore>,
     env: EnvMcpAuthProvider,
 }
 
 impl StoredMcpAuthProvider {
     pub(crate) fn new(connections: Arc<ConnectionStore>) -> Self {
         Self {
-            connections,
+            oauth: everruns_mcp::oauth::OAuthAuthProvider::new(
+                crate::auth::mcp_oauth::ConnectionTokenStore::new(connections),
+                crate::auth::mcp_oauth::oauth_egress(),
+            ),
             env: EnvMcpAuthProvider,
         }
     }
@@ -191,43 +194,15 @@ impl McpAuthProvider for StoredMcpAuthProvider {
         request: &McpAuthRequest<'_>,
     ) -> anyhow::Result<Option<McpCredential>> {
         let key = Self::provider_key(request);
-        let Some(tokens) = crate::auth::mcp_oauth::load_tokens(&self.connections, key) else {
-            // No stored OAuth token for this server: fall back to env vars.
-            return self.env.authorization(request).await;
+        let keyed_request = McpAuthRequest {
+            server_name: key,
+            auth_mode: request.auth_mode.clone(),
+            oauth_provider_id: None,
         };
-
-        let tokens = if crate::auth::mcp_oauth_login::needs_refresh(&tokens) {
-            match crate::auth::mcp_oauth_login::refresh(&tokens).await {
-                Ok(refreshed) => {
-                    if let Err(err) = crate::auth::mcp_oauth::save_tokens(
-                        &self.connections,
-                        key,
-                        refreshed.clone(),
-                    ) {
-                        tracing::warn!(
-                            provider = key,
-                            %err,
-                            "failed to persist refreshed MCP OAuth token"
-                        );
-                    }
-                    refreshed
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        provider = key,
-                        %err,
-                        "MCP OAuth token refresh failed; using the existing token"
-                    );
-                    tokens
-                }
-            }
-        } else {
-            tokens
-        };
-
-        Ok(Some(McpCredential::authorization(
-            tokens.authorization_value(),
-        )))
+        match self.oauth.authorization(&keyed_request).await? {
+            Some(credential) => Ok(Some(credential)),
+            None => self.env.authorization(request).await,
+        }
     }
 }
 
@@ -3084,15 +3059,17 @@ pub async fn build_with_options(
     // Install the local platform seam. Host-session messages are queued onto
     // `background_wake`; child sub-agent messages run synchronously through the
     // in-process runtime once it has been built below.
-    let (background_wake_tx, background_wake_rx) = mpsc::unbounded_channel();
     let runtime_cell = Arc::new(std::sync::OnceLock::new());
-    let wake_runner = Arc::new(crate::runtime::background_wake::WakeRunner::new(
-        session_id,
-        background_wake_tx,
-        runtime_cell.clone(),
-        local_backends.runtime_backends.session_store.clone(),
-        Some(task_registry.clone()),
+    let wake_runner = Arc::new(everruns_local::HostRoutedRunner::new(
+        crate::runtime::background_wake::WakeRunner::new(
+            runtime_cell.clone(),
+            local_backends.runtime_backends.session_store.clone(),
+            Some(task_registry.clone()),
+        ),
+        everruns_local::WakeRoutes::new(),
     ));
+    let background_wake_rx =
+        crate::runtime::background_wake::register_host_route(wake_runner.clone(), session_id);
     let schedule_runner = local_backends
         .start_schedule_runner(wake_runner.clone())
         .context("start everruns-local schedule runner")?;

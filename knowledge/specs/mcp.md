@@ -91,10 +91,13 @@ server offers it → authorization code + PKCE (RFC 7636) through the browser wi
 a loopback redirect. The authorize URL is printed in the transcript before the
 host waits on the callback (so fullscreen and inline both stay usable if the
 browser is invisible), and the wait runs in the background so the event loop is
-not blocked. The token endpoint and client id are persisted alongside the tokens
-so refresh is self-contained. Because credentials are resolved per turn, a fresh
-login takes effect on the next message — no restart (composes with live reload
-above). Agent-driven `/mcp` and `/tools` via `run_command` return the
+not blocked. The token is bound to the MCP server through the OAuth `resource`
+indicator, and callback issuer validation prevents mix-up attacks. The token
+endpoint and client id are persisted alongside the tokens so refresh is
+self-contained; refreshes are serialized and re-read under the lock so rotated
+refresh tokens cannot be spent concurrently. Because credentials are resolved
+per turn, a fresh login takes effect on the next message — no restart (composes
+with live reload above). Agent-driven `/mcp` and `/tools` via `run_command` return the
 host's response text in the tool result; `/tools` includes live discovered
 `mcp_*` names from the session's scoped servers.
 
@@ -104,11 +107,11 @@ host's response text in the tool result; `/tools` includes live discovered
 - **stdio** spawns local processes the user explicitly listed in their own
   `.mcp.json`. Authoring that file is the act of consent, mirroring how other
   MCP clients treat a project-scoped server list.
-- **OAuth** discovery/token calls go to the authorization server advertised by
-  the (user-configured) MCP server. Discovered endpoints must be `https`
-  (loopback may use `http`), bounding downgrade to plaintext. The user
-  configuring the server URL is the act of consent; yolop is a local CLI on the
-  user's own network.
+- **OAuth** discovery/token calls use `everruns-core`'s egress-bound OAuth
+  client. Public endpoints require DNS-pinned SSRF validation and discovered
+  endpoints must be `https`. Literal loopback endpoints may use `http` because
+  the user explicitly configured the local MCP server; Yolop's transport
+  adapter limits that exception to loopback hosts.
 - **No per-call approval**: MCP tools run autonomously like the rest of yolop's
   tools; the standing guardrail is the write blocklist on filesystem writes.
 
@@ -127,7 +130,7 @@ host's response text in the tool result; `/tools` includes live discovered
 | Wiring into the session | `src/runtime/mod.rs` (`session_mcp_servers`, `StartupInfo.mcp_server_names`) |
 | `/mcp` command (list/reload/enable/disable/remove) | `src/capabilities/client_commands.rs`, `src/tui/host_ui.rs`, `src/tui/mod.rs` |
 | Live reload seam | `src/runtime/mod.rs` (`RuntimeHandles::reload_mcp_servers`), `src/runtime/session.rs` |
-| OAuth login (discovery, DCR, PKCE) | `src/auth/mcp_oauth_login.rs` |
-| OAuth token storage | `src/auth/mcp_oauth.rs` (connection store) |
-| Auth provider (stored token + refresh, env fallback) | `src/runtime/mod.rs` (`StoredMcpAuthProvider`) |
+| OAuth protocol (discovery, DCR, PKCE, exchange, refresh) | upstream `everruns-core::oauth`, `everruns-mcp::oauth` |
+| OAuth loopback host, token storage, egress adapter | `src/auth/mcp_oauth_login.rs`, `src/auth/mcp_oauth.rs` |
+| Auth policy (stored token, env fallback) | `src/runtime/mod.rs` (`StoredMcpAuthProvider`) |
 | Client / transports / executor | upstream `everruns-mcp`, `everruns-runtime` (`mcp-stdio` feature) |

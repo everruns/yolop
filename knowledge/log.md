@@ -3,6 +3,21 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-07 — Shared completion and host wake routing
+
+- [User ask](specs/user-ask.md) now delegates deterministic turn completion and
+  continuation budgets to `everruns-core`; Yolop retains ask-specific tagging,
+  prompts, evaluation projection, and host streaming.
+- [Background execution](specs/background.md) now delegates live-session route
+  ownership and retryable closed-route handling to `everruns-local`; Yolop's
+  inner runner retains authenticated task handoffs, wake coalescing, and
+  synchronous child-session turns.
+- [MCP](specs/mcp.md) now delegates OAuth discovery, dynamic registration,
+  PKCE, resource binding, callback-issuer validation, code exchange, and
+  serialized token refresh to the shared Everruns client. Yolop retains the
+  loopback callback host, connection-file adapter, environment fallback, and
+  explicit loopback egress exception.
+
 ## 2026-08-06 — Upstream interactive approval and cancellation
 
 - ACP tool gating now delegates risk classification, permission decisions, and

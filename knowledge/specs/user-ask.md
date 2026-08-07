@@ -92,8 +92,10 @@ restart on process resume.
 
 - `UserAskCapability` and `UserAskStore` live in yolop (`src/capabilities/user_ask.rs`,
   `src/session_state/user_ask.rs`).
-- The shared deterministic gate and budgets live in
-  `src/session_state/task_completion.rs`; hosts own only streaming/projection.
+- The deterministic gate and three-axis continuation budget live in
+  `everruns-core::turn_completion`. Yolop's `src/session_state/task_completion.rs`
+  adapts runtime turn results and owns continuation tagging, prompts, and ask
+  projection; hosts own streaming.
 - Evaluator calls use upstream `CommandHost::completion` (everruns-core).
 
 ## Related
