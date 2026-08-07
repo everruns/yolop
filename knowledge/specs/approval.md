@@ -13,6 +13,11 @@ Yolop also has a hard shell `approval_policy`. It composes with
 and fails closed in non-interactive hosts. This specification remains focused
 on the separate soft-approval layer.
 
+ACP also composes this guidance with the upstream `everruns-core` interactive
+tool-approval capability. Yolop supplies the central `approval_mode` live on
+each call, while upstream owns tool-risk classification, permission decisions,
+and remembered allow/reject answers.
+
 ## Why
 
 A coding agent runs tools that touch the real host: it writes files, deletes

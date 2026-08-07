@@ -3581,7 +3581,7 @@ pub async fn build_with_options(
     // only from the *resolved* capability set.
     if options.tool_approver.is_some() {
         harness_capabilities.push(AgentCapabilityConfig::new(
-            crate::capabilities::tool_approval::TOOL_APPROVAL_CAPABILITY_ID,
+            everruns_core::capabilities::TOOL_APPROVAL_CAPABILITY_ID,
         ));
     }
     let user_ask_enabled = harness_capabilities

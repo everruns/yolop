@@ -3,6 +3,15 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-06 — Upstream interactive approval and cancellation
+
+- ACP tool gating now delegates risk classification, permission decisions, and
+  remembered answers to `everruns-core`; Yolop retains only the adapter that
+  supplies its mutable central approval level on every call.
+- ACP cancellation now awaits runtime task teardown before returning, allowing
+  active tools' cooperative `ToolContext` cancellation tokens to reach detached
+  child work before the client continues.
+
 ## 2026-08-05 — Bounded provider-turn recovery
 
 - Provider stalls, transport failures, overload, and retryable server failures
