@@ -65,10 +65,6 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
             .clone()
             .map(Value::String)
             .unwrap_or(Value::Null),
-        KeyTarget::DefaultModel => settings
-            .default_model()
-            .map(|s| Value::String(s.to_string()))
-            .unwrap_or(Value::Null),
         KeyTarget::Attribution => Value::Bool(settings.attribution_enabled()),
         KeyTarget::ApprovalMode => Value::String(settings.approval_mode().as_str().to_string()),
         KeyTarget::ApprovalPolicy => Value::String(settings.approval_policy().as_str().to_string()),

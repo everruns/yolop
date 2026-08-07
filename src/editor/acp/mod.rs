@@ -28,6 +28,7 @@ use crate::capabilities::ClientUiContext;
 use crate::config::{SandboxMode, SettingsStore};
 use crate::runtime::session_log::{legacy_session_log_path, session_dir_path, session_log_path};
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
+use agent_client_protocol::schema::v1::{AuthMethod, AuthMethodAgent};
 use everruns_core::ScopedMcpServers;
 use everruns_core::typed_id::SessionId as RuntimeSessionId;
 
@@ -50,6 +51,21 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         let session_dir = session_dir_path(&self.sessions_dir, session_id);
         session_log_path(&session_dir).exists()
             || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+    }
+
+    fn auth_methods(&self) -> Vec<AuthMethod> {
+        vec![AuthMethod::Agent(
+            AuthMethodAgent::new("codex_browser", "Sign in with ChatGPT")
+                .description("Open a browser to connect the Codex provider."),
+        )]
+    }
+
+    async fn authenticate(&self, method_id: &str) -> Result<()> {
+        if method_id != "codex_browser" {
+            anyhow::bail!("unknown authentication method `{method_id}`");
+        }
+        let auth = crate::auth::codex::login_with_browser().await?;
+        self.settings.set_codex_auth(auth)
     }
 
     async fn build(
@@ -129,6 +145,22 @@ mod tests {
             let session_dir = session_dir_path(&self.sessions_dir, session_id);
             session_log_path(&session_dir).exists()
                 || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+        }
+
+        fn auth_methods(&self) -> Vec<AuthMethod> {
+            vec![AuthMethod::Agent(AuthMethodAgent::new(
+                "test_connect_openai",
+                "Connect OpenAI for tests",
+            ))]
+        }
+
+        async fn authenticate(&self, method_id: &str) -> Result<()> {
+            anyhow::ensure!(
+                method_id == "test_connect_openai",
+                "unknown test auth method"
+            );
+            self.settings
+                .set_token("openai".to_string(), "test-token".to_string())
         }
 
         async fn build(
@@ -426,9 +458,21 @@ mod tests {
         Lines<BufReader<DuplexStream>>,
         tokio::task::JoinHandle<Result<()>>,
     ) {
+        let settings = Arc::new(SettingsStore::open(sessions_dir.join("settings.toml")));
+        start_raw_server_with_settings(config, sessions_dir, settings)
+    }
+
+    fn start_raw_server_with_settings(
+        config: LlmSimConfig,
+        sessions_dir: PathBuf,
+        settings: Arc<SettingsStore>,
+    ) -> (
+        DuplexStream,
+        Lines<BufReader<DuplexStream>>,
+        tokio::task::JoinHandle<Result<()>>,
+    ) {
         let (client_w, agent_r) = tokio::io::duplex(64 * 1024);
         let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
-        let settings = Arc::new(SettingsStore::open(sessions_dir.join("settings.toml")));
         let factory = Arc::new(ScriptedFactory {
             config,
             sessions_dir,
@@ -788,6 +832,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn standard_config_options_select_the_live_session_model() {
         let sessions = tempfile::tempdir().expect("sessions tempdir");
+        SettingsStore::open(sessions.path().join("settings.toml"))
+            .set_token("ollama".to_string(), "local".to_string())
+            .expect("mark Ollama configured");
         let (mut w, mut reader, _server) =
             start_raw_server(fixed("unused"), sessions.path().to_path_buf());
         send_json(
@@ -871,6 +918,196 @@ mod tests {
         .await;
         let (invalid, _) = collect_until_response_id(&mut reader, 3).await;
         assert_eq!(invalid["error"]["code"], -32602);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_credential_change_pushes_refreshed_model_options() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let (mut w, mut reader, _server) = start_raw_server_with_settings(
+            fixed("unused"),
+            sessions.path().to_path_buf(),
+            settings.clone(),
+        );
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd, "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId");
+        let initial_options = new_session["result"]["configOptions"][0]["options"]
+            .as_array()
+            .expect("initial model options");
+        assert!(
+            !initial_options.iter().any(|option| option["value"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("openai:"))),
+            "disconnected OpenAI must not be advertised"
+        );
+
+        settings
+            .set_token("openai".to_string(), "test-token".to_string())
+            .expect("connect OpenAI outside the ACP prompt channel");
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{ "type": "text", "text": "/setup status" }]
+                }
+            }),
+        )
+        .await;
+        let (_, updates) = collect_until_response_id(&mut reader, 2).await;
+        let refreshed = updates
+            .iter()
+            .filter_map(|message| message.get("params")?.get("update"))
+            .find(|update| update["sessionUpdate"] == "config_option_update")
+            .expect("config_option_update after credential change");
+        let model = refreshed["configOptions"]
+            .as_array()
+            .expect("refreshed options")
+            .iter()
+            .find(|option| option["id"] == "model")
+            .expect("model config option");
+        assert!(
+            model["options"]
+                .as_array()
+                .expect("model choices")
+                .iter()
+                .any(|option| option["value"]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("openai:"))),
+            "connected OpenAI must be advertised after the settings change: {model}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_token_is_rejected_without_echoing_the_secret() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let (mut w, mut reader, _server) =
+            start_raw_server(fixed("unused"), sessions.path().to_path_buf());
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd, "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId");
+
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{ "type": "text", "text": "/setup token openai top-secret" }]
+                }
+            }),
+        )
+        .await;
+        let (_, updates) = collect_until_response_id(&mut reader, 2).await;
+        let serialized = serde_json::to_string(&updates).expect("updates serialize");
+        assert!(serialized.contains("cannot be entered over ACP"));
+        assert!(!serialized.contains("top-secret"));
+        let settings_file =
+            std::fs::read_to_string(sessions.path().join("settings.toml")).unwrap_or_default();
+        assert!(!settings_file.contains("top-secret"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authenticate_refreshes_model_options_for_open_sessions() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let (mut w, mut reader, _server) =
+            start_raw_server(fixed("unused"), sessions.path().to_path_buf());
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        let (initialize, _) = collect_until_response_id(&mut reader, 0).await;
+        assert_eq!(
+            initialize["result"]["authMethods"][0]["id"],
+            "test_connect_openai"
+        );
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd, "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId");
+
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "authenticate",
+                "params": { "methodId": "unknown" }
+            }),
+        )
+        .await;
+        let (unknown, _) = collect_until_response_id(&mut reader, 2).await;
+        assert_eq!(unknown["error"]["code"], -32602);
+
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "authenticate",
+                "params": { "methodId": "test_connect_openai" }
+            }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 3).await;
+        let update = next_json(&mut reader).await;
+        let refreshed = update
+            .get("params")
+            .filter(|params| {
+                params["sessionId"] == session_id
+                    && params["update"]["sessionUpdate"] == "config_option_update"
+            })
+            .expect("open session receives config option refresh after authentication");
+        assert!(
+            refreshed["update"]["configOptions"][0]["options"]
+                .as_array()
+                .expect("model choices")
+                .iter()
+                .any(|option| option["value"]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("openai:")))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -249,9 +249,10 @@ async fn list_openai_compatible_models(
     Ok(Some(models))
 }
 
-fn provider_is_usable(settings: &Settings, provider: &str) -> bool {
+pub(crate) fn provider_is_usable(settings: &Settings, provider: &str) -> bool {
     match provider {
-        "llmsim" | "ollama" => true,
+        "llmsim" => true,
+        "ollama" => provider_env_present("ollama") || settings.has_token("ollama"),
         "custom" => crate::runtime::custom_base_url(settings).is_some(),
         "codex" => provider_env_present("codex") || settings.has_codex_auth(),
         _ => provider_env_present(provider) || settings.has_token(provider),

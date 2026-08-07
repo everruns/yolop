@@ -49,11 +49,11 @@ use crate::session_state::user_ask::{AskOutcome, UserAskStore};
 use super::bridge::{Translator, tool_kind};
 use super::modes;
 use super::protocol::{
-    self, AgentCapabilities, AuthenticateParams, AuthenticateResult, AvailableCommand,
-    AvailableCommandInput, CurrentModeUpdate, InitializeParams, InitializeResult,
-    LoadSessionParams, LoadSessionResult, McpCapabilities, McpServer, NewSessionParams,
-    NewSessionResult, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptParams,
-    PromptResult, RequestPermissionOutcome, RequestPermissionParams, SessionConfigId,
+    self, AgentCapabilities, AuthMethod, AuthenticateParams, AuthenticateResult, AvailableCommand,
+    AvailableCommandInput, ConfigOptionUpdate, CurrentModeUpdate, InitializeParams,
+    InitializeResult, LoadSessionParams, LoadSessionResult, McpCapabilities, McpServer,
+    NewSessionParams, NewSessionResult, PermissionOption, PermissionOptionKind, PromptCapabilities,
+    PromptParams, PromptResult, RequestPermissionOutcome, RequestPermissionParams, SessionConfigId,
     SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeParams, SetSessionModeResult, StopReason,
@@ -70,6 +70,14 @@ const TURN_POLL_INTERVAL: Duration = Duration::from_millis(150);
 #[async_trait]
 pub trait RuntimeFactory: Send + Sync + 'static {
     fn session_exists(&self, session_id: RuntimeSessionId) -> bool;
+
+    fn auth_methods(&self) -> Vec<AuthMethod> {
+        Vec::new()
+    }
+
+    async fn authenticate(&self, method_id: &str) -> Result<()> {
+        anyhow::bail!("unknown authentication method `{method_id}`")
+    }
 
     async fn build(
         &self,
@@ -296,6 +304,10 @@ impl<F: RuntimeFactory> Server<F> {
     fn session(&self, id: &str) -> Option<Arc<Session>> {
         self.sessions.lock().unwrap().get(id).cloned()
     }
+
+    fn sessions(&self) -> Vec<Arc<Session>> {
+        self.sessions.lock().unwrap().values().cloned().collect()
+    }
 }
 
 /// Run the ACP agent over the given byte streams until the client closes its
@@ -345,14 +357,47 @@ where
         .builder()
         .name("yolop")
         .on_receive_request(
-            async |params: InitializeParams, responder, _cx| {
-                responder.respond(handle_initialize(params))
+            {
+                let server = server.clone();
+                async move |params: InitializeParams, responder, _cx| {
+                    responder.respond(handle_initialize(params, server.factory.auth_methods()))
+                }
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async |_params: AuthenticateParams, responder, _cx| {
-                responder.respond(AuthenticateResult::new())
+            {
+                let server = server.clone();
+                let next_tool_id = next_tool_id.clone();
+                async move |params: AuthenticateParams, responder, cx| {
+                    let method_id = params.method_id.to_string();
+                    if !server
+                        .factory
+                        .auth_methods()
+                        .iter()
+                        .any(|method| method.id().to_string() == method_id)
+                    {
+                        responder.respond_with_error(invalid_params(format!(
+                            "unknown authentication method `{method_id}`"
+                        )))?;
+                        return Ok(());
+                    }
+                    match server.factory.authenticate(&method_id).await {
+                        Ok(()) => {
+                            responder.respond(AuthenticateResult::new())?;
+                            let peer = Peer {
+                                cx: cx.clone(),
+                                next_id: next_tool_id.clone(),
+                            };
+                            for session in server.sessions() {
+                                emit_config_options(&peer, &session);
+                            }
+                        }
+                        Err(err) => responder
+                            .respond_with_error(internal_error(format!("authenticate: {err}")))?,
+                    }
+                    Ok(())
+                }
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -511,34 +556,36 @@ fn value_mentions_broken_pipe(value: &Value) -> bool {
     }
 }
 
-fn handle_initialize(params: InitializeParams) -> InitializeResult {
+fn handle_initialize(params: InitializeParams, auth_methods: Vec<AuthMethod>) -> InitializeResult {
     // Echo a supported version: honour the client's request when it is one we
     // speak, otherwise advertise our own.
     let version = match params.protocol_version {
         v if v == protocol::PROTOCOL_VERSION => v,
         _ => protocol::PROTOCOL_VERSION,
     };
-    InitializeResult::new(version).agent_capabilities(
-        AgentCapabilities::new()
-            .load_session(true)
-            .prompt_capabilities(
-                PromptCapabilities::new()
-                    .image(true)
-                    .audio(false)
-                    .embedded_context(true),
-            )
-            // Client-configured MCP servers: `http` is advertised; the `stdio`
-            // transport is mandatory for all agents and needs no flag. `sse` is
-            // not advertised (the runtime has no SSE transport).
-            .mcp_capabilities(McpCapabilities::new().http(true))
-            .meta(protocol::meta(json!({
-                "yolop.dev/acp": {
-                    "commandMetadata": true,
-                    "commandArgSuggestions": true,
-                    "commandToolLifecycle": true
-                }
-            }))),
-    )
+    InitializeResult::new(version)
+        .auth_methods(auth_methods)
+        .agent_capabilities(
+            AgentCapabilities::new()
+                .load_session(true)
+                .prompt_capabilities(
+                    PromptCapabilities::new()
+                        .image(true)
+                        .audio(false)
+                        .embedded_context(true),
+                )
+                // Client-configured MCP servers: `http` is advertised; the `stdio`
+                // transport is mandatory for all agents and needs no flag. `sse` is
+                // not advertised (the runtime has no SSE transport).
+                .mcp_capabilities(McpCapabilities::new().http(true))
+                .meta(protocol::meta(json!({
+                    "yolop.dev/acp": {
+                        "commandMetadata": true,
+                        "commandArgSuggestions": true,
+                        "commandToolLifecycle": true
+                    }
+                }))),
+        )
 }
 
 async fn handle_new_session<F: RuntimeFactory>(
@@ -895,6 +942,15 @@ fn emit_mode_change_if_needed(peer: &Peer, session: &Session) {
     }
 }
 
+fn emit_config_options(peer: &Peer, session: &Session) {
+    peer.session_update(
+        &session.acp_id,
+        SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(session_config_options(
+            &session.model,
+        ))),
+    );
+}
+
 async fn respond_prompt<F: RuntimeFactory>(
     server: &Arc<Server<F>>,
     peer: Arc<Peer>,
@@ -1034,6 +1090,15 @@ async fn run_slash_command(
     let name = command.name;
     let args = command.args;
     let title = command.title;
+    if name == "setup" && args.split_whitespace().next() == Some("token") {
+        peer.session_update(
+            &session.acp_id,
+            SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                "API keys cannot be entered over ACP because the protocol does not provide secure secret input; configure the provider key in the agent process environment",
+            )),
+        );
+        return StopReason::EndTurn;
+    }
     let commands = session.commands.lock().unwrap().clone();
     let Some(descriptor) = commands.iter().find(|c| c.name == name).cloned() else {
         peer.session_update(
@@ -1123,6 +1188,7 @@ async fn run_slash_command(
                 )),
             );
             refresh_available_commands(&peer, &session).await;
+            emit_config_options(&peer, &session);
             StopReason::EndTurn
         }
         CommandSource::Skill => {
@@ -1449,6 +1515,23 @@ async fn drain_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initialize_advertises_agent_handled_authentication() {
+        let result = handle_initialize(
+            InitializeParams::new(protocol::PROTOCOL_VERSION),
+            vec![AuthMethod::Agent(
+                agent_client_protocol::schema::v1::AuthMethodAgent::new(
+                    "codex_browser",
+                    "Sign in with ChatGPT",
+                ),
+            )],
+        );
+
+        let value = serde_json::to_value(result).expect("serialize initialize response");
+        assert_eq!(value["authMethods"][0]["id"], "codex_browser");
+        assert_eq!(value["authMethods"][0]["name"], "Sign in with ChatGPT");
+    }
 
     #[test]
     fn prompt_image_parts_preserve_acp_inline_images() {

@@ -225,10 +225,6 @@ pub struct Settings {
     /// `model [effort]` form `/setup model` accepts. Lets a model pick
     /// survive restarts and provider switches.
     pub models: BTreeMap<String, String>,
-    /// Global fallback model spec applied to the active provider when no
-    /// per-provider `[models]` entry exists. Provider-relative, same form as
-    /// `[models]` (`gpt-5.5 high`). A per-provider pick always wins over this.
-    pub default_model: Option<String>,
     /// Endpoint base URLs keyed by provider. Today only `custom` (the
     /// generic OpenAI-compatible provider) writes here.
     pub base_urls: BTreeMap<String, String>,
@@ -264,7 +260,6 @@ impl Default for Settings {
             default_provider: None,
             tokens: BTreeMap::new(),
             models: BTreeMap::new(),
-            default_model: None,
             base_urls: BTreeMap::new(),
             codex_auth: None,
             attribution: true,
@@ -287,10 +282,6 @@ impl Settings {
         let default_provider = table
             .get("default_provider")
             .or_else(|| table.get("provider"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let default_model = table
-            .get("default_model")
             .and_then(Value::as_str)
             .map(str::to_string);
         let attribution = table
@@ -345,7 +336,6 @@ impl Settings {
             default_provider,
             tokens: string_map("tokens"),
             models: string_map("models"),
-            default_model,
             base_urls: string_map("base_urls"),
             codex_auth,
             attribution,
@@ -364,9 +354,6 @@ impl Settings {
         let mut table = Table::new();
         if let Some(p) = &self.default_provider {
             table.insert("default_provider".to_string(), Value::String(p.clone()));
-        }
-        if let Some(m) = &self.default_model {
-            table.insert("default_model".to_string(), Value::String(m.clone()));
         }
         if !self.attribution {
             table.insert("attribution".to_string(), Value::Boolean(false));
@@ -451,10 +438,6 @@ impl Settings {
 
     pub fn model_for(&self, provider: &str) -> Option<&str> {
         self.models.get(provider).map(String::as_str)
-    }
-
-    pub fn default_model(&self) -> Option<&str> {
-        self.default_model.as_deref()
     }
 
     pub fn base_url_for(&self, provider: &str) -> Option<&str> {
@@ -735,7 +718,6 @@ impl SettingsStore {
         let overlay = &active.overlay;
         let overridden = match target {
             schema::KeyTarget::DefaultProvider => overlay.default_provider.is_some(),
-            schema::KeyTarget::DefaultModel => overlay.default_model.is_some(),
             schema::KeyTarget::ApprovalMode => overlay.approval_mode.is_some(),
             schema::KeyTarget::ApprovalPolicy => overlay.approval_policy.is_some(),
             schema::KeyTarget::Worktrees => overlay.worktrees.is_some(),
@@ -898,16 +880,6 @@ impl SettingsStore {
             existed
         };
         Ok(existed)
-    }
-
-    /// Set or clear the global fallback model spec (`default_model`).
-    pub fn set_default_model(&self, spec: Option<String>) -> Result<()> {
-        let spec = spec.filter(|s| !s.trim().is_empty());
-        let base_spec = spec.clone();
-        self.update_profileable(
-            |settings| settings.default_model = base_spec,
-            |profile| profile.default_model = spec.map(Some),
-        )
     }
 
     pub fn set_base_url(&self, provider: String, url: String) -> Result<()> {
@@ -1564,37 +1536,6 @@ Authorization = "Bearer ${LINEAR_API_KEY}"
             Some("http://localhost:8000/v1")
         );
         assert!(reloaded.snapshot().model_for("anthropic").is_none());
-    }
-
-    #[test]
-    fn default_model_roundtrips_and_clears() {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let path = tmp.path().join("settings.toml");
-        let store = SettingsStore::open(path.clone());
-        assert!(store.snapshot().default_model().is_none());
-
-        store
-            .set_default_model(Some("claude-sonnet-4-5".to_string()))
-            .expect("save default model");
-        let on_disk = std::fs::read_to_string(&path).expect("read");
-        assert!(
-            on_disk.contains("default_model = \"claude-sonnet-4-5\""),
-            "expected default_model key, got: {on_disk}"
-        );
-
-        let reloaded = SettingsStore::open(path.clone());
-        assert_eq!(
-            reloaded.snapshot().default_model(),
-            Some("claude-sonnet-4-5")
-        );
-
-        // Empty/whitespace clears, and the key drops out of the TOML.
-        reloaded
-            .set_default_model(Some("  ".to_string()))
-            .expect("clear");
-        assert!(reloaded.snapshot().default_model().is_none());
-        let on_disk = std::fs::read_to_string(&path).expect("read");
-        assert!(!on_disk.contains("default_model"), "got: {on_disk}");
     }
 
     #[test]
