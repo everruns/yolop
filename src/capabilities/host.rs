@@ -1383,11 +1383,11 @@ impl Tool for SetModelTool {
         })
     }
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let model = match required_str_arg(&arguments, "model") {
+        let query = match required_str_arg(&arguments, "model") {
             Ok(value) => value,
             Err(err) => return err,
         };
-        let search = search_configured_models(&self.controller.settings.snapshot(), model).await;
+        let search = search_configured_models(&self.controller.settings.snapshot(), query).await;
         let current_provider = self
             .controller
             .provider
@@ -1395,30 +1395,53 @@ impl Tool for SetModelTool {
             .expect("provider lock poisoned")
             .provider_name()
             .to_string();
-        let exact_current = search
-            .matches
-            .iter()
-            .any(|item| item.provider == current_provider && item.model_id == model);
-        if !search.matches.is_empty() && !exact_current {
-            let choices = search
-                .matches
+        let resolved = match resolve_model_match(query, &search.matches) {
+            Ok(model) => Some(model),
+            Err(_) if search.matches.is_empty() => None,
+            Err(message) => return ToolExecutionResult::tool_error(message),
+        };
+        let model_id = resolved.map_or(query, |model| model.model_id.as_str());
+        let spec = match arguments.get("reasoning_effort").and_then(Value::as_str) {
+            Some(effort) if !effort.trim().is_empty() => {
+                format!("{model_id} {}", effort.trim())
+            }
+            _ => model_id.to_string(),
+        };
+        let result = match resolved {
+            Some(model) if model.provider != current_provider => {
+                self.controller
+                    .change_provider(&format!("{} {spec}", model.provider))
+                    .await
+            }
+            _ => self.controller.change_model(&spec).await,
+        };
+        into_tool_result(result)
+    }
+}
+
+fn resolve_model_match<'a>(
+    query: &str,
+    matches: &'a [crate::capabilities::model_discovery::ModelSearchMatch],
+) -> Result<&'a crate::capabilities::model_discovery::ModelSearchMatch, String> {
+    if let Some(exact) = matches.iter().find(|candidate| candidate.model_id == query) {
+        return Ok(exact);
+    }
+    match matches {
+        [model] => Ok(model),
+        [] => Err(format!(
+            "No configured model matches `{query}`. Call search_models to see available models."
+        )),
+        _ => {
+            let choices = matches
                 .iter()
-                .take(20)
-                .map(|item| format!("{}: {}", item.provider, item.model_id))
+                .take(5)
+                .map(|model| format!("{}: {}", model.provider, model.model_id))
                 .collect::<Vec<_>>()
                 .join(", ");
-            return ToolExecutionResult::tool_error(format!(
-                "`{model}` is not an exact model ID for provider `{current_provider}`. Matching models: {choices}. Select an exact result; call set_provider first for another provider."
-            ));
+            Err(format!(
+                "Multiple configured models match `{query}`. Top matches: {choices}. Pass one exact model ID to set_model."
+            ))
         }
-
-        // `change_model` accepts the `model [reasoning-effort]` spec the
-        // `/setup model` command takes, so join the optional effort onto it.
-        let spec = match arguments.get("reasoning_effort").and_then(Value::as_str) {
-            Some(effort) if !effort.trim().is_empty() => format!("{model} {}", effort.trim()),
-            _ => model.to_string(),
-        };
-        into_tool_result(self.controller.change_model(&spec).await)
     }
 }
 
@@ -1636,6 +1659,38 @@ mod tests {
             Some("gpt-5.4 none")
         );
         assert_eq!(after.default_provider.as_deref(), Some("openai"));
+    }
+
+    #[test]
+    fn model_match_resolution_returns_five_actionable_choices() {
+        use crate::capabilities::model_discovery::ModelSearchMatch;
+
+        let mut matches = vec![ModelSearchMatch {
+            provider: "openrouter".to_string(),
+            model_id: "openrouter/terra".to_string(),
+            display_name: Some("Terra".to_string()),
+        }];
+        assert_eq!(
+            resolve_model_match("terra", &matches).unwrap().model_id,
+            "openrouter/terra"
+        );
+
+        for index in 2..=6 {
+            matches.push(ModelSearchMatch {
+                provider: format!("provider-{index}"),
+                model_id: format!("terra-v{index}"),
+                display_name: Some(format!("Terra v{index}")),
+            });
+        }
+        let error = resolve_model_match("terra", &matches).unwrap_err();
+        assert!(error.contains("openrouter: openrouter/terra"));
+        assert!(error.contains("provider-5: terra-v5"));
+        assert!(!error.contains("provider-6: terra-v6"));
+        assert!(error.contains("Pass one exact model ID to set_model"));
+        assert_eq!(
+            resolve_model_match("terra-v2", &matches).unwrap().provider,
+            "provider-2"
+        );
     }
 
     #[tokio::test]
