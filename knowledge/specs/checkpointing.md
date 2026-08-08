@@ -174,8 +174,11 @@ On a new turn, Yolop:
 
 A failed model preflight does not create a checkpoint or append the ask. Once a
 provider request begins, everruns-runtime owns bounded transient recovery inside
-the active reason phase. Retries reuse the persisted ask and completed tool
-outputs; they never create another checkpoint or re-run a completed tool.
+the active reason phase. Yolop installs a stall liveness window and a recovery
+elapsed budget large enough to absorb full stall retries (upstream's default
+elapsed budget is shorter than one stall window). Retries reuse the persisted ask
+and completed tool outputs; they never create another checkpoint or re-run a
+completed tool.
 
 On resume, Yolop validates the timeline, walks parents from the active head, and
 replays only those event ranges into the event bus, message store, and transcript.

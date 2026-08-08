@@ -1398,6 +1398,17 @@ async fn completion_followup(
     if !session.user_ask_enabled || !session.user_ask_store.is_active(session_id) {
         return None;
     }
+    if let Some(evaluation) = crate::session_state::task_completion::failed_turn_evaluation(result)
+    {
+        let _ = session
+            .user_ask_store
+            .record_evaluation(session_id, &evaluation);
+        peer.session_update(
+            &session.acp_id,
+            SessionUpdate::AgentMessageChunk(protocol::text_chunk("task failed")),
+        );
+        return None;
+    }
     let tokens = session.handles.turn_tokens(result.turn_id).await;
     if !session
         .completion_budget

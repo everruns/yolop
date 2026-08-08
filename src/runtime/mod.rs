@@ -100,7 +100,33 @@ use crate::runtime::session_log::{
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, RwLock};
+use std::time::Duration;
 use tokio::sync::{RwLock as AsyncRwLock, mpsc};
+
+/// Default no-output stream-liveness window. Matches everruns-core's Reason
+/// atom default and the provider reconnect first-item bound so silent HTTP 200
+/// responses fail at the same budget everywhere.
+pub(crate) const PROVIDER_STALL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Bounded recovery for transient provider failures, including stream stalls.
+///
+/// Upstream's default `max_retry_elapsed` is 30s — shorter than one stall
+/// window — so a recovered attempt is clipped and usually stalls again
+/// immediately. Keep SDK-shaped retry counts/backoff, but give the elapsed
+/// budget enough room for `max_retries` full stall windows plus backoff.
+pub(crate) fn provider_recovery_config() -> everruns_core::LlmRetryConfig {
+    let max_retries = 2;
+    everruns_core::LlmRetryConfig {
+        max_retries,
+        initial_backoff: Duration::from_secs(1),
+        max_backoff: Duration::from_secs(60),
+        backoff_multiplier: 2.0,
+        jitter_factor: 0.25,
+        max_retry_elapsed: PROVIDER_STALL_TIMEOUT
+            .saturating_mul(max_retries)
+            .saturating_add(Duration::from_secs(60)),
+    }
+}
 
 // The harness prompt is the durable instruction surface — borrowed in shape
 // from `crates/server/src/harnesses/coding_container.rs` and trimmed for
@@ -2739,6 +2765,13 @@ pub struct BuildOptions {
     /// registered and enforces the current approval level; hosts without an
     /// interactive prompt (the TUI, `--print`) leave it `None`.
     pub tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
+    /// Override the provider stream-stall liveness window. Tests inject a short
+    /// bound; production leaves this `None` and uses [`PROVIDER_STALL_TIMEOUT`].
+    pub provider_stall_timeout: Option<Duration>,
+    /// Override the bounded provider-recovery policy. Tests inject a short
+    /// elapsed budget; production leaves this `None` and uses
+    /// [`provider_recovery_config`].
+    pub provider_retry_config: Option<everruns_core::LlmRetryConfig>,
 }
 
 impl Default for BuildOptions {
@@ -2752,6 +2785,8 @@ impl Default for BuildOptions {
             client_ui: ClientUiContext::None,
             client_mcp_servers: ScopedMcpServers::new(),
             tool_approver: None,
+            provider_stall_timeout: None,
+            provider_retry_config: None,
         }
     }
 }
@@ -3593,6 +3628,20 @@ pub async fn build_with_options(
         .with_model("llmsim-yolop")
     });
     builder = builder.llm_sim(llmsim_config);
+    // EVE-806 / production stalls: everruns recovers silent streams when the
+    // elapsed retry budget can absorb full stall windows. Yolop always installs
+    // that aligned policy (tests may override both knobs via BuildOptions).
+    builder = builder
+        .provider_stall_timeout(
+            options
+                .provider_stall_timeout
+                .unwrap_or(PROVIDER_STALL_TIMEOUT),
+        )
+        .provider_retry_config(
+            options
+                .provider_retry_config
+                .unwrap_or_else(provider_recovery_config),
+        );
     let runtime = Arc::new(builder.build().await?);
     runtime_cell
         .set(Arc::downgrade(&runtime))
@@ -4195,6 +4244,127 @@ mod tests {
                 .expect("read workspace metadata")
                 .expect("workspace metadata present");
         assert_eq!(metadata.title.as_deref(), Some("Automatic session titles"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn provider_stream_stall_recovers_through_yolop_runtime_builder() {
+        use everruns_core::llmsim_driver::SimTurn;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::StreamStall,
+                SimTurn::Assistant("recovered after stall".to_string()),
+            ])),
+            provider_stall_timeout: Some(Duration::from_millis(50)),
+            provider_retry_config: Some(everruns_core::LlmRetryConfig {
+                max_retries: 2,
+                initial_backoff: Duration::from_millis(10),
+                max_backoff: Duration::from_millis(40),
+                backoff_multiplier: 2.0,
+                jitter_factor: 0.0,
+                // Must cover a full stall window after the first failure; the
+                // upstream default of 30s is fine for wall-clock rate limits
+                // but too short once the stall watchdog uses the same budget.
+                max_retry_elapsed: Duration::from_millis(500),
+            }),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "survive the stall",
+                built.model.input_message("survive the stall"),
+            )
+            .await
+            .expect("run turn");
+
+        assert!(result.success, "stall should recover: {result:?}");
+        assert_eq!(result.response, "recovered after stall");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn misaligned_retry_budget_fails_a_recoverable_stream_stall() {
+        use everruns_core::llmsim_driver::SimTurn;
+
+        // Prove the production bug class: when max_retry_elapsed is shorter
+        // than the stall window, the first recovery attempt is clipped and the
+        // turn dies instead of completing on the scripted follow-up response.
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::StreamStall,
+                SimTurn::StreamStall,
+                SimTurn::Assistant("should not run".to_string()),
+            ])),
+            provider_stall_timeout: Some(Duration::from_millis(80)),
+            provider_retry_config: Some(everruns_core::LlmRetryConfig {
+                max_retries: 2,
+                initial_backoff: Duration::from_millis(10),
+                max_backoff: Duration::from_millis(40),
+                backoff_multiplier: 2.0,
+                jitter_factor: 0.0,
+                max_retry_elapsed: Duration::from_millis(20),
+            }),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "budget too small",
+                built.model.input_message("budget too small"),
+            )
+            .await
+            .expect("run turn");
+
+        assert!(!result.success, "clipped recovery must fail: {result:?}");
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("provider stream stall")
+                    || error.contains("time budget exhausted")),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn provider_recovery_budget_covers_full_stall_retries() {
+        let config = provider_recovery_config();
+        assert_eq!(config.max_retries, 2);
+        assert!(
+            config.max_retry_elapsed >= PROVIDER_STALL_TIMEOUT.saturating_mul(config.max_retries),
+            "elapsed budget {:?} must cover {} full {} stall windows",
+            config.max_retry_elapsed,
+            config.max_retries,
+            PROVIDER_STALL_TIMEOUT.as_secs()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
