@@ -66,6 +66,19 @@ pub(crate) fn evaluation_for_state(
     }
 }
 
+/// Provider/runtime failures are terminal for the ask and must not consume the
+/// continuation budget. Spec: user-ask.md — "Provider errors … become failed
+/// … and never retry blindly." Checking this before `observe_turn` also stops
+/// ACP/TUI from appending a misleading "budget exhausted" line after a stall.
+pub(crate) fn failed_turn_evaluation(
+    result: &everruns_runtime::TurnResult,
+) -> Option<crate::session_state::user_ask::UserAskEvaluation> {
+    if result.success {
+        return None;
+    }
+    Some(evaluation_for_state(CompletionState::Failed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +134,16 @@ mod tests {
         assert_eq!(
             gate_turn(&result("", 0, false), false),
             GateDecision::Conclusive(CompletionState::Failed)
+        );
+    }
+
+    #[test]
+    fn failed_turn_evaluation_skips_successful_turns() {
+        assert!(failed_turn_evaluation(&result("ok", 0, true)).is_none());
+        let failed = failed_turn_evaluation(&result("", 0, false)).expect("failed");
+        assert_eq!(
+            failed.outcome,
+            crate::session_state::user_ask::AskOutcome::Failed
         );
     }
 

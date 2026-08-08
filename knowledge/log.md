@@ -3,6 +3,15 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-08 — Provider stall recovery budget and failure UX
+
+- [Checkpointing](specs/checkpointing.md) now records that Yolop installs a
+  stall liveness window with an elapsed recovery budget large enough for full
+  stall retries (upstream's default elapsed budget is shorter than one window).
+- [User ask](specs/user-ask.md) now classifies provider/runtime failures as
+  failed before charging the continuation budget, so a stall never surfaces as
+  "budget exhausted".
+
 ## 2026-08-07 — Connected ACP model catalog and authentication
 
 - ACP session creation now falls back from a stale disconnected preference to

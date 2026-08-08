@@ -47,6 +47,8 @@ Automatic work is capped per user ask at six agent turns, 64,000 provider-report
 tokens, and ten minutes. Exhaustion leaves the ask active for an explicit user
 resume. A fresh user message resets the budget; automatic wakes do not. Achieved,
 blocked, and failed deactivate the ask. Waiting remains active for its wake.
+Provider/runtime failures are classified as failed before the continuation budget
+is charged, so a stall or transport error never surfaces as "budget exhausted".
 
 ## Configuration
 
