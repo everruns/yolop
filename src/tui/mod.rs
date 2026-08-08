@@ -3342,7 +3342,6 @@ impl App {
         if let Some(evaluation) =
             crate::session_state::task_completion::failed_turn_evaluation(&result)
         {
-            let outcome = evaluation.outcome;
             if let Err(err) = self
                 .user_ask_store
                 .record_evaluation(session_id, &evaluation)
@@ -3351,10 +3350,6 @@ impl App {
                 return;
             }
             self.push_system(evaluation_status_message(&evaluation));
-            if matches!(outcome, AskOutcome::Blocked) {
-                self.session
-                    .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
-            }
             return;
         }
         let tokens = self.session.turn_tokens(result.turn_id).await;

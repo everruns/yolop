@@ -2766,12 +2766,11 @@ pub struct BuildOptions {
     /// interactive prompt (the TUI, `--print`) leave it `None`.
     pub tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
     /// Override the provider stream-stall liveness window. Tests inject a short
-    /// bound under `tokio::time` pause; production leaves this `None` and uses
-    /// [`PROVIDER_STALL_TIMEOUT`].
+    /// bound; production leaves this `None` and uses [`PROVIDER_STALL_TIMEOUT`].
     pub provider_stall_timeout: Option<Duration>,
-    /// Override the bounded provider-recovery policy. Tests pair a short
-    /// elapsed budget with a paused clock; production leaves this `None` and
-    /// uses [`provider_recovery_config`].
+    /// Override the bounded provider-recovery policy. Tests inject a short
+    /// elapsed budget; production leaves this `None` and uses
+    /// [`provider_recovery_config`].
     pub provider_retry_config: Option<everruns_core::LlmRetryConfig>,
 }
 
