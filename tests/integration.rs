@@ -43,6 +43,33 @@ fn yolop_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_yolop"))
 }
 
+#[test]
+fn meta_provider_reaches_credential_boundary_from_real_binary() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_root = tmp.path().join(".config");
+    let output = Command::new(yolop_binary())
+        .args([
+            "--provider",
+            "meta",
+            "--session-dir",
+            tmp.path().to_str().unwrap(),
+            "-p",
+            "hi",
+        ])
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", &config_root)
+        .env_remove("MODEL_API_KEY")
+        .output()
+        .expect("spawn yolop with Meta provider");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success(), "stderr={stderr}");
+    assert!(
+        stderr.contains("MODEL_API_KEY not set") || stderr.contains("API key is required"),
+        "Meta provider should reach credential resolution or its registered driver: {stderr}"
+    );
+}
+
 #[cfg(target_os = "linux")]
 fn run_linux_sandbox_worker(
     cwd: &Path,

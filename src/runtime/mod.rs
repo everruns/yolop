@@ -1052,6 +1052,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.6-sol";
 const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
+const DEFAULT_META_MODEL: &str = "muse-spark-1.2";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
 // Gemini exposes an OpenAI-compatible surface at this base URL, driven through
 // `everruns_openai`. (OpenRouter has its own first-class driver since
@@ -1087,6 +1088,10 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
 #[derive(Clone, Debug)]
 pub enum ProviderChoice {
     Anthropic {
+        model: String,
+        reasoning_effort: Option<String>,
+    },
+    Meta {
         model: String,
         reasoning_effort: Option<String>,
     },
@@ -1144,6 +1149,7 @@ pub enum Provider {
     OpenAi,
     Codex,
     Anthropic,
+    Meta,
     Google,
     OpenRouter,
     Ollama,
@@ -1153,10 +1159,11 @@ pub enum Provider {
 
 impl Provider {
     /// Every provider, in the user-visible suggestion order.
-    pub const ALL: [Provider; 8] = [
+    pub const ALL: [Provider; 9] = [
         Provider::OpenAi,
         Provider::Codex,
         Provider::Anthropic,
+        Provider::Meta,
         Provider::Google,
         Provider::OpenRouter,
         Provider::Ollama,
@@ -1170,6 +1177,7 @@ impl Provider {
             Provider::OpenAi => "openai",
             Provider::Codex => "codex",
             Provider::Anthropic => "anthropic",
+            Provider::Meta => "meta",
             Provider::Google => "google",
             Provider::OpenRouter => "openrouter",
             Provider::Ollama => "ollama",
@@ -1193,6 +1201,7 @@ impl Provider {
     pub fn driver_id(self) -> Option<DriverId> {
         match self {
             Provider::Anthropic => Some(DriverId::Anthropic),
+            Provider::Meta => Some(DriverId::Meta),
             Provider::OpenAi | Provider::Google => Some(DriverId::OpenAI),
             Provider::OpenRouter => Some(DriverId::OpenRouter),
             Provider::Codex | Provider::Ollama | Provider::Custom | Provider::Sim => None,
@@ -1207,6 +1216,7 @@ pub const SUPPORTED_PROVIDERS: &[&str] = &[
     Provider::OpenAi.as_str(),
     Provider::Codex.as_str(),
     Provider::Anthropic.as_str(),
+    Provider::Meta.as_str(),
     Provider::Google.as_str(),
     Provider::OpenRouter.as_str(),
     Provider::Ollama.as_str(),
@@ -1228,6 +1238,9 @@ impl ProviderChoice {
         }
         if env_non_empty("ANTHROPIC_API_KEY").is_some() || settings.has_token("anthropic") {
             return Self::default_anthropic();
+        }
+        if env_non_empty("MODEL_API_KEY").is_some() || settings.has_token("meta") {
+            return Self::default_meta();
         }
         if env_non_empty("OPENROUTER_API_KEY").is_some() || settings.has_token("openrouter") {
             return Self::default_openrouter();
@@ -1286,6 +1299,14 @@ impl ProviderChoice {
         }
     }
 
+    fn default_meta() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_META_MODEL);
+        Self::Meta {
+            reasoning_effort: default_reasoning_effort(&DriverId::Meta, &model),
+            model,
+        }
+    }
+
     fn default_google() -> Self {
         let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL);
         Self::Google {
@@ -1336,6 +1357,7 @@ impl ProviderChoice {
     pub fn provider(&self) -> Provider {
         match self {
             Self::Anthropic { .. } => Provider::Anthropic,
+            Self::Meta { .. } => Provider::Meta,
             Self::OpenAi { .. } => Provider::OpenAi,
             Self::Codex { .. } => Provider::Codex,
             Self::Google { .. } => Provider::Google,
@@ -1365,6 +1387,7 @@ impl ProviderChoice {
             Provider::OpenAi => Ok(Self::default_openai()),
             Provider::Codex => Ok(Self::default_codex()),
             Provider::Anthropic => Ok(Self::default_anthropic()),
+            Provider::Meta => Ok(Self::default_meta()),
             Provider::Google => Ok(Self::default_google()),
             Provider::OpenRouter => Ok(Self::default_openrouter()),
             Provider::Ollama => Ok(Self::default_ollama()),
@@ -1460,6 +1483,7 @@ impl ProviderChoice {
     pub fn model_id(&self) -> &str {
         match self {
             Self::Anthropic { model, .. }
+            | Self::Meta { model, .. }
             | Self::OpenAi { model, .. }
             | Self::Codex { model, .. }
             | Self::Google { model, .. }
@@ -1506,6 +1530,9 @@ impl ProviderChoice {
                 reasoning_effort, ..
             }
             | Self::Anthropic {
+                reasoning_effort, ..
+            }
+            | Self::Meta {
                 reasoning_effort, ..
             }
             | Self::Codex {
@@ -1574,6 +1601,7 @@ impl ProviderChoice {
                 "claude-fable-5[1m]",
                 "claude-opus-4-8[1m]",
             ],
+            "meta" => &["muse-spark-1.2", "muse-spark-1.2-contributor"],
             "google" => &["gemini-2.5-flash", "gemini-2.5-pro"],
             "openrouter" => &[
                 "openai/gpt-5.6-sol",
@@ -1613,6 +1641,14 @@ impl ProviderChoice {
                 let reasoning_effort =
                     self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
                 Ok(Self::Anthropic {
+                    model,
+                    reasoning_effort,
+                })
+            }
+            Self::Meta { .. } => {
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
+                Ok(Self::Meta {
                     model,
                     reasoning_effort,
                 })
@@ -1765,6 +1801,17 @@ impl ProviderChoice {
                     base_url: None,
                 })
             }
+            ProviderChoice::Meta { model, .. } => {
+                let key = resolve_token(settings, "meta", &["MODEL_API_KEY"])
+                    .ok_or_else(|| anyhow!("MODEL_API_KEY not set (and no token stored)"))?;
+                Ok(ResolvedModel {
+                    model: model.clone(),
+                    provider_type: DriverId::Meta,
+                    provider_metadata: None,
+                    api_key: Some(key),
+                    base_url: None,
+                })
+            }
             ProviderChoice::OpenAi { model, .. } => {
                 let key = resolve_token(settings, "openai", &["OPENAI_API_KEY"])
                     .ok_or_else(|| anyhow!("OPENAI_API_KEY not set (and no token stored)"))?;
@@ -1887,6 +1934,13 @@ impl ProviderChoice {
             ProviderChoice::Anthropic { model, .. } => ResolvedModel {
                 model: model.clone(),
                 provider_type: DriverId::Anthropic,
+                provider_metadata: None,
+                api_key: None,
+                base_url: None,
+            },
+            ProviderChoice::Meta { model, .. } => ResolvedModel {
+                model: model.clone(),
+                provider_type: DriverId::Meta,
                 provider_metadata: None,
                 api_key: None,
                 base_url: None,
@@ -3470,6 +3524,7 @@ pub async fn build_with_options(
 
     let mut driver_registry = DriverRegistry::new();
     everruns_anthropic::register_driver(&mut driver_registry);
+    everruns_meta::register_driver(&mut driver_registry);
     everruns_openai::register_driver(&mut driver_registry);
     // OpenRouter moved to its own crate in everruns 0.13.0; register its
     // first-class DriverId::OpenRouter driver here (was bundled with openai).
@@ -3483,6 +3538,7 @@ pub async fn build_with_options(
         .clone();
     let default_model = match &active_provider {
         ProviderChoice::Anthropic { .. }
+        | ProviderChoice::Meta { .. }
         | ProviderChoice::OpenAi { .. }
         | ProviderChoice::Codex { .. }
         | ProviderChoice::Google { .. }
@@ -5968,6 +6024,9 @@ mod tests {
         let anthropic = ProviderChoice::default_for_provider_name("anthropic").unwrap();
         assert_eq!(anthropic.label(), "anthropic/claude-opus-4-8 high");
 
+        let meta = ProviderChoice::default_for_provider_name("meta").unwrap();
+        assert_eq!(meta.label(), "meta/muse-spark-1.2");
+
         let google = ProviderChoice::default_for_provider_name("google").unwrap();
         assert_eq!(google.label(), "google/gemini-2.5-flash");
 
@@ -6000,6 +6059,7 @@ mod tests {
 
         // Driver mapping matches the previous hand-written table.
         assert_eq!(Provider::Anthropic.driver_id(), Some(DriverId::Anthropic));
+        assert_eq!(Provider::Meta.driver_id(), Some(DriverId::Meta));
         assert_eq!(Provider::OpenAi.driver_id(), Some(DriverId::OpenAI));
         assert_eq!(Provider::Google.driver_id(), Some(DriverId::OpenAI));
         assert_eq!(Provider::OpenRouter.driver_id(), Some(DriverId::OpenRouter));
@@ -6016,6 +6076,7 @@ mod tests {
             std::env::remove_var("OPENAI_API_KEY");
             std::env::remove_var("CODEX_ACCESS_TOKEN");
             std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("MODEL_API_KEY");
             std::env::remove_var("OPENROUTER_API_KEY");
             std::env::remove_var("GEMINI_API_KEY");
             std::env::remove_var("GOOGLE_API_KEY");
@@ -6035,6 +6096,7 @@ mod tests {
         unsafe {
             std::env::remove_var("OPENAI_API_KEY");
             std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("MODEL_API_KEY");
             std::env::remove_var("OPENROUTER_API_KEY");
             std::env::remove_var("GEMINI_API_KEY");
             std::env::remove_var("GOOGLE_API_KEY");
@@ -6345,6 +6407,44 @@ mod tests {
         };
         let model = provider.model_with_provider(&settings).unwrap();
         assert_eq!(model.api_key, Some("stored-anth-key".to_string()));
+    }
+
+    #[test]
+    fn meta_uses_first_class_driver_and_model_api_key() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::set_var("MODEL_API_KEY", "test-meta-key");
+        }
+        let provider = ProviderChoice::default_for_provider_name("meta").unwrap();
+
+        let model = provider.model_with_provider(&Settings::default()).unwrap();
+        unsafe {
+            std::env::remove_var("MODEL_API_KEY");
+        }
+
+        assert_eq!(model.model, "muse-spark-1.2");
+        assert_eq!(model.provider_type, DriverId::Meta);
+        assert_eq!(model.api_key.as_deref(), Some("test-meta-key"));
+        assert_eq!(
+            provider.model_without_stored_key().provider_type,
+            DriverId::Meta
+        );
+    }
+
+    #[test]
+    fn meta_suggestions_include_standard_and_contributor_profiles() {
+        let suggestions = ProviderChoice::model_suggestions_for_provider("meta");
+        assert_eq!(
+            suggestions,
+            &["muse-spark-1.2", "muse-spark-1.2-contributor"]
+        );
+
+        for model in suggestions {
+            assert!(
+                get_model_profile(&DriverId::Meta, model).is_some(),
+                "missing published Meta profile for {model}"
+            );
+        }
     }
 
     #[test]

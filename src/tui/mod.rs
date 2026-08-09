@@ -489,6 +489,11 @@ const PROVIDER_OPTIONS: &[ProviderOption] = &[
         hint: "Claude",
     },
     ProviderOption {
+        name: "meta",
+        label: "Meta Model API",
+        hint: "Muse models",
+    },
+    ProviderOption {
         name: "google",
         label: "Google Gemini",
         hint: "Gemini models",
@@ -9420,6 +9425,7 @@ mod tests {
         let rendered = setup_overlay_text(app);
         assert!(rendered.iter().any(|line| line.contains("Set Up Yolop")));
         assert!(rendered.iter().any(|line| line.contains("OpenAI")));
+        assert!(rendered.iter().any(|line| line.contains("Meta Model API")));
         assert!(
             rendered
                 .iter()
