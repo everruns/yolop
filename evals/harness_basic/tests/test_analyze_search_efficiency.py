@@ -8,7 +8,25 @@ analyzer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(analyzer)
 
 
-def case(sample, binary, passed, tools=1, tokens=100, failures=0, error=None):
+def scores(checks=None, budget=None):
+    """Score list as the harness emits it: `checks` grades whether the agent did
+    the task, `declared_budget` grades the efficiency ceiling separately."""
+    emitted = []
+    if checks is not None:
+        emitted.append(
+            {"scorer": "checks", "pass": checks}
+            if checks is not NA
+            else {"scorer": "checks", "pass": False, "na": True}
+        )
+    if budget is not None:
+        emitted.append({"scorer": "declared_budget", "pass": budget})
+    return emitted
+
+
+NA = object()
+
+
+def case(sample, binary, passed, tools=1, tokens=100, failures=0, error=None, scored=None):
     transcript = {
         "tool_calls_count": tools,
         "metrics": {
@@ -21,12 +39,15 @@ def case(sample, binary, passed, tools=1, tokens=100, failures=0, error=None):
     }
     if error is not None:
         transcript["error"] = error
-    return {
+    built = {
         "sample": sample,
         "passed": passed,
         "params": {"binary": binary},
         "transcript": transcript,
     }
+    if scored is not None:
+        built["scores"] = scored
+    return built
 
 
 QUOTA_ERROR = (
@@ -156,6 +177,72 @@ class AnalyzeTests(unittest.TestCase):
         self.assertTrue(
             any("candidate focused pass rate" in failure for failure in failures)
         )
+
+    def test_candidate_only_budget_is_not_a_correctness_regression(self):
+        # The real zero-result-search-recovery shape: baseline answers two
+        # assertions and passes, candidate answers six and busts its own budget.
+        # Both cleared the rubric they share, so this is not a regression — it was
+        # reported as "correctness regressed 100% -> 33%" for two weeks.
+        cases = []
+        for index, sample in enumerate(sorted(analyzer.FOCUSED)):
+            # One focused case improves, as on a real night, so the separate
+            # "some case improved" gate is satisfied and cannot mask this result.
+            base_ok = index != 0
+            for _ in range(3):
+                cases.append(
+                    case(
+                        sample, "baseline", base_ok, tools=5, scored=scores(checks=base_ok)
+                    )
+                )
+                cases.append(
+                    case(
+                        sample,
+                        "candidate",
+                        False,
+                        tools=5,
+                        scored=scores(checks=True, budget=False),
+                    )
+                )
+        cases += control_cases()
+        _, failures, notes = analyzer.analyze_reports([{"cases": cases}])
+        self.assertEqual(failures, [])
+        # Not gated, but not silent either.
+        self.assertTrue(any("declared budget" in note for note in notes))
+
+    def test_shared_rubric_failure_still_regresses(self):
+        # The budget split must not blunt the gate: when the candidate fails the
+        # rubric both binaries answer, that is still a correctness regression.
+        cases = []
+        for sample in sorted(analyzer.FOCUSED):
+            for _ in range(3):
+                cases.append(
+                    case(sample, "baseline", True, tools=5, scored=scores(checks=True))
+                )
+                cases.append(
+                    case(
+                        sample,
+                        "candidate",
+                        False,
+                        tools=5,
+                        scored=scores(checks=False, budget=True),
+                    )
+                )
+        cases += control_cases()
+        _, failures, _ = analyzer.analyze_reports([{"cases": cases}])
+        self.assertTrue(any("correctness regressed" in failure for failure in failures))
+
+    def test_sample_with_no_shared_rubric_is_reported_not_compared(self):
+        cases = []
+        for sample in sorted(analyzer.FOCUSED):
+            for _ in range(3):
+                for binary in ("baseline", "candidate"):
+                    cases.append(
+                        case(sample, binary, False, tools=5, scored=scores(checks=NA))
+                    )
+        cases += control_cases()
+        _, failures, notes = analyzer.analyze_reports([{"cases": cases}])
+        self.assertEqual(failures, [])
+        self.assertTrue(all("no correctness rubric" in note for note in notes))
 
     def test_billing_outage_is_inconclusive_not_regression(self):
         # Provider billing exhaustion wipes out both binaries exactly like a quota

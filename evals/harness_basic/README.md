@@ -312,6 +312,22 @@ separate five-trial controls expose global prompt/tool-surface regressions with
 a less noisy median. A candidate is not an improvement merely because its
 aggregate pass count is higher.
 
+A check marked `"budget": true` is an efficiency ceiling rather than a statement
+about whether the agent did the task, and is scored under `declared_budget`
+instead of `checks`. Keep the two apart: budgets are usually asserted on the
+candidate only, so folding one into `checks` and comparing pass rates across
+binaries measures the candidate against a baseline that was never asked to meet
+any ceiling — which is how `zero-result-search-recovery` reported its own call
+budget as `correctness regressed 100% -> 33%`. Binary-conditional *behavioural*
+checks stay in `checks`: "baseline emits no guard warning, candidate emits one"
+is the asymmetry those cases exist to prove. The analyzer gates a budget only
+when both binaries declare one; a candidate-only budget is reported, not gated.
+
+Budgets on `zero-result-search-recovery` and `prior-session-reference` are
+currently set at exactly the call count their prompts mandate, so every trial
+sits on the edge and one extra call fails the sample. Loosening them is a
+deliberate policy choice about how much slack the eval allows, not a bug fix.
+
 The manual/nightly [Search Efficiency Eval](../../.github/workflows/search-efficiency-eval.yml)
 builds both the triggering revision and the immutable pre-fix commit recorded
 in [`search_efficiency_baseline.json`](search_efficiency_baseline.json), runs
