@@ -555,14 +555,19 @@ mod tests {
     /// so a localhost mock always falls through to the OpenAI-compatible
     /// branch instead. Only a live hosted endpoint exercises the branch that
     /// reports `capabilities`, so the embedding-exclusion proof lives here.
+    /// Skips itself when the key is absent so a plain `cargo test` stays
+    /// offline, matching the convention in `tests/integration.rs` rather than
+    /// using `#[ignore]` — an ignored test is one nothing ever runs.
+    /// `YOLOP_REQUIRE_LIVE_TESTS=1` upgrades a missing key to a hard failure so
+    /// a misconfigured secret cannot report a false green.
     #[tokio::test]
-    #[ignore = "requires OPENAI_API_KEY; performs a live models API call"]
     async fn discovery_openai_live_excludes_embedding_models() {
-        if std::env::var("OPENAI_API_KEY")
-            .map(|v| v.is_empty())
-            .unwrap_or(true)
-        {
-            eprintln!("skipping: OPENAI_API_KEY not set");
+        if !std::env::var_os("OPENAI_API_KEY").is_some_and(|value| !value.is_empty()) {
+            assert!(
+                std::env::var_os("YOLOP_REQUIRE_LIVE_TESTS").is_none(),
+                "OPENAI_API_KEY is required when YOLOP_REQUIRE_LIVE_TESTS is set"
+            );
+            eprintln!("skipping live test: OPENAI_API_KEY not set");
             return;
         }
         let provider = ProviderChoice::default_for_provider_name("openai").unwrap();
