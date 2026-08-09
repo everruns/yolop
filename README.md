@@ -192,6 +192,7 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 | OpenAI     | `OPENAI_API_KEY`                      | `gpt-5.6-sol`     |
 | Codex subscription | browser/device ChatGPT login or `CODEX_ACCESS_TOKEN` | `gpt-5.6-sol` |
 | Anthropic  | `ANTHROPIC_API_KEY`                   | `claude-opus-4-8` |
+| Meta Model API | `MODEL_API_KEY`                   | `muse-spark-1.2`  |
 | OpenRouter | `OPENROUTER_API_KEY`                  | `openai/gpt-5.6-sol` |
 | Google     | `GEMINI_API_KEY` / `GOOGLE_API_KEY`   | `gemini-2.5-flash` |
 | Ollama     | `OLLAMA_BASE_URL` / `OLLAMA_API_KEY`  | `llama3.2`        |
@@ -317,7 +318,7 @@ act of consent. MCP tools run autonomously like the rest of yolop's tools.
 | Flag                       | Description                                                          |
 | -------------------------- | -------------------------------------------------------------------- |
 | `-C, --cwd <PATH>`         | Workspace root (default: current dir)                                |
-| `--provider <P>`           | Force `anthropic`, `codex`, `openai`, `google`, `openrouter`, `ollama`, `custom`, or `llmsim` |
+| `--provider <P>`           | Force `anthropic`, `meta`, `codex`, `openai`, `google`, `openrouter`, `ollama`, `custom`, or `llmsim` |
 | `--profile <NAME>`         | Overlay a named execution profile from the platform config directory |
 | `-m, --model <ID>`         | Override the model id for the chosen provider                        |
 | `-p, --print <PROMPT>`     | Run one prompt non-interactively and print the result                |
@@ -345,7 +346,8 @@ act of consent. MCP tools run autonomously like the rest of yolop's tools.
 | `OPENAI_API_KEY`                    | Select OpenAI unless `--provider` overrides                  |
 | `CODEX_ACCESS_TOKEN`                | Select Codex subscription auth                               |
 | `ANTHROPIC_API_KEY`                 | Select Anthropic when OpenAI is not configured               |
-| `OPENROUTER_API_KEY`                | Select OpenRouter when OpenAI/Anthropic are not configured   |
+| `MODEL_API_KEY`                     | Select Meta Model API when earlier providers are not configured |
+| `OPENROUTER_API_KEY`                | Select OpenRouter when earlier providers are not configured  |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Select Google Gemini via its OpenAI-compatible endpoint      |
 | `OLLAMA_BASE_URL`                   | Select Ollama, defaults to `http://localhost:11434/v1`       |
 | `CUSTOM_BASE_URL`                   | Select the custom OpenAI-compatible endpoint                 |
@@ -398,7 +400,7 @@ changes back to that profile while credential changes still update the global
 settings file.
 
 **Provider resolution at startup:** `--provider` wins, then the saved
-profile `default_provider`, then the global `default_provider`, then auto-detect in the order **OpenAI → Codex → Anthropic →
+profile `default_provider`, then the global `default_provider`, then auto-detect in the order **OpenAI → Codex → Anthropic → Meta →
 OpenRouter → Google → Ollama → Custom** (first with a matching env var or saved
 credential), then a fall back to OpenAI's default with setup opened.
 

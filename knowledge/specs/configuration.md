@@ -62,6 +62,11 @@ without persisting the ask, so the user can select an advertised model and
 submit the same turn. Providers without discovery support (including custom
 compatible endpoints) continue without preflight.
 
+Meta Model API is a first-class `meta` provider backed by `everruns-meta`, not a
+generic compatible endpoint. It reads `MODEL_API_KEY`, defaults to
+`muse-spark-1.2`, and exposes both the standard and
+`muse-spark-1.2-contributor` published profiles.
+
 ### Named execution profiles
 
 `--profile <name>` loads

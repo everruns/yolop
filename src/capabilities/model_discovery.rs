@@ -51,6 +51,7 @@ pub(crate) async fn discover_provider_models(
 
     let mut registry = DriverRegistry::new();
     everruns_anthropic::register_driver(&mut registry);
+    everruns_meta::register_driver(&mut registry);
     everruns_openai::register_driver(&mut registry);
     everruns_openrouter::register_driver(&mut registry);
     let driver = registry.create_chat_driver(&config)?;
@@ -290,6 +291,7 @@ fn provider_env_present(provider: &str) -> bool {
         "openai" => &["OPENAI_API_KEY"],
         "codex" => &["CODEX_ACCESS_TOKEN"],
         "anthropic" => &["ANTHROPIC_API_KEY"],
+        "meta" => &["MODEL_API_KEY"],
         "google" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "openrouter" => &["OPENROUTER_API_KEY"],
         "ollama" => &["OLLAMA_BASE_URL", "OLLAMA_API_KEY"],

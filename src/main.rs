@@ -320,6 +320,7 @@ struct ZedIntoArgs {
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
 enum ProviderArg {
     Anthropic,
+    Meta,
     Codex,
     Openai,
     Google,
@@ -334,6 +335,7 @@ enum ProviderArg {
 fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
     match arg {
         ProviderArg::Anthropic => "anthropic",
+        ProviderArg::Meta => "meta",
         ProviderArg::Codex => "codex",
         ProviderArg::Openai => "openai",
         ProviderArg::Google => "google",
@@ -404,6 +406,16 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<St
             },
             effort,
         ) => ProviderChoice::Anthropic {
+            model,
+            reasoning_effort: effort.or(reasoning_effort),
+        },
+        (
+            ProviderChoice::Meta {
+                model,
+                reasoning_effort,
+            },
+            effort,
+        ) => ProviderChoice::Meta {
             model,
             reasoning_effort: effort.or(reasoning_effort),
         },

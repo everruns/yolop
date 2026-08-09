@@ -141,6 +141,7 @@ impl App {
             "openai" => &["OPENAI_API_KEY"],
             "codex" => &["CODEX_ACCESS_TOKEN"],
             "anthropic" => &["ANTHROPIC_API_KEY"],
+            "meta" => &["MODEL_API_KEY"],
             "google" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
             "openrouter" => &["OPENROUTER_API_KEY"],
             "ollama" => &["OLLAMA_BASE_URL", "OLLAMA_API_KEY"],
@@ -386,6 +387,18 @@ impl App {
                     spec: Some("claude-fable-5".to_string()),
                     label: "claude-fable-5".to_string(),
                     hint: "most powerful Claude model".to_string(),
+                },
+            ],
+            "meta" => vec![
+                ModelOption {
+                    spec: Some("muse-spark-1.2".to_string()),
+                    label: "muse-spark-1.2".to_string(),
+                    hint: "full Muse Spark model".to_string(),
+                },
+                ModelOption {
+                    spec: Some("muse-spark-1.2-contributor".to_string()),
+                    label: "muse-spark-1.2-contributor".to_string(),
+                    hint: "lower-cost contributor model".to_string(),
                 },
             ],
             "google" => vec![

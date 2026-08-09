@@ -3,6 +3,12 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-09 — Meta Model API provider
+
+- Yolop adopts the Everruns 0.17.25 family and registers `everruns-meta` as the
+  first-class `meta` provider. `MODEL_API_KEY` enables Muse Spark 1.2 and its
+  Contributor profile through CLI, setup, settings, and model discovery.
+
 ## 2026-08-09 — Everruns 0.17.24 adoption; upstream example is no longer a mirror
 
 - [Maintenance](specs/maintenance.md) no longer treats `examples/coding-cli` as a
