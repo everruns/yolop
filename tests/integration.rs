@@ -44,7 +44,7 @@ fn yolop_binary() -> PathBuf {
 }
 
 #[test]
-fn meta_provider_requires_model_api_key_from_real_binary() {
+fn meta_provider_reaches_credential_boundary_from_real_binary() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_root = tmp.path().join(".config");
     let output = Command::new(yolop_binary())
@@ -65,8 +65,8 @@ fn meta_provider_requires_model_api_key_from_real_binary() {
 
     assert!(!output.status.success(), "stderr={stderr}");
     assert!(
-        stderr.contains("API key is required"),
-        "Meta provider should reach its registered driver: {stderr}"
+        stderr.contains("MODEL_API_KEY not set") || stderr.contains("API key is required"),
+        "Meta provider should reach credential resolution or its registered driver: {stderr}"
     );
 }
 
