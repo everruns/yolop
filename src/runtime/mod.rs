@@ -2656,41 +2656,72 @@ impl ModelState {
         Ok(())
     }
 
-    pub(crate) fn model_options(&self) -> Vec<(String, String, String)> {
+    fn push_model_option(
+        options: &mut Vec<(String, String, String)>,
+        provider: &str,
+        model: &str,
+        name: &str,
+    ) {
+        let value = format!("{provider}:{model}");
+        if options.iter().any(|(existing, _, _)| existing == &value) {
+            return;
+        }
+        options.push((value, name.to_string(), provider.to_string()));
+    }
+
+    pub(crate) async fn model_options(&self) -> Vec<(String, String, String)> {
         let settings = self.settings.snapshot();
-        let current = self.provider.read().expect("provider lock poisoned");
-        let mut options = SUPPORTED_PROVIDERS
-            .iter()
-            .filter(|provider| {
-                crate::capabilities::model_discovery::provider_is_usable(&settings, provider)
-            })
-            .filter_map(|provider| {
-                resolve_for_settings(provider, &settings)
-                    .ok()
-                    .map(|resolved| resolved.choice)
-            })
-            .filter(|choice| !choice.model_id().trim().is_empty())
-            .map(|choice| {
-                (
-                    format!("{}:{}", choice.provider_name(), choice.model_id()),
-                    choice.model_id().to_owned(),
-                    choice.provider_name().to_owned(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let current_option = (
-            format!("{}:{}", current.provider_name(), current.model_id()),
-            current.model_id().to_owned(),
-            current.provider_name().to_owned(),
-        );
+        let current = self
+            .provider
+            .read()
+            .expect("provider lock poisoned")
+            .clone();
+        let mut options = Vec::new();
+
+        for provider in SUPPORTED_PROVIDERS.iter().copied().filter(|provider| {
+            crate::capabilities::model_discovery::provider_is_usable(&settings, provider)
+        }) {
+            let Ok(resolved) = resolve_for_settings(provider, &settings) else {
+                continue;
+            };
+            Self::push_model_option(
+                &mut options,
+                provider,
+                resolved.choice.model_id(),
+                resolved.choice.model_id(),
+            );
+
+            for model in ProviderChoice::model_suggestions_for_provider(provider) {
+                Self::push_model_option(&mut options, provider, model, model);
+            }
+
+            if let Ok(Ok(Some(discovered))) = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                crate::capabilities::model_discovery::discover_provider_models(
+                    &resolved.choice,
+                    &settings,
+                ),
+            )
+            .await
+            {
+                for model in discovered {
+                    let name = model.display_name.as_deref().unwrap_or(&model.model_id);
+                    Self::push_model_option(&mut options, provider, &model.model_id, name);
+                }
+            }
+        }
+
         // The installed session model remains usable even if its credential is
         // later removed from persistent settings; the runtime already owns the
         // resolved credential for this session. Startup never installs a stale
         // disconnected provider in ACP, so the current option is connection
         // truth rather than a persisted preference.
-        if !options.iter().any(|option| option.0 == current_option.0) {
-            options.push(current_option);
-        }
+        Self::push_model_option(
+            &mut options,
+            current.provider_name(),
+            current.model_id(),
+            current.model_id(),
+        );
         options
     }
 
@@ -4042,20 +4073,38 @@ mod tests {
 
         assert!(built.startup.setup_recommended);
         assert_eq!(built.model.provider_name(), "llmsim");
+        let options = built.model.model_options().await;
+        assert!(options.iter().any(|(id, _, _)| id == "llmsim:llmsim-yolop"));
         assert!(
-            built
-                .model
-                .model_options()
+            !options.iter().any(|(_, _, provider)| provider == "codex"),
+            "disconnected providers must not be exposed to ACP"
+        );
+    }
+
+    #[test]
+    fn curated_acp_model_options_include_terra_and_luna_without_duplicates() {
+        let mut options = Vec::new();
+        for model in ProviderChoice::model_suggestions_for_provider("codex") {
+            ModelState::push_model_option(&mut options, "codex", model, model);
+        }
+        ModelState::push_model_option(&mut options, "codex", "gpt-5.6-terra", "Terra");
+
+        assert!(
+            options
                 .iter()
-                .any(|(id, _, _)| id == "llmsim:llmsim-yolop")
+                .any(|(id, _, provider)| { id == "codex:gpt-5.6-terra" && provider == "codex" })
         );
         assert!(
-            !built
-                .model
-                .model_options()
+            options
                 .iter()
-                .any(|(_, _, provider)| provider == "codex"),
-            "disconnected providers must not be exposed to ACP"
+                .any(|(id, _, provider)| { id == "codex:gpt-5.6-luna" && provider == "codex" })
+        );
+        assert_eq!(
+            options
+                .iter()
+                .filter(|(id, _, _)| id == "codex:gpt-5.6-terra")
+                .count(),
+            1
         );
     }
 
