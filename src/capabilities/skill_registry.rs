@@ -1030,11 +1030,16 @@ mod tests {
         );
     }
 
-    /// Live smoke against production skills.sh. Not part of default CI; run with
-    /// `cargo test -- --ignored live_skills_sh_search_and_install`.
+    /// Live smoke against production skills.sh. Opt-in rather than `#[ignore]`,
+    /// which nothing ever runs: it needs no key, so gate it on the same
+    /// `YOLOP_REQUIRE_LIVE_TESTS` flag the live-smoke job sets instead of
+    /// letting a default `cargo test` reach an external service.
     #[tokio::test]
-    #[ignore = "hits production skills.sh"]
     async fn live_skills_sh_search_and_install() {
+        if std::env::var_os("YOLOP_REQUIRE_LIVE_TESTS").is_none() {
+            eprintln!("skipping live test: YOLOP_REQUIRE_LIVE_TESTS not set");
+            return;
+        }
         let registry = SkillRegistryClient::production();
         let search = SearchSkillsTool::new(registry.clone());
         let search_out = match search

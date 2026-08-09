@@ -48,6 +48,12 @@ its split-footer mode. See [Tuika](#tuika).
 - Decisions worth keeping belong as concise comments near the relevant code, not
   in scratch documents.
 - For bug fixes, prefer writing the failing test before the fix.
+- Never write `#[ignore]` tests — an ignored test is one nothing ever runs, and
+  neither `cargo test` nor CI passes `--ignored`. A test that needs something the
+  environment may lack checks for it at runtime and returns early: a key via
+  `live_key_or_skip`, a binary via a probe, an external service via
+  `YOLOP_REQUIRE_LIVE_TESTS`. CI's live-smoke job sets that flag, which turns a
+  missing key into a hard failure so a misconfigured secret cannot report green.
 
 `RUST_LOG` is honored for the tracing layer (stderr).
 

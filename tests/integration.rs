@@ -2453,10 +2453,9 @@ fn acp_openai_handshake_smoke() {
 }
 
 #[test]
-#[ignore = "requires ANTHROPIC_API_KEY; run under doppler with --ignored"]
 fn acp_anthropic_handshake_smoke() {
-    let Ok(_) = std::env::var("ANTHROPIC_API_KEY") else {
-        panic!("ANTHROPIC_API_KEY required for live ACP smoke test");
+    let Some(_) = live_key_or_skip("ANTHROPIC_API_KEY") else {
+        return;
     };
     let result = run_acp_handshake("anthropic", "Reply with exactly the single word: pong");
     assert_eq!(

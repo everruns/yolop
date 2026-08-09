@@ -555,21 +555,31 @@ mod tests {
     /// so a localhost mock always falls through to the OpenAI-compatible
     /// branch instead. Only a live hosted endpoint exercises the branch that
     /// reports `capabilities`, so the embedding-exclusion proof lives here.
-    /// Skips itself when the key is absent so a plain `cargo test` stays
-    /// offline, matching the convention in `tests/integration.rs` rather than
-    /// using `#[ignore]` — an ignored test is one nothing ever runs.
-    /// `YOLOP_REQUIRE_LIVE_TESTS=1` upgrades a missing key to a hard failure so
-    /// a misconfigured secret cannot report a false green.
+    /// Resolve a provider API key for a live test, mirroring
+    /// `tests/integration.rs`'s helper of the same name.
+    ///
+    /// Returns `None` (the caller then returns early) when the key is absent,
+    /// so a plain `cargo test` stays offline without `#[ignore]` — an ignored
+    /// test is one nothing ever runs. `YOLOP_REQUIRE_LIVE_TESTS=1` turns a
+    /// missing key into a hard failure so a misconfigured secret cannot report
+    /// a false green. Presence check only: the value is never read into memory.
+    fn live_key_or_skip(var: &str) -> Option<()> {
+        if std::env::var_os(var).is_some_and(|value| !value.is_empty()) {
+            return Some(());
+        }
+        assert!(
+            std::env::var_os("YOLOP_REQUIRE_LIVE_TESTS").is_none(),
+            "{var} is required when YOLOP_REQUIRE_LIVE_TESTS is set"
+        );
+        eprintln!("skipping live test: {var} not set");
+        None
+    }
+
     #[tokio::test]
     async fn discovery_openai_live_excludes_embedding_models() {
-        if !std::env::var_os("OPENAI_API_KEY").is_some_and(|value| !value.is_empty()) {
-            assert!(
-                std::env::var_os("YOLOP_REQUIRE_LIVE_TESTS").is_none(),
-                "OPENAI_API_KEY is required when YOLOP_REQUIRE_LIVE_TESTS is set"
-            );
-            eprintln!("skipping live test: OPENAI_API_KEY not set");
+        let Some(_) = live_key_or_skip("OPENAI_API_KEY") else {
             return;
-        }
+        };
         let provider = ProviderChoice::default_for_provider_name("openai").unwrap();
         let models = discover_provider_models(&provider, &Settings::default())
             .await
@@ -589,15 +599,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires OPENROUTER_API_KEY; performs a live models API call"]
     async fn discovery_openrouter_live() {
-        if std::env::var("OPENROUTER_API_KEY")
-            .map(|v| v.is_empty())
-            .unwrap_or(true)
-        {
-            eprintln!("skipping: OPENROUTER_API_KEY not set");
+        let Some(_) = live_key_or_skip("OPENROUTER_API_KEY") else {
             return;
-        }
+        };
         let provider = ProviderChoice::default_for_provider_name("openrouter").unwrap();
         let models = discover_provider_models(&provider, &Settings::default())
             .await

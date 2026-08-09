@@ -1830,11 +1830,9 @@ mod tests {
     }
 
     /// Real-server smoke test; exercises process spawn, framing, and the
-    /// initialize handshake against rust-analyzer. Ignored by default because
-    /// it needs the binary on PATH and cold indexing time:
-    /// `cargo test --all-features lsp -- --ignored`.
+    /// initialize handshake against rust-analyzer. Skips itself when the binary
+    /// is absent, so it runs for free wherever rust-analyzer is installed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore = "needs rust-analyzer on PATH; run with -- --ignored"]
     async fn rust_analyzer_smoke() {
         // `output()` alone is not enough: rustup ships a `rust-analyzer`
         // shim that spawns fine but errors when the component is missing.
