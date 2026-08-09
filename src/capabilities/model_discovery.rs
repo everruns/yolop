@@ -550,6 +550,39 @@ mod tests {
         assert!(ids.contains(&"qwen3"), "ids: {ids:?}");
     }
 
+    /// The driver path is the one 0.17.24 changed, and it cannot be mocked:
+    /// the OpenAI driver deliberately declines discovery for custom base URLs,
+    /// so a localhost mock always falls through to the OpenAI-compatible
+    /// branch instead. Only a live hosted endpoint exercises the branch that
+    /// reports `capabilities`, so the embedding-exclusion proof lives here.
+    #[tokio::test]
+    #[ignore = "requires OPENAI_API_KEY; performs a live models API call"]
+    async fn discovery_openai_live_excludes_embedding_models() {
+        if std::env::var("OPENAI_API_KEY")
+            .map(|v| v.is_empty())
+            .unwrap_or(true)
+        {
+            eprintln!("skipping: OPENAI_API_KEY not set");
+            return;
+        }
+        let provider = ProviderChoice::default_for_provider_name("openai").unwrap();
+        let models = discover_provider_models(&provider, &Settings::default())
+            .await
+            .expect("openai discovery should succeed")
+            .expect("openai supports model listing");
+
+        assert!(!models.is_empty(), "openai should report models");
+        let embeddings: Vec<&str> = models
+            .iter()
+            .map(|m| m.model_id.as_str())
+            .filter(|id| id.starts_with("text-embedding-"))
+            .collect();
+        assert!(
+            embeddings.is_empty(),
+            "embedding models must not reach the chat picker: {embeddings:?}"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires OPENROUTER_API_KEY; performs a live models API call"]
     async fn discovery_openrouter_live() {
