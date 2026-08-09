@@ -390,7 +390,7 @@ where
                                 next_id: next_tool_id.clone(),
                             };
                             for session in server.sessions() {
-                                emit_config_options(&peer, &session);
+                                emit_config_options(&peer, &session).await;
                             }
                         }
                         Err(err) => responder
@@ -612,7 +612,7 @@ async fn handle_new_session<F: RuntimeFactory>(
 
     Ok(NewSessionResult::new(acp_id)
         .modes(modes::session_mode_state(mode))
-        .config_options(session_config_options(&session.model)))
+        .config_options(session_config_options(&session.model).await))
 }
 
 async fn handle_load_session<F: RuntimeFactory>(
@@ -658,7 +658,7 @@ async fn handle_load_session<F: RuntimeFactory>(
     Ok((
         LoadSessionResult::new()
             .modes(modes::session_mode_state(mode))
-            .config_options(session_config_options(&session.model)),
+            .config_options(session_config_options(&session.model).await),
         session.acp_id.clone(),
     ))
 }
@@ -795,9 +795,10 @@ async fn replay_session_history(
 const MODEL_CONFIG_ID: &str = "model";
 const REASONING_EFFORT_CONFIG_ID: &str = "reasoning_effort";
 
-fn session_config_options(model: &ModelState) -> Vec<SessionConfigOption> {
+async fn session_config_options(model: &ModelState) -> Vec<SessionConfigOption> {
     let model_options = model
         .model_options()
+        .await
         .into_iter()
         .map(|(value, name, group)| {
             SessionConfigSelectOption::new(value, format!("{group}: {name}"))
@@ -860,9 +861,9 @@ async fn apply_set_config_option<F: RuntimeFactory>(
     }
     .map_err(|err| invalid_params(err.to_string()))?;
 
-    Ok(SetSessionConfigOptionResponse::new(session_config_options(
-        &session.model,
-    )))
+    Ok(SetSessionConfigOptionResponse::new(
+        session_config_options(&session.model).await,
+    ))
 }
 
 async fn handle_prompt<F: RuntimeFactory>(
@@ -942,12 +943,12 @@ fn emit_mode_change_if_needed(peer: &Peer, session: &Session) {
     }
 }
 
-fn emit_config_options(peer: &Peer, session: &Session) {
+async fn emit_config_options(peer: &Peer, session: &Session) {
     peer.session_update(
         &session.acp_id,
-        SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(session_config_options(
-            &session.model,
-        ))),
+        SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
+            session_config_options(&session.model).await,
+        )),
     );
 }
 
@@ -1188,7 +1189,7 @@ async fn run_slash_command(
                 )),
             );
             refresh_available_commands(&peer, &session).await;
-            emit_config_options(&peer, &session);
+            emit_config_options(&peer, &session).await;
             StopReason::EndTurn
         }
         CommandSource::Skill => {
