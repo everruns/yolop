@@ -34,6 +34,14 @@ QUOTA_ERROR = (
     "You exceeded your current quota, please check your plan and billing details."
 )
 
+# Verbatim shape of the 2026-08-03 and 2026-07-22 nightlies, where every trial
+# died on provider billing and the gate scored the dead run as a fleet-wide
+# regression because no marker matched.
+CREDIT_ERROR = (
+    "yolop exit 1: turn error: LLM error: credit_balance_exhausted: "
+    "You have no credits remaining. Add credits to continue."
+)
+
 
 def focused_cases():
     cases = []
@@ -62,18 +70,22 @@ def control_cases(candidate_passed=True, candidate_tokens=100, trials=5):
     return cases
 
 
-def outage_cases():
-    """Every focused and control trial fails with a provider quota error — the
-    shape of a full provider outage (baseline and candidate both wiped out)."""
+def outage_cases(error=QUOTA_ERROR, tools=1, tokens=100):
+    """Every focused and control trial fails with a provider error — the shape of
+    a full provider outage (baseline and candidate both wiped out)."""
     cases = []
     for sample in sorted(analyzer.FOCUSED):
         for _ in range(3):
             for binary in ("baseline", "candidate"):
-                cases.append(case(sample, binary, False, error=QUOTA_ERROR))
+                cases.append(
+                    case(sample, binary, False, tools=tools, tokens=tokens, error=error)
+                )
     for sample in sorted(analyzer.CONTROLS):
         for _ in range(5):
             for binary in ("baseline", "candidate"):
-                cases.append(case(sample, binary, False, error=QUOTA_ERROR))
+                cases.append(
+                    case(sample, binary, False, tools=tools, tokens=tokens, error=error)
+                )
     return cases
 
 
@@ -143,6 +155,57 @@ class AnalyzeTests(unittest.TestCase):
         self.assertEqual(notes, [])
         self.assertTrue(
             any("candidate focused pass rate" in failure for failure in failures)
+        )
+
+    def test_billing_outage_is_inconclusive_not_regression(self):
+        # Provider billing exhaustion wipes out both binaries exactly like a quota
+        # outage. The 2026-08-03 nightly reported eight gate violations against a
+        # run in which not one trial ever reached the provider.
+        rows, failures, notes = analyzer.analyze({"cases": outage_cases(CREDIT_ERROR)})
+        self.assertEqual(failures, [])
+        self.assertEqual(rows, [])
+        self.assertEqual(len(notes), len(analyzer.EXPECTED_SAMPLES))
+
+    def test_trials_that_never_ran_are_inconclusive_without_error_text(self):
+        # Structural backstop for outage strings no marker anticipates: a failed
+        # trial with no tool calls and no input tokens never reached the provider,
+        # so it carries no signal even when the report exposes no error at all.
+        rows, failures, notes = analyzer.analyze(
+            {"cases": outage_cases(error=None, tools=0, tokens=0)}
+        )
+        self.assertEqual(failures, [])
+        self.assertEqual(rows, [])
+        self.assertEqual(len(notes), len(analyzer.EXPECTED_SAMPLES))
+
+    def test_timeout_stays_a_real_failure_even_with_no_signal(self):
+        # A harness timeout can also land zero tool calls and zero tokens, but it
+        # is a finding about the agent under test — the structural backstop must
+        # not launder it into an inconclusive dropout.
+        self.assertFalse(
+            analyzer.is_infra_failure(
+                case(
+                    "repo-map-bounded",
+                    "candidate",
+                    False,
+                    tools=0,
+                    tokens=0,
+                    error="timeout after 300s",
+                )
+            )
+        )
+
+    def test_inconclusive_run_does_not_exit_as_a_pass(self):
+        # A night in which nothing was gradable must be distinguishable from a
+        # night that actually cleared the gates: 2026-07-30 was the streak's only
+        # green, and every one of its samples had 0/3 valid trials.
+        _, failures, notes = analyzer.analyze({"cases": outage_cases(CREDIT_ERROR)})
+        self.assertEqual(
+            analyzer.exit_code([], failures, notes), analyzer.INCONCLUSIVE_EXIT
+        )
+        self.assertNotEqual(analyzer.INCONCLUSIVE_EXIT, 0)
+        self.assertEqual(analyzer.exit_code(["add-fn: ..."], [], []), 0)
+        self.assertEqual(
+            analyzer.exit_code(["add-fn: ..."], ["boom"], []), analyzer.REGRESSION_EXIT
         )
 
     def test_harness_timeout_is_not_treated_as_infra(self):

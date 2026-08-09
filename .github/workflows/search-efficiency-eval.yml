@@ -130,12 +130,30 @@ jobs:
           fi
           echo "Mira controls exit: ${mira_status}; the distribution analyzer decides the regression gate."
 
+      # Exit 75 means the analyzer graded nothing — a provider outage, not a
+      # regression. The job stays green so an unfunded or throttled account does
+      # not page, but the run must not read as a clean nightly: an outage-green
+      # is indistinguishable from a real pass in the run list, which is how a
+      # night with 0/3 valid trials on every sample was once the only green in a
+      # two-week streak.
       - name: Gate trial distributions
         working-directory: evals/harness_basic
         run: |
+          status=0
           python3 "${SEARCH_EFFICIENCY_ANALYZER}" \
             "${RUNNER_TEMP}/search-efficiency-focused.json" \
-            "${RUNNER_TEMP}/search-efficiency-controls.json"
+            "${RUNNER_TEMP}/search-efficiency-controls.json" || status=$?
+          if [ "${status}" -eq 75 ]; then
+            echo "::warning::Search-efficiency gate INCONCLUSIVE: provider/infrastructure errors left no valid trials. Nothing was verified this run."
+            {
+              echo "### Search efficiency: INCONCLUSIVE"
+              echo
+              echo "Provider/infrastructure errors left no valid trials to compare."
+              echo "No regression gate ran — this is not a passing nightly."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          exit "${status}"
 
       - name: Upload eval reports
         if: always()

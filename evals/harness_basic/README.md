@@ -320,12 +320,20 @@ Mira run archives. It is intentionally excluded from pull-request CI because
 it is a live-model regression monitor, not a deterministic unit test.
 
 Trials that fail because the provider or infrastructure was unavailable (quota
-exhaustion, rate limits, 5xx, network) carry no signal and are dropped from the
-gate like skipped trials; harness timeouts stay real failures. When an outage
-wipes out a majority of a sample's trials the sample is reported *inconclusive*
-rather than a regression, and a run with nothing left to compare exits green so
-a throttled account never pages as a fleet-wide regression. The gate logic is
-covered by pure-Python unit tests (`tests/`) that do run in pull-request CI.
+exhaustion, billing exhaustion, rate limits, 5xx, network) carry no signal and
+are dropped from the gate like skipped trials; harness timeouts stay real
+failures. Error-string matching only recognizes outages someone has already
+seen, so a failed trial that made no tool calls and burned no input tokens is
+dropped too, whatever it reported: it never reached the provider, and scoring an
+unrecognized outage as a regression is the worst available default.
+
+When an outage wipes out a majority of a sample's trials the sample is reported
+*inconclusive* rather than a regression. A run with nothing left to compare
+exits `75`, not `0` — the workflow keeps the job green so a throttled account
+never pages, but annotates the run as inconclusive, because a nightly that
+graded nothing has not passed the gate and must not be read as evidence that
+`main` is clean. The gate logic is covered by pure-Python unit tests (`tests/`)
+that do run in pull-request CI.
 
 For progress-efficiency, the distribution gate additionally requires fewer
 workspace-state revisits in the dependency case and fewer redundant validation

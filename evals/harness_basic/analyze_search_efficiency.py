@@ -57,7 +57,23 @@ INFRA_ERROR_MARKERS = (
     "failed to connect",
     "network error",
     "temporarily unavailable",
+    # Billing exhaustion. An unfunded account fails every trial identically, which
+    # is an outage in every sense that matters here — but it says nothing about
+    # quota or rate limits, so it went unmatched and scored two nightlies
+    # (2026-07-22, 2026-08-03) as fleet-wide regressions against runs where no
+    # trial ever reached the provider.
+    "credit_balance_exhausted",
+    "no credits remaining",
+    "insufficient_credit",
+    "billing_hard_limit_reached",
+    "payment_required",
 )
+
+# Exit statuses. Inconclusive is deliberately not 0: a night that graded nothing
+# has not cleared the gate, and reporting it as a pass is how a run in which every
+# trial died could read as the only green night in a streak.
+REGRESSION_EXIT = 1
+INCONCLUSIVE_EXIT = 75  # EX_TEMPFAIL
 
 
 def error_text(case: dict) -> str:
@@ -70,6 +86,15 @@ def error_text(case: dict) -> str:
     return " ".join(parts).lower()
 
 
+def produced_no_signal(case: dict) -> bool:
+    """True when a failed trial made no tool calls and burned no input tokens —
+    it never reached the provider, so there is no trajectory to compare. This is
+    the structural backstop behind INFRA_ERROR_MARKERS: matching error strings can
+    only catch outages someone has already seen, and an unmatched one is scored as
+    a regression, which is the worst possible default."""
+    return value(case, "tool_calls") == 0 and value(case, "input_tokens") == 0
+
+
 def is_infra_failure(case: dict) -> bool:
     """True when a *failed* trial errored because the provider or infrastructure
     was unavailable, not because the agent solved the task wrong. Harness timeouts
@@ -79,11 +104,13 @@ def is_infra_failure(case: dict) -> bool:
     if case.get("passed"):
         return False
     error = error_text(case)
-    if not error.strip():
-        return False
+    # Checked before everything else: a timeout can also land zero tool calls and
+    # zero tokens, and it must not reach the structural backstop below.
     if "timeout after" in error or "no events at" in error:
         return False
-    return any(marker in error for marker in INFRA_ERROR_MARKERS)
+    if any(marker in error for marker in INFRA_ERROR_MARKERS):
+        return True
+    return produced_no_signal(case)
 
 
 def value(case: dict, metric: str) -> float:
@@ -199,6 +226,15 @@ def analyze(report: dict) -> tuple[list[str], list[str], list[str]]:
     return analyze_reports([report])
 
 
+def exit_code(rows: list[str], failures: list[str], notes: list[str]) -> int:
+    """Map an analysis to a status: regression, inconclusive, or clean."""
+    if failures:
+        return REGRESSION_EXIT
+    if not rows and notes:
+        return INCONCLUSIVE_EXIT
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -216,22 +252,23 @@ def main() -> int:
         print("\nInconclusive (excluded from the gate):", file=sys.stderr)
         for note in notes:
             print(f"- {note}", file=sys.stderr)
-    if failures:
+    status = exit_code(rows, failures, notes)
+    if status == REGRESSION_EXIT:
         print("\nRegression gates:", file=sys.stderr)
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
-        return 1
-    if not rows and notes:
+        return status
+    if status == INCONCLUSIVE_EXIT:
         # Nothing was gradable: a provider/infrastructure outage, not a code
-        # regression. Say so plainly and let the scheduled run stay green rather
-        # than paging on a throttled account.
+        # regression. The caller decides whether to page — but it is told the
+        # difference, because "no trial ran" is not "the gates passed".
         print(
             "\nRegression gate inconclusive: provider/infrastructure errors left "
-            "no valid trials to compare; not gating CI on a provider outage."
+            "no valid trials to compare; nothing was gated this run."
         )
-        return 0
+        return status
     print("\nRegression gates passed.")
-    return 0
+    return status
 
 
 if __name__ == "__main__":
