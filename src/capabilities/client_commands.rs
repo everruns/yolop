@@ -35,7 +35,7 @@ commands: `/help`, `/tools`, `/mcp`, `/cwd`, `/status [compact|expanded|toggle]`
 The TUI may expose other slash commands, but only use `run_command` for this listed
 client-command set. When the user asks for one of these terminal
 actions — for example "exit", "clear the screen", "show tools", "switch model",
-"reload MCP servers" (`/mcp reload`), "log in to an MCP server"
+"restart MCP", "reconnect MCP", or "refresh MCP" (`/mcp reload`), "log in to an MCP server"
 (`/mcp login <name>`), or "expand the status bar" —
 call `run_command` with the command and argument array; do not merely tell the
 user to type the slash command, and do not invent a manager window. The tool
@@ -455,6 +455,9 @@ mod tests {
         assert!(prompt.contains("client-command set"));
         assert!(prompt.contains("/quit"));
         assert!(prompt.contains("/exit"));
+        assert!(prompt.contains("\"restart MCP\""));
+        assert!(prompt.contains("\"reconnect MCP\""));
+        assert!(prompt.contains("\"refresh MCP\" (`/mcp reload`)"));
         assert!(prompt.contains("set_status"));
     }
 
