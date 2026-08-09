@@ -261,14 +261,29 @@ mod tests {
         assert!(response.contains("MCP server is connected."));
     }
 
+    // everruns-mcp 0.17.24 binds the OAuth resource to the MCP server origin
+    // and requires that origin to be HTTPS, so an authorization server cannot
+    // mint a token for an endpoint it does not control. The loopback *redirect*
+    // below is still plain HTTP — that is the native-app pattern and unchanged.
+    //
+    // The consequence for this file: `prepare_login` can no longer be driven
+    // end-to-end against a local plain-HTTP mock, so the discovery →
+    // registration → resource-binding assertions moved upstream, where
+    // everruns-mcp's own tests exercise them over https through a fake egress.
+    // What stays here is the boundary yolop owns: a plain-HTTP MCP endpoint is
+    // refused before any token is requested.
     #[tokio::test]
-    async fn upstream_login_preparation_discovers_registers_and_binds_resource() {
+    async fn plain_http_mcp_endpoints_are_refused_before_requesting_a_token() {
         let server = MockOAuthServer::start().await;
-        let prepared = prepare_login(&format!("{}/mcp", server.base), None, Some("read"))
-            .await
-            .expect("prepare login");
-        assert!(prepared.authorize_url.contains("client_id=dcr-client-1"));
-        assert!(prepared.authorize_url.contains("code_challenge="));
-        assert!(prepared.authorize_url.contains("resource="));
+        // `PreparedLogin` holds a live listener and is not `Debug`, so unwrap
+        // the error side by hand rather than via `expect_err`.
+        let Err(error) = prepare_login(&format!("{}/mcp", server.base), None, Some("read")).await
+        else {
+            panic!("plain-HTTP MCP endpoint must not reach a token request");
+        };
+        assert!(
+            error.to_string().contains("HTTPS"),
+            "expected an HTTPS requirement error, got: {error}"
+        );
     }
 }

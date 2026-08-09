@@ -102,20 +102,32 @@ tree-sitter-zig = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-everruns-anthropic = "0.17.23"
-everruns-core = "0.17.23"
-everruns-openai = "0.17.23"
+# 0.17.24 added a value-first `everruns` facade crate that re-exports core and
+# runtime behind one dependency. Yolop deliberately does not use it: the facade
+# covers core + runtime (plus an `openai` feature), while yolop also needs the
+# anthropic, openrouter, local, mcp, and integration crates, and reaches into
+# core APIs the facade does not surface (capabilities, hooks, session tasks, MCP
+# transports, the driver registry). Adopting it today would collapse two of nine
+# dependencies and route the rest through escape hatches. Revisit when the
+# facade promotes provider registration, MCP, and capability wiring.
+everruns-anthropic = "0.17.24"
+everruns-core = "0.17.24"
+# The identity/platform family (PlatformStore and friends) moved out of
+# everruns-core into its own crate in 0.17.24; yolop implements PlatformStore
+# to route background-task wakes (src/runtime/background_wake.rs).
+everruns-platform = "0.17.24"
+everruns-openai = "0.17.24"
 # OpenRouter's first-class driver was split out of everruns-openai into its own
 # crate in 0.13.0; register it alongside openai to keep DriverId::OpenRouter.
-everruns-openrouter = "0.17.23"
-everruns-local = "0.17.23"
-everruns-mcp = { version = "0.17.23", features = ["stdio"] }
+everruns-openrouter = "0.17.24"
+everruns-local = "0.17.24"
+everruns-mcp = { version = "0.17.24", features = ["stdio"] }
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
 # everruns server/worker never enable it (knowledge/specs/mcp.md, upstream runtime-mcp.md D2).
-everruns-runtime = { version = "0.17.23", features = ["mcp-stdio"] }
-everruns-integrations-duckduckgo = "0.17.23"
-everruns-integrations-parallel = "0.17.23"
-everruns-integrations-daytona = "0.17.23"
+everruns-runtime = { version = "0.17.24", features = ["mcp-stdio"] }
+everruns-integrations-duckduckgo = "0.17.24"
+everruns-integrations-parallel = "0.17.24"
+everruns-integrations-daytona = "0.17.24"
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
 html-escape = "0.2"

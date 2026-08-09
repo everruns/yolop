@@ -522,6 +522,7 @@ mod tests {
                     display_name: None,
                     created_at: None,
                     owned_by: None,
+                    capabilities: vec!["chat".to_string()],
                     discovered_profile: None,
                 }]))
             }

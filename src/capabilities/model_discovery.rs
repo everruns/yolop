@@ -79,12 +79,35 @@ pub(crate) async fn discover_provider_models(
             model.model_id = bare.to_string();
         }
     }
+    let mut models = retain_chat_models(models);
     models.sort_by(|a, b| {
         b.created_at
             .cmp(&a.created_at)
             .then_with(|| a.model_id.cmp(&b.model_id))
     });
     Ok(Some(enrich_with_profiles(&target.provider_type, models)))
+}
+
+/// Keep only models yolop can actually chat with.
+///
+/// Since 0.17.24 the drivers no longer filter discovery down to chat models —
+/// embedding models are discoverable so they can be configured separately in
+/// hosted Everruns. Yolop only ever selects a chat model, so anything that
+/// declares capabilities without `chat` is dropped here. An empty capability
+/// list means "not reported" (the OpenAI-compatible fallback below, Ollama,
+/// proxies) and is kept, so unknown endpoints degrade open rather than
+/// presenting an empty picker.
+fn retain_chat_models(models: Vec<DiscoveredModel>) -> Vec<DiscoveredModel> {
+    models
+        .into_iter()
+        .filter(|model| {
+            model.capabilities.is_empty()
+                || model
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "chat")
+        })
+        .collect()
 }
 
 const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -243,6 +266,9 @@ async fn list_openai_compatible_models(
             display_name: None,
             owned_by: model.owned_by,
             model_id: model.id,
+            // The bare OpenAI-compatible `/models` shape reports no service
+            // capabilities; leave it empty so `retain_chat_models` keeps them.
+            capabilities: Vec::new(),
             discovered_profile: None,
         })
         .collect();
@@ -355,8 +381,45 @@ mod tests {
             display_name: None,
             created_at: None,
             owned_by: None,
+            capabilities: vec!["chat".to_string()],
             discovered_profile: None,
         }
+    }
+
+    fn discovered_with_capabilities(model_id: &str, capabilities: &[&str]) -> DiscoveredModel {
+        let mut model = bare_discovered(model_id);
+        model.capabilities = capabilities.iter().map(|c| c.to_string()).collect();
+        model
+    }
+
+    #[test]
+    fn embedding_models_are_excluded_from_chat_discovery() {
+        // 0.17.24 stopped filtering driver discovery down to chat models so
+        // embedding models could be configured separately upstream. Yolop only
+        // ever picks a chat model, so an embeddings-only entry must not reach
+        // the picker — nor `pick_catalog_fallback`, which can auto-select the
+        // newest discovered model.
+        let models = vec![
+            discovered_with_capabilities("text-embedding-3-large", &["embeddings"]),
+            discovered_with_capabilities("gpt-5.5", &["chat"]),
+        ];
+
+        let kept = retain_chat_models(models);
+
+        assert_eq!(
+            kept.iter().map(|m| m.model_id.as_str()).collect::<Vec<_>>(),
+            vec!["gpt-5.5"]
+        );
+    }
+
+    #[test]
+    fn models_without_declared_capabilities_are_kept() {
+        // The OpenAI-compatible fallback and any driver that does not report
+        // capabilities leave the list empty; treat unknown as usable rather
+        // than silently emptying the picker for Ollama and proxy endpoints.
+        let kept = retain_chat_models(vec![discovered_with_capabilities("llama3.3", &[])]);
+
+        assert_eq!(kept.len(), 1);
     }
 
     #[tokio::test]
@@ -487,16 +550,59 @@ mod tests {
         assert!(ids.contains(&"qwen3"), "ids: {ids:?}");
     }
 
-    #[tokio::test]
-    #[ignore = "requires OPENROUTER_API_KEY; performs a live models API call"]
-    async fn discovery_openrouter_live() {
-        if std::env::var("OPENROUTER_API_KEY")
-            .map(|v| v.is_empty())
-            .unwrap_or(true)
-        {
-            eprintln!("skipping: OPENROUTER_API_KEY not set");
-            return;
+    /// The driver path is the one 0.17.24 changed, and it cannot be mocked:
+    /// the OpenAI driver deliberately declines discovery for custom base URLs,
+    /// so a localhost mock always falls through to the OpenAI-compatible
+    /// branch instead. Only a live hosted endpoint exercises the branch that
+    /// reports `capabilities`, so the embedding-exclusion proof lives here.
+    /// Resolve a provider API key for a live test, mirroring
+    /// `tests/integration.rs`'s helper of the same name.
+    ///
+    /// Returns `None` (the caller then returns early) when the key is absent,
+    /// so a plain `cargo test` stays offline without `#[ignore]` — an ignored
+    /// test is one nothing ever runs. `YOLOP_REQUIRE_LIVE_TESTS=1` turns a
+    /// missing key into a hard failure so a misconfigured secret cannot report
+    /// a false green. Presence check only: the value is never read into memory.
+    fn live_key_or_skip(var: &str) -> Option<()> {
+        if std::env::var_os(var).is_some_and(|value| !value.is_empty()) {
+            return Some(());
         }
+        assert!(
+            std::env::var_os("YOLOP_REQUIRE_LIVE_TESTS").is_none(),
+            "{var} is required when YOLOP_REQUIRE_LIVE_TESTS is set"
+        );
+        eprintln!("skipping live test: {var} not set");
+        None
+    }
+
+    #[tokio::test]
+    async fn discovery_openai_live_excludes_embedding_models() {
+        let Some(_) = live_key_or_skip("OPENAI_API_KEY") else {
+            return;
+        };
+        let provider = ProviderChoice::default_for_provider_name("openai").unwrap();
+        let models = discover_provider_models(&provider, &Settings::default())
+            .await
+            .expect("openai discovery should succeed")
+            .expect("openai supports model listing");
+
+        assert!(!models.is_empty(), "openai should report models");
+        let embeddings: Vec<&str> = models
+            .iter()
+            .map(|m| m.model_id.as_str())
+            .filter(|id| id.starts_with("text-embedding-"))
+            .collect();
+        assert!(
+            embeddings.is_empty(),
+            "embedding models must not reach the chat picker: {embeddings:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_openrouter_live() {
+        let Some(_) = live_key_or_skip("OPENROUTER_API_KEY") else {
+            return;
+        };
         let provider = ProviderChoice::default_for_provider_name("openrouter").unwrap();
         let models = discover_provider_models(&provider, &Settings::default())
             .await

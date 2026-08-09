@@ -48,6 +48,12 @@ its split-footer mode. See [Tuika](#tuika).
 - Decisions worth keeping belong as concise comments near the relevant code, not
   in scratch documents.
 - For bug fixes, prefer writing the failing test before the fix.
+- Never write `#[ignore]` tests — an ignored test is one nothing ever runs, and
+  neither `cargo test` nor CI passes `--ignored`. A test that needs something the
+  environment may lack checks for it at runtime and returns early: a key via
+  `live_key_or_skip`, a binary via a probe, an external service via
+  `YOLOP_REQUIRE_LIVE_TESTS`. CI's live-smoke job sets that flag, which turns a
+  missing key into a hard failure so a misconfigured secret cannot report green.
 
 `RUST_LOG` is honored for the tracing layer (stderr).
 
@@ -108,7 +114,11 @@ bump the version — a git dependency would make yolop unpublishable.
 
 ## Upstream relationship
 
-Yolop is a friendly fork of the `examples/coding-cli` example in
-[`everruns/everruns`](https://github.com/everruns/everruns). Mirror meaningful
-upstream changes, and keep the public runtime crate versions in lockstep with
-what is published on crates.io.
+Yolop began as a friendly fork of the `examples/coding-cli` example in
+[`everruns/everruns`](https://github.com/everruns/everruns). As of 0.17.24 that
+example is no longer a mirror source — upstream rebuilt it as a minimal
+acceptance test for the new `everruns` facade crate and deleted its TUI, MCP,
+and provider wiring. Track the `everruns-*` library surface and upstream's
+`CHANGELOG.md` instead, and keep the crate versions in lockstep with what is
+published on crates.io. See
+[`knowledge/specs/maintenance.md`](knowledge/specs/maintenance.md).
