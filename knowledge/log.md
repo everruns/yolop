@@ -3,6 +3,22 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-09 — Everruns 0.17.24 adoption; upstream example is no longer a mirror
+
+- [Maintenance](specs/maintenance.md) no longer treats `examples/coding-cli` as a
+  mirror source. Upstream rebuilt it as the acceptance test for its new
+  `everruns` facade crate — one dependency, no TUI/MCP/provider wiring — so
+  yolop is now the more complete agent and has nothing left to pull from it.
+  Track the `everruns-*` library surface and upstream's changelog instead.
+- Maintenance also records that a clean compile is not sufficient evidence of
+  adoption, citing the two 0.17.24 behavior changes that raised no compile
+  error: driver model discovery began returning embedding models, and MCP OAuth
+  began requiring an HTTPS resource origin.
+- `everruns-platform` joins the pinned everruns family; the identity and
+  platform-store types yolop implements moved there out of `everruns-core`.
+- Yolop deliberately does not adopt the new `everruns` facade. The rationale
+  lives beside the dependencies in `Cargo.toml`.
+
 ## 2026-08-08 — Provider stall recovery budget and failure UX
 
 - [Checkpointing](specs/checkpointing.md) now records that Yolop installs a

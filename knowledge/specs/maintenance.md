@@ -81,6 +81,7 @@ The `everruns-*` family is yolop's single most consequential dependency vector:
 
 - `everruns-runtime`
 - `everruns-core`
+- `everruns-platform`
 - `everruns-openai`
 - `everruns-anthropic`
 - `everruns-integrations-duckduckgo`
@@ -95,14 +96,27 @@ Beyond the everruns family, dependency hygiene means:
 
 ## Upstream Mirror
 
-Yolop began as `examples/coding-cli` in `everruns/everruns`. Maintenance should periodically:
+Yolop began as `examples/coding-cli` in `everruns/everruns`, but that example is
+no longer a mirror source. In 0.17.24 upstream rebuilt it as the acceptance test
+for the new public `everruns` facade: it depends only on that one crate, and a
+test forbids it from touching `everruns-core` or `everruns-runtime`. Its TUI,
+MCP, provider, and capability wiring were deleted. Yolop is now the more complete
+agent of the two, so there is nothing left to pull from the example.
 
-- compare `src/` to the latest upstream example
-- pull non-everruns-specific improvements (UI tweaks, bug fixes, capability wiring)
-- leave behind anything tied to internal everruns paths or specs
-- note material divergence as a comment near the code, not a separate doc
+What remains worth tracking upstream is the **library surface**, not the example:
 
-When upstream changes the public runtime API, bump the `everruns-*` versions in `Cargo.toml` together and reconcile any compile errors before the new feature lands.
+- the `everruns-*` crates yolop depends on, and their API changes
+- the `everruns` facade's coverage — see the note beside the dependencies in
+  `Cargo.toml` for why yolop does not use it yet, and revisit when it promotes
+  provider registration, MCP, and capability wiring
+- upstream's `CHANGELOG.md` highlights, which name the behavioral changes that a
+  clean compile will not catch
+
+When upstream changes the public runtime API, bump the `everruns-*` versions in
+`Cargo.toml` together and reconcile any compile errors before the new feature
+lands. A clean compile is not sufficient evidence of adoption: 0.17.24 widened
+driver model discovery to include embedding models and began requiring HTTPS for
+MCP OAuth resources, and neither showed up as a compile error.
 
 ## Release Readiness Standard
 

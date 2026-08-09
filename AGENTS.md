@@ -108,7 +108,11 @@ bump the version — a git dependency would make yolop unpublishable.
 
 ## Upstream relationship
 
-Yolop is a friendly fork of the `examples/coding-cli` example in
-[`everruns/everruns`](https://github.com/everruns/everruns). Mirror meaningful
-upstream changes, and keep the public runtime crate versions in lockstep with
-what is published on crates.io.
+Yolop began as a friendly fork of the `examples/coding-cli` example in
+[`everruns/everruns`](https://github.com/everruns/everruns). As of 0.17.24 that
+example is no longer a mirror source — upstream rebuilt it as a minimal
+acceptance test for the new `everruns` facade crate and deleted its TUI, MCP,
+and provider wiring. Track the `everruns-*` library surface and upstream's
+`CHANGELOG.md` instead, and keep the crate versions in lockstep with what is
+published on crates.io. See
+[`knowledge/specs/maintenance.md`](knowledge/specs/maintenance.md).

@@ -261,6 +261,10 @@ fn mcp_connection_for(
         protocol_mode: server.protocol_mode,
         oauth_provider_id: server.oauth_provider_id.clone(),
         pending_oauth_provider: None,
+        // Secret bindings (0.17.24) are resolved by the hosted control plane
+        // from a secure store. Yolop is local-only and configures MCP servers
+        // from its own config, so there is never a binding to inject.
+        secret_bindings: Default::default(),
     })
 }
 
