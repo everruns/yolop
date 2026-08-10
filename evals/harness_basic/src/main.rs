@@ -1424,9 +1424,18 @@ fn checks_scorer() -> Box<dyn Scorer> {
             return Score::na("checks", "sample declares only budget checks");
         }
         let mut passed = 0usize;
+        let mut applied = 0usize;
         let mut failures: Vec<String> = Vec::new();
         for spec in correctness {
-            run_check(spec, t, &mut passed, &mut failures);
+            if run_check(spec, t, &mut passed, &mut failures) {
+                applied += 1;
+            }
+        }
+        if applied == 0 {
+            return Score::na(
+                "checks",
+                "no correctness checks apply to this binary/harness",
+            );
         }
         if failures.is_empty() {
             Score::pass("checks", format!("{passed} check(s) passed"))
@@ -1448,9 +1457,18 @@ fn declared_budget_scorer() -> Box<dyn Scorer> {
             return Score::na("declared_budget", "sample declares no budget checks");
         }
         let mut passed = 0usize;
+        let mut applied = 0usize;
         let mut failures: Vec<String> = Vec::new();
         for spec in budgets {
-            run_check(spec, t, &mut passed, &mut failures);
+            if run_check(spec, t, &mut passed, &mut failures) {
+                applied += 1;
+            }
+        }
+        if applied == 0 {
+            return Score::na(
+                "declared_budget",
+                "no budget checks apply to this binary/harness",
+            );
         }
         if failures.is_empty() {
             Score::pass("declared_budget", format!("{passed} budget(s) met"))
@@ -1514,12 +1532,17 @@ fn ast_edit_used_scorer() -> Box<dyn Scorer> {
     })
 }
 
-fn run_check(spec: &Value, t: &Transcript, passed: &mut usize, failures: &mut Vec<String>) {
+/// Runs one check spec against a transcript, returning whether it applied.
+/// A `when_binary`/`when_harness` mismatch means this transcript is not the
+/// audience for the check at all — it returns `false` without touching
+/// `passed`/`failures`, so callers can tell "applied and passed" apart from
+/// "did not apply here" instead of reading the latter as a vacuous pass.
+fn run_check(spec: &Value, t: &Transcript, passed: &mut usize, failures: &mut Vec<String>) -> bool {
     for (condition, metadata_key) in [("when_binary", "binary"), ("when_harness", "harness")] {
         if let Some(expected) = spec.get(condition).and_then(Value::as_str)
             && t.metadata.get(metadata_key).and_then(Value::as_str) != Some(expected)
         {
-            return;
+            return false;
         }
     }
     let strings = |key: &str| -> Vec<&str> {
@@ -1531,7 +1554,7 @@ fn run_check(spec: &Value, t: &Transcript, passed: &mut usize, failures: &mut Ve
     if let Some(path) = spec.get("file").and_then(Value::as_str) {
         let Some(contents) = t.files.get(path) else {
             failures.push(format!("no such file: {path}"));
-            return;
+            return true;
         };
         for needle in strings("contains") {
             if contents.contains(needle) {
@@ -1634,6 +1657,7 @@ fn run_check(spec: &Value, t: &Transcript, passed: &mut usize, failures: &mut Ve
             failures.push(format!("metric {key} {actual} != {expected}"));
         }
     }
+    true
 }
 
 // ============================================================================
@@ -3416,6 +3440,31 @@ mod tests {
             Sample::new("plain", "x").meta("checks", json!([{"response_contains": ["x"]}]));
         let score = declared_budget_scorer()
             .score(&sample, &graded_transcript())
+            .await;
+        assert!(score.na, "{}", score.reason);
+    }
+
+    #[tokio::test]
+    async fn candidate_only_budget_is_na_on_baseline_not_a_vacuous_pass() {
+        // zero-result-search-recovery's budget check is `when_binary: candidate`
+        // only. On a baseline transcript it must not apply to that binary — and
+        // must not apply, silently, to a vacuous "0 budget(s) met" pass either.
+        // A vacuous pass reads to the nightly analyzer as "baseline also declares
+        // and meets this budget", which turned a single candidate trial missing
+        // its own budget into a fabricated cross-binary regression.
+        let mut transcript = graded_transcript();
+        transcript.final_response = "GUARD-203".into();
+        transcript
+            .metadata
+            .insert("binary".into(), json!("baseline"));
+        transcript.metrics.extend([
+            ("progress_guard_warnings".into(), 0.0),
+            ("task_tool_calls".into(), 9.0),
+            ("task_llm_calls".into(), 9.0),
+        ]);
+
+        let score = declared_budget_scorer()
+            .score(&zero_result_search_sample(), &transcript)
             .await;
         assert!(score.na, "{}", score.reason);
     }
