@@ -312,6 +312,22 @@ separate five-trial controls expose global prompt/tool-surface regressions with
 a less noisy median. A candidate is not an improvement merely because its
 aggregate pass count is higher.
 
+A check marked `"budget": true` is an efficiency ceiling rather than a statement
+about whether the agent did the task, and is scored under `declared_budget`
+instead of `checks`. Keep the two apart: budgets are usually asserted on the
+candidate only, so folding one into `checks` and comparing pass rates across
+binaries measures the candidate against a baseline that was never asked to meet
+any ceiling — which is how `zero-result-search-recovery` reported its own call
+budget as `correctness regressed 100% -> 33%`. Binary-conditional *behavioural*
+checks stay in `checks`: "baseline emits no guard warning, candidate emits one"
+is the asymmetry those cases exist to prove. The analyzer gates a budget only
+when both binaries declare one; a candidate-only budget is reported, not gated.
+
+Budgets on `zero-result-search-recovery` and `prior-session-reference` are
+currently set at exactly the call count their prompts mandate, so every trial
+sits on the edge and one extra call fails the sample. Loosening them is a
+deliberate policy choice about how much slack the eval allows, not a bug fix.
+
 The manual/nightly [Search Efficiency Eval](../../.github/workflows/search-efficiency-eval.yml)
 builds both the triggering revision and the immutable pre-fix commit recorded
 in [`search_efficiency_baseline.json`](search_efficiency_baseline.json), runs
@@ -320,12 +336,20 @@ Mira run archives. It is intentionally excluded from pull-request CI because
 it is a live-model regression monitor, not a deterministic unit test.
 
 Trials that fail because the provider or infrastructure was unavailable (quota
-exhaustion, rate limits, 5xx, network) carry no signal and are dropped from the
-gate like skipped trials; harness timeouts stay real failures. When an outage
-wipes out a majority of a sample's trials the sample is reported *inconclusive*
-rather than a regression, and a run with nothing left to compare exits green so
-a throttled account never pages as a fleet-wide regression. The gate logic is
-covered by pure-Python unit tests (`tests/`) that do run in pull-request CI.
+exhaustion, billing exhaustion, rate limits, 5xx, network) carry no signal and
+are dropped from the gate like skipped trials; harness timeouts stay real
+failures. Error-string matching only recognizes outages someone has already
+seen, so a failed trial that made no tool calls and burned no input tokens is
+dropped too, whatever it reported: it never reached the provider, and scoring an
+unrecognized outage as a regression is the worst available default.
+
+When an outage wipes out a majority of a sample's trials the sample is reported
+*inconclusive* rather than a regression. A run with nothing left to compare
+exits `75`, not `0` — the workflow keeps the job green so a throttled account
+never pages, but annotates the run as inconclusive, because a nightly that
+graded nothing has not passed the gate and must not be read as evidence that
+`main` is clean. The gate logic is covered by pure-Python unit tests (`tests/`)
+that do run in pull-request CI.
 
 For progress-efficiency, the distribution gate additionally requires fewer
 workspace-state revisits in the dependency case and fewer redundant validation

@@ -57,7 +57,23 @@ INFRA_ERROR_MARKERS = (
     "failed to connect",
     "network error",
     "temporarily unavailable",
+    # Billing exhaustion. An unfunded account fails every trial identically, which
+    # is an outage in every sense that matters here — but it says nothing about
+    # quota or rate limits, so it went unmatched and scored two nightlies
+    # (2026-07-22, 2026-08-03) as fleet-wide regressions against runs where no
+    # trial ever reached the provider.
+    "credit_balance_exhausted",
+    "no credits remaining",
+    "insufficient_credit",
+    "billing_hard_limit_reached",
+    "payment_required",
 )
+
+# Exit statuses. Inconclusive is deliberately not 0: a night that graded nothing
+# has not cleared the gate, and reporting it as a pass is how a run in which every
+# trial died could read as the only green night in a streak.
+REGRESSION_EXIT = 1
+INCONCLUSIVE_EXIT = 75  # EX_TEMPFAIL
 
 
 def error_text(case: dict) -> str:
@@ -70,6 +86,15 @@ def error_text(case: dict) -> str:
     return " ".join(parts).lower()
 
 
+def produced_no_signal(case: dict) -> bool:
+    """True when a failed trial made no tool calls and burned no input tokens —
+    it never reached the provider, so there is no trajectory to compare. This is
+    the structural backstop behind INFRA_ERROR_MARKERS: matching error strings can
+    only catch outages someone has already seen, and an unmatched one is scored as
+    a regression, which is the worst possible default."""
+    return value(case, "tool_calls") == 0 and value(case, "input_tokens") == 0
+
+
 def is_infra_failure(case: dict) -> bool:
     """True when a *failed* trial errored because the provider or infrastructure
     was unavailable, not because the agent solved the task wrong. Harness timeouts
@@ -79,11 +104,45 @@ def is_infra_failure(case: dict) -> bool:
     if case.get("passed"):
         return False
     error = error_text(case)
-    if not error.strip():
-        return False
+    # Checked before everything else: a timeout can also land zero tool calls and
+    # zero tokens, and it must not reach the structural backstop below.
     if "timeout after" in error or "no events at" in error:
         return False
-    return any(marker in error for marker in INFRA_ERROR_MARKERS)
+    if any(marker in error for marker in INFRA_ERROR_MARKERS):
+        return True
+    return produced_no_signal(case)
+
+
+def correctness_pass(case: dict) -> bool | None:
+    """Whether the trial did the task, ignoring any efficiency budget it declares.
+
+    The harness reports budgets under the `declared_budget` scorer precisely so
+    they stay out of this number. Budgets are asserted on the candidate only, so
+    folding them into whole-case `passed` and comparing that across binaries
+    measures the candidate against a baseline that is never asked to meet a
+    budget: `zero-result-search-recovery` reported exactly that as "correctness
+    regressed 100% -> 33%".
+
+    Budget results are still gated — as budgets, by `budget_regressed` below.
+    None when the sample asserts nothing about correctness at all.
+    """
+    for score in case.get("scores", []):
+        if score.get("scorer") == "checks":
+            if score.get("na"):
+                return None
+            return bool(score.get("pass"))
+    return bool(case.get("passed"))
+
+
+def budget_pass(case: dict) -> bool | None:
+    """Whether the trial met its declared efficiency budget, or None if it
+    declares none."""
+    for score in case.get("scores", []):
+        if score.get("scorer") == "declared_budget":
+            if score.get("na"):
+                return None
+            return bool(score.get("pass"))
+    return None
 
 
 def value(case: dict, metric: str) -> float:
@@ -140,8 +199,47 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
                 f"{len(candidate)}/{len(candidate_all)} candidate valid trials"
             )
             continue
-        base_pass = sum(bool(case.get("passed")) for case in baseline) / len(baseline)
-        cand_pass = sum(bool(case.get("passed")) for case in candidate) / len(candidate)
+        base_graded = [
+            result
+            for result in (correctness_pass(case) for case in baseline)
+            if result is not None
+        ]
+        cand_graded = [
+            result
+            for result in (correctness_pass(case) for case in candidate)
+            if result is not None
+        ]
+        if not base_graded or not cand_graded:
+            notes.append(f"{sample}: no correctness rubric to compare")
+            continue
+        base_pass = sum(base_graded) / len(base_graded)
+        cand_pass = sum(cand_graded) / len(cand_graded)
+
+        # Budgets are gated only where both binaries declare one, because that is
+        # the only case in which the two numbers mean the same thing. A
+        # candidate-only budget is reported instead of gated: choosing a floor for
+        # it is a policy call about how much slack the eval allows, and these
+        # budgets currently sit at the exact call count their prompts mandate.
+        base_budget = [b for b in (budget_pass(c) for c in baseline) if b is not None]
+        cand_budget = [b for b in (budget_pass(c) for c in candidate) if b is not None]
+        budget_row = ""
+        if cand_budget:
+            cand_budget_rate = sum(cand_budget) / len(cand_budget)
+            budget_row = f"; budget {cand_budget_rate:.0%}"
+            if base_budget:
+                base_budget_rate = sum(base_budget) / len(base_budget)
+                budget_row = f"; budget {base_budget_rate:.0%}->{cand_budget_rate:.0%}"
+                if cand_budget_rate < base_budget_rate:
+                    failures.append(
+                        f"{sample}: declared budget regressed "
+                        f"{base_budget_rate:.0%} -> {cand_budget_rate:.0%}"
+                    )
+            elif cand_budget_rate < 1:
+                notes.append(
+                    f"{sample}: candidate met its declared budget in only "
+                    f"{cand_budget_rate:.0%} of trials (candidate-only budget, "
+                    f"reported not gated)"
+                )
         if cand_pass < base_pass:
             failures.append(
                 f"{sample}: correctness regressed {base_pass:.0%} -> {cand_pass:.0%}"
@@ -185,6 +283,7 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
             f"{medians[('candidate', 'input_tokens')]:g}; "
             f"bytes {medians[('baseline', 'total_tool_result_bytes')]:g}->"
             f"{medians[('candidate', 'total_tool_result_bytes')]:g}"
+            f"{budget_row}"
         )
     # Only demand an improvement when at least one focused case actually produced
     # signal. A provider outage that leaves every focused case inconclusive must
@@ -197,6 +296,15 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
 def analyze(report: dict) -> tuple[list[str], list[str], list[str]]:
     """Analyze one report; retained for callers with a combined report."""
     return analyze_reports([report])
+
+
+def exit_code(rows: list[str], failures: list[str], notes: list[str]) -> int:
+    """Map an analysis to a status: regression, inconclusive, or clean."""
+    if failures:
+        return REGRESSION_EXIT
+    if not rows and notes:
+        return INCONCLUSIVE_EXIT
+    return 0
 
 
 def main() -> int:
@@ -213,25 +321,26 @@ def main() -> int:
     )
     print("\n".join(rows))
     if notes:
-        print("\nInconclusive (excluded from the gate):", file=sys.stderr)
+        print("\nNot gated:", file=sys.stderr)
         for note in notes:
             print(f"- {note}", file=sys.stderr)
-    if failures:
+    status = exit_code(rows, failures, notes)
+    if status == REGRESSION_EXIT:
         print("\nRegression gates:", file=sys.stderr)
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
-        return 1
-    if not rows and notes:
+        return status
+    if status == INCONCLUSIVE_EXIT:
         # Nothing was gradable: a provider/infrastructure outage, not a code
-        # regression. Say so plainly and let the scheduled run stay green rather
-        # than paging on a throttled account.
+        # regression. The caller decides whether to page — but it is told the
+        # difference, because "no trial ran" is not "the gates passed".
         print(
             "\nRegression gate inconclusive: provider/infrastructure errors left "
-            "no valid trials to compare; not gating CI on a provider outage."
+            "no valid trials to compare; nothing was gated this run."
         )
-        return 0
+        return status
     print("\nRegression gates passed.")
-    return 0
+    return status
 
 
 if __name__ == "__main__":

@@ -435,7 +435,12 @@ fn prior_session_reference_sample() -> Sample {
                 "search_sessions_first_exploration": 1.0,
                 "tool_calls_failed": 0.0,
                 "duplicate_exploration_calls": 0.0
-            },
+            }
+        },
+        {
+            // Also zero-slack: the task needs one session search plus one read,
+            // so a single extra call fails the sample outright.
+            "budget": true,
             "metric_at_most": {
                 "tool_calls": 2.0,
                 "llm_calls": 3.0,
@@ -614,15 +619,24 @@ fn zero_result_search_sample() -> Sample {
         "checks",
         json!([
             {"response_contains": ["GUARD-203"]},
+            // The behavioural proof: the guard must fire, and the agent must act
+            // on it rather than keep searching blindly.
             {
                 "when_binary": "candidate",
                 "metric_at_least": {"progress_guard_warnings": 1.0},
+                "metric_equals": {"duplicate_exploration_calls": 0.0}
+            },
+            // The efficiency ceiling. Note the prompt mandates three zero-result
+            // searches plus one recovery search — exactly task_tool_calls — so
+            // this budget has no slack and every trial sits on its edge.
+            {
+                "when_binary": "candidate",
+                "budget": true,
                 "metric_at_most": {
                     "calls_after_progress_warning": 1.0,
                     "task_tool_calls": 4.0,
                     "task_llm_calls": 5.0
-                },
-                "metric_equals": {"duplicate_exploration_calls": 0.0}
+                }
             },
             {
                 "when_binary": "baseline",
@@ -1382,20 +1396,66 @@ fn dataset() -> Dataset {
 /// Grades each sample against its own `checks` metadata (file contents captured
 /// from the workdir after the run, and/or the final response). N/A — not a
 /// failure — on samples that declare no checks.
+/// True for checks a sample marks `"budget": true` — efficiency ceilings (call
+/// counts, bytes) rather than statements about whether the agent did the task.
+///
+/// These are scored apart from correctness because the two are compared
+/// differently: correctness is compared *across binaries*, and a budget usually
+/// is not, since budgets are asserted on the candidate only. Folding a
+/// candidate-only ceiling into the same pass/fail as the task assertions is what
+/// reported `zero-result-search-recovery` busting its own call budget as
+/// "correctness regressed 100% -> 33%" against a baseline that is never asked to
+/// meet any budget at all.
+///
+/// Behavioural proofs stay in `checks` even when binary-conditional: "baseline
+/// emits no guard warning, candidate emits one" is the asymmetry these cases
+/// exist to demonstrate, not an artifact.
+fn is_budget_check(spec: &Value) -> bool {
+    spec.get("budget").and_then(Value::as_bool).unwrap_or(false)
+}
+
 fn checks_scorer() -> Box<dyn Scorer> {
     scorer("checks", |sample, t| {
         let Some(specs) = sample.metadata.get("checks").and_then(Value::as_array) else {
             return Score::na("checks", "sample declares no checks");
         };
+        let correctness: Vec<&Value> = specs.iter().filter(|s| !is_budget_check(s)).collect();
+        if correctness.is_empty() {
+            return Score::na("checks", "sample declares only budget checks");
+        }
         let mut passed = 0usize;
         let mut failures: Vec<String> = Vec::new();
-        for spec in specs {
+        for spec in correctness {
             run_check(spec, t, &mut passed, &mut failures);
         }
         if failures.is_empty() {
             Score::pass("checks", format!("{passed} check(s) passed"))
         } else {
             Score::fail("checks", failures.join("; "))
+        }
+    })
+}
+
+/// Grades a sample's declared efficiency budgets, separately from correctness.
+/// N/A on samples that declare none.
+fn declared_budget_scorer() -> Box<dyn Scorer> {
+    scorer("declared_budget", |sample, t| {
+        let Some(specs) = sample.metadata.get("checks").and_then(Value::as_array) else {
+            return Score::na("declared_budget", "sample declares no checks");
+        };
+        let budgets: Vec<&Value> = specs.iter().filter(|s| is_budget_check(s)).collect();
+        if budgets.is_empty() {
+            return Score::na("declared_budget", "sample declares no budget checks");
+        }
+        let mut passed = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+        for spec in budgets {
+            run_check(spec, t, &mut passed, &mut failures);
+        }
+        if failures.is_empty() {
+            Score::pass("declared_budget", format!("{passed} budget(s) met"))
+        } else {
+            Score::fail("declared_budget", failures.join("; "))
         }
     })
 }
@@ -1712,6 +1772,19 @@ struct Mined {
 // Bookkeeping-only rounds are tracked independently from the work an eval asks
 // the agent to perform. This keeps product features such as automatic session
 // titles from consuming a task's search or reasoning budget.
+/// Runtime-mandated meta-calls that are not task progress. The agent does not
+/// choose to make these, so charging them to a task budget measures the runtime,
+/// not the trajectory. `progress_checkpoint` joined this set when the progress
+/// guard began *requiring* a checkpoint after it warns: without the exemption a
+/// case that budgets exactly the calls its prompt mandates fails the moment the
+/// guard fires, which is the behaviour the case exists to reward.
+fn is_bookkeeping_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "write_session_title" | "write_todos" | "set_status" | "progress_checkpoint"
+    )
+}
+
 fn task_tool_calls(mined: &Mined) -> u64 {
     mined
         .total_model_emitted_tool_calls
@@ -2096,12 +2169,7 @@ fn parse_events(jsonl: &str) -> Mined {
                         m.max_read_file_batch_width = m.max_read_file_batch_width.max(read_width);
                         let bookkeeping = tool_names
                             .iter()
-                            .filter(|name| {
-                                matches!(
-                                    **name,
-                                    "write_session_title" | "write_todos" | "set_status"
-                                )
-                            })
+                            .filter(|name| is_bookkeeping_tool(name))
                             .count() as u64;
                         m.bookkeeping_tool_calls += bookkeeping;
                         if bookkeeping == width {
@@ -2136,7 +2204,10 @@ fn parse_events(jsonl: &str) -> Mined {
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
                 m.tool_calls.push(name.to_string());
-                if saw_progress_warning {
+                // The mandatory checkpoint lands after the warning by definition;
+                // counting it here would consume the whole post-warning allowance
+                // before the agent can make its recovery call.
+                if saw_progress_warning && !is_bookkeeping_tool(name) {
                     m.calls_after_progress_warning += 1;
                 }
                 let result_bytes = data
@@ -2786,6 +2857,7 @@ fn basic_coding() -> Eval {
         .axis("effort", EFFORTS.iter().copied())
         .scorer(succeeded())
         .scorer(checks_scorer())
+        .scorer(declared_budget_scorer())
         // Guardrails, not the comparison itself: the per-case numbers (turns,
         // tool calls, tokens, cost) surface in the report for A/B reading.
         .scorer(turns_budget_scorer())
@@ -3221,6 +3293,10 @@ mod tests {
         transcript.metrics.insert("warnings".into(), 0.0);
         let score = checks_scorer().score(&sample, &transcript).await;
         assert!(!score.pass);
+
+        // Binary-conditional behavioural checks are correctness, not budget.
+        let budget = declared_budget_scorer().score(&sample, &transcript).await;
+        assert!(budget.na, "{}", budget.reason);
     }
 
     #[tokio::test]
@@ -3244,6 +3320,104 @@ mod tests {
             .score(&zero_result_search_sample(), &transcript)
             .await;
         assert!(score.pass, "{}", score.reason);
+    }
+
+    #[tokio::test]
+    async fn zero_result_search_budget_ignores_required_progress_checkpoint() {
+        // The progress guard *requires* a progress_checkpoint call once it fires.
+        // Charging that call to the task budget makes the candidate pay for a
+        // call the runtime forced on it: the case mandates three zero-result
+        // searches plus one recovery search, exactly the task_tool_calls budget,
+        // so a mandatory extra call fails the sample by construction.
+        let mut transcript = graded_transcript();
+        transcript.final_response = "GUARD-203".into();
+        transcript
+            .metadata
+            .insert("binary".into(), json!("candidate"));
+        transcript.metrics.extend([
+            ("progress_guard_warnings".into(), 1.0),
+            // The checkpoint and the recovery search both land after the warning.
+            ("calls_after_progress_warning".into(), 1.0),
+            ("duplicate_exploration_calls".into(), 0.0),
+            ("tool_calls".into(), 5.0),
+            ("llm_calls".into(), 6.0),
+            ("task_tool_calls".into(), 4.0),
+            ("task_llm_calls".into(), 5.0),
+        ]);
+
+        let score = checks_scorer()
+            .score(&zero_result_search_sample(), &transcript)
+            .await;
+        assert!(score.pass, "{}", score.reason);
+    }
+
+    #[test]
+    fn progress_checkpoint_is_bookkeeping_not_task_work() {
+        assert!(is_bookkeeping_tool("progress_checkpoint"));
+        assert!(is_bookkeeping_tool("write_todos"));
+        assert!(!is_bookkeeping_tool("grep_files"));
+        assert!(!is_bookkeeping_tool("read_file"));
+    }
+
+    #[tokio::test]
+    async fn busted_budget_does_not_fail_correctness() {
+        // The agent found the target, the guard fired, and it did not re-search
+        // blindly — it just took more calls than the ceiling allows. That is a
+        // budget result, not a correctness one, and must not read as a
+        // correctness regression against a baseline held to no budget.
+        let mut transcript = graded_transcript();
+        transcript.final_response = "GUARD-203".into();
+        transcript
+            .metadata
+            .insert("binary".into(), json!("candidate"));
+        transcript.metrics.extend([
+            ("progress_guard_warnings".into(), 1.0),
+            ("calls_after_progress_warning".into(), 1.0),
+            ("duplicate_exploration_calls".into(), 0.0),
+            ("task_tool_calls".into(), 9.0),
+            ("task_llm_calls".into(), 9.0),
+        ]);
+        let sample = zero_result_search_sample();
+
+        let correctness = checks_scorer().score(&sample, &transcript).await;
+        let budget = declared_budget_scorer().score(&sample, &transcript).await;
+
+        assert!(correctness.pass, "correctness: {}", correctness.reason);
+        assert!(!budget.pass, "budget should fail");
+    }
+
+    #[tokio::test]
+    async fn behavioural_proof_stays_in_correctness_when_binary_conditional() {
+        // "candidate emits a guard warning" is the asymmetry the case exists to
+        // demonstrate. It must stay in `checks`, or the eval loses the very
+        // signal that distinguishes the fixed binary from the pre-fix one.
+        let mut transcript = graded_transcript();
+        transcript.final_response = "GUARD-203".into();
+        transcript
+            .metadata
+            .insert("binary".into(), json!("candidate"));
+        transcript.metrics.extend([
+            ("progress_guard_warnings".into(), 0.0),
+            ("calls_after_progress_warning".into(), 0.0),
+            ("duplicate_exploration_calls".into(), 0.0),
+            ("task_tool_calls".into(), 4.0),
+            ("task_llm_calls".into(), 5.0),
+        ]);
+
+        let score = checks_scorer()
+            .score(&zero_result_search_sample(), &transcript)
+            .await;
+        assert!(!score.pass, "guard never fired; correctness must fail");
+    }
+
+    #[tokio::test]
+    async fn samples_without_budget_checks_report_no_budget_score() {
+        let sample =
+            Sample::new("plain", "x").meta("checks", json!([{"response_contains": ["x"]}]));
+        let score = declared_budget_scorer()
+            .score(&sample, &graded_transcript())
+            .await;
+        assert!(score.na, "{}", score.reason);
     }
 
     #[test]
