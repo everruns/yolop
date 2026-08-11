@@ -2603,6 +2603,9 @@ fn looks_provider_quota_exhausted(combined: &str) -> bool {
     let lower = combined.to_lowercase();
     lower.contains("insufficient_quota")
         || lower.contains("exceeded your current quota")
+        || lower.contains("credit_balance_exhausted")
+        || lower.contains("no credits remaining")
+        || lower.contains("out of credits or quota")
         || (combined.contains("402")
             && (lower.contains("more credits") || lower.contains("monthly limit")))
 }
@@ -2612,6 +2615,9 @@ fn provider_quota_detection_covers_openai_and_openrouter_billing_errors() {
     assert!(looks_provider_quota_exhausted("insufficient_quota"));
     assert!(looks_provider_quota_exhausted(
         "402 Payment Required: this request requires more credits"
+    ));
+    assert!(looks_provider_quota_exhausted(
+        "The AI provider account is out of credits or quota. Add credits or raise the provider account limits to continue.turn error: LLM error: credit_balance_exhausted: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/."
     ));
     assert!(!looks_provider_quota_exhausted(
         "400 No tool output found for function call"
