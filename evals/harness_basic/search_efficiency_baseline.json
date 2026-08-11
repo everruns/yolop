@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "baseline": {
-    "git_commit": "67e3d798240111614ca8051594caf8376753542f",
-    "everruns_runtime_version": "0.17.7",
-    "description": "Preserved pre-fix yolop revision that reproduced the session/search inefficiencies."
+    "git_commit": "5021d36c8fb6b0343189e28f3f81f1016948c1fd",
+    "everruns_runtime_version": "0.17.25",
+    "description": "Re-pinned 2026-08-11 to a current green main commit. The prior pin (67e3d798, 2026-07-11) predated #539 (perf(runtime): shape first-turn tool disclosure), which deliberately trades an extra reveal-round tool call for a smaller first-turn context on mutation tools. That made the frozen pre-#539 revision permanently cheaper on the add-fn/find-constant ordinary-control gates' strict tool-call-count checks, failing every nightly run since 2026-08-06 on an intentional, unrelated architecture change rather than a real regression. Re-pin periodically to keep the ordinary-control gates comparing against current architecture; the focused search-efficiency cases this baseline also anchors remain valid regardless of the pin date."
   },
   "monitor": {
     "focused_preset": "search-efficiency",
