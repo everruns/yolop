@@ -1742,7 +1742,11 @@ mod tests {
         })
         .await;
 
-        assert!(run.assistant_text().contains("task blocked"));
+        assert_eq!(
+            run.assistant_text(),
+            "I need the target path. Which file should I edit?",
+            "ACP must preserve the clarification without appending host status"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

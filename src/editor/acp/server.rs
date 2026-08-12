@@ -1477,10 +1477,6 @@ async fn completion_followup(
             session
                 .handles
                 .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
-            peer.session_update(
-                &session.acp_id,
-                SessionUpdate::AgentMessageChunk(protocol::text_chunk("task blocked")),
-            );
             None
         }
         AskOutcome::Failed => {

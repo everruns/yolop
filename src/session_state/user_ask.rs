@@ -498,15 +498,18 @@ pub(crate) fn evaluation_result_message(evaluation: &UserAskEvaluation) -> Strin
     .to_string()
 }
 
-pub(crate) fn evaluation_status_message(evaluation: &UserAskEvaluation) -> String {
+pub(crate) fn evaluation_status_message(evaluation: &UserAskEvaluation) -> Option<String> {
     match evaluation.outcome {
-        AskOutcome::Achieved => format!("user ask achieved: {}", evaluation.reason),
-        AskOutcome::Blocked => format!("user ask blocked: {}", evaluation.reason),
-        AskOutcome::Failed => format!("user ask failed: {}", evaluation.reason),
-        AskOutcome::WaitingOnBackground => {
-            format!("user ask waiting on background: {}", evaluation.reason)
-        }
-        AskOutcome::InProgress => format!("user ask in progress: {}", evaluation.reason),
+        AskOutcome::Achieved => Some(format!("user ask achieved: {}", evaluation.reason)),
+        // The assistant's clarification is already the visible handoff to the user.
+        // Repeating blocked state as host-authored transcript copy only adds noise.
+        AskOutcome::Blocked => None,
+        AskOutcome::Failed => Some(format!("user ask failed: {}", evaluation.reason)),
+        AskOutcome::WaitingOnBackground => Some(format!(
+            "user ask waiting on background: {}",
+            evaluation.reason
+        )),
+        AskOutcome::InProgress => Some(format!("user ask in progress: {}", evaluation.reason)),
     }
 }
 
@@ -612,6 +615,26 @@ mod tests {
         .expect("parse");
         assert_eq!(evaluation.outcome, AskOutcome::Blocked);
         assert!(evaluation.reason.contains("API key"));
+    }
+
+    #[test]
+    fn evaluation_status_message_suppresses_only_blocked() {
+        for (outcome, expected) in [
+            (AskOutcome::Achieved, Some("user ask achieved: reason")),
+            (AskOutcome::Blocked, None),
+            (AskOutcome::Failed, Some("user ask failed: reason")),
+            (
+                AskOutcome::WaitingOnBackground,
+                Some("user ask waiting on background: reason"),
+            ),
+            (AskOutcome::InProgress, Some("user ask in progress: reason")),
+        ] {
+            let evaluation = UserAskEvaluation {
+                outcome,
+                reason: "reason".into(),
+            };
+            assert_eq!(evaluation_status_message(&evaluation).as_deref(), expected);
+        }
     }
 
     #[test]
