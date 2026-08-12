@@ -6808,6 +6808,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tuika"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3df8ce9b27d3a5e4541ead23a9c187a2923b5c33a8dad162e390d5817f902523"
+dependencies = [
+ "crossterm",
+ "pulldown-cmark",
+ "ratatui-core",
+ "ratatui-crossterm",
+ "textwrap",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "tuika-codeformatters"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6829,7 +6844,7 @@ dependencies = [
  "tree-sitter-sequel",
  "tree-sitter-typescript",
  "tree-sitter-zig",
- "tuika",
+ "tuika 0.7.0",
 ]
 
 [[package]]
@@ -6841,7 +6856,7 @@ dependencies = [
  "html5ever 0.39.0",
  "markup5ever_rcdom 0.39.0+unofficial",
  "ratatui-core",
- "tuika",
+ "tuika 0.7.0",
 ]
 
 [[package]]
@@ -6852,7 +6867,7 @@ checksum = "a0077b474ae88da6606a63a4b3bfe837f658e35029d4d8cf37971b959292a75e"
 dependencies = [
  "mmdflux",
  "ratatui-core",
- "tuika",
+ "tuika 0.7.0",
 ]
 
 [[package]]
@@ -7887,7 +7902,7 @@ dependencies = [
  "tree-sitter-sequel",
  "tree-sitter-typescript",
  "tree-sitter-zig",
- "tuika",
+ "tuika 0.8.0",
  "tuika-codeformatters",
  "tuika-html",
  "tuika-mermaid",
