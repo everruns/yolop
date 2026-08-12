@@ -1257,6 +1257,15 @@ impl App {
         });
     }
 
+    fn push_evaluation_status(
+        &mut self,
+        evaluation: &crate::session_state::user_ask::UserAskEvaluation,
+    ) {
+        if let Some(message) = evaluation_status_message(evaluation) {
+            self.push_system(message);
+        }
+    }
+
     /// Refresh the memoized full-screen transcript wrapping for `width` and
     /// return the total wrapped-line count.
     ///
@@ -3278,7 +3287,7 @@ impl App {
             self.push_system(format!("user ask: {err}"));
             return;
         }
-        self.push_system(evaluation_status_message(&evaluation));
+        self.push_evaluation_status(&evaluation);
     }
 
     fn maybe_start_goal_turn(&mut self) {
@@ -3354,7 +3363,7 @@ impl App {
                 self.push_system(format!("user ask: {err}"));
                 return;
             }
-            self.push_system(evaluation_status_message(&evaluation));
+            self.push_evaluation_status(&evaluation);
             return;
         }
         let tokens = self.session.turn_tokens(result.turn_id).await;
@@ -3382,7 +3391,7 @@ impl App {
                 self.push_system(format!("user ask: {err}"));
                 return;
             }
-            self.push_system(evaluation_status_message(&evaluation));
+            self.push_evaluation_status(&evaluation);
             match outcome {
                 AskOutcome::InProgress => {
                     let prompt =
@@ -3422,7 +3431,7 @@ impl App {
             self.session
                 .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
         }
-        self.push_system(evaluation_status_message(&evaluation));
+        self.push_evaluation_status(&evaluation);
         if evaluation.outcome == AskOutcome::InProgress {
             let prompt =
                 crate::session_state::task_completion::continuation_prompt(&evaluation.reason);
@@ -6508,7 +6517,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blocked_completion_state_is_in_presentation_transcript() {
+    async fn blocked_completion_state_stops_without_presentation_status() {
         use everruns_core::turn::TurnStopReason;
         use everruns_core::typed_id::TurnId;
 
@@ -6530,9 +6539,15 @@ mod tests {
             }))
             .await;
 
-        assert!(test.app.lines.iter().any(|line| {
-            line.author == Author::System && line.text.contains("user ask blocked")
-        }));
+        assert!(
+            test.app.lines.is_empty(),
+            "blocked completion must not add host status to the presentation transcript: {:?}",
+            test.app.lines
+        );
+        assert!(
+            !test.app.user_ask_store.is_active(session_id),
+            "blocked completion must remain persisted as terminal"
+        );
         assert!(!test.app.busy, "blocked state must not auto-continue");
     }
 

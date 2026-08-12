@@ -271,10 +271,6 @@ impl Session {
             if cancelled {
                 handles.report_herdr_state(crate::capabilities::herdr::HerdrState::Idle);
                 let _ = tx.send(TurnEvent::Stream(None));
-                let _ = tx.send(TurnEvent::Lines(vec![ChatLine {
-                    author: Author::System,
-                    text: "turn cancelled".into(),
-                }]));
                 let _ = tx.send(TurnEvent::Done(None));
                 return;
             }
@@ -580,6 +576,54 @@ mod tests {
                 .expect("messages")
                 .is_empty(),
             "the rejected ask must remain resumable instead of entering history"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_agent_turn_finishes_without_host_transcript_status() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(crate::config::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
+        let built = crate::runtime::build_with_options(
+            workspace.path().to_path_buf(),
+            crate::runtime::ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            crate::runtime::BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let session = Session::new(built.handles, built.model);
+
+        let mut turn = session.run_turn("keep working".to_string(), Vec::new());
+        turn.cancel.send(()).expect("cancel turn");
+
+        let mut transcript = Vec::new();
+        let mut completed = false;
+        while let Some(event) = turn.events.recv().await {
+            match event {
+                TurnEvent::Lines(lines) => transcript.extend(lines),
+                TurnEvent::Done(None) => {
+                    completed = true;
+                    break;
+                }
+                TurnEvent::Done(Some(result)) => {
+                    panic!("cancelled turn unexpectedly completed: {result:?}")
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            completed,
+            "cancelled turn must still reach its terminal event"
+        );
+        assert!(
+            transcript.is_empty(),
+            "cancelled turn must not add host status to the transcript: {transcript:?}"
         );
     }
 }

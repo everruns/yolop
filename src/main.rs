@@ -1561,10 +1561,11 @@ async fn run_print_mode(
                     session_state::task_completion::CompletionState::Failed,
                 );
                 user_ask_store.record_evaluation(handles.session_id, &evaluation)?;
-                eprintln!(
-                    "{}",
+                if let Some(message) =
                     session_state::user_ask::evaluation_status_message(&evaluation)
-                );
+                {
+                    eprintln!("{message}");
+                }
             }
             write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
             std::process::exit(1);
