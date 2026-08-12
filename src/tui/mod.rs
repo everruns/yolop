@@ -1021,6 +1021,26 @@ impl App {
         self.selection.clear();
     }
 
+    /// Apply fullscreen mouse-selection policy for one key press.
+    ///
+    /// Returns `true` when the key was fully handled here (caller must not
+    /// feed it to [`Self::handle_key`]). Bare modifier presses — reported
+    /// because yolop enables `REPORT_ALL_KEYS_AS_ESCAPE_CODES` — must not
+    /// dismiss the highlight; otherwise pressing Ctrl before C wipes the
+    /// selection. With an active selection, Ctrl+C re-arms the OSC 52 copy
+    /// instead of interrupting.
+    fn handle_fullscreen_selection_key(&mut self, key: &KeyEvent) -> bool {
+        if matches!(key.code, KeyCode::Modifier(_)) {
+            return true;
+        }
+        if self.selection.is_active() && is_ctrl_c(key) {
+            self.pending_copy = true;
+            return true;
+        }
+        self.clear_selection();
+        false
+    }
+
     /// Enable the terminal's native OSC 9;4 progress indicator for this session.
     /// Called by `run_tui`; left off for tests and non-terminal hosts.
     pub(crate) fn enable_native_progress(&mut self) {
@@ -1679,8 +1699,10 @@ impl App {
                     if key.code == KeyCode::Esc && self.handle_escape_prefixed_enter().await? {
                         continue;
                     }
-                    if self.render_mode.is_fullscreen() {
-                        self.clear_selection();
+                    if self.render_mode.is_fullscreen()
+                        && self.handle_fullscreen_selection_key(&key)
+                    {
+                        continue;
                     }
                     self.handle_key(key).await;
                 }
@@ -3809,6 +3831,12 @@ fn capability_command_usage_with_prefix(descriptor: &CommandDescriptor, prefix: 
             .join(" ");
         format!("{prefix}{} {args}", descriptor.name)
     }
+}
+
+fn is_ctrl_c(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
 }
 
 fn normalize_printable_key(mut key: KeyEvent) -> KeyEvent {
@@ -6291,6 +6319,75 @@ mod tests {
         // space, so it survives the scroll and stays available to copy.
         test.app.handle_fullscreen_scroll(MouseEventKind::ScrollUp);
         assert!(test.app.has_selection());
+    }
+
+    /// With `REPORT_ALL_KEYS_AS_ESCAPE_CODES`, pressing Ctrl alone arrives as a
+    /// `KeyCode::Modifier` event. That must not wipe an active mouse selection —
+    /// otherwise Ctrl+C is impossible because the highlight is gone before C.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fullscreen_selection_survives_bare_ctrl_modifier() {
+        let mut test = app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.set_render_mode(RenderMode::Fullscreen);
+        test.app.push_user("copy me please".to_string());
+
+        let _ = render_app_lines(&mut test.app, 60, 12);
+        let area = test.app.selection_area;
+        let row = area.bottom() - 1;
+        let ev = |kind, column| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(
+            test.app
+                .handle_fullscreen_selection(ev(MouseEventKind::Down(MouseButton::Left), area.x))
+        );
+        assert!(
+            test.app.handle_fullscreen_selection(ev(
+                MouseEventKind::Drag(MouseButton::Left),
+                area.x + 8
+            ))
+        );
+        assert!(
+            test.app
+                .handle_fullscreen_selection(ev(MouseEventKind::Up(MouseButton::Left), area.x + 8))
+        );
+        assert!(test.app.has_selection());
+        test.app.pending_copy = false;
+
+        // Bare Ctrl (what the enhanced keyboard protocol sends before C).
+        let ctrl = KeyEvent::new(
+            KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftControl),
+            KeyModifiers::CONTROL,
+        );
+        assert!(
+            test.app.handle_fullscreen_selection_key(&ctrl),
+            "bare Ctrl should be swallowed"
+        );
+        assert!(
+            test.app.has_selection(),
+            "bare Ctrl must not clear the mouse selection"
+        );
+        assert!(!test.app.pending_copy);
+
+        // Completing Ctrl+C re-arms the OSC 52 copy without interrupting.
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(
+            test.app.handle_fullscreen_selection_key(&ctrl_c),
+            "Ctrl+C with a selection should copy, not fall through to interrupt"
+        );
+        assert!(test.app.has_selection());
+        assert!(
+            test.app.pending_copy,
+            "Ctrl+C should re-arm the deferred clipboard copy"
+        );
+
+        // A real typing key still dismisses the selection so the composer can take it.
+        let letter = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty());
+        assert!(!test.app.handle_fullscreen_selection_key(&letter));
+        assert!(!test.app.has_selection());
     }
 
     /// Repro for "impossible to select more than one window of text": a drag
