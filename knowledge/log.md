@@ -3,6 +3,13 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-11 — Fullscreen mouse selection survives Ctrl and Ctrl+C copies
+
+- [Presentation](specs/presentation.md) records that fullscreen drag-select is
+  application-owned: bare modifier key events must not dismiss the highlight,
+  and with an active selection `Ctrl+C` re-arms OSC 52 copy instead of
+  interrupting. Typing still clears the selection.
+
 ## 2026-08-09 — Meta Model API provider
 
 - Yolop adopts the Everruns 0.17.25 family and registers `everruns-meta` as the

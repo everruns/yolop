@@ -71,6 +71,13 @@ macOS). The fullscreen host must not also launch the URL from the reported mouse
 event. While mouse capture is active, link hover may set the terminal pointer
 through OSC 22, and must restore the default pointer when the session ends.
 
+Fullscreen mouse text selection is application-owned (mouse capture replaces the
+terminal's native drag-select). A left-drag across the transcript highlights and
+copies via OSC 52 on release. Bare modifier key events — which arrive when the
+session enables `REPORT_ALL_KEYS_AS_ESCAPE_CODES` — must not dismiss that
+highlight; with an active selection, `Ctrl+C` re-arms the OSC 52 copy instead of
+interrupting. Ordinary typing still clears the selection.
+
 ### Fullscreen Status Drawer
 
 The fullscreen host projects expanded session status as a responsive drawer.
