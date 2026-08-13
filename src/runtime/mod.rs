@@ -2361,9 +2361,6 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         // `/btw` — ephemeral side question, answered out-of-band with the
         // session's context (upstream `BtwCapability`).
         AgentCapabilityConfig::new(BTW_CAPABILITY_ID),
-        // Host-side completion tracking is cheap while inactive and prevents
-        // tool/commentary-only turns from silently ending a user request.
-        AgentCapabilityConfig::new(USER_ASK_CAPABILITY_ID),
         // `/goal` — keep working across turns until a model-evaluated condition holds.
         AgentCapabilityConfig::new(GOAL_CAPABILITY_ID),
         // Soft approval: injects spoken-consent guidance for critical actions,
@@ -2471,7 +2468,7 @@ pub struct BuiltRuntime {
     pub model: ModelState,
     pub goal_store: Arc<GoalStore>,
     pub user_ask_store: Arc<UserAskStore>,
-    /// Whether `yolop_user_ask` is on the session harness (on by default).
+    /// Whether the experimental `yolop_user_ask` capability was enabled.
     pub user_ask_enabled: bool,
     pub worktree: Arc<WorktreeManager>,
     /// Settings store shared with the runtime capabilities. The TUI uses it
@@ -3549,6 +3546,8 @@ pub async fn build_with_options(
     });
     let user_ask_store = Arc::new(UserAskStore::open(session_dir.clone()));
     user_ask_store.load_session(session_id)?;
+    // Registered for catalog discovery and explicit settings opt-in, but kept
+    // off the default harness while completion tracking remains experimental.
     capabilities.register(UserAskCapability {
         store: user_ask_store.clone(),
         session_id,
@@ -5540,6 +5539,36 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn user_ask_command_is_not_registered_by_default() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        assert!(!built.user_ask_enabled);
+        let commands = built
+            .handles
+            .runtime
+            .list_commands(built.handles.session_id)
+            .await
+            .expect("commands");
+        assert!(
+            commands.iter().all(|command| command.name != "ask"),
+            "/ask should require the experimental capability opt-in"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn user_ask_command_is_registered_when_enabled_in_settings() {
         use crate::config::capability_settings::CapabilityOverride;
 
@@ -5608,12 +5637,12 @@ mod tests {
     }
 
     #[test]
-    fn coding_harness_enables_user_ask_by_default() {
+    fn coding_harness_does_not_enable_experimental_user_ask_by_default() {
         let ids = coding_harness_capabilities(false, None, &Settings::default());
         assert!(
-            ids.iter()
+            !ids.iter()
                 .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID),
-            "user ask completion tracking should be on by default"
+            "experimental user ask completion tracking should require opt-in"
         );
     }
 

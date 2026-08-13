@@ -322,13 +322,13 @@ mod tests {
         let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
         let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
         let settings = Arc::new(SettingsStore::open(sessions.join("settings.toml")));
-        if !completion_tracking {
+        if completion_tracking {
             settings
                 .set_capability_enabled(
                     crate::session_state::user_ask::USER_ASK_CAPABILITY_ID,
-                    false,
+                    true,
                 )
-                .expect("disable completion tracking for unrelated ACP fixture");
+                .expect("enable completion tracking for ACP fixture");
         }
         let factory = Arc::new(ScriptedFactory {
             config,
@@ -1297,8 +1297,12 @@ mod tests {
         let sessions = tempfile::tempdir().expect("sessions tempdir");
         let sessions_dir = sessions.path().to_path_buf();
         let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        let settings = Arc::new(SettingsStore::open(sessions_dir.join("settings.toml")));
+        settings
+            .set_capability_enabled(crate::session_state::user_ask::USER_ASK_CAPABILITY_ID, true)
+            .expect("enable completion tracking");
         let (mut first_w, mut first_reader, first_server) =
-            start_raw_server(fixed(""), sessions_dir.clone());
+            start_raw_server_with_settings(fixed(""), sessions_dir.clone(), settings);
         send_json(
             &mut first_w,
             json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
@@ -1639,7 +1643,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn default_completion_gate_continues_tool_only_stop_to_one_final() {
+    async fn opt_in_completion_gate_continues_tool_only_stop_to_one_final() {
         use everruns_core::llmsim_driver::OnExhausted;
 
         let config = LlmSimConfig::scripted(vec![

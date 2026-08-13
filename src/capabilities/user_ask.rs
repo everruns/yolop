@@ -1,7 +1,8 @@
-//! `yolop_user_ask` — track the user's request and validate it after each turn.
+//! Experimental `yolop_user_ask` — track the user's request and validate it
+//! after each turn.
 //!
 //! Independent of `/goal`: records what the user wants, allows updates when they
-//! pivot, and runs a tool-less evaluator at turn end. Does not auto-continue turns.
+//! pivot, and runs a tool-less evaluator at turn end. Hosts own bounded continuation.
 
 use crate::capabilities::narration::stable_labeled;
 use crate::session_state::user_ask::{
@@ -34,11 +35,11 @@ impl Capability for UserAskCapability {
     }
 
     fn name(&self) -> &str {
-        "User ask"
+        "User ask (experimental)"
     }
 
     fn description(&self) -> &str {
-        "Track the user's request across turns and evaluate whether it was achieved."
+        "Experimental request tracking across turns with end-of-turn completion evaluation."
     }
 
     fn status(&self) -> CapabilityStatus {

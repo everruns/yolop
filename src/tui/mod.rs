@@ -6618,7 +6618,7 @@ mod tests {
         use everruns_core::turn::TurnStopReason;
         use everruns_core::typed_id::TurnId;
 
-        let mut test = app_with_llmsim().await;
+        let mut test = app_with_llmsim_and_user_ask().await;
         let session_id = test.app.session.session_id();
         test.app
             .user_ask_store
@@ -6672,11 +6672,27 @@ mod tests {
     }
 
     async fn app_with_llmsim() -> TestApp {
+        app_with_llmsim_capabilities(false).await
+    }
+
+    async fn app_with_llmsim_and_user_ask() -> TestApp {
+        app_with_llmsim_capabilities(true).await
+    }
+
+    async fn app_with_llmsim_capabilities(user_ask: bool) -> TestApp {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let sessions = tempfile::tempdir().expect("sessions tempdir");
         let settings = std::sync::Arc::new(crate::config::SettingsStore::open(
             sessions.path().join("settings.toml"),
         ));
+        if user_ask {
+            settings
+                .set_capability_enabled(
+                    crate::session_state::user_ask::USER_ASK_CAPABILITY_ID,
+                    true,
+                )
+                .expect("enable user ask for TUI fixture");
+        }
         let runtime = crate::runtime::build_with_options(
             workspace.path().to_path_buf(),
             crate::runtime::ProviderChoice::Sim,
@@ -8453,7 +8469,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn busy_composer_queues_messages_for_fifo_delivery() {
-        let mut fixture = app_with_llmsim().await;
+        let mut fixture = app_with_llmsim_and_user_ask().await;
         let app = &mut fixture.app;
         app.setup = None;
         app.lines.clear();
