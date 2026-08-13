@@ -67,7 +67,9 @@ use everruns_core::llmsim_driver::LlmSimConfig;
 use everruns_core::message::{ContentPart, MessageRole};
 use everruns_core::session_file::{
     FileInfo, FileStat, GrepMatch, GrepOptions, GrepSearchResult, InitialFile, SessionFile,
+    build_grep_search_result,
 };
+use everruns_core::session_path::GrepPathPattern;
 use everruns_core::session_task::SessionTaskRegistry;
 use everruns_core::typed_id::SessionId;
 use everruns_core::{
@@ -88,6 +90,8 @@ use everruns_runtime::{
     InProcessRuntimeBuilder, RealDiskFileStore, RuntimeBackends, RuntimeSessionStore,
     SessionBuilder, WriteBlocklistFileStore,
 };
+use ignore::WalkBuilder;
+use regex::RegexBuilder;
 
 use crate::capabilities::host::SetupController;
 use crate::exec::workspace_host::WorkspaceHost;
@@ -418,6 +422,140 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
 struct GrepOptionsForwardingFileStore {
     policy: Arc<dyn SessionFileSystem>,
     grep_backend: Arc<dyn SessionFileSystem>,
+}
+
+// Upstream's real-disk backend retains every scanned file and therefore aborts
+// after 5 MiB. Yolop scans one file at a time instead: input memory stays
+// bounded per file while the existing match and response budgets remain intact.
+const MAX_GREP_PATTERN_LEN: usize = 1_000;
+const MAX_GREP_REGEX_BYTES: usize = 512 * 1024;
+const MAX_GREP_FILE_BYTES: usize = 512 * 1024;
+
+async fn grep_workspace_with_options(
+    root: PathBuf,
+    pattern: &str,
+    options: &GrepOptions,
+) -> everruns_core::Result<GrepSearchResult> {
+    if pattern.len() > MAX_GREP_PATTERN_LEN {
+        return Err(AgentLoopError::tool(format!(
+            "Regex pattern too long (max {MAX_GREP_PATTERN_LEN} characters)"
+        )));
+    }
+    if options
+        .path_pattern
+        .as_ref()
+        .is_some_and(|path| path.len() > MAX_GREP_PATTERN_LEN)
+    {
+        return Err(AgentLoopError::tool(format!(
+            "Path pattern too long (max {MAX_GREP_PATTERN_LEN} characters)"
+        )));
+    }
+
+    let regex = RegexBuilder::new(pattern)
+        .size_limit(MAX_GREP_REGEX_BYTES)
+        .build()
+        .map_err(|error| AgentLoopError::tool(format!("Invalid regex pattern: {error}")))?;
+    let path_matcher = options
+        .path_pattern
+        .as_deref()
+        .map(GrepPathPattern::new)
+        .transpose()?;
+    let options = options.clone();
+
+    tokio::task::spawn_blocking(move || -> everruns_core::Result<GrepSearchResult> {
+        let mut matches = Vec::new();
+        let mut blocks = Vec::new();
+        let mut total_matches = 0usize;
+        let mut returned_matches = 0usize;
+        let mut bytes_returned = 0usize;
+        let mut bytes_total = 0usize;
+        let mut remaining_offset = options.offset;
+        let mut remaining_limit = options.limit;
+
+        let mut builder = WalkBuilder::new(&root);
+        builder
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(false)
+            .git_exclude(true)
+            .sort_by_file_path(|left, right| left.cmp(right));
+
+        for entry in builder.build().filter_map(std::result::Result::ok) {
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let Ok(relative) = entry.path().strip_prefix(&root) else {
+                continue;
+            };
+            let Some(relative) = relative.to_str() else {
+                continue;
+            };
+            let canonical_path = format!("/{}", relative.replace(std::path::MAIN_SEPARATOR, "/"));
+            if path_matcher
+                .as_ref()
+                .is_some_and(|matcher| !matcher.is_match(&canonical_path))
+            {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.len() > MAX_GREP_FILE_BYTES as u64 {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(entry.path()) else {
+                continue;
+            };
+            if !SessionFile::is_text_content(&bytes) {
+                continue;
+            }
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+
+            let file_matches = text.lines().filter(|line| regex.is_match(line)).count();
+            total_matches = total_matches.saturating_add(file_matches);
+            let skip = remaining_offset.min(file_matches);
+            remaining_offset -= skip;
+            let selected = file_matches.saturating_sub(skip).min(remaining_limit);
+            remaining_limit -= selected;
+            if selected == 0 {
+                continue;
+            }
+
+            let file_result = build_grep_search_result(
+                vec![(canonical_path, text)],
+                &regex,
+                &GrepOptions {
+                    path_pattern: None,
+                    before_context: options.before_context,
+                    after_context: options.after_context,
+                    offset: skip,
+                    limit: selected,
+                    max_bytes: options.max_bytes.saturating_sub(bytes_returned),
+                },
+            );
+            returned_matches = returned_matches.saturating_add(file_result.returned_matches);
+            bytes_returned = bytes_returned.saturating_add(file_result.bytes_returned);
+            bytes_total = bytes_total.saturating_add(file_result.bytes_total);
+            matches.extend(file_result.matches);
+            blocks.extend(file_result.blocks);
+        }
+
+        let next_offset = options.offset.saturating_add(returned_matches);
+        Ok(GrepSearchResult {
+            matches,
+            blocks,
+            total_matches,
+            returned_matches,
+            bytes_returned,
+            bytes_total,
+            next_offset: (next_offset < total_matches).then_some(next_offset),
+            byte_truncated: bytes_returned < bytes_total,
+        })
+    })
+    .await
+    .map_err(|error| AgentLoopError::tool(format!("grep walk join failed: {error}")))?
 }
 
 impl GrepOptionsForwardingFileStore {
@@ -996,10 +1134,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
                 .grep_files_with_options(session_id, pattern, &routed)
                 .await;
         }
-        let store = self.workspace_store()?;
-        store
-            .grep_files_with_options(session_id, pattern, options)
-            .await
+        grep_workspace_with_options(self.workspace.host_root()?, pattern, options).await
     }
 
     async fn create_directory(
@@ -6862,6 +6997,78 @@ mod tests {
                 "compatibility adapter must retain the {blocked_dir} write block"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn grep_tool_searches_workspaces_larger_than_five_mib() {
+        use everruns_core::ToolContext;
+        use everruns_core::capabilities::Capability;
+        use everruns_core::tools::ToolExecutionResult;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let session_id = SessionId::from_seed(13);
+        let host = Arc::new(
+            WorkspaceHost::new(
+                Arc::new(RwLock::new(workspace.path().to_path_buf())),
+                workspace.path().to_path_buf(),
+            )
+            .expect("workspace host"),
+        );
+        let factory = CodingCliSessionFileSystemFactory {
+            workspace: host,
+            session_dir: session.path().to_path_buf(),
+            session_id,
+            materializer: Arc::new(session_log::SessionMaterializer::new(
+                session.path().to_path_buf(),
+                None,
+            )),
+            skill_global: None,
+            skill_system: None,
+            environment_skill: None,
+            extension_skills: Vec::new(),
+        };
+        let store = factory
+            .create_session_file_system(SessionFileSystemFactoryContext::default())
+            .await
+            .expect("session file system");
+
+        for index in 0..12 {
+            let mut content = "x".repeat(480 * 1024);
+            if index >= 10 {
+                content.push_str("\nunique_large_workspace_match\n");
+            }
+            std::fs::write(
+                workspace.path().join(format!("source_{index:02}.rs")),
+                content,
+            )
+            .expect("source file");
+        }
+
+        let context = ToolContext::with_file_store(session_id, store);
+        let grep_tool = FileSystemCapability
+            .tools()
+            .into_iter()
+            .find(|tool| tool.name() == "grep_files")
+            .expect("grep tool");
+        let result = grep_tool
+            .execute_with_context(
+                serde_json::json!({
+                    "pattern": "unique_large_workspace_match",
+                    "path_pattern": "*.rs",
+                    "limit": 1
+                }),
+                &context,
+            )
+            .await;
+        let ToolExecutionResult::Success(result) = result else {
+            panic!("grep tool should search the full workspace: {result:?}");
+        };
+
+        assert_eq!(result["total_matches"], 2);
+        assert_eq!(result["matches"][0]["path"], "/workspace/source_10.rs");
+        assert_eq!(result["matches"][0]["line_number"], 2);
+        assert_eq!(result["truncation"]["next_offset"], 1);
     }
 
     #[test]

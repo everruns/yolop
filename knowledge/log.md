@@ -3,6 +3,12 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-12 — Streaming workspace grep
+
+- [Sandboxing](specs/sandboxing.md) records that broad structured grep streams
+  bounded files instead of failing on a small aggregate input cap, while
+  retaining path, per-file, pagination, and response limits.
+
 ## 2026-08-11 — Fullscreen mouse selection survives Ctrl and Ctrl+C copies
 
 - [Presentation](specs/presentation.md) records that fullscreen drag-select is

@@ -28,6 +28,11 @@ the active `WorkspaceHost` and retain the existing protected-path checks. System
 global, workspace, and extension skills also keep their existing read-only
 mounts. Model-provider credentials stay in the trusted parent process.
 
+Broad structured grep must not fail solely because aggregate workspace text
+exceeds a small input budget. Workspace grep streams one bounded text file at a
+time while preserving the regex, path-filter, match-pagination, and response
+bounds; gitignored files and oversized individual files remain excluded.
+
 This is intentionally a provider seam rather than OS-specific policy logic in
 the tool. A provider receives the canonical active workspace and script and
 returns the process to launch. Bashkit, agentOS, Daytona, Monty, or another
@@ -228,10 +233,12 @@ The automated suite exercises the real `BashTool` launch path and asserts:
 - writes outside the workspace and `/tmp` fail;
 - network connections fail;
 - the active worktree is resolved per command;
-- foreground and background execution retain the shared executor; and
+- foreground and background execution retain the shared executor;
 - runtime construction still resolves system skills and automatic settings;
+- the real `grep_files` tool searches a workspace larger than the upstream
+  aggregate scan cap while retaining its path filter and response envelope;
 - an `AGENTS.md`-loaded real-binary TUI session cannot write outside its
-  workspace through `!shell`; and
+  workspace through `!shell`;
 - denial output carries provider metadata and an explicit user-facing
   containment explanation.
 
