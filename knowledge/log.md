@@ -3,6 +3,12 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-12 — Streaming workspace grep
+
+- [Sandboxing](specs/sandboxing.md) records that broad structured grep streams
+  bounded files instead of failing on a small aggregate input cap, while
+  retaining path, per-file, pagination, and response limits.
+
 ## 2026-08-12 — User-ask tracking becomes experimental opt-in
 
 - [User ask](specs/user-ask.md) is no longer part of the default harness. The
