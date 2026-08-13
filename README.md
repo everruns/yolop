@@ -85,6 +85,9 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 - **Goal loops** — `/goal <condition>` keeps working across turns until a
   separate evaluator model confirms the condition; `/goal clear` stops early.
   Works in `--print` mode too.
+- **User-ask tracking** *(experimental, off by default)* — records the current
+  request across turns and applies bounded completion checks. Enable with
+  `[[capabilities]] ref = "yolop_user_ask"` in `settings.toml`.
 - **Planning** — `write_todos` keeps multi-step tasks on track, and loop
   detection stops the model from retrying the same failing tool call.
 - **One-shot mode** — `--print` runs a single prompt non-interactively, for

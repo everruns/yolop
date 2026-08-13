@@ -6,7 +6,7 @@ description: Defines the user ask — request tracking and turn-end validation c
 
 # User ask — request tracking and turn-end validation
 
-Status: implemented in yolop (`yolop_user_ask` capability) and enabled by default.
+Status: experimental and opt-in through the `yolop_user_ask` capability.
 
 ## Why
 
@@ -15,9 +15,10 @@ over several turns. The agent needs a durable record of the current request,
 independent of `/goal` completion loops, so it can stay aligned and the host can
 judge whether the latest turn actually addressed what was asked.
 
-`/goal` remains the explicit user-authored completion condition. User ask is the
-default safety net: one tracked request per session, revision history on pivots,
-and selective bounded continuation when a turn stops without finishing.
+`/goal` remains the explicit user-authored completion condition. When enabled,
+user ask provides a completion safety net: one tracked request per session,
+revision history on pivots, and selective bounded continuation when a turn stops
+without finishing.
 
 ## Behavior
 
@@ -52,15 +53,19 @@ is charged, so a stall or transport error never surfaces as "budget exhausted".
 
 ## Configuration
 
-The capability is on by default. It can be removed from the harness with:
+The capability is experimental and off by default. Enable it in `settings.toml`
+with:
 
 ```toml
 [[capabilities]]
 ref = "yolop_user_ask"
-enabled = false
+enabled = true
 ```
 
-The ordinary capability override path takes effect on the next run.
+The ordinary capability override path takes effect on the next run. The
+capability remains registered while disabled, so it is discoverable through
+`get_config key=capabilities` and can be enabled conversationally with
+`set_config`.
 
 ## System prompt
 
@@ -86,9 +91,10 @@ restart on process resume.
 ## Independence from `/goal`
 
 - Separate store, capability id, tools, and evaluator.
-- Either capability can be disabled in `[[capabilities]]` without affecting the other.
-- `/goal` uses the user's explicit completion condition; default continuation uses
-  the latest conversational ask and a smaller fixed budget.
+- Either capability can be enabled or disabled in `[[capabilities]]` without
+  affecting the other.
+- `/goal` uses the user's explicit completion condition; opt-in user ask
+  continuation uses the latest conversational ask and a smaller fixed budget.
 
 ## Ownership
 

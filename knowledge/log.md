@@ -3,6 +3,13 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-12 — User-ask tracking becomes experimental opt-in
+
+- [User ask](specs/user-ask.md) is no longer part of the default harness. The
+  registered `yolop_user_ask` capability remains available through an explicit
+  `[[capabilities]]` settings override while the completion behavior is
+  experimental.
+
 ## 2026-08-11 — Fullscreen mouse selection survives Ctrl and Ctrl+C copies
 
 - [Presentation](specs/presentation.md) records that fullscreen drag-select is
