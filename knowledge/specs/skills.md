@@ -134,7 +134,10 @@ a labeled VFS root that yolop's file store maps to a **real on-disk directory**:
 - `crate::capabilities::skills` owns the yolop wiring: the scope set, the
   host-path `SkillDirResolver`, the embedded system skills + materialization, the
   VFS-root constants the file store routes on, and the `SkillManagementCapability`
-  that contributes `search_skills`, `install_skill`, and `delete_skill`.
+  that contributes `search_skills`, `install_skill`, and `delete_skill`. That
+  capability must be both registered *and* enabled in the default coding
+  harness; registering it alone leaves its tools out of every session while the
+  skill-management skill still instructs the model to call them.
 - `crate::capabilities::skill_registry` owns the skills.sh HTTP client used by
   `search_skills` / `install_skill`.
 - `crate::runtime` (`CodingCliSessionFileStore`) owns mapping the scope VFS roots

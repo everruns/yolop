@@ -2301,6 +2301,11 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         ),
         AgentCapabilityConfig::new(SESSION_FILE_SYSTEM_CAPABILITY_ID),
         AgentCapabilityConfig::new(SKILLS_CAPABILITY_ID),
+        // Registering `SkillManagementCapability` is not enough — a capability
+        // the harness never enables contributes no tools, which left
+        // `search_skills` / `install_skill` / `delete_skill` absent from the
+        // session while the skill-management skill documented them.
+        AgentCapabilityConfig::new(crate::capabilities::skills::SKILL_MANAGEMENT_CAPABILITY_ID),
         AgentCapabilityConfig::new(HERDR_CAPABILITY_ID),
         AgentCapabilityConfig::new(REPO_MAP_CAPABILITY_ID),
         AgentCapabilityConfig::new(SESSION_HISTORY_CAPABILITY_ID),
@@ -5926,10 +5931,49 @@ mod tests {
     // are registered via ModelsCapability / SkillManagementCapability
     // in `build_with_options`. Because ToolSearchCapability defers the long tail
     // behind `tool_search`, all three skill-management schemas remain deferred
-    // but discoverable until the model reveals them. Presence is asserted at the
-    // capability level
-    // (`capabilities::skills::tests::skill_management_capability_exposes_search_install_delete`)
-    // and behavior by the SkillRegistry / DeleteSkillTool unit tests.
+    // but discoverable until the model reveals them. Behavior is covered by the
+    // SkillRegistry / DeleteSkillTool unit tests.
+
+    /// Registering a capability is not the same as enabling it: the harness only
+    /// contributes tools for capabilities in its enabled set. Asserting presence
+    /// at the capability level once let `search_skills` / `install_skill` /
+    /// `delete_skill` disappear from real sessions while the skill-management
+    /// skill still told the model to call them, so this pins the assembled
+    /// session tool surface instead.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn skill_management_tools_reach_the_assembled_session() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let context = built
+            .handles
+            .runtime
+            .load_context(built.handles.session_id)
+            .await
+            .expect("assemble cold-start context");
+        let names: Vec<&str> = context
+            .runtime_agent
+            .tools
+            .iter()
+            .map(|tool| tool.name())
+            .collect();
+        for expected in ["search_skills", "install_skill", "delete_skill"] {
+            assert!(
+                names.contains(&expected),
+                "{expected} missing from the assembled session tools: {names:?}"
+            );
+        }
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn setup_url_and_custom_model_persist_through_settings() {
@@ -7842,8 +7886,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cold_start_prompt_composition_is_measured_by_component() {
         const BASELINE_PROMPT_BYTES: usize = 12_888;
-        const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901;
-        const BASELINE_SCHEMA_BYTES: usize = 13_414;
+        // The tool baselines model what today's surface would cost undeferred,
+        // so enabling a capability raises them by exactly that capability's
+        // undeferred cost — otherwise the ratio guards below would read a
+        // legitimately larger surface as lost savings. Enabling
+        // `yolop_skill_management` added `search_skills` (588 def / 409 schema),
+        // `install_skill` (854 / 582), and `delete_skill` (493 / 314).
+        const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901 + 1_935;
+        const BASELINE_SCHEMA_BYTES: usize = 13_414 + 1_305;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));

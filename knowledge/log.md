@@ -386,3 +386,14 @@ wording, formatting, and link fixes do not need entries.
   artifact exists.
 - Non-discoverable owner-private coordination locks preserve fail-fast
   simultaneous-open safety before the event log is materialized.
+
+## 2026-08-14 — Registry skill install reaches real sessions
+
+- `search_skills` / `install_skill` / `delete_skill` were registered but never
+  enabled in the default coding harness, so no session ever exposed them while
+  [Skills](specs/skills.md) and the README documented them. The harness now
+  enables `yolop_skill_management`, and the cold-start guard asserts the three
+  tools reach the assembled session rather than only the capability.
+- Tool descriptions are provider-visible even when schemas are deferred, so the
+  three registry tools dropped the workflow prose the skill-management skill
+  already owns.
