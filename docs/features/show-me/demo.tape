@@ -4,10 +4,10 @@ Output docs/features/show-me/demo.gif
 Output docs/features/show-me/demo.mp4
 
 Set Shell bash
-Set Width 1900
+Set Width 1600
 Set Height 1000
-Set FontSize 13
-Set FontFamily "Menlo"
+Set FontSize 15
+Set FontFamily "Menlo, DejaVu Sans Mono, monospace"
 Set LetterSpacing 0
 Set LineHeight 1.1
 Set TypingSpeed 18ms
@@ -18,8 +18,8 @@ Set BorderRadius 12
 Set Padding 12
 Set Margin 24
 Set MarginFill "#5b4b8a"
-Set Framerate 30
-Set PlaybackSpeed 2.4
+Set Framerate 24
+Set PlaybackSpeed 3.4
 
 Env NO_COLOR ""
 Env COLORTERM "truecolor"
