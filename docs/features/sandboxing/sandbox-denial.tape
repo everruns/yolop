@@ -4,7 +4,7 @@ Set Shell zsh
 Set Width 1200
 Set Height 440
 Set FontSize 17
-Set FontFamily "Menlo"
+Set FontFamily "Menlo, DejaVu Sans Mono, monospace"
 Set LetterSpacing 0
 Set TypingSpeed 35ms
 Set CursorBlink false

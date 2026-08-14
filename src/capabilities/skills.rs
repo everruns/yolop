@@ -478,8 +478,7 @@ impl Tool for DeleteSkillTool {
     }
     fn description(&self) -> &str {
         "Uninstall a skill by removing its directory from a writable scope \
-         (`workspace` or `global`). System skills cannot be deleted. Use this to \
-         remove a skill the user no longer wants; install/update go through `write_skill`."
+         (`workspace` or `global`). System skills cannot be deleted."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -811,8 +810,10 @@ mod tests {
             .description()
             .to_string();
         assert!(description.contains("workspace"));
+        // The read-only system scope is the one thing the schema cannot express;
+        // routing between delete/write lives in the skill-management skill, not
+        // in provider-visible description bytes.
         assert!(description.contains("System skills cannot be deleted"));
-        assert!(description.contains("write_skill"));
     }
 
     /// Build a tool whose workspace/global scopes point at fresh temp dirs.

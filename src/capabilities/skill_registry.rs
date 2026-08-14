@@ -511,11 +511,12 @@ impl Tool for SearchSkillsTool {
     }
 
     fn description(&self) -> &str {
+        // Kept to what the model cannot infer from the schema. The search →
+        // ask → install workflow and the off-registry fallbacks live in the
+        // skill-management skill; repeating them here costs every session
+        // tokens, since tool descriptions survive schema deferral.
         "Search the public skills.sh registry for installable agent skills. \
-         Use when the user asks to find a skill for a task. Present the top \
-         matches (name, source, installs, skills.sh URL) and ask which one to \
-         install before calling `install_skill`. For sources outside skills.sh, \
-         fall back to `free_web_search` / `web_fetch` and `write_skill`."
+         Returns `owner/repo/skillId` sources for `install_skill`."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -663,11 +664,9 @@ impl Tool for InstallSkillTool {
 
     fn description(&self) -> &str {
         "Install a skill from the skills.sh registry into the workspace or global \
-         scope. Prefer sources returned by `search_skills` (`owner/repo/skillId` or \
-         `owner/repo@skill`). Ask the user which skill to install first. After \
-         install the skill is available immediately via `list_skills` / \
-         `activate_skill` — no restart. For non-registry sources, fetch files and \
-         use `write_skill` instead."
+         scope, live immediately. Sources are `owner/repo/skillId`, \
+         `owner/repo@skill`, or a skills.sh URL; off-registry skills go through \
+         `write_skill`."
     }
 
     fn parameters_schema(&self) -> Value {

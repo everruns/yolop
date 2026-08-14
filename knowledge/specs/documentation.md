@@ -122,6 +122,14 @@ installed browser instead of the `go-rod` download, point `ROD_BROWSER_BIN` at
 its `chrome` binary. These environment knobs belong in the shell around a
 recording, not in committed tapes, so tapes stay portable.
 
+`Set FontFamily` is a CSS font stack, and a family the recording host lacks
+fails silently: Chromium ignores fontconfig aliases for an unknown family and
+substitutes a *proportional* default, so every glyph lands in a monospace cell
+with visible gaps. macOS-only families therefore need a fallback that exists
+elsewhere — tapes name `Menlo, DejaVu Sans Mono, monospace`, which keeps Menlo
+on macOS and stays monospaced on Linux. Inspect a rendered frame before
+committing a capture; the failure looks like wide letter-spacing, not a crash.
+
 ## README hero capture
 
 The README hero is a checked-in VHS workflow, not a one-off screen recording:
