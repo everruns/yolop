@@ -414,3 +414,7 @@ wording, formatting, and link fixes do not need entries.
   automated-test requirement; they never replace it.
 - First scenario covers installing a skills.sh skill mid-session and rendering
   its Mermaid answer as a terminal diagram.
+- [Release](specs/release.md) now draws its smoke paths from the collection:
+  impact analysis picks which scenarios a cut walks, so a release stops
+  improvising a smoke path. The manual terminal matrix stays in the release
+  spec, which owns the gate requiring it.

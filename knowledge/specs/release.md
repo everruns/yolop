@@ -163,6 +163,13 @@ The agent verifies before opening the release PR:
 - [ ] `X.Y.Z` is greater than the latest crates.io version.
 - [ ] Manual terminal matrix walked (see below) if the TUI renderer changed.
 
+Which end-to-end paths to smoke follows from what the release changed. Work out
+that impact from the commits since the previous tag, then draw the paths from
+[manual test scenarios](../test-scenarios/index.md) — each one already states a
+setup and acceptance criteria, so a release walks a known path instead of
+improvising a new one per cut. A release whose impact no scenario covers is a
+gap in the collection worth filling rather than a reason to skip the smoke.
+
 ## Manual Terminal Matrix
 
 The automated tests cover the *protocol* the terminal renderer emits — the

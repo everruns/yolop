@@ -17,6 +17,22 @@ additional coverage, never a substitute.
 | --- | --- | --- |
 | [Install a registry skill and render its diagram](skill-install-mermaid-render.md) | Skills, transcript rendering | Live provider, network |
 
+## Related manual checks
+
+Not every manual check belongs here. Two live elsewhere because another concept
+owns when they run:
+
+- The [manual terminal matrix](../specs/release.md#manual-terminal-matrix) —
+  walking `yolop tuika-gallery` across real emulators — stays in the release
+  spec, which owns the pre-release gate that requires it.
+- [`surfaces.md`](../../.agents/skills/maintenance/surfaces.md) carries the
+  commands a maintenance pass runs by hand. It checks repository health, not
+  product behavior.
+
+[Release](../specs/release.md#pre-release-checklist) draws its smoke paths from
+the scenarios below, so keeping them current is what keeps a release cut from
+improvising one.
+
 ## Running one
 
 Build first (`cargo build`), then follow the scenario's Setup and Steps exactly.
