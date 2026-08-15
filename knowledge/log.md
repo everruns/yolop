@@ -3,6 +3,19 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-14 — Manual test scenarios collection
+
+- Added [manual test scenarios](test-scenarios/index.md), a home for flows the
+  automated suite cannot reach — live provider, network, or a judgement about
+  what the terminal actually shows. Scenarios supplement the shipping bar's
+  automated-test requirement; they never replace it.
+- First scenario covers installing a skills.sh skill mid-session and rendering
+  its Mermaid answer as a terminal diagram.
+- [Release](specs/release.md) now draws its smoke paths from the collection:
+  impact analysis picks which scenarios a cut walks, so a release stops
+  improvising a smoke path. The manual terminal matrix stays in the release
+  spec, which owns the gate requiring it.
+
 ## 2026-08-14 — OpenRouter PKCE browser login
 
 - [Configuration](specs/configuration.md) records that OpenRouter can mint a
@@ -10,6 +23,17 @@ wording, formatting, and link fixes do not need entries.
   `tokens.openrouter` like a pasted key.
 - [ACP](specs/acp.md) advertises `openrouter_browser` alongside `codex_browser`
   so editors can connect OpenRouter without a pre-set environment variable.
+
+## 2026-08-14 — Registry skill install reaches real sessions
+
+- `search_skills` / `install_skill` / `delete_skill` were registered but never
+  enabled in the default coding harness, so no session ever exposed them while
+  [Skills](specs/skills.md) and the README documented them. The harness now
+  enables `yolop_skill_management`, and the cold-start guard asserts the three
+  tools reach the assembled session rather than only the capability.
+- Tool descriptions are provider-visible even when schemas are deferred, so the
+  three registry tools dropped the workflow prose the skill-management skill
+  already owns.
 
 ## 2026-08-12 — Streaming workspace grep
 
@@ -394,14 +418,3 @@ wording, formatting, and link fixes do not need entries.
   artifact exists.
 - Non-discoverable owner-private coordination locks preserve fail-fast
   simultaneous-open safety before the event log is materialized.
-
-## 2026-08-14 — Registry skill install reaches real sessions
-
-- `search_skills` / `install_skill` / `delete_skill` were registered but never
-  enabled in the default coding harness, so no session ever exposed them while
-  [Skills](specs/skills.md) and the README documented them. The harness now
-  enables `yolop_skill_management`, and the cold-start guard asserts the three
-  tools reach the assembled session rather than only the capability.
-- Tool descriptions are provider-visible even when schemas are deferred, so the
-  three registry tools dropped the workflow prose the skill-management skill
-  already owns.

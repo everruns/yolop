@@ -59,3 +59,8 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 - [Release](specs/release.md) — publishing crates and Homebrew releases.
 - [Documentation](specs/documentation.md) — public/internal documentation contract.
 - [Agent context](specs/agent-context.md) — how AGENTS.md, knowledge, and skills are layered.
+
+## Verification
+
+- [Manual test scenarios](test-scenarios/index.md) — flows verified by hand because
+  the automated suite cannot reach them.
