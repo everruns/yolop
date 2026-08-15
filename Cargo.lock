@@ -7847,6 +7847,7 @@ dependencies = [
  "image",
  "include_dir",
  "inventory",
+ "jsonschema",
  "landlock",
  "libc",
  "portable-pty",

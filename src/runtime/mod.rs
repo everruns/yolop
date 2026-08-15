@@ -27,8 +27,9 @@ use crate::capabilities::{
     LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID,
     ModelRuntimeContextCapability, ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID,
     ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
-    SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCapability, USER_ASK_CAPABILITY_ID,
-    UserAskCapability, WorktreeCapability,
+    SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCapability,
+    TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
+    USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability,
 };
 use crate::config::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::config::mcp::McpConfigStore;
@@ -54,9 +55,10 @@ use everruns_core::capabilities::{
     SESSION_STORAGE_CAPABILITY_ID, SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID,
     STATELESS_TODO_LIST_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, ScopedSkillsCapability,
     SessionCapability, SessionStorageCapability, StatelessTodoListCapability, SubagentCapability,
-    TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID,
-    ToolOutputPersistenceCapability, ToolSearchCapability, USER_HOOKS_CAPABILITY_ID,
-    UserHooksCapability, WEB_FETCH_CAPABILITY_ID, WebFetchCapability,
+    TOOL_CALL_REPAIR_CAPABILITY_ID, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID,
+    TOOL_SEARCH_CAPABILITY_ID, ToolCallRepairCapability, ToolOutputPersistenceCapability,
+    ToolSearchCapability, USER_HOOKS_CAPABILITY_ID, UserHooksCapability, WEB_FETCH_CAPABILITY_ID,
+    WebFetchCapability,
 };
 use everruns_core::command::CommandDescriptor;
 use everruns_core::driver_registry::{DriverRegistry, ProviderMetadata};
@@ -1207,6 +1209,9 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "grep_files",
     "write_todos",
     "write_session_title",
+    // progress_guard can make this the only allowed transition, so the model
+    // must never need tool_search to recover its argument shape.
+    "progress_checkpoint",
     // LSP tools exist only when the optional `lsp` capability is enabled
     // (absent names are ignored by the allowlist). Enabling that host profile
     // is an explicit task-shaped signal, and the LSP adoption eval showed that
@@ -2326,6 +2331,11 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
         AgentCapabilityConfig::new(CONTEXT_COST_CONTROL_CAPABILITY_ID),
         AgentCapabilityConfig::new(STATELESS_TODO_LIST_CAPABILITY_ID),
         AgentCapabilityConfig::new(LOOP_DETECTION_CAPABILITY_ID),
+        AgentCapabilityConfig::new(TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID),
+        AgentCapabilityConfig::with_config(
+            TOOL_CALL_REPAIR_CAPABILITY_ID,
+            serde_json::json!({ "max_reprompts": 1 }),
+        ),
         AgentCapabilityConfig::new(PROGRESS_GUARD_CAPABILITY_ID),
         AgentCapabilityConfig::new(PROMPT_CACHING_CAPABILITY_ID),
         // Provider-agnostic deferred tool loading. Core tools stay fully
@@ -3487,6 +3497,8 @@ pub async fn build_with_options(
     capabilities.register(ContextCostControlCapability);
     capabilities.register(StatelessTodoListCapability);
     capabilities.register(LoopDetectionCapability);
+    capabilities.register(ToolArgumentValidationCapability);
+    capabilities.register(ToolCallRepairCapability);
     capabilities.register(PromptCachingCapability::new());
     // Provider-agnostic deferred tool loading (upstream `everruns-core`, 0.11.0+).
     // Defers the long tail behind a `tool_search` tool and restores real schemas
@@ -4158,6 +4170,22 @@ mod tests {
     }
 
     #[test]
+    fn default_harness_enables_bounded_tool_call_validation_and_repair() {
+        let caps = default_coding_harness_capabilities(false);
+        let validation = caps
+            .iter()
+            .find(|capability| capability.capability_id() == "yolop_tool_argument_validation")
+            .expect("host-side tool argument validation must be enabled");
+        let repair = caps
+            .iter()
+            .find(|capability| capability.capability_id() == "tool_call_repair")
+            .expect("upstream tool-call repair must be enabled");
+
+        assert_eq!(validation.config, serde_json::json!({}));
+        assert_eq!(repair.config, serde_json::json!({ "max_reprompts": 1 }));
+    }
+
+    #[test]
     fn harness_prompt_leaves_project_files_framing_to_the_capability() {
         // The agent_instructions capability owns the <agent-instructions>
         // framing, so the base prompt must not hardcode project-file rules.
@@ -4492,6 +4520,88 @@ mod tests {
                 .expect("read workspace metadata")
                 .expect("workspace metadata present");
         assert_eq!(metadata.title.as_deref(), Some("Automatic session titles"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_turn_blocks_misshaped_arguments_then_accepts_one_correction() {
+        use everruns_core::events::EventData;
+        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(workspace.path().join("evidence.txt"), "confirmed\n")
+            .expect("seed evidence");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({
+                        "path": ["private-value-must-not-echo"]
+                    }),
+                    id: None,
+                }]),
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({ "path": "evidence.txt" }),
+                    id: None,
+                }]),
+                SimTurn::Assistant("Correction accepted.".to_string()),
+            ])),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "Exercise tool argument correction.",
+                built
+                    .model
+                    .input_message("Exercise tool argument correction."),
+            )
+            .await
+            .expect("run correction turn");
+        assert!(result.success, "correction turn: {result:?}");
+        assert_eq!(result.tool_calls_count, 2);
+
+        let events = built
+            .handles
+            .runtime
+            .events()
+            .await
+            .expect("runtime events");
+        let completed = events
+            .iter()
+            .filter_map(|event| match &event.data {
+                EventData::ToolCompleted(data) if data.tool_name == "read_file" => Some(data),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(completed.len(), 2);
+        let error = completed[0].error.as_deref().expect("validation error");
+        assert!(error.contains("invalid_tool_arguments"), "{error}");
+        assert!(error.contains("\"path\":\"/path\""), "{error}");
+        assert!(!error.contains("private-value-must-not-echo"));
+        assert!(
+            completed[1].success,
+            "corrected call should execute: {:?}",
+            completed[1].error
+        );
+        assert!(events.iter().any(|event| matches!(
+            &event.data,
+            EventData::ToolCallRepaired(data)
+                if data.tool_name == "read_file" && data.outcome == "re-prompt"
+        )));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -7698,6 +7808,7 @@ mod tests {
             "grep_files",
             "write_todos",
             "write_session_title",
+            "progress_checkpoint",
         ];
         let deferred = [
             "write_file",
@@ -7989,8 +8100,8 @@ mod tests {
             "provider-visible tool bytes must fall by at least 24%: {tool_definition_bytes} vs {BASELINE_TOOL_DEFINITION_BYTES}"
         );
         assert!(
-            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 47,
-            "schema bytes must fall by at least 53%: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
+            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 50,
+            "schema bytes must fall by at least 50%: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
         );
     }
 

@@ -31,6 +31,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 - [Session history](specs/session-history.md) — discovery of earlier sessions.
 - [Session titles](specs/session-titles.md) — automatic conversation titles.
 - [Skills](specs/skills.md) — reusable instruction packs.
+- [Tool calling](specs/tool-calling.md) — argument shape enforcement and bounded repair.
 - [Tool search](specs/tool-search.md) — deferred capability loading.
 - [Worktrees](specs/worktrees.md) — isolated Git workspace behavior.
 - [Yolop framing](specs/yolop.md) — requests addressed to Yolop itself.

@@ -40,9 +40,10 @@ vendor was deleted and yolop now consumes upstream directly:
    *registered* definition and the model can pass real arguments. Tool execution
    always uses the real tools; only the advertised schema changes.
 
-2. **Static host-shaped eager profile.** Yolop passes only first-turn repository
-   discovery (`read_file`, `list_directory`, `grep_files`) and bookkeeping
-   (`write_todos`, `write_session_title`) to
+2. **Static host-shaped eager profile.** Yolop passes first-turn repository
+   discovery (`read_file`, `list_directory`, `grep_files`), bookkeeping
+   (`write_todos`, `write_session_title`), and the mandatory progress-guard
+   transition (`progress_checkpoint`) to
    `ToolSearchCapability::new().with_never_defer([...])`. Mutation, shell,
    background, release/control, skills, session history, web, and other
    specialized tools keep their names and descriptions visible but reveal their

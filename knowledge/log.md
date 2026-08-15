@@ -3,6 +3,16 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-14 — Layered tool-call shape enforcement and repair
+
+- Added [tool-call shape enforcement](specs/tool-calling.md): compatible Codex
+  schemas request strict generation, every provider is guarded by full-schema
+  pre-execution validation, and Everruns' bounded `tool_call_repair` is enabled
+  for one corrective attempt.
+- [Progress guard](specs/progress-guard.md) keeps `progress_checkpoint` eager and
+  makes array shapes explicit, while [tool search](specs/tool-search.md) records
+  the mandatory transition as part of the static eager profile.
+
 ## 2026-08-14 — ACP authentication recovery through setup
 
 - [ACP](specs/acp.md) now routes Codex authentication failures to `/setup` and
