@@ -3,6 +3,12 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-15 — Interactive tracing no longer corrupts terminal frames
+
+- Fullscreen and inline renderers now route `RUST_LOG` diagnostics to private,
+  bounded files under the platform data directory instead of stderr. CLI,
+  `--print`, and ACP behavior is unchanged.
+
 ## 2026-08-15 — Terminal verification split into tiers
 
 - The release spec's "Manual Terminal Matrix" became

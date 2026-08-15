@@ -65,6 +65,13 @@ exits. A published entry is never repainted, so anything that changes during a
 turn belongs in the pinned rows, and an entry the pinned rows still show must
 not also be published — a transcript entry appears once, never twice.
 
+Neither interactive renderer permits tracing output to inherit stderr: an
+asynchronous diagnostic would bypass the layout and overwrite owned terminal
+rows. `RUST_LOG` output is written without ANSI styling to owner-only rotating
+files under the platform data directory's `yolop/logs/` folder; command,
+`--print`, and ACP modes continue to write tracing output to stderr. At most
+five interactive trace files are retained, capped at 4 MiB each.
+
 Transcript links use OSC 8 targets and leave activation to the terminal
 emulator, including its platform-native modifier (`Ctrl` on Linux, `Command` on
 macOS). The fullscreen host must not also launch the URL from the reported mouse

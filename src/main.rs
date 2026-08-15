@@ -43,10 +43,43 @@ use ratatui::{Terminal, TerminalOptions};
 use runtime::{BuiltRuntime, ProviderChoice, ResolvedProviderChoice, resolve_for_settings};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tui::{App, COMPOSER_VIEWPORT_HEIGHT};
 use tuika::term::capabilities::Capabilities;
 use tuika::term::hyperlink::{HyperlinkBackend, LinkPolicy};
+
+const MAX_INTERACTIVE_TRACE_LOGS: usize = 5;
+const MAX_INTERACTIVE_TRACE_BYTES: u64 = 4 * 1024 * 1024;
+
+struct BoundedTraceWriter {
+    file: std::fs::File,
+    remaining: u64,
+}
+
+impl BoundedTraceWriter {
+    fn new(file: std::fs::File, max_bytes: u64) -> Self {
+        Self {
+            file,
+            remaining: max_bytes,
+        }
+    }
+}
+
+impl Write for BoundedTraceWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let writable = bytes.len().min(self.remaining as usize);
+        self.file.write_all(&bytes[..writable])?;
+        self.remaining -= writable as u64;
+        // Once capped, consume later trace events without growing the file or
+        // surfacing write failures into the application being diagnosed.
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -537,15 +570,17 @@ fn join_worker<T>(
 }
 
 async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> {
+    let cli = Cli::parse();
+    let interactive = uses_interactive_renderer(&cli);
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
         )
-        .with_writer(io::stderr)
+        .with_ansi(!interactive)
+        .with_writer(trace_writer(interactive))
         .init();
 
-    let cli = Cli::parse();
     if let Some(command) = cli.command {
         return run_command(command);
     }
@@ -677,6 +712,87 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
     }
     let pending_images = tui::input::image_input::load_image_parts(&cli.images)?;
     run_tui(runtime, pending_images, cli.trajectory_out, !cli.inline).await
+}
+
+fn uses_interactive_renderer(cli: &Cli) -> bool {
+    (cli.command.is_none() && cli.print.is_none() && !cli.acp)
+        || matches!(cli.command.as_ref(), Some(Commands::TuikaGallery))
+}
+
+fn trace_writer(interactive: bool) -> BoxMakeWriter {
+    if !interactive {
+        return BoxMakeWriter::new(io::stderr);
+    }
+    let Some(data_dir) = dirs::data_dir() else {
+        eprintln!("yolop: no platform data dir resolvable — interactive tracing is disabled");
+        return BoxMakeWriter::new(io::sink);
+    };
+    let trace_dir = data_dir.join("yolop").join("logs");
+    match open_interactive_trace_log(&trace_dir) {
+        Ok((file, _path)) => BoxMakeWriter::new(Mutex::new(BoundedTraceWriter::new(
+            file,
+            MAX_INTERACTIVE_TRACE_BYTES,
+        ))),
+        Err(err) => {
+            eprintln!(
+                "yolop: cannot open interactive trace log in {}: {err}",
+                trace_dir.display()
+            );
+            BoxMakeWriter::new(io::sink)
+        }
+    }
+}
+
+fn open_interactive_trace_log(dir: &Path) -> io::Result<(std::fs::File, PathBuf)> {
+    let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S%.6fZ");
+    open_interactive_trace_log_at(dir, &timestamp.to_string(), std::process::id())
+}
+
+fn open_interactive_trace_log_at(
+    dir: &Path,
+    timestamp: &str,
+    process_id: u32,
+) -> io::Result<(std::fs::File, PathBuf)> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+
+    let path = dir.join(format!("{timestamp}-{process_id}-trace.log"));
+    let mut options = std::fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&path)?;
+    prune_interactive_trace_logs(dir, MAX_INTERACTIVE_TRACE_LOGS);
+    Ok((file, path))
+}
+
+fn prune_interactive_trace_logs(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut logs = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with("-trace.log"))
+        })
+        .collect::<Vec<_>>();
+    logs.sort();
+    let remove_count = logs.len().saturating_sub(keep);
+    for path in logs.into_iter().take(remove_count) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 fn resolve_workspace_root(
@@ -1793,6 +1909,90 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
     use std::process::Command;
+
+    #[test]
+    fn trace_routing_follows_terminal_ownership() {
+        let tui = Cli::try_parse_from(["yolop", "--provider", "llmsim"]).expect("parse TUI");
+        let gallery = Cli::try_parse_from(["yolop", "tuika-gallery"]).expect("parse TUI gallery");
+        let print = Cli::try_parse_from(["yolop", "--provider", "llmsim", "-p", "hi"])
+            .expect("parse print mode");
+        let command = Cli::try_parse_from(["yolop", "version"]).expect("parse command");
+
+        assert!(uses_interactive_renderer(&tui));
+        assert!(uses_interactive_renderer(&gallery));
+        assert!(!uses_interactive_renderer(&print));
+        assert!(!uses_interactive_renderer(&command));
+    }
+
+    #[test]
+    fn interactive_trace_logs_are_private_and_bounded() {
+        let dir = tempfile::tempdir().expect("trace tempdir");
+        for index in 0..MAX_INTERACTIVE_TRACE_LOGS {
+            std::fs::write(
+                dir.path().join(format!("2026-08-14-{index:02}-trace.log")),
+                b"old",
+            )
+            .expect("write old trace log");
+        }
+
+        let (file, path) =
+            open_interactive_trace_log_at(dir.path(), "2026-08-15T07-00-49.403905Z", 42)
+                .expect("open interactive trace log");
+        drop(file);
+
+        let trace_logs = std::fs::read_dir(dir.path())
+            .expect("read trace directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with("-trace.log"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(trace_logs.len(), MAX_INTERACTIVE_TRACE_LOGS);
+        assert!(path.exists());
+        assert!(!dir.path().join("2026-08-14-00-trace.log").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(dir.path())
+                    .expect("trace directory metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                std::fs::metadata(path)
+                    .expect("trace metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn interactive_trace_log_stops_growing_at_its_byte_limit() {
+        let dir = tempfile::tempdir().expect("trace tempdir");
+        let (file, path) =
+            open_interactive_trace_log_at(dir.path(), "2026-08-15T07-00-49.403905Z", 43)
+                .expect("open interactive trace log");
+        let mut writer = BoundedTraceWriter::new(file, 4);
+
+        writer
+            .write_all(b"warning one")
+            .expect("write first warning");
+        writer
+            .write_all(b"warning two")
+            .expect("discard warning past cap");
+        writer.flush().expect("flush trace log");
+
+        assert_eq!(std::fs::read(path).expect("read trace log"), b"warn");
+    }
 
     #[test]
     fn worker_join_preserves_original_panic_payload() {

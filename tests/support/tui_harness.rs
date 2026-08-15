@@ -40,6 +40,8 @@ pub struct TuiSpawnOptions {
     pub workspace: Option<PathBuf>,
     /// Enable shell sandboxing for this process.
     pub sandbox: bool,
+    /// Tracing filter passed to the spawned binary.
+    pub rust_log: Option<String>,
 }
 
 impl Default for TuiSpawnOptions {
@@ -53,6 +55,7 @@ impl Default for TuiSpawnOptions {
             inline: true,
             workspace: None,
             sandbox: false,
+            rust_log: None,
         }
     }
 }
@@ -86,6 +89,19 @@ impl TuiHarness {
 
     pub fn sessions_path(&self) -> PathBuf {
         self._session_dir.path().to_path_buf()
+    }
+
+    /// Directory where an interactive child writes tracing output.
+    pub fn trace_logs_path(&self) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            self._home
+                .path()
+                .join("Library/Application Support/yolop/logs")
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        self._home.path().join(".local/share/yolop/logs")
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -255,6 +271,9 @@ pub fn spawn_tui_llmsim_with_settings(
     cmd.env("XDG_CONFIG_HOME", home.path().join(".config"));
     cmd.env("XDG_DATA_HOME", home.path().join(".local/share"));
     cmd.env("TERM", "xterm-256color");
+    if let Some(rust_log) = options.rust_log {
+        cmd.env("RUST_LOG", rust_log);
+    }
     if let Some(prefix) = options.path_prefix {
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let path =

@@ -1427,9 +1427,15 @@ fn tui_starts_when_emulator_answers_only_the_first_cursor_query() {
 
 #[test]
 fn tui_exits_cleanly_when_emulator_stops_answering_cursor_queries() {
-    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            rust_log: Some("warn".to_string()),
+            ..TuiSpawnOptions::default()
+        },
+    );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", Duration::from_secs(5)),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -1450,6 +1456,21 @@ fn tui_exits_cleanly_when_emulator_stops_answering_cursor_queries() {
             .contains("Continue with yolop --provider llmsim"),
         "cleanup should still print continuation hint: {}",
         tui.output_text()
+    );
+
+    let terminal_output = strip_ansi(&tui.output_text());
+    assert!(
+        !terminal_output.contains("footer teardown failed"),
+        "tracing must not overwrite the TUI or leak into terminal output: {terminal_output}"
+    );
+    let traces = std::fs::read_dir(tui.trace_logs_path())
+        .expect("read interactive trace logs")
+        .filter_map(Result::ok)
+        .map(|entry| std::fs::read_to_string(entry.path()).expect("read interactive trace log"))
+        .collect::<String>();
+    assert!(
+        traces.contains("footer teardown failed"),
+        "the terminal-safe trace log should retain the teardown warning: {traces}"
     );
 }
 

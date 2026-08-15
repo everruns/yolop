@@ -343,7 +343,10 @@ act of consent. MCP tools run autonomously like the rest of yolop's tools.
 | `yolop into zed`   | Configure yolop as a custom ACP agent in Zed    |
 | `yolop mcp …`      | Manage MCP servers (see [MCP servers](#mcp-servers)) |
 
-`RUST_LOG` is honored for the underlying tracing layer (writes to stderr).
+`RUST_LOG` is honored for the underlying tracing layer. Non-interactive modes
+write traces to stderr. Interactive sessions keep terminal rendering clean and
+write traces to private, rotating files under `<data_dir>/yolop/logs/` (the five
+most recent files are retained, capped at 4 MiB each).
 
 ### Provider env vars
 
