@@ -34,6 +34,13 @@ tool can execute. The checkpoint is bounded and structured:
 - one next decisive action, classified as mutation, validation, or no-change
   diagnosis.
 
+Because the gate can make this tool the only permitted exploration transition,
+`progress_checkpoint` is never deferred: its full schema remains in the
+provider-visible tool set. Container descriptions explicitly require JSON
+arrays for `facts` and `missing_evidence`. Calls that still misshape a field are
+blocked before the checkpoint executor and receive the structured correction
+defined by [tool-call shape enforcement](tool-calling.md).
+
 An accepted checkpoint resets the exploration tranche and unlocks exploration.
 Submitting the same checkpoint again on unchanged state is rejected. Mutation
 or validation clears the gate directly, so the guard cannot trap a decisive

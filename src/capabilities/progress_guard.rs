@@ -9,7 +9,7 @@ use everruns_core::atoms::{
     PostToolExecHook, PostToolExecHookPriority, PreToolUseDecision, PreToolUseHook,
 };
 use everruns_core::capabilities::{Capability, CapabilityStatus};
-use everruns_core::tool_types::{ToolCall, ToolDefinition, ToolResult};
+use everruns_core::tool_types::{DeferrablePolicy, ToolCall, ToolDefinition, ToolResult};
 use everruns_core::tools::{Tool, ToolExecutionResult};
 use everruns_core::traits::ToolContext;
 use everruns_core::typed_id::SessionId;
@@ -709,7 +709,7 @@ impl Tool for ProgressCheckpointTool {
     }
 
     fn description(&self) -> &str {
-        "Submit the bounded trajectory checkpoint required by progress_guard before further exploration. State concise facts already established, one current hypothesis, the specific missing evidence, and one decisive next action. Use only when progress_guard requires it."
+        "Submit the bounded trajectory checkpoint required by progress_guard before further exploration. Pass facts and missing_evidence as JSON arrays of strings, hypothesis as one string, and next_decisive_action as an object with kind and description. Use only when progress_guard requires it."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -718,18 +718,26 @@ impl Tool for ProgressCheckpointTool {
             "properties": {
                 "facts": {
                     "type": "array",
+                    "description": "Established facts as a JSON array of 1 to 8 concise strings; do not pass one combined string.",
                     "minItems": 1,
                     "maxItems": 8,
                     "items": { "type": "string", "minLength": 1, "maxLength": 300 }
                 },
-                "hypothesis": { "type": "string", "minLength": 1, "maxLength": 600 },
+                "hypothesis": {
+                    "type": "string",
+                    "description": "The single current hypothesis that best explains the evidence.",
+                    "minLength": 1,
+                    "maxLength": 600
+                },
                 "missing_evidence": {
                     "type": "array",
+                    "description": "Evidence still needed as a JSON array of up to 6 strings; use [] when none remains, never a single string.",
                     "maxItems": 6,
                     "items": { "type": "string", "minLength": 1, "maxLength": 300 }
                 },
                 "next_decisive_action": {
                     "type": "object",
+                    "description": "Exactly one next transition: a mutation, validation, or explicit no-change decision.",
                     "properties": {
                         "kind": {
                             "type": "string",
@@ -744,6 +752,12 @@ impl Tool for ProgressCheckpointTool {
             "required": ["facts", "hypothesis", "missing_evidence", "next_decisive_action"],
             "additionalProperties": false
         })
+    }
+
+    fn deferrable_policy(&self) -> DeferrablePolicy {
+        // The progress gate can require this tool without allowing tool_search;
+        // its authoritative schema must therefore remain callable at all times.
+        DeferrablePolicy::Never
     }
 
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
@@ -1284,6 +1298,30 @@ mod tests {
                 "description": format!("validate {label}")
             }
         })
+    }
+
+    #[test]
+    fn checkpoint_schema_is_always_loaded_and_self_describing() {
+        let tool = ProgressCheckpointTool;
+        let schema = tool.parameters_schema();
+
+        assert_eq!(tool.deferrable_policy(), DeferrablePolicy::Never);
+        for field in [
+            "facts",
+            "hypothesis",
+            "missing_evidence",
+            "next_decisive_action",
+        ] {
+            assert!(
+                schema["properties"][field]["description"].is_string(),
+                "{field} needs a model-facing shape description"
+            );
+        }
+        assert_eq!(schema["properties"]["missing_evidence"]["type"], "array");
+        assert_eq!(
+            schema["properties"]["missing_evidence"]["items"]["type"],
+            "string"
+        );
     }
 
     #[tokio::test]

@@ -578,6 +578,7 @@ struct CodexTool {
     name: String,
     description: String,
     parameters: Value,
+    strict: bool,
 }
 
 #[derive(Clone, Default)]
@@ -774,13 +775,136 @@ fn repair_unpaired_function_items(input: Vec<CodexInputItem>) -> Vec<CodexInputI
 fn convert_tools(tools: &[ToolDefinition]) -> Vec<CodexTool> {
     tools
         .iter()
-        .map(|tool| CodexTool {
-            r#type: "function".to_string(),
-            name: tool.name().to_string(),
-            description: tool.description().to_string(),
-            parameters: sanitize_parameters(tool.parameters()),
+        .map(|tool| {
+            let parameters = sanitize_parameters(tool.parameters());
+            CodexTool {
+                r#type: "function".to_string(),
+                name: tool.name().to_string(),
+                description: tool.description().to_string(),
+                strict: openai_strict_schema_compatible(&parameters),
+                parameters,
+            }
         })
         .collect()
+}
+
+/// OpenAI strict tool schemas require closed objects with every property named
+/// in `required`. Stay conservative: an unsupported construct falls back to the
+/// provider's ordinary best-effort decoding and the host validator remains the
+/// authoritative execution boundary.
+fn openai_strict_schema_compatible(schema: &Value) -> bool {
+    fn visit(schema: &Value, depth: usize, property_count: &mut usize) -> bool {
+        if depth > 10 {
+            return false;
+        }
+        let Some(object) = schema.as_object() else {
+            return false;
+        };
+        const SUPPORTED: &[&str] = &[
+            "$defs",
+            "$ref",
+            "additionalProperties",
+            "anyOf",
+            "const",
+            "description",
+            "enum",
+            "exclusiveMaximum",
+            "exclusiveMinimum",
+            "format",
+            "items",
+            "maxItems",
+            "maxLength",
+            "maxProperties",
+            "maximum",
+            "minItems",
+            "minLength",
+            "minProperties",
+            "minimum",
+            "multipleOf",
+            "pattern",
+            "properties",
+            "required",
+            "title",
+            "type",
+            "uniqueItems",
+        ];
+        if object.keys().any(|key| !SUPPORTED.contains(&key.as_str())) {
+            return false;
+        }
+
+        if object.get("type").and_then(Value::as_str) == Some("object") {
+            if object.get("additionalProperties") != Some(&Value::Bool(false)) {
+                return false;
+            }
+            let Some(properties) = object.get("properties").and_then(Value::as_object) else {
+                return false;
+            };
+            let Some(required_values) = object.get("required").and_then(Value::as_array) else {
+                return false;
+            };
+            let required = required_values
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<std::collections::HashSet<_>>();
+            if required.len() != required_values.len()
+                || required.len() != properties.len()
+                || properties
+                    .keys()
+                    .any(|key| !required.contains(key.as_str()))
+            {
+                return false;
+            }
+            *property_count += properties.len();
+            if *property_count > 5_000
+                || properties
+                    .values()
+                    .any(|property| !visit(property, depth + 1, property_count))
+            {
+                return false;
+            }
+        }
+
+        if object
+            .get("items")
+            .is_some_and(|child| !visit(child, depth + 1, property_count))
+        {
+            return false;
+        }
+        if let Some(any_of) = object.get("anyOf") {
+            let Some(children) = any_of.as_array() else {
+                return false;
+            };
+            if children.is_empty()
+                || children
+                    .iter()
+                    .any(|child| !visit(child, depth + 1, property_count))
+            {
+                return false;
+            }
+        }
+        if let Some(definitions) = object.get("$defs") {
+            let Some(definitions) = definitions.as_object() else {
+                return false;
+            };
+            if definitions
+                .values()
+                .any(|child| !visit(child, depth + 1, property_count))
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    // This byte bound is stricter than OpenAI's 120k aggregate limit for
+    // schema-authored names/enum/const strings and is cheap to establish.
+    if schema.get("type").and_then(Value::as_str) != Some("object")
+        || !serde_json::to_vec(schema).is_ok_and(|encoded| encoded.len() <= 120_000)
+    {
+        return false;
+    }
+    let mut property_count = 0;
+    visit(schema, 1, &mut property_count)
 }
 
 fn sanitize_parameters(params: &Value) -> Value {
@@ -1082,6 +1206,9 @@ fn metadata_extra_i64(metadata: &ProviderMetadata, key: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use everruns_core::driver_registry::{LlmMessage, LlmMessageRole};
+    use everruns_core::tool_types::{
+        BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy,
+    };
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::Mutex as StdMutex;
@@ -1137,6 +1264,74 @@ mod tests {
             refresh_gate: Arc::new(tokio::sync::Mutex::new(())),
             auth_store: None,
         }
+    }
+
+    fn tool_with_schema(name: &str, parameters: Value) -> ToolDefinition {
+        ToolDefinition::Builtin(BuiltinTool {
+            name: name.to_string(),
+            display_name: None,
+            description: "test tool".to_string(),
+            parameters,
+            policy: ToolPolicy::Auto,
+            category: None,
+            deferrable: DeferrablePolicy::Automatic,
+            hints: ToolHints::default(),
+            full_parameters: None,
+        })
+    }
+
+    #[test]
+    fn compatible_tool_schema_requests_strict_decoding() {
+        let tools = convert_tools(&[tool_with_schema(
+            "checkpoint",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "missing_evidence": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                },
+                "required": ["missing_evidence"],
+                "additionalProperties": false
+            }),
+        )]);
+        let wire = serde_json::to_value(tools).expect("serialize tools");
+
+        assert_eq!(wire[0]["strict"], true);
+    }
+
+    #[test]
+    fn permissive_or_optional_tool_schema_does_not_request_strict_decoding() {
+        let tools = convert_tools(&[
+            tool_with_schema(
+                "deferred",
+                serde_json::json!({ "type": "object", "additionalProperties": true }),
+            ),
+            tool_with_schema(
+                "optional",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": { "value": { "type": "string" } },
+                    "required": [],
+                    "additionalProperties": false
+                }),
+            ),
+            tool_with_schema(
+                "malformed",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": "not-an-object",
+                    "required": [],
+                    "additionalProperties": false
+                }),
+            ),
+        ]);
+        let wire = serde_json::to_value(tools).expect("serialize tools");
+
+        assert_eq!(wire[0]["strict"], false);
+        assert_eq!(wire[1]["strict"], false);
+        assert_eq!(wire[2]["strict"], false);
     }
 
     fn serve_one_json_response(response_body: &'static str) -> (String, mpsc::Receiver<String>) {

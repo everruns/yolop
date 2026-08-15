@@ -30,6 +30,7 @@ pub(crate) mod session_tasks_override;
 pub(crate) mod skill_registry;
 pub mod skills;
 pub(crate) mod tool_approval;
+pub(crate) mod tool_argument_validation;
 pub(crate) mod tool_reveal;
 pub(crate) mod user_ask;
 pub(crate) mod worktree_cmd;
@@ -66,6 +67,9 @@ pub(crate) use progress_guard::{PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapab
 pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
 pub(crate) use session_history::{SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCapability};
 pub(crate) use tool_approval::{ApprovalDecision, ToolApprovalCapability, ToolApprover};
+pub(crate) use tool_argument_validation::{
+    TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
+};
 pub(crate) use user_ask::UserAskCapability;
 pub(crate) use worktree_cmd::WorktreeCapability;
 
