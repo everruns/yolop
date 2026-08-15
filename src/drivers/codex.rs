@@ -15,6 +15,7 @@ use everruns_core::{
     DriverId, ModelProfile, get_model_profile,
 };
 use futures::StreamExt;
+use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -24,7 +25,8 @@ use std::sync::{Arc, Mutex};
 pub const CODEX_DRIVER_ID: &str = "openai-codex";
 const CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const CODEX_BETA_HEADER: &str = "responses=experimental";
-const REAUTH_MESSAGE: &str = "Codex login is no longer valid (refresh token already used). Run `/setup` and sign in with Codex again.";
+const REAUTH_MESSAGE: &str =
+    "Codex login is no longer valid. Run `/setup` and sign in with Codex again.";
 
 /// Host-side Codex OAuth storage. Reload must hit disk so another process that
 /// already rotated the refresh token is visible before we call `/oauth/token`.
@@ -250,6 +252,30 @@ fn classified_refresh_error(error: &anyhow::Error) -> AgentLoopError {
     AgentLoopError::llm_kind(kind, format!("Codex token refresh failed: {message}"))
 }
 
+fn codex_response_error(
+    operation: &str,
+    status: StatusCode,
+    body: String,
+    store: Option<&dyn CodexAuthStore>,
+) -> AgentLoopError {
+    let kind = LlmErrorKind::from_provider_status(status.as_u16(), &body);
+    if status == StatusCode::UNAUTHORIZED {
+        if let Some(store) = store
+            && let Err(clear_err) = store.clear()
+        {
+            tracing::warn!(error = %clear_err, "failed to clear invalid Codex auth");
+        }
+        return AgentLoopError::llm_kind(LlmErrorKind::Authentication, REAUTH_MESSAGE);
+    }
+    if kind == LlmErrorKind::Authentication {
+        return AgentLoopError::llm_kind(
+            kind,
+            "Codex access was denied. Run `/setup` to sign in again, or choose another provider.",
+        );
+    }
+    AgentLoopError::llm_kind(kind, format!("Codex {operation} error ({status}): {body}"))
+}
+
 fn adopt_disk_auth(tokens: &mut CodexTokens, store: &dyn CodexAuthStore) {
     let Some(disk) = store.load_from_disk() else {
         return;
@@ -348,9 +374,11 @@ impl ChatDriver for CodexChatDriver {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(AgentLoopError::llm_kind(
-                everruns_core::error::LlmErrorKind::from_provider_status(status.as_u16(), &body),
-                format!("Codex API error ({status}): {body}"),
+            return Err(codex_response_error(
+                "API",
+                status,
+                body,
+                self.auth_store.as_deref(),
             ));
         }
 
@@ -425,9 +453,11 @@ impl ChatDriver for CodexChatDriver {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(AgentLoopError::llm_kind(
-                everruns_core::error::LlmErrorKind::from_provider_status(status.as_u16(), &body),
-                format!("Codex compact API error ({status}): {body}"),
+            return Err(codex_response_error(
+                "compact API",
+                status,
+                body,
+                self.auth_store.as_deref(),
             ));
         }
 
@@ -1455,8 +1485,35 @@ mod tests {
         .expect_err("must fail");
 
         assert!(err.to_string().contains("/setup"));
-        assert!(err.to_string().contains("refresh token already used"));
+        assert!(err.to_string().contains("login is no longer valid"));
         assert_eq!(err.llm_error_kind(), Some(LlmErrorKind::Authentication));
+        assert!(store.load_from_disk().is_none());
+        assert_eq!(*store.clears.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn invalidated_api_token_clears_auth_and_asks_for_setup() {
+        let store = MemoryAuthStore::default();
+        store
+            .save(CodexAuth {
+                access_token: "invalidated-access".to_string(),
+                refresh_token: Some("invalidated-refresh".to_string()),
+                expires_at: None,
+                account_id: Some("acc".to_string()),
+                email: Some("user@example.com".to_string()),
+            })
+            .unwrap();
+
+        let err = codex_response_error(
+            "API",
+            StatusCode::UNAUTHORIZED,
+            r#"{"error":{"code":"token_invalidated"}}"#.to_string(),
+            Some(&store),
+        );
+
+        assert_eq!(err.llm_error_kind(), Some(LlmErrorKind::Authentication));
+        assert!(err.to_string().contains("/setup"));
+        assert!(!err.to_string().contains("token_invalidated"));
         assert!(store.load_from_disk().is_none());
         assert_eq!(*store.clears.lock().unwrap(), 1);
     }

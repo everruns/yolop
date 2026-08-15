@@ -895,7 +895,7 @@ async fn handle_prompt<F: RuntimeFactory>(
         session.completion_budget.lock().unwrap().reset();
     }
     let stop_reason = match parsed_command {
-        Some(command) => run_slash_command(peer, session.clone(), command).await,
+        Some(command) => run_slash_command(server, peer, session.clone(), command).await,
         None => run_prompt(peer, session.clone(), prompt, input).await,
     };
     // A level changed mid-turn (the `set_approval_mode` tool, `/setup approval`)
@@ -1021,11 +1021,15 @@ fn command_meta(command: &CommandDescriptor) -> Option<serde_json::Map<String, V
         "yolop.dev/command": {
             "source": source,
             "args": command.args.iter().map(|arg| {
+                let mut suggestions = arg.suggestions.clone();
+                if command.name == "setup" && !suggestions.iter().any(|value| value == "login") {
+                    suggestions.insert(0, "login".to_string());
+                }
                 json!({
                     "name": arg.name,
                     "description": arg.description,
                     "required": arg.required,
-                    "suggestions": arg.suggestions,
+                    "suggestions": suggestions,
                 })
             }).collect::<Vec<_>>()
         }
@@ -1083,7 +1087,8 @@ fn parse_shell_shortcut(rest: &str) -> ParsedCommand {
     }
 }
 
-async fn run_slash_command(
+async fn run_slash_command<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
     peer: Arc<Peer>,
     session: Arc<Session>,
     command: ParsedCommand,
@@ -1091,6 +1096,11 @@ async fn run_slash_command(
     let name = command.name;
     let args = command.args;
     let title = command.title;
+    if name == "setup"
+        && let Some(stop_reason) = run_setup_login(server, &peer, &session, &args).await
+    {
+        return stop_reason;
+    }
     if name == "setup" && args.split_whitespace().next() == Some("token") {
         peer.session_update(
             &session.acp_id,
@@ -1202,6 +1212,129 @@ async fn run_slash_command(
             run_prompt(peer, session, text, input).await
         }
     }
+}
+
+/// ACP has no secure generic setup form, but it does have agent-handled auth
+/// methods. Treat plain `/setup` as the host's guided entry point, selecting
+/// the current provider's method when several are advertised, and expose
+/// `/setup login` as the explicit form.
+fn select_setup_auth_method(
+    methods: &[AuthMethod],
+    requested: Option<&str>,
+    active_provider: &str,
+) -> std::result::Result<Option<String>, String> {
+    let available = methods
+        .iter()
+        .map(|method| method.id().to_string())
+        .collect::<Vec<_>>();
+    if let Some(id) = requested {
+        return available
+            .contains(&id.to_string())
+            .then(|| Some(id.to_string()))
+            .ok_or_else(|| {
+                format!(
+                    "unknown authentication method `{id}`; available: {}",
+                    available.join(", ")
+                )
+            });
+    }
+
+    let active_method_id = format!("{active_provider}_browser");
+    if available.contains(&active_method_id) {
+        return Ok(Some(active_method_id));
+    }
+    if let [method_id] = available.as_slice() {
+        return Ok(Some(method_id.clone()));
+    }
+    Ok(None)
+}
+
+async fn run_setup_login<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    peer: &Arc<Peer>,
+    session: &Arc<Session>,
+    args: &str,
+) -> Option<StopReason> {
+    let mut parts = args.split_whitespace();
+    let requested = match parts.next() {
+        None => None,
+        Some("login" | "reauthenticate") => parts.next(),
+        Some(_) => return None,
+    };
+    let methods = server.factory.auth_methods();
+    if methods.is_empty() {
+        return None;
+    }
+    let method_id =
+        match select_setup_auth_method(&methods, requested, &session.model.provider_name()) {
+            Ok(Some(method_id)) => method_id,
+            Err(message) => {
+                peer.session_update(
+                    &session.acp_id,
+                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(message)),
+                );
+                return Some(StopReason::EndTurn);
+            }
+            Ok(None) => {
+                peer.session_update(
+                    &session.acp_id,
+                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
+                        "choose an authentication method with `/setup login <method>`: {}",
+                        methods
+                            .iter()
+                            .map(|method| method.id().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))),
+                );
+                return Some(StopReason::EndTurn);
+            }
+        };
+
+    let tool_call_id = format!("command_{}", peer.next_id.fetch_add(1, Ordering::Relaxed));
+    peer.session_update(
+        &session.acp_id,
+        SessionUpdate::ToolCall(
+            ToolCall::new(tool_call_id.clone(), "/setup login")
+                .kind(ToolKind::Execute)
+                .status(ToolCallStatus::InProgress)
+                .raw_input(json!({
+                    "command": "setup",
+                    "arguments": "login",
+                    "source": "system",
+                    "authenticationMethod": method_id,
+                })),
+        ),
+    );
+
+    let result = server.factory.authenticate(&method_id).await;
+    let (success, message) = match &result {
+        Ok(()) => (
+            true,
+            "Authentication refreshed. Retry your request.".to_string(),
+        ),
+        Err(err) => (false, format!("Authentication failed: {err}")),
+    };
+    peer.session_update(
+        &session.acp_id,
+        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+            tool_call_id,
+            ToolCallUpdateFields::new()
+                .status(if success {
+                    ToolCallStatus::Completed
+                } else {
+                    ToolCallStatus::Failed
+                })
+                .content(vec![protocol::content(message.clone())])
+                .raw_output(json!({ "success": success, "message": message })),
+        )),
+    );
+    if success {
+        for open_session in server.sessions() {
+            emit_config_options(peer, &open_session).await;
+        }
+    }
+    Some(StopReason::EndTurn)
 }
 
 fn command_title(prefix: &str, name: &str, args: &str) -> String {
@@ -1536,6 +1669,20 @@ mod tests {
         assert_eq!(value["authMethods"][0]["name"], "Sign in with ChatGPT");
         assert_eq!(value["authMethods"][1]["id"], "openrouter_browser");
         assert_eq!(value["authMethods"][1]["name"], "Sign in with OpenRouter");
+    }
+
+    #[test]
+    fn setup_authentication_prefers_the_active_provider() {
+        let methods = super::super::advertised_auth_methods();
+
+        assert_eq!(
+            select_setup_auth_method(&methods, None, "codex").unwrap(),
+            Some("codex_browser".to_string())
+        );
+        assert_eq!(
+            select_setup_auth_method(&methods, None, "openrouter").unwrap(),
+            Some("openrouter_browser".to_string())
+        );
     }
 
     #[test]

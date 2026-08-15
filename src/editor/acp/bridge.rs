@@ -101,9 +101,11 @@ impl Translator {
                 if data.message.role != MessageRole::Agent {
                     return Vec::new();
                 }
-                let mut updates = data
-                    .message
-                    .text()
+                let recovery_message = (data.error_code.as_deref()
+                    == Some(everruns_core::user_facing_error_codes::PROVIDER_MISCONFIGURED))
+                .then(|| provider_authentication_message(data.error_fields.as_ref()));
+                let mut updates = recovery_message
+                    .or_else(|| data.message.text())
                     .map(str::trim)
                     .filter(|text| !text.is_empty())
                     .map(|text| vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(text))])
@@ -228,6 +230,25 @@ impl Translator {
                 updates
             }
             _ => Vec::new(),
+        }
+    }
+}
+
+fn provider_authentication_message(
+    fields: Option<&everruns_core::user_facing_error::UserFacingErrorFields>,
+) -> &'static str {
+    let provider = fields
+        .and_then(|fields| fields.get("provider"))
+        .and_then(Value::as_str);
+    match provider {
+        Some("codex" | "openai-codex") => {
+            "Codex authentication failed. Run `/setup` to sign in again, or choose another connected model."
+        }
+        Some("openrouter") => {
+            "OpenRouter authentication failed. Run `/setup` to sign in again, or choose another connected model."
+        }
+        _ => {
+            "AI provider authentication failed. API keys cannot be entered securely over ACP; update the provider credentials in the agent process environment and restart it, or choose another connected model."
         }
     }
 }
@@ -419,6 +440,53 @@ mod tests {
                 "full answer"
             ))]
         );
+    }
+
+    #[test]
+    fn provider_authentication_failure_points_to_acp_setup() {
+        let mut t = Translator::new();
+        let updates = t.on_event(&event(EventData::OutputMessageCompleted(
+            OutputMessageCompletedData {
+                message: Message::assistant(
+                    "There is a misconfiguration with the AI provider. Please contact support.",
+                ),
+                metadata: None,
+                usage: None,
+                error_code: Some(
+                    everruns_core::user_facing_error_codes::PROVIDER_MISCONFIGURED.to_string(),
+                ),
+                error_fields: Some(std::collections::BTreeMap::from([(
+                    "provider".to_string(),
+                    json!("openai-codex"),
+                )])),
+                error_disclosure: None,
+            },
+        )));
+
+        assert_eq!(
+            updates,
+            vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                "Codex authentication failed. Run `/setup` to sign in again, or choose another connected model."
+            ))]
+        );
+    }
+
+    #[test]
+    fn api_key_authentication_failure_explains_acp_secret_boundary() {
+        let fields = std::collections::BTreeMap::from([("provider".to_string(), json!("openai"))]);
+
+        assert!(
+            provider_authentication_message(Some(&fields))
+                .contains("cannot be entered securely over ACP")
+        );
+    }
+
+    #[test]
+    fn openrouter_authentication_failure_points_to_acp_setup() {
+        let fields =
+            std::collections::BTreeMap::from([("provider".to_string(), json!("openrouter"))]);
+
+        assert!(provider_authentication_message(Some(&fields)).contains("Run `/setup`"));
     }
 
     #[test]
