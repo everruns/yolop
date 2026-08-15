@@ -49,6 +49,9 @@ jobs:
               - 'rust-toolchain.toml'
               - '**/build.rs'
               - '.github/workflows/ci.yml'
+              # The tmux gallery gate runs in this job; a change that weakens
+              # the assertion must re-run it even with no Rust touched.
+              - 'scripts/assert-gallery.sh'
             docs:
               - '**/*.md'
             # The regression-gate analyzers under harness_basic are pure Python
