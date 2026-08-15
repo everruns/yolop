@@ -1072,21 +1072,25 @@ fn run_tuika_gallery() -> Result<()> {
         // default, and split-footer mode is for hosts that publish scrollback.
         ..tuika::RunnerConfig::default()
     });
+    // The gallery has no state of its own, so the closure seam (`from_fn`) is
+    // cheaper than naming an `Application` type for a unit state.
     let mut state = ();
     runner.run_with_backend(
         &theme,
         backend,
-        &mut state,
-        |_state, frame| build_gallery(frame, &theme),
-        |_state, signal| match signal {
-            tuika::Signal::Event(tuika::Event::Key(key))
-                if matches!(key.code, tuika::KeyCode::Esc | tuika::KeyCode::Char('q'))
-                    || (key.ctrl && matches!(key.code, tuika::KeyCode::Char('c'))) =>
-            {
-                tuika::UpdateResult::Exit
-            }
-            _ => tuika::UpdateResult::Dirty,
-        },
+        tuika::runner::from_fn(
+            &mut state,
+            |_state, frame| build_gallery(frame, &theme),
+            |_state, signal| match signal {
+                tuika::Signal::Event(tuika::Event::Key(key))
+                    if matches!(key.code, tuika::KeyCode::Esc | tuika::KeyCode::Char('q'))
+                        || (key.ctrl && matches!(key.code, tuika::KeyCode::Char('c'))) =>
+                {
+                    tuika::UpdateResult::Exit
+                }
+                _ => tuika::UpdateResult::Dirty,
+            },
+        ),
     )?;
     progress.clear();
     Ok(())
