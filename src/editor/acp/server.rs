@@ -1528,17 +1528,14 @@ mod tests {
     fn initialize_advertises_agent_handled_authentication() {
         let result = handle_initialize(
             InitializeParams::new(protocol::PROTOCOL_VERSION),
-            vec![AuthMethod::Agent(
-                agent_client_protocol::schema::v1::AuthMethodAgent::new(
-                    "codex_browser",
-                    "Sign in with ChatGPT",
-                ),
-            )],
+            super::super::advertised_auth_methods(),
         );
 
         let value = serde_json::to_value(result).expect("serialize initialize response");
         assert_eq!(value["authMethods"][0]["id"], "codex_browser");
         assert_eq!(value["authMethods"][0]["name"], "Sign in with ChatGPT");
+        assert_eq!(value["authMethods"][1]["id"], "openrouter_browser");
+        assert_eq!(value["authMethods"][1]["name"], "Sign in with OpenRouter");
     }
 
     #[test]

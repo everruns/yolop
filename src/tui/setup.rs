@@ -235,6 +235,37 @@ impl App {
                 },
             ];
         }
+        if provider == "openrouter" {
+            return vec![
+                CredentialOption {
+                    id: CredentialAction::BrowserLogin,
+                    label: "Sign in with browser".to_string(),
+                    hint: "opens OpenRouter in your browser".to_string(),
+                },
+                CredentialOption {
+                    id: CredentialAction::UseEnv,
+                    label: "Use OPENROUTER_API_KEY from environment".to_string(),
+                    hint: Self::detected_env_var(provider)
+                        .map(|name| format!("{name} detected"))
+                        .unwrap_or_else(|| "not detected yet".to_string()),
+                },
+                CredentialOption {
+                    id: CredentialAction::PasteKey,
+                    label: "Paste API key".to_string(),
+                    hint: "saved to settings.toml".to_string(),
+                },
+                CredentialOption {
+                    id: CredentialAction::Skip,
+                    label: "Skip for now".to_string(),
+                    hint: "leave setup unchanged".to_string(),
+                },
+                CredentialOption {
+                    id: CredentialAction::ClearSaved,
+                    label: "Clear saved key".to_string(),
+                    hint: "remove this provider token".to_string(),
+                },
+            ];
+        }
         let env_names = Self::provider_env_names(provider);
         // The custom endpoint treats a key as optional: most local servers
         // accept any bearer token, so the first option proceeds with the env
@@ -636,6 +667,11 @@ impl App {
                     self.cancel_codex_login(selected);
                 }
             }
+            SetupStep::OpenRouterLogin { selected } => {
+                if key.code == KeyCode::Esc {
+                    self.cancel_openrouter_login(selected);
+                }
+            }
             SetupStep::TokenInput {
                 provider, token, ..
             } => {
@@ -918,12 +954,11 @@ impl App {
                     }
                 }
             }
-            CredentialAction::BrowserLogin => {
-                if provider != "codex" {
-                    return;
-                }
-                self.start_codex_login(CodexLoginMethod::Browser, selected);
-            }
+            CredentialAction::BrowserLogin => match provider.as_str() {
+                "codex" => self.start_codex_login(CodexLoginMethod::Browser, selected),
+                "openrouter" => self.start_openrouter_login(selected),
+                _ => {}
+            },
             CredentialAction::DeviceLogin => {
                 if provider != "codex" {
                     return;
@@ -1035,6 +1070,42 @@ impl App {
         }
     }
 
+    fn start_openrouter_login(&mut self, selected: usize) {
+        if self.openrouter_login.is_some() {
+            return;
+        }
+        self.next_openrouter_login_id = self.next_openrouter_login_id.wrapping_add(1);
+        let id = self.next_openrouter_login_id;
+        let tx = self.openrouter_login_tx.clone();
+        let task = tokio::spawn(async move {
+            let result = crate::auth::openrouter::login_with_browser()
+                .await
+                .map_err(|error| error.to_string());
+            let _ = tx.send(OpenRouterLoginEvent::Finished {
+                id,
+                selected,
+                result,
+            });
+        });
+        self.openrouter_login = Some(PendingOpenRouterLogin { id, task });
+        self.setup = Some(SetupStep::OpenRouterLogin { selected });
+    }
+
+    fn cancel_openrouter_login(&mut self, selected: usize) {
+        self.abort_openrouter_login();
+        self.setup = Some(SetupStep::Credential {
+            provider: "openrouter".to_string(),
+            selected,
+            error: Some("OpenRouter sign-in canceled".to_string()),
+        });
+    }
+
+    pub(crate) fn abort_openrouter_login(&mut self) {
+        if let Some(login) = self.openrouter_login.take() {
+            login.task.abort();
+        }
+    }
+
     pub(crate) fn abort_mcp_login(&mut self) {
         if let Some(login) = self.mcp_login.take() {
             login.task.abort();
@@ -1094,6 +1165,51 @@ impl App {
                     }
                 }
                 _ => {}
+            }
+        }
+        applied
+    }
+
+    pub(crate) async fn apply_openrouter_login_events(&mut self) -> bool {
+        let mut applied = false;
+        while let Ok(event) = self.openrouter_login_rx.try_recv() {
+            let OpenRouterLoginEvent::Finished {
+                id,
+                selected,
+                result,
+            } = event;
+            if self.openrouter_login.as_ref().map(|login| login.id) != Some(id) {
+                continue;
+            }
+            self.openrouter_login = None;
+            applied = true;
+            match result {
+                Ok(key) => {
+                    if let Err(error) = self.settings.set_token("openrouter".to_string(), key) {
+                        self.setup = Some(SetupStep::Credential {
+                            provider: "openrouter".to_string(),
+                            selected,
+                            error: Some(error.to_string()),
+                        });
+                    } else if let Err(error) =
+                        self.run_setup_command(Some("provider openrouter")).await
+                    {
+                        self.setup = Some(SetupStep::Credential {
+                            provider: "openrouter".to_string(),
+                            selected,
+                            error: Some(error),
+                        });
+                    } else {
+                        self.open_model_step("openrouter");
+                    }
+                }
+                Err(error) => {
+                    self.setup = Some(SetupStep::Credential {
+                        provider: "openrouter".to_string(),
+                        selected,
+                        error: Some(error),
+                    });
+                }
             }
         }
         applied

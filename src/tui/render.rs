@@ -973,6 +973,18 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
             lines.push(Line::from(""));
             lines.push(setup_footer("Esc cancel · Ctrl+C twice exit"));
         }
+        Some(SetupStep::OpenRouterLogin { .. }) => {
+            lines.push(setup_title("Sign in to OpenRouter"));
+            lines.push(setup_hint(
+                "Waiting for the browser to finish authentication.",
+            ));
+            lines.push(Line::from(""));
+            lines.push(setup_hint(
+                "If the browser was closed, cancel here and try again.",
+            ));
+            lines.push(Line::from(""));
+            lines.push(setup_footer("Esc cancel · Ctrl+C twice exit"));
+        }
         Some(SetupStep::TokenInput {
             provider,
             token,
