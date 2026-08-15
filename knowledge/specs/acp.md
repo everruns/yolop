@@ -77,7 +77,14 @@ so clients can expose the newly connected provider's models without restarting
 the ACP process. Stable ACP does not define secure API-key entry; remaining
 key-based providers stay connectable only through the agent process
 environment. Yolop rejects `/setup token` over ACP without echoing or persisting
-the supplied value.
+the supplied value. Plain `/setup` and `/setup login` run the active provider's
+advertised login, or ask the user to choose a method when the active provider
+has none. This gives failed Codex and OpenRouter sessions an in-conversation
+recovery path even when the client does not expose its own authentication
+control. Codex authentication failures point to that command instead of generic
+support copy, while other API-key failures explain ACP's secure-input boundary
+and the environment/restart path. Invalid Codex credentials are cleared before
+reauthentication.
 
 ### Prompt content
 
@@ -143,7 +150,7 @@ notifications. The mapping is a pure, per-turn state machine
 | Runtime event | ACP update |
 |---------------|-----------|
 | assistant text delta | `agent_message_chunk` (incremental) |
-| completed assistant message, when no deltas streamed | `agent_message_chunk` (whole text) — covers providers that don't stream |
+| completed assistant message, when no deltas streamed | `agent_message_chunk` (whole text) — covers providers that don't stream; provider-authentication failures use ACP `/setup` recovery copy |
 | extended-thinking delta | `agent_thought_chunk` |
 | provider-curated reasoning summary | `agent_thought_chunk` (displayable reasoning; segments separated by blank lines) |
 | completed assistant commentary with tool calls, when no deltas streamed | `agent_message_chunk` before the tool activity |
@@ -170,8 +177,8 @@ can activate the skill.
 
 ACP v1 command input only standardises an unstructured `input.hint`. yolop also
 adds compatible extension metadata under `_meta["yolop.dev/command"]` so richer
-clients can render command argument suggestions (for example `/setup status`,
-`/setup provider openai`, or `/setup effort high`). Standard clients ignore
+clients can render command argument suggestions (for example `/setup login`,
+`/setup status`, `/setup provider openai`, or `/setup effort high`). Standard clients ignore
 this metadata and still see the command name, description, and hint. After a
 system command runs, yolop re-emits `available_commands_update` so clients can
 refresh any state-sensitive command UI.

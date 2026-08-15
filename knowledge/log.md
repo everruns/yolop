@@ -3,6 +3,13 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-14 — ACP authentication recovery through setup
+
+- [ACP](specs/acp.md) now routes Codex authentication failures to `/setup` and
+  API-key failures to the secure environment/restart path; plain `/setup`
+  selects the active provider's advertised login, refreshes open sessions, and
+  invalid Codex credentials are cleared before the user signs in again.
+
 ## 2026-08-14 — Manual test scenarios collection
 
 - Added [manual test scenarios](test-scenarios/index.md), a home for flows the

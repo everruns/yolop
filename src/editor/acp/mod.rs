@@ -1473,7 +1473,8 @@ mod tests {
             .as_array()
             .expect("setup suggestions");
         assert!(
-            suggestions.iter().any(|s| s == "status")
+            suggestions.iter().any(|s| s == "login")
+                && suggestions.iter().any(|s| s == "status")
                 && suggestions.iter().any(|s| s == "provider openai"),
             "expected setup choices in command metadata, got: {setup:?}"
         );
@@ -1514,6 +1515,67 @@ mod tests {
             "slash command should not invoke the model"
         );
         assert!(!run.updates_of_kind("available_commands_update").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plain_setup_runs_advertised_acp_authentication() {
+        let run = with_sdk_client(fixed("model should not run"), |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "/setup").await
+        })
+        .await;
+
+        assert_eq!(run.stop_reason, StopReason::EndTurn);
+        let completed = run
+            .updates_of_kind("tool_call_update")
+            .into_iter()
+            .find(|update| update["status"] == "completed")
+            .expect("completed setup login");
+        assert_eq!(completed["rawOutput"]["success"], true);
+        assert!(
+            completed["content"][0]["content"]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("Authentication refreshed")),
+            "expected authentication recovery output, got: {completed:?}"
+        );
+        let config_update = run
+            .updates_of_kind("config_option_update")
+            .into_iter()
+            .next()
+            .expect("model options refreshed after setup login");
+        assert!(
+            config_update["configOptions"][0]["options"]
+                .as_array()
+                .expect("model options")
+                .iter()
+                .any(|option| option["value"]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("openai:"))),
+            "authenticated provider must become selectable: {config_update:?}"
+        );
+        assert!(!run.assistant_text().contains("model should not run"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn provider_authentication_failure_has_actionable_recovery() {
+        use everruns_core::llmsim_driver::SimError;
+
+        let config = LlmSimConfig::scripted(vec![SimTurn::Error(SimError::Authentication)]);
+        let run = with_sdk_client(config, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "continue the task").await
+        })
+        .await;
+
+        let text = run.assistant_text();
+        assert!(
+            text.contains("authentication failed")
+                && text.contains("cannot be entered securely over ACP"),
+            "expected actionable authentication recovery, got: {text}"
+        );
+        assert!(!text.contains("contact support"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
