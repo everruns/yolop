@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Assert that a captured terminal screen shows `yolop tuika-gallery` rendered
-# correctly. Used by the nightly cross-terminal workflow's text-capture legs
-# (tmux, kitty) to turn a real emulator's on-screen text into a pass/fail gate.
+# correctly — turning a real terminal's on-screen text into a pass/fail gate.
 #
-# Usage: assert_gallery.sh <capture-file>
+# Used by CI's per-PR tmux capture (Tier 1 of the release spec's terminal
+# verification) and by the nightly cross-terminal workflow's text-capture legs
+# (tmux, kitty).
+#
+# Usage: assert-gallery.sh <capture-file>
 set -euo pipefail
 
 capture="${1:?usage: assert_gallery.sh <capture-file>}"

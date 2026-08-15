@@ -179,6 +179,31 @@ jobs:
       - name: Build
         run: cargo build --locked --all-targets
 
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      # `tuika_pty` asserts the bytes yolop *emits*, parsed by the vt100 crate.
+      # This asserts what a real, independent terminal implementation *paints*
+      # from those bytes. Same recipe as the nightly job's tmux leg, run per-PR
+      # so a renderer regression surfaces at review time rather than up to a day
+      # later — and so a release can cite a run against its own commit.
+      - name: Gallery renders under tmux
+        env:
+          TERM: tmux-256color
+          YOLOP_HYPERLINKS: "1"
+        run: |
+          set -euo pipefail
+          BIN="$PWD/target/debug/yolop"
+          tmux -f /dev/null new-session -d -x 120 -y 40 -s gallery "$BIN tuika-gallery"
+          sleep 4
+          tmux capture-pane -t gallery -p > capture.txt || true
+          tmux send-keys -t gallery q || true
+          sleep 1
+          tmux kill-server 2>/dev/null || true
+          echo "----- capture -----"
+          cat capture.txt
+          bash scripts/assert-gallery.sh capture.txt
+
       - name: Unit and integration tests with coverage
         # The live provider tests skip themselves here (no API keys and
         # YOLOP_REQUIRE_LIVE_TESTS unset); they run in the `live-smoke` job below.
