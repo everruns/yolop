@@ -55,7 +55,8 @@ its split-footer mode. See [Tuika](#tuika).
   `YOLOP_REQUIRE_LIVE_TESTS`. CI's live-smoke job sets that flag, which turns a
   missing key into a hard failure so a misconfigured secret cannot report green.
 
-`RUST_LOG` is honored for the tracing layer (stderr).
+`RUST_LOG` is honored for the tracing layer: stderr outside the interactive TUI,
+private rotating files under `<data_dir>/yolop/logs/` inside it.
 
 ## Checks
 
