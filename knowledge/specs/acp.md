@@ -35,7 +35,7 @@ ACP protocol version: **1** (integer).
 | Method | Direction | Behaviour |
 |--------|-----------|-----------|
 | `initialize` | client → agent | Negotiates protocol version and advertises agent capabilities. Echoes the client's version when supported, else advertises v1. |
-| `authenticate` | client → agent | Runs an advertised agent-handled login. Yolop currently advertises browser-based ChatGPT/Codex OAuth; API-key providers continue to use inherited environment variables or `/setup token`. |
+| `authenticate` | client → agent | Runs an advertised agent-handled login. Yolop currently advertises browser-based ChatGPT/Codex OAuth and OpenRouter PKCE login; other API-key providers continue to use inherited environment variables or `/setup token`. |
 | `session/new` | client → agent | Builds a fresh runtime rooted at the client-supplied `cwd`; returns the everruns session id as the ACP `sessionId`. |
 | `session/load` | client → agent | Rehydrates an existing yolop JSONL session for the supplied `sessionId` and `cwd`, replays persisted conversation history as `session/update` notifications, and then returns success. |
 | `session/prompt` | client → agent | Runs one turn, or executes a recognised `/command`; streams `session/update`s, and resolves a `stopReason`. |
@@ -68,14 +68,16 @@ initial model before any live ACP selection.
 
 ### Authentication
 
-`initialize.authMethods` advertises `codex_browser`, an agent-handled method
-that opens the ChatGPT OAuth flow and stores the resulting refreshable Codex
-credentials in Yolop settings. `authenticate` rejects unknown method ids. A
-successful login refreshes open sessions' model options, so clients can expose
-the newly connected Codex models without restarting the ACP process. Stable ACP
-does not define secure API-key entry; those providers remain connectable only
-through the agent process environment. Yolop rejects `/setup token` over ACP
-without echoing or persisting the supplied value.
+`initialize.authMethods` advertises `codex_browser` and `openrouter_browser`,
+agent-handled methods that open a browser OAuth flow. Codex stores refreshable
+ChatGPT credentials in Yolop settings; OpenRouter exchanges the PKCE code for a
+user-controlled API key stored as `tokens.openrouter`. `authenticate` rejects
+unknown method ids. A successful login refreshes open sessions' model options,
+so clients can expose the newly connected provider's models without restarting
+the ACP process. Stable ACP does not define secure API-key entry; remaining
+key-based providers stay connectable only through the agent process
+environment. Yolop rejects `/setup token` over ACP without echoing or persisting
+the supplied value.
 
 ### Prompt content
 

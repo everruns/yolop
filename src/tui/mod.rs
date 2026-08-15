@@ -186,6 +186,12 @@ pub struct App {
     codex_login_tx: mpsc::UnboundedSender<CodexLoginEvent>,
     codex_login_rx: mpsc::UnboundedReceiver<CodexLoginEvent>,
     next_codex_login_id: u64,
+    /// OpenRouter PKCE login is the same shape as Codex browser login: a
+    /// background task plus a wait overlay so the TUI stays responsive.
+    openrouter_login: Option<PendingOpenRouterLogin>,
+    openrouter_login_tx: mpsc::UnboundedSender<OpenRouterLoginEvent>,
+    openrouter_login_rx: mpsc::UnboundedReceiver<OpenRouterLoginEvent>,
+    next_openrouter_login_id: u64,
     /// Background MCP OAuth login (browser + loopback), parallel to Codex so
     /// the event loop stays alive in both fullscreen and inline modes.
     mcp_login: Option<PendingMcpLogin>,
@@ -391,6 +397,9 @@ pub(crate) enum SetupStep {
         method: CodexLoginMethod,
         device_code: Option<(String, String)>,
     },
+    OpenRouterLogin {
+        selected: usize,
+    },
     TokenInput {
         provider: String,
         token: String,
@@ -415,6 +424,11 @@ pub(crate) enum CodexLoginMethod {
 }
 
 struct PendingCodexLogin {
+    id: u64,
+    task: tokio::task::JoinHandle<()>,
+}
+
+struct PendingOpenRouterLogin {
     id: u64,
     task: tokio::task::JoinHandle<()>,
 }
@@ -454,6 +468,14 @@ enum CodexLoginEvent {
         id: u64,
         selected: usize,
         result: Result<crate::config::CodexAuth, String>,
+    },
+}
+
+enum OpenRouterLoginEvent {
+    Finished {
+        id: u64,
+        selected: usize,
+        result: Result<String, String>,
     },
 }
 
@@ -595,6 +617,8 @@ impl App {
         let session = Session::new(runtime.handles, runtime.model.clone());
         let (models_tx, models_rx) = mpsc::unbounded_channel::<ModelDiscovery>();
         let (codex_login_tx, codex_login_rx) = mpsc::unbounded_channel::<CodexLoginEvent>();
+        let (openrouter_login_tx, openrouter_login_rx) =
+            mpsc::unbounded_channel::<OpenRouterLoginEvent>();
         let (mcp_login_tx, mcp_login_rx) = mpsc::unbounded_channel::<McpLoginEvent>();
         let mut app = Self {
             session,
@@ -626,6 +650,10 @@ impl App {
             codex_login_tx,
             codex_login_rx,
             next_codex_login_id: 0,
+            openrouter_login: None,
+            openrouter_login_tx,
+            openrouter_login_rx,
+            next_openrouter_login_id: 0,
             mcp_login: None,
             mcp_login_tx,
             mcp_login_rx,
@@ -1663,6 +1691,9 @@ impl App {
         if self.apply_codex_login_events().await {
             return Ok(());
         }
+        if self.apply_openrouter_login_events().await {
+            return Ok(());
+        }
         if self.apply_mcp_login_events() {
             return Ok(());
         }
@@ -1928,6 +1959,7 @@ impl App {
                 GlobalAction::Interrupt => self.handle_ctrl_c(),
                 GlobalAction::Quit => {
                     self.abort_codex_login();
+                    self.abort_openrouter_login();
                     self.abort_mcp_login();
                     self.should_quit = true;
                 }
@@ -3218,6 +3250,7 @@ impl App {
 
         if self.ctrl_c_pending_exit() {
             self.abort_codex_login();
+            self.abort_openrouter_login();
             self.abort_mcp_login();
             self.ctrl_c_exit = true;
             self.should_quit = true;
@@ -9669,6 +9702,91 @@ mod tests {
                 error: Some(ref error),
             }) if provider == "codex" && error == "Codex sign-in canceled"
         ));
+    }
+
+    #[test]
+    fn openrouter_credential_options_lead_with_browser_login() {
+        let options = App::credential_options("openrouter");
+        assert_eq!(options[0].id, CredentialAction::BrowserLogin);
+        assert_eq!(options[0].label, "Sign in with browser");
+        assert!(
+            options
+                .iter()
+                .any(|option| option.id == CredentialAction::PasteKey)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_openrouter_login_wait_can_be_cancelled() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        let task = tokio::spawn(std::future::pending());
+        app.openrouter_login = Some(PendingOpenRouterLogin { id: 3, task });
+        app.setup = Some(SetupStep::OpenRouterLogin { selected: 0 });
+
+        let rendered = setup_overlay_text(app);
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("Sign in to OpenRouter")),
+            "wait overlay should name OpenRouter: {rendered:?}"
+        );
+
+        app.handle_setup_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert!(app.openrouter_login.is_none());
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::Credential {
+                ref provider,
+                selected: 0,
+                error: Some(ref error),
+            }) if provider == "openrouter" && error == "OpenRouter sign-in canceled"
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_openrouter_login_stores_key_without_echoing_it() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        let task = tokio::spawn(std::future::pending());
+        app.openrouter_login = Some(PendingOpenRouterLogin { id: 9, task });
+        app.setup = Some(SetupStep::OpenRouterLogin { selected: 0 });
+        app.openrouter_login_tx
+            .send(OpenRouterLoginEvent::Finished {
+                id: 9,
+                selected: 0,
+                result: Ok("sk-or-secret-login-key".into()),
+            })
+            .expect("send login result");
+
+        assert!(app.apply_openrouter_login_events().await);
+        assert_eq!(
+            app.settings.snapshot().token_for("openrouter"),
+            Some("sk-or-secret-login-key")
+        );
+        let transcript = app
+            .lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !transcript.contains("sk-or-secret-login-key"),
+            "OAuth key must not land in the transcript: {transcript}"
+        );
+        assert!(
+            matches!(
+                app.setup,
+                Some(SetupStep::PickModel { ref provider, .. }) if provider == "openrouter"
+            ) || matches!(
+                app.setup,
+                Some(SetupStep::Credential { ref provider, .. }) if provider == "openrouter"
+            ),
+            "login should advance to model pick or return to credentials: {:?}",
+            app.setup
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

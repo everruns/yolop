@@ -41,7 +41,7 @@ Keys are addressed the way a human would name them:
 |---------------------------|--------|----------------------------------------------------------------|
 | `default_provider`        | text   | Provider used when no `--provider` flag is given; takes precedence over env auto-detection. |
 | `models.<provider>`       | text   | Per-provider model spec, survives provider switches.           |
-| `tokens.<provider>`       | secret | Provider API token (owner-only on disk; env vars override).    |
+| `tokens.<provider>`       | secret | Provider API token (owner-only on disk; env vars override). OpenRouter PKCE browser login stores the minted key as `tokens.openrouter`. |
 | `base_urls.<provider>`    | text   | Endpoint base URL (used by the `custom` provider).             |
 | `approval_mode`           | text   | Soft-approval paranoia level (`protective` / `normal` / `off`). |
 | `approval_policy`         | text   | Hard shell approval policy (`untrusted` / `on-failure` / `on-request` / `never`). |

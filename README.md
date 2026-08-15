@@ -197,7 +197,7 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 | Codex subscription | browser/device ChatGPT login or `CODEX_ACCESS_TOKEN` | `gpt-5.6-sol` |
 | Anthropic  | `ANTHROPIC_API_KEY`                   | `claude-opus-4-8` |
 | Meta Model API | `MODEL_API_KEY`                   | `muse-spark-1.2`  |
-| OpenRouter | `OPENROUTER_API_KEY`                  | `openai/gpt-5.6-sol` |
+| OpenRouter | browser PKCE login or `OPENROUTER_API_KEY` | `openai/gpt-5.6-sol` |
 | Google     | `GEMINI_API_KEY` / `GOOGLE_API_KEY`   | `gemini-2.5-flash` |
 | Ollama     | `OLLAMA_BASE_URL` / `OLLAMA_API_KEY`  | `llama3.2`        |
 | Custom     | `CUSTOM_BASE_URL` (+ optional `CUSTOM_API_KEY`) | — (set via `/setup`) |
@@ -205,8 +205,10 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 
 Pick explicitly with `--provider`, override the model with `-m/--model`. **Codex
 subscription** signs in through ChatGPT and uses the Codex backend directly.
-**Custom** is any OpenAI-compatible Chat Completions endpoint (vLLM, llama.cpp,
-LM Studio, hosted gateways, …).
+**OpenRouter** can mint a user-controlled API key through the same `/setup`
+browser login, or you can paste/`OPENROUTER_API_KEY` as before. **Custom** is
+any OpenAI-compatible Chat Completions endpoint (vLLM, llama.cpp, LM Studio,
+hosted gateways, …).
 
 ### Git attribution
 

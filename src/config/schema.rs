@@ -117,7 +117,8 @@ pub fn schema() -> &'static [ConfigField] {
             title: "Provider API token",
             description: "API token for a provider, stored owner-only (0o600). Environment \
                           variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, …) always override the \
-                          stored value. Addressed as `tokens.<provider>`.",
+                          stored value. OpenRouter browser login mints a key into \
+                          `tokens.openrouter`. Addressed as `tokens.<provider>`.",
             kind: ValueKind::Secret,
             default: None,
             examples: &["tokens.openai = sk-…", "tokens.anthropic = …"],

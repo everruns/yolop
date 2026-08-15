@@ -34,6 +34,19 @@ use everruns_core::typed_id::SessionId as RuntimeSessionId;
 
 pub use server::{RuntimeFactory, serve};
 
+pub(crate) fn advertised_auth_methods() -> Vec<AuthMethod> {
+    vec![
+        AuthMethod::Agent(
+            AuthMethodAgent::new("codex_browser", "Sign in with ChatGPT")
+                .description("Open a browser to connect the Codex provider."),
+        ),
+        AuthMethod::Agent(
+            AuthMethodAgent::new("openrouter_browser", "Sign in with OpenRouter")
+                .description("Open a browser to create an OpenRouter API key."),
+        ),
+    ]
+}
+
 /// Production [`RuntimeFactory`]: builds a real provider-backed runtime rooted
 /// at the client-supplied `cwd` for each `session/new`. The provider, settings,
 /// and session-log directory come from the CLI invocation and are shared
@@ -54,18 +67,21 @@ impl RuntimeFactory for ConfigRuntimeFactory {
     }
 
     fn auth_methods(&self) -> Vec<AuthMethod> {
-        vec![AuthMethod::Agent(
-            AuthMethodAgent::new("codex_browser", "Sign in with ChatGPT")
-                .description("Open a browser to connect the Codex provider."),
-        )]
+        advertised_auth_methods()
     }
 
     async fn authenticate(&self, method_id: &str) -> Result<()> {
-        if method_id != "codex_browser" {
-            anyhow::bail!("unknown authentication method `{method_id}`");
+        match method_id {
+            "codex_browser" => {
+                let auth = crate::auth::codex::login_with_browser().await?;
+                self.settings.set_codex_auth(auth)
+            }
+            "openrouter_browser" => {
+                let key = crate::auth::openrouter::login_with_browser().await?;
+                self.settings.set_token("openrouter".to_string(), key)
+            }
+            _ => anyhow::bail!("unknown authentication method `{method_id}`"),
         }
-        let auth = crate::auth::codex::login_with_browser().await?;
-        self.settings.set_codex_auth(auth)
     }
 
     async fn build(

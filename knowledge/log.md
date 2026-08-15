@@ -3,6 +3,14 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-14 — OpenRouter PKCE browser login
+
+- [Configuration](specs/configuration.md) records that OpenRouter can mint a
+  user-controlled API key through PKCE browser login, stored as
+  `tokens.openrouter` like a pasted key.
+- [ACP](specs/acp.md) advertises `openrouter_browser` alongside `codex_browser`
+  so editors can connect OpenRouter without a pre-set environment variable.
+
 ## 2026-08-12 — Streaming workspace grep
 
 - [Sandboxing](specs/sandboxing.md) records that broad structured grep streams
