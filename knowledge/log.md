@@ -405,3 +405,12 @@ wording, formatting, and link fixes do not need entries.
 - Tool descriptions are provider-visible even when schemas are deferred, so the
   three registry tools dropped the workflow prose the skill-management skill
   already owns.
+
+## 2026-08-14 — Manual test scenarios collection
+
+- Added [manual test scenarios](test-scenarios/index.md), a home for flows the
+  automated suite cannot reach — live provider, network, or a judgement about
+  what the terminal actually shows. Scenarios supplement the shipping bar's
+  automated-test requirement; they never replace it.
+- First scenario covers installing a skills.sh skill mid-session and rendering
+  its Mermaid answer as a terminal diagram.
