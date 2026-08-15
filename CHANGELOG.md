@@ -10,6 +10,41 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.15.1] - 2026-08-15
+
+### Highlights
+
+- Model selection is honest about what is reachable: ACP exposes only connected models, duplicate model names resolve uniquely, and provider model catalogs are listable over ACP.
+- The Meta Model API joins the supported providers.
+- Long-running turns behave better under stress — stall recovery shares the watchdog's budget, blocked completion status stays hidden, and workspace grep scans stream instead of buffering.
+- Terminal selection survives Ctrl and Ctrl+C, on tuika 0.8.0 with matching satellite crates.
+- Skill management (`search_skills` / `install_skill` / `delete_skill`) is now actually enabled in the coding harness, matching what the docs already promised.
+
+### Breaking Changes
+
+- None. `feat` commits in this release are additive (a new provider, a new ACP listing, an opt-in experimental flag), so the release is cut as a patch.
+
+### What's Changed
+
+* fix(skills): enable skill management in the coding harness ([#564](https://github.com/everruns/yolop/pull/564)) by @chaliy
+* chore(deps): bump tuika to 0.8.0 with matching satellite crates ([#563](https://github.com/everruns/yolop/pull/563)) by @chaliy
+* feat(user-ask): make tracking experimental opt-in ([#562](https://github.com/everruns/yolop/pull/562)) by @chaliy
+* fix(runtime): stream workspace grep scans ([#561](https://github.com/everruns/yolop/pull/561)) by @chaliy
+* fix(tui): keep mouse selection through Ctrl and Ctrl+C ([#557](https://github.com/everruns/yolop/pull/557)) by @chaliy
+* fix(runtime): hide blocked completion status ([#556](https://github.com/everruns/yolop/pull/556)) by @chaliy
+* fix(ci): recognize OpenAI credit exhaustion and re-pin stale eval baseline ([#555](https://github.com/everruns/yolop/pull/555)) by @chaliy
+* fix(evals): stop declared_budget vacuously passing binaries it never checked ([#554](https://github.com/everruns/yolop/pull/554)) by @chaliy
+* fix(evals): stop reporting outages and budget misses as search-efficiency regressions ([#553](https://github.com/everruns/yolop/pull/553)) by @chaliy
+* feat(providers): add Meta Model API ([#552](https://github.com/everruns/yolop/pull/552)) by @chaliy
+* chore(deps): adopt everruns 0.17.24 ([#551](https://github.com/everruns/yolop/pull/551)) by @chaliy
+* feat(acp): list provider model catalogs ([#550](https://github.com/everruns/yolop/pull/550)) by @chaliy
+* fix(mcp): recognize conversational restart requests ([#549](https://github.com/everruns/yolop/pull/549)) by @chaliy
+* fix(runtime): align stall recovery budget with watchdog ([#548](https://github.com/everruns/yolop/pull/548)) by @chaliy
+* fix(models): resolve unique model names ([#547](https://github.com/everruns/yolop/pull/547)) by @chaliy
+* fix(acp): expose only connected models ([#546](https://github.com/everruns/yolop/pull/546)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.15.0...v0.15.1
+
 ## [0.15.0] - 2026-08-06
 
 ### Highlights
