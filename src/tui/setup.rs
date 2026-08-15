@@ -336,6 +336,16 @@ impl App {
         let mut models = match provider {
             "openai" => vec![
                 ModelOption {
+                    spec: Some("gpt-5.6-terra".to_string()),
+                    label: "gpt-5.6-terra".to_string(),
+                    hint: "frontier model for complex coding".to_string(),
+                },
+                ModelOption {
+                    spec: Some("gpt-5.6-luna".to_string()),
+                    label: "gpt-5.6-luna".to_string(),
+                    hint: "frontier model for complex coding".to_string(),
+                },
+                ModelOption {
                     spec: Some("gpt-5.6-sol".to_string()),
                     label: "gpt-5.6-sol".to_string(),
                     hint: "frontier model for complex coding".to_string(),
@@ -367,6 +377,16 @@ impl App {
                 },
             ],
             "codex" => vec![
+                ModelOption {
+                    spec: Some("gpt-5.6-terra".to_string()),
+                    label: "gpt-5.6-terra".to_string(),
+                    hint: "frontier Codex model".to_string(),
+                },
+                ModelOption {
+                    spec: Some("gpt-5.6-luna".to_string()),
+                    label: "gpt-5.6-luna".to_string(),
+                    hint: "frontier Codex model".to_string(),
+                },
                 ModelOption {
                     spec: Some("gpt-5.6-sol".to_string()),
                     label: "gpt-5.6-sol".to_string(),
@@ -1549,6 +1569,26 @@ impl App {
             Ok(result) if result.success => Ok(()),
             Ok(result) => Err(result.message),
             Err(err) => Err(err),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+
+    #[test]
+    fn openai_and_codex_fallback_models_include_gpt_5_6_variants() {
+        for provider in ["openai", "codex"] {
+            let specs = App::fallback_model_options(provider)
+                .into_iter()
+                .filter_map(|model| model.spec)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                &specs[..3],
+                &["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"],
+                "{provider} selector should lead with all GPT-5.6 variants"
+            );
         }
     }
 }

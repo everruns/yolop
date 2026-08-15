@@ -10146,7 +10146,7 @@ mod tests {
         ));
         // The curated list must remain usable after a failed fetch.
         let options = app.model_options("openai");
-        assert_eq!(options[0].spec.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(options[0].spec.as_deref(), Some("gpt-5.6-terra"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -10371,7 +10371,7 @@ mod tests {
                 ref provider,
                 selected,
                 ..
-            }) if provider == "openai" && selected == 2
+            }) if provider == "openai" && selected == 4
         ));
     }
 
