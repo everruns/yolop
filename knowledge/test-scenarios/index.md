@@ -22,9 +22,9 @@ additional coverage, never a substitute.
 Not every manual check belongs here. Two live elsewhere because another concept
 owns when they run:
 
-- The [manual terminal matrix](../specs/release.md#manual-terminal-matrix) —
-  walking `yolop tuika-gallery` across real emulators — stays in the release
-  spec, which owns the pre-release gate that requires it.
+- The human tier of [terminal verification](../specs/release.md#terminal-verification)
+  — walking `yolop tuika-gallery` across real GUI emulators — stays in the
+  release spec, which owns the pre-release gate that requires it.
 - [`surfaces.md`](../../.agents/skills/maintenance/surfaces.md) carries the
   commands a maintenance pass runs by hand. It checks repository health, not
   product behavior.

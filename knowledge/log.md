@@ -3,6 +3,22 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-15 — Terminal verification split into tiers
+
+- The release spec's "Manual Terminal Matrix" became
+  [Terminal Verification](specs/release.md#terminal-verification), organized by
+  what actually checks each row: asserted per PR, best-effort nightly, or human.
+  Presenting one undifferentiated checklist led a release to report rows as
+  unverified that CI had already gated on the same commit, and invited humans to
+  re-walk them.
+- The tmux gallery capture moved from nightly-only to `ci.yml`'s `Build + Tests`
+  job, so a real terminal implementation checks the render on every PR and a
+  release can cite a run against its own commit. `scripts/nightly-assert-gallery.sh`
+  lost its `nightly-` prefix accordingly; the nightly leg keeps running as a
+  scheduled re-check.
+- The human tier now lists GUI emulators only. tmux left the manual list because
+  a machine gates it.
+
 ## 2026-08-14 — Layered tool-call shape enforcement and repair
 
 - Added [tool-call shape enforcement](specs/tool-calling.md): compatible Codex

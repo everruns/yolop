@@ -5,9 +5,10 @@ name: Nightly Terminals
 # this runs `yolop tuika-gallery` inside *real* terminal emulators nightly to
 # check how they actually interpret those bytes.
 #
-# Maturity differs by leg (see knowledge/specs/release.md § Manual Terminal Matrix):
+# Maturity differs by leg (see knowledge/specs/release.md § Terminal Verification):
 #   - tmux (Linux): text-capture via `capture-pane`, asserted — a regression
-#     here fails the nightly.
+#     here fails the nightly. `ci.yml` runs this same capture per-PR, so the
+#     nightly leg is a scheduled re-check rather than the only gate.
 #   - kitty / iTerm2 / Windows Terminal: GPU- or OS-locked GUI terminals driven
 #     best-effort. They capture text and/or a screenshot as build artifacts for
 #     human inspection and do not fail the nightly yet (`continue-on-error`).
@@ -70,7 +71,7 @@ jobs:
           cat capture.txt
 
       - name: Assert the gallery rendered
-        run: bash scripts/nightly-assert-gallery.sh capture.txt
+        run: bash scripts/assert-gallery.sh capture.txt
 
       - name: Upload capture
         if: always()
@@ -110,7 +111,7 @@ jobs:
 
       - name: Assert (non-fatal)
         run: |
-          bash scripts/nightly-assert-gallery.sh capture.txt \
+          bash scripts/assert-gallery.sh capture.txt \
             || echo "::warning::kitty capture did not pass assertions (best-effort leg)"
 
       - name: Upload capture + screenshot
@@ -170,7 +171,7 @@ jobs:
 
       - name: Assert (non-fatal)
         run: |
-          bash scripts/nightly-assert-gallery.sh capture.txt \
+          bash scripts/assert-gallery.sh capture.txt \
             || echo "::warning::iTerm2 capture did not pass assertions (best-effort leg)"
 
       - name: Upload capture + screenshot
