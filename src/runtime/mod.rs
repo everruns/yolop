@@ -1196,7 +1196,7 @@ const DEFAULT_GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com
 const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-5.6-sol";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
-const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
 const DEFAULT_OLLAMA_API_KEY: &str = "ollama";
 // Generic OpenAI-compatible servers usually ignore the bearer token, but the
 // OpenAI client requires one — same trick as Ollama's placeholder key.
@@ -6576,6 +6576,23 @@ mod tests {
         assert_eq!(
             provider.model_without_stored_key().provider_type,
             DriverId::OpenRouter
+        );
+    }
+
+    #[test]
+    fn ollama_provider_resolution_uses_literal_loopback_url() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::remove_var("OLLAMA_BASE_URL");
+        }
+
+        let provider = resolve_for_settings("ollama", &Settings::default())
+            .expect("resolve Ollama")
+            .choice;
+
+        assert_eq!(
+            provider.model_without_stored_key().base_url.as_deref(),
+            Some("http://127.0.0.1:11434/v1")
         );
     }
 

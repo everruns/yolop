@@ -353,7 +353,7 @@ act of consent. MCP tools run autonomously like the rest of yolop's tools.
 | `MODEL_API_KEY`                     | Select Meta Model API when earlier providers are not configured |
 | `OPENROUTER_API_KEY`                | Select OpenRouter when earlier providers are not configured  |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Select Google Gemini via its OpenAI-compatible endpoint      |
-| `OLLAMA_BASE_URL`                   | Select Ollama, defaults to `http://localhost:11434/v1`       |
+| `OLLAMA_BASE_URL`                   | Select Ollama, defaults to `http://127.0.0.1:11434/v1`       |
 | `CUSTOM_BASE_URL`                   | Select the custom OpenAI-compatible endpoint                 |
 | `EVERRUNS_CLI_MODEL`                | Override the auto-selected default model                     |
 | `EVERRUNS_CLI_REASONING_EFFORT`     | Reasoning effort override when the model profile supports it  |
