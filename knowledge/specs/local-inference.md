@@ -59,7 +59,8 @@ probe lockfile against this one.
 |---|---|---|---|
 | Crates | 763 | 1021 | +258 (+34%) |
 | Cold release build | 12 min 35 s | 29 min 09 s | +16 min 34 s (2.32×) |
-| Binary | 96.3 MiB | 137.6 MiB | +41.3 MiB (1.43×) |
+| Binary on disk | 96.3 MiB | 137.6 MiB | +41.3 MiB (1.43×) |
+| Release tarball (`.tar.gz`) | 27.8 MiB | not measured | — |
 | Native-toolchain deps | none | none | — |
 
 Absolute times are machine-specific; the ratios are the durable part.
@@ -73,10 +74,15 @@ the gate earns its keep:
   `cargo install yolop` roughly doubles, and a contributor's cold build pays the
   same. That is worth avoiding for the majority who will never select `local`.
 - **Binary size is not something the gate fixes.** The release binaries are
-  built with the feature on, so every Homebrew install and upgrade carries the
-  +41 MiB whether or not the user ever runs a local model. If that trade stops
-  being worth it — and for an experiment with no eval numbers behind it, that is
-  a fair question — the lever is
+  built with the feature on, so a Homebrew install carries the engine whether or
+  not the user ever runs a local model. Two different costs hide behind that,
+  and they should not be quoted interchangeably: **+41.3 MiB of disk** after
+  install, and a *download* that grows by the compressed delta. The formula
+  fetches a `.tar.gz`, and the baseline binary compresses 3.46× (96.3 → 27.8
+  MiB), so the download delta is much smaller than the disk delta — but it has
+  not been measured, so do not quote a figure for it. If the trade stops being
+  worth it — and for an experiment with no eval numbers behind it, that is a
+  fair question — the lever is
   [`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml), not the
   feature default.
 
