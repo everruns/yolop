@@ -159,6 +159,10 @@ impl App {
     ) -> (bool, String) {
         match provider {
             "llmsim" | "ollama" => (true, "✓ no key needed".to_string()),
+            // Usable without configuration, but the first turn pays for a
+            // multi-gigabyte weight download, so say so rather than implying
+            // it is ready to go.
+            "local" => (true, "✓ no key needed (downloads weights)".to_string()),
             "custom" => {
                 if crate::runtime::custom_base_url(settings).is_some() {
                     (true, "✓ base URL set".to_string())
@@ -486,6 +490,21 @@ impl App {
                 label: "llama3.2".to_string(),
                 hint: "local default model".to_string(),
             }],
+            // Specs are Hugging Face repos the embedded engine downloads, so
+            // these are starting points rather than an installed-model list —
+            // the free-form entry takes any repo (or `repo::file.gguf`).
+            "local" => vec![
+                ModelOption {
+                    spec: Some("Qwen/Qwen3-8B".to_string()),
+                    label: "Qwen/Qwen3-8B".to_string(),
+                    hint: "in-process, quantized on load".to_string(),
+                },
+                ModelOption {
+                    spec: Some("Qwen/Qwen3-4B".to_string()),
+                    label: "Qwen/Qwen3-4B".to_string(),
+                    hint: "smaller, faster, weaker at tools".to_string(),
+                },
+            ],
             // No preset list exists for an arbitrary endpoint; only the
             // trailing "Custom..." free-form entry is offered.
             "custom" => Vec::new(),

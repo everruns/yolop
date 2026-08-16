@@ -874,6 +874,27 @@ pub(crate) fn setup_panel_rect(area: Rect) -> Rect {
     }
 }
 
+/// Option rows the inline setup sheet can show for the provider list.
+///
+/// [`setup_panel_rect`] caps the sheet at 18 rows; two go to the border and
+/// five to the title, hint, spacer, trailing spacer, and footer, leaving nine.
+/// Overflowing this silently clips the footer off the bottom of the sheet, so
+/// the list is windowed instead. The full-screen renderer has no such limit —
+/// [`setup_picker`] hands the options to a scrolling `SelectList`.
+const INLINE_PROVIDER_ROWS: usize = 9;
+
+/// Window a `len`-item list down to `capacity` rows, keeping `selected` in
+/// view and centered where possible. A list that already fits is untouched.
+fn scroll_window(len: usize, selected: usize, capacity: usize) -> std::ops::Range<usize> {
+    if len <= capacity {
+        return 0..len;
+    }
+    let start = selected
+        .saturating_sub(capacity / 2)
+        .min(len.saturating_sub(capacity));
+    start..start.saturating_add(capacity)
+}
+
 pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
     let mut lines = Vec::new();
     let mut cursor = None;
@@ -886,7 +907,15 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
             lines.push(Line::from(""));
             let current = app.current_provider_name();
             let snapshot = app.settings.snapshot();
-            for (idx, option) in PROVIDER_OPTIONS.iter().enumerate() {
+            // Row numbers stay tied to the option's real index, so the digit
+            // shortcuts keep working the same whether or not the list scrolled.
+            let window = scroll_window(PROVIDER_OPTIONS.len(), *selected, INLINE_PROVIDER_ROWS);
+            for (idx, option) in PROVIDER_OPTIONS
+                .iter()
+                .enumerate()
+                .skip(window.start)
+                .take(window.len())
+            {
                 let (_, status) = App::provider_status(&snapshot, option.name);
                 let mut hint = format!("{} · {status}", option.hint);
                 if option.name == current {
@@ -2403,4 +2432,36 @@ fn status_line(line: &StatusLine) -> Line<'static> {
     }
     spans.push(Span::styled(" ", Style::default().fg(TEXT_MUTED)));
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::{INLINE_PROVIDER_ROWS, PROVIDER_OPTIONS, scroll_window};
+
+    #[test]
+    fn a_list_that_fits_is_not_windowed() {
+        assert_eq!(scroll_window(5, 0, 9), 0..5);
+        assert_eq!(scroll_window(9, 8, 9), 0..9);
+    }
+
+    #[test]
+    fn an_overflowing_list_keeps_the_selection_in_view() {
+        for selected in 0..12 {
+            let window = scroll_window(12, selected, 9);
+            assert_eq!(window.len(), 9, "selected={selected}");
+            assert!(
+                window.contains(&selected),
+                "selected={selected} fell outside {window:?}"
+            );
+            assert!(window.end <= 12, "selected={selected} ran past the list");
+        }
+    }
+
+    #[test]
+    fn the_provider_list_fits_the_inline_sheet_once_windowed() {
+        // The sheet clips silently, so the guard is that the windowed row count
+        // never exceeds what `setup_panel_rect` leaves room for.
+        let window = scroll_window(PROVIDER_OPTIONS.len(), 0, INLINE_PROVIDER_ROWS);
+        assert!(window.len() <= INLINE_PROVIDER_ROWS);
+    }
 }

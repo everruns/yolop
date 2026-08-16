@@ -279,6 +279,11 @@ async fn list_openai_compatible_models(
 pub(crate) fn provider_is_usable(settings: &Settings, provider: &str) -> bool {
     match provider {
         "llmsim" => true,
+        // Nothing to configure and nothing to reach, so usability is purely a
+        // question of whether this build linked the engine. A build without it
+        // reports unusable, which keeps `local` out of the ACP fallback search
+        // instead of installing a provider that cannot answer.
+        "local" => cfg!(feature = "local-inference"),
         "ollama" => provider_env_present("ollama") || settings.has_token("ollama"),
         "custom" => crate::runtime::custom_base_url(settings).is_some(),
         "codex" => provider_env_present("codex") || settings.has_codex_auth(),

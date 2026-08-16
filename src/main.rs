@@ -359,6 +359,9 @@ enum ProviderArg {
     Google,
     Openrouter,
     Ollama,
+    /// In-process inference — no external server. Requires a build with the
+    /// `local-inference` feature (the release binaries and Homebrew formula).
+    Local,
     /// Generic OpenAI-compatible endpoint (CUSTOM_BASE_URL / saved base URL).
     Custom,
     #[value(name = "llmsim", alias = "sim")]
@@ -374,6 +377,7 @@ fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
         ProviderArg::Google => "google",
         ProviderArg::Openrouter => "openrouter",
         ProviderArg::Ollama => "ollama",
+        ProviderArg::Local => "local",
         ProviderArg::Custom => "custom",
         ProviderArg::Sim => "llmsim",
     }

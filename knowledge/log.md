@@ -3,6 +3,18 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-16 — In-process inference provider (experimental)
+
+- Added [Local inference](specs/local-inference.md): a `local` provider that
+  links the inference engine into yolop instead of talking to an external
+  server, and downloads its own weights on first use. The existing `ollama`
+  provider is unchanged — it was never an Ollama integration, just the OpenAI
+  driver aimed at loopback.
+- Records the build-gate policy and why it points opposite to distribution:
+  `local-inference` is off in default features so source builds stay fast, and
+  on in the release binaries so the Homebrew install path carries the engine.
+  The gate is justified by compile time alone, not toolchains or publishability.
+
 ## 2026-08-15 — Interactive tracing no longer corrupts terminal frames
 
 - Fullscreen and inline renderers now route `RUST_LOG` diagnostics to private,

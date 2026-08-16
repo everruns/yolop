@@ -1200,6 +1200,12 @@ const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
 const DEFAULT_OLLAMA_API_KEY: &str = "ollama";
+// Weights are fetched from Hugging Face on first use, so the default is a repo
+// id rather than a served model name; the engine quantizes it in-situ on load.
+// Qwen3-8B is a starting point picked for having a tool-calling chat template
+// at a size that fits consumer hardware — how well it actually drives the agent
+// loop is exactly what this experiment is meant to measure.
+const DEFAULT_LOCAL_MODEL: &str = "Qwen/Qwen3-8B";
 // Generic OpenAI-compatible servers usually ignore the bearer token, but the
 // OpenAI client requires one — same trick as Ollama's placeholder key.
 const DEFAULT_CUSTOM_API_KEY: &str = "unused";
@@ -1258,6 +1264,12 @@ pub enum ProviderChoice {
         base_url: String,
         reasoning_effort: Option<String>,
     },
+    /// In-process inference. Carries no base URL or key because there is no
+    /// endpoint: the model spec is a Hugging Face repo the embedded engine
+    /// downloads and runs itself.
+    Local {
+        model: String,
+    },
     /// Generic OpenAI-compatible endpoint (vLLM, llama.cpp, LM Studio,
     /// hosted gateways, …). Unlike the other variants the base URL is not
     /// carried here: it is user configuration, resolved from
@@ -1293,13 +1305,17 @@ pub enum Provider {
     Google,
     OpenRouter,
     Ollama,
+    /// In-process inference: no endpoint, no second process. Served by the
+    /// `local-inference` build's own driver (`src/drivers/local.rs`); a build
+    /// without that feature rejects the choice at driver-construction time.
+    Local,
     Custom,
     Sim,
 }
 
 impl Provider {
     /// Every provider, in the user-visible suggestion order.
-    pub const ALL: [Provider; 9] = [
+    pub const ALL: [Provider; 10] = [
         Provider::OpenAi,
         Provider::Codex,
         Provider::Anthropic,
@@ -1307,6 +1323,7 @@ impl Provider {
         Provider::Google,
         Provider::OpenRouter,
         Provider::Ollama,
+        Provider::Local,
         Provider::Custom,
         Provider::Sim,
     ];
@@ -1321,6 +1338,7 @@ impl Provider {
             Provider::Google => "google",
             Provider::OpenRouter => "openrouter",
             Provider::Ollama => "ollama",
+            Provider::Local => "local",
             Provider::Custom => "custom",
             Provider::Sim => "llmsim",
         }
@@ -1344,7 +1362,11 @@ impl Provider {
             Provider::Meta => Some(DriverId::Meta),
             Provider::OpenAi | Provider::Google => Some(DriverId::OpenAI),
             Provider::OpenRouter => Some(DriverId::OpenRouter),
-            Provider::Codex | Provider::Ollama | Provider::Custom | Provider::Sim => None,
+            Provider::Codex
+            | Provider::Ollama
+            | Provider::Local
+            | Provider::Custom
+            | Provider::Sim => None,
         }
     }
 }
@@ -1360,6 +1382,7 @@ pub const SUPPORTED_PROVIDERS: &[&str] = &[
     Provider::Google.as_str(),
     Provider::OpenRouter.as_str(),
     Provider::Ollama.as_str(),
+    Provider::Local.as_str(),
     Provider::Custom.as_str(),
     Provider::Sim.as_str(),
 ];
@@ -1474,6 +1497,12 @@ impl ProviderChoice {
         }
     }
 
+    fn default_local() -> Self {
+        Self::Local {
+            model: env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_LOCAL_MODEL),
+        }
+    }
+
     /// The custom endpoint has no default model; callers gate on a model being
     /// known before selecting it, and an empty model is rejected downstream.
     fn default_custom() -> Self {
@@ -1503,6 +1532,7 @@ impl ProviderChoice {
             Self::Google { .. } => Provider::Google,
             Self::OpenRouter { .. } => Provider::OpenRouter,
             Self::Ollama { .. } => Provider::Ollama,
+            Self::Local { .. } => Provider::Local,
             Self::Custom { .. } => Provider::Custom,
             Self::Sim => Provider::Sim,
         }
@@ -1531,6 +1561,7 @@ impl ProviderChoice {
             Provider::Google => Ok(Self::default_google()),
             Provider::OpenRouter => Ok(Self::default_openrouter()),
             Provider::Ollama => Ok(Self::default_ollama()),
+            Provider::Local => Ok(Self::default_local()),
             // No sensible default model exists for an arbitrary endpoint; an
             // empty model is rejected later by `model_with_provider` so the
             // setup wizard (or a saved model from settings) must fill it in.
@@ -1629,6 +1660,7 @@ impl ProviderChoice {
             | Self::Google { model, .. }
             | Self::OpenRouter { model, .. }
             | Self::Ollama { model, .. }
+            | Self::Local { model }
             | Self::Custom { model, .. } => model,
             Self::Sim => "llmsim-yolop",
         }
@@ -1836,6 +1868,15 @@ impl ProviderChoice {
                     reasoning_effort,
                 })
             }
+            // A local model spec is a Hugging Face repo, not an entry in a
+            // profile catalog, so there is no reasoning-effort config to
+            // resolve against and an explicit effort has nowhere to go.
+            Self::Local { .. } => {
+                if reasoning_effort.is_some() {
+                    return Err(anyhow!("local models do not support reasoning effort"));
+                }
+                Ok(Self::Local { model })
+            }
             Self::Custom { .. } => {
                 let reasoning_effort =
                     self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
@@ -2039,6 +2080,7 @@ impl ProviderChoice {
                     base_url: Some(base_url.clone()),
                 })
             }
+            ProviderChoice::Local { model } => Ok(local_resolved_model(model)),
             ProviderChoice::Custom { model, .. } => {
                 let base_url = custom_base_url(settings).ok_or_else(|| {
                     anyhow!("custom endpoint base URL not set (set CUSTOM_BASE_URL or run /setup)")
@@ -2128,6 +2170,7 @@ impl ProviderChoice {
                 api_key: Some(DEFAULT_OLLAMA_API_KEY.to_string()),
                 base_url: Some(base_url.clone()),
             },
+            ProviderChoice::Local { model } => local_resolved_model(model),
             ProviderChoice::Custom { model, .. } => ResolvedModel {
                 model: model.clone(),
                 provider_type: DriverId::OpenAICompletions,
@@ -2206,6 +2249,18 @@ fn google_api_key() -> Option<String> {
 
 /// Base URL for the generic OpenAI-compatible provider. Env beats the
 /// settings file, mirroring token resolution.
+/// In-process inference needs no endpoint and no credential, so the resolved
+/// model is just the spec pointed at yolop's own driver.
+fn local_resolved_model(model: &str) -> ResolvedModel {
+    ResolvedModel {
+        model: model.to_string(),
+        provider_type: DriverId::external(crate::drivers::LOCAL_DRIVER_ID),
+        provider_metadata: None,
+        api_key: None,
+        base_url: None,
+    }
+}
+
 pub(crate) fn custom_base_url(settings: &Settings) -> Option<String> {
     env_non_empty("CUSTOM_BASE_URL").or_else(|| settings.base_url_for("custom").map(str::to_string))
 }
@@ -3681,6 +3736,8 @@ pub async fn build_with_options(
     // first-class DriverId::OpenRouter driver here (was bundled with openai).
     everruns_openrouter::register_driver(&mut driver_registry);
     crate::drivers::codex::register_driver(&mut driver_registry, settings.clone());
+    #[cfg(feature = "local-inference")]
+    crate::drivers::local::register_driver(&mut driver_registry);
     let settings_snapshot = settings.snapshot();
     let mut setup_recommended = ModelsCapability::needs_onboarding(&settings_snapshot);
     let active_provider = provider_state
@@ -3695,6 +3752,7 @@ pub async fn build_with_options(
         | ProviderChoice::Google { .. }
         | ProviderChoice::OpenRouter { .. }
         | ProviderChoice::Ollama { .. }
+        | ProviderChoice::Local { .. }
         | ProviderChoice::Custom { .. } => {
             match active_provider.model_with_provider(&settings_snapshot) {
                 Ok(model) => model,

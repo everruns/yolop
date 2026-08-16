@@ -46,8 +46,15 @@ jobs:
         with:
           shared-key: "cli-${{ matrix.target }}"
 
+      # `local-inference` is off in the crate's default features so
+      # `cargo install yolop` and the contributor loop stay fast. The shipped
+      # artifacts are the opposite trade: they are built once here, so they
+      # carry the engine and the Homebrew formula (generated from these
+      # tarballs) gets it for free.
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p yolop --locked
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p yolop --locked \
+            --features local-inference
 
       - name: Package binary
         env:
