@@ -69,13 +69,35 @@ than silently disappearing from the picker.
 Accelerated backends (`metal`, `cuda`) do require vendor toolchains and stay
 opt-in on top of `local-inference`.
 
+## The model store
+
+Weights live under `<data_dir>/yolop/models/`, one flat directory per repo
+(`/` → `__`). Yolop owns this directory instead of deferring to the engine's own
+cache, because an engine-managed cache leaves users with gigabytes they can
+neither see nor delete through yolop. `yolop models list` reports what is on
+disk and its size; `yolop models rm` reclaims it.
+
+**A turn never downloads.** The engine is capable of fetching its own weights,
+but it does so inside the first inference call — the turn appears to hang for
+several gigabytes with nothing on screen. Instead the driver loads only from the
+store and, when the weights are absent, fails immediately with the `yolop models
+pull` command that fixes it. The wait is explicit, has a progress bar, and
+happens where a progress bar can be drawn.
+
+Listing and removal are plain filesystem work and compile into every build, so a
+build without the engine can still clean up what an earlier one downloaded.
+Pulling needs the Hugging Face client and is feature-gated with the rest;
+without the engine there would be nothing to run the bytes.
+
 ## Open questions
 
-- Tool-calling reliability in the agent loop, measured against
-  [`evals/`](../../evals/README.md) rather than asserted. This gates whether the
-  provider graduates from experiment.
-- Weight downloads have no progress reporting: the first turn on a new model
-  stalls for gigabytes with nothing on screen. A download surfaced through the
-  TUI is the first thing to fix if the experiment survives.
-- No model store management (list, remove, disk accounting). That is the part of
-  Ollama this provider has not replaced.
+- Tool-calling reliability in the agent loop, measured rather than asserted.
+  [`evals/harness_basic/`](../../evals/harness_basic/) carries a `local` target
+  for this, gated on `YOLOP_LOCAL_MODEL` naming a pulled model so an ordinary
+  run skips it. That is the cheap first gate; SWE-bench Verified is the later
+  and far more expensive one. **No numbers exist yet** — until they do, this
+  provider stays an experiment.
+- Downloads resume only at file granularity: an interrupted shard restarts from
+  zero on the next pull.
+- No quantization choice for safetensors repos; the driver always applies 8-bit
+  in-situ quantization on load.

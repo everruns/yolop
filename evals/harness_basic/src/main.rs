@@ -103,7 +103,31 @@ fn targets() -> Vec<Target> {
         Target::anthropic("claude-opus-4-8"),
         Target::openai("gpt-5.5"),
         Target::cloud("openrouter", "z-ai/glm-5.2", "OPENROUTER_API_KEY"),
+        local_target(),
     ]
+}
+
+/// Yolop's in-process `local` provider.
+///
+/// It takes no API key, so it cannot gate on one like the cloud targets. It
+/// gates on `YOLOP_LOCAL_MODEL` instead — naming the model is the operator
+/// saying "these weights are pulled and this machine can run them", which is
+/// the real precondition. Unset, the target is unavailable and a normal
+/// `mira run` skips it rather than trying to load gigabytes that are not there.
+///
+/// This is the cheap first gate on whether a local model can drive the tool
+/// loop at all; SWE-bench Verified is the later, far more expensive one.
+///
+///   YOLOP_LOCAL_MODEL=Qwen/Qwen3-8B mira run --targets 'local/*' --preset smoke
+fn local_target() -> Target {
+    let model = std::env::var("YOLOP_LOCAL_MODEL").unwrap_or_default();
+    let model = model.trim().to_string();
+    let label = if model.is_empty() {
+        "local".to_string()
+    } else {
+        format!("local/{model}")
+    };
+    Target::new(label, "local", model.clone()).available(!model.is_empty())
 }
 
 // ============================================================================
@@ -3556,14 +3580,34 @@ mod tests {
     #[test]
     fn matrix_shape() {
         let eval = basic_coding();
-        assert_eq!(eval.targets.len(), 4);
+        assert_eq!(eval.targets.len(), 5);
         // binary × harness × effort axis cross-product
         assert_eq!(
             eval.axis_combinations().len(),
             BINARIES.len() * HARNESS_VARIANTS.len() * EFFORTS.len()
         );
-        // Every target is a key-gated cloud model; none is unconditionally on.
+        // Every target is gated — on a provider key, or for `local` on the
+        // operator naming a pulled model. None is unconditionally on.
         assert!(eval.targets.iter().all(|t| !t.is_sim()));
+    }
+
+    #[test]
+    fn the_local_target_is_off_until_a_model_is_named() {
+        // Weights are gigabytes and machine-specific, so an unconfigured run
+        // must skip this target rather than attempt a load.
+        // SAFETY: single-threaded test process; the var is restored below.
+        unsafe { std::env::remove_var("YOLOP_LOCAL_MODEL") };
+        let target = local_target();
+        assert!(!target.available);
+        assert_eq!(target.label, "local");
+
+        unsafe { std::env::set_var("YOLOP_LOCAL_MODEL", "Qwen/Qwen3-8B") };
+        let target = local_target();
+        assert!(target.available);
+        assert_eq!(target.label, "local/Qwen/Qwen3-8B");
+        // The subject passes this straight to `yolop --model`.
+        assert_eq!(target.model, "Qwen/Qwen3-8B");
+        unsafe { std::env::remove_var("YOLOP_LOCAL_MODEL") };
     }
 
     /// Drives the subject end-to-end: spawns the real yolop binary against its

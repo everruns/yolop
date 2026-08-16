@@ -212,13 +212,23 @@ any OpenAI-compatible Chat Completions endpoint (vLLM, llama.cpp, LM Studio,
 hosted gateways, …).
 
 **Local (in-process)** is experimental. Unlike Ollama it needs no server: the
-inference engine is linked into yolop, and the model spec is a Hugging Face repo
-(`Qwen/Qwen3-8B`, or `repo::file.gguf` for a specific GGUF) that yolop downloads
-itself on first use — expect a multi-gigabyte wait and no progress bar yet. It
-is compiled into the Homebrew and GitHub release binaries; a build from source
-needs `cargo install yolop --features local-inference`, which is much slower to
-compile. How well a local model actually drives the agent loop is the open
-question this is here to answer.
+inference engine is linked into yolop. Model specs are Hugging Face repos
+(`Qwen/Qwen3-8B`) or a GGUF file inside one
+(`unsloth/Qwen3-8B-GGUF::Qwen3-8B-Q4_K_M.gguf`). Pull the weights before use —
+a turn never blocks on a download:
+
+```bash
+yolop models pull Qwen/Qwen3-8B    # several GB, with progress
+yolop models list                  # what is on disk, and how much
+yolop models rm Qwen/Qwen3-8B      # reclaim it
+yolop --provider local
+```
+
+Weights live under `<data_dir>/yolop/models/`. The engine is compiled into the
+Homebrew and GitHub release binaries; a build from source needs `cargo install
+yolop --features local-inference`, which is much slower to compile. How well a
+local model actually drives the agent loop is the open question this is here to
+answer.
 
 ### Git attribution
 

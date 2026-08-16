@@ -32,10 +32,7 @@ use tokio::sync::Mutex;
 
 pub use crate::drivers::LOCAL_DRIVER_ID;
 
-/// Separator between a Hugging Face repo and a specific GGUF file inside it:
-/// `TheBloke/Qwen3-8B-GGUF::qwen3-8b-q4_k_m.gguf`. Without it the spec is
-/// treated as a safetensors repo and quantized in-situ on load.
-const GGUF_SEPARATOR: &str = "::";
+use crate::models::GGUF_SEPARATOR;
 
 /// Engines are keyed by model spec and shared process-wide. Loading is minutes
 /// and gigabytes, and the registry builds a fresh driver per request, so the
@@ -71,13 +68,23 @@ impl LocalChatDriver {
             return Ok(engine);
         }
 
-        tracing::info!(model = spec, "loading local inference engine");
-        let model = match spec.split_once(GGUF_SEPARATOR) {
-            Some((repo, file)) => GgufModelBuilder::new(repo.to_string(), vec![file.to_string()])
+        // Load only from the local store. Letting the engine fetch its own
+        // weights would turn the first turn into a silent multi-gigabyte stall;
+        // `yolop models pull` owns that wait and shows progress for it.
+        if !crate::models::is_installed(spec) {
+            return Err(missing_weights_error(spec));
+        }
+        let (repo, gguf_file) = crate::models::split_spec(spec);
+        let dir = crate::models::repo_dir(repo).map_err(|err| load_error(spec, err))?;
+        let dir = dir.to_string_lossy().to_string();
+
+        tracing::info!(model = spec, path = %dir, "loading local inference engine");
+        let model = match gguf_file {
+            Some(file) => GgufModelBuilder::new(dir, vec![file.to_string()])
                 .build()
                 .await
                 .map_err(|err| load_error(spec, err))?,
-            None => ModelBuilder::new(spec.to_string())
+            None => ModelBuilder::new(dir)
                 .with_auto_isq(IsqBits::Eight)
                 .build()
                 .await
@@ -299,6 +306,18 @@ fn terminal_events(
         ..Default::default()
     })));
     events
+}
+
+/// Absent weights are a setup step, not a failure to explain — the message is
+/// the command that fixes it.
+fn missing_weights_error(spec: &str) -> AgentLoopError {
+    AgentLoopError::llm_kind(
+        LlmErrorKind::Unavailable,
+        format!(
+            "local model '{spec}' is not downloaded. Run `yolop models pull {spec}` first \
+             (several GB), then retry. `yolop models list` shows what is already on disk."
+        ),
+    )
 }
 
 fn load_error(spec: &str, err: impl std::fmt::Display) -> AgentLoopError {

@@ -10464,6 +10464,7 @@ dependencies = [
  "everruns-runtime",
  "flate2",
  "futures",
+ "hf-hub",
  "html-escape",
  "ignore",
  "image",
