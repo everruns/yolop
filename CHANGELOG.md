@@ -10,6 +10,33 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.15.2] - 2026-08-15
+
+### Highlights
+
+- OpenRouter can be authenticated from the browser: `--provider openrouter` runs a PKCE login instead of requiring a hand-pasted key.
+- Terra and Luna model variants join the OpenAI and Codex selectors, listed ahead of Sol.
+- Malformed tool calls no longer reach execution — every provider's model-authored arguments are validated against the authoritative JSON Schema first, and `progress_checkpoint` stays callable when the progress gate demands it.
+- ACP recovers provider authentication mid-session rather than stalling on an expired credential.
+- The tmux gallery render is now gated on every PR by a real terminal implementation, so the release spec's terminal matrix reserves the human walk for GUI emulators.
+
+### Breaking Changes
+
+- None. The `feat` commits in this release are additive — a new browser login path for an existing provider and new entries in the model selectors — so nothing that worked on 0.15.1 changes behavior and the release is cut as a patch.
+
+### What's Changed
+
+* chore(deps): bump tuika to 0.9 and companion crates ([#573](https://github.com/everruns/yolop/pull/573)) by @chaliy
+* fix(tools): repair malformed tool call arguments ([#572](https://github.com/everruns/yolop/pull/572)) by @chaliy
+* feat(models): add Terra and Luna variants ([#571](https://github.com/everruns/yolop/pull/571)) by @chaliy
+* fix(acp): recover provider authentication ([#570](https://github.com/everruns/yolop/pull/570)) by @chaliy
+* test(tuika): gate the tmux gallery render on every PR ([#569](https://github.com/everruns/yolop/pull/569)) by @chaliy
+* chore(knowledge): add manual test scenarios collection ([#568](https://github.com/everruns/yolop/pull/568)) by @chaliy
+* feat(auth): add OpenRouter PKCE browser login ([#567](https://github.com/everruns/yolop/pull/567)) by @chaliy
+* fix(ollama): use literal loopback default ([#566](https://github.com/everruns/yolop/pull/566)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.15.1...v0.15.2
+
 ## [0.15.1] - 2026-08-15
 
 ### Highlights
