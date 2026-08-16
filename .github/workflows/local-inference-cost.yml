@@ -1,0 +1,88 @@
+# Measures what the `local-inference` feature costs: release binary size and
+# cold compile time, with and without it.
+#
+# Manual only. This deliberately builds twice from scratch, in separate target
+# directories and with no cache, because the point is the *cold* cost of each
+# configuration — a warm second build would report the incremental delta and
+# flatter the feature. That makes the job slow and expensive, so it is not
+# wired to push or pull_request; run it when the number matters (before a
+# release, or after a dependency bump that could move it).
+#
+# The result lands in the job summary. Copy it into
+# knowledge/specs/local-inference.md when it changes materially.
+name: Local Inference Cost
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Measure binary size and compile time
+    runs-on: ubuntu-latest
+    # Two cold release builds of a ~1000-crate tree; the default 6h cap is not
+    # generous here.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      # No Swatinem/rust-cache on purpose — see the header.
+
+      - name: Report available disk
+        run: df -h /
+
+      - name: Build without local-inference
+        id: baseline
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target-baseline
+        run: |
+          start=$(date +%s)
+          cargo build --release -p yolop --locked
+          echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+          echo "bytes=$(stat -c%s "$CARGO_TARGET_DIR/release/yolop")" >> "$GITHUB_OUTPUT"
+          # Reclaim before the second build: two release trees of this size do
+          # not both fit on a standard runner.
+          du -sh "$CARGO_TARGET_DIR"
+          rm -rf "$CARGO_TARGET_DIR"
+
+      - name: Build with local-inference
+        id: feature
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target-feature
+        run: |
+          start=$(date +%s)
+          cargo build --release -p yolop --locked --features local-inference
+          echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+          echo "bytes=$(stat -c%s "$CARGO_TARGET_DIR/release/yolop")" >> "$GITHUB_OUTPUT"
+          du -sh "$CARGO_TARGET_DIR"
+          rm -rf "$CARGO_TARGET_DIR"
+
+      - name: Summarize
+        env:
+          BASE_SECONDS: ${{ steps.baseline.outputs.seconds }}
+          BASE_BYTES: ${{ steps.baseline.outputs.bytes }}
+          FEAT_SECONDS: ${{ steps.feature.outputs.seconds }}
+          FEAT_BYTES: ${{ steps.feature.outputs.bytes }}
+        run: |
+          mib() { awk -v b="$1" 'BEGIN { printf "%.1f MiB", b / 1048576 }'; }
+          mins() { awk -v s="$1" 'BEGIN { printf "%d min %02d s", s / 60, s % 60 }'; }
+          ratio() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.2f×", a / b }'; }
+
+          {
+            echo "## \`local-inference\` cost"
+            echo
+            echo "Cold builds, \`ubuntu-latest\`, release profile, no cache."
+            echo
+            echo "| | Binary | Cold build |"
+            echo "|---|---|---|"
+            echo "| default features | $(mib "$BASE_BYTES") | $(mins "$BASE_SECONDS") |"
+            echo "| \`--features local-inference\` | $(mib "$FEAT_BYTES") | $(mins "$FEAT_SECONDS") |"
+            echo "| **delta** | **+$(mib "$((FEAT_BYTES - BASE_BYTES))") ($(ratio "$FEAT_BYTES" "$BASE_BYTES"))** | **+$(mins "$((FEAT_SECONDS - BASE_SECONDS))") ($(ratio "$FEAT_SECONDS" "$BASE_SECONDS"))** |"
+            echo
+            echo "Runner core count: $(nproc)."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -44,12 +44,38 @@ provider exists to answer that question with evidence rather than argument.
 
 ## Feature gate and distribution
 
-The engine adds ~258 crates to a ~763-crate tree and dominates build time — a
-`cargo check` with it goes from under a minute to over an hour on a small
-machine. The gate exists for that reason alone. It is *not* about toolchains
-(the default engine features are pure Rust, so an enabled build still needs no
-C/C++ compiler) and not about crates.io publishability (an optional dependency
-publishes fine).
+The engine dominates build time. The gate exists for that reason alone. It is
+*not* about toolchains (the default engine features are pure Rust, so an enabled
+build still needs no C/C++ compiler) and not about crates.io publishability (an
+optional dependency publishes fine).
+
+### Measured cost
+
+Dependency count is exact. The timings are from a 4-core container and are
+lower bounds, not benchmarks — they are recorded because the *order of
+magnitude* is what justifies the gate.
+
+| | Value | How |
+|---|---|---|
+| Crates in the default tree | 763 | `Cargo.lock` |
+| Crates the engine adds | +258 (+34%) | lockfile diff against a `mistralrs`-only probe |
+| Native-toolchain deps added | none | no `cc`/`cmake`/`bindgen`/`cudarc` in the default feature set |
+| `cargo check --features local-inference`, cold | >2 h | 4-core container |
+| `cargo check --features local-inference`, warm | ~6 min | same, deps cached |
+| `cargo build --release`, cold, **default features** | did not finish in ~9 h | same container, aborted in final LTO codegen |
+
+That last row is the honest state of the local measurement: the shipped release
+profile (`lto = "thin"`, `codegen-units = 1`) is beyond what a small machine
+completes in a working session, for the *baseline* let alone the feature build.
+
+**Binary-size impact is therefore still unmeasured.** Do not quote a figure for
+it until one exists.
+
+[`local-inference-cost.yml`](../../.github/workflows/local-inference-cost.yml)
+is the way to get both numbers: a manual workflow that builds each
+configuration cold, in its own target directory with no cache, and writes a
+size/time comparison to the job summary. Run it on a real runner and copy the
+result into the table above.
 
 Because compile cost lands on builders rather than users, the gate and the
 distribution point in opposite directions:
