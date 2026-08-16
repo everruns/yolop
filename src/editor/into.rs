@@ -20,6 +20,14 @@ pub struct PaseoIntoOptions {
 }
 
 #[derive(Debug)]
+pub struct BuzzIntoOptions {
+    pub harness_path: Option<PathBuf>,
+    pub agent_name: String,
+    pub command: PathBuf,
+    pub force: bool,
+}
+
+#[derive(Debug)]
 pub struct ZedIntoResult {
     pub settings_path: PathBuf,
     pub agent_name: String,
@@ -30,6 +38,14 @@ pub struct ZedIntoResult {
 #[derive(Debug)]
 pub struct PaseoIntoResult {
     pub settings_path: PathBuf,
+    pub agent_name: String,
+    pub command: String,
+    pub status: IntoStatus,
+}
+
+#[derive(Debug)]
+pub struct BuzzIntoResult {
+    pub harness_path: PathBuf,
     pub agent_name: String,
     pub command: String,
     pub status: IntoStatus,
@@ -74,7 +90,7 @@ pub fn into_zed(options: ZedIntoOptions) -> Result<ZedIntoResult> {
 
     if status != IntoStatus::Unchanged {
         let rendered = render_settings(&root, existing_text.as_deref(), "Zed")?;
-        write_file_atomically(&settings_path, rendered.as_bytes())?;
+        write_file_atomically(&settings_path, rendered.as_bytes(), "Zed settings")?;
     }
 
     Ok(ZedIntoResult {
@@ -123,7 +139,7 @@ pub fn into_paseo(options: PaseoIntoOptions) -> Result<PaseoIntoResult> {
 
     if status != IntoStatus::Unchanged {
         let rendered = render_settings(&root, existing_text.as_deref(), "Paseo")?;
-        write_file_atomically(&settings_path, rendered.as_bytes())?;
+        write_file_atomically(&settings_path, rendered.as_bytes(), "Paseo settings")?;
     }
 
     Ok(PaseoIntoResult {
@@ -131,6 +147,75 @@ pub fn into_paseo(options: PaseoIntoOptions) -> Result<PaseoIntoResult> {
         agent_name: options.agent_name,
         command,
         status,
+    })
+}
+
+pub fn into_buzz(options: BuzzIntoOptions) -> Result<BuzzIntoResult> {
+    if options.agent_name.trim().is_empty() {
+        bail!("agent harness name cannot be empty");
+    }
+
+    let harness_path = options
+        .harness_path
+        .unwrap_or_else(|| default_buzz_harness_path(&options.agent_name));
+    let command = path_to_json_string(&options.command)?;
+    let desired = buzz_harness(&options.agent_name, &command);
+    let existing_text = read_optional_settings(&harness_path, "Buzz")?;
+    let (root, status) = match existing_text.as_deref() {
+        None => (desired, IntoStatus::Created),
+        Some(text) => {
+            let mut current = parse_settings_or_empty(Some(text), &harness_path, "Buzz")?;
+            if current == desired {
+                (current, IntoStatus::Unchanged)
+            } else if options.force {
+                (desired, IntoStatus::Updated)
+            } else {
+                let before = current.clone();
+                let current_object = current.as_object_mut().context(
+                    "Buzz custom harness must be a JSON object; re-run with --force to replace it",
+                )?;
+                let desired_object = desired
+                    .as_object()
+                    .expect("desired Buzz harness is an object");
+                for (key, value) in desired_object {
+                    if key != "env" {
+                        current_object.insert(key.clone(), value.clone());
+                    }
+                }
+                if !current_object.contains_key("env") {
+                    current_object.insert("env".to_string(), json!({}));
+                }
+                let status = if current == before {
+                    IntoStatus::Unchanged
+                } else {
+                    IntoStatus::Updated
+                };
+                (current, status)
+            }
+        }
+    };
+
+    if status != IntoStatus::Unchanged {
+        let rendered = render_settings(&root, None, "Buzz")?;
+        write_file_atomically(&harness_path, rendered.as_bytes(), "Buzz custom harness")?;
+    }
+
+    Ok(BuzzIntoResult {
+        harness_path,
+        agent_name: options.agent_name,
+        command,
+        status,
+    })
+}
+
+fn buzz_harness(agent_name: &str, command: &str) -> Value {
+    json!({
+        "name": agent_name,
+        "display_name": agent_name,
+        "description": "Yolop coding agent",
+        "command": command,
+        "args": ["--acp"],
+        "env": {}
     })
 }
 
@@ -198,6 +283,14 @@ fn merge_agent_server(
     } else {
         IntoStatus::Unchanged
     })
+}
+
+fn default_buzz_harness_path(agent_name: &str) -> PathBuf {
+    let base = dirs::data_dir()
+        .unwrap_or_else(|| dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")));
+    base.join("xyz.block.buzz.app")
+        .join("custom_harnesses")
+        .join(format!("{agent_name}.json"))
 }
 
 fn default_paseo_settings_path() -> PathBuf {
@@ -403,16 +496,16 @@ fn strip_trailing_commas(text: &str) -> String {
     out
 }
 
-fn write_file_atomically(path: &Path, content: &[u8]) -> Result<()> {
+fn write_file_atomically(path: &Path, content: &[u8], description: &str) -> Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
-        .with_context(|| format!("create Zed settings dir {}", parent.display()))?;
+        .with_context(|| format!("create {description} dir {}", parent.display()))?;
     let file_name = path
         .file_name()
-        .with_context(|| format!("Zed settings path has no file name: {}", path.display()))?;
+        .with_context(|| format!("{description} path has no file name: {}", path.display()))?;
     let mut tmp_name = std::ffi::OsString::from(".");
     tmp_name.push(file_name);
     tmp_name.push(format!(".tmp.{}", std::process::id()));
@@ -424,11 +517,11 @@ fn write_file_atomically(path: &Path, content: &[u8]) -> Result<()> {
             .create(true)
             .truncate(true)
             .open(&tmp_path)
-            .with_context(|| format!("open temp Zed settings {}", tmp_path.display()))?;
+            .with_context(|| format!("open temp {description} {}", tmp_path.display()))?;
         file.write_all(content)
-            .with_context(|| format!("write temp Zed settings {}", tmp_path.display()))?;
+            .with_context(|| format!("write temp {description} {}", tmp_path.display()))?;
         file.sync_all()
-            .with_context(|| format!("sync temp Zed settings {}", tmp_path.display()))?;
+            .with_context(|| format!("sync temp {description} {}", tmp_path.display()))?;
         Ok(())
     })();
     if let Err(err) = write_result {
@@ -438,7 +531,7 @@ fn write_file_atomically(path: &Path, content: &[u8]) -> Result<()> {
     #[cfg(windows)]
     if path.exists() {
         std::fs::remove_file(path)
-            .with_context(|| format!("remove existing Zed settings {}", path.display()))?;
+            .with_context(|| format!("remove existing {description} {}", path.display()))?;
     }
     std::fs::rename(&tmp_path, path)
         .with_context(|| format!("rename {} -> {}", tmp_path.display(), path.display()))?;
@@ -465,6 +558,64 @@ mod tests {
             command: PathBuf::from(command),
             force,
         })
+    }
+
+    fn into_buzz_at(path: PathBuf, command: &str, force: bool) -> Result<BuzzIntoResult> {
+        into_buzz(BuzzIntoOptions {
+            harness_path: Some(path),
+            agent_name: "yolop".to_string(),
+            command: PathBuf::from(command),
+            force,
+        })
+    }
+
+    #[test]
+    fn buzz_into_creates_custom_harness() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("custom_harnesses/yolop.json");
+
+        let result = into_buzz_at(path.clone(), "/bin/yolop", false).expect("into");
+
+        assert_eq!(result.status, IntoStatus::Created);
+        let value: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "name": "yolop",
+                "display_name": "yolop",
+                "description": "Yolop coding agent",
+                "command": "/bin/yolop",
+                "args": ["--acp"],
+                "env": {}
+            })
+        );
+    }
+
+    #[test]
+    fn buzz_into_updates_managed_fields_and_preserves_env_and_extensions() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("yolop.json");
+        std::fs::write(&path, r#"{"name":"old","display_name":"Old","description":"Old","command":"old","args":["old"],"env":{"API_KEY":"keep"},"icon":"keep"}"#).unwrap();
+
+        let result = into_buzz_at(path.clone(), "/bin/yolop", false).expect("into");
+
+        assert_eq!(result.status, IntoStatus::Updated);
+        let value: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(value["command"], "/bin/yolop");
+        assert_eq!(value["args"], json!(["--acp"]));
+        assert_eq!(value["env"]["API_KEY"], "keep");
+        assert_eq!(value["icon"], "keep");
+    }
+
+    #[test]
+    fn buzz_into_is_idempotent_with_user_env() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("yolop.json");
+        std::fs::write(&path, r#"{"name":"yolop","display_name":"yolop","description":"Yolop coding agent","command":"/bin/yolop","args":["--acp"],"env":{"API_KEY":"keep"}}"#).unwrap();
+
+        let result = into_buzz_at(path, "/bin/yolop", false).expect("into");
+
+        assert_eq!(result.status, IntoStatus::Unchanged);
     }
 
     #[test]
