@@ -877,11 +877,19 @@ pub(crate) fn setup_panel_rect(area: Rect) -> Rect {
 /// Option rows the inline setup sheet can show for the provider list.
 ///
 /// [`setup_panel_rect`] caps the sheet at 18 rows; two go to the border and
-/// five to the title, hint, spacer, trailing spacer, and footer, leaving nine.
-/// Overflowing this silently clips the footer off the bottom of the sheet, so
-/// the list is windowed instead. The full-screen renderer has no such limit —
-/// [`setup_picker`] hands the options to a scrolling `SelectList`.
-const INLINE_PROVIDER_ROWS: usize = 9;
+/// four to the title, hint, spacer, and footer, leaving ten. Overflowing this
+/// silently clips the footer off the bottom, so the list is windowed instead.
+///
+/// Ten is exactly the current provider count, and deliberately so: windowing is
+/// the safety net, not the normal path. A scrolled list hides whichever
+/// providers fall outside it, including their connection status, which is the
+/// main thing the picker exists to show. If an eleventh provider arrives,
+/// prefer buying back a row (the hint line is the obvious candidate) over
+/// letting the list scroll by default.
+///
+/// The full-screen renderer has no such limit — [`setup_picker`] hands the
+/// options to a scrolling `SelectList` with a scrollbar.
+const INLINE_PROVIDER_ROWS: usize = 10;
 
 /// Window a `len`-item list down to `capacity` rows, keeping `selected` in
 /// view and centered where possible. A list that already fits is untouched.
@@ -923,7 +931,8 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
                 }
                 lines.push(setup_row(idx == *selected, idx + 1, option.label, &hint));
             }
-            lines.push(Line::from(""));
+            // No spacer before the footer here, unlike the other steps: that
+            // row is worth more as a tenth provider than as whitespace.
             lines.push(setup_footer(
                 "Enter select · c configure key/URL · ↑/↓ move · Esc cancel",
             ));
@@ -2463,5 +2472,23 @@ mod window_tests {
         // never exceeds what `setup_panel_rect` leaves room for.
         let window = scroll_window(PROVIDER_OPTIONS.len(), 0, INLINE_PROVIDER_ROWS);
         assert!(window.len() <= INLINE_PROVIDER_ROWS);
+    }
+
+    #[test]
+    fn every_provider_is_visible_without_scrolling() {
+        // Scrolling hides providers *and their connection status*, which is the
+        // picker's whole job — a user with a saved OpenAI key must see it
+        // regardless of which row happens to be selected. Windowing exists for
+        // overflow, not as the normal path, so the list must fit outright.
+        assert!(
+            PROVIDER_OPTIONS.len() <= INLINE_PROVIDER_ROWS,
+            "{} providers vs {INLINE_PROVIDER_ROWS} rows: buy back a chrome line \
+             rather than letting the picker scroll by default",
+            PROVIDER_OPTIONS.len()
+        );
+        for selected in 0..PROVIDER_OPTIONS.len() {
+            let window = scroll_window(PROVIDER_OPTIONS.len(), selected, INLINE_PROVIDER_ROWS);
+            assert_eq!(window, 0..PROVIDER_OPTIONS.len(), "selected={selected}");
+        }
     }
 }

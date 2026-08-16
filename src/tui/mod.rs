@@ -9622,9 +9622,10 @@ mod tests {
             !rows.iter().any(|line| line.contains("recommended")),
             "setup should not recommend a specific provider: {rows:?}"
         );
-        // The provider list outgrew the inline sheet, so it windows rather than
-        // clipping: the footer must survive even though the tail of the list is
-        // scrolled out of view at rest.
+        assert!(
+            rows.iter().any(|line| line.contains("Offline demo mode")),
+            "last provider choice should not be clipped: {rows:?}"
+        );
         assert!(
             rows.iter().any(|line| line.contains("Esc cancel")),
             "footer should not be clipped: {rows:?}"
