@@ -215,8 +215,8 @@ fn buzz_harness(agent_name: &str, command: &str) -> Value {
         "command": command,
         "args": ["--acp"],
         "env": {},
-        "installInstructionsUrl": "https://github.com/everruns/yolop#install",
-        "installHint": "Install Yolop, then run `yolop into buzz`."
+        "installInstructionsUrl": "https://everruns.com/yolop",
+        "installHint": "brew install everruns/tap/yolop"
     })
 }
 
@@ -587,8 +587,8 @@ mod tests {
                 "command": "/bin/yolop",
                 "args": ["--acp"],
                 "env": {},
-                "installInstructionsUrl": "https://github.com/everruns/yolop#install",
-                "installHint": "Install Yolop, then run `yolop into buzz`."
+                "installInstructionsUrl": "https://everruns.com/yolop",
+                "installHint": "brew install everruns/tap/yolop"
             })
         );
     }
@@ -613,7 +613,7 @@ mod tests {
     fn buzz_into_is_idempotent_with_user_env() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("yolop.json");
-        std::fs::write(&path, r#"{"id":"yolop","label":"yolop","command":"/bin/yolop","args":["--acp"],"env":{"API_KEY":"keep"},"installInstructionsUrl":"https://github.com/everruns/yolop#install","installHint":"Install Yolop, then run `yolop into buzz`."}"#).unwrap();
+        std::fs::write(&path, r#"{"id":"yolop","label":"yolop","command":"/bin/yolop","args":["--acp"],"env":{"API_KEY":"keep"},"installInstructionsUrl":"https://everruns.com/yolop","installHint":"brew install everruns/tap/yolop"}"#).unwrap();
 
         let result = into_buzz_at(path, "/bin/yolop", false).expect("into");
 
