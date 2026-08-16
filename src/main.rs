@@ -414,6 +414,24 @@ fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
 /// Resolution order: explicit `--provider` flag > persisted settings >
 /// env-var auto-detection. Model and reasoning-effort flags layer on top
 /// of whichever base was chosen.
+/// Reject a provider this build cannot serve, before the runtime starts.
+///
+/// `local` resolves in every build so the picker and settings stay
+/// feature-independent, but only a `local-inference` build registers a driver
+/// for it. Without this the failure surfaces mid-turn as the driver registry's
+/// "No driver registered for provider type" — an internal message that tells
+/// the user nothing they can act on.
+fn ensure_provider_is_built_in(provider: &ProviderChoice) -> Result<()> {
+    if matches!(provider, ProviderChoice::Local { .. }) && !cfg!(feature = "local-inference") {
+        anyhow::bail!(
+            "this build has no local inference engine, so `--provider local` cannot run. \
+             Install a release build (`brew install everruns/tap/yolop`) or build with \
+             `--features local-inference`."
+        );
+    }
+    Ok(())
+}
+
 fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<String>) {
     let snapshot = settings.snapshot();
     let cli_reasoning_effort = runtime::normalize_reasoning_effort(cli.reasoning_effort.clone());
@@ -645,6 +663,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
     let effective_sandbox_mode =
         sandbox_mode_override.unwrap_or_else(|| settings.snapshot().sandbox_mode());
     let (mut provider, mut notes) = pick_provider(&cli, &settings);
+    ensure_provider_is_built_in(&provider)?;
     let snapshot = settings.snapshot();
     let (reconciled, catalog_notes) =
         capabilities::model_discovery::reconcile_provider_with_catalog(provider, &snapshot).await;
@@ -2182,6 +2201,35 @@ mod tests {
             inline: false,
             theme: None,
             sandbox: false,
+        }
+    }
+
+    #[test]
+    fn a_build_without_the_engine_rejects_the_local_provider_up_front() {
+        let local = ProviderChoice::Local {
+            model: "Qwen/Qwen3-8B".to_string(),
+        };
+        let result = ensure_provider_is_built_in(&local);
+
+        if cfg!(feature = "local-inference") {
+            assert!(result.is_ok(), "an engine build must accept `local`");
+        } else {
+            // The point is the message: the registry's own failure names an
+            // internal driver id and offers the user no way forward.
+            let err = result.expect_err("a build without the engine must reject `local`");
+            let message = err.to_string();
+            assert!(message.contains("--features local-inference"), "{message}");
+            assert!(message.contains("brew install"), "{message}");
+        }
+    }
+
+    #[test]
+    fn providers_other_than_local_are_never_gated_on_the_engine_feature() {
+        for provider in [
+            ProviderChoice::Sim,
+            ProviderChoice::default_for_provider_name("openai").expect("openai"),
+        ] {
+            assert!(ensure_provider_is_built_in(&provider).is_ok());
         }
     }
 

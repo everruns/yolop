@@ -42,11 +42,16 @@ pub fn split_spec(spec: &str) -> (&str, Option<&str>) {
 
 /// On-disk directory name for a repo.
 ///
-/// `/` is the only character a Hugging Face repo id can carry that would nest
-/// or escape a directory, so mapping it to `__` keeps every repo a single flat
-/// entry that [`installed`] can enumerate without walking a tree.
+/// Maps `/` to `__` so every repo is one flat entry that [`installed`] can
+/// enumerate without walking a tree. `\` gets the same treatment because it is
+/// a separator on Windows, and a leading `.` is escaped so a repo named `..`
+/// cannot name a parent directory.
 pub fn dir_name(repo: &str) -> String {
-    repo.replace('/', "__")
+    let flattened = repo.replace(['/', '\\'], "__");
+    match flattened.strip_prefix('.') {
+        Some(rest) => format!("_{rest}"),
+        None => flattened,
+    }
 }
 
 /// Inverse of [`dir_name`], for reporting what is installed.
@@ -59,6 +64,45 @@ pub fn repo_dir(repo: &str) -> Result<PathBuf> {
     let root =
         store_root().ok_or_else(|| anyhow!("no platform data directory for the model store"))?;
     Ok(root.join(dir_name(repo)))
+}
+
+/// Join a repo-relative filename onto `dir`, refusing anything that could
+/// land outside it.
+///
+/// Filenames are not trusted input. The GGUF half of a spec comes from the
+/// command line, and for a safetensors repo the list comes from the Hugging
+/// Face API — a repo can advertise a sibling called `../../../.bashrc`, and
+/// a plain `dir.join(..)` would happily write there. Only ordinary path
+/// components are allowed: no root, no prefix, no `..`, and the joined result
+/// must still be under `dir`.
+#[cfg_attr(not(feature = "local-inference"), allow(dead_code))]
+pub fn safe_join(dir: &Path, filename: &str) -> Result<PathBuf> {
+    use std::path::Component;
+
+    if filename.trim().is_empty() {
+        return Err(anyhow!("empty filename in model repo listing"));
+    }
+    let relative = Path::new(filename);
+    for component in relative.components() {
+        match component {
+            Component::Normal(_) => {}
+            _ => {
+                return Err(anyhow!(
+                    "refusing model file '{filename}': only plain relative paths are allowed"
+                ));
+            }
+        }
+    }
+
+    let joined = dir.join(relative);
+    // Belt and braces: the component check already rejects traversal, but a
+    // symlinked parent or an odd platform encoding should not slip past.
+    if !joined.starts_with(dir) {
+        return Err(anyhow!(
+            "refusing model file '{filename}': it resolves outside the model store"
+        ));
+    }
+    Ok(joined)
 }
 
 /// A repo present in the store.
@@ -112,7 +156,7 @@ pub fn is_installed(spec: &str) -> bool {
         return false;
     };
     match file {
-        Some(file) => dir.join(file).is_file(),
+        Some(file) => safe_join(&dir, file).is_ok_and(|path| path.is_file()),
         None => has_extension(&dir, "safetensors"),
     }
 }
@@ -201,6 +245,53 @@ mod tests {
         // A nested name would put the repo outside the store's single level and
         // hide it from `installed`.
         assert!(!dir_name("Qwen/Qwen3-8B").contains('/'));
+    }
+
+    #[test]
+    fn a_repo_id_cannot_escape_the_store_directory() {
+        // Repo ids reach the filesystem as a single directory name; a
+        // separator or a leading dot must not turn one into a parent.
+        for hostile in ["../../etc", "..\\..\\windows", "..", "a/../../b"] {
+            let name = dir_name(hostile);
+            assert!(!name.contains('/'), "{hostile} -> {name}");
+            assert!(!name.contains('\\'), "{hostile} -> {name}");
+            assert_ne!(name, "..", "{hostile} -> {name}");
+            assert!(!name.starts_with('.'), "{hostile} -> {name}");
+        }
+    }
+
+    #[test]
+    fn hostile_filenames_are_refused_rather_than_joined() {
+        // The safetensors file list comes from the remote repo, so a malicious
+        // repo could advertise a sibling that writes outside the store.
+        let dir = Path::new("/store/repo");
+        for hostile in [
+            "../../../.bashrc",
+            "/etc/passwd",
+            "a/../../../b",
+            "..",
+            "",
+            "   ",
+        ] {
+            assert!(
+                safe_join(dir, hostile).is_err(),
+                "should have refused {hostile:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_filenames_still_join() {
+        let dir = Path::new("/store/repo");
+        assert_eq!(
+            safe_join(dir, "model.safetensors").expect("plain name"),
+            Path::new("/store/repo/model.safetensors")
+        );
+        // Sharded repos legitimately nest one level.
+        assert_eq!(
+            safe_join(dir, "shards/model-00001.safetensors").expect("nested name"),
+            Path::new("/store/repo/shards/model-00001.safetensors")
+        );
     }
 
     #[test]

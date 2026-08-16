@@ -225,7 +225,9 @@ pub async fn pull(spec: &str, sink: Arc<Mutex<dyn ProgressSink>>) -> Result<Pull
 
     let mut summary = PullSummary::default();
     for (filename, optional) in wanted {
-        let target = dest.join(&filename);
+        // `filename` is untrusted: it is either the `::` half of a CLI spec or
+        // a name the remote repo listing supplied.
+        let target = super::safe_join(&dest, &filename)?;
         if target.is_file() {
             continue;
         }
