@@ -268,6 +268,16 @@ That adds a custom ACP agent server to `~/.config/zed/settings.json` using the
 current yolop executable (preserving any existing `env` on re-run). Then pick
 **yolop** in Zed's agent panel.
 
+To set up Buzz Desktop:
+
+```bash
+yolop into buzz
+```
+
+That adds a custom harness under Buzz's application data directory using the
+current yolop executable and `--acp`. Re-running updates the managed fields while
+preserving any custom `env` values and extension fields.
+
 ## MCP servers
 
 Yolop pulls in extra tools from MCP servers, remote (Streamable **HTTP**) and
@@ -341,6 +351,7 @@ act of consent. MCP tools run autonomously like the rest of yolop's tools.
 | ------------------ | ----------------------------------------------- |
 | `yolop version`    | Print yolop, commit, and runtime versions       |
 | `yolop into zed`   | Configure yolop as a custom ACP agent in Zed    |
+| `yolop into buzz`  | Configure yolop as a custom ACP harness in Buzz |
 | `yolop mcp …`      | Manage MCP servers (see [MCP servers](#mcp-servers)) |
 
 `RUST_LOG` is honored for the underlying tracing layer. Non-interactive modes

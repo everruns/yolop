@@ -265,6 +265,27 @@ The binary itself is smoke-tested over real OS pipes in
 (`acp_openai_handshake_smoke`, which skips itself when no API key is present)
 documents the live path.
 
+### Real-life testing in Buzz Desktop
+
+Register the current yolop executable as a custom Buzz ACP harness:
+
+```bash
+yolop into buzz
+```
+
+This writes `yolop.json` below Buzz's platform application-data
+`custom_harnesses` directory and launches yolop with `--acp`. The generated
+JSON follows Buzz's `CustomHarnessConfig` contract: `id`, `label`, `command`,
+`args`, `env`, `installInstructionsUrl`, and `installHint`. The path and schema
+are sourced from Buzz's loader and validator at commit
+[`d8281b9`](https://github.com/block/buzz/blob/d8281b9c93395f15d55091b131bb2747a0a3da8a/desktop/src-tauri/src/managed_agents/custom_harnesses.rs#L11-L64).
+Buzz's Tauri identifier is `xyz.block.buzz.app`, which determines the platform
+application-data directory.
+
+Re-running updates Yolop-owned fields while preserving user `env` values and
+unknown extension fields. Pass `--force` to replace the whole document. Restart
+Buzz Desktop after changing the harness so it is rediscovered.
+
 ### Real-life testing in an editor
 
 Configure Zed to launch yolop as a custom agent:
