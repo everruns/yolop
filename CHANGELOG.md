@@ -19,6 +19,7 @@ tags the version and publishes to crates.io and the Homebrew tap.
 - Malformed tool calls no longer reach execution — every provider's model-authored arguments are validated against the authoritative JSON Schema first, and `progress_checkpoint` stays callable when the progress gate demands it.
 - ACP recovers provider authentication mid-session rather than stalling on an expired credential.
 - The tmux gallery render is now gated on every PR by a real terminal implementation, so the release spec's terminal matrix reserves the human walk for GUI emulators.
+- Tracing output no longer scribbles over terminal rows the TUI owns.
 
 ### Breaking Changes
 
@@ -26,6 +27,7 @@ tags the version and publishes to crates.io and the Homebrew tap.
 
 ### What's Changed
 
+* fix(tui): keep tracing off owned terminal rows ([#575](https://github.com/everruns/yolop/pull/575)) by @chaliy
 * chore(deps): bump tuika to 0.9 and companion crates ([#573](https://github.com/everruns/yolop/pull/573)) by @chaliy
 * fix(tools): repair malformed tool call arguments ([#572](https://github.com/everruns/yolop/pull/572)) by @chaliy
 * feat(models): add Terra and Luna variants ([#571](https://github.com/everruns/yolop/pull/571)) by @chaliy
