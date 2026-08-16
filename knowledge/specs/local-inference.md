@@ -51,31 +51,24 @@ optional dependency publishes fine).
 
 ### Measured cost
 
-Dependency count is exact. The timings are from a 4-core container and are
-lower bounds, not benchmarks — they are recorded because the *order of
-magnitude* is what justifies the gate.
+Only the dependency counts are measured. They come from resolving a
+`mistralrs`-only probe crate and diffing its lockfile against this one.
 
-| | Value | How |
-|---|---|---|
-| Crates in the default tree | 763 | `Cargo.lock` |
-| Crates the engine adds | +258 (+34%) | lockfile diff against a `mistralrs`-only probe |
-| Native-toolchain deps added | none | no `cc`/`cmake`/`bindgen`/`cudarc` in the default feature set |
-| `cargo check --features local-inference`, cold | >2 h | 4-core container |
-| `cargo check --features local-inference`, warm | ~6 min | same, deps cached |
-| `cargo build --release`, cold, **default features** | did not finish in ~9 h | same container, aborted in final LTO codegen |
+| | Value |
+|---|---|
+| Crates in the default tree | 763 |
+| Crates the engine adds | +258 (+34%) |
+| Native-toolchain deps added | none — no `cc`/`cmake`/`bindgen`/`cudarc` in the default feature set |
 
-That last row is the honest state of the local measurement: the shipped release
-profile (`lto = "thin"`, `codegen-units = 1`) is beyond what a small machine
-completes in a working session, for the *baseline* let alone the feature build.
-
-**Binary-size impact is therefore still unmeasured.** Do not quote a figure for
-it until one exists.
+**Compile time and binary size are both unmeasured. Do not quote a figure for
+either until one exists.** The qualitative claim that the engine dominates build
+time rests on the crate count and on `candle`'s generic-heavy kernels meeting
+`lto = "thin"` with `codegen-units = 1`; it has not been timed.
 
 [`local-inference-cost.yml`](../../.github/workflows/local-inference-cost.yml)
-is the way to get both numbers: a manual workflow that builds each
-configuration cold, in its own target directory with no cache, and writes a
-size/time comparison to the job summary. Run it on a real runner and copy the
-result into the table above.
+produces both numbers: a manual workflow that builds each configuration cold, in
+its own target directory with no cache, and writes a size/time comparison to the
+job summary. Run it and fill in the table above from the result.
 
 Because compile cost lands on builders rather than users, the gate and the
 distribution point in opposite directions:
