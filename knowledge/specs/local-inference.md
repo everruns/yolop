@@ -51,24 +51,34 @@ optional dependency publishes fine).
 
 ### Measured cost
 
-Only the dependency counts are measured. They come from resolving a
-`mistralrs`-only probe crate and diffing its lockfile against this one.
+Cold release builds (the shipped profile), separate target directories, no
+cache, 4-core container. Crate counts come from diffing a `mistralrs`-only
+probe lockfile against this one.
 
-| | Value |
-|---|---|
-| Crates in the default tree | 763 |
-| Crates the engine adds | +258 (+34%) |
-| Native-toolchain deps added | none — no `cc`/`cmake`/`bindgen`/`cudarc` in the default feature set |
+| | Default | `--features local-inference` | Delta |
+|---|---|---|---|
+| Crates | 763 | 1021 | +258 (+34%) |
+| Cold release build | 12 min 35 s | 29 min 09 s | +16 min 34 s (2.32×) |
+| Binary | 96.3 MiB | 137.6 MiB | +41.3 MiB (1.43×) |
+| Native-toolchain deps | none | none | — |
 
-**Compile time and binary size are both unmeasured. Do not quote a figure for
-either until one exists.** The qualitative claim that the engine dominates build
-time rests on the crate count and on `candle`'s generic-heavy kernels meeting
-`lto = "thin"` with `codegen-units = 1`; it has not been timed.
-
+Absolute times are machine-specific; the ratios are the durable part.
 [`local-inference-cost.yml`](../../.github/workflows/local-inference-cost.yml)
-produces both numbers: a manual workflow that builds each configuration cold, in
-its own target directory with no cache, and writes a size/time comparison to the
-job summary. Run it and fill in the table above from the result.
+reproduces this on a runner.
+
+The numbers are more modest than the crate count suggests, and they change where
+the gate earns its keep:
+
+- **Compile time justifies the gate for people who build from source.**
+  `cargo install yolop` roughly doubles, and a contributor's cold build pays the
+  same. That is worth avoiding for the majority who will never select `local`.
+- **Binary size is not something the gate fixes.** The release binaries are
+  built with the feature on, so every Homebrew install and upgrade carries the
+  +41 MiB whether or not the user ever runs a local model. If that trade stops
+  being worth it — and for an experiment with no eval numbers behind it, that is
+  a fair question — the lever is
+  [`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml), not the
+  feature default.
 
 Because compile cost lands on builders rather than users, the gate and the
 distribution point in opposite directions:
