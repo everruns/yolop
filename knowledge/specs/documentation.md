@@ -102,8 +102,8 @@ resolve consistently.
 
 ## Capture toolchain
 
-Reproducing any VHS capture — the feature guides above and the README hero
-below — needs the same tools on `PATH`:
+Reproducing any VHS capture, the feature guides above and the README hero
+below, needs the same tools on `PATH`:
 
 - **VHS**, which drives **ttyd** and **ffmpeg** (both must be installed
   separately) and renders frames through a headless Chromium it fetches via
@@ -115,7 +115,7 @@ Install:
   `apt-get install ttyd ffmpeg`).
 - VHS ships prebuilt binaries; when a release download is unavailable, build it
   from source with `go install github.com/charmbracelet/vhs@latest` (this needs
-  a Go toolchain new enough for VHS — `GOTOOLCHAIN=auto` lets Go fetch one).
+  a Go toolchain new enough for VHS, `GOTOOLCHAIN=auto` lets Go fetch one).
 
 In a container or as root, set `VHS_NO_SANDBOX=true`; to reuse an already
 installed browser instead of the `go-rod` download, point `ROD_BROWSER_BIN` at
@@ -126,7 +126,7 @@ recording, not in committed tapes, so tapes stay portable.
 fails silently: Chromium ignores fontconfig aliases for an unknown family and
 substitutes a *proportional* default, so every glyph lands in a monospace cell
 with visible gaps. macOS-only families therefore need a fallback that exists
-elsewhere — tapes name `Menlo, DejaVu Sans Mono, monospace`, which keeps Menlo
+elsewhere, tapes name `Menlo, DejaVu Sans Mono, monospace`, which keeps Menlo
 on macOS and stays monospaced on Linux. Inspect a rendered frame before
 committing a capture; the failure looks like wide letter-spacing, not a crash.
 
@@ -164,7 +164,7 @@ The fixture and prompt should bound model work rather than scripting model
 output. Prefer exact dependency versions, existing dependencies, a small test
 surface, and low reasoning effort. If the live turn becomes slow, simplify
 those inputs before increasing the visible wait. Tune `PlaybackSpeed` in the
-tape—not by rotating or trimming the finished GIF—to target about one minute
+tape, not by rotating or trimming the finished GIF, to target about one minute
 and less than 5 MiB.
 
 Before committing, inspect both endpoints and the asset metadata:

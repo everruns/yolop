@@ -1,6 +1,6 @@
 ---
 name: ast-grep
-description: Write effective ast-grep patterns for the built-in `ast_grep` structural-search tool and `ast_edit` rewrites. Use when searching or refactoring code by shape rather than text — call expressions, function/struct declarations, wrappers, imports — or when a pattern returns nothing or the wrong nodes.
+description: Write effective ast-grep patterns for the built-in `ast_grep` structural-search tool and `ast_edit` rewrites. Use when searching or refactoring code by shape rather than text, call expressions, function/struct declarations, wrappers, imports, or when a pattern returns nothing or the wrong nodes.
 user-invocable: true
 ---
 
@@ -9,7 +9,7 @@ user-invocable: true
 Yolop ships built-in `ast_grep` (read-only search, default harness) and `ast_edit`
 (pattern/replacement rewrites, opt-in via `[[capabilities]] ref = "ast_edit"` in
 `settings.toml`) backed by the `ast-grep` engine compiled into the binary. This is **not** the
-`sg` command-line tool — there is no `sg run`/`sg scan`, no rule YAML files, and no
+`sg` command-line tool, there is no `sg run`/`sg scan`, no rule YAML files, and no
 `--rewrite` CLI. Drive the tools directly with their arguments.
 
 ## When to reach for it
@@ -23,7 +23,7 @@ the area:
 - Anywhere lexical search drowns in comments, strings, or false matches.
 
 Use `ast_edit` when the same ast-grep pattern should be **rewritten** everywhere it
-matches — rename a call shape, swap an import path, delete a wrapper, modernize an
+matches, rename a call shape, swap an import path, delete a wrapper, modernize an
 idiom. Always confirm the pattern with `ast_grep` first, then preview with `ast_edit`
 before applying.
 
@@ -71,12 +71,12 @@ pattern-compile noise, and is faster.
 
 Patterns are real code with metavariables standing in for sub-trees:
 
-- `$NAME` — matches exactly one named node (an identifier, expression, etc.).
+- `$NAME`, matches exactly one named node (an identifier, expression, etc.).
   Upper-case, may include digits/underscores. Reusing the same name requires the
   matches to be identical.
-- `$$$ARGS` — matches zero or more nodes (argument lists, statement bodies,
+- `$$$ARGS`, matches zero or more nodes (argument lists, statement bodies,
   parameter lists). Use it wherever a variable-length sequence appears.
-- `$_` / `$$$` — anonymous wildcards when you don't need the capture text back.
+- `$_` / `$$$`, anonymous wildcards when you don't need the capture text back.
 
 Captured names come back in each match's `captures` array; the matched node's
 `kind`, `text`, and line/column come back too. Use `kind` to confirm you matched
@@ -116,12 +116,12 @@ language=go      pattern: if err != nil { $$$BODY }
 
 A valid-but-wrong pattern matches zero nodes silently. Work it like this:
 
-1. **Check `pattern_error_languages`** in the result — a non-empty entry means
+1. **Check `pattern_error_languages`** in the result, a non-empty entry means
    the pattern failed to *compile* for that language (usually a syntax slip or
    the wrong `language`), not that nothing matched.
 2. **Make the pattern a complete, parseable fragment.** ast-grep parses the
    pattern with the same grammar as source, so it must stand on its own. Partial
-   fragments like `fn $NAME(` won't parse — write `fn $NAME($$$A) { $$$B }`.
+   fragments like `fn $NAME(` won't parse, write `fn $NAME($$$A) { $$$B }`.
 3. **Loosen with `$$$`.** Replace fixed argument/body content with `$$$` to stop
    over-constraining; tighten back once you get hits.
 4. **Confirm `kind`.** If matches come back as the wrong node kind, your pattern

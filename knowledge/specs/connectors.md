@@ -10,8 +10,8 @@ Status: v1 implemented (Daytona).
 
 ## Why
 
-Yolop sandboxes arbitrary local shell commands by default. Some tasks — untrusted
-code, heavy builds, network experiments — should run in an isolated remote
+Yolop sandboxes arbitrary local shell commands by default. Some tasks, untrusted
+code, heavy builds, network experiments, should run in an isolated remote
 environment instead. [Daytona](https://www.daytona.io/) provides cloud Linux
 sandboxes; upstream ships the integration as `everruns-integrations-daytona`.
 
@@ -35,7 +35,7 @@ implementations. Daytona is registered by default; new providers add a
 
 ### Runtime wiring
 
-- **`connectors`** is enabled on the default harness — always available
+- **`connectors`** is enabled on the default harness, always available
   for listing providers and saving credentials.
 - **`daytona`** and **`session_storage`** are registered but **not** on the
   default harness. Opt in through the generic capability config in
@@ -94,7 +94,7 @@ docs for the full tool reference.
 
 ## See also
 
-- [`knowledge/specs/configuration.md`](./configuration.md) — `[[capabilities]]` harness overrides
-- [`knowledge/specs/sandboxing.md`](./sandboxing.md) — common execution-provider boundary
-- [`knowledge/specs/maintenance.md`](./maintenance.md) — host threat surface
+- [`knowledge/specs/configuration.md`](./configuration.md), `[[capabilities]]` harness overrides
+- [`knowledge/specs/sandboxing.md`](./sandboxing.md), common execution-provider boundary
+- [`knowledge/specs/maintenance.md`](./maintenance.md), host threat surface
 - [Everruns Daytona integration](https://docs.everruns.com/integrations/daytona/)

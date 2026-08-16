@@ -42,7 +42,7 @@ published as a side effect of a `yolop` release only when its in-tree version
 isn't already on crates.io (see § `publish.yml`). Extension authors consume it
 on its own (`cargo add yolop-yep`).
 
-The TUI toolkit yolop renders through — `tuika` and `tuika-codeformatters` — is
+The TUI toolkit yolop renders through, `tuika` and `tuika-codeformatters`, is
 **not** released from here. It ships from
 [`everruns/tuika`](https://github.com/everruns/tuika) on its own schedule, and a
 yolop release simply depends on whatever version is already live. A yolop
@@ -77,7 +77,7 @@ registries silently failed.
    - "Cut release v0.2.0"
    - "Prepare a patch release"
 2. **Review the PR** the agent opens, including its publish-readiness report.
-3. **Squash and merge** — CI handles the GitHub Release, crates.io publish,
+3. **Squash and merge**: CI handles the GitHub Release, crates.io publish,
    binary builds, and Homebrew formula update.
 4. **Ask the agent to monitor** (or let it auto-monitor if subscribed to PR
    activity) until both registries report the new version.
@@ -110,7 +110,7 @@ crates.io requires it live first. `publish.yml` derives the dependency-first
 order from Cargo metadata (currently `yolop-yep`, then `yolop`) and skips
 versions already live. A consequence: `cargo publish --dry-run -p yolop` can
 fail locally until a new `yolop-yep` version is on crates.io. That is expected,
-not a broken release — `yolop-yep` is dry-run locally and CI validates `yolop`
+not a broken release, `yolop-yep` is dry-run locally and CI validates `yolop`
 after it goes live.
 
 ## CI Automation
@@ -159,14 +159,14 @@ The agent verifies before opening the release PR:
 - [ ] `CHANGELOG.md` has an entry for every commit since the last release.
 - [ ] `Cargo.toml` and `Cargo.lock` both read `X.Y.Z`.
 - [ ] `cargo publish --dry-run` succeeds for each library crate (`-p yolop` is
-      validated by CI once they are live — see § Agent Steps).
+      validated by CI once they are live, see § Agent Steps).
 - [ ] `X.Y.Z` is greater than the latest crates.io version.
-- [ ] Terminal verification current (see below) if the TUI renderer changed —
+- [ ] Terminal verification current (see below) if the TUI renderer changed,
       Tier 1 green on the release commit, Tier 3 walked by a human.
 
 Which end-to-end paths to smoke follows from what the release changed. Work out
 that impact from the commits since the previous tag, then draw the paths from
-[manual test scenarios](../test-scenarios/index.md) — each one already states a
+[manual test scenarios](../test-scenarios/index.md), each one already states a
 setup and acceptance criteria, so a release walks a known path instead of
 improvising a new one per cut. A release whose impact no scenario covers is a
 gap in the collection worth filling rather than a reason to skip the smoke.
@@ -178,7 +178,7 @@ because the failure mode is reporting the whole matrix as "unverified" when two
 of the tiers are already green: that invites a human to re-walk what a machine
 gates on every PR, and it buries the rows nobody actually checked.
 
-### Tier 1 — asserted on every PR
+### Tier 1, asserted on every PR
 
 The `Build + Tests` job in `ci.yml` runs both of these for any change touching
 Rust, so they are green on the release commit before the release PR is cut.
@@ -191,32 +191,32 @@ Rust, so they are green on the release commit before the release PR is cut.
 A release PR cites the CI run for these rows. It does not list them as
 unverified, and it does not ask a human to walk them.
 
-### Tier 2 — best-effort nightly
+### Tier 2, best-effort nightly
 
 `.github/workflows/nightly-terminals.yml` drives GUI emulators on a schedule and
-on `workflow_dispatch`. Being nightly, it can lag the commit being released —
+on `workflow_dispatch`. Being nightly, it can lag the commit being released,
 dispatch it against the tag when a cut needs the evidence fresh.
 
 | Leg | Runner | Capture | Status |
 |-----|--------|---------|--------|
-| kitty | Linux (Xvfb, software GL) | remote-control text + screenshot | Best-effort — captured as an artifact; assertion is a warning, not a failure. |
-| iTerm2 | macOS | AppleScript session text + `screencapture` | Best-effort — artifact for inspection. |
-| Windows Terminal | Windows | screenshot | Best-effort — artifact for inspection. |
+| kitty | Linux (Xvfb, software GL) | remote-control text + screenshot | Best-effort, captured as an artifact; assertion is a warning, not a failure. |
+| iTerm2 | macOS | AppleScript session text + `screencapture` | Best-effort, artifact for inspection. |
+| Windows Terminal | Windows | screenshot | Best-effort, artifact for inspection. |
 
 Promote a leg to Tier 1 once its capture is proven stable on the runner. The
 best-effort legs are `continue-on-error`, so a flaky GUI runner never reports the
 nightly red on its own.
 
-### Tier 3 — the human walk
+### Tier 3, the human walk
 
 What no tier above reaches: how a specific GUI emulator *paints* the bytes. Walk
 this before a release when the TUI renderer changed. It is a checklist, not a
-record of results — tick a box only after confirming it yourself, and leave it
+record of results, tick a box only after confirming it yourself, and leave it
 unticked rather than inferring it from a green CI run.
 
 Run `cargo run -- tuika-gallery` in each terminal and check truecolor fidelity,
-wide and Braille glyph shaping, mouse-wheel scroll, and — with
-`YOLOP_HYPERLINKS=1` — that the footer URL is a clickable OSC 8 link with the
+wide and Braille glyph shaping, mouse-wheel scroll, and, with
+`YOLOP_HYPERLINKS=1`, that the footer URL is a clickable OSC 8 link with the
 surrounding text, colors, and wrapping undamaged:
 
 - [ ] Ghostty
@@ -236,7 +236,7 @@ changing tmux-specific behavior, where truecolor needs `Tc`/`RGB` in
 something to re-verify per release). Terminals that render it: **Ghostty** (bar
 at the top of the window), **Windows Terminal** and **ConEmu** (taskbar),
 **WezTerm**, **Konsole**, **mintty**. Others (e.g. **iTerm2**, **Kitty**)
-silently ignore the unknown OSC, so emitting it is safe everywhere — the
+silently ignore the unknown OSC, so emitting it is safe everywhere, the
 in-terminal UI is unaffected.
 
 **OSC 8 hyperlinks** (tuika's `HyperlinkBackend`)
@@ -247,7 +247,7 @@ still auto-linkified) text, so emitting it is safe everywhere. Unlike OSC 9;4,
 this one *is* worth re-checking, because it writes styled spans straight to the
 terminal: confirm the link is clickable **and** that surrounding text, colors,
 and wrapping are undamaged. In yolop it is opt-in (`YOLOP_HYPERLINKS=1`),
-default-off until Tier 3 is walked — that is what the checkboxes above verify.
+default-off until Tier 3 is walked, that is what the checkboxes above verify.
 
 ## Post-Release Verification
 
@@ -336,7 +336,7 @@ release.
 
 | Secret                  | Used by              | Source                                                  |
 |-------------------------|----------------------|---------------------------------------------------------|
-| `CARGO_REGISTRY_TOKEN`  | `publish.yml`        | https://crates.io/settings/tokens — publish scope       |
+| `CARGO_REGISTRY_TOKEN`  | `publish.yml`        | https://crates.io/settings/tokens, publish scope       |
 | `DOPPLER_TOKEN`         | `cli-binaries.yml`   | Doppler service token for the `release` config          |
 
 **Doppler secrets** (loaded by `cli-binaries.yml` via `doppler secrets get`):

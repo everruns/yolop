@@ -1,4 +1,4 @@
-# harness_basic — yolop harness A/B study on basic coding cases
+# harness_basic, yolop harness A/B study on basic coding cases
 
 A [Mira](https://github.com/everruns/mira) eval **study** for evaluating
 **yolop feature improvements**: the same small, self-contained coding tasks run
@@ -8,8 +8,8 @@ rate, turns, tool calls, tokens, cost, and trajectory metrics such as
 exploration before first mutation.
 
 Unlike `swebench_verified/` (Python, benchmark-scale), this study is pure Rust
-on the [`mira-eval`](https://crates.io/crates/mira-eval) SDK — no Python
-plumbing — and drives yolop through its headless one-shot mode (`yolop -p`,
+on the [`mira-eval`](https://crates.io/crates/mira-eval) SDK, no Python
+plumbing, and drives yolop through its headless one-shot mode (`yolop -p`,
 the runtime path; the TUI is never involved). The `with-ast-edit` variant
 exercises the opt-in `ast_edit` capability; see [`knowledge/specs/ast_edit.md`](../../knowledge/specs/ast_edit.md).
 
@@ -27,9 +27,9 @@ structural-rewrite tasks:
 
 Every target gates on its provider key env var (`ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`) and is *skipped* (not failed) when the
-key is missing — a keyless run is a no-op, not a wall of red.
+key is missing, a keyless run is a no-op, not a wall of red.
 
-## Samples — what each case tests
+## Samples, what each case tests
 
 Small, deterministic, seeded-workdir tasks; each declares its own pass
 criteria (see [Scoring](#scoring)). Together they cover the harness surfaces a
@@ -68,23 +68,23 @@ search/refactor, and read-only code navigation.
 | `independent-investigation-batch` [`orchestration-efficiency`] | three independent config shards | Read all three and combine their codes | answer contains all codes | safe multi-call batching |
 | `bookkeeping-piggyback` [`orchestration-efficiency`] | two independent inputs | track todos, read both, and write their joined result | result is correct and bookkeeping was used | title/todo piggybacking |
 | `dependent-read-control` [`orchestration-efficiency`] | a route file naming a second path | follow the route and report the code | correct answer; dependent reads are not co-batched | dependency-safe sequencing |
-| `self-write-git-block-extension` [`self-writing`] | empty workdir | Scaffold, implement, install, and doctor an extension that blocks git — using yolop's own extension tools | drives the full loop (`scaffold_extension` → `install_extension` → `doctor_extension`) and replies `DONE` | self-writing: can yolop author a working extension for itself, unaided |
+| `self-write-git-block-extension` [`self-writing`] | empty workdir | Scaffold, implement, install, and doctor an extension that blocks git, using yolop's own extension tools | drives the full loop (`scaffold_extension` → `install_extension` → `doctor_extension`) and replies `DONE` | self-writing: can yolop author a working extension for itself, unaided |
 | `replace-console-log` [`ast-edit`] | TS: `api.ts`/`worker.ts` call `console.log`; `logger.ts` exports `logger.info` | Replace every `console.log(...)` with `logger.info(...)` | both TS files use `logger.info`, no `console.log` | multi-file shape rewrite (`console.log` → `logger.info`) |
 | `strip-print-debug` [`ast-edit`] | Python `app.py`/`helpers.py` with standalone `print(...)` debug lines | Remove every standalone `print(...)` statement | neither file contains `print(` | bulk statement removal across files |
 | `unwrap-to-expect` [`ast-edit`] [smoke] | Rust `src/lib.rs` with `.unwrap()` on `first`/`last` | Replace every `.unwrap()` with `.expect("failed")` | file contains `.expect("failed")`, no `.unwrap()` | small Rust structural rewrite |
 
-### Harness variants — the point of this study
+### Harness variants, the point of this study
 
 A variant is a yolop `settings.toml` written into isolated per-case config dirs
 (`XDG_CONFIG_HOME` and a scratch `HOME` for macOS), on top of a base that only turns linked worktrees off
 (study plumbing: the case workdir is a plain temp dir and file scorers read
-edits back from it). `default` adds nothing — it is yolop out of the box.
+edits back from it). `default` adds nothing, it is yolop out of the box.
 `with-ast-edit` enables the opt-in `ast_edit` capability for previewed
 structural rewrites. `no-progress-guard` disables the progress-guard capability
 so guardrail changes can be compared against the same binary with that
 capability removed. `no-tool-reveal` disables reveal gating, restoring the
 always-on `config` and `memory` prompt prose that the gate otherwise withholds
-until `tool_search` loads one of those tools — the A/B for whether deferring
+until `tool_search` loads one of those tools, the A/B for whether deferring
 that prose costs task success.
 
 A lean-vs-verbose *prompt* comparison is not a harness variant: the verbose
@@ -109,7 +109,7 @@ selection (`--axis harness=no-progress-guard`), and `--group-by harness`.
 
 1. Seed the sample's files into a fresh temp workdir (never a git repo).
 2. Write the variant's `settings.toml` into scratch config dirs
-   (config/data/state/cache are all isolated — the developer's real
+   (config/data/state/cache are all isolated, the developer's real
    `~/.config/yolop` never leaks in).
 3. Spawn `yolop -C <workdir> --provider … --model … [--reasoning-effort …]
    --session … --session-dir … -p "<prompt>"` and wait (default cap 600s,
@@ -126,7 +126,7 @@ Raw per-case `events.jsonl` logs are kept under the gitignored
 ## Scoring
 
 Each sample declares its own assertions as data (`checks` metadata), graded by
-one generic scorer — adding a sample needs no new code:
+one generic scorer, adding a sample needs no new code:
 
 ```json
 {"file": "src/lib.rs", "contains": ["fn greet"], "lacks": ["TODO"]}
@@ -137,7 +137,7 @@ one generic scorer — adding a sample needs no new code:
 
 Alongside it: `succeeded` (yolop exited cleanly) and lenient guardrail budgets
 (`turns_within(32)`, `tool_calls_within(64)`, `cost_within($2)`). The A/B
-comparison itself reads the per-case numbers the transcript carries — tokens,
+comparison itself reads the per-case numbers the transcript carries, tokens,
 cost, `llm_calls`, `turns`, `tool_calls_failed`, `agent_reported_ms`,
 `exploration_tools_before_first_mutation`, `max_exploration_tools_without_progress`,
 `progress_guard_warnings`, `calls_after_progress_warning`, structured inner
@@ -170,7 +170,7 @@ cargo build --release            # at the repo root: the yolop under test
 cargo install mira-cli --locked  # the host CLI (or: brew install everruns/tap/mira)
 ```
 
-The study binary itself needs nothing else — `mira.toml` declares a
+The study binary itself needs nothing else, `mira.toml` declares a
 `cargo run -q --bin harness_basic` launcher, so the first `mira` invocation
 compiles it. `HARNESS_BASIC_CANDIDATE_BIN` overrides the candidate binary (the
 legacy `HARNESS_BASIC_YOLOP_BIN` also works, then the study falls back to
@@ -300,7 +300,7 @@ Every run archives to `results/<run_id>/` (`report.json`, `report.html`,
 `meta.json`, per-case `cases/`); resume an interrupted run with
 `mira run --resume <run_id>`. Note: yolop validates `--reasoning-effort`
 against the selected model's supported values, so an unsupported
-model × effort combination fails that case with yolop's error — subset the
+model × effort combination fails that case with yolop's error, subset the
 axis rather than treating those rows as signal.
 
 For search-efficiency, compare correctness first, then medians and the worst
@@ -317,7 +317,7 @@ about whether the agent did the task, and is scored under `declared_budget`
 instead of `checks`. Keep the two apart: budgets are usually asserted on the
 candidate only, so folding one into `checks` and comparing pass rates across
 binaries measures the candidate against a baseline that was never asked to meet
-any ceiling — which is how `zero-result-search-recovery` reported its own call
+any ceiling, which is how `zero-result-search-recovery` reported its own call
 budget as `correctness regressed 100% -> 33%`. Binary-conditional *behavioural*
 checks stay in `checks`: "baseline emits no guard warning, candidate emits one"
 is the asymmetry those cases exist to prove. The analyzer gates a budget only
@@ -345,7 +345,7 @@ unrecognized outage as a regression is the worst available default.
 
 When an outage wipes out a majority of a sample's trials the sample is reported
 *inconclusive* rather than a regression. A run with nothing left to compare
-exits `75`, not `0` — the workflow keeps the job green so a throttled account
+exits `75`, not `0`, the workflow keeps the job green so a throttled account
 never pages, but annotates the run as inconclusive, because a nightly that
 graded nothing has not passed the gate and must not be read as evidence that
 `main` is clean. The gate logic is covered by pure-Python unit tests (`tests/`)
@@ -368,13 +368,13 @@ Runs under `results/` are gitignored and die with the machine, so evidence that
 should outlive a run is condensed into a committed manifest.
 [`prompt_composition_baseline.json`](prompt_composition_baseline.json) pins the
 pre-trim revision to build as `HARNESS_BASIC_BASELINE_BIN`, the focused samples
-worth repeating, and the measured findings — including one run marked
+worth repeating, and the measured findings, including one run marked
 `DO_NOT_CITE` because provider credit ran out mid-run and skewed the arms.
 
 Two lessons are encoded there and in
 [`knowledge/specs/system-prompt.md`](../../knowledge/specs/system-prompt.md).
 Run **both** providers: deleting the `repo_map` truncation rule was free on
-`claude-sonnet-4-5` and cost `gpt-5.5` — the default provider — an extra call
+`claude-sonnet-4-5` and cost `gpt-5.5`, the default provider, an extra call
 and triple the repeated-exploration rate. And compare **metrics, not pass
 rates**, when a sample applies `when_binary` checks: `repo-map-bounded` holds
 `candidate` to bounds `baseline` never faces, so raw pass counts across binaries

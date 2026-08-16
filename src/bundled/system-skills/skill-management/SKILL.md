@@ -6,7 +6,7 @@ user-invocable: true
 
 # Skill Management
 
-Use this skill when the user wants to customize Yolop with skills — especially
+Use this skill when the user wants to customize Yolop with skills, especially
 when they ask to *find* a skill for a task.
 
 ## Ground Rules
@@ -53,7 +53,7 @@ scope:
 - `scope`: `workspace` (default) or `global`
 - `overwrite`: defaults to true
 
-After install the skill is live — no restart.
+After install the skill is live, no restart.
 
 ## Install Or Modify By Hand
 
@@ -87,7 +87,7 @@ repository, package, archive, or file contents.
 
 ## Search Fallback Order
 
-1. `search_skills` (skills.sh) — preferred.
+1. `search_skills` (skills.sh), preferred.
 2. GitHub repositories and paths containing `SKILL.md` via `free_web_search` /
    `web_fetch`.
 3. General web search for the skill topic plus `SKILL.md`.

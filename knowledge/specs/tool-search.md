@@ -1,10 +1,10 @@
 ---
 type: Product Specification
-title: `tool_search` — deferred tool loading
-description: Defines the `tool_search` — deferred tool loading contract for Yolop.
+title: `tool_search`, deferred tool loading
+description: Defines the `tool_search`, deferred tool loading contract for Yolop.
 ---
 
-# `tool_search` — deferred tool loading
+# `tool_search`, deferred tool loading
 
 Status: implemented via upstream `everruns-core` (provider-agnostic).
 
@@ -23,7 +23,7 @@ callable.
 Yolop registers the upstream `everruns_core::capabilities::ToolSearchCapability`
 (id `tool_search`, generic/provider-agnostic) in `runtime.rs`. It does **not**
 use the native `openai_tool_search` path, which fails with a `server_error` on
-the reasoning models that advertise it (gpt-5.4 family; gpt-5.5 gated off — see
+the reasoning models that advertise it (gpt-5.4 family; gpt-5.5 gated off, see
 EVE-521).
 
 Yolop previously shipped a *vendored* copy of this capability because the
@@ -56,7 +56,7 @@ vendor was deleted and yolop now consumes upstream directly:
    contract. Yolop does not own the built-in definitions, so it sets this policy
    by name rather than changing each tool's `DeferrablePolicy`.
 
-   **MCP server tools defer on the same footing** — with many configured servers
+   **MCP server tools defer on the same footing**: with many configured servers
    their schemas are the largest, least-used part of the surface, so only names
    and descriptions ride each turn until `tool_search` loads a schema (execution
    still routes through the real registry proxy, so a stubbed MCP tool call works
@@ -75,7 +75,7 @@ Deferral activates only once the total tool count crosses
 ## Provider support
 
 Works on every provider/model because it only rewrites the standard `tools`
-array — no driver or native-feature dependency. Validated end-to-end (a
+array, no driver or native-feature dependency. Validated end-to-end (a
 deferred web-search tool loaded via `tool_search` and called with correct
 arguments) on:
 
@@ -89,7 +89,7 @@ Deferral hid tool *schemas* while capability prompt blocks kept explaining how
 to call those same hidden tools every turn. `capabilities::tool_reveal` closes
 that: a `PostToolExecHook` records `tool_search`'s structured `loaded` names
 into a bounded, session-keyed registry, and gated capabilities check it before
-contributing how-to prose. Discovery text stays ungated — see
+contributing how-to prose. Discovery text stays ungated, see
 [system prompt composition](system-prompt.md) for where the line falls.
 
 The registry reads `tool_search`'s own result rather than mirroring upstream

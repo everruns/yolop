@@ -33,10 +33,10 @@ exceeds a small input budget. Workspace grep streams one bounded text file at a
 time while preserving the regex, path-filter, match-pagination, and response
 bounds; gitignored files and oversized individual files remain excluded.
 
-This is intentionally a provider seam rather than OS-specific policy logic in
+This is intentionally a provider boundary rather than OS-specific policy logic in
 the tool. A provider receives the canonical active workspace and script and
 returns the process to launch. Bashkit, agentOS, Daytona, Monty, or another
-backend can implement the same seam without changing tool schemas.
+backend can implement the same boundary without changing tool schemas.
 
 ## Modes × approvals
 
@@ -64,7 +64,7 @@ closed; ACP's separate general tool-permission gate is unchanged.
 On macOS and Linux, native execution is fail closed: if the required OS
 primitive is unavailable, the command returns a sandbox-setup error and is not
 retried on the host. Windows has no native provider yet and is the documented
-exception — see [Windows](#windows) below.
+exception, see [Windows](#windows) below.
 
 ### macOS
 
@@ -102,7 +102,7 @@ a known limit.
 ### Windows
 
 There is no native sandbox on Windows yet, so the platform is fail *open*, not
-fail closed: every mode — including `workspace-write` — runs the
+fail closed: every mode, including `workspace-write`, runs the
 shell with full host access. The shell is PowerShell (`powershell.exe -NoProfile
 -NonInteractive -Command`) rather than bash, since it ships in-box on every
 supported Windows. Because nothing is contained, the startup warning fires for
@@ -135,7 +135,7 @@ Clearing the setting restores `danger-full-access`. An explicit
 
 ## Provider contract and future composition
 
-The implemented host seam is deliberately small:
+The implemented host boundary is deliberately small:
 
 ```rust
 trait SandboxProvider: Send + Sync {

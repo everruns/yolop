@@ -1,7 +1,7 @@
 ---
 type: Policy
 title: Agent Context Specification
-description: Defines how this repository organizes the context coding agents read — AGENTS.md, knowledge, and skills.
+description: Defines how this repository organizes the context coding agents read, AGENTS.md, knowledge, and skills.
 ---
 
 # Agent Context Specification
@@ -32,7 +32,7 @@ project-specific facts that do.
    reading the repository already shows.
 4. **Judgment over ritual.** State the required outcome and the constraint that
    makes it non-negotiable, then let the agent choose the path. Prescribe exact
-   steps only where the cost of a wrong choice is high and irreversible —
+   steps only where the cost of a wrong choice is high and irreversible,
    publishing, security review, credentials, git history.
 5. **No conflicting constraints.** A hard requirement and an invitation to use
    judgment must not cover the same ground. Where both appear, the agent
@@ -51,15 +51,15 @@ project-specific facts that do.
 | Code, tests, benches, `evals/` | The task reaches them | The authoritative how, colocated with what it describes. |
 
 Detail belongs at the deepest layer that can hold it. Operational how-to about
-a directory belongs in that directory — bench procedure next to the benches,
-eval procedure next to the evals — not in `AGENTS.md`.
+a directory belongs in that directory, bench procedure next to the benches,
+eval procedure next to the evals, not in `AGENTS.md`.
 
 ## Skills
 
 A skill is a lightweight guide for retrieving the right context, not a
 procedure manual. `SKILL.md` carries the goal, when to use it, the outcomes
-that define success, and the decision points. Reference material — templates,
-long command sequences, per-surface checklists — goes in sibling files under
+that define success, and the decision points. Reference material, templates,
+long command sequences, per-surface checklists, goes in sibling files under
 the skill directory and is read when that part of the work comes up.
 
 Constrain hard only where it matters: gates that protect users, published
@@ -85,7 +85,7 @@ artifacts, or credentials. Everywhere else, the outcome is the instruction.
 
 ## Related
 
-- [`documentation.md`](./documentation.md) — the public/internal documentation boundary.
-- [`system-prompt.md`](./system-prompt.md) — the same principles applied to the prompt yolop ships at runtime.
-- [`skills.md`](./skills.md) — the runtime skills capability yolop ships.
-- [`okf.md`](./okf.md) — why the knowledge bundle is plain OKF markdown.
+- [`documentation.md`](./documentation.md), the public/internal documentation boundary.
+- [`system-prompt.md`](./system-prompt.md), the same principles applied to the prompt yolop ships at runtime.
+- [`skills.md`](./skills.md), the runtime skills capability yolop ships.
+- [`okf.md`](./okf.md), why the knowledge bundle is plain OKF markdown.

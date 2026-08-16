@@ -10,7 +10,7 @@ description: Defines the conversational control specification contract for Yolop
 
 Every user-facing control over a yolop session must be reachable **conversationally**:
 the agent can perform it by calling a tool in response to ordinary prose, or on its
-own initiative when the task calls for it — without the user typing a slash command
+own initiative when the task calls for it, without the user typing a slash command
 and without an interactive overlay the user must confirm. Slash commands and TUI
 overlays remain as convenient front-ends, but they are never the *only* path.
 
@@ -22,7 +22,7 @@ not duplicate each tool's schema (those live in source).
 
 yolop is an agent first. If the agent decides it needs more reasoning budget for a
 hard step, a different model for a task, or wants to uninstall a stale skill, it
-should just do it — the same way a human collaborator would — rather than printing
+should just do it, the same way a human collaborator would, rather than printing
 "please type `/effort high`". Controls that are reachable only through a slash
 command, an overlay confirmation, or a next-run-only settings write fail this bar.
 
@@ -31,12 +31,12 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 1. **Live, agent-invocable, no confirmation.** Each control surface listed below
    exposes a model-facing tool that (a) the agent can call from a natural-language
    request or autonomously, (b) takes effect on the **live session** (at the latest,
-   the next turn — never "next process run only"), and (c) does not require the user
+   the next turn, never "next process run only"), and (c) does not require the user
    to confirm an interactive overlay.
 
 2. **One implementation, many front-ends.** A control's mutation logic lives in one
    place; the slash command, any overlay, and the agent tool all route through it.
-   Adding a tool must not fork the logic — it shares the command's code path so
+   Adding a tool must not fork the logic, it shares the command's code path so
    validation, persistence, and live application are identical. (`SetupController` is
    the reference: `/setup`, the model picker overlay, and the `set_*` tools all call
    its `change_*` methods.) Model selection applies immediately but is persisted only
@@ -54,7 +54,7 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 
 5. **New control surfaces inherit this contract.** Any future setting, mode, or
    resource a user can change in a session ships with its conversational tool in the
-   same change — not as a follow-up. A control that is only a slash command, only an
+   same change, not as a follow-up. A control that is only a slash command, only an
    overlay, or only a next-run settings key is incomplete and should be treated as a
    bug against this spec.
 
@@ -65,11 +65,11 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 | Reasoning effort | `set_reasoning_effort` | `/effort` overlay, `/setup effort` |
 | Model | `search_models` / `set_model` | `/model` overlay, `/setup model` |
 | Provider | `set_provider` | `/setup provider` |
-| Skills — list | `list_skills` (upstream) | system-prompt listing |
-| Skills — search (skills.sh) | `search_skills` | — |
-| Skills — install from registry | `install_skill` | — |
-| Skills — install/update by content | `write_skill` (upstream) | — |
-| Skills — uninstall | `delete_skill` | — |
+| Skills, list | `list_skills` (upstream) | system-prompt listing |
+| Skills, search (skills.sh) | `search_skills` |, |
+| Skills, install from registry | `install_skill` |, |
+| Skills, install/update by content | `write_skill` (upstream) |, |
+| Skills, uninstall | `delete_skill` |, |
 | Settings (provider/model/tokens/urls/capabilities, next-run) | `get_config` / `set_config` | `/setup`, `yolop-config` skill |
 | Terminal/UI actions (help, tools, mcp, cwd, status, model, effort, clear, quit) | `run_command` (TUI only) | the slash commands themselves |
 
@@ -81,7 +81,7 @@ Notes:
 - `search_models` queries usable providers through the runtime driver registry and
   returns provider-qualified matches. `set_model` rejects a partial name when it
   matches discovered models but is not an exact ID for the current provider.
-- `set_config` is intentionally next-run for provider/model edits — it edits the
+- `set_config` is intentionally next-run for provider/model edits, it edits the
   settings file. The *live* equivalents are the `set_*` tools above.
 - `run_command` is gated to the interactive TUI because its effects (clearing
   the transcript, quitting) only exist there; see [`commands.md`](./commands.md).
@@ -105,6 +105,6 @@ Notes:
 
 ## Related
 
-- [`commands.md`](./commands.md) — slash-command surface and natural-language dispatch.
-- [`skills.md`](./skills.md) — skill scopes and management tools.
-- [`configuration.md`](./configuration.md) — the settings file and its schema.
+- [`commands.md`](./commands.md), slash-command surface and natural-language dispatch.
+- [`skills.md`](./skills.md), skill scopes and management tools.
+- [`configuration.md`](./configuration.md), the settings file and its schema.

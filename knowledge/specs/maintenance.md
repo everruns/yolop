@@ -72,7 +72,7 @@ system skills. Maintenance should catch:
   instead of the terminal-independent presentation model
 
 The outcome is either a small fix that reconnects the surfaces or a crisp
-finding naming the missing surface and its user-visible impact — not a
+finding naming the missing surface and its user-visible impact, not a
 generic "tech debt" note.
 
 ## Dependency Discipline
@@ -91,7 +91,7 @@ These crates ship together from one upstream workspace and are designed to be us
 Beyond the everruns family, dependency hygiene means:
 
 - no known CVEs in the tree (`cargo audit` when available, plus the repo's Dependabot alerts)
-- duplicate transitive versions reviewed (`cargo tree --duplicates`) — fix or note why unfixable
+- duplicate transitive versions reviewed (`cargo tree --duplicates`), fix or note why unfixable
 - no unused direct dependencies; prefer narrow sub-crates over umbrella crates when only a slice is used
 
 ## Upstream Mirror
@@ -106,7 +106,7 @@ agent of the two, so there is nothing left to pull from the example.
 What remains worth tracking upstream is the **library surface**, not the example:
 
 - the `everruns-*` crates yolop depends on, and their API changes
-- the `everruns` facade's coverage — see the note beside the dependencies in
+- the `everruns` facade's coverage, see the note beside the dependencies in
   `Cargo.toml` for why yolop does not use it yet, and revisit when it promotes
   provider registration, MCP, and capability wiring
 - upstream's `CHANGELOG.md` highlights, which name the behavioral changes that a
@@ -133,14 +133,14 @@ Before tagging a release:
 Yolop uses native containment for arbitrary shell commands by default. The
 remaining threat surface is concentrated:
 
-- **Filesystem** — structured file tools still use the rooted real-disk broker
+- **Filesystem**: structured file tools still use the rooted real-disk broker
   and protected-path checks. Maintenance must verify those mounts and checks
   remain wired.
-- **Shell** — arbitrary commands spawn through the configured sandbox provider.
+- **Shell**: arbitrary commands spawn through the configured sandbox provider.
   Maintenance must run the workspace-write, outside-write, network-denial,
   worktree-switch, timeout, and output-cap tests on macOS and Linux.
-- **Session log** — JSONL session logs contain prompts, tool arguments, and tool output. They must be created with `0o600` on Unix.
-- **API keys** — provider keys must only be read from process env. They must never be written to the session log or echoed to tracing output.
+- **Session log**: JSONL session logs contain prompts, tool arguments, and tool output. They must be created with `0o600` on Unix.
+- **API keys**: provider keys must only be read from process env. They must never be written to the session log or echoed to tracing output.
 
 [`sandboxing.md`](./sandboxing.md) defines the implemented boundary and its known limitations.
 
@@ -149,11 +149,11 @@ remaining threat surface is concentrated:
 Complexity accretes: an abstraction added for a second caller that never
 arrived, a trait with one impl, a config knob nobody sets. A deep maintenance
 pass treats removing that complexity as real work, not a side effect. The bias
-is toward deletion — the healthiest passes often remove more code than they add.
+is toward deletion, the healthiest passes often remove more code than they add.
 
 Maintenance should look for and collapse:
 
-- single-use abstractions (one-impl traits, forwarding wrappers, single-instantiation generics, builders for trivial structs) — unless the seam is load-bearing
+- single-use abstractions (one-impl traits, forwarding wrappers, single-instantiation generics, builders for trivial structs), unless the boundary is essential
 - premature generalization: flexibility shaped for hypothetical futures, not current callers
 - indirection with no payoff: helpers that only rename a stdlib call, modules that re-export one item, always-default knobs
 - under-abstraction: the same block pasted in several places, where a shared helper genuinely reduces total code
@@ -163,21 +163,21 @@ Maintenance should look for and collapse:
 Constraints:
 
 - A simplification must preserve behavior. It is verified by build, clippy, and
-  the test suite — a behavior change disguised as cleanup is a regression.
+  the test suite, a behavior change disguised as cleanup is a regression.
 - Keep simplifications small and independently reviewable; do not fold a
   de-abstraction sweep into an unrelated change.
 - Removing a public item from the published `yolop-yep` crate is a breaking
   change and must be called out, not slipped in.
 - A simplification too large to land inline (a cross-cutting abstraction with
   many call sites) is deferred to a tracked issue naming the abstraction and why
-  it no longer pays its way — same discipline as any other deferred finding.
+  it no longer pays its way, same discipline as any other deferred finding.
 
 This is the inverse of premature abstraction, not an argument against all
 abstraction: an abstraction that carries real, current weight stays.
 
 ## Spec Hygiene
 
-Specs preserve design intent, rationale, and constraints — not implementation details readable from code. Maintenance should:
+Specs preserve design intent, rationale, and constraints, not implementation details readable from code. Maintenance should:
 
 - replace duplicated struct/enum/field tables with links to source
 - replace exhaustive feature-flag or capability lists with links to source
@@ -188,7 +188,7 @@ Specs preserve design intent, rationale, and constraints — not implementation 
 The context agents read drifts the same way code does, and duplication is its
 characteristic failure: a rule stated in `AGENTS.md`, restated in a spec, and
 restated again in a skill will disagree within a few changes. Maintenance should
-check the layering defined in [`agent-context.md`](./agent-context.md) — one
+check the layering defined in [`agent-context.md`](./agent-context.md), one
 owner per rule, `AGENTS.md` carrying only every-turn facts, skills thin at the
 top with reference material split out, and no instruction that both mandates a
 step and invites judgment about it.

@@ -1,4 +1,4 @@
-# Yolop — coding-agent guidance
+# Yolop, coding-agent guidance
 
 Yolop is a terminal coding agent built on
 [`everruns-runtime`](https://crates.io/crates/everruns-runtime). The binary and
@@ -8,7 +8,7 @@ This file is read on every turn. It carries repository facts and gotchas only;
 depth lives behind the links below. [`knowledge/specs/agent-context.md`](knowledge/specs/agent-context.md)
 defines how this repository organizes what agents read.
 
-Telegraph — keep updates short and factual. Fix root causes; when you are still
+Telegraph, keep updates short and factual. Fix root causes; when you are still
 stuck after reading the code, ask with short options.
 
 ## Layout
@@ -16,8 +16,8 @@ stuck after reading the code, ask with short options.
 A Cargo workspace of two packages; root `cargo test` / `cargo clippy` cover
 both.
 
-- `.` — the `yolop` binary.
-- `crates/yolop-yep/` — the YEP extension protocol and server SDK, published
+- `.`, the `yolop` binary.
+- `crates/yolop-yep/`, the YEP extension protocol and server SDK, published
   separately for extension authors; the host depends on it for the wire types.
 
 Both renderers are built on [tuika](https://github.com/everruns/tuika), a
@@ -38,7 +38,7 @@ its split-footer mode. See [Tuika](#tuika).
   ```
 
 - Try `gh` directly first. Only if it reports that it is not authenticated,
-  retry through Doppler — do not reach for Doppler preemptively:
+  retry through Doppler, do not reach for Doppler preemptively:
   `doppler run -- bash -lc 'GH_TOKEN="$GITHUB_TOKEN" <command>'`.
 - `--provider llmsim` needs no API key, so `cargo run -- --provider llmsim -p "hi"`
   is the offline smoke test.
@@ -48,7 +48,7 @@ its split-footer mode. See [Tuika](#tuika).
 - Decisions worth keeping belong as concise comments near the relevant code, not
   in scratch documents.
 - For bug fixes, prefer writing the failing test before the fix.
-- Never write `#[ignore]` tests — an ignored test is one nothing ever runs, and
+- Never write `#[ignore]` tests, an ignored test is one nothing ever runs, and
   neither `cargo test` nor CI passes `--ignored`. A test that needs something the
   environment may lack checks for it at runtime and returns early: a key via
   `live_key_or_skip`, a binary via a probe, an external service via
@@ -69,15 +69,15 @@ python3 scripts/validate_okf.py knowledge --check-links   # when knowledge/ chan
 
 ## Where things live
 
-- [`knowledge/`](knowledge/index.md) — the OKF bundle and durable development
+- [`knowledge/`](knowledge/index.md), the OKF bundle and durable development
   memory: intent, architecture, policy, constraints, and the success bars for
   shipping, maintenance, and release. Read the index first, then only the
   concepts the task touches.
-- [`.agents/skills/`](.agents/skills) — workflows the user can request by name:
+- [`.agents/skills/`](.agents/skills), workflows the user can request by name:
   `/ship`, `/maintenance`, `/release`, `/author-extension`.
-- [`evals/README.md`](evals/README.md) — the Mira eval studies (SWE-bench
+- [`evals/README.md`](evals/README.md), the Mira eval studies (SWE-bench
   Verified, harness A/Bs, LSP isolation). Outside the Cargo workspace.
-- [`README.md`](README.md) and [`docs/`](docs/) — the public surface. Neither may
+- [`README.md`](README.md) and [`docs/`](docs/), the public surface. Neither may
   link into `knowledge/` or `.agents/`; see
   [`knowledge/specs/documentation.md`](knowledge/specs/documentation.md).
 
@@ -106,18 +106,18 @@ rebase onto `origin/main`. The merge bar (PR template, CI, squash) is owned by
 
 ## Tuika
 
-Toolkit-shaped work — layout, components, overlays, focus, keymap, markdown
-rendering, terminal escapes, screen modes — belongs in
+Toolkit-shaped work, layout, components, overlays, focus, keymap, markdown
+rendering, terminal escapes, screen modes, belongs in
 [everruns/tuika](https://github.com/everruns/tuika), not here; what belongs here
 is how yolop *composes* it. Land a needed toolkit change there, release it, then
-bump the version — a git dependency would make yolop unpublishable.
+bump the version, a git dependency would make yolop unpublishable.
 `tests/tuika_pty.rs` stays because it drives the `yolop` binary. See [`knowledge/specs/tuika.md`](knowledge/specs/tuika.md).
 
 ## Upstream relationship
 
 Yolop began as a friendly fork of the `examples/coding-cli` example in
 [`everruns/everruns`](https://github.com/everruns/everruns). As of 0.17.24 that
-example is no longer a mirror source — upstream rebuilt it as a minimal
+example is no longer a mirror source, upstream rebuilt it as a minimal
 acceptance test for the new `everruns` facade crate and deleted its TUI, MCP,
 and provider wiring. Track the `everruns-*` library surface and upstream's
 `CHANGELOG.md` instead, and keep the crate versions in lockstep with what is

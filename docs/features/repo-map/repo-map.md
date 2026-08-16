@@ -6,7 +6,7 @@ description: On-demand, multi-language symbol maps that give Yolop a compact str
 Repo Map gives Yolop a fast, structural overview of a codebase without reading
 every file. Instead of streaming whole directories into the model, the
 `repo_map` and `repo_symbols` tools parse source on demand and return a compact
-list of symbols — functions, types, classes, and their signatures — that the
+list of symbols, functions, types, classes, and their signatures, that the
 agent can use to orient itself before reaching for targeted `grep` and `read`.
 
 ## Background
@@ -14,7 +14,7 @@ agent can use to orient itself before reaching for targeted `grep` and `read`.
 Coding agents waste context when they explore an unfamiliar repository
 file-by-file. A common fix is a "repository map": a precomputed digest of
 signatures that is stuffed into the prompt up front. That approach fits
-assistants that cannot navigate on their own, but it has real costs — the map
+assistants that cannot navigate on their own, but it has real costs, the map
 goes stale the moment code changes, and it is paid for on every turn whether or
 not the current task needs it.
 
@@ -28,21 +28,21 @@ replacement for reading code.
 
 ![Repo map on-demand symbol pipeline](repo-map.svg)
 
-1. **Request** — the agent calls `repo_map` or `repo_symbols` with an optional
+1. **Request**: the agent calls `repo_map` or `repo_symbols` with an optional
    `path`, `query`, `language`, and `limit`.
-2. **Walk tree** — the workspace (or the requested subpath) is walked
+2. **Walk tree**: the workspace (or the requested subpath) is walked
    recursively, skipping vendored and build directories such as `.git`,
    `node_modules`, `target`, `dist`, `build`, and virtualenvs. The walk is
    sandboxed to the workspace: paths that escape via `..` or symlinks pointing
    outside the root are rejected.
-3. **Parse** — each supported file is parsed with its
+3. **Parse**: each supported file is parsed with its
    [tree-sitter](https://tree-sitter.github.io/) grammar. Files larger than
    `max_file_bytes` are skipped, and partially-parseable files still contribute
    the symbols that did parse.
-4. **Extract** — declarations are turned into symbols carrying their `name`,
+4. **Extract**: declarations are turned into symbols carrying their `name`,
    `kind`, enclosing `parent` scope, one-line `signature`, `visibility`, and
    source location.
-5. **Rank & group** — when a query is present the candidates are scored and
+5. **Rank & group**: when a query is present the candidates are scored and
    ordered by relevance; `repo_map` groups the result by file while
    `repo_symbols` returns a flat ranked list.
 
@@ -51,13 +51,13 @@ replacement for reading code.
 Without a query, symbols are returned in scan order and capped at `limit`.
 
 With a query, results are ranked with a lightweight, deterministic TF-IDF-ish
-score — no embeddings, no index, no network:
+score, no embeddings, no index, no network:
 
-- **Terms** — the query is lowercased and split on whitespace into
+- **Terms**: the query is lowercased and split on whitespace into
   de-duplicated terms. A symbol is a candidate if it matches *any* term, so
   `auth handler` matches symbols related to either word instead of requiring the
   exact phrase.
-- **Field weights** — each term contributes the strongest field it matches, so
+- **Field weights**: each term contributes the strongest field it matches, so
   specific hits beat incidental ones:
 
   | Match | Weight |
@@ -69,11 +69,11 @@ score — no embeddings, no index, no network:
   | Signature | 2 |
   | Path | 1 |
 
-- **Inverse document frequency** — terms that match fewer candidates are
+- **Inverse document frequency**: terms that match fewer candidates are
   weighted higher, so a rare, distinctive term outranks a common one.
-- **Coverage boost** — symbols that match more of a multi-term query are
+- **Coverage boost**: symbols that match more of a multi-term query are
   promoted above symbols that match only one term.
-- **Deterministic order** — ties break by path, then line, then column, so the
+- **Deterministic order**: ties break by path, then line, then column, so the
   same query always returns the same order.
 
 To keep ranking predictable on large trees, the candidate pool is bounded
@@ -98,7 +98,7 @@ Both accept the same parameters:
 | `limit` | 200 | Maximum symbols returned (max 1000) |
 | `max_file_bytes` | 524288 | Skip source files larger than this (max 2 MiB) |
 
-Responses also report scan statistics — `scanned_files`, `skipped_files`,
+Responses also report scan statistics, `scanned_files`, `skipped_files`,
 `skipped_large_files`, `skipped_unsupported_files`, `parse_error_files`, the set
 of `languages` seen, and the `count` of returned symbols.
 
