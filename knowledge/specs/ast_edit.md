@@ -1,10 +1,10 @@
 ---
 type: Product Specification
-title: `ast_edit` — previewed ast-grep rewrites (optional)
-description: Defines the `ast_edit` — previewed ast-grep rewrites (optional) contract for Yolop.
+title: `ast_edit`, previewed ast-grep rewrites (optional)
+description: Defines the `ast_edit`, previewed ast-grep rewrites (optional) contract for Yolop.
 ---
 
-# `ast_edit` — previewed ast-grep rewrites (optional)
+# `ast_edit`, previewed ast-grep rewrites (optional)
 
 Status: implemented in `src/capabilities/ast_grep.rs` (`AstEditCapability`).
 **Off by default.**
@@ -12,8 +12,8 @@ Status: implemented in `src/capabilities/ast_grep.rs` (`AstEditCapability`).
 ## Why
 
 Yolop's default navigation stack includes read-only `ast_grep` for structural
-search. Bulk shape rewrites — rename every call of a pattern, strip debug
-statements, swap an idiom — still fall to repeated `edit_file` calls or shell
+search. Bulk shape rewrites, rename every call of a pattern, strip debug
+statements, swap an idiom, still fall to repeated `edit_file` calls or shell
 one-liners. The ast-grep engine already compiles into the binary; exposing
 pattern/replacement rewrites with a preview-first flow gives agents a single
 tool for multi-file structural edits without new processes or external CLIs.
@@ -23,7 +23,7 @@ tool for multi-file structural edits without new processes or external CLIs.
 A yolop-owned `ast_edit` capability (separate from read-only `ast_grep`) that
 exposes one tool:
 
-- `ast_edit` — scan workspace source with an ast-grep `pattern`, rewrite each
+- `ast_edit`, scan workspace source with an ast-grep `pattern`, rewrite each
   match with `replacement`, return per-file `diff` and `replacements_detail`.
   **`dry_run` defaults to `true`** (preview only); call again with
   `dry_run=false` after the user accepts the preview.
@@ -53,7 +53,7 @@ Same grammars as `ast_grep` (compiled via `ast-grep-language`):
 Pass `language` when known; without it the scan tries every supported grammar.
 Unsupported files are skipped and counted in the result.
 
-### Enablement — off by default
+### Enablement, off by default
 
 `ast_grep` stays in the default harness; `ast_edit` is registered in the
 catalog only. Enable per user in `settings.toml`:
@@ -85,7 +85,7 @@ contract.
 - `ast_grep` and `ast_edit` are separate capabilities so read-only search stays
   on by default and rewrite tooling is an explicit opt-in.
 - Preview/accept is modeled as two tool calls (`dry_run` true then false), not
-  a separate UI card — matching how other write tools surface diffs in the
+  a separate UI card, matching how other write tools surface diffs in the
   transcript today.
 - Confirm matches with `ast_grep` before rewriting; `pattern_error_languages`
   in the result reports compile failures per language (syntax slips, wrong
@@ -101,7 +101,7 @@ enabled on tag `ast-edit`, reporting pass rate, `ast_edit_tool_calls`, and an
 
 ## Non-goals
 
-- No relational rules, `inside`/`has`, or YAML rule files — single pattern +
+- No relational rules, `inside`/`has`, or YAML rule files, single pattern +
   replacement only.
 - No languages beyond the ast-grep grammars shipped in the binary (e.g. Java,
   Kotlin, PHP are out of scope here; use `grep_files` / `edit_file` / `lsp`).

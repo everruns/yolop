@@ -1,7 +1,7 @@
 # Extensions
 
-Extensions add capabilities to yolop — tools, system-prompt guidance, MCP
-servers, and lifecycle hooks — as **installable packages**, with no rebuild of
+Extensions add capabilities to yolop, tools, system-prompt guidance, MCP
+servers, and lifecycle hooks, as **installable packages**, with no rebuild of
 yolop itself. An extension's logic runs as a small subprocess yolop talks to
 over the yolop extension protocol (YEP); you can write one in any language, and
 there's a Rust SDK ([`yolop-yep`](../crates/yolop-yep)) that makes it a few
@@ -25,15 +25,15 @@ own.
 ## Set up an extension
 
 An extension is a directory containing a `plugin.json` manifest (and, for a
-compiled server, its binary). Extensions live in **one place** — your global
-config dir — so a repository never carries agent-specific machinery:
+compiled server, its binary). Extensions live in **one place**: your global
+config dir, so a repository never carries agent-specific machinery:
 
 - Linux: `~/.config/yolop/extensions/<name>/`
 - macOS: `~/Library/Application Support/yolop/extensions/<name>/`
 - Override for testing: `YOLOP_EXTENSIONS_DIR`
 
-**1. Install** — the fastest way is from **crates.io**, toolchain-free (no
-cargo or rustc needed — yolop fetches and unpacks the `.crate` itself):
+**1. Install**: the fastest way is from **crates.io**, toolchain-free (no
+cargo or rustc needed, yolop fetches and unpacks the `.crate` itself):
 
 ```
 install_extension source="crates.io:yolop-extension-lsp"     # or a bare "lsp"
@@ -47,7 +47,7 @@ path**, or just drop the package directory in place by hand. yolop has
 conversationally. Installs are pinned in `extensions.lock` (source + resolved
 version + content hash) so a later reinstall can flag a changed grant.
 
-**2. Enable** — installing does not activate. Turn an extension on by adding it
+**2. Enable**: installing does not activate. Turn an extension on by adding it
 to your harness in `~/.config/yolop/settings.toml`:
 
 ```toml
@@ -57,7 +57,7 @@ ref = "ext:<name>"
 
 (or run `enable_extension`). Changes take effect on the next session.
 
-**3. Use** — start yolop; the extension's tools and prompt are available. To
+**3. Use**: start yolop; the extension's tools and prompt are available. To
 watch it connect:
 
 ```bash
@@ -66,13 +66,13 @@ RUST_LOG=yolop::ext=debug yolop -p "list your tools"
 # DEBUG yolop::ext: extension server connected ext=echo capabilities=["tools", "prompt"]
 ```
 
-Installing runs third-party code on your machine — the same trust as adding a
+Installing runs third-party code on your machine, the same trust as adding a
 server to `.mcp.json`. Install only from sources you trust; yolop prints what a
 package contributes (server command, tool names, hooks) before you confirm.
 
 ## Create your own (Rust, with `yolop-yep`)
 
-**1. A capability server.** Add the SDK and write handlers — the `serve()` loop
+**1. A capability server.** Add the SDK and write handlers, the `serve()` loop
 owns the wire protocol:
 
 ```bash
@@ -101,7 +101,7 @@ fn main() -> std::io::Result<()> {
 [`crates/yolop-yep/examples/echo.rs`](../crates/yolop-yep/examples/echo.rs) for
 all three.
 
-**2. A manifest** — `plugin.json` beside the built binary. The manifest is what
+**2. A manifest**: `plugin.json` beside the built binary. The manifest is what
 you (and other users) approve *without running the binary*, so it declares the
 full tool definitions:
 
@@ -127,7 +127,7 @@ full tool definitions:
 }
 ```
 
-**3. Install it** — build, drop the binary and `plugin.json` into
+**3. Install it**: build, drop the binary and `plugin.json` into
 `~/.config/yolop/extensions/hello/` (ensure the binary is on `PATH` or in the
 package's `bin/`), and enable `ext:hello` as above.
 
@@ -138,7 +138,7 @@ Everything under the `yolop` key:
 | Key | Meaning |
 |-----|---------|
 | `protocol_version` | YEP version you target (`"1.0"`). Major must match yolop's. |
-| `capabilityServer` | `{ command, args }` — how to spawn your server. |
+| `capabilityServer` | `{ command, args }`, how to spawn your server. |
 | `tools[]` | `{ name, description, schema, never_defer }`. `never_defer` keeps a tool's schema always loaded (budget: 8/extension). |
 | `prompt` | `true` if the server sends a static system-prompt contribution. |
 | `dynamic_prompt` | `true` to recompute the prompt each turn (`prompt/contribution`). |
@@ -147,17 +147,17 @@ Everything under the `yolop` key:
 | `config_schema` | JSON Schema for this extension's `[[capabilities]]` config. |
 
 The running server's handshake may only **narrow** what the manifest declares,
-never widen it — so the manifest is the complete, auditable statement of what an
+never widen it, so the manifest is the complete, auditable statement of what an
 extension can do.
 
 ### Naming & distribution
 
 Name a crate `yolop-extension-<name>` so it's discoverable on crates.io under a
-common prefix — and so the bare-name install shorthand (`install_extension
+common prefix, and so the bare-name install shorthand (`install_extension
 source="lsp"` → `yolop-extension-lsp`) resolves it.
 
 **Publishing to crates.io.** Include `plugin.json` in the published package so
-yolop can read it straight from the `.crate` tarball — no build step:
+yolop can read it straight from the `.crate` tarball, no build step:
 
 ```toml
 # Cargo.toml
@@ -167,7 +167,7 @@ include = ["src/**", "plugin.json", "README.md"]
 `cargo publish`, and users install with `install_extension
 source="crates.io:yolop-extension-<name>"`. yolop resolves the version through
 the crates.io **sparse index**, downloads the tarball from the CDN, verifies
-its SHA-256 against the index, and unpacks it — all without cargo or rustc.
+its SHA-256 against the index, and unpacks it, all without cargo or rustc.
 Because a published crate ships source, the manifest's
 `capabilityServer.command` should name a binary the user already has on `PATH`
 (or one shipped in the package's `bin/`); yolop does **not** compile the crate.
@@ -176,9 +176,9 @@ Because a published crate ships source, the manifest's
 JSON-RPC over stdio, so any language works. Two language-neutral artifacts
 describe the wire surface:
 
-- [`schema/yep/v1/meta.json`](../schema/yep/v1/meta.json) — the *vocabulary*:
+- [`schema/yep/v1/meta.json`](../schema/yep/v1/meta.json), the *vocabulary*:
   every method name (with direction) and capability token.
-- [`schema/yep/v1/schema.json`](../schema/yep/v1/schema.json) — the *payloads*:
+- [`schema/yep/v1/schema.json`](../schema/yep/v1/schema.json), the *payloads*:
   a Draft 2020-12 JSON Schema for each request/result, keyed by method under
   `messages`, with full type definitions in `$defs`. Validate what you send and
   receive against it.

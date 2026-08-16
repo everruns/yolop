@@ -1,8 +1,8 @@
-# terminal_bench — yolop on Terminal-Bench 2.1
+# terminal_bench, yolop on Terminal-Bench 2.1
 
 Benchmarks yolop on [**Terminal-Bench 2.1**](https://www.tbench.ai/news/terminal-bench-2-1):
-89 containerized terminal tasks — compile a toolchain, recover a corrupted
-database, break a cipher — each scored by the task's own test suite. 2.1 is a
+89 containerized terminal tasks, compile a toolchain, recover a corrupted
+database, break a cipher, each scored by the task's own test suite. 2.1 is a
 revision of 2.0 that fixes 28 tasks, so **2.0 and 2.1 numbers are not
 comparable**; cite the version with any result.
 
@@ -10,7 +10,7 @@ Two harnesses stack, each owning what it is good at:
 
 | Layer | Owns |
 |-------|------|
-| [Mira](https://github.com/everruns/mira) (`mira` CLI) | the target matrix, sample/target selection, saved run folders, reporting — the same role it plays for [`swebench_verified`](../swebench_verified/) |
+| [Mira](https://github.com/everruns/mira) (`mira` CLI) | the target matrix, sample/target selection, saved run folders, reporting, the same role it plays for [`swebench_verified`](../swebench_verified/) |
 | [Harbor](https://harborframework.com) (`harbor` CLI) | one case: build the task container, run the agent in it, run the task's verifier |
 
 `terminal_bench.py` is the Mira study; it shells out to `harbor run` per case and
@@ -26,19 +26,19 @@ host-built binary** into the container instead of fetching a release.
 
 Two yolop features do the heavy lifting:
 
-- **`--trajectory-out` writes ATIF v1.7** — the same format Harbor consumes
+- **`--trajectory-out` writes ATIF v1.7**: the same format Harbor consumes
   (see [`knowledge/specs/trajectory.md`](../../knowledge/specs/trajectory.md)).
   The adapter points it at `/logs/agent/trajectory.json`, declares
   `SUPPORTS_ATIF`, and hands the document over unconverted. Token totals and
   cost come from its `final_metrics`.
 - **`--session-dir` writes `events.jsonl` incrementally**, and `/logs/agent` is
-  bind-mounted from the host trial dir — so the host can watch cost as it
+  bind-mounted from the host trial dir, so the host can watch cost as it
   accrues and stop the run at `max_cost_usd`. yolop has no native dollar cap.
 
 The adapter also applies `prompt_autonomous.md` to every instruction by default
 (override with `--ak prompt_template_path=<path>`). Terminal-Bench instructions
-are written as if to a colleague — "please help me find them and merge them into
-master" — but there is nobody in the container to answer a follow-up, and grading
+are written as if to a colleague, "please help me find them and merge them into
+master", but there is nobody in the container to answer a follow-up, and grading
 looks only at the filesystem after the agent exits, so a run that stops to ask
 for confirmation scores zero with the work undone. The template says so.
 
@@ -49,7 +49,7 @@ filesystem, so edits must land in place rather than on a linked branch.
 ### ABI: the binary must match the image
 
 Harbor **always** runs the agent inside the task's container, and Terminal-Bench
-images are mostly Debian bookworm (glibc 2.36) — older than a typical dev box, so
+images are mostly Debian bookworm (glibc 2.36), older than a typical dev box, so
 a host glibc build will not start there. Build the static musl binary
 (`bootstrap.sh` does this):
 
@@ -62,14 +62,14 @@ Point `TB_YOLOP_BIN` elsewhere to override it.
 ## First run
 
 Two `easy` tasks, yolop · gpt-5.6-terra (via OpenRouter, so `cost_usd` is the
-real charge), run `20260730T205010Z-4dc1` — **2/2 resolved for $0.20**:
+real charge), run `20260730T205010Z-4dc1`, **2/2 resolved for $0.20**:
 
 | task | resolved | cost | wall | llm calls | tool calls |
 |---|---|---|---|---|---|
 | `fix-git` | ✓ | $0.091 | 73s | 13 | 16 |
 | `cobol-modernization` | ✓ | $0.106 | 85s | 16 | 20 |
 
-Two cents of signal, not a resolve rate — run the full 89 for a headline number.
+Two cents of signal, not a resolve rate, run the full 89 for a headline number.
 Both cases needed a fix that the run surfaced, and both are worth knowing about
 before reading any Terminal-Bench result:
 
@@ -81,7 +81,7 @@ before reading any Terminal-Bench result:
   nothing reads the agent's output and that only the filesystem is graded.
 - **The verifier needs its own network trust.** Many tasks' `test.sh` fetches
   `uv` before running the tests. The verifier phase inherits none of the agent's
-  environment, so behind a TLS-terminating proxy every task fails to *score* —
+  environment, so behind a TLS-terminating proxy every task fails to *score*,
   reported as a 0.0 reward that looks exactly like a wrong answer. `TB_CA_CERT`
   now also configures the verifier (see [Environment knobs](#environment-knobs)).
 
@@ -89,12 +89,12 @@ before reading any Terminal-Bench result:
 
 Per `(task, config)` case, surfaced in the host's transcript/usage:
 
-- **success** — `resolved` (reward 1.0 = the task's tests all passed; Terminal-Bench is pass/fail per task)
-- **time** — `wall_time_s` (harness-measured, includes container build + verify)
-- **tokens** — input, output, `cache_read_tokens`; **cost** — `cost_usd` from yolop's own accounting
-- **loop shape** — `agent_steps`, `llm_calls`, `tool_calls`, per-tool `tools_used`
-- **stop_reason** — `completed` / `budget` / `timeout` / `error`
-- **config metadata** — agent, provider, model, reasoning effort, yolop version
+- **success**: `resolved` (reward 1.0 = the task's tests all passed; Terminal-Bench is pass/fail per task)
+- **time**: `wall_time_s` (harness-measured, includes container build + verify)
+- **tokens**: input, output, `cache_read_tokens`; **cost**: `cost_usd` from yolop's own accounting
+- **loop shape**: `agent_steps`, `llm_calls`, `tool_calls`, per-tool `tools_used`
+- **stop_reason**: `completed` / `budget` / `timeout` / `error`
+- **config metadata**: agent, provider, model, reasoning effort, yolop version
 
 Samples carry `difficulty`, `category`, and the task's own keyword tags, so the
 host can break results down by any of them:
@@ -152,7 +152,7 @@ reasoning effort unset at the CLI. Luna recorded its effective profile value as
 | metric | Terra | Luna | Luna vs Terra |
 |---|---:|---:|---:|
 | resolved | 6/8 (75%) | 5/8 (62.5%) | -1 task (-12.5 pp) |
-| easy | 3/3 | 3/3 | — |
+| easy | 3/3 | 3/3 |, |
 | medium | 2/3 | 1/3 | -1 task |
 | hard | 1/2 | 1/2 | different task passed |
 | estimated cost | $1.344 | $0.552 | -58.9% |
@@ -209,11 +209,11 @@ table bills full `prompt_tokens`, including cache reads that dominate these
 agentic runs, and Terra and Luna have different configured rates. The absolute
 figures are ceilings; the 58.9% delta describes yolop's estimator.
 
-It is selected deterministically by `suites/select_control.py` — no hand-picking:
+It is selected deterministically by `suites/select_control.py`, no hand-picking:
 tasks needing a GPU or more than 4 GiB are excluded (so the suite runs
 concurrently on an ordinary box), each tier is ordered by `(agent timeout, name)`
 so the cheapest come first, and a task is taken only if its category is not
-already in the suite. Only `easy` needs the fallback — there are four easy tasks
+already in the suite. Only `easy` needs the fallback, there are four easy tasks
 and three of them are `software-engineering`. Seven categories over eight tasks.
 
 ```bash
@@ -227,7 +227,7 @@ selects it anywhere. Re-running the selector on the same dataset reproduces the
 committed set exactly; **bump to `control-v2` rather than editing v1**, so
 historical numbers stay comparable.
 
-Eight tasks is a regression signal, not a resolve rate — a one-task swing is
+Eight tasks is a regression signal, not a resolve rate, a one-task swing is
 12.5%. Read it as movement over time on a fixed set, and use the `full` preset
 when you need a number to quote.
 
@@ -235,11 +235,11 @@ when you need a number to quote.
 
 Two nested caps, because a terminal task can loop for its full agent timeout:
 
-- **Per case** — `max_cost_usd` in the matrix (default **$5**). The adapter
+- **Per case**: `max_cost_usd` in the matrix (default **$5**). The adapter
   polls the in-flight `events.jsonl` from the host and `SIGINT`s yolop once the
   cap is passed (`stop_reason: budget`). The verifier still runs against
   whatever the agent had written to disk by then.
-- **Per run** — `TB_MAX_COST_USD`, a budget across *every* case in the run. The
+- **Per run**: `TB_MAX_COST_USD`, a budget across *every* case in the run. The
   study clamps each case's cap to what the run has left, and once the budget is
   gone the remaining cases are skipped and reported N/A rather than started.
 
@@ -290,11 +290,11 @@ TB_MAX_COST_USD=5 doppler run -- mira run --preset smoke
 doppler run -- mira run --preset full --group-by difficulty
 ```
 
-`mira run` selects like `cargo test` — `--samples <glob>`, `--tag easy`,
-`--targets <glob>` — and takes the cross-product of the chosen samples and
+`mira run` selects like `cargo test`, `--samples <glob>`, `--tag easy`,
+`--targets <glob>`, and takes the cross-product of the chosen samples and
 targets.
 
-### Presets — named runs
+### Presets, named runs
 
 | Preset | Purpose | Samples | Targets |
 |--------|---------|---------|---------|
@@ -362,6 +362,6 @@ evals/terminal_bench/
 - **New yolop flag:** add a `CliFlag` to `harbor_yolop.Yolop.CLI_FLAGS` and pass
   it per config as an `--ak <kwarg>=<value>`.
 - **A different Harbor dataset** (terminal-bench-pro, swebench-verified as
-  packaged by Harbor): a sibling study folder — `DATASET`/`DATASET_NAME` are the
+  packaged by Harbor): a sibling study folder, `DATASET`/`DATASET_NAME` are the
   only benchmark-specific constants, but the matrix and prompt framing differ
   enough that a copy beats a flag.

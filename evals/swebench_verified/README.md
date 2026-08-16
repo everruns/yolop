@@ -1,10 +1,10 @@
-# swebench_verified — yolop benchmark study
+# swebench_verified, yolop benchmark study
 
 Benchmarks yolop on coding benchmarks, starting with **SWE-bench Verified**.
 swebench_verified is a [Mira](https://github.com/everruns/mira) eval **study**: the
 generic `mira` host CLI owns the target matrix, selection, saved run folders, and
-JSON/HTML/JUnit reporting, while this Python study — driven over Mira's stdio
-protocol — owns the SWE-bench-specific work (loading instances, checking out
+JSON/HTML/JUnit reporting, while this Python study, driven over Mira's stdio
+protocol, owns the SWE-bench-specific work (loading instances, checking out
 repos, running agent CLIs, and the Docker `FAIL_TO_PASS` scoring). Designed to
 grow: new benchmarks and new agents plug in behind small interfaces.
 
@@ -31,7 +31,7 @@ agent, so scoring is identical.
 ### First comparison
 
 Seven configs on `astropy__astropy-12907` (SWE-bench Verified), same prompt and
-Docker scorer — all **resolved**. `effort` is the reasoning effort *actually
+Docker scorer, all **resolved**. `effort` is the reasoning effort *actually
 applied* (yolop records it per request; it picks a per-model default when none is
 configured):
 
@@ -40,22 +40,22 @@ configured):
 | yolop (claude-sonnet-4-5) | high | ✓ | $0.288† | 131s | 26 | 26 | 26 |
 | yolop (claude-opus-4-8) | high | ✓ | $0.114† | 122s | 10 | 10 | 9 |
 | yolop (gpt-5.5, OpenAI) | medium | ✓ | $1.698† | 156s | 23 | 23 | 22 |
-| yolop · OpenRouter (nvidia nemotron-3-ultra-550b) | — | ✓ | $0.718 | 607s | 71 | 71 | 70 |
+| yolop · OpenRouter (nvidia nemotron-3-ultra-550b) |, | ✓ | $0.718 | 607s | 71 | 71 | 70 |
 | claude-code (claude-sonnet-4-5) | n/a | ✓ | $0.830 | 226s | 34 | 54 | 33 |
 | codex (gpt-5.5) | n/a | ✓ | ~$0.063\* | 27s | 1 | 6 | 11 |
 | pi (gpt-5.5) | n/a | ✓ | $0.099 | 22s | 7 | 14 | 6 |
 
-\* codex reports no cost; harness estimate from a placeholder `price` block —
+\* codex reports no cost; harness estimate from a placeholder `price` block,
 update to real gpt-5.5 pricing. `n/a` = the agent's CLI doesn't expose effort.
 
 † yolop's cost for providers that don't return an inline price (OpenAI,
 Anthropic) is a price-table **estimate that does not discount cached input**
 (`estimate_cost_usd` bills full `prompt_tokens`). For OpenAI `prompt_tokens`
 *includes* cached tokens, so cache-heavy runs are **over-stated**: the gpt-5.5
-row reads $1.698 but ≈87% of its prompt was cache reads — applying the standard
+row reads $1.698 but ≈87% of its prompt was cache reads, applying the standard
 cache discount gives ≈ **$0.38**, matching the same model's real OpenRouter cost
 ($0.36). OpenRouter and pi costs are tool-reported (real). `effort` is the model
-reasoning-effort setting (`reasoning_effort`; per-model default when unset — see the
+reasoning-effort setting (`reasoning_effort`; per-model default when unset, see the
 `openai-gpt-5.5-high` config for `high`). One instance is a smoke, not a resolve-rate;
 run the full set per config for leaderboard-comparable numbers.
 
@@ -64,23 +64,23 @@ run the full set per config for leaderboard-comparable numbers.
 For every `(instance, config)` case it records, mined from the agent's event log
 and surfaced in the host's transcript/usage:
 
-- **success** — `resolved` (did the hidden test suite pass?)
-- **time** — `wall_time_s` (harness-measured) and `agent_reported_time_s` (from the agent)
+- **success**: `resolved` (did the hidden test suite pass?)
+- **time**: `wall_time_s` (harness-measured) and `agent_reported_time_s` (from the agent)
 - **turns**/**iterations**, **assistant/user messages**, **llm_calls**
-- **tool calls** — total, failed, and a per-tool breakdown (`tools_used`)
-- **tokens** — input, output, `cache_read_tokens`, `cache_creation_tokens`, total
-- **cost** — `cost_usd` (tool-reported where available, else estimated from `price`)
-- **efficiency** — cost per resolved instance ("score per dollar"), computable
+- **tool calls**: total, failed, and a per-tool breakdown (`tools_used`)
+- **tokens**: input, output, `cache_read_tokens`, `cache_creation_tokens`, total
+- **cost**: `cost_usd` (tool-reported where available, else estimated from `price`)
+- **efficiency**: cost per resolved instance ("score per dollar"), computable
   from the host's per-case `resolved` + `cost_usd`
-- **stop_reason** — `completed` / `timeout` / `budget` / `error`
-- **config metadata** — agent, provider, model, reasoning effort, stop reason
+- **stop_reason**: `completed` / `timeout` / `budget` / `error`
+- **config metadata**: agent, provider, model, reasoning effort, stop reason
 
 Each case's transcript carries these on Mira's open channels: a numeric
 **`metrics`** map (`turns`, `iterations`, `tool_calls`, `tool_calls_failed`,
 cache tokens, `agent_reported_time_s`) that feeds the host's generic budget
 scorers, and structured **`metadata`** (`agent`, `provider`, `model`,
 `reasoning_effort`, `stop_reason`, `resolved`, `repo`, `difficulty`,
-`tools_used`, and the full SWE-bench `eval_report` — `FAIL_TO_PASS`/`PASS_TO_PASS`
+`tools_used`, and the full SWE-bench `eval_report`, `FAIL_TO_PASS`/`PASS_TO_PASS`
 status). Tokens/cost/latency stay on the typed `usage`/`timing` fields. A
 Docker/harness failure to score is reported as an **infra error** (`error_kind`),
 so the host treats it as **N/A** and retries it rather than counting it as the
@@ -98,7 +98,7 @@ mira run --group-by agent                          # yolop vs claude-code vs …
 
 Cost is cache-aware (`cache_read`/`cache_creation` tokens are priced), so cost
 per resolved instance is a fair cross-model comparison. The host surfaces all of
-the above per case in its JSON and HTML reports — emit one with
+the above per case in its JSON and HTML reports, emit one with
 `mira ... run --format html --out report.html` (a single self-contained file),
 `--format json --out run.json` for the raw rows, or `--format jsonl`/`--format csv`
 for un-aggregated, analysis-ready exports (one row per case, resp. per case × score). Each saved run also stamps
@@ -112,7 +112,7 @@ matrix). None of these CLIs has a native dollar cap, so the study watches the
 running cost in the session log and kills the run if
 it exceeds the cap (recorded as `stop_reason: budget`). Cost comes from the
 tool's own reporting where available; for agents that report only tokens (codex)
-set a per-config `price` block (USD per 1M tokens) so cost — and the cap — can be
+set a per-config `price` block (USD per 1M tokens) so cost, and the cap, can be
 computed. Without a price/reported cost, only the wall-clock `timeout` bounds a
 run.
 
@@ -160,7 +160,7 @@ evals/swebench_verified/
 
 The study is a single self-contained file with its dependencies declared inline
 ([PEP 723](https://peps.python.org/pep-0723/)), so `uv run swebench_verified.py`
-builds an ephemeral env and runs it — no package, `pyproject.toml`, or venv.
+builds an ephemeral env and runs it, no package, `pyproject.toml`, or venv.
 
 The `mira` host owns durable run output. Every run auto-archives a self-contained run
 folder under `results/` (`results/<run_id>/{report.json,report.html,meta.json}`,
@@ -202,7 +202,7 @@ Requires a running **Docker** daemon (SWE-bench runs the hidden tests in
 per-instance containers) and provider keys in the environment: `OPENAI_API_KEY`
 (yolop openai / codex / pi), `ANTHROPIC_API_KEY` (yolop anthropic / claude-code),
 `OPENROUTER_API_KEY` (yolop openrouter configs). Use `doppler run --` to inject
-secrets. **codex** ignores `OPENAI_API_KEY` for requests — log in once with
+secrets. **codex** ignores `OPENAI_API_KEY` for requests, log in once with
 `printenv OPENAI_API_KEY | codex login --with-api-key`. To benchmark a non-yolop
 agent, its CLI must be installed and on `PATH` (`claude`, `codex`, or `pi`).
 
@@ -216,7 +216,7 @@ host CLI drives it over a stdio JSON protocol, owning the matrix, selection,
 saved run folders, and reporting, while the study owns the SWE-bench-specific run +
 Docker scoring. `mira.toml` declares a `default_launcher` (and uses mira >=0.3.0
 `samples` presets), so from
-this directory a bare `mira run`/`mira list` starts the study — no `--uv
+this directory a bare `mira run`/`mira list` starts the study, no `--uv
 swebench_verified.py` (or the older `--cmd "uv run swebench_verified.py"`) needed:
 
 ```bash
@@ -245,14 +245,14 @@ they can be set on the `mira` line: `SWEBENCH_NO_EVAL=1` (skip Docker scoring),
 (build images locally instead of pulling prebuilt), `SWEBENCH_EVAL_TIMEOUT`,
 `SWEBENCH_YOLOP_BIN` (override the yolop binary), `SWEBENCH_CACHE_LEVEL=instance`
 (keep the per-instance Docker image so a multi-target matrix pulls it once
-rather than re-pulling per case — avoids Docker Hub anonymous pull-rate limits;
+rather than re-pulling per case, avoids Docker Hub anonymous pull-rate limits;
 default `env`). The per-instance USD cap is set per config in the matrix
 (`max_cost_usd`, default `$5`).
 
-### Presets — named runs
+### Presets, named runs
 
 A **preset** (`[presets.NAME]` in `mira.toml`, applied with `--preset NAME`) is a
-saved *selection* bundle — which samples (`tag`/`samples`) and which targets — so
+saved *selection* bundle, which samples (`tag`/`samples`) and which targets, so
 the recurring run scenarios have names. It's the same one eval (`swebench_verified`)
 sliced differently, not separate evals. A preset only subsets the grid;
 `--group-by` isn't selection, so pass it too (the run folder is always saved).
@@ -264,15 +264,15 @@ sliced differently, not separate evals. A preset only subsets the grid;
 | `full` | Whole benchmark, run rarely | all 500 | same as tracking (edit as needed) | `mira … run --preset full --group-by repo` |
 
 A preset's `samples` is a glob on the sample id (here the instance id), so it can
-**pin a sample** — clone the `astropy-12907-compare` block (new name + `samples`) to
+**pin a sample**: clone the `astropy-12907-compare` block (new name + `samples`) to
 pin other instances. (The cross-cutting case-key substring stays available as the
-positional `mira run [filter]`.) A **target** is Mira's comparison axis — a model *or* a
-harness — so agent configs are first-class targets, not models faked into the
+positional `mira run [filter]`.) A **target** is Mira's comparison axis, a model *or* a
+harness, so agent configs are first-class targets, not models faked into the
 model slot.
 
 ## Config matrix
 
-The matrix is the `MATRIX` dict near the top of `swebench_verified.py` — one
+The matrix is the `MATRIX` dict near the top of `swebench_verified.py`, one
 entry per config, each a Mira target (label = config name). `agent:` picks the
 adapter (`yolop` | `claude-code` | `codex` | `pi`); remaining keys go to it.
 `DEFAULTS` (timeout, `max_cost_usd`) applies to all. Add a config by appending an
@@ -293,7 +293,7 @@ yolop configs run the binary at `target/release/yolop` (override with
 
 ## Extending
 
-It's one file — extend it in place:
+It's one file, extend it in place:
 
 - **New agent:** add a `run_<agent>(cfg, instance, workdir, session_dir) -> AgentRun`
   (use the shared `run_agent_process` driver + an event-log `extract_*` parser),
@@ -308,7 +308,7 @@ Full `events.jsonl` logs are large and noisy, so they stay out of git (in
 `.cache/sessions/`). The agent records each log's path; the case transcript
 returned to the host carries the metrics mined from it. Uploading these logs to
 durable storage (object store /
-dataset) is a deliberate, still-open integration point — the harness keeps the
+dataset) is a deliberate, still-open integration point, the harness keeps the
 logs intact and addressable so an uploader can be bolted on without changing the
 run path. **TODO:** wire up an uploader (and record the resulting URL on each
 result record).
@@ -328,15 +328,15 @@ The host asks the study to run one `(instance, config)` case at a time; for each
 
 Steps 1–3 above default to running on the **host**: `/testbed` is copied out of
 the instance image and yolop edits that copy. The host has no compiled/installed
-copy of the project, so the agent can't `import` it or run its tests — and weak
+copy of the project, so the agent can't `import` it or run its tests, and weak
 models then burn 60–100+ turns trying to build the package before they can check
 their fix (a confound that dwarfs the actual reasoning). Set `container: True` on
 a yolop config (or `SWEBENCH_IN_CONTAINER=1` for all of them) to run the agent
-**inside the instance container** instead — the standard SWE-bench setup, where
+**inside the instance container** instead, the standard SWE-bench setup, where
 the project is already installed in the image's `testbed` env. The agent edits
 `/testbed` in place; the patch is captured there; scoring is unchanged (the
 official evaluator still runs in its own fresh container). Container mode
 bind-mounts the host `yolop`, so point `SWEBENCH_YOLOP_BIN` at a binary built for
-the image ABI — a static musl build (`cargo build --release --target
+the image ABI, a static musl build (`cargo build --release --target
 x86_64-unknown-linux-musl`) runs in every instance image; the host glibc build
 will not.

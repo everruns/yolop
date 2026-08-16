@@ -1,4 +1,4 @@
-# evals — yolop evaluation studies
+# evals, yolop evaluation studies
 
 This directory holds yolop's evaluation studies, each a
 [Mira](https://github.com/everruns/mira) eval **study**: the generic `mira` host
@@ -8,10 +8,10 @@ agent, scoring). One study per subfolder.
 
 | Study | What it measures |
 |-------|------------------|
-| [`swebench_verified/`](swebench_verified/) | yolop (and other coding agents) on **SWE-bench Verified** — resolve rate via the official Docker `FAIL_TO_PASS` harness, plus tokens/cost/latency. |
-| [`terminal_bench/`](terminal_bench/) | yolop (and other terminal agents) on **Terminal-Bench 2.1** — 89 containerized terminal tasks scored by each task's own tests, run through [Harbor](https://harborframework.com) with a yolop agent adapter. |
-| [`harness_basic/`](harness_basic/) | **yolop feature A/Bs** on basic coding cases — models × reasoning effort × yolop harness configurations (out-of-the-box, ast-grep off, …), pure Rust on the `mira-eval` SDK, driving headless `yolop -p`. |
-| [`lsp_integration/`](lsp_integration/) | The optional **LSP capability**, isolated — semantic-navigation traps (decoy renames, re-export chains, no-build diagnostics) run with the capability off vs on, plus `lsp_*` adoption metrics. Same pure-Rust `mira-eval` pattern as `harness_basic/`; language servers come from its `bootstrap.sh`. |
+| [`swebench_verified/`](swebench_verified/) | yolop (and other coding agents) on **SWE-bench Verified**: resolve rate via the official Docker `FAIL_TO_PASS` harness, plus tokens/cost/latency. |
+| [`terminal_bench/`](terminal_bench/) | yolop (and other terminal agents) on **Terminal-Bench 2.1**: 89 containerized terminal tasks scored by each task's own tests, run through [Harbor](https://harborframework.com) with a yolop agent adapter. |
+| [`harness_basic/`](harness_basic/) | **yolop feature A/Bs** on basic coding cases, models × reasoning effort × yolop harness configurations (out-of-the-box, ast-grep off, …), pure Rust on the `mira-eval` SDK, driving headless `yolop -p`. |
+| [`lsp_integration/`](lsp_integration/) | The optional **LSP capability**, isolated, semantic-navigation traps (decoy renames, re-export chains, no-build diagnostics) run with the capability off vs on, plus `lsp_*` adoption metrics. Same pure-Rust `mira-eval` pattern as `harness_basic/`; language servers come from its `bootstrap.sh`. |
 
 ## Running a study with mira
 
@@ -19,9 +19,9 @@ Install the host CLI once (`brew install everruns/tap/mira`, `cargo binstall
 mira-cli`, or `cargo install mira-cli --locked`), then drive a study from its own
 directory so its `mira.toml` is found and the auto-saved run folders land in that
 study's `results/`. Each study's `mira.toml` declares a `default_launcher` (these
-studies target mira >=0.3.0), so a bare `mira run`/`mira list` from that directory starts it — no
+studies target mira >=0.3.0), so a bare `mira run`/`mira list` from that directory starts it, no
 `--uv`/`--cmd` needed. (Authoring a Python study? The
-[`mira-eval`](https://pypi.org/project/mira-eval/) SDK is on PyPI —
+[`mira-eval`](https://pypi.org/project/mira-eval/) SDK is on PyPI,
 `pip install mira-eval`.)
 
 ```bash
@@ -40,8 +40,8 @@ doppler run -- mira run --samples astropy__astropy-12907 \
     --targets anthropic-claude-sonnet-4.5
 ```
 
-`mira run` selects like `cargo test` — by `--samples <glob>`
-(`--samples astropy__astropy-12907`), `--tag tracking-v1`, or `--targets <glob>` —
+`mira run` selects like `cargo test`, by `--samples <glob>`
+(`--samples astropy__astropy-12907`), `--tag tracking-v1`, or `--targets <glob>`,
 and takes the cross-product of the chosen samples and targets (the positional
 `mira run [filter]` is still a case-key substring). `--samples`/`--targets`/
 `--evals` glob-match (`*`, `?`, `[set]`, `{a,b}`). Provider keys live only in the

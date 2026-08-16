@@ -1,10 +1,10 @@
 ---
 type: Product Specification
-title: User ask — request tracking and turn-end validation
-description: Defines the user ask — request tracking and turn-end validation contract for Yolop.
+title: User ask, request tracking and turn-end validation
+description: Defines the user ask, request tracking and turn-end validation contract for Yolop.
 ---
 
-# User ask — request tracking and turn-end validation
+# User ask, request tracking and turn-end validation
 
 Status: experimental and opt-in through the `yolop_user_ask` capability.
 
@@ -108,7 +108,7 @@ restart on process resume.
 
 ## Related
 
-- [`goal.md`](./goal.md) — autonomous completion loops.
-- [`conversational-control.md`](./conversational-control.md) — `set_user_ask` /
+- [`goal.md`](./goal.md), autonomous completion loops.
+- [`conversational-control.md`](./conversational-control.md), `set_user_ask` /
   `clear_user_ask` tools.
-- [`commands.md`](./commands.md) — `/ask` in the command registry.
+- [`commands.md`](./commands.md), `/ask` in the command registry.

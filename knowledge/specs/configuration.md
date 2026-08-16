@@ -12,8 +12,8 @@ Status: v1 implemented.
 
 yolop's global settings live in `settings.toml` in the platform config dir.
 Optional named profiles live below `profiles/` and form a sparse execution
-layer above global settings. Global loading is deliberately tolerant — unknown keys are ignored, never fatal
-(see `Settings::from_table`) — so a user or another tool can add keys without
+layer above global settings. Global loading is deliberately tolerant, unknown keys are ignored, never fatal
+(see `Settings::from_table`), so a user or another tool can add keys without
 breaking yolop. The cost of that tolerance is that the file carries no
 *semantics*: nothing tells the agent (or the user) what a key means, what type
 it takes, what its default is, or how to set it safely.
@@ -26,13 +26,13 @@ forcing slash-command syntax.
 
 ## What
 
-### Schema registry — single source of truth
+### Schema registry, single source of truth
 
 `src/config/schema.rs` is a compile-time registry of `ConfigField`s. Each field
 carries a canonical `key`, `aliases`, `title`, `description`, value `kind`
 (`text` / `bool` / `secret`), effective `default`, `examples`, and whether it is
 `provider_scoped` (addressed as `<key>.<provider>`). This one registry feeds
-every configuration surface — the tools below and the `yolop-config` skill — so
+every configuration surface, the tools below and the `yolop-config` skill, so
 there is no second place to keep in sync.
 
 Keys are addressed the way a human would name them:
@@ -108,12 +108,12 @@ profiles fail before session construction.
 The `config` capability (`src/capabilities/config.rs`) exposes two tools backed
 by the schema:
 
-- **`get_config`** — with no argument, returns every key with its semantics and
+- **`get_config`**: with no argument, returns every key with its semantics and
   current value; with a `key`, returns just that entry. Secrets are reported as
   `stored` / `unset`, never echoed. Use `key=capabilities` for the registered
   catalog plus stored overrides and effective harness, or `key=capabilities.<ref>`
   for one capability's schema metadata (`config_schema`, `config_ui_schema`).
-- **`set_config`** — validates and persists scalar keys via `value` (`clear`
+- **`set_config`**: validates and persists scalar keys via `value` (`clear`
   unsets). Harness overrides: `key=capabilities` with a `json` object appends one
   `[[capabilities]]` entry; `value=clear` drops all stored overrides. Capability
   config is validated through each capability's `validate_config`.
@@ -139,8 +139,8 @@ carrying speculative methods.
 
 `SettingsStore` implements `ConfigService`, so the shared layered handle that
 backs writes also serves effective reads. Read-only capabilities take only an
-`Arc<dyn ConfigService>`; write-coupled capabilities hold both — reads go
-through the service handle, writes through the concrete `SettingsStore` — so the
+`Arc<dyn ConfigService>`; write-coupled capabilities hold both, reads go
+through the service handle, writes through the concrete `SettingsStore`, so the
 read/write split is explicit at the type level. `AttributionCapability` reads
 whether attribution is enabled through the service; `ApprovalCapability` reads
 its soft-approval paranoia level through `ConfigService::approval_mode()` each

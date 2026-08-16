@@ -10,13 +10,13 @@ Status: implemented.
 
 ## Scope
 
-This is the prompt **yolop ships to the model at runtime** — `system.md` plus
+This is the prompt **yolop ships to the model at runtime**: `system.md` plus
 capability contributions. The context *this repository* presents to coding
 agents reading it is a different subject, owned by
 [agent context](agent-context.md).
 
-The two share their principles — one owner per instruction, progressive
-disclosure, judgment over ritual, prefer references in code — and this spec does
+The two share their principles, one owner per instruction, progressive
+disclosure, judgment over ritual, prefer references in code, and this spec does
 not restate them. What follows is only what is specific to a prompt assembled
 per turn from capabilities.
 
@@ -26,7 +26,7 @@ Yolop's system prompt is not a file. `src/runtime/system.md` is around a
 kilobyte, but the prefix the model actually reads is that file plus a block from
 every enabled capability plus `AGENTS.md`. For a long time only the file was
 watched, so the file stayed lean while the assembly grew to roughly five times
-its size — most of it prose restating what a tool's own `description()` already
+its size, most of it prose restating what a tool's own `description()` already
 said.
 
 Restating is not free and not neutral. It is paid on every turn including the
@@ -43,10 +43,10 @@ A fact belongs in exactly one place, chosen by what the fact is about:
 
 | Fact is about | Home |
 | --- | --- |
-| How to call a tool — arguments, sequencing, preconditions | that tool's `description()` |
-| What to do about a specific result — truncation, a guard warning, a failure | the tool result itself |
+| How to call a tool, arguments, sequencing, preconditions | that tool's `description()` |
+| What to do about a specific result, truncation, a guard warning, a failure | the tool result itself |
 | That a capability exists at all, when nothing else reveals it | a capability prompt block |
-| Cross-cutting policy — safety, untrusted input, output shape | `system.md` |
+| Cross-cutting policy, safety, untrusted input, output shape | `system.md` |
 
 A capability block that names its own tools and explains how to call them is
 duplicating the tool description; delete it. `progress_guard` and `repo_map` are
@@ -59,10 +59,10 @@ result, at the moment it applies, so neither needs a block.
 them ([tool search](tool-search.md)), but names and descriptions always ride. A
 capability block therefore splits in two:
 
-- **Discovery** — "this capability exists", "these memories are stored". Always
+- **Discovery**: "this capability exists", "these memories are stored". Always
   contributed. Gating it would be circular: the model cannot ask to reveal a
   tool it has no reason to know about.
-- **How-to** — argument shapes, file locations, when an edit takes effect.
+- **How-to**: argument shapes, file locations, when an edit takes effect.
   Contributed only once `tool_search` has revealed one of the capability's
   tools, because until the schema loads the model cannot act on it anyway.
 
@@ -88,7 +88,7 @@ being rendered belongs in `<environment_context>` next to `client_ui`.
 render (`supports_markdown`, `supports_markdown_mermaid`), or `none` for a host
 that renders nothing. Additive is the point. A listed capability is a claim
 yolop can stand behind; an absent one means "not known to render", which is the
-only honest thing to say about Mermaid over ACP — the editor renders the
+only honest thing to say about Mermaid over ACP, the editor renders the
 markdown, and the protocol never says how. A per-capability true/false would
 force a guess there, and `none` beats omitting the field, which would read as a
 value yolop failed to compute.
@@ -96,8 +96,8 @@ value yolop failed to compute.
 State the capability, not the instruction: whether a diagram is worth drawing is
 the model's call.
 
-Keep these fields *static per host*. Live values that change mid-session — the
-terminal width, the current scroll position — would rewrite the prefix on every
+Keep these fields *static per host*. Live values that change mid-session, the
+terminal width, the current scroll position, would rewrite the prefix on every
 resize and cost the cached prefix that `AGENTS.md`'s placement exists to
 protect. A capability that only holds at some widths still advertises `true`;
 degrading gracefully at the narrow end is the renderer's job, not the prompt's.
@@ -133,13 +133,13 @@ stuck twice, ask"), and habit instructions ("do not repeat passing checks").
 The prompt-specific caveat is that the preference is a default, not an absolute.
 Two blocks are directive on measured grounds:
 
-- `lsp` — softer phrasing drove adoption to near zero in `evals/lsp_integration`.
-- `repo_map` — its truncation rule was deleted on the reasoning that the same
+- `lsp`, softer phrasing drove adoption to near zero in `evals/lsp_integration`.
+- `repo_map`, its truncation rule was deleted on the reasoning that the same
   words already ship inside the truncated result, and `repo-map-bounded`
   regressed on gpt-5.5: repeated exploration calls breached their zero bar in
   5/5 trials against 2/5 before.
 
-Where an eval contradicts the preference, the eval wins — and a preference is
+Where an eval contradicts the preference, the eval wins, and a preference is
 not evidence.
 
 ### Investigation earns an owner before mutation
@@ -170,7 +170,7 @@ how-to lives in the `progress_checkpoint` tool schema. See
 
 The distinction is also model-specific. The same deletion that cost gpt-5.5 an
 extra call per truncated map was free on claude-sonnet-4-5. Prompt content that
-looks redundant against one model's judgement can be load-bearing for another's,
+looks redundant against one model's judgement can be essential for another's,
 which is why composition changes get A/B'd on both providers rather than
 reasoned about.
 
@@ -223,8 +223,8 @@ savings so a host-required transition can never depend on schema discovery.
 
 `always_on_capability_prompts_within_budget` sums the always-on static blocks
 and fails past a cap; `system_prompt_within_budget` covers `system.md`. Trimming
-once does not keep anything trimmed — each new capability's prose looks small on
-its own — so growth has to trip a gate. Raising a cap is a deliberate edit
+once does not keep anything trimmed, each new capability's prose looks small on
+its own, so growth has to trip a gate. Raising a cap is a deliberate edit
 justified in the commit, never a silent side effect.
 
 ## Validation
@@ -234,7 +234,7 @@ one model's judgement may not suit another's. Prompt-composition changes are
 A/B'd through [`evals/harness_basic`](../../evals/harness_basic/README.md)
 before they are trusted.
 
-Lean-versus-verbose is a **binary** comparison, not a harness variant — the
+Lean-versus-verbose is a **binary** comparison, not a harness variant, the
 verbose prompt is an earlier revision of yolop, so it is the `baseline` arm
 against `candidate`. Reveal gating is a **harness** variant (`no-tool-reveal`),
 because it is a capability toggle on one binary.
@@ -253,7 +253,7 @@ only, prompt policy only, and the combined candidate.
 
 ## Related
 
-- [agent context](agent-context.md) — the same principles applied to the context
+- [agent context](agent-context.md), the same principles applied to the context
   this repository presents to agents reading it.
-- [tool search](tool-search.md) — the deferral mechanism reveal gating rides on.
-- [memory](memory.md) — the two-tier disclosure this contract produces.
+- [tool search](tool-search.md), the deferral mechanism reveal gating rides on.
+- [memory](memory.md), the two-tier disclosure this contract produces.

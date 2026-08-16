@@ -66,10 +66,10 @@ config/secrets.json
 
 ### Commands
 
-- `/worktree` — show active worktree, branch, and path (or mode when inactive)
-- `/worktree off` — disable auto-activation for future turns in this session
-- `yolop worktree list` — list worktree directories on disk
-- `yolop worktree prune` — remove worktrees not referenced by any saved session (`--dry-run` to preview)
+- `/worktree`, show active worktree, branch, and path (or mode when inactive)
+- `/worktree off`, disable auto-activation for future turns in this session
+- `yolop worktree list`, list worktree directories on disk
+- `yolop worktree prune`, remove worktrees not referenced by any saved session (`--dry-run` to preview)
 
 
 Harness and `<environment_context>` tell the model to edit and commit only in

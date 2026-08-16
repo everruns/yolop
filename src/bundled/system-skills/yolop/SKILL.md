@@ -1,6 +1,6 @@
 ---
 name: yolop
-description: Built-in guide to using yolop — slash commands, keyboard shortcuts, CLI flags, tools, and session controls. Use when the user asks how yolop works, what commands or shortcuts are available, what yolop can do, or wants help using the terminal UI.
+description: Built-in guide to using yolop, slash commands, keyboard shortcuts, CLI flags, tools, and session controls. Use when the user asks how yolop works, what commands or shortcuts are available, what yolop can do, or wants help using the terminal UI.
 user-invocable: true
 ---
 
@@ -13,11 +13,11 @@ and how the UI behaves.
 
 ## Quick reference in the TUI
 
-- `/help` — commands with descriptions plus keyboard shortcuts
-- `/tools` — comma-separated list of tools available this session
-- `/mcp` — configured MCP servers (or where to add them)
-- `/cwd` — workspace root
-- Startup banner — workspace, model, tools, command names, and the most common
+- `/help`, commands with descriptions plus keyboard shortcuts
+- `/tools`, comma-separated list of tools available this session
+- `/mcp`, configured MCP servers (or where to add them)
+- `/cwd`, workspace root
+- Startup banner, workspace, model, tools, command names, and the most common
   shortcuts
 
 ## Slash commands
@@ -53,7 +53,7 @@ path as `/shell` (handy for quick one-offs).
 | `/setup [subcommand]` | Guided provider/model setup, or direct forms: `status`, `provider`, `model`, `effort`, `token`, `url`, `attribution`, `approval` |
 | `/goal [condition]` | Set a completion condition and keep working until met; `pause`/`resume`, `clear`, or omit for status |
 | `/background` | Show the task tree and branch usage |
-| `/btw <question>` | Ask a side question with session context — no tools, not added to history |
+| `/btw <question>` | Ask a side question with session context, no tools, not added to history |
 | `/worktree [off]` | Show worktree status, or `off` to disable auto worktree activation |
 
 User-invocable skills (for example `/yolop`, `/yolop-config`, `/skill-management`)
@@ -78,7 +78,7 @@ also appear in the registry when installed.
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl-C` (once, empty input) | Arm exit — press again to quit |
+| `Ctrl-C` (once, empty input) | Arm exit, press again to quit |
 | `Ctrl-C` (with draft text) | Clear the composer |
 | `Ctrl-D` | Exit immediately |
 | `Enter` while a turn runs | Queue a steering message for the next turn boundary |
@@ -109,23 +109,23 @@ viewport); there is no in-app page-up/page-down.
 
 yolop is an autonomous coding agent for the workspace it was started in.
 
-- **Files** — read, write, edit, grep, delete, and map the repository
-- **Shell** — `bash -lc` from the workspace root (120 s timeout, capped output)
-- **AST search** — structural `ast_grep` across common languages (default harness)
-- **AST edit** *(opt-in)* — previewed `ast_edit` rewrites; enable with `[[capabilities]] ref = "ast_edit"`
-- **Background work** — detached shell commands with completion wakes
-- **Web** — `web_fetch`, `free_web_search`, and `duckduckgo_instant_answer`
-- **Memory** — durable cross-session notes via `remember` / `recall` / `forget`
-- **Skills** — `SKILL.md` packages in workspace, global, and bundled system scopes;
+- **Files**: read, write, edit, grep, delete, and map the repository
+- **Shell**: `bash -lc` from the workspace root (120 s timeout, capped output)
+- **AST search**: structural `ast_grep` across common languages (default harness)
+- **AST edit** *(opt-in)*, previewed `ast_edit` rewrites; enable with `[[capabilities]] ref = "ast_edit"`
+- **Background work**: detached shell commands with completion wakes
+- **Web**: `web_fetch`, `free_web_search`, and `duckduckgo_instant_answer`
+- **Memory**: durable cross-session notes via `remember` / `recall` / `forget`
+- **Skills**: `SKILL.md` packages in workspace, global, and bundled system scopes;
   find/install from skills.sh via `search_skills` / `install_skill`
-- **MCP** — extra tools from `.mcp.json` / global `mcp.json`
-- **Hooks** — block, allow, or audit tool calls (see `yolop-hooks` skill)
-- **Goal loops** — `/goal` keeps working until an evaluator confirms the condition
-- **Soft approval** — optional spoken consent before destructive steps (`/setup approval`)
-- **Sessions** — resume with `--session <id>`; every run logs to `events.jsonl`
+- **MCP**: extra tools from `.mcp.json` / global `mcp.json`
+- **Hooks**: block, allow, or audit tool calls (see `yolop-hooks` skill)
+- **Goal loops**: `/goal` keeps working until an evaluator confirms the condition
+- **Soft approval**: optional spoken consent before destructive steps (`/setup approval`)
+- **Sessions**: resume with `--session <id>`; every run logs to `events.jsonl`
 
 Natural-language control: the agent can switch model, effort, or provider, clear
-the screen, show help, and more without the user typing slash commands — see
+the screen, show help, and more without the user typing slash commands, see
 `knowledge/specs/conversational-control.md`.
 
 ## CLI flags (non-interactive)
@@ -135,7 +135,7 @@ the screen, show help, and more without the user typing slash commands — see
 | `-C, --cwd <PATH>` | Workspace root (default: current directory) |
 | `--provider <P>` | Force a provider |
 | `-m, --model <ID>` | Override model for the chosen provider |
-| `-p, --print <PROMPT>` | One-shot mode — print result and exit |
+| `-p, --print <PROMPT>` | One-shot mode, print result and exit |
 | `--acp` | Agent Client Protocol over stdio (editors like Zed) |
 | `--session <ID>` | Resume a previous session |
 | `--session-dir <PATH>` | Override where session folders are stored |
@@ -147,7 +147,7 @@ Subcommands: `yolop version`, `yolop into zed`, `yolop worktree list|prune`.
 
 | Skill | When to use |
 | --- | --- |
-| `yolop-config` | Change `settings.toml` — provider, tokens, models, capabilities |
+| `yolop-config` | Change `settings.toml`, provider, tokens, models, capabilities |
 | `yolop-hooks` | Configure behavioral hooks |
 | `skill-management` | Install, upgrade, or remove skills |
 | `ast-grep` | Structural code search and rewrite patterns |
@@ -157,7 +157,7 @@ Subcommands: `yolop version`, `yolop into zed`, `yolop worktree list|prune`.
 When the user asks what yolop can do or how to use it:
 
 1. Summarize the relevant section from this skill (commands, shortcuts, or
-   features — match what they asked).
+   features, match what they asked).
 2. For the **live** command or tool list, prefer `/help`, `/tools`, or
    `run_command` / `list_skills` rather than guessing.
 3. Point power users at `README.md` and `knowledge/specs/` for protocol and configuration

@@ -335,8 +335,8 @@ repository, and richer native ACP UI would require ACP support.
 
 ## Related
 
-- [`session-history.md`](./session-history.md) — local session discovery.
-- [`worktrees.md`](./worktrees.md) — session-owned workspace isolation.
-- [`commands.md`](./commands.md) — command registry and host routing.
-- [`conversational-control.md`](./conversational-control.md) — natural-language
+- [`session-history.md`](./session-history.md), local session discovery.
+- [`worktrees.md`](./worktrees.md), session-owned workspace isolation.
+- [`commands.md`](./commands.md), command registry and host routing.
+- [`conversational-control.md`](./conversational-control.md), natural-language
   access to user-facing controls.

@@ -1,18 +1,18 @@
 ---
 type: Product Specification
-title: `lsp` — language-server integration (optional)
-description: Defines the `lsp` — language-server integration (optional) contract for Yolop.
+title: `lsp`, language-server integration (optional)
+description: Defines the `lsp`, language-server integration (optional) contract for Yolop.
 ---
 
-# `lsp` — language-server integration (optional)
+# `lsp`, language-server integration (optional)
 
 Status: implemented in `src/capabilities/lsp/`. **Off by default.**
 
 ## Why
 
 Yolop's navigation stack (grep, `repo_map`, `ast_grep`) is lexical and
-structural. It cannot answer semantic questions — where a symbol is *defined*,
-who *references* it across module boundaries, what *type* an expression has —
+structural. It cannot answer semantic questions, where a symbol is *defined*,
+who *references* it across module boundaries, what *type* an expression has,
 and a textual rename misses re-exports, barrels, and aliases. Real language
 servers already solve all of this per ecosystem; wiring them in gives the
 agent IDE-grade code intelligence without reimplementing any language.
@@ -22,17 +22,17 @@ agent IDE-grade code intelligence without reimplementing any language.
 A yolop-owned `lsp` capability that speaks the Language Server Protocol over
 stdio to real servers and exposes seven tools:
 
-- `lsp_diagnostics` — errors/warnings for one file (pull diagnostics when the
+- `lsp_diagnostics`, errors/warnings for one file (pull diagnostics when the
   server supports them, merged and deduped with push diagnostics).
-- `lsp_definition` — go to definition / type definition / implementation /
+- `lsp_definition`, go to definition / type definition / implementation /
   declaration.
-- `lsp_references` — semantic find-references across the workspace.
-- `lsp_hover` — type signature and docs at a position.
-- `lsp_rename` — workspace-wide rename; applies the server's `WorkspaceEdit`
+- `lsp_references`, semantic find-references across the workspace.
+- `lsp_hover`, type signature and docs at a position.
+- `lsp_rename`, workspace-wide rename; applies the server's `WorkspaceEdit`
   to disk (with `dry_run` preview).
-- `lsp_symbols` — file outline (`documentSymbol`) or fuzzy workspace search
+- `lsp_symbols`, file outline (`documentSymbol`) or fuzzy workspace search
   (`workspace/symbol`).
-- `lsp_code_actions` — list server quick fixes/refactorings at a position and
+- `lsp_code_actions`, list server quick fixes/refactorings at a position and
   apply one by exact title (workspace-edit actions only; command-only actions
   are reported but not executable).
 
@@ -40,7 +40,7 @@ Tool coordinates are 1-based `(line, column)` counted in characters, matching
 `ast_grep` output; the capability converts to/from the server's negotiated
 position encoding (UTF-8/UTF-16/UTF-32).
 
-### Enablement — off by default
+### Enablement, off by default
 
 The capability is registered in the catalog but **not** in the default
 harness, because it spawns external server processes. Enable it per user in
@@ -72,7 +72,7 @@ Config (validated against the capability's `config_schema`) can override a
 built-in's `command`/`args`/`extensions`, disable one (`enabled = false`), or
 add a new server key (requires `command` + `extensions`), plus
 `request_timeout_ms` and `diagnostics_wait_ms`. A missing binary is a tool
-error at call time with install/override guidance — never a startup failure.
+error at call time with install/override guidance, never a startup failure.
 
 ### Safety
 
