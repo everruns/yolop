@@ -11,6 +11,10 @@ defines how this repository organizes what agents read.
 Telegraph, keep updates short and factual. Fix root causes; when you are still
 stuck after reading the code, ask with short options.
 
+Prose in this repository, `knowledge/`, docs, commit messages, and PR bodies
+alike, uses no em-dashes: a comma, colon, or separate sentence says the same
+thing without the AI tell. `knowledge/log.md` headings are `## DATE, Title`.
+
 ## Layout
 
 A Cargo workspace of two packages; root `cargo test` / `cargo clippy` cover
