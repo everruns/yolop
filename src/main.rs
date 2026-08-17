@@ -11,6 +11,7 @@ mod drivers;
 mod editor;
 mod exec;
 mod extensions;
+mod models;
 mod runtime;
 mod sandbox_approval;
 mod session_state;
@@ -186,6 +187,8 @@ enum Commands {
     Worktree(WorktreeArgs),
     /// Manage MCP servers in global settings or workspace `.mcp.json`.
     Mcp(McpArgs),
+    /// Manage downloaded weights for the `local` provider.
+    Models(ModelsArgs),
     /// Live demo of the experimental `tuika` TUI toolkit (spinners, progress
     /// bars, loader). Press `q` or `Esc` to quit. Hidden dev helper.
     #[command(hide = true)]
@@ -209,6 +212,31 @@ enum Commands {
 struct McpArgs {
     #[command(subcommand)]
     command: McpCommand,
+}
+
+#[derive(Args, Debug)]
+struct ModelsArgs {
+    #[command(subcommand)]
+    command: ModelsCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum ModelsCommand {
+    /// List downloaded models and the disk they use.
+    List,
+    /// Download a model into the store.
+    ///
+    /// Specs are Hugging Face repos (`Qwen/Qwen3-8B`) or a GGUF file inside one
+    /// (`unsloth/Qwen3-8B-GGUF::Qwen3-8B-Q4_K_M.gguf`).
+    Pull {
+        /// Model spec to download.
+        spec: String,
+    },
+    /// Delete a downloaded model and reclaim its disk.
+    Rm {
+        /// Hugging Face repo to remove.
+        repo: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -368,6 +396,9 @@ enum ProviderArg {
     Google,
     Openrouter,
     Ollama,
+    /// In-process inference — no external server. Requires a build with the
+    /// `local-inference` feature (the release binaries and Homebrew formula).
+    Local,
     /// Generic OpenAI-compatible endpoint (CUSTOM_BASE_URL / saved base URL).
     Custom,
     #[value(name = "llmsim", alias = "sim")]
@@ -383,6 +414,7 @@ fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
         ProviderArg::Google => "google",
         ProviderArg::Openrouter => "openrouter",
         ProviderArg::Ollama => "ollama",
+        ProviderArg::Local => "local",
         ProviderArg::Custom => "custom",
         ProviderArg::Sim => "llmsim",
     }
@@ -391,6 +423,24 @@ fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
 /// Resolution order: explicit `--provider` flag > persisted settings >
 /// env-var auto-detection. Model and reasoning-effort flags layer on top
 /// of whichever base was chosen.
+/// Reject a provider this build cannot serve, before the runtime starts.
+///
+/// `local` resolves in every build so the picker and settings stay
+/// feature-independent, but only a `local-inference` build registers a driver
+/// for it. Without this the failure surfaces mid-turn as the driver registry's
+/// "No driver registered for provider type" — an internal message that tells
+/// the user nothing they can act on.
+fn ensure_provider_is_built_in(provider: &ProviderChoice) -> Result<()> {
+    if matches!(provider, ProviderChoice::Local { .. }) && !cfg!(feature = "local-inference") {
+        anyhow::bail!(
+            "this build has no local inference engine, so `--provider local` cannot run. \
+             Install a release build (`brew install everruns/tap/yolop`) or build with \
+             `--features local-inference`."
+        );
+    }
+    Ok(())
+}
+
 fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<String>) {
     let snapshot = settings.snapshot();
     let cli_reasoning_effort = runtime::normalize_reasoning_effort(cli.reasoning_effort.clone());
@@ -622,6 +672,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
     let effective_sandbox_mode =
         sandbox_mode_override.unwrap_or_else(|| settings.snapshot().sandbox_mode());
     let (mut provider, mut notes) = pick_provider(&cli, &settings);
+    ensure_provider_is_built_in(&provider)?;
     let snapshot = settings.snapshot();
     let (reconciled, catalog_notes) =
         capabilities::model_discovery::reconcile_provider_with_catalog(provider, &snapshot).await;
@@ -819,6 +870,74 @@ fn resolve_workspace_root(
         }
     }
     std::env::current_dir().context("resolve current workspace directory")
+}
+
+fn run_models_command(command: ModelsCommand) -> Result<()> {
+    match command {
+        ModelsCommand::List => {
+            let models = models::installed()?;
+            if models.is_empty() {
+                let location = models::store_root()
+                    .map(|root| root.display().to_string())
+                    .unwrap_or_else(|| "<no data directory>".to_string());
+                println!("No models downloaded. Store: {location}");
+                println!("Pull one with `yolop models pull Qwen/Qwen3-8B`.");
+                return Ok(());
+            }
+            let total: u64 = models.iter().map(|model| model.bytes).sum();
+            for model in &models {
+                println!("{:<44} {}", model.repo, models::human_bytes(model.bytes));
+            }
+            println!("{:<44} {}", "total", models::human_bytes(total));
+            Ok(())
+        }
+        ModelsCommand::Rm { repo } => {
+            let reclaimed = models::remove(&repo)?;
+            println!(
+                "Removed {repo} ({} reclaimed)",
+                models::human_bytes(reclaimed)
+            );
+            Ok(())
+        }
+        ModelsCommand::Pull { spec } => run_models_pull(&spec),
+    }
+}
+
+#[cfg(feature = "local-inference")]
+fn run_models_pull(spec: &str) -> Result<()> {
+    use std::sync::{Arc, Mutex};
+
+    if models::is_installed(spec) {
+        println!("{spec} is already downloaded.");
+        return Ok(());
+    }
+
+    println!("Pulling {spec}…");
+    let sink: Arc<Mutex<dyn models::download::ProgressSink>> =
+        Arc::new(Mutex::new(models::download::StderrProgress::new()));
+    let summary = tokio::runtime::Runtime::new()?.block_on(models::download::pull(spec, sink))?;
+
+    if summary.files.is_empty() {
+        println!("Nothing to fetch — {spec} was already complete.");
+    } else {
+        println!(
+            "Downloaded {} file(s), {}",
+            summary.files.len(),
+            models::human_bytes(summary.bytes)
+        );
+    }
+    Ok(())
+}
+
+/// Without the engine there is nothing to run the weights, so pulling gigabytes
+/// would only waste the disk. List and remove still work, so a build that drops
+/// the feature can still clean up what an earlier build downloaded.
+#[cfg(not(feature = "local-inference"))]
+fn run_models_pull(_spec: &str) -> Result<()> {
+    Err(anyhow::anyhow!(
+        "this build has no local inference engine, so downloaded weights could not be run. \
+         Install a release build (Homebrew) or build with `--features local-inference`."
+    ))
 }
 
 fn run_mcp_command(command: McpCommand) -> Result<()> {
@@ -1065,6 +1184,7 @@ fn run_command(command: Commands) -> Result<()> {
         }
         Commands::Worktree(args) => run_worktree_command(args.command),
         Commands::Mcp(args) => run_mcp_command(args.command),
+        Commands::Models(args) => run_models_command(args.command),
         Commands::TuikaGallery => run_tuika_gallery(),
         #[cfg(target_os = "linux")]
         Commands::SandboxExec {
@@ -2119,6 +2239,35 @@ mod tests {
             inline: false,
             theme: None,
             sandbox: false,
+        }
+    }
+
+    #[test]
+    fn a_build_without_the_engine_rejects_the_local_provider_up_front() {
+        let local = ProviderChoice::Local {
+            model: "Qwen/Qwen3-8B".to_string(),
+        };
+        let result = ensure_provider_is_built_in(&local);
+
+        if cfg!(feature = "local-inference") {
+            assert!(result.is_ok(), "an engine build must accept `local`");
+        } else {
+            // The point is the message: the registry's own failure names an
+            // internal driver id and offers the user no way forward.
+            let err = result.expect_err("a build without the engine must reject `local`");
+            let message = err.to_string();
+            assert!(message.contains("--features local-inference"), "{message}");
+            assert!(message.contains("brew install"), "{message}");
+        }
+    }
+
+    #[test]
+    fn providers_other_than_local_are_never_gated_on_the_engine_feature() {
+        for provider in [
+            ProviderChoice::Sim,
+            ProviderChoice::default_for_provider_name("openai").expect("openai"),
+        ] {
+            assert!(ensure_provider_is_built_in(&provider).is_ok());
         }
     }
 

@@ -531,6 +531,11 @@ const PROVIDER_OPTIONS: &[ProviderOption] = &[
         hint: "local OpenAI-compatible server",
     },
     ProviderOption {
+        name: "local",
+        label: "Local (in-process)",
+        hint: "no server; downloads weights on first use",
+    },
+    ProviderOption {
         name: "custom",
         label: "Custom endpoint",
         hint: "any OpenAI-compatible URL",
@@ -9632,6 +9637,30 @@ mod tests {
         assert!(
             rows.first().is_some_and(String::is_empty) && rows.last().is_some_and(String::is_empty),
             "the centered panel should have clean margins without underlying chrome: {rows:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_provider_picker_scrolls_the_selection_into_view() {
+        // Regression guard for the inline sheet's fixed height: selecting an
+        // option past the visible window must scroll it in and still leave the
+        // footer on screen, rather than pushing either off the bottom.
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        let last = PROVIDER_OPTIONS.len() - 1;
+        app.setup = Some(SetupStep::Provider { selected: last });
+
+        let rows = render_app_lines(app, 110, COMPOSER_VIEWPORT_HEIGHT);
+
+        assert!(
+            rows.iter()
+                .any(|line| line.contains(PROVIDER_OPTIONS[last].label)),
+            "the selected provider should be scrolled into view: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|line| line.contains("Esc cancel")),
+            "footer should survive scrolling: {rows:?}"
         );
     }
 

@@ -93,6 +93,7 @@ pub fn schema() -> &'static [ConfigField] {
                 "google",
                 "openrouter",
                 "ollama",
+                "local",
             ],
             provider_scoped: false,
         },
