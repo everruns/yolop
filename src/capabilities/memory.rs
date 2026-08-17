@@ -699,6 +699,7 @@ fn render_memory_block(
 
 pub(crate) struct GlobalMemoryCapability {
     pub(crate) memory: Arc<MemoryStore>,
+    pub(crate) repository_memory: Arc<MemoryStore>,
     pub(crate) reveals: Arc<RevealedTools>,
 }
 
@@ -717,14 +718,17 @@ impl GlobalMemoryCapability {
         vec![
             Box::new(RememberTool {
                 memory: self.memory.clone(),
+                repository_memory: self.repository_memory.clone(),
                 config,
             }),
             Box::new(RecallTool {
                 memory: self.memory.clone(),
+                repository_memory: self.repository_memory.clone(),
                 config,
             }),
             Box::new(ForgetTool {
                 memory: self.memory.clone(),
+                repository_memory: self.repository_memory.clone(),
             }),
         ]
     }
@@ -768,22 +772,30 @@ impl Capability for GlobalMemoryCapability {
         config: &Value,
     ) -> Option<String> {
         let cfg = Self::resolved_config(config);
-        let (titles, total) = self.memory.titles(cfg.disclosed_titles);
+        let (global_titles, global_total) = self.memory.titles(cfg.disclosed_titles);
+        let (repository_titles, repository_total) =
+            self.repository_memory.titles(cfg.disclosed_titles);
         let detailed = self
             .reveals
             .any_revealed(ctx.session_id, &["recall", "remember", "forget"]);
         // Empty memory with nothing revealed has neither disclosure nor
         // actionable how-to to offer; `remember`'s description is enough for the
         // model to find it.
-        if total == 0 && !detailed {
+        if global_total == 0 && repository_total == 0 && !detailed {
             return None;
         }
-        Some(render_memory_block(
-            self.memory.path(),
-            &titles,
-            total,
+        let mut global =
+            render_memory_block(self.memory.path(), &global_titles, global_total, detailed);
+        global = global.replacen("<memory>\n", "<memory>\nscope: global\n", 1);
+        global.truncate(global.len() - "</memory>".len());
+        let repository = render_memory_block(
+            self.repository_memory.path(),
+            &repository_titles,
+            repository_total,
             detailed,
-        ))
+        )
+        .replacen("<memory>\n", "scope: repository\n", 1);
+        Some(global + &repository)
     }
 
     fn system_prompt_preview(&self) -> Option<String> {
@@ -818,10 +830,38 @@ fn soft_cap_warning(total: usize, soft_cap: usize) -> Option<String> {
     })
 }
 
+fn selected_memory<'a>(
+    arguments: &Value,
+    global: &'a MemoryStore,
+    repository: &'a MemoryStore,
+) -> Result<&'a MemoryStore, ToolExecutionResult> {
+    match arguments
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("global")
+    {
+        "global" => Ok(global),
+        "repository" => Ok(repository),
+        _ => Err(ToolExecutionResult::tool_error(
+            "'scope' must be either 'global' or 'repository'",
+        )),
+    }
+}
+
+fn scope_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["global", "repository"],
+        "default": "global",
+        "description": "Memory scope. Omit for global memory (backward-compatible default)."
+    })
+}
+
 // ---------- tools ----------
 
 struct RememberTool {
     memory: Arc<MemoryStore>,
+    repository_memory: Arc<MemoryStore>,
     config: MemoryConfig,
 }
 
@@ -867,13 +907,18 @@ impl Tool for RememberTool {
                 "id": {
                     "type": "string",
                     "description": "Optional id of an existing memory to update in place (from `recall`)."
-                }
+                },
+                "scope": scope_schema()
             },
             "required": ["title", "memory"],
             "additionalProperties": false
         })
     }
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let memory = match selected_memory(&arguments, &self.memory, &self.repository_memory) {
+            Ok(memory) => memory,
+            Err(error) => return error,
+        };
         let title = match arguments.get("title").and_then(Value::as_str) {
             Some(t) if !t.trim().is_empty() => t,
             _ => {
@@ -896,7 +941,7 @@ impl Tool for RememberTool {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        match self.memory.remember(title, body, id) {
+        match memory.remember(title, body, id) {
             Ok(outcome) => {
                 let verb = if outcome.created {
                     "remembered"
@@ -926,6 +971,7 @@ impl Tool for RememberTool {
 
 struct RecallTool {
     memory: Arc<MemoryStore>,
+    repository_memory: Arc<MemoryStore>,
     config: MemoryConfig,
 }
 
@@ -972,12 +1018,17 @@ impl Tool for RecallTool {
                     "type": "integer",
                     "minimum": 1,
                     "description": "Max memories to return (defaults to the configured recall limit)."
-                }
+                },
+                "scope": scope_schema()
             },
             "additionalProperties": false
         })
     }
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let memory = match selected_memory(&arguments, &self.memory, &self.repository_memory) {
+            Ok(memory) => memory,
+            Err(error) => return error,
+        };
         // By-id retrieval is exact and ignores limit.
         if let Some(id) = arguments
             .get("id")
@@ -985,7 +1036,7 @@ impl Tool for RecallTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            return match self.memory.get(id) {
+            return match memory.get(id) {
                 Some(m) => ToolExecutionResult::success(json!({
                     "ok": true,
                     "memory": m.to_json(),
@@ -1011,7 +1062,7 @@ impl Tool for RecallTool {
             .unwrap_or("")
             .trim();
 
-        let result = self.memory.search(query, limit);
+        let result = memory.search(query, limit);
         let shown = result.matches.len();
         let mut message = if query.is_empty() {
             format!("{shown} most recent of {} memories", result.total_matched)
@@ -1035,6 +1086,7 @@ impl Tool for RecallTool {
 
 struct ForgetTool {
     memory: Arc<MemoryStore>,
+    repository_memory: Arc<MemoryStore>,
 }
 
 #[async_trait]
@@ -1069,24 +1121,29 @@ impl Tool for ForgetTool {
                 "id": {
                     "type": "string",
                     "description": "The memory id (from `recall`/disclosure), or the exact memory title."
-                }
+                },
+                "scope": scope_schema()
             },
             "required": ["id"],
             "additionalProperties": false
         })
     }
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let memory = match selected_memory(&arguments, &self.memory, &self.repository_memory) {
+            Ok(memory) => memory,
+            Err(error) => return error,
+        };
         let key = match arguments.get("id").and_then(Value::as_str) {
             Some(k) if !k.trim().is_empty() => k,
             _ => return ToolExecutionResult::tool_error("'id' is required and must be non-empty"),
         };
-        match self.memory.forget(key) {
+        match memory.forget(key) {
             Ok(Some(removed)) => ToolExecutionResult::success(json!({
                 "ok": true,
                 "removed": true,
                 "id": removed.id,
                 "title": removed.title,
-                "total": self.memory.len(),
+                "total": memory.len(),
             })),
             Ok(None) => ToolExecutionResult::success(json!({
                 "ok": true,
@@ -1374,7 +1431,8 @@ mod tests {
     fn capability_config_schema_validates_and_tools_read_config() {
         let (_tmp, store) = store_in_tmp();
         let cap = GlobalMemoryCapability {
-            memory: Arc::new(store),
+            memory: Arc::new(MemoryStore::open(store.path().to_path_buf())),
+            repository_memory: Arc::new(store),
             reveals: Arc::new(RevealedTools::new()),
         };
         assert!(cap.config_schema().is_some());
@@ -1400,6 +1458,7 @@ mod tests {
         let store = Arc::new(store);
         let remember = RememberTool {
             memory: store.clone(),
+            repository_memory: store.clone(),
             config: MemoryConfig::default(),
         };
         let res = remember
@@ -1409,6 +1468,7 @@ mod tests {
 
         let recall = RecallTool {
             memory: store.clone(),
+            repository_memory: store.clone(),
             config: MemoryConfig::default(),
         };
         let by_query = recall.execute(json!({ "query": "spaces" })).await;
@@ -1428,6 +1488,7 @@ mod tests {
         }
         let recall = RecallTool {
             memory: store.clone(),
+            repository_memory: store.clone(),
             config: MemoryConfig::default(),
         };
         let res = recall
@@ -1441,8 +1502,10 @@ mod tests {
     #[tokio::test]
     async fn remember_tool_rejects_empty_fields() {
         let (_tmp, store) = store_in_tmp();
+        let store = Arc::new(store);
         let tool = RememberTool {
-            memory: Arc::new(store),
+            memory: store.clone(),
+            repository_memory: store,
             config: MemoryConfig::default(),
         };
         assert!(
@@ -1464,6 +1527,7 @@ mod tests {
         store.remember("Throwaway", "temp", None).expect("seed");
         let tool = ForgetTool {
             memory: store.clone(),
+            repository_memory: store.clone(),
         };
         let hit = tool.execute(json!({ "id": "Throwaway" })).await;
         assert!(hit.is_success());
@@ -1477,7 +1541,8 @@ mod tests {
     fn capability_exposes_memory_tools_without_slash_command() {
         let (_tmp, store) = store_in_tmp();
         let capability = GlobalMemoryCapability {
-            memory: Arc::new(store),
+            memory: Arc::new(MemoryStore::open(store.path().to_path_buf())),
+            repository_memory: Arc::new(store),
             reveals: Arc::new(RevealedTools::new()),
         };
         let names: Vec<String> = capability
@@ -1500,7 +1565,8 @@ mod tests {
         let ctx = SystemPromptContext::without_file_store(session);
 
         let capability = GlobalMemoryCapability {
-            memory: Arc::new(store),
+            memory: Arc::new(MemoryStore::open(store.path().to_path_buf())),
+            repository_memory: Arc::new(store),
             reveals: reveals.clone(),
         };
         assert!(
@@ -1528,5 +1594,58 @@ mod tests {
             .expect("revealed");
         assert!(full.contains("Prefer terse"));
         assert!(full.contains("Global, durable user memory"));
+    }
+    #[tokio::test]
+    async fn tools_route_and_isolate_memory_scopes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = Arc::new(MemoryStore::open(tmp.path().join("global.json")));
+        let repository = Arc::new(MemoryStore::open(tmp.path().join("repository.json")));
+        let remember = RememberTool {
+            memory: global.clone(),
+            repository_memory: repository.clone(),
+            config: MemoryConfig::default(),
+        };
+
+        remember
+            .execute(json!({ "title": "global", "memory": "g" }))
+            .await;
+        remember
+            .execute(json!({
+                "title": "repository",
+                "memory": "r",
+                "scope": "repository"
+            }))
+            .await;
+
+        assert_eq!(global.search("global", 10).matches.len(), 1);
+        assert!(global.search("repository", 10).matches.is_empty());
+        assert_eq!(repository.search("repository", 10).matches.len(), 1);
+        assert!(repository.search("global", 10).matches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prompt_labels_global_and_repository_memory_scopes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = Arc::new(MemoryStore::open(tmp.path().join("global.json")));
+        let repository = Arc::new(MemoryStore::open(tmp.path().join("repository.json")));
+        global
+            .remember("global title", "global body", None)
+            .unwrap();
+        repository
+            .remember("repo title", "repo body", None)
+            .unwrap();
+        let capability = GlobalMemoryCapability {
+            memory: global,
+            repository_memory: repository,
+            reveals: Arc::new(RevealedTools::new()),
+        };
+        let ctx =
+            SystemPromptContext::without_file_store(everruns_provider::typed_id::SessionId::new());
+
+        let prompt = capability.system_prompt_contribution(&ctx).await.unwrap();
+        assert!(prompt.contains("scope: global"));
+        assert!(prompt.contains("global title"));
+        assert!(prompt.contains("scope: repository"));
+        assert!(prompt.contains("repo title"));
     }
 }
