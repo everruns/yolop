@@ -26,10 +26,10 @@ use crate::config::service::{ConfigService, current_value, scoped_current};
 use crate::config::{ApprovalMode, Settings, SettingsStore};
 use crate::runtime::{SUPPORTED_PROVIDERS, coding_harness_defaults, resolve_for_settings};
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::ToolNarrationPhase;
-use everruns_core::tool_types::ToolCall;
-use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::ToolCall;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -240,7 +240,7 @@ impl Tool for GetConfigTool {
                                 json!({
                                     "index": index,
                                     "ref": cap.capability_id(),
-                                    "config": cap.config,
+                                    "config": cap.config_value(),
                                 })
                             })
                             .collect();
@@ -690,9 +690,9 @@ fn on_off(enabled: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::capabilities::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
+    use everruns_builtins::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
     use everruns_core::tool_narration::ToolNarrationPhase;
-    use everruns_core::tool_types::ToolCall;
+    use everruns_provider::ToolCall;
 
     fn store() -> (tempfile::TempDir, Arc<SettingsStore>) {
         let tmp = tempfile::tempdir().expect("tmp");
@@ -1155,7 +1155,7 @@ mod tests {
             catalog: catalog(),
             reveals: reveals.clone(),
         };
-        let session = everruns_core::typed_id::SessionId::new();
+        let session = everruns_provider::typed_id::SessionId::new();
         let ctx = SystemPromptContext::without_file_store(session);
 
         assert!(
@@ -1183,8 +1183,8 @@ mod tests {
             catalog: catalog(),
             reveals: reveals.clone(),
         };
-        let revealed = everruns_core::typed_id::SessionId::new();
-        let other = everruns_core::typed_id::SessionId::new();
+        let revealed = everruns_provider::typed_id::SessionId::new();
+        let other = everruns_provider::typed_id::SessionId::new();
         reveals.record(revealed, ["set_config".to_string()]);
 
         assert!(

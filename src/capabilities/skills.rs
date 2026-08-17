@@ -25,12 +25,11 @@
 
 use crate::capabilities::narration::stable_labeled;
 use async_trait::async_trait;
-use everruns_core::capabilities::{
-    Capability, CapabilityStatus, SkillDirResolver, SkillScope, SkillsConfig,
-};
+use everruns_builtins::{SkillDirResolver, SkillScope, SkillsConfig};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
-use everruns_core::tool_types::ToolCall;
-use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::{Capability, CapabilityStatus};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::ToolCall;
 use include_dir::{Dir, include_dir};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};

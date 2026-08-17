@@ -7,7 +7,7 @@
 use everruns_core::tool_narration::{
     ToolNarrationPhase, arg_str, labeled_phrase, safe_arg_str, truncate,
 };
-use everruns_core::tool_types::ToolCall;
+use everruns_provider::ToolCall;
 use serde_json::Value;
 
 /// Present-tense label for started and completed; explicit failure wording.
@@ -131,7 +131,7 @@ fn set_config_detail(arguments: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::tool_types::ToolCall;
+    use everruns_provider::ToolCall;
     use serde_json::json;
 
     fn call(arguments: Value) -> ToolCall {

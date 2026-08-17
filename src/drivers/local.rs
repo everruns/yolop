@@ -14,12 +14,12 @@
 //! in `Cargo.toml` for why it is off by default.
 
 use async_trait::async_trait;
-use everruns_core::driver_registry::{
+use everruns_provider::driver_registry::{
     ChatDriver, DriverConfig, DriverRegistry, LlmCallConfig, LlmCompletionMetadata, LlmMessage,
     LlmMessageRole, LlmResponseStream, LlmStreamEvent,
 };
-use everruns_core::error::{AgentLoopError, LlmErrorKind, Result as EverrunsResult};
-use everruns_core::tool_types::{ToolCall, ToolDefinition};
+use everruns_provider::error::{AgentLoopError, LlmErrorKind, Result as EverrunsResult};
+use everruns_provider::tool_types::{ToolCall, ToolDefinition};
 use futures::stream::Stream;
 use mistralrs::{
     ChatCompletionChunkResponse, ChunkChoice, Delta, Function, GgufModelBuilder, IsqBits, Model,
@@ -101,6 +101,9 @@ impl LocalChatDriver {
 impl ChatDriver for LocalChatDriver {
     async fn chat_completion_stream(
         &self,
+        // 0.18 passes the resolved endpoint per call instead of baking it into
+        // the driver. In-process inference has no endpoint to honor.
+        _endpoint: &everruns_provider::runtime_provider::ProviderEndpoint,
         messages: Vec<LlmMessage>,
         config: &LlmCallConfig,
     ) -> EverrunsResult<LlmResponseStream> {
@@ -351,7 +354,7 @@ fn inference_error(model: &str, message: String) -> AgentLoopError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::driver_registry::LlmMessageContent;
+    use everruns_provider::driver_registry::LlmMessageContent;
     use mistralrs::RequestLike;
 
     fn message(role: LlmMessageRole, text: &str) -> LlmMessage {

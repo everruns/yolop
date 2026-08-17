@@ -15,14 +15,14 @@
 use crate::capabilities::narration::stable_labeled;
 use crate::tui::host_ui::{HostUi, UiCommand};
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
-use everruns_core::tool_types::ToolCall;
-use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::{Capability, CapabilityStatus};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::ToolCall;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -95,7 +95,7 @@ impl Capability for ClientCommandsCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_core::Result<CommandResult> {
+    ) -> everruns_provider::error::Result<CommandResult> {
         let arg = request
             .arguments
             .as_deref()
@@ -103,7 +103,7 @@ impl Capability for ClientCommandsCapability {
             .filter(|s| !s.is_empty())
             .map(str::to_string);
         let command = ui_command_for(&request.name, arg).ok_or_else(|| {
-            everruns_core::AgentLoopError::config(format!(
+            everruns_provider::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
@@ -464,7 +464,7 @@ mod tests {
     #[test]
     fn run_command_narration_includes_command() {
         use everruns_core::tool_narration::ToolNarrationPhase;
-        use everruns_core::tool_types::ToolCall;
+        use everruns_provider::ToolCall;
 
         let tool = RunCommandTool {
             ui: Arc::new(RecordingUi::default()),
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn set_status_narration_includes_truncated_status() {
         use everruns_core::tool_narration::ToolNarrationPhase;
-        use everruns_core::tool_types::ToolCall;
+        use everruns_provider::ToolCall;
 
         let tool = SetStatusTool {
             ui: Arc::new(RecordingUi::default()),

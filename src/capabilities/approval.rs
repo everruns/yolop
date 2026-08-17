@@ -23,10 +23,10 @@ use crate::capabilities::narration::stable_labeled;
 use crate::config::service::ConfigService;
 use crate::config::{ApprovalMode, SettingsStore};
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
-use everruns_core::tool_types::{BuiltinTool, DeferrablePolicy, ToolCall, ToolDefinition};
-use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::{BuiltinTool, DeferrablePolicy, ToolCall, ToolDefinition};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -373,7 +373,7 @@ mod tests {
             settings: settings.clone(),
         };
         let ctx =
-            SystemPromptContext::without_file_store(everruns_core::typed_id::SessionId::new());
+            SystemPromptContext::without_file_store(everruns_provider::typed_id::SessionId::new());
 
         // Default (normal) contributes a block.
         assert!(cap.system_prompt_contribution(&ctx).await.is_some());

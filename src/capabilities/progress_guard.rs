@@ -5,14 +5,14 @@
 // spending many tools on investigation without edits or validation.
 
 use async_trait::async_trait;
-use everruns_core::atoms::{
+use everruns_core::ToolContext;
+use everruns_core::tool_hooks::{
     PostToolExecHook, PostToolExecHookPriority, PreToolUseDecision, PreToolUseHook,
 };
-use everruns_core::capabilities::{Capability, CapabilityStatus};
-use everruns_core::tool_types::{DeferrablePolicy, ToolCall, ToolDefinition, ToolResult};
-use everruns_core::tools::{Tool, ToolExecutionResult};
-use everruns_core::traits::ToolContext;
-use everruns_core::typed_id::SessionId;
+use everruns_core::{Capability, CapabilityStatus};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::typed_id::SessionId;
+use everruns_provider::{DeferrablePolicy, ToolCall, ToolDefinition, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -1243,10 +1243,8 @@ fn inject_warning(result: &mut ToolResult, warning: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::tool_types::{
-        BuiltinTool, DeferrablePolicy, ToolHints, ToolPolicy, ToolResult,
-    };
-    use everruns_core::typed_id::SessionId;
+    use everruns_provider::typed_id::SessionId;
+    use everruns_provider::{BuiltinTool, DeferrablePolicy, ToolHints, ToolPolicy, ToolResult};
 
     fn call(name: &str, arguments: Value) -> ToolCall {
         ToolCall {

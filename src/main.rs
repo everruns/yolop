@@ -38,8 +38,8 @@ use crossterm::event::{
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
 use everruns_core::command::ExecuteCommandRequest;
-use everruns_core::message::{ContentPart, MessageRole};
-use everruns_core::typed_id::SessionId;
+use everruns_core::{ContentPart, MessageRole};
+use everruns_provider::typed_id::SessionId;
 use ratatui::{Terminal, TerminalOptions};
 use runtime::{BuiltRuntime, ProviderChoice, ResolvedProviderChoice, resolve_for_settings};
 use std::io::{self, IsTerminal, Write};
@@ -1989,7 +1989,7 @@ async fn run_print_goal(
 }
 
 struct PrintTurn {
-    result: everruns_runtime::TurnResult,
+    result: everruns_host::TurnResult,
     output: Vec<String>,
 }
 

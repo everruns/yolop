@@ -602,9 +602,10 @@ fn compact_token_count(tokens: u32) -> String {
 mod tests {
     use super::*;
     use crate::tui::transcript::lines_for_event;
-    use everruns_core::events::{Event as RuntimeEvent, EventContext, ToolCompletedData};
-    use everruns_core::message::ContentPart;
-    use everruns_core::typed_id::SessionId;
+    use everruns_core::ContentPart;
+    use everruns_core::events::Event as RuntimeEvent;
+    use everruns_core::{EventContext, ToolCompletedData};
+    use everruns_provider::typed_id::SessionId;
     use serde_json::json;
 
     fn state() -> PresentationState {
@@ -810,9 +811,9 @@ mod tests {
     fn session_task_narration_is_visible_in_live_activity_and_transcript() {
         use crate::capabilities::narration::{narrate_spawn_background, narrate_wait_task};
         use crate::tui::transcript::status_for_event;
-        use everruns_core::events::ToolStartedData;
+        use everruns_core::ToolStartedData;
         use everruns_core::tool_narration::ToolNarrationPhase;
-        use everruns_core::tool_types::ToolCall;
+        use everruns_provider::ToolCall;
 
         let wait_call = ToolCall {
             id: "call_wait".to_string(),

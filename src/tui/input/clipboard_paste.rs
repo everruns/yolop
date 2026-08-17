@@ -5,7 +5,7 @@
 // multimodal user-message part.
 
 use crate::tui::input::image_input::MAX_IMAGE_BYTES;
-use everruns_core::message::ContentPart;
+use everruns_core::ContentPart;
 use std::io::Cursor;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;

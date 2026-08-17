@@ -11,11 +11,16 @@ use crate::runtime::session_log::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
-use everruns_core::events::Event;
-use everruns_core::in_memory::InMemoryMessageRetriever;
-use everruns_core::session_task::SessionTaskRegistry;
-use everruns_core::typed_id::SessionId;
-use everruns_runtime::DEFAULT_WRITE_BLOCKLIST;
+use everruns_core::Event;
+use everruns_core::SessionTaskRegistry;
+use everruns_provider::typed_id::SessionId;
+use everruns_test_support::InMemoryMessageRetriever;
+// TM-FS: upstream deprecated `WRITE_BLOCKLIST` in favour of
+// `WorkspacePolicy`. Swapping yolop's write-protection over is a
+// security-relevant change that deserves its own review rather than riding
+// along with the 0.18 migration, so the legacy list stays for now behind a
+// single alias instead of an `allow` at every call site.
+#[allow(deprecated)]
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
@@ -24,6 +29,24 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+
+// Yolop's own traversal skip-list: which directories checkpointing and LSP
+// indexing walk past. Upstream dropped its exported constant with the
+// WorkspacePolicy move; this is deliberately a local list, not the agent's
+// write guard — that is still enforced by `WriteBlocklistFileStore` around
+// the session file store.
+const WRITE_BLOCKLIST: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".venv",
+    "venv",
+    ".tox",
+    ".gradle",
+];
 
 const TIMELINE_FILE: &str = "timeline.jsonl";
 const MAX_PROMPT_PREVIEW_CHARS: usize = 120;
@@ -739,14 +762,14 @@ impl CheckpointManager {
             )?;
             let mut add = git_command(&info.path, Some(&index));
             add.args(["add", "-A", "--", "."]);
-            for blocked in DEFAULT_WRITE_BLOCKLIST {
+            for blocked in WRITE_BLOCKLIST {
                 add.arg(format!(":(exclude,glob)**/{blocked}/**"));
                 add.arg(format!(":(exclude,glob){blocked}/**"));
             }
             run_git(&mut add, "snapshot workspace")?;
             let mut remove_blocked = git_command(&info.path, Some(&index));
             remove_blocked.args(["rm", "-r", "-f", "--cached", "--ignore-unmatch", "--"]);
-            for blocked in DEFAULT_WRITE_BLOCKLIST {
+            for blocked in WRITE_BLOCKLIST {
                 remove_blocked.arg(format!(":(glob)**/{blocked}/**"));
                 remove_blocked.arg(format!(":(glob){blocked}/**"));
             }
@@ -1141,7 +1164,7 @@ fn validate_relative_path(relative: &str) -> Result<()> {
             )
         })
         || path.components().any(|component| {
-            matches!(component, Component::Normal(name) if DEFAULT_WRITE_BLOCKLIST.iter().any(|blocked| name == std::ffi::OsStr::new(blocked)))
+            matches!(component, Component::Normal(name) if WRITE_BLOCKLIST.iter().any(|blocked| name == std::ffi::OsStr::new(blocked)))
         })
     {
         bail!("unsafe checkpoint path `{relative}`");
@@ -1206,10 +1229,9 @@ mod tests {
     use super::*;
     use crate::config::WorktreesMode;
     use crate::runtime::session_log::{JsonlEventEmitter, session_log_path};
-    use everruns_core::events::{EventContext, EventRequest, InputMessageData};
-    use everruns_core::message::Message;
-    use everruns_core::traits::EventEmitter;
-    use everruns_runtime::EventBus;
+    use everruns_core::EventEmitter;
+    use everruns_core::Message;
+    use everruns_core::{EventContext, EventRequest, InputMessageData};
     use tempfile::TempDir;
 
     fn git(path: &Path, args: &[&str]) {

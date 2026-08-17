@@ -10,9 +10,9 @@
 use crate::config::Settings;
 use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS};
 use anyhow::{Context, Result, anyhow};
-use everruns_core::DriverId;
-use everruns_core::driver_registry::{DiscoveredModel, DriverRegistry, ProviderConfig};
-use everruns_core::get_model_profile;
+use everruns_provider::model_profiles::get_model_profile;
+use everruns_provider::{DiscoveredModel, DriverRegistry, ProviderConfig};
+use everruns_provider::{DriverId, ProviderEndpoint};
 use std::collections::HashSet;
 
 /// One model offered by a provider, ready for display: bare id plus
@@ -38,7 +38,10 @@ pub(crate) async fn discover_provider_models(
     let target = choice.model_with_provider(settings)?;
     // Yolop never registers Bedrock (no Bedrock driver below) or the llmsim
     // discovery driver; treat discovery as unsupported rather than erroring.
-    if matches!(target.provider_type, DriverId::Bedrock | DriverId::LlmSim) {
+    // 0.17.26 turned `DriverId` into a string-backed id with associated
+    // constants (providers are no longer a closed driver enum), so these
+    // compare by value rather than matching as patterns.
+    if target.provider_type == DriverId::Bedrock || target.provider_type == DriverId::LlmSim {
         return Ok(None);
     }
     let mut config = ProviderConfig::new(target.provider_type.clone());
@@ -56,7 +59,12 @@ pub(crate) async fn discover_provider_models(
     everruns_openrouter::register_driver(&mut registry);
     let driver = registry.create_chat_driver(&config)?;
 
-    let models = match driver.list_models().await? {
+    // 0.17.26 hands endpoint + auth policy to the driver per call. Drivers
+    // built through the registry come back already bound to their provider's
+    // endpoint (the factory wraps them via `Provider::into_boxed_driver`), so
+    // the argument here is ignored by the bound wrapper — same as upstream's
+    // own `discover_provider_models`.
+    let models = match driver.list_models(&ProviderEndpoint::default()).await? {
         Some(models) => Some(models),
         // The everruns drivers decline discovery for unrecognized custom
         // endpoints (Ollama, Gemini's OpenAI-compatible surface, custom

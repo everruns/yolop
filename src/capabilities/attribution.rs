@@ -9,7 +9,7 @@
 
 use crate::config::service::ConfigService;
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use std::sync::Arc;
 
 pub(crate) const ATTRIBUTION_CAPABILITY_ID: &str = "yolop_attribution";
@@ -81,7 +81,7 @@ mod tests {
             config: settings.clone(),
         };
         let ctx =
-            SystemPromptContext::without_file_store(everruns_core::typed_id::SessionId::new());
+            SystemPromptContext::without_file_store(everruns_provider::typed_id::SessionId::new());
 
         let enabled = capability
             .system_prompt_contribution(&ctx)

@@ -2,11 +2,11 @@
 
 use crate::capabilities::narration::stable_labeled;
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::ToolNarrationPhase;
-use everruns_core::tool_types::{ToolCall, ToolHints};
-use everruns_core::tools::{Tool, ToolExecutionResult};
-use everruns_core::typed_id::SessionId;
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::typed_id::SessionId;
+use everruns_provider::{ToolCall, ToolHints};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::cmp::Reverse;

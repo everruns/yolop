@@ -56,18 +56,21 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use everruns_core::error::{AgentLoopError, Result};
-use everruns_core::events::{
+use everruns_core::EventEmitter;
+use everruns_core::{ContentPart, Message};
+use everruns_core::{
     Event, EventData, EventRequest, INPUT_MESSAGE, OUTPUT_MESSAGE_COMPLETED,
     OutputMessageCompletedData, REASON_COMPLETED, REASON_ITEM, SESSION_TITLE_UPDATED,
     TOOL_COMPLETED,
 };
-use everruns_core::message::{ContentPart, Message};
-use everruns_core::tools::ToolResultImage;
-use everruns_core::traits::EventEmitter;
-use everruns_core::typed_id::EventId;
-use everruns_core::typed_id::SessionId;
-use everruns_runtime::EventBus;
+use everruns_host::{
+    EventCursor, EventDurability, EventLog, EventLogError, EventPage, EventReadRequest,
+    EventReader, EventSink, EventSinkError,
+};
+use everruns_provider::ToolResultImage;
+use everruns_provider::typed_id::EventId;
+use everruns_provider::typed_id::SessionId;
+use everruns_provider::{AgentLoopError, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
@@ -604,7 +607,31 @@ impl JsonlEventEmitter {
         if events.is_empty() {
             return;
         }
-        self.events.write().await.extend(events);
+        // The canonical event log requires a sequence on every event, and a
+        // reader must not silently drop the ones without it — that would turn a
+        // log written before sequencing into an empty resume.
+        //
+        // Backfill in order rather than allocating from the live counter: the
+        // emitter was opened with the sequence *after* the replayed events, so
+        // those events belong below that floor. Consuming counter values here
+        // would push new appends past it and leave a gap.
+        let mut normalized = Vec::with_capacity(events.len());
+        let mut last = 0i32;
+        for mut event in events {
+            match event.sequence {
+                Some(sequence) => last = sequence,
+                None => {
+                    last = last.saturating_add(1);
+                    event.sequence = Some(last);
+                }
+            }
+            normalized.push(event);
+        }
+        if let Some(highest) = normalized.iter().filter_map(|event| event.sequence).max() {
+            self.sequence.fetch_max(highest, Ordering::AcqRel);
+            self.persisted_sequence.fetch_max(highest, Ordering::AcqRel);
+        }
+        self.events.write().await.extend(normalized);
     }
 
     /// Replace the model-visible branch after a conversation rewind. The
@@ -740,9 +767,16 @@ fn open_session_log(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-#[async_trait]
-impl EventEmitter for JsonlEventEmitter {
-    async fn emit(&self, request: EventRequest) -> Result<Event> {
+impl JsonlEventEmitter {
+    /// Commit one event: assign id and sequence, record it in the active-branch
+    /// view, and persist it when it is replay-relevant.
+    ///
+    /// This is the whole write path. It deliberately does not fan out to live
+    /// subscribers: under the canonical event model the host appends here and
+    /// then hands the finalized envelope to an [`EventSink`], which is where
+    /// yolop's broadcast lives. `emit` below keeps both halves together for the
+    /// few callers that drive the emitter directly.
+    async fn commit(&self, request: EventRequest) -> Result<Event> {
         // Assign id + sequence ourselves so we own the monotonic
         // sequence even across resumes.
         let previous = self
@@ -791,6 +825,24 @@ impl EventEmitter for JsonlEventEmitter {
             );
         }
 
+        Ok(event)
+    }
+
+    /// Events on the branch currently visible to the model, in sequence order.
+    ///
+    /// Was `EventBus::collected_events`; the trait is gone with the canonical
+    /// event model, but yolop's own callers (checkpointing, transcript) still
+    /// want the whole active branch in one shot rather than paged.
+    #[cfg(test)]
+    pub async fn collected_events(&self) -> Vec<Event> {
+        self.events.read().await.clone()
+    }
+}
+
+#[async_trait]
+impl EventEmitter for JsonlEventEmitter {
+    async fn emit(&self, request: EventRequest) -> Result<Event> {
+        let event = self.commit(request).await?;
         // Fan out to live subscribers. `send` errors only when there are
         // no receivers, which is the common steady state — ignore.
         let _ = self.live.send(event.clone());
@@ -798,13 +850,108 @@ impl EventEmitter for JsonlEventEmitter {
     }
 }
 
-// `EventBus: EventEmitter` adds the `collected_events()` query so the
-// runtime can ask "what events fired this session?" through the same
-// trait object that handles emissions.
 #[async_trait]
-impl EventBus for JsonlEventEmitter {
-    async fn collected_events(&self) -> Vec<Event> {
-        self.events.read().await.clone()
+impl EventReader for JsonlEventEmitter {
+    /// Page over the active branch.
+    ///
+    /// This is where yolop's rewind survives the move to an append-only
+    /// canonical log. `self.events` holds only the branch the model can see —
+    /// `replace_collected_events` swaps it after a rewind, while the discarded
+    /// suffix stays durable in `events.jsonl` for redo. Paging over that view
+    /// therefore hands the runtime the active branch without the log needing
+    /// any truncation or mutation contract.
+    async fn read_page(
+        &self,
+        request: EventReadRequest,
+    ) -> std::result::Result<EventPage, EventLogError> {
+        let session_id = request.session_id();
+        if let Some(cursor) = request.cursor()
+            && cursor.session_id() != session_id
+        {
+            return Err(EventLogError::CrossSessionCursor {
+                detail: format!(
+                    "cursor for session {} presented to session {session_id}",
+                    cursor.session_id()
+                ),
+            });
+        }
+
+        let events = self.events.read().await;
+        let visible: Vec<&Event> = events
+            .iter()
+            .filter(|event| event.session_id == session_id)
+            .collect();
+
+        // A continuation stays pinned to the watermark its first page fixed, so
+        // appends made since then stay invisible. A fresh read pins to the
+        // highest sequence present right now; `0` means nothing durable yet.
+        let watermark = match request
+            .cursor()
+            .and_then(EventCursor::snapshot_high_watermark)
+        {
+            Some(pinned) => pinned,
+            None => visible
+                .iter()
+                .filter_map(|event| event.sequence)
+                .max()
+                .unwrap_or(0),
+        };
+        let after = request
+            .cursor()
+            .map(EventCursor::after_sequence)
+            .unwrap_or(0);
+
+        let mut selected: Vec<Event> = visible
+            .into_iter()
+            .filter(|event| {
+                event
+                    .sequence
+                    .is_some_and(|sequence| sequence > after && sequence <= watermark)
+            })
+            .cloned()
+            .collect();
+        selected.sort_by_key(|event| event.sequence);
+
+        let limit = request.limit().get();
+        let next_cursor = if selected.len() > limit {
+            selected.truncate(limit);
+            let last = selected
+                .last()
+                .and_then(|event| event.sequence)
+                .unwrap_or(after);
+            Some(EventCursor::continuation(session_id, last, watermark)?)
+        } else {
+            None
+        };
+
+        EventPage::new(selected, next_cursor, watermark)
+    }
+}
+
+#[async_trait]
+impl EventLog for JsonlEventEmitter {
+    async fn append(&self, request: EventRequest) -> std::result::Result<Event, EventLogError> {
+        self.commit(request)
+            .await
+            .map_err(|error| EventLogError::Backend {
+                detail: error.to_string(),
+            })
+    }
+
+    /// Replay-relevant events are written and flushed before the append is
+    /// acknowledged, so an accepted write survives a crash.
+    fn durability(&self) -> EventDurability {
+        EventDurability::CrashDurable
+    }
+}
+
+impl EventSink for JsonlEventEmitter {
+    /// Live observation for the TUI and ACP streams. Lossy by contract, and
+    /// yolop's broadcast matches: `send` fails only when nothing is listening,
+    /// which is the steady state for a headless run.
+    fn try_send(&self, event: Event) -> std::result::Result<(), EventSinkError> {
+        let _ = self.live.send(event);
+        Ok(())
     }
 }
 
@@ -884,11 +1031,12 @@ fn parse_structured_tool_result_text(text: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::events::{
+    use everruns_core::Message;
+    use everruns_core::{
         EventContext, InputMessageData, OutputMessageCompletedData, SessionTitleUpdatedData,
         ToolCompletedData,
     };
-    use everruns_core::message::Message;
+    use everruns_host::EventReadLimit;
 
     fn input_event(session_id: SessionId, text: &str) -> Event {
         Event::new(
@@ -896,6 +1044,126 @@ mod tests {
             EventContext::default(),
             InputMessageData::new(Message::user(text)),
         )
+    }
+
+    async fn read_all(emitter: &JsonlEventEmitter, session_id: SessionId) -> Vec<Event> {
+        let request = EventReadRequest::new(session_id, EventReadLimit::default());
+        emitter.read_page(request).await.expect("read page").events
+    }
+
+    async fn append_input(emitter: &JsonlEventEmitter, session_id: SessionId, text: &str) -> Event {
+        emitter
+            .append(EventRequest::new(
+                session_id,
+                EventContext::default(),
+                InputMessageData::new(Message::user(text)),
+            ))
+            .await
+            .expect("append")
+    }
+
+    /// The property that lets rewind survive an append-only canonical log: the
+    /// log projects the active branch, so a discarded suffix stops being
+    /// model-visible without the log needing truncation.
+    #[tokio::test]
+    async fn read_page_projects_only_the_active_branch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(9911);
+        let path = session_log_path(&session_dir_path(dir.path(), session_id));
+        let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+
+        append_input(&emitter, session_id, "kept").await;
+        append_input(&emitter, session_id, "discarded").await;
+        assert_eq!(read_all(&emitter, session_id).await.len(), 2);
+
+        let kept: Vec<Event> = emitter
+            .collected_events()
+            .await
+            .into_iter()
+            .take(1)
+            .collect();
+        emitter.replace_collected_events(kept).await;
+
+        let visible = read_all(&emitter, session_id).await;
+        assert_eq!(visible.len(), 1, "rewind must hide the discarded suffix");
+        assert_eq!(visible[0].sequence, Some(1));
+    }
+
+    /// A continuation is pinned to the watermark its first page fixed, so an
+    /// append made mid-read is not observable through that cursor.
+    #[tokio::test]
+    async fn continuation_cannot_observe_a_concurrent_append() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(9912);
+        let path = session_log_path(&session_dir_path(dir.path(), session_id));
+        let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+        for index in 0..3 {
+            append_input(&emitter, session_id, &format!("m{index}")).await;
+        }
+
+        let limit = EventReadLimit::new(2).expect("limit");
+        let first = emitter
+            .read_page(EventReadRequest::new(session_id, limit))
+            .await
+            .expect("first page");
+        assert_eq!(first.events.len(), 2);
+        let cursor = first.next_cursor.expect("more remains");
+
+        append_input(&emitter, session_id, "arrived-mid-read").await;
+
+        let rest = emitter
+            .read_page(EventReadRequest::from_cursor(cursor, limit))
+            .await
+            .expect("continuation");
+        assert_eq!(
+            rest.events.len(),
+            1,
+            "snapshot must exclude the concurrent append"
+        );
+        assert_eq!(rest.events[0].sequence, Some(3));
+    }
+
+    /// A cursor minted for another session must be refused rather than
+    /// silently returning this session's events.
+    #[tokio::test]
+    async fn a_cursor_from_another_session_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(9913);
+        let other = SessionId::from_seed(9914);
+        let path = session_log_path(&session_dir_path(dir.path(), session_id));
+        let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+        append_input(&emitter, session_id, "one").await;
+
+        let foreign = EventCursor::continuation(other, 0, 1).expect("cursor");
+        let error = emitter
+            .read_page(
+                EventReadRequest::new(session_id, EventReadLimit::default()).with_cursor(foreign),
+            )
+            .await
+            .expect_err("cross-session cursor must be refused");
+        assert!(matches!(error, EventLogError::CrossSessionCursor { .. }));
+    }
+
+    /// Replayed events that predate sequencing must still be readable, or a
+    /// resume from such a log would render an empty transcript.
+    #[tokio::test]
+    async fn seeded_events_without_a_sequence_are_still_readable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(9915);
+        let path = session_log_path(&session_dir_path(dir.path(), session_id));
+        let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+
+        emitter
+            .seed_replayed(vec![
+                input_event(session_id, "older"),
+                input_event(session_id, "newer"),
+            ])
+            .await;
+
+        let visible = read_all(&emitter, session_id).await;
+        assert_eq!(visible.len(), 2, "sequence-less history must stay visible");
+        assert_eq!(visible[0].sequence, Some(1));
+        assert_eq!(visible[1].sequence, Some(2));
     }
 
     fn title_event(session_id: SessionId, previous_title: Option<&str>, title: &str) -> Event {
@@ -1335,7 +1603,7 @@ mod tests {
 
     #[tokio::test]
     async fn reason_completed_event_is_persisted_and_replayed() {
-        use everruns_core::events::ReasonCompletedData;
+        use everruns_core::ReasonCompletedData;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let session_id = SessionId::from_seed(4822);
@@ -1380,8 +1648,8 @@ mod tests {
 
     #[tokio::test]
     async fn reason_item_event_is_persisted_and_replayed() {
-        use everruns_core::events::ReasonItemData;
-        use everruns_core::typed_id::TurnId;
+        use everruns_core::ReasonItemData;
+        use everruns_provider::typed_id::TurnId;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let session_id = SessionId::from_seed(4823);
@@ -1433,10 +1701,10 @@ mod tests {
 
     #[tokio::test]
     async fn subscribe_receives_emitted_events_including_deltas() {
-        use everruns_core::events::{
+        use everruns_core::{
             OUTPUT_MESSAGE_DELTA, OutputMessageDeltaData, TOOL_OUTPUT_DELTA, ToolOutputDeltaData,
         };
-        use everruns_core::typed_id::{MessageId, TurnId};
+        use everruns_provider::typed_id::{MessageId, TurnId};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let session_id = SessionId::from_seed(99);

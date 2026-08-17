@@ -3,8 +3,8 @@
 //! Yolop registers upstream [`Connector`] implementations here. The
 //! catalog is the single place new sandbox backends (E2B, etc.) plug in.
 
-use everruns_core::connector::{Connector, ConnectorRegistry, ConnectorValidation};
 use everruns_integrations_daytona::connection::DaytonaConnector;
+use everruns_platform::{Connector, ConnectorRegistry, ConnectorValidation};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -17,8 +17,8 @@ pub struct ConnectorInfo {
     pub display_name: String,
     pub description: String,
     pub icon: String,
-    pub connection_type: everruns_core::connector::ConnectorType,
-    pub form_schema: Option<everruns_core::connector::ConnectorFormSchema>,
+    pub connection_type: everruns_platform::connector::ConnectorType,
+    pub form_schema: Option<everruns_platform::connector::ConnectorFormSchema>,
     pub connected: bool,
 }
 
@@ -125,7 +125,7 @@ impl ConnectionCatalog {
 #[cfg(test)]
 mod catalog_tests {
     use super::*;
-    use everruns_core::connector::ConnectorType;
+    use everruns_platform::ConnectorType;
 
     struct StubProvider;
 
@@ -146,7 +146,7 @@ mod catalog_tests {
         fn connection_type(&self) -> ConnectorType {
             ConnectorType::ApiKey
         }
-        fn form_schema(&self) -> Option<everruns_core::connector::ConnectorFormSchema> {
+        fn form_schema(&self) -> Option<everruns_platform::connector::ConnectorFormSchema> {
             None
         }
         async fn validate(&self, _credential: &str) -> Result<ConnectorValidation, String> {

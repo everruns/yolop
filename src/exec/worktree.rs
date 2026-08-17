@@ -10,7 +10,7 @@ use crate::runtime::session_log::{
     write_session_workspace,
 };
 use anyhow::{Context, Result, bail};
-use everruns_core::typed_id::SessionId;
+use everruns_provider::typed_id::SessionId;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -734,7 +734,7 @@ pub fn referenced_worktree_paths(
     sessions_dir: &Path,
 ) -> Result<std::collections::HashSet<PathBuf>> {
     use crate::runtime::session_log::{read_session_workspace_metadata, session_dir_path};
-    use everruns_core::typed_id::SessionId;
+    use everruns_provider::typed_id::SessionId;
 
     let mut referenced = std::collections::HashSet::new();
     if !sessions_dir.is_dir() {
@@ -937,7 +937,7 @@ mod tests {
             WorktreesMode::Always,
             Some(root.path().to_path_buf()),
             root.path().to_path_buf(),
-            everruns_core::typed_id::SessionId::new(),
+            everruns_provider::typed_id::SessionId::new(),
             session.path().to_path_buf(),
             Some(info),
         );

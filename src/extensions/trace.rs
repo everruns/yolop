@@ -10,10 +10,10 @@
 //! and a forward failure degrades to a warning.
 
 use super::manager::ExtensionProcess;
-use everruns_core::events::{
+use everruns_core::{
     Event, OUTPUT_MESSAGE_DELTA, REASON_THINKING_DELTA, TOOL_OUTPUT_DELTA, TOOL_PROGRESS,
 };
-use everruns_core::typed_id::SessionId;
+use everruns_provider::typed_id::SessionId;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -60,7 +60,7 @@ impl TraceForwarder {
         capability: &super::capability::ExtensionCapability,
         config: &serde_json::Value,
     ) -> Option<Self> {
-        use everruns_core::capabilities::Capability;
+        use everruns_core::Capability;
         capability.trace_process(config).map(|process| Self {
             name: capability.name().to_string(),
             process,
@@ -114,7 +114,7 @@ pub(crate) fn spawn_forwarder(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::events::{EventContext, EventRequest};
+    use everruns_core::{EventContext, EventRequest};
 
     #[test]
     fn deltas_are_dropped_lifecycle_is_kept() {
@@ -141,7 +141,7 @@ mod tests {
             metadata: None,
             tags: None,
         };
-        let event = request.into_event(everruns_core::typed_id::EventId::new(), 1);
+        let event = request.into_event(everruns_provider::typed_id::EventId::new(), 1);
         let params = trace_event_params(&event);
         assert_eq!(params["event_type"], "tool.completed");
         assert_eq!(params["session_id"], session.to_string());

@@ -1,9 +1,9 @@
 //! Resolves connector credentials for sandbox capabilities at tool time.
 
 use async_trait::async_trait;
-use everruns_core::Result;
-use everruns_core::traits::UserConnectionResolver;
-use everruns_core::typed_id::SessionId;
+use everruns_core::UserConnectionResolver;
+use everruns_provider::Result;
+use everruns_provider::typed_id::SessionId;
 use std::sync::Arc;
 
 use crate::connectors::store::ConnectionStore;

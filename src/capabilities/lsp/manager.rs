@@ -16,6 +16,24 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 
+// Yolop's own traversal skip-list: which directories checkpointing and LSP
+// indexing walk past. Upstream dropped its exported constant with the
+// WorkspacePolicy move; this is deliberately a local list, not the agent's
+// write guard — that is still enforced by `WriteBlocklistFileStore` around
+// the session file store.
+const WRITE_BLOCKLIST: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".venv",
+    "venv",
+    ".tox",
+    ".gradle",
+];
+
 pub(crate) const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 60_000;
 pub(crate) const MAX_REQUEST_TIMEOUT_MS: u64 = 600_000;
 pub(crate) const DEFAULT_DIAGNOSTICS_WAIT_MS: u64 = 15_000;
@@ -595,7 +613,7 @@ fn workspace_file(root: &Path, uri: &str) -> Result<PathBuf> {
     {
         if let Component::Normal(name) = component
             && let Some(name) = name.to_str()
-            && everruns_runtime::DEFAULT_WRITE_BLOCKLIST.contains(&name)
+            && WRITE_BLOCKLIST.contains(&name)
         {
             bail!(
                 "server proposed an edit inside the protected directory `{name}`: {}",

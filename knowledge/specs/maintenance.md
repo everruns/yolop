@@ -116,7 +116,9 @@ When upstream changes the public runtime API, bump the `everruns-*` versions in
 `Cargo.toml` together and reconcile any compile errors before the new feature
 lands. A clean compile is not sufficient evidence of adoption: 0.17.24 widened
 driver model discovery to include embedding models and began requiring HTTPS for
-MCP OAuth resources, and neither showed up as a compile error.
+MCP OAuth resources, and 0.18.0 moved credentials out of model selection so a
+host that keeps its own keys gets keyless drivers from the built-in provider
+store. None of these showed up as a compile error.
 
 ## Release Readiness Standard
 

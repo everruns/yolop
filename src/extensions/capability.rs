@@ -12,14 +12,14 @@ use super::package::{ExtensionPackage, ToolDefinition, extension_capability_id};
 use crate::capabilities::EnvironmentContextRegistry;
 use crate::capabilities::narration::stable_labeled;
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, SystemPromptContext};
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
 use everruns_core::tool_narration::ToolNarrationPhase;
-use everruns_core::tool_types::ToolCall;
-use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::{Capability, SystemPromptContext};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::ToolCall;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -196,7 +196,7 @@ impl ExtensionCapability {
     /// means the approved transport shape is exactly what runs.
     pub fn contributed_mcp_servers(&self) -> everruns_core::ScopedMcpServers {
         use super::package::McpTransport;
-        use everruns_core::mcp_server::{McpServerTransportType, ScopedMcpServer};
+        use everruns_core::{McpServerTransportType, ScopedMcpServer};
         let mut servers = everruns_core::ScopedMcpServers::new();
         for (name, spec) in &self.package.manifest.mcp_servers {
             let scoped = match spec.transport {
@@ -302,7 +302,7 @@ impl Capability for ExtensionCapability {
     fn pre_tool_use_hooks_with_config(
         &self,
         config: &Value,
-    ) -> Vec<Arc<dyn everruns_core::atoms::PreToolUseHook>> {
+    ) -> Vec<Arc<dyn everruns_core::tool_hooks::PreToolUseHook>> {
         use super::hooks::ExtensionPreHook;
         use super::package::HookEvent;
         let manifest = &self.package.manifest;
@@ -319,7 +319,7 @@ impl Capability for ExtensionCapability {
                     ext_name: manifest.name.clone(),
                     process: process.clone(),
                     sub: sub.clone(),
-                }) as Arc<dyn everruns_core::atoms::PreToolUseHook>
+                }) as Arc<dyn everruns_core::tool_hooks::PreToolUseHook>
             })
             .collect()
     }
@@ -327,7 +327,7 @@ impl Capability for ExtensionCapability {
     fn post_tool_exec_hooks_with_config(
         &self,
         config: &Value,
-    ) -> Vec<Arc<dyn everruns_core::atoms::PostToolExecHook>> {
+    ) -> Vec<Arc<dyn everruns_core::tool_hooks::PostToolExecHook>> {
         use super::hooks::ExtensionPostHook;
         use super::package::HookEvent;
         let manifest = &self.package.manifest;
@@ -344,7 +344,7 @@ impl Capability for ExtensionCapability {
                     ext_name: manifest.name.clone(),
                     process: process.clone(),
                     sub: sub.clone(),
-                }) as Arc<dyn everruns_core::atoms::PostToolExecHook>
+                }) as Arc<dyn everruns_core::tool_hooks::PostToolExecHook>
             })
             .collect()
     }
@@ -383,7 +383,7 @@ impl Capability for ExtensionCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_core::Result<CommandResult> {
+    ) -> everruns_provider::error::Result<CommandResult> {
         let prefix = format!("{}:", self.package.manifest.name);
         let name = request.name.strip_prefix(&prefix).unwrap_or(&request.name);
         if !self
@@ -393,7 +393,7 @@ impl Capability for ExtensionCapability {
             .iter()
             .any(|c| c.name == name)
         {
-            return Err(everruns_core::AgentLoopError::config(format!(
+            return Err(everruns_provider::error::AgentLoopError::config(format!(
                 "extension `{}` does not provide command `{name}`",
                 self.package.manifest.name
             )));
@@ -517,7 +517,7 @@ mod tests {
     use super::*;
     use crate::extensions::package::ExtensionPackage;
     use crate::extensions::package::parse_manifest;
-    use everruns_core::mcp_server::McpServerTransportType;
+    use everruns_core::McpServerTransportType;
     use serde_json::json;
 
     #[test]

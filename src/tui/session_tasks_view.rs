@@ -1,5 +1,6 @@
-use everruns_core::session_task::{SessionTaskState, TASK_KIND_MONITOR, TASK_KIND_SUBAGENT};
-use everruns_core::{SessionId, SessionStore, SessionTask, SessionTaskRegistry, TokenUsage};
+use everruns_core::{SessionStore, SessionTask, SessionTaskRegistry, TokenUsage};
+use everruns_core::{SessionTaskState, TASK_KIND_MONITOR, TASK_KIND_SUBAGENT};
+use everruns_provider::typed_id::SessionId;
 use std::collections::HashSet;
 
 const MAX_TREE_SESSIONS: usize = 256;
@@ -329,7 +330,7 @@ pub(crate) fn render_activity_rail(tree: &TaskTree, selected: Option<usize>) -> 
 }
 
 enum Visit {
-    Session {
+    ExecutionSession {
         session_id: SessionId,
         parent: Option<usize>,
         ancestors_last: Vec<bool>,
@@ -350,7 +351,7 @@ pub(crate) async fn load_task_tree(
     sessions: &dyn SessionStore,
 ) -> TaskTree {
     let mut tree = TaskTree::default();
-    let mut stack = vec![Visit::Session {
+    let mut stack = vec![Visit::ExecutionSession {
         session_id: root_session_id,
         parent: None,
         ancestors_last: Vec::new(),
@@ -361,7 +362,7 @@ pub(crate) async fn load_task_tree(
 
     while let Some(visit) = stack.pop() {
         match visit {
-            Visit::Session {
+            Visit::ExecutionSession {
                 session_id,
                 parent,
                 ancestors_last,
@@ -463,7 +464,7 @@ pub(crate) async fn load_task_tree(
                 if let Some(child_id) = child_session_id {
                     let mut child_ancestors = ancestors_last;
                     child_ancestors.push(is_last);
-                    stack.push(Visit::Session {
+                    stack.push(Visit::ExecutionSession {
                         session_id: child_id,
                         parent: Some(row_index),
                         ancestors_last: child_ancestors,
@@ -597,13 +598,15 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use chrono::Utc;
-    use everruns_core::session_task::{
+    use everruns_core::session_task::new_session_task;
+    use everruns_core::{CreateSessionTask, ExecutionSession};
+    use everruns_core::{
         SessionTaskState, TASK_KIND_BACKGROUND_TOOL, TASK_KIND_MONITOR, TASK_KIND_SUBAGENT,
-        TaskLinks, new_session_task,
+        TaskLinks,
     };
-    use everruns_core::{CreateSessionTask, HarnessId, Session, SessionId};
+    use everruns_host::SessionBuilder;
     use everruns_local::{LocalSessionTaskRegistry, SqliteDb};
-    use everruns_runtime::SessionBuilder;
+    use everruns_provider::typed_id::{HarnessId, SessionId};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -753,14 +756,14 @@ mod tests {
         );
     }
 
-    struct Sessions(HashMap<SessionId, Session>);
+    struct Sessions(HashMap<SessionId, ExecutionSession>);
 
     #[async_trait]
     impl SessionStore for Sessions {
         async fn get_session(
             &self,
             session_id: SessionId,
-        ) -> everruns_core::Result<Option<Session>> {
+        ) -> everruns_provider::error::Result<Option<ExecutionSession>> {
             Ok(self.0.get(&session_id).cloned())
         }
     }

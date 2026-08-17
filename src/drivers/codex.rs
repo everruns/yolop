@@ -2,18 +2,21 @@ use crate::auth::codex::CODEX_ORIGINATOR;
 use crate::config::{CodexAuth, SettingsStore};
 use async_trait::async_trait;
 use eventsource_stream::Eventsource;
-use everruns_core::driver_registry::{
-    ChatDriver, DriverConfig, LlmCallConfig, LlmCompletionMetadata, LlmContentPart, LlmMessage,
+use everruns_provider::ProviderEndpoint;
+use everruns_provider::driver_registry::DriverConfig;
+use everruns_provider::error::Result as EverrunsResult;
+use everruns_provider::{AgentLoopError, LlmErrorKind};
+use everruns_provider::{
+    ChatDriver, LlmCallConfig, LlmCompletionMetadata, LlmContentPart, LlmMessage,
     LlmMessageContent, LlmMessageRole, LlmResponseStream, LlmStreamError, LlmStreamEvent,
     ProviderMetadata, ProviderOpaqueContext,
 };
-use everruns_core::driver_registry::{DiscoveredModel, DriverRegistry};
-use everruns_core::error::{AgentLoopError, LlmErrorKind, Result as EverrunsResult};
-use everruns_core::tool_types::{ToolCall, ToolDefinition};
-use everruns_core::{
+use everruns_provider::{
     CompactContent, CompactContentPart, CompactOutputItem, CompactRequest, CompactResponse,
     DriverId, ModelProfile, get_model_profile,
 };
+use everruns_provider::{DiscoveredModel, DriverRegistry};
+use everruns_provider::{ToolCall, ToolDefinition};
 use futures::StreamExt;
 use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -333,8 +336,14 @@ fn persist_tokens(tokens: &CodexTokens, store: Option<&dyn CodexAuthStore>) -> E
 
 #[async_trait]
 impl ChatDriver for CodexChatDriver {
+    // 0.17.26 separated providers from drivers: endpoint and auth policy now
+    // arrive per call instead of being baked into the driver. Codex is bound to
+    // ChatGPT's own endpoint and signs with rotating OAuth tokens it owns, so it
+    // ignores the supplied endpoint — the same thing upstream's own
+    // `ProviderBoundDriver` does for drivers that carry their own binding.
     async fn chat_completion_stream(
         &self,
+        _endpoint: &ProviderEndpoint,
         messages: Vec<LlmMessage>,
         config: &LlmCallConfig,
     ) -> EverrunsResult<LlmResponseStream> {
@@ -417,7 +426,10 @@ impl ChatDriver for CodexChatDriver {
         Ok(converted)
     }
 
-    async fn list_models(&self) -> EverrunsResult<Option<Vec<DiscoveredModel>>> {
+    async fn list_models(
+        &self,
+        _endpoint: &ProviderEndpoint,
+    ) -> EverrunsResult<Option<Vec<DiscoveredModel>>> {
         Ok(None)
     }
 
@@ -433,7 +445,11 @@ impl ChatDriver for CodexChatDriver {
         })
     }
 
-    async fn compact(&self, request: CompactRequest) -> EverrunsResult<Option<CompactResponse>> {
+    async fn compact(
+        &self,
+        _endpoint: &ProviderEndpoint,
+        request: CompactRequest,
+    ) -> EverrunsResult<Option<CompactResponse>> {
         let tokens = self.token_snapshot().await?;
         let response = self
             .client
@@ -1205,10 +1221,8 @@ fn metadata_extra_i64(metadata: &ProviderMetadata, key: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::driver_registry::{LlmMessage, LlmMessageRole};
-    use everruns_core::tool_types::{
-        BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy,
-    };
+    use everruns_provider::{BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy};
+    use everruns_provider::{LlmMessage, LlmMessageRole};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::Mutex as StdMutex;
@@ -1428,9 +1442,10 @@ mod tests {
 
         let response = ChatDriver::compact(
             &driver,
+            &ProviderEndpoint::default(),
             CompactRequest {
                 model: "gpt-5.6".to_string(),
-                input: vec![everruns_core::CompactInputItem::Message {
+                input: vec![everruns_provider::compact::CompactInputItem::Message {
                     role: "user".to_string(),
                     content: CompactContent::Text("compact me".to_string()),
                 }],
@@ -1858,7 +1873,7 @@ mod tests {
         assert!(error.message.contains("req_test_processing_error"));
         assert_eq!(
             error.kind(),
-            everruns_core::error::LlmErrorKind::Unavailable
+            everruns_provider::error::LlmErrorKind::Unavailable
         );
     }
 

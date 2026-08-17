@@ -19,20 +19,19 @@
 use crate::capabilities::narration::narrate_spawn_background;
 use crate::tui::session_tasks_view::{load_task_tree, render_task_tree};
 use async_trait::async_trait;
-use everruns_core::capabilities::{
-    BackgroundExecutionCapability, Capability, CapabilityLocalization, CapabilityStatus,
-    SystemPromptContext,
-};
+use everruns_core::SessionStore;
+use everruns_core::SessionTaskRegistry;
+use everruns_core::TASK_KIND_MONITOR;
+use everruns_core::Tool;
+use everruns_core::capabilities::CapabilityLocalization;
 use everruns_core::command::{
     CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource, ExecuteCommandRequest,
 };
-use everruns_core::session_task::SessionTaskRegistry;
-use everruns_core::session_task::TASK_KIND_MONITOR;
 use everruns_core::tool_narration::ToolNarrationPhase;
-use everruns_core::tool_types::{ToolCall, ToolDefinition};
-use everruns_core::tools::Tool;
-use everruns_core::traits::SessionStore;
-use everruns_core::typed_id::SessionId;
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_platform::capabilities::BackgroundExecutionCapability;
+use everruns_provider::typed_id::SessionId;
+use everruns_provider::{ToolCall, ToolDefinition};
 use std::sync::Arc;
 
 pub(crate) const BACKGROUND_CAPABILITY_ID: &str = "background";
@@ -129,9 +128,9 @@ impl Capability for BackgroundCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_core::Result<CommandResult> {
+    ) -> everruns_provider::error::Result<CommandResult> {
         if request.name != "background" {
-            return Err(everruns_core::AgentLoopError::config(format!(
+            return Err(everruns_provider::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
@@ -197,6 +196,14 @@ impl Capability for NarratedBackgroundExecutionCapability {
         self.inner.category()
     }
 
+    /// Delegate activation too, not just presentation. The capability is
+    /// auto-activating — it turns on when some tool declares
+    /// `supports_background` — so a wrapper that inherits the default
+    /// `false` silently withholds `spawn_background` from the model.
+    fn auto_activates_for(&self, tools: &[everruns_provider::tool_types::ToolDefinition]) -> bool {
+        self.inner.auto_activates_for(tools)
+    }
+
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         self.inner.tools()
     }
@@ -220,7 +227,7 @@ impl Capability for NarratedBackgroundExecutionCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::session_task::{
+    use everruns_core::{
         CreateSessionTask, NewTaskMessage, SessionTask, SessionTaskFilter, SessionTaskUpdate,
         TaskMessage,
     };
@@ -233,7 +240,10 @@ mod tests {
 
     #[async_trait]
     impl SessionTaskRegistry for StubRegistry {
-        async fn create(&self, _input: CreateSessionTask) -> everruns_core::Result<SessionTask> {
+        async fn create(
+            &self,
+            _input: CreateSessionTask,
+        ) -> everruns_provider::error::Result<SessionTask> {
             unimplemented!("stub")
         }
         async fn update(
@@ -241,28 +251,28 @@ mod tests {
             _session_id: SessionId,
             _task_id: &str,
             _update: SessionTaskUpdate,
-        ) -> everruns_core::Result<Option<SessionTask>> {
+        ) -> everruns_provider::error::Result<Option<SessionTask>> {
             unimplemented!("stub")
         }
         async fn get(
             &self,
             _session_id: SessionId,
             _task_id: &str,
-        ) -> everruns_core::Result<Option<SessionTask>> {
+        ) -> everruns_provider::error::Result<Option<SessionTask>> {
             unimplemented!("stub")
         }
         async fn list(
             &self,
             _session_id: SessionId,
             _filter: Option<&SessionTaskFilter>,
-        ) -> everruns_core::Result<Vec<SessionTask>> {
+        ) -> everruns_provider::error::Result<Vec<SessionTask>> {
             Ok(self.tasks.clone())
         }
         async fn request_cancel(
             &self,
             _session_id: SessionId,
             _task_id: &str,
-        ) -> everruns_core::Result<Option<SessionTask>> {
+        ) -> everruns_provider::error::Result<Option<SessionTask>> {
             unimplemented!("stub")
         }
         async fn record_message(
@@ -270,7 +280,7 @@ mod tests {
             _session_id: SessionId,
             _task_id: &str,
             _message: NewTaskMessage,
-        ) -> everruns_core::Result<TaskMessage> {
+        ) -> everruns_provider::error::Result<TaskMessage> {
             unimplemented!("stub")
         }
         async fn list_messages(
@@ -279,17 +289,17 @@ mod tests {
             _task_id: &str,
             _limit: Option<u32>,
             _after_id: Option<&str>,
-        ) -> everruns_core::Result<Vec<TaskMessage>> {
+        ) -> everruns_provider::error::Result<Vec<TaskMessage>> {
             unimplemented!("stub")
         }
     }
 
     #[async_trait]
-    impl everruns_core::traits::SessionStore for StubRegistry {
+    impl everruns_core::execution_loading::SessionStore for StubRegistry {
         async fn get_session(
             &self,
             _session_id: SessionId,
-        ) -> everruns_core::Result<Option<everruns_core::Session>> {
+        ) -> everruns_provider::error::Result<Option<everruns_core::ExecutionSession>> {
             Ok(None)
         }
     }

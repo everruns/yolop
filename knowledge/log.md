@@ -107,6 +107,36 @@ wording, formatting, and link fixes do not need entries.
   and with an active selection `Ctrl+C` re-arms OSC 52 copy instead of
   interrupting. Typing still clears the selection.
 
+## 2026-08-17, Everruns 0.18.0 adoption; credentials leave model selection
+
+- Yolop is on the published Everruns 0.18.0 family, with no git dependency. The
+  0.18 core decomposition moved driver, model, and provider types out of
+  `everruns-core` into `everruns-provider`, moved the built-in capabilities into
+  `everruns-builtins`, and left `everruns-core` mostly a set of traits.
+- **Selection and credentials are now separate.** `ModelSpec` names a provider
+  and a model and cannot carry a key; credentials reach a driver through
+  `ProviderStore::get_provider_config`. Yolop keeps its own credentialed record
+  for settings resolution and splits it at that boundary, and supplies its own
+  provider store, because the built-in store owns no credentials and a host that
+  keeps them elsewhere would otherwise build every driver without a key.
+  Returning `None` is the supported "selected but not configured yet" state: the
+  provider stays constructible so `/setup` still runs, and provider calls fail
+  locally at the credential boundary instead of sending an empty key and
+  surfacing a remote 401.
+- `ChatDriver::chat_completion_stream` now receives the resolved
+  `ProviderEndpoint` per call rather than having it baked into the driver, which
+  is the same credential/endpoint split seen from the driver side. Drivers that
+  do not talk to an endpoint, such as Codex and in-process inference, ignore it.
+- The simulator behind `--provider llmsim` now comes from the production-safe
+  `everruns-llmsim`. `everruns-test-support` documents itself as test-only;
+  yolop still depends on it for `InMemoryMessageRetriever`, which has no other
+  home.
+- A clean compile again proved insufficient. `llm_sim` had briefly both
+  registered the simulator and set it as the default model, which silently
+  overrode yolop's selection for every provider when called after
+  `default_model`. 0.18 splits that into `llm_sim` and `llm_sim_as_default`;
+  yolop selects its default explicitly either way.
+
 ## 2026-08-09, Meta Model API provider
 
 - Yolop adopts the Everruns 0.17.25 family and registers `everruns-meta` as the

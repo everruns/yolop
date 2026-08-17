@@ -12,10 +12,10 @@ use ast_grep_core::tree_sitter::StrDoc;
 use ast_grep_core::{AstGrep, Node};
 use ast_grep_language::SupportLang;
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::tool_narration::ToolNarrationPhase;
-use everruns_core::tool_types::ToolHints;
-use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::{Capability, CapabilityStatus};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::ToolHints;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -145,7 +145,7 @@ struct AstGrepTool {
 impl Tool for AstGrepTool {
     fn narrate(
         &self,
-        tool_call: &everruns_core::tool_types::ToolCall,
+        tool_call: &everruns_provider::tool_types::ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
         _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
@@ -242,7 +242,7 @@ struct AstEditTool {
 impl Tool for AstEditTool {
     fn narrate(
         &self,
-        tool_call: &everruns_core::tool_types::ToolCall,
+        tool_call: &everruns_provider::tool_types::ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
         _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,

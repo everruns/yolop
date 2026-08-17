@@ -19,10 +19,10 @@ use crate::config::SettingsStore;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
-use everruns_core::tool_types::ToolCall;
-use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::ToolCall;
 use serde_json::{Value, json};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -43,7 +43,7 @@ not by hand. -->\n";
 // ---------- configuration ----------
 
 /// Tunables for the memory capability, supplied through the generic
-/// capability-config system (`AgentCapabilityConfig.config`) and described by
+/// capability-config system (`CapabilityRef.config`) and described by
 /// [`MemoryConfig::schema`]. All keys are optional; defaults apply otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MemoryConfig {
@@ -68,7 +68,7 @@ impl Default for MemoryConfig {
 
 impl MemoryConfig {
     /// Parse config from a capability config `Value` (from
-    /// `AgentCapabilityConfig.config`, the generic capability-config system).
+    /// `CapabilityRef.config`, the generic capability-config system).
     /// `Null` / missing keys fall back to defaults. Strict on types so the same
     /// parse backs `validate_config`: a present key must be a non-negative
     /// integer or it is rejected.
@@ -1496,7 +1496,7 @@ mod tests {
     async fn memory_block_discloses_titles_but_gates_the_framing() {
         let (_tmp, store) = store_in_tmp();
         let reveals = Arc::new(RevealedTools::new());
-        let session = everruns_core::typed_id::SessionId::new();
+        let session = everruns_provider::typed_id::SessionId::new();
         let ctx = SystemPromptContext::without_file_store(session);
 
         let capability = GlobalMemoryCapability {

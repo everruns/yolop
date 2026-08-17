@@ -1,15 +1,16 @@
 //! Persisted harness capability overrides in `settings.toml`.
 //!
 //! Overrides are stored as an ordered `[[capabilities]]` list — matching the
-//! runtime's `Vec<AgentCapabilityConfig>` — so the same capability can appear
+//! runtime's `Vec<CapabilityRef>` — so the same capability can appear
 //! more than once with different configs. Each entry is applied in order:
 //! - `enabled = false` removes every harness instance with that `ref`
 //! - default (`append = false`) merges config into the first matching `ref`, or
 //!   appends when absent
 //! - `append = true` always appends a new harness instance (duplicates allowed)
 
-use everruns_core::capabilities::Capability;
-use everruns_core::{AgentCapabilityConfig, CapabilityInfo};
+use everruns_capability::CapabilityRef;
+use everruns_core::Capability;
+use everruns_core::CapabilityInfo;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -60,7 +61,7 @@ impl CapabilityCatalog {
 /// One ordered harness override under `[[capabilities]]` in settings.toml.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityOverride {
-    /// Capability id (`ref` on disk, matching `AgentCapabilityConfig`).
+    /// Capability id (`ref` on disk, matching `CapabilityRef`).
     #[serde(rename = "ref")]
     pub capability_ref: String,
     /// When `false`, removes every harness instance with this `ref`.
@@ -256,9 +257,9 @@ fn json_to_toml(value: &Value) -> TomlValue {
 
 /// Apply ordered user overrides to the compile-time default harness list.
 pub fn apply_capability_settings(
-    defaults: Vec<AgentCapabilityConfig>,
+    defaults: Vec<CapabilityRef>,
     overrides: &[CapabilityOverride],
-) -> Vec<AgentCapabilityConfig> {
+) -> Vec<CapabilityRef> {
     let mut caps = defaults;
     for entry in overrides {
         if entry.is_remove() {
@@ -266,7 +267,7 @@ pub fn apply_capability_settings(
             continue;
         }
         if entry.append {
-            caps.push(AgentCapabilityConfig::with_config(
+            caps.push(CapabilityRef::with_config(
                 entry.capability_ref.clone(),
                 entry.config.clone(),
             ));
@@ -276,9 +277,12 @@ pub fn apply_capability_settings(
             .iter_mut()
             .find(|cap| cap.capability_id() == entry.capability_ref)
         {
-            existing.config = merge_config(&existing.config, &entry.config);
+            // `CapabilityRef` keeps its config private since the 0.18
+            // capability contract; merge through the accessors.
+            let merged = merge_config(existing.config_value(), &entry.config);
+            existing.set_config(merged);
         } else {
-            caps.push(AgentCapabilityConfig::with_config(
+            caps.push(CapabilityRef::with_config(
                 entry.capability_ref.clone(),
                 entry.config.clone(),
             ));
@@ -338,14 +342,14 @@ pub fn stored_override_json(index: usize, entry: &CapabilityOverride) -> Value {
     })
 }
 
-pub fn effective_harness_json(caps: &[AgentCapabilityConfig]) -> Vec<Value> {
+pub fn effective_harness_json(caps: &[CapabilityRef]) -> Vec<Value> {
     caps.iter()
         .enumerate()
         .map(|(index, cap)| {
             json!({
                 "index": index,
                 "ref": cap.capability_id(),
-                "config": cap.config,
+                "config": cap.config_value(),
             })
         })
         .collect()
@@ -381,15 +385,12 @@ pub fn build_capability_override(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::capabilities::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
+    use everruns_builtins::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
 
-    fn defaults() -> Vec<AgentCapabilityConfig> {
+    fn defaults() -> Vec<CapabilityRef> {
         vec![
-            AgentCapabilityConfig::new("duckduckgo"),
-            AgentCapabilityConfig::with_config(
-                "web_fetch",
-                json!({ "enable_file_download": true }),
-            ),
+            CapabilityRef::new("duckduckgo"),
+            CapabilityRef::with_config("web_fetch", json!({ "enable_file_download": true })),
         ]
     }
 
@@ -422,7 +423,7 @@ mod tests {
     #[test]
     fn apply_removes_all_instances_with_ref() {
         let mut base = defaults();
-        base.push(AgentCapabilityConfig::new("duckduckgo"));
+        base.push(CapabilityRef::new("duckduckgo"));
         let overrides = vec![CapabilityOverride::remove("duckduckgo")];
         let resolved = apply_capability_settings(base, &overrides);
         assert!(!resolved.iter().any(|c| c.capability_id() == "duckduckgo"));
@@ -448,7 +449,7 @@ mod tests {
             .iter()
             .find(|c| c.capability_id() == "web_fetch")
             .expect("web_fetch still enabled");
-        assert_eq!(cap.config["enable_file_download"], false);
+        assert_eq!(cap.config_value()["enable_file_download"], false);
     }
 
     #[test]
