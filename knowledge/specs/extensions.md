@@ -1,10 +1,10 @@
 ---
 type: Product Specification
-title: Extensions — capability servers over the yolop extension protocol
-description: Defines the extensions — capability servers over the yolop extension protocol contract for Yolop.
+title: Extensions, capability servers over the yolop extension protocol
+description: Defines the extensions, capability servers over the yolop extension protocol contract for Yolop.
 ---
 
-# Extensions — capability servers over the yolop extension protocol
+# Extensions, capability servers over the yolop extension protocol
 
 Status: **phases 1–3 implemented** in `src/extensions/`.
 Phase 1: protocol core, transport-generic client, persistent process
@@ -14,12 +14,12 @@ Phase 2: the always-on `extensions` capability with
 `install`/`list`/`enable`/`disable`/`remove` tools, `extensions.lock`
 content-hash pinning, install from git URL and local path, and the
 `ext:<name>` enable/disable write path.
-Phase 3: contributed MCP servers — a `yolop.mcpServers` manifest facet
+Phase 3: contributed MCP servers, a `yolop.mcpServers` manifest facet
 (stdio/http), surfaced through `Capability::mcp_servers()` and merged into
 scoped MCP config for enabled extensions, name-prefixed `<ext>__<server>`
 and consumed by yolop's own MCP client (workspace `.mcp.json` still
 overrides by name).
-Phase 4: hook subscriptions (`yolop.hooks` — `pre_tool_use`/`post_tool_use`
+Phase 4: hook subscriptions (`yolop.hooks`, `pre_tool_use`/`post_tool_use`
 with a tool-name glob, `timeout_ms`, and `on_error`) fired on the warm
 server via `hook/fire`, and a `dynamic_prompt` facet recomputing the
 system-prompt contribution per turn via `prompt/contribution` (falling back
@@ -29,16 +29,16 @@ stable system-prompt prefix for provider prompt caches. Pre-hooks can block;
 per-hook timeout +
 `on_error` (warn/block) bound the cost; the whole-bash-per-event
 `user_hooks` precedent makes a warm-process RPC strictly cheaper.
-Phase 5 (foundation): the **`yolop-yep`** crate (`crates/yolop-yep/`) — the
+Phase 5 (foundation): the **`yolop-yep`** crate (`crates/yolop-yep/`), the
 wire types (now the single source of truth, re-exported by the host) plus a
 handler-based server SDK (`Server::new().tool().on_hook().dynamic_prompt()
 .serve()`) so extension servers are authored in Rust without a hand-rolled
 JSON-RPC loop. A reference `echo` example server built on it is driven by
-yolop's own client in an integration test — the SDK's interop proof and the
+yolop's own client in an integration test, the SDK's interop proof and the
 foundation a future `yolop-extension-lsp` builds on.
 Schema artifacts: `schema/yep/v1/meta.json` (method + capability-token
 vocabulary) and `schema/yep/v1/schema.json` (Draft 2020-12 JSON Schema of every
-request/result payload — keyed by method under `messages`, full types under
+request/result payload, keyed by method under `messages`, full types under
 `$defs`) are both generated from the `yolop-yep` types by `cargo run -p
 yolop-yep --features schema --bin schema-gen` (the mira pattern). `schema.json`
 comes from `#[derive(schemars::JsonSchema)]` on the payload structs behind an
@@ -49,21 +49,21 @@ artifacts changing. A non-Rust author reads them to discover and validate the
 wire format.
 Conformance: `doctor_extension` (surfaced as `/extensions doctor`) spawns an
 installed extension's server, runs the `initialize` handshake, and grades it
-against the manifest — protocol-version compatibility, the D4 tool clamp
+against the manifest, protocol-version compatibility, the D4 tool clamp
 (a widened tool is a hard fail; an unserved manifest tool a warning), and
-prompt-facet consistency — returning per-check pass/warn/fail. It is the
+prompt-facet consistency, returning per-check pass/warn/fail. It is the
 runtime dual of the CI schema/drift guards: authors validate a server before
 shipping without booting a whole session.
-Self-writing: `scaffold_extension` generates a ready-to-edit package — a
+Self-writing: `scaffold_extension` generates a ready-to-edit package, a
 `plugin.json` declaring the requested facets (`tools`, `hooks`, `prompt`) plus
-a self-contained capability server whose only author-editable seams are the
+a self-contained capability server whose only author-editable boundaries are the
 `handle_*` bodies. The skeleton is correct by construction: it installs via
 `install_extension source=<dir>` and passes `doctor_extension` before any logic
 is written, so authoring collapses to filling in handlers. The server is a
 single executable under the package `bin/` (resolved via the `bin/`-on-PATH
 rule the runtime already uses; the exec bit survives the install copy), so no
 absolute paths leak into the manifest. The `python` and `typescript`
-(dependency-free Node.js) templates are single-file and toolchain-free — the
+(dependency-free Node.js) templates are single-file and toolchain-free, the
 fastest, most reliable path for yolop to author an extension for itself. The
 `rust` template emits a `serde_json`-only crate (the compiled twin of the same
 raw-protocol server); it carries a `build` step in the scaffold result because
@@ -71,8 +71,8 @@ the binary must be compiled into `bin/` before install, unlike the zero-build
 templates. The
 [`author-extension`](../../.agents/skills/author-extension/SKILL.md) skill drives
 the loop (scaffold → implement → install → doctor → ask-to-enable); the
-end-to-end acceptance — a self-authored `pre_tool_use` hook that blocks `git`,
-spawned exactly as the runtime spawns it — is covered by
+end-to-end acceptance, a self-authored `pre_tool_use` hook that blocks `git`,
+spawned exactly as the runtime spawns it, is covered by
 `scaffolded_extension_blocks_git_end_to_end`.
 Status bar: an extension that declares `status` in its manifest (the D4 opt-in)
 may push `status/changed` notifications carrying a short string the host shows
@@ -83,7 +83,7 @@ into a `SetExtensionStatus` `UiCommand`, then `App.extension_status`, then
 `expanded_status_lines`) and the full-screen renderer (`app/fullscreen.rs`); it
 is a no-op in `--print`/ACP, where the sink is `None` and the push only logs.
 `scaffold_extension status=true` emits an `emit_status(text)` helper; the
-acceptance — a self-authored char-counter that pushes to the sink — is covered
+acceptance, a self-authored char-counter that pushes to the sink, is covered
 by `scaffolded_status_extension_pushes_to_the_sink`. ACP has no status surface
 today, so extension status is intentionally TUI-only for now.
 Skills: an extension that declares `skills` and ships a `skills/` directory
@@ -93,17 +93,17 @@ declaring extension's `skills/` is seeded into a read-only in-memory mount at
 `extension_skills_vfs(<name>)` (so an installed extension's skills can't be
 mutated through the VFS) and added as a read-only `SkillScope` (label
 `ext:<name>`) in `skills_config`. Loading follows the MCP-contribution rule
-(enabled extensions only) and is host-side — no server or wire involvement.
+(enabled extensions only) and is host-side, no server or wire involvement.
 `scaffold_extension skills=true` writes a starter `skills/<name>/SKILL.md`;
 `extension_contributed_skill_is_visible_and_read_only` covers the mount.
 Slash commands: an extension declares `commands` in its manifest; `ExtensionCapability`
-implements the `Capability` `commands()`/`execute_command()` seams, so the
+implements the `Capability` `commands()`/`execute_command()` boundaries, so the
 commands flow into `runtime.list_commands` → the palette automatically. Each is
 registered namespaced (`<ext>:<name>`) so it can never shadow a built-in, and
 invoking it sends `command/execute` (host→server) with `{name, arguments}`; the
 server's `CommandExecuteResult { success, message }` becomes the `CommandResult`
 shown to the user. `scaffold_extension commands=[…]` generates a
-`handle_command` seam in all three templates. Covered by
+`handle_command` boundary in all three templates. Covered by
 `scaffolded_extension_serves_a_slash_command`.
 ui/ask: an extension that declares `ui_ask` (the D4 opt-in) may send a `ui/ask`
 *request* (server→host, the reverse-request direction) carrying
@@ -124,25 +124,25 @@ environment under that name (so servers read env, not the wire). Non-secret
 fields flow through `initialize.config` as before; a non-secret field that also
 declares `env` is additionally injected as env, sourced from config. `secret`
 fields are stored in the shared credential store (`connections.toml`, 0600,
-redacted — `ExtensionSecrets`, keyed `ext:<name>`), **never** in `settings.toml`,
+redacted, `ExtensionSecrets`, keyed `ext:<name>`), **never** in `settings.toml`,
 and reach the server as injected env only (`capability.rs` strips any `secret`
 key from `initialize.config`). The `secret` marker decouples the concept from the
 location: moving credentials to a keychain later changes only `secrets.rs`. Agent
 leak-protection is threefold: entry is out-of-band via `set_extension_secret`
-(and setup-on-enable), which prompts the *user* through the `ui/ask` surface —
+(and setup-on-enable), which prompts the *user* through the `ui/ask` surface,
 the agent triggers it but supplies no value and is refused if it passes one; all
 agent-facing reads (`list_extensions`) report a field's `set`/`unset` status,
 never its value; and a redacting `Secret` newtype keeps values out of logs. On
 `enable_extension`, every required field that is unset is prompted for (setup on
 enable), dispatched by `ConfigField::kind`: `secret` → masked entry stored in the
-credential store; an `enum` field → a **selector**; otherwise free text — both
+credential store; an `enum` field → a **selector**; otherwise free text, both
 persisted to capability config (`SettingsStore::set_capability_config`). The kind
 enum is the extension point: new input kinds slot in without touching callers.
 The prompts ride the one `ui/ask` reverse-request, now carrying `secret` (the
-host masks input and shows `(saved)`, never the value — both TUI overlays honor
+host masks input and shows `(saved)`, never the value, both TUI overlays honor
 it via `ask_overlay_content`) and `options` (an arrow-key selector). Non-secret
 config reaches SDK servers through `Server::on_config`, a handler the SDK invokes
-once with `initialize.config` at handshake — so an author builds state (an
+once with `initialize.config` at handshake, so an author builds state (an
 exporter, a client) from config without hand-parsing the wire. The `logfire`
 extension dogfoods the whole path: `token` (secret → `LOGFIRE_TOKEN` env),
 `endpoint` and `service_name` (plain config consumed via `on_config`). Covered by
@@ -151,7 +151,7 @@ extension dogfoods the whole path: `token` (secret → `LOGFIRE_TOKEN` env),
 `list_reports_secret_status_never_values`, `setup_on_enable_prompts_by_field_kind`,
 and the SDK's `on_config_receives_initialize_config`.
 Traces: an extension that declares `trace` in its manifest (the D4 opt-in)
-receives the session's agentic event stream — each lifecycle event (`turn.*`,
+receives the session's agentic event stream, each lifecycle event (`turn.*`,
 `reason.*`, `act.*`, `tool.started/completed`, `llm.generation`) forwarded as a
 fire-and-forget host→server `trace/event` notification, so it can export the run
 to a tracing backend (Logfire, an OTLP collector). This is the observe-only dual
@@ -166,7 +166,7 @@ are dropped (the paired `*.started`/`*.completed` events already bound the work)
 The wire type is `TraceEventParams` (event type, ids, timestamp, and the event
 `context`/`data` carried verbatim); the SDK exposes it as `Server::on_trace`
 (a stateful `FnMut` so an exporter can pair spans across events). The reference
-consumer is the `yolop-extension-logfire` crate — a capability server on the SDK
+consumer is the `yolop-extension-logfire` crate, a capability server on the SDK
 that folds the events into OpenTelemetry spans and POSTs OTLP/HTTP to Logfire,
 configured by the same environment variables Logfire's onboarding checklist uses
 (`LOGFIRE_TOKEN`, `LOGFIRE_ENDPOINT`, `OTEL_SERVICE_NAME`). Covered by
@@ -174,7 +174,7 @@ configured by the same environment variables Logfire's onboarding checklist uses
 gets no forwarder (`non_declaring_extension_has_no_trace_process`).
 Live reload: `reload_extension name=<name>` restarts an already-enabled
 extension's *server process* in place, so implementation edits take effect
-mid-session without a yolop restart — the self-writing inner loop. Each
+mid-session without a yolop restart, the self-writing inner loop. Each
 `ExtensionCapability` publishes its live `ExtensionProcess` into a shared
 `LiveProcessRegistry` (a `Weak` map, so the registry never keeps a server alive
 past its owning capability's cache); the management capability holds the same
@@ -184,10 +184,10 @@ handshake. Crucially the *approved surface* is the session snapshot: the
 manifest (tool names, schemas, prompt opt-in) was read at build and the harness
 tool set is frozen there, so reload re-runs the binary within the same D4 grant
 and can never widen it. A manifest change (a new tool, a changed schema) still
-requires a restart — the enabled-capability set is fixed for the session
-because `everruns-core` builds the harness once with no live-reconfigure seam.
+requires a restart, the enabled-capability set is fixed for the session
+because `everruns-core` builds the harness once with no live-reconfigure boundary.
 Covered by `reload_respawns_the_server_with_edited_code`.
-Hot-enable: `everruns-runtime` grew a live-reconfigure seam
+Hot-enable: `everruns-runtime` grew a live-reconfigure boundary
 (`InProcessRuntime::activate_capability`/`deactivate_capability` →
 `CapabilityDelta`, EVE-795), so enabling a *new* extension no longer waits for
 the next session. `enable_extension`/`disable_extension` still persist the
@@ -196,42 +196,42 @@ the next session. `enable_extension`/`disable_extension` still persist the
 `Session::activate_capability`/`deactivate_capability`, which mutate the
 session-scoped capability overlay. The runtime reassembles prompt, tools, hooks,
 commands, and contributed MCP servers from that overlay on the next reason/act
-boundary, so the extension is live on the **next turn** — no restart. The
+boundary, so the extension is live on the **next turn**: no restart. The
 capability lands on the session overlay (distinct from the harness layer a
 startup-enabled extension rides), so it can be live-deactivated too; disabling
 one that was active from session start rides the harness layer and only settings
 can drop it (next session). Refused with no live session (`--print`/ACP), where
 enable/disable persist for the next run. Covered by
 `enable_disable_emit_live_activation_when_wired`.
-Later — the full `yolop-extension-lsp` control-plane extraction (gated on
+Later, the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in),
 `workspace/changed`,
-providers — remain design-of-record below.
+providers, remain design-of-record below.
 Toolchain-free crates.io install is now wired: `install_extension
 source="crates.io:yolop-extension-<name>[@ver]"` (or the bare-`<name>`
 shorthand) resolves the version through the crates.io **sparse index**
 (`index.crates.io`), downloads the `.crate` from the static CDN, verifies its
-SHA-256 against the index `cksum`, and unpacks the gzip'd tar — no cargo/rustc.
+SHA-256 against the index `cksum`, and unpacks the gzip'd tar, no cargo/rustc.
 A published crate ships *source*, so the manifest's `capabilityServer.command`
 names a binary the user has on `PATH` (or in the package `bin/`); yolop does
 not compile it (`cargo install` remains an optional author-side path, not a
 yolop dependency). Still follow-ups: full JSON-Schema config validation and
 `config/changed` restart. Phase-1 deltas from the original sketch: tool *definitions*
 (description, schema, policy) live in the manifest, and the handshake's
-`tools` list carries only the served names it narrows to — keeping every
+`tools` list carries only the served names it narrows to, keeping every
 contribution inspectable without executing the binary; `tool/update`
 progress surfaces through the tracing layer until the TUI grows a live
-seam.
+boundary.
 
 ## Why
 
 Yolop's unit of functionality is the everruns **capability**: one `Capability`
 implementation contributes tools, system-prompt text, config schema, hooks,
-MCP servers, skills, and commands through well-defined trait seams, and the
+MCP servers, skills, and commands through well-defined trait boundaries, and the
 harness is an ordered, user-editable list of capability refs
 (`[[capabilities]]` in `settings.toml`). The contract is right; the delivery
 is wrong: every capability is compiled in. The `lsp` capability (#236) is the
-canonical example — ~3.4k lines of Rust that had to land in this repo, ride
+canonical example, ~3.4k lines of Rust that had to land in this repo, ride
 the release train, and grow everyone's binary, including the majority who
 keep it off.
 
@@ -246,8 +246,8 @@ commands, static MCP server registrations) are arriving upstream as
 carried *inside* the `plugin:{name}` capability config and hydrated at
 collection time. Yolop inherits that layer by staying in lockstep; this spec
 does not redesign it. What yolop must own is the tier upstream does not
-have: **executable, stateful, capability-level logic in a subprocess** — the
-*capability server* — and the protocol between yolop and it: the **yolop
+have: **executable, stateful, capability-level logic in a subprocess**: the
+*capability server*, and the protocol between yolop and it: the **yolop
 extension protocol (YEP)**.
 
 ## Prior art (compressed)
@@ -260,7 +260,7 @@ tier:
   breadth (pi's ~35-event TypeScript API, OpenCode's JS middleware) is a
   property of having a scripting runtime, not a design yolop can copy.
 - **goose** proves "extension = MCP server" works but also shows its ceiling:
-  tools/resources/prompts only — no prompt shaping, no loop hooks, no config
+  tools/resources/prompts only, no prompt shaping, no loop hooks, no config
   schema, no streaming tool output. That ceiling is exactly the gap between
   MCP and the `Capability` trait.
 - **Zed** shows the strongest versioning story (per-version WIT snapshots)
@@ -283,11 +283,11 @@ tier:
 
 ## Design decisions
 
-### D1 — YEP is its own protocol; MCP is a *contribution*, not the base
+### D1, YEP is its own protocol; MCP is a *contribution*, not the base
 
 A capability server speaks **YEP**: yolop-owned methods and lifecycle,
 JSON-RPC 2.0 as the message envelope (the same envelope LSP, DAP, and MCP
-use — it is framing, not semantics) over stdio, newline-delimited. The
+use, it is framing, not semantics) over stdio, newline-delimited. The
 protocol mirrors the `Capability` trait directly instead of bending the
 contract to fit another protocol's shape.
 
@@ -295,7 +295,7 @@ Why not an MCP superset (the previous revision of this spec recommended one;
 recorded here as rejected):
 
 - **The contract should evolve with the trait, not with MCP.** Tool policy,
-  hooks, prompt contributions, config push, streaming tool output — none of
+  hooks, prompt contributions, config push, streaming tool output, none of
   these exist in MCP; a superset means forever expressing yolop semantics
   through someone else's extension escape hatch and tracking their spec's
   churn underneath.
@@ -303,7 +303,7 @@ recorded here as rejected):
   progress/partial output while a tool runs (yolop's TUI already renders
   streaming `bash` output; extension tools must not regress to
   spinner-until-done), cancellation, and structured result payloads aligned
-  with `ToolExecutionResult` — native YEP messages rather than bolted-on
+  with `ToolExecutionResult`, native YEP messages rather than bolted-on
   progress notifications.
 - **The cross-host argument inverts.** The superset's main selling point was
   "the same binary also works in goose/Claude Code." Composition achieves
@@ -311,17 +311,17 @@ recorded here as rejected):
   server* (next paragraph) and keeps the yolop-specific surface in YEP.
 
 **MCP as a contribution.** An extension can announce, in its handshake:
-*"I provide these MCP servers"* — each entry a name plus transport (a stdio
+*"I provide these MCP servers"*, each entry a name plus transport (a stdio
 command, or an HTTP URL, typically `localhost` served by the extension
 process itself). Yolop merges them into scoped MCP config and consumes them
 through its **existing MCP client path**, exactly as if they came from
-`.mcp.json`. This is not a new seam: it is the wire form of
+`.mcp.json`. This is not a new boundary: it is the wire form of
 `Capability::mcp_servers_with_config()`, which compiled-in capabilities
 already use. Division of labor:
 
-- **Native YEP tools** — streaming, stateful, policy-rich, session-scoped;
+- **Native YEP tools**: streaming, stateful, policy-rich, session-scoped;
   the LSP class.
-- **Contributed MCP servers** — wrapping/bundling the existing MCP
+- **Contributed MCP servers**: wrapping/bundling the existing MCP
   ecosystem: an extension can manage credentials, config, or lifecycle for a
   third-party MCP server and hand yolop the endpoint. Stateful contributed
   servers should prefer an extension-hosted HTTP endpoint (the extension
@@ -329,20 +329,20 @@ already use. Division of labor:
   spawn-per-call today.
 
 The cost of a bespoke protocol is the missing SDK ecosystem. The mitigation
-is not hand-waving — it is the pattern [mira](https://github.com/everruns/mira)
+is not hand-waving, it is the pattern [mira](https://github.com/everruns/mira)
 already ships for its eval protocol (itself an ACP-inspired stdio dialect;
 YEP joins the same family and follows `mira/docs/protocol.md` as its style
 template): a schema-first contract with generated, native SDKs and a
 conformance harness. See "Protocol construction" below.
 
-### D2 — Persistent, session-scoped processes
+### D2, Persistent, session-scoped processes
 
-A capability server is spawned once per session and lives for it —
+A capability server is spawned once per session and lives for it,
 persistence is intrinsic to YEP, not an option. Spawn is eager at session
 start when the extension contributes prompt text or hooks (needed before the
 first turn), lazy on first tool call otherwise. `kill_on_drop`; crash fails
 pending requests with a clear message and the next call respawns with
-backoff — the policy `lsp/manager.rs` already implements for language
+backoff, the policy `lsp/manager.rs` already implements for language
 servers. Graceful path: `shutdown` request, then `exit` notification,
 SIGKILL after a grace window.
 
@@ -351,31 +351,31 @@ mid-session (`WorkspaceHost`), so the workspace root arrives in `initialize`
 **and** changes arrive as `workspace/changed` notifications; servers that
 cache roots (the LSP class) must handle it.
 
-### D3 — Every trait seam gets one of three treatments
+### D3, Every trait boundary gets one of three treatments
 
-The core of the design. The `Capability` trait's seams split by how hot
+The core of the design. The `Capability` trait's boundaries split by how hot
 their call path is:
 
-| Treatment | Seams | Mechanism |
+| Treatment | Boundaries | Mechanism |
 |---|---|---|
-| **Static** — declared, no RPC after startup | id/name/description/category, `config_schema`, static system prompt, tool definitions + policy (naming, never-defer, approval/risk hints, narration templates), **provided MCP servers**, commands, hook *subscriptions*, dependencies, features | Package manifest + `initialize` handshake; a generic yolop-side adapter answers the trait from this cache |
-| **RPC** — cold path, bounded, fallible | tool execution (streamed), dynamic system prompt (≤1/turn, timeout + last-known-good fallback), hook firings, user questions, config push, workspace change | YEP requests/notifications over the persistent connection, each with a declared timeout and error policy |
-| **Excluded** from the wire (v1) | `facts`, `message_filter_provider`, `model_view_provider`, `tool_definition_hooks` | Per-request hot loop, documented "cheap and side-effect free" — a cross-process round-trip there is hostile to latency and prompt-cache stability. If real demand appears, this is the future WASM tier's job, not a protocol extension |
+| **Static**: declared, no RPC after startup | id/name/description/category, `config_schema`, static system prompt, tool definitions + policy (naming, never-defer, approval/risk hints, narration templates), **provided MCP servers**, commands, hook *subscriptions*, dependencies, features | Package manifest + `initialize` handshake; a generic yolop-side adapter answers the trait from this cache |
+| **RPC**: cold path, bounded, fallible | tool execution (streamed), dynamic system prompt (≤1/turn, timeout + last-known-good fallback), hook firings, user questions, config push, workspace change | YEP requests/notifications over the persistent connection, each with a declared timeout and error policy |
+| **Excluded** from the wire (v1) | `facts`, `message_filter_provider`, `model_view_provider`, `tool_definition_hooks` | Per-request hot loop, documented "cheap and side-effect free", a cross-process round-trip there is hostile to latency and prompt-cache stability. If real demand appears, this is the future WASM tier's job, not a protocol extension |
 
 Hooks over RPC deserve the explicit precedent: `user_hooks` today spawns a
 **whole bash process per event**. A request to an already-warm process is
-strictly cheaper than the mechanism yolop already ships — but bounded
+strictly cheaper than the mechanism yolop already ships, but bounded
 anyway: subscriptions are static (event + tool-name matcher + `timeout_ms` +
 `on_error: warn|block`), a match-all matcher must be spelled `"*"` and is
 called out at approval time, and per-extension subscription count is capped.
 
-### D4 — The manifest is the approval boundary; the handshake may only narrow it
+### D4, The manifest is the approval boundary; the handshake may only narrow it
 
 Static facets live in **both** the package manifest and the handshake, with
 a strict relationship:
 
 - The **manifest** (`plugin.json` + `yolop` facet block) is what the user
-  approves at install time — it must be inspectable *without executing the
+  approves at install time, it must be inspectable *without executing the
   binary* (the VS Code lesson). It declares the server command and the upper
   bound of everything: tool names, never-defer list, hook subscriptions,
   provided MCP servers, prompt size, config schema.
@@ -384,51 +384,51 @@ a strict relationship:
   (feature-gated builds), but anything not in the approved manifest is
   refused and logged. A server that tries to widen its grant after
   installation is the exact attack the clamp exists for. Provided MCP
-  servers are clamped by *name and transport shape* — an approved stdio
+  servers are clamped by *name and transport shape*, an approved stdio
   command cannot silently become a remote URL.
 
 The lockfile's content hash makes the boundary durable: what was approved
 is pinned, and an `update` whose manifest widens the grant re-asks with a
 contribution diff before anything runs.
 
-### D5 — Config rides the existing capability machinery
+### D5, Config rides the existing capability machinery
 
-An enabled extension is one harness entry — `[[capabilities]]
-ref = "ext:<name>"` — so enable/disable/configure/validate ride the existing
+An enabled extension is one harness entry, `[[capabilities]]
+ref = "ext:<name>"`, so enable/disable/configure/validate ride the existing
 overrides, catalog, and `set_config` tools unchanged. The declared
 `config_schema` plugs into `CapabilityCatalog` validation exactly like a
 built-in's.
 
 Delivery: validated config is passed in `initialize` params, and pushed on
 change as `config/changed`; the server answers `ok` or `restart-required`
-(yolop restarts it — the same "rebuild manager on config change" semantics
+(yolop restarts it, the same "rebuild manager on config change" semantics
 `LspCapability` has today). Secrets stay in env (`${VAR}` expansion in the
 server spec, as `.mcp.json` does now); config is for structure, not
 credentials.
 
-### D6 — Tool policy is part of the tool definition
+### D6, Tool policy is part of the tool definition
 
 The LSP eval produced two hard facts: tools deferred behind `tool_search`
 stubs get ~zero adoption, and prompt guidance names exact tool names. In a
-yolop-owned protocol this is native — each declared tool carries:
+yolop-owned protocol this is native, each declared tool carries:
 
-- its **real name** (`lsp_definition` — no forced prefix; registered only if
+- its **real name** (`lsp_definition`, no forced prefix; registered only if
   it collides with nothing built-in or already installed; on collision, the
   extension-qualified form with a startup warning),
 - **`never_defer`** (schema always loaded, budgeted: ≤8 per extension so one
   package cannot blow the context window; everything else defers behind
-  `tool_search` — the answer to pi's context-cost critique),
+  `tool_search`, the answer to pi's context-cost critique),
 - **approval/risk hints** consumed by the approval capability, and an
   optional **narration template** (static templates beat narration RPC),
-- **`streaming`** — whether the tool emits `tool/update` progress.
+- **`streaming`**: whether the tool emits `tool/update` progress.
 
 ## The protocol surface
 
 ### Wire model (mira conventions, adopted)
 
-YEP's wire model is lifted from the mira eval protocol — the ACP-inspired
+YEP's wire model is lifted from the mira eval protocol, the ACP-inspired
 stdio dialect this codebase's sibling already specifies, generates, and
-tests — rather than invented fresh:
+tests, rather than invented fresh:
 
 - **Transport & framing.** Child-process stdio; newline-delimited JSON, one
   UTF-8 object per line, blank lines ignored. `stdout` carries **only**
@@ -437,16 +437,16 @@ tests — rather than invented fresh:
 - **Field-based message classification.** A line bearing `method` is a
   request (with `id`) or notification (without); only a `method`-less line
   is a response. Classification is by fields, not by direction or pipe.
-- **Bidirectional from day one, with mira's reserved-seam invariants made
+- **Bidirectional from day one, with mira's reserved-boundary invariants made
   live**: independent `id` spaces per direction (a response matches pending
   requests *on the same side* only), and each direction's optional methods
-  are capability-negotiated — a peer never emits a method the other side
+  are capability-negotiated, a peer never emits a method the other side
   did not advertise. YEP needs the reverse direction immediately
   (`ui/ask`, `status/changed`, `log`), so these invariants are v1 behavior,
   not a reservation.
 - **Correlated notifications.** A notification cannot carry the envelope
   `id` (that would classify it as a response), so streamed `tool/update`
-  events correlate to their in-flight call via `request_id` in the payload —
+  events correlate to their in-flight call via `request_id` in the payload,
   the same demultiplexing key mira uses, which is what lets many tool calls
   (and their update streams) multiplex over the single pipe.
 - **Errors are JSON-RPC-shaped and defaulted**: `code` (JSON-RPC
@@ -464,7 +464,7 @@ tests — rather than invented fresh:
 ### Versioning (mira rules, verbatim)
 
 `MAJOR.MINOR`, negotiated at `initialize`; v1 ships as `1.0`. Majors must
-match — yolop refuses a mismatched server with a startup warning, never a
+match, yolop refuses a mismatched server with a startup warning, never a
 crash. Minors are additive. Forward compatibility is a hard requirement on
 both sides: **ignore unknown fields** (no deny-unknown-fields on the wire),
 **default missing fields**, and **feature-detect via capability tokens, not
@@ -479,17 +479,17 @@ verbatim when unrecognized): `tools`, `streaming`, `hooks`, `prompt`,
 | Direction | Method | Kind | Purpose |
 |---|---|---|---|
 | →server | `initialize` | req | protocol version, session id, workspace root, locale, validated config, host feature set |
-| ←server | (result) | — | identity, contributions (prompt, tools, hooks, MCP servers, commands), clamped by manifest |
+| ←server | (result) |, | identity, contributions (prompt, tools, hooks, MCP servers, commands), clamped by manifest |
 | →server | `initialized` | ntf | handshake complete |
 | →server | `tool/call` | req | `{tool_call_id, name, args}`; response is the final `ToolExecutionResult`-shaped payload; the host uses the manifest tool name as stable activity narration |
 | ←server | `tool/update` | ntf | streamed progress/partial output; correlates via `request_id` in the payload |
-| →server | `cancel` | req | `{id}` — abort any in-flight request (mira semantics: best-effort, aborted call resolves with error `cancelled`) |
+| →server | `cancel` | req | `{id}`, abort any in-flight request (mira semantics: best-effort, aborted call resolves with error `cancelled`) |
 | →server | `prompt/contribution` | req | dynamic system prompt (only if declared `dynamic`); timeout + last-known-good |
 | →server | `hook/fire` | req | `{event, toolName, payload}` → decision per subscription (`allow/block/mutate`) |
 | →server | `trace/event` | ntf | forward one agentic-lifecycle event (turn/reason/act/tool/llm) to a `trace`-declaring extension; observe-only, never awaited |
 | →server | `config/changed` | req | new validated config → `ok` \| `restart-required` |
 | →server | `workspace/changed` | ntf | active worktree/root repointed |
-| ←server | `ui/ask` | req | user question/form — bridged to the `user_ask` capability |
+| ←server | `ui/ask` | req | user question/form, bridged to the `user_ask` capability |
 | ←server | `status/changed` | ntf | capability status (e.g. `degraded: rust-analyzer not found`) surfaced in `/extensions list` |
 | ←server | `log` | ntf | structured logs → yolop's tracing layer (`RUST_LOG` honored) |
 | →server | `shutdown` / `exit` | req/ntf | graceful stop before `kill_on_drop` |
@@ -524,7 +524,7 @@ yolop                                   capability server (ext:lsp)
 
 ### Protocol construction (the mira pattern)
 
-How the contract is defined, published, and kept honest — adopted wholesale
+How the contract is defined, published, and kept honest, adopted wholesale
 from mira, which has already proven each piece for a protocol of this exact
 shape:
 
@@ -537,18 +537,18 @@ shape:
   `--all-features`) so a wire change cannot merge without a matching schema
   update.
   *Implemented shape:* rather than a root `anyOf` over the three envelopes
-  (the envelope is field-classified — see `classify_line` — and its
+  (the envelope is field-classified, see `classify_line`, and its
   direction vocabulary already lives in `meta.json`), `schema.json` keys
   payloads by **method** under a `messages` map (`{ params, result }` refs),
   with the shared `error` and `capability_params` shapes at the top level and
   all types under `$defs`. A conformance corpus (`schema/yep/v1/
   conformance/`) remains a follow-up.
 - **SDKs are native, zero-dependency libraries, never FFI bindings.** The
-  protocol is the seam by design; bindings would re-couple what the wire
+  protocol is the boundary by design; bindings would re-couple what the wire
   decouples. Each SDK ships a small codegen with its own `--check` drift
   mode that generates wire types from `schema.json` and protocol metadata
-  from `meta.json` — the version string and method/capability vocabulary
-  are generated, not hardcoded — plus a hand-written ergonomic layer: a
+  from `meta.json`, the version string and method/capability vocabulary
+  are generated, not hardcoded, plus a hand-written ergonomic layer: a
   `serve()` stdio loop and tool/hook registration helpers. Rust
   (`yolop-extension`, dogfooded by `yolop-extension-lsp`) first; TypeScript and
   Python when demand shows, following `mira/knowledge/specs/sdks.md` including its
@@ -562,7 +562,7 @@ shape:
   extend without any bump at all.
 - **Conformance harness in the product**: `/extensions doctor <cmd>` drives
   a server through handshake, tool call, streaming, cancellation, and
-  config push, validating every message against the committed schema — the
+  config push, validating every message against the committed schema, the
   runtime dual of the CI guards, pointed at third-party servers.
 
 ### The adapter
@@ -574,7 +574,7 @@ streamed to the TUI); `mcp_servers_with_config()` returns the contributed
 endpoints for the runtime's scoped-MCP merge; `pre/post_tool_exec_hooks()`
 manufactured from subscriptions; `system_prompt_contribution()` from the
 static text or the RPC. Registered per installed+enabled extension at
-startup — `CapabilityRegistry::register` takes `Arc<dyn Capability>` at
+startup, `CapabilityRegistry::register` takes `Arc<dyn Capability>` at
 runtime, so registration needs no upstream change.
 
 ## Packaging, install, trust
@@ -589,7 +589,7 @@ A publishable Rust extension crate includes its `plugin.json` and README in the
 crate package, allowing crates.io installation to provision the extension
 manifest alongside the source package.
 
-The package is the everruns plugin directory — the declarative layer arrives
+The package is the everruns plugin directory, the declarative layer arrives
 upstream; yolop adds one facet:
 
 ```json
@@ -621,38 +621,38 @@ upstream; yolop adds one facet:
   `<config_dir>/yolop/extensions/<name>/`, installed per user; malformed
   packages warn, never sink startup. There is deliberately **no workspace
   scope** (no `.agents/extensions/` discovered from repos): a repository
-  must not carry agent-specific machinery — committing yolop extensions to
+  must not carry agent-specific machinery, committing yolop extensions to
   a repo would quietly couple that project to one agent. Projects keep
   using the agent-neutral surfaces they already have (`.mcp.json`,
   `.agents/skills/`, `.agents/hooks.json`); a project README may *recommend*
   extensions, and the user installs them once, globally, by choice.
 - **Naming convention**: crates.io extensions are named
   `yolop-extension-<name>` (the `cargo-<subcommand>` pattern). The suffix is
-  the extension name — crate `yolop-extension-lsp` is extension `lsp`,
+  the extension name, crate `yolop-extension-lsp` is extension `lsp`,
   capability ref `ext:lsp`. The prefix gives yolop a de-facto namespace and
   catalog on crates.io with no registry of its own: prefix search is
   discovery (`/extensions search <term>` can ride the crates.io API later),
   and squatting/typo risk is scoped to one greppable prefix. Crates should
   also set `keywords = ["yolop-extension"]`.
 - **Install**: `/extensions install <source>`, plus
-  `list | update | remove | enable | disable | doctor` — System commands
+  `list | update | remove | enable | disable | doctor`, System commands
   *and* capability tools, so both the user and the model can drive setup.
   Sources, all pinned in `extensions.lock` and updated only explicitly:
-  - `<name>` (bare) — shorthand for `crates.io:yolop-extension-<name>`;
+  - `<name>` (bare), shorthand for `crates.io:yolop-extension-<name>`;
     `/extensions install lsp` is the whole UX for the common case.
-  - `<git-url>[@rev]` — cloned into the global dir; lock records source,
+  - `<git-url>[@rev]`, cloned into the global dir; lock records source,
     resolved commit, content hash. Carries the package; the server binary
-    must already be resolvable (PATH or the package's `bin/`) — a missing
+    must already be resolvable (PATH or the package's `bin/`), a missing
     binary is a call-time tool error with install guidance, exactly like a
     missing `rust-analyzer` today.
-  - `crates.io:<crate>[@version]` — provisions package *and binary* in one
+  - `crates.io:<crate>[@version]`, provisions package *and binary* in one
     step, **with no cargo or Rust toolchain required**. The pieces that
     don't need a toolchain are compiled into yolop: the sparse index
     (`index.crates.io`) is plain HTTPS + JSON and the `.crate` file is a
     checksummed tar.gz, so yolop resolves the version, downloads the
     tarball, verifies the registry checksum, and reads the extension
-    manifest from it — `plugin.json` at the crate root or
-    `[package.metadata.yolop]` in `Cargo.toml` — **without executing
+    manifest from it, `plugin.json` at the crate root or
+    `[package.metadata.yolop]` in `Cargo.toml`, **without executing
     anything**, preserving the D4 invariant. Binary provisioning after
     consent, in order:
     1. **Prebuilt artifact (primary).** The crate's metadata names
@@ -666,7 +666,7 @@ upstream; yolop adds one facet:
        if no artifact matches the host target *and* a toolchain happens to
        be present.
     3. Otherwise: install completes package-only and the missing binary is
-       a call-time tool error with guidance — same policy as git installs.
+       a call-time tool error with guidance, same policy as git installs.
     Lock records crate, version, registry checksum, and the artifact
     digest actually installed.
     *Implemented today:* the toolchain-free fetch (sparse-index resolve →
@@ -674,10 +674,10 @@ upstream; yolop adds one facet:
     the server binary must be on `PATH` or in the package `bin/`). The
     prebuilt-artifact and `cargo install` provisioning steps (1–2) remain
     design-of-record.
-  - `<path>` — referenced in place, not copied (dev loop).
+  - `<path>`, referenced in place, not copied (dev loop).
 - **Trust**: install is consent by action (same stance as authoring
   `.mcp.json`), preceded by a printed contribution summary (server command,
-  tools, hooks, MCP servers, prompt size) — readable straight from the
+  tools, hooks, MCP servers, prompt size), readable straight from the
   manifest, without executing the binary. `update` shows a **contribution
   diff** against the approved manifest and re-asks when the grant widened
   (new tools, new hooks, a changed server command); a hash-identical update
@@ -688,17 +688,17 @@ upstream; yolop adds one facet:
 
 Decomposition of the existing capability:
 
-- **Data plane** — rust-analyzer, gopls, pyright, … : already subprocesses;
+- **Data plane**: rust-analyzer, gopls, pyright, … : already subprocesses;
   now spawned and kept warm by the extension process instead of by yolop.
-- **Control plane** — `yolop-extension-lsp` (crate name per the convention;
+- **Control plane**: `yolop-extension-lsp` (crate name per the convention;
   binary ditto), a standalone binary on the reference SDK:
   the transport-generic LSP client, server lifecycle manager,
   position-encoding conversion, and workspace-edit safety checks move there
   ~verbatim (`client.rs` is already transport-generic; only `manager.rs`
-  knows processes). It exposes the seven `lsp_*` tools natively over YEP —
+  knows processes). It exposes the seven `lsp_*` tools natively over YEP,
   streaming suits `lsp_rename` (per-file progress on large workspaces).
-- **Package** — manifest above + the directive prompt text (verbatim: the
-  eval showed the "call `lsp_*` FIRST" wording is load-bearing) + the same
+- **Package**: manifest above + the directive prompt text (verbatim: the
+  eval showed the "call `lsp_*` FIRST" wording is essential) + the same
   config schema (`servers.<key>.command/args/extensions`, timeouts). Config
   changes to the servers map answer `restart-required`, matching today's
   "rebuild manager, killing old servers" behavior. `workspace/changed`
@@ -707,7 +707,7 @@ Decomposition of the existing capability:
 Migration gate: the built-in stays until the extension reaches parity on
 `evals/lsp_integration` (pass rate, `lsp_*` adoption, turns, tokens, plus
 tool-call latency overhead measured). Parity → retire the in-tree
-capability; the eval is the gate, the extension is the dogfood — for both
+capability; the eval is the gate, the extension is the dogfood, for both
 the protocol and the SDK.
 
 ## Future facets on the same protocol
@@ -715,9 +715,9 @@ the protocol and the SDK.
 - **LLM providers.** Tier 1 is declarative (OpenAI-compatible descriptor:
   base_url, auth env, model list/profiles) once `Provider` moves from a
   closed enum to a catalog. Tier 2 rides the handshake: the server announces
-  `provider: { baseUrl: "http://127.0.0.1:<port>/v1", models: [...] }` — an
+  `provider: { baseUrl: "http://127.0.0.1:<port>/v1", models: [...] }`, an
   OpenAI-compatible endpoint it hosts (the pattern Ollama normalized;
-  `codex_driver`'s `DriverId::external` shows the driver-side seam). Native
+  `codex_driver`'s `DriverId::external` shows the driver-side boundary). Native
   drivers stay compiled in.
 - **UI features.** Extensions never run TUI code. `ui/ask` bridges to
   `user_ask` forms now; if richer needs appear, handshake-declared component
@@ -730,23 +730,23 @@ the protocol and the SDK.
 
 ## Alternatives considered
 
-- **MCP superset** (previous revision's recommendation) — rejected: the
+- **MCP superset** (previous revision's recommendation), rejected: the
   contract would be shaped by, and forever versioned under, a protocol that
   lacks tool streaming, hooks, prompt policy, and config semantics; the
-  cross-host benefit is achieved better by composition — extensions
+  cross-host benefit is achieved better by composition, extensions
   *provide* MCP servers through the handshake instead of *being* one.
-- **Pure MCP with no extension surface** — rejected as the ceiling goose
+- **Pure MCP with no extension surface**: rejected as the ceiling goose
   already demonstrates: tools only, no capability-level contract. Still
   fully supported for plain tool servers via `.mcp.json` and via
   extension-provided MCP servers.
-- **Rust dylibs** (`abi_stable`/`stabby`) — rejected: no stable ABI,
+- **Rust dylibs** (`abi_stable`/`stabby`), rejected: no stable ABI,
   toolchain lockstep, per-platform artifacts, no isolation.
-- **In-process scripting** (pi/OpenCode model; upstream `lua` exists) —
+- **In-process scripting** (pi/OpenCode model; upstream `lua` exists),
   deferred: single language, engine surface, and a sandbox liability for
   exactly the FS/process access the LSP class needs.
-- **WASM components** (wasmtime + WIT / Extism) — deferred, and *scoped*: it
+- **WASM components** (wasmtime + WIT / Extism), deferred, and *scoped*: it
   is the untrusted-marketplace endgame and the only honest home for the
-  excluded hot-loop seams (D3), but WASI cannot spawn the data plane, and
+  excluded hot-loop boundaries (D3), but WASI cannot spawn the data plane, and
   the host machinery (per-version WIT snapshots) is Zed-scale. When it
   comes, a WASM module is one more facet in this same package format, not a
   new unit.
@@ -780,13 +780,13 @@ the protocol and the SDK.
 
 - No in-process native code, ever (ABI analysis above).
 - No TUI code from extensions.
-- No hot-loop seams over the wire (facts, message filters, model views,
-  tool-definition transforms) — see D3.
-- No workspace scope — repos never carry (or auto-discover) yolop
+- No hot-loop boundaries over the wire (facts, message filters, model views,
+  tool-definition transforms), see D3.
+- No workspace scope, repos never carry (or auto-discover) yolop
   extensions; projects stay agent-neutral.
 - No hot reload, central registry, or sandbox claims in v1.
-- No second hook engine, skills format, or enable/disable surface — every
-  facet lands on an existing seam.
+- No second hook engine, skills format, or enable/disable surface, every
+  facet lands on an existing boundary.
 
 ## Open questions
 

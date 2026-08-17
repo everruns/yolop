@@ -1,10 +1,10 @@
 ---
 type: Policy
-title: `approval` — soft approval
+title: `approval`, soft approval
 description: Defines when Yolop requests confirmation before consequential actions.
 ---
 
-# `approval` — soft approval
+# `approval`, soft approval
 
 Status: v2 implemented.
 
@@ -22,7 +22,7 @@ and remembered allow/reject answers.
 
 A coding agent runs tools that touch the real host: it writes files, deletes
 things, commits, pushes, installs packages. Users want a say before the
-risky ones — but a hard, per-call yes/no gate is miserable. It interrupts safe
+risky ones, but a hard, per-call yes/no gate is miserable. It interrupts safe
 work, can't be reasoned about, and trains users to reflexively approve.
 
 Soft approval takes the opposite tack. It is **prompt-engineering, not a
@@ -30,7 +30,7 @@ permission gate**: yolop is told, in its system prompt, to batch safe work and
 to pause for spoken consent only at the genuinely critical moments. The model
 decides what is critical; the user approves in plain language ("yes",
 "approved"); the granted approval is logged for audit. There is no separate
-approval UI to wire up — consent lives in the conversation.
+approval UI to wire up, consent lives in the conversation.
 
 ## What
 
@@ -42,7 +42,7 @@ A single central setting, `approval_mode`, picks how cautious yolop is:
 |--------------|-----------------------------------------------------------------|
 | `protective` | any state-changing action (writes, commits, pushes, installs, non-read-only `bash`) |
 | `normal`     | only clearly destructive/irreversible or outward-facing actions (default) |
-| `off`        | nothing — yolop acts autonomously, no soft-approval prompt at all |
+| `off`        | nothing, yolop acts autonomously, no soft-approval prompt at all |
 
 The level is **central configuration**: it lives in `settings.toml`
 (`approval_mode = "protective"`) next to the other yolop settings, so it is
@@ -81,12 +81,12 @@ call after spoken consent. No separate audit store is introduced.
 
 The paranoia level can be changed three ways, all writing the same setting:
 
-- **Status bar** — the current level is always shown in the session status
+- **Status bar**: the current level is always shown in the session status
   line (`approval <level>`), so it is visible at a glance.
-- **`/setup approval <protective|normal|off>`** — the explicit command form,
+- **`/setup approval <protective|normal|off>`**: the explicit command form,
   alongside the other `/setup` knobs; bare `/setup approval` reports the
   current level.
-- **Natural language** — because users address yolop directly ("be more
+- **Natural language**: because users address yolop directly ("be more
   careful", "stop asking me", "yolo mode"), the `set_approval_mode` tool lets
   the model switch the level in response.
 

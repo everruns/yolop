@@ -21,17 +21,17 @@ terminal.
 
 The model must expose structured values for:
 
-1. **Transcript output** — user, assistant, narration, tool, tool-detail, diff,
+1. **Transcript output**: user, assistant, narration, tool, tool-detail, diff,
    and system entries with stable labels and text. Tool completion wording lives
    here, including success/failure markers and summaries.
-2. **Live activity** — current turn status such as thinking, running tools,
+2. **Live activity**: current turn status such as thinking, running tools,
    waiting for client results, cancelled, or failed.
-3. **Stream previews** — assistant and tool delta previews while a turn is
+3. **Stream previews**: assistant and tool delta previews while a turn is
    active.
-4. **Session status** — every value shown in the status bar, including provider
+4. **Session status**: every value shown in the status bar, including provider
    and model, active configuration profile, approval mode, goal state, background-task counts, token counts,
    current session, worktree state, and busy/idle state when present.
-5. **Startup empty state** — immediate workspace readiness plus optional
+5. **Startup empty state**: immediate workspace readiness plus optional
    repository name, branch, worktree cleanliness, and latest commit context.
    Fullscreen repository inspection runs asynchronously and may enrich the
    empty state after the composer is already interactive; it must never extend
@@ -60,10 +60,10 @@ The application owns transcript scrolling, overlays, and viewport composition in
 this mode. `--inline` selects the scrollback-native renderer when terminal
 history is preferred: a composer pinned to the terminal's last rows with
 finalized transcript entries published above it as ordinary scrollback, which
-the terminal keeps — selectable, scrollable, and still there after the session
+the terminal keeps, selectable, scrollable, and still there after the session
 exits. A published entry is never repainted, so anything that changes during a
 turn belongs in the pinned rows, and an entry the pinned rows still show must
-not also be published — a transcript entry appears once, never twice.
+not also be published, a transcript entry appears once, never twice.
 
 Neither interactive renderer permits tracing output to inherit stderr: an
 asynchronous diagnostic would bypass the layout and overwrite owned terminal
@@ -80,8 +80,8 @@ through OSC 22, and must restore the default pointer when the session ends.
 
 Fullscreen mouse text selection is application-owned (mouse capture replaces the
 terminal's native drag-select). A left-drag across the transcript highlights and
-copies via OSC 52 on release. Bare modifier key events — which arrive when the
-session enables `REPORT_ALL_KEYS_AS_ESCAPE_CODES` — must not dismiss that
+copies via OSC 52 on release. Bare modifier key events, which arrive when the
+session enables `REPORT_ALL_KEYS_AS_ESCAPE_CODES`, must not dismiss that
 highlight; with an active selection, `Ctrl+C` re-arms the OSC 52 copy instead of
 interrupting. Ordinary typing still clears the selection.
 
@@ -168,7 +168,7 @@ Required coverage examples:
 
 ## Related
 
-- [`knowledge/specs/commands.md`](./commands.md) — terminal-side commands and host effects.
-- [`knowledge/specs/shipping.md`](./shipping.md) — required validation before merge.
-- [`knowledge/specs/maintenance.md`](./maintenance.md) — drift checks across user-facing
+- [`knowledge/specs/commands.md`](./commands.md), terminal-side commands and host effects.
+- [`knowledge/specs/shipping.md`](./shipping.md), required validation before merge.
+- [`knowledge/specs/maintenance.md`](./maintenance.md), drift checks across user-facing
   surfaces.

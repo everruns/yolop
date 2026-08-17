@@ -30,9 +30,9 @@ registered with `AgentCapabilityConfig::with_config("user_hooks", ...)`.
 
 Two user-authored scopes are supported:
 
-1. **Global** — `<config_dir>/yolop/hooks.json`.
+1. **Global**: `<config_dir>/yolop/hooks.json`.
    Personal automation shared across every workspace.
-2. **Workspace** — `<workspace>/.agents/hooks.json`.
+2. **Workspace**: `<workspace>/.agents/hooks.json`.
    Project-owned automation that can be reviewed and committed with the repo.
 
 The config format is JSON because the upstream `user_hooks` capability already
@@ -120,11 +120,11 @@ The reliable design is **prompt/skill for interpretation, tools for writes**:
 
 Initial tool surface:
 
-- `list_hooks` — show effective hooks, their scope, event, matcher, and
+- `list_hooks`, show effective hooks, their scope, event, matcher, and
   source file.
-- `upsert_hook` — create or replace one hook by `id`.
-- `remove_hook` — remove or disable one hook by `id`.
-- `validate_hook` — validate a candidate spec without writing it.
+- `upsert_hook`, create or replace one hook by `id`.
+- `remove_hook`, remove or disable one hook by `id`.
+- `validate_hook`, validate a candidate spec without writing it.
 
 `upsert_hook` accepts an explicit `scope`:
 

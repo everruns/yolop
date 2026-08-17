@@ -13,7 +13,7 @@ also accepts `!<command>` and `!shell <command>` as terminal-local shell
 aliases for the same capability command as `/shell`. Every command is
 contributed by a **capability** (`Capability::commands()`), so each host's
 command surface
-is sourced solely from `runtime.list_commands(session_id)` — the source of
+is sourced solely from `runtime.list_commands(session_id)`, the source of
 truth for that host's palette, `/help`, and completion. There is no hard-coded
 command table on any host.
 
@@ -30,18 +30,18 @@ top of the runtime's two, not a separate `CommandSource` variant.
 
 ## Execution targets
 
-1. **System** — the **runtime** executes it via `runtime.execute_command`,
+1. **System**: the **runtime** executes it via `runtime.execute_command`,
    returning a `CommandResult { success, message }` the host renders inline.
    Example: `/setup` and its subcommands mutate provider/model/token settings;
    `/shell <command>` runs the existing bounded bash tool; `/undo`, `/redo`, and
    `/rewind` preview and confirm durable session restores; `/goal <condition>`
    starts an autonomous completion loop (see [`goal.md`](./goal.md)).
 
-2. **Skill** — the **LLM** executes it. The literal `/name args` text is
+2. **Skill**: the **LLM** executes it. The literal `/name args` text is
    forwarded as a chat turn so the model activates the skill. Skill commands are
    contributed by the skills capability (see [`skills.md`](./skills.md)).
 
-3. **Client (terminal-side)** — the **host** executes it, because the effect is
+3. **Client (terminal-side)**: the **host** executes it, because the effect is
    on the terminal surface the runtime cannot reach (open an overlay, clear the
    transcript, quit, print local info). These are declared as ordinary `System`
    commands; on execute, their capability emits a typed `UiCommand` through an
@@ -55,15 +55,15 @@ top of the runtime's two, not a separate `CommandSource` variant.
 The runtime's `execute_command` can only return a `CommandResult` string; it has
 no way to clear a transcript or open an overlay. Rather than add a second,
 non-capability command path in the host, yolop injects a host UI port
-(`HostUi`) into the capability at construction — the same dependency-injection
+(`HostUi`) into the capability at construction, the same dependency-injection
 pattern `ModelsCapability` already uses for its settings/provider stores. The
-capability requests an effect (`UiCommand`); the host — the only thing that can
-— performs it. This keeps all commands in one registry, keeps them pluggable
+capability requests an effect (`UiCommand`); the host, the only thing that can
+, performs it. This keeps all commands in one registry, keeps them pluggable
 (remove the capability and its commands disappear from the UI; swap it and they
 reroute), and requires **no `everruns-core` change**.
 
-A *portable, plugin-contributed* client command — one that arbitrary hosts honor
-without each implementing a shared port — would instead need a first-class
+A *portable, plugin-contributed* client command, one that arbitrary hosts honor
+without each implementing a shared port, would instead need a first-class
 `CommandSource::External` upstream. That was proposed (Linear EVE-520) and
 **canceled** as unnecessary for yolop, whose terminal commands are
 host-intrinsic. The note is kept here so the rationale is not lost if the
@@ -82,7 +82,7 @@ portable case ever arises.
 3. **Client effects are host-applied.** A client command's `execute_command`
    returns an empty `CommandResult` and emits a `UiCommand`; the host applies
    every queued `UiCommand` before the next render. The `UiCommand` vocabulary
-   is the shared contract between client capabilities and the host — a genuinely
+   is the shared contract between client capabilities and the host, a genuinely
    new on-screen effect is a host change, not a drop-in.
 4. **Natural-language dispatch.** In the interactive TUI, the same client
    capability exposes a model-facing `run_command` tool and a prompt
@@ -109,5 +109,5 @@ portable case ever arises.
 
 ## Related
 
-- [`skills.md`](./skills.md) — `Skill`-source commands.
-- [`acp.md`](./acp.md) — how commands surface over the ACP transport.
+- [`skills.md`](./skills.md), `Skill`-source commands.
+- [`acp.md`](./acp.md), how commands surface over the ACP transport.

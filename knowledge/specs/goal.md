@@ -1,17 +1,17 @@
 ---
 type: Product Specification
-title: `/goal` — autonomous completion loops
+title: `/goal`, autonomous completion loops
 description: Defines the product goal and principles that guide Yolop development.
 ---
 
-# `/goal` — autonomous completion loops
+# `/goal`, autonomous completion loops
 
 Status: implemented in yolop (`yolop_goal` capability).
 
 ## Why
 
-Multi-step coding work often has a verifiable end state — all tests pass, a
-refactor is complete, a checklist is satisfied — but the agent stops after each
+Multi-step coding work often has a verifiable end state, all tests pass, a
+refactor is complete, a checklist is satisfied, but the agent stops after each
 turn and waits for another prompt. Claude Code's `/goal` command (v2.1.139+)
 showed that a session-scoped completion condition plus a lightweight evaluator
 after every turn removes that bottleneck without giving the working model
@@ -35,7 +35,7 @@ the transcript.
 After each agent turn while a goal is active:
 
 1. The host calls an internal evaluator through the same `CommandHost`
-   completion path as `/btw` — no tools, nothing extra persisted.
+   completion path as `/btw`, no tools, nothing extra persisted.
 2. The evaluator returns JSON `{"met": bool, "reason": "..."}` judged only from
    the conversation transcript.
 3. If `met` is true, the goal clears and the host prints `goal achieved`.
@@ -74,6 +74,6 @@ restored without starting a turn until `/goal resume`.
 
 ## Related
 
-- [`commands.md`](./commands.md) — single command registry and dispatch.
-- [Claude Code `/goal` docs](https://code.claude.com/docs/en/goal) — upstream
+- [`commands.md`](./commands.md), single command registry and dispatch.
+- [Claude Code `/goal` docs](https://code.claude.com/docs/en/goal), upstream
   UX reference.

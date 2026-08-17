@@ -18,8 +18,8 @@ yolop run feed those tools without a bespoke converter per consumer.
 
 ## What
 
-`--trajectory-out <path>` writes the whole session — including events replayed
-on `--session` resume — as a single ATIF-v1.7 JSON document when the run ends.
+`--trajectory-out <path>` writes the whole session, including events replayed
+on `--session` resume, as a single ATIF-v1.7 JSON document when the run ends.
 It works in the interactive TUI and in headless `-p/--print` mode (including
 failed turns and `/goal` runs); `--acp` ignores it because the editor owns the
 session lifecycle there.
@@ -38,6 +38,6 @@ completed-response metadata in the session log.
 
 ## Non-goals
 
-- Not a replay or resume format — the per-session JSONL log stays the local
+- Not a replay or resume format, the per-session JSONL log stays the local
   source of truth (see `src/runtime/session_log.rs`).
 - No image/multimodal export yet; text content only.

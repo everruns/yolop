@@ -1,10 +1,10 @@
 ---
 type: Product Specification
-title: ACP — Agent Client Protocol support
-description: Defines the acp — agent client protocol support contract for Yolop.
+title: ACP, Agent Client Protocol support
+description: Defines the acp, agent client protocol support contract for Yolop.
 ---
 
-# ACP — Agent Client Protocol support
+# ACP, Agent Client Protocol support
 
 Status: v1 implemented (agent side, stdio transport).
 
@@ -12,16 +12,16 @@ Status: v1 implemented (agent side, stdio transport).
 
 Yolop is a terminal agent, but the same agent loop is useful *inside* an
 editor. The [Agent Client Protocol](https://agentclientprotocol.com) (ACP) is
-the open, editor-neutral protocol — created by Zed — that lets a code editor
+the open, editor-neutral protocol, created by Zed, that lets a code editor
 (the **client**) drive an external coding agent (the **agent**) over stdio.
 Implementing the agent side means yolop drops into Zed (and any other ACP
 client) with no bespoke integration: the editor renders the conversation, tool
 calls, plans, and diffs in its own UI while yolop does the work.
 
 This is a promotion target for the same runtime that powers the TUI and
-`--print` mode — one agent, three front ends (TUI, one-shot, ACP).
+`--print` mode, one agent, three front ends (TUI, one-shot, ACP).
 
-## What — scope of the layer
+## What, scope of the layer
 
 `yolop --acp` turns the process into an ACP agent speaking **newline-delimited
 JSON-RPC 2.0** over stdin/stdout (one compact JSON object per line, no embedded
@@ -91,12 +91,12 @@ reauthentication.
 `promptCapabilities` advertises `image: true` and `embeddedContext: true`
 (`audio: false`). Inbound content blocks map to the model input as:
 
-- **Text** — passed through.
-- **Image** — forwarded as an image content part.
-- **Resource** (embedded context) — folded into the model's prompt text: text
+- **Text**: passed through.
+- **Image**: forwarded as an image content part.
+- **Resource** (embedded context), folded into the model's prompt text: text
   contents are inlined inside a `<resource uri="…">` block; binary contents are
   referenced by URI and MIME type rather than dumped as base64.
-- **ResourceLink** — folded in as a one-line `[linked resource: name (uri)]`
+- **ResourceLink**: folded in as a one-line `[linked resource: name (uri)]`
   reference so the model knows it was attached.
 
 Resource folding targets the *model* text only; the text used for slash-command
@@ -108,13 +108,13 @@ Non-goals).
 
 The `initialize` response advertises `mcpCapabilities.http: true`; the `stdio`
 transport is mandatory for every agent and needs no flag. `sse` is not
-advertised — the runtime has no SSE transport.
+advertised, the runtime has no SSE transport.
 
 `session/new` and `session/load` honour the `mcpServers` list: each `http` or
 `stdio` entry is translated into the runtime's scoped MCP config and merged over
 the file-based `.mcp.json`/global config for that session, so a
 client-configured server wins on a name collision (see `knowledge/specs/mcp.md`). Values
-pass through literally — the client has already resolved its own placeholders.
+pass through literally, the client has already resolved its own placeholders.
 An `sse` (or otherwise unsupported) transport is rejected with `InvalidParams`
 rather than silently dropped, so a client that ignored the advertised
 capabilities gets a clear error instead of a server that quietly went missing.
@@ -123,7 +123,7 @@ capabilities gets a clear error instead of a server that quietly went missing.
 
 Yolop surfaces its approval level (`ApprovalMode`: `protective` / `normal` /
 `off`, see `src/capabilities/approval.rs`) as ACP session modes, so an editor
-can switch it from the same mode picker it uses for other agents — one
+can switch it from the same mode picker it uses for other agents, one
 vocabulary across every front end instead of an ACP-only taxonomy.
 
 - `session/new` and `session/load` responses carry a `modes` block listing the
@@ -150,7 +150,7 @@ notifications. The mapping is a pure, per-turn state machine
 | Runtime event | ACP update |
 |---------------|-----------|
 | assistant text delta | `agent_message_chunk` (incremental) |
-| completed assistant message, when no deltas streamed | `agent_message_chunk` (whole text) — covers providers that don't stream; provider-authentication failures use ACP `/setup` recovery copy |
+| completed assistant message, when no deltas streamed | `agent_message_chunk` (whole text), covers providers that don't stream; provider-authentication failures use ACP `/setup` recovery copy |
 | extended-thinking delta | `agent_thought_chunk` |
 | provider-curated reasoning summary | `agent_thought_chunk` (displayable reasoning; segments separated by blank lines) |
 | completed assistant commentary with tool calls, when no deltas streamed | `agent_message_chunk` before the tool activity |
@@ -187,11 +187,11 @@ refresh any state-sensitive command UI.
 
 `session/prompt` resolves with:
 
-- `end_turn` — the tracked user ask reached achieved, blocked, failed,
+- `end_turn`, the tracked user ask reached achieved, blocked, failed,
   waiting-on-background, or the bounded continuation budget. In-progress turns
   are continued and streamed before the original prompt resolves. Recoverable
   failure text is streamed as an `agent_message_chunk`.
-- `cancelled` — a `session/cancel` arrived, or the turn task was dropped.
+- `cancelled`, a `session/cancel` arrived, or the turn task was dropped.
 
 The runtime does not expose token-limit or refusal outcomes distinctly, so
 `max_tokens`, `max_turn_requests`, and `refusal` are not currently produced.
@@ -205,13 +205,13 @@ level requires approval for that tool, classified by the runtime's own
 call so `session/set_mode`, `/setup approval`, and `set_approval_mode` take
 effect without rebuilding the session:
 
-- `off` — never asks; tools run autonomously (unchanged behaviour).
-- `normal` — asks before `destructive` or `open_world` (outward-facing) tools.
-- `protective` — asks before any tool that is not `readonly`.
+- `off`, never asks; tools run autonomously (unchanged behaviour).
+- `normal`, asks before `destructive` or `open_world` (outward-facing) tools.
+- `protective`, asks before any tool that is not `readonly`.
 
 When approval is required, yolop issues `session/request_permission` with four
 options (allow once / always, reject once / always) and the turn genuinely
-suspends until the client answers — this is safe because the turn already runs
+suspends until the client answers, this is safe because the turn already runs
 in its own task, off the SDK event loop. "Always" answers are remembered per
 tool for the session; a rejection blocks the tool with an error the model sees.
 
@@ -219,7 +219,7 @@ The gate only runs when the host can service an interactive prompt: the ACP
 server wires a client-backed approver, while the TUI and `--print` keep the
 soft-approval guidance alone. If the client cannot answer (no permission UI, or
 the connection is closing), the gate falls back to allowing so an editor without
-`session/request_permission` keeps working — the write blocklist on filesystem
+`session/request_permission` keeps working, the write blocklist on filesystem
 writes (see `knowledge/specs/maintenance.md`) remains the standing guardrail either way.
 
 ## Architecture
@@ -249,11 +249,11 @@ it over `tokio::io::duplex` pipes with a scripted llmsim runtime.
 
 Three layers, all offline (no API key):
 
-1. **Wire types** (`protocol.rs`) — SDK schema round-trips assert exact field
+1. **Wire types** (`protocol.rs`), SDK schema round-trips assert exact field
    casing and discriminator values against the published schema.
-2. **Translation** (`bridge.rs`) — the `Translator` is exercised per event type
+2. **Translation** (`bridge.rs`), the `Translator` is exercised per event type
    (deltas, tool lifecycle, todos→plan, dedup, streamed-vs-completed).
-3. **End-to-end** (`mod.rs`) — a real `serve` loop over duplex pipes driven by
+3. **End-to-end** (`mod.rs`), a real `serve` loop over duplex pipes driven by
    an in-memory ACP client: the full `initialize` → `session/new` →
    `session/prompt` handshake, `session/load` history replay across an ACP
    server restart, unknown-method and unknown-session errors, scripted tool
@@ -264,6 +264,27 @@ The binary itself is smoke-tested over real OS pipes in
 `tests/integration.rs` (`acp_stdio_handshake_smoke`), and a real-provider test
 (`acp_openai_handshake_smoke`, which skips itself when no API key is present)
 documents the live path.
+
+### Real-life testing in Buzz Desktop
+
+Register the current yolop executable as a custom Buzz ACP harness:
+
+```bash
+yolop into buzz
+```
+
+This writes `yolop.json` below Buzz's platform application-data
+`custom_harnesses` directory and launches yolop with `--acp`. The generated
+JSON follows Buzz's `CustomHarnessConfig` contract: `id`, `label`, `command`,
+`args`, `env`, `installInstructionsUrl`, and `installHint`. The path and schema
+are sourced from Buzz's loader and validator at commit
+[`d8281b9`](https://github.com/block/buzz/blob/d8281b9c93395f15d55091b131bb2747a0a3da8a/desktop/src-tauri/src/managed_agents/custom_harnesses.rs#L11-L64).
+Buzz's Tauri identifier is `xyz.block.buzz.app`, which determines the platform
+application-data directory.
+
+Re-running updates Yolop-owned fields while preserving user `env` values and
+unknown extension fields. Pass `--force` to replace the whole document. Restart
+Buzz Desktop after changing the harness so it is rediscovered.
 
 ### Real-life testing in an editor
 
@@ -299,8 +320,8 @@ same way.
   root, so it does not route file ops back through the client.
 - Terminals (`terminal/*`): deliberately unsupported. ACP terminals have the
   **client** execute the command in its own environment, which would bypass
-  yolop's Landlock sandbox and write blocklist — the core of its shell-safety
-  model — and split execution (shell client-side, file edits agent-side). The
+  yolop's Landlock sandbox and write blocklist, the core of its shell-safety
+  model, and split execution (shell client-side, file edits agent-side). The
   gain over the status quo is a live-terminal widget rather than the command
   output yolop already streams as tool-call content, which does not justify the
   loss of the sandbox. Revisit only behind an explicit opt-in that the user

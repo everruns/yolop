@@ -1,7 +1,7 @@
 ---
 type: Architecture Specification
 title: Tuika dependency
-description: Defines Yolop's relationship to the tuika terminal-UI toolkit and how the host wires into its seams.
+description: Defines Yolop's relationship to the tuika terminal-UI toolkit and how the host wires into its boundaries.
 ---
 
 # Tuika dependency
@@ -25,14 +25,14 @@ than a one-line convenience.
 
 Yolop depends on four crates from crates.io:
 
-- `tuika` — the toolkit. Version-pinned like any other dependency, with no path
+- `tuika`, the toolkit. Version-pinned like any other dependency, with no path
   override.
-- `tuika-codeformatters` — the tree-sitter `Highlighter` implementation. Kept
+- `tuika-codeformatters`, the tree-sitter `Highlighter` implementation. Kept
   separate upstream so tuika core stays grammar-free.
-- `tuika-mermaid` — the `MarkdownBlockRenderer` that turns ` ```mermaid ` fences
+- `tuika-mermaid`, the `MarkdownBlockRenderer` that turns ` ```mermaid ` fences
   into Unicode cell diagrams. Kept separate upstream so tuika core takes on no
   diagram engine.
-- `tuika-html` — the safe block-HTML renderer. It maps supported semantic HTML
+- `tuika-html`, the safe block-HTML renderer. It maps supported semantic HTML
   to styled terminal text and ignores unsafe elements and attributes.
 
 ## Screen modes
@@ -40,18 +40,18 @@ Yolop depends on four crates from crates.io:
 Both renderers are tuika screen modes rather than two hand-rolled hosts:
 `ScreenMode::Alternate` for the fullscreen default, and
 `ScreenMode::SplitFooter` for `--inline`. The mode decides the viewport, and the
-toolkit owns the split-footer mechanics that yolop used to open-code — pinning
+toolkit owns the split-footer mechanics that yolop used to open-code, pinning
 the footer to the terminal's last rows across resizes (`pin_footer`), publishing
 a block above it (`publish_block`), and handing its rows back at exit
 (`close_footer`), so the shell prompt resumes below the transcript.
 
 What stays here is what yolop *publishes*: which transcript lines are final
 enough to leave the frame, and the fact that a published block is never
-repainted, so anything live — the composer, the status bar, the busy
-indicator — belongs in the footer.
+repainted, so anything live, the composer, the status bar, the busy
+indicator, belongs in the footer.
 
 A line is shown in exactly one place. The footer paints what has not been
-published yet, and the flush holds back exactly the rows those lines cover — a
+published yet, and the flush holds back exactly the rows those lines cover, a
 row-level cut, splitting an entry when one straddles the edge, so the region is
 neither doubled nor left half empty. The retained tail is published as it is
 pushed out, and in full at exit: the footer's rows are handed back there, so an
@@ -65,7 +65,7 @@ tuika owns *presentation*; yolop owns *acquisition and meaning*. Concretely:
 | --- | --- | --- |
 | Code highlighting | `CodeBlock` framing, gutter, wrapping | the `Highlighter` (`tuika-codeformatters`) |
 | Markdown images | block reservation and protocol emission | an `ImageResolver` that decodes bytes to RGBA |
-| Mermaid fences | the `FencedBlockRenderer` seam | the renderer (`tuika-mermaid`), the transcript's width guard, and telling the model the TUI paints them ([system prompt](./system-prompt.md)) |
+| Mermaid fences | the `FencedBlockRenderer` boundary | the renderer (`tuika-mermaid`), the transcript's width guard, and telling the model the TUI paints them ([system prompt](./system-prompt.md)) |
 | Key bindings | the keymap engine (chords, sequences, gated layers, dispatch) | the binding table and what each command *means* |
 | Links | OSC 8 encoding and the `LinkPolicy` sanitizer | which schemes are allowed, and the transcript's link runs |
 | Progress | the OSC 9;4 encoder | when a turn is running |
@@ -74,7 +74,7 @@ tuika owns *presentation*; yolop owns *acquisition and meaning*. Concretely:
 Yolop's keymap adoption is the clearest case of the split: tuika resolves a
 translated key to a named command, and yolop decides that the resulting command
 interrupts a turn, opens the activity rail, or starts a reverse search. The
-engine's precedence is yolop's choice too — the global layer is ungated and
+engine's precedence is yolop's choice too, the global layer is ungated and
 dispatched ahead of every modal guard, which reproduces the precedence the
 former inline `match` had: global chords fire in any mode, mid-turn, during
 setup, or with an overlay open. A key that no binding matches falls through to
@@ -94,7 +94,7 @@ it receives, or a modifier-click opens the browser twice. See
   publish` refuses a dependency without a version requirement, so it would make
   yolop unreleasable for as long as it stayed.
 - **A yolop-only feature does not belong upstream.** If a proposed tuika change
-  only makes sense for yolop, the right shape is a new seam (a trait, a state
+  only makes sense for yolop, the right shape is a new boundary (a trait, a state
   type, a callback) that yolop fills in.
 - **The companion crates move with tuika.** `tuika-codeformatters`,
   `tuika-mermaid`, and `tuika-html` pin a compatible `tuika` range, so bumping
@@ -105,7 +105,7 @@ it receives, or a modifier-click opens the browser twice. See
   rather than paint a diagram the viewport will clip, so the source stays
   readable at any terminal width.
 - **`ratatui` stays aligned.** Yolop and tuika must resolve to one shared
-  `ratatui-core`, since the interoperability seam is a raw `Buffer` from it. A
+  `ratatui-core`, since the interoperability boundary is a raw `Buffer` from it. A
   `ratatui` major bump is a coordinated change across both repositories.
 
 ## Testing boundary

@@ -31,7 +31,7 @@ Every shipped change MUST satisfy ALL of these. These are mandatory, not suggest
 
 1. **Safe branch state.** No shipping from `main` or `master`. Working tree clean before final push. Prefer rebasing onto latest `origin/main` before merge.
 2. **Goal achieved with evidence.** The requested behavior is implemented and validated with proof matching the risk.
-3. **Feature tested before merge.** Every behavior change is covered by an automated test that exercises the new or changed behavior directly — driving its real entry point, not merely adjacent code that still compiles — added or updated as part of the change. A behavior that is genuinely impractical to test automatically is the only exception: the PR body must say so, describe the manual verification performed instead, and list the gap under **Follow-ups**. Docs-only or config-only changes with no behavior change are exempt with stated justification. Changes to user-visible agent output, live activity, or status values must include tests against the terminal-independent presentation model in [`presentation.md`](./presentation.md); terminal-buffer tests alone are not enough.
+3. **Feature tested before merge.** Every behavior change is covered by an automated test that exercises the new or changed behavior directly, driving its real entry point, not merely adjacent code that still compiles, added or updated as part of the change. A behavior that is genuinely impractical to test automatically is the only exception: the PR body must say so, describe the manual verification performed instead, and list the gap under **Follow-ups**. Docs-only or config-only changes with no behavior change are exempt with stated justification. Changes to user-visible agent output, live activity, or status values must include tests against the terminal-independent presentation model in [`presentation.md`](./presentation.md); terminal-buffer tests alone are not enough.
 4. **Merge-ready code.** Touched code is reviewed for avoidable complexity. A structured security review is performed (see `.agents/skills/ship/SKILL.md` § Security Review). Issues are addressed or explicitly blocked.
 5. **Synced artifacts.** Affected artifacts are updated: README, docs, AGENTS.md, specs. No code-duplicating prose.
 6. **Smoke test impacted functionality.** In addition to the automated test in outcome 3, smoke test the affected flows end-to-end. Mandatory unless the change is docs-only or config-only with explicit justification. For runtime changes, run at least one live-provider smoke through Doppler.
@@ -44,14 +44,14 @@ Every shipped change MUST satisfy ALL of these. These are mandatory, not suggest
 - Validation starts with the smallest high-signal proof and deepens only when risk requires it.
 - Docs-only or config-only changes may skip code tests if the choice is justified and the relevant lint/build was run.
 - Security review is mandatory for code, configuration, or infrastructure changes. Perceived low risk does not justify skipping it.
-- Every review comment must be explicitly addressed, answered inline on its own thread with a written reply (in addition to any code change), and resolved before merge — including low-confidence suggestions, nits, and bot comments.
+- Every review comment must be explicitly addressed, answered inline on its own thread with a written reply (in addition to any code change), and resolved before merge, including low-confidence suggestions, nits, and bot comments.
 - Auto-merge is not used: async reviewer bots can post after the last push or after CI turns green.
 - If a blocker cannot be resolved safely by the agent alone, shipping stops and reports rather than guesses.
 
 ## Validation Depth
 
 Use the smallest set of checks that gives high confidence, drawn from the
-[checks in `AGENTS.md`](../../AGENTS.md) plus what the changed surface demands —
+[checks in `AGENTS.md`](../../AGENTS.md) plus what the changed surface demands,
 `cargo build --release` for binary-surface or release-profile changes, the
 Doppler live-provider integration test when the change touches the agent loop or
 tool wiring.

@@ -9,7 +9,7 @@ description: Defines the background execution contract for Yolop.
 Status: consolidated onto Everruns primitives. Detached background work runs
 through Everruns `spawn_background` and is tracked in Everruns `session_tasks`
 (backed locally by `everruns-local`). Yolop owns no competing task registry; it
-adds only the wake delivery seam and the `/background` command.
+adds only the wake delivery boundary and the `/background` command.
 
 ## Why
 
@@ -71,7 +71,7 @@ harness steers there at the three places poll loops start, on any repo:
 
 - The `background` capability's system prompt says waits on external events
   (CI, reviews, deploys) must not consume turns: detach one blocking watch,
-  end the turn, let the completion wake continue — or `wait_task` it in
+  end the turn, let the completion wake continue, or `wait_task` it in
   one-shot mode, where there is no wake.
 - `progress_guard` classifies external-event and session-task probes
   (`gh pr checks`, `gh run …`, `get_task`, bare/leading `sleep`) as *waiting*.
@@ -94,8 +94,8 @@ instructions and task-completion messages.
 Background fan-out is bounded twice: Everruns permits five active background
 runs per session, and Yolop configures at most 32 active descendants across a
 linked tree (with the upstream depth-two and total-task limits still applying).
-This supports a two-level `4 × 4` hierarchy — four coordinators with four
-workers each, 20 sub-agents total — without weakening the per-session guard.
+This supports a two-level `4 × 4` hierarchy, four coordinators with four
+workers each, 20 sub-agents total, without weakening the per-session guard.
 Users can tighten these limits through the `subagents` capability config.
 
 Concurrent children share the same working tree. Delegation prompts must assign
@@ -107,7 +107,7 @@ wait for every branch before it reports completion.
 ### Inspecting and controlling
 
 The Everruns `session_tasks` capability exposes the model-facing tools:
-`list_tasks`, `get_task` (returns state, summary, and `result_path` — read it
+`list_tasks`, `get_task` (returns state, summary, and `result_path`, read it
 with the file tools), `cancel_task`, `message_task`, and `wait_task`. Yolop adds
 one host-facing surface: the `/background` command (and the `Ctrl+B` TUI
 activity rail / status-bar count) lists the session's task tree. Subagent-shaped
@@ -132,7 +132,7 @@ result distinguishes terminal `disarmed` cancellation from cooperative
 
 On completion `spawn_background`'s sink calls
 `platform_store.send_message(session_id, <completion message>)`. Without a
-platform store that call is a silent no-op — which is why finished background
+platform store that call is a silent no-op, which is why finished background
 work previously never reached the agent.
 
 Due schedules enter through the same host boundary: `everruns-local` calls
@@ -189,7 +189,7 @@ Session tasks and their `result.json` / `output.log` artifacts live in
 `everruns-local` (SQLite) and the session file store, so results survive a
 restart. In-flight OS processes do not: a run whose worker died is not resumed
 unless an orphan reaper re-attaches it (Yolop runs none, so non-reattachable
-runs simply stop). The wake is a live, in-process signal — a completion that
+runs simply stop). The wake is a live, in-process signal, a completion that
 happened while Yolop was down is observed on the next `/background` / `get_task`,
 not replayed as a wake.
 

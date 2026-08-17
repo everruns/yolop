@@ -41,7 +41,7 @@ arrays for `facts` and `missing_evidence`. Calls that still misshape a field are
 blocked before the checkpoint executor and receive the structured correction
 defined by [tool-call shape enforcement](tool-calling.md).
 
-An accepted checkpoint resets the exploration tranche and unlocks exploration.
+An accepted checkpoint resets the exploration tranche and re-enables exploration.
 Submitting the same checkpoint again on unchanged state is rejected. Mutation
 or validation clears the gate directly, so the guard cannot trap a decisive
 action behind its own checkpoint. Other tools remain available, allowing the

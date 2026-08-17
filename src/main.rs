@@ -358,10 +358,19 @@ struct IntoCommand {
 
 #[derive(Subcommand, Debug)]
 enum IntoTarget {
+    /// Configure Buzz Desktop to launch yolop as a custom ACP harness.
+    Buzz(BuzzIntoArgs),
     /// Configure Paseo to launch yolop as a custom ACP provider.
     Paseo(PaseoIntoArgs),
     /// Configure Zed to launch yolop as a custom ACP agent.
     Zed(ZedIntoArgs),
+}
+
+#[derive(Args, Debug)]
+struct BuzzIntoArgs {
+    /// Replace the custom harness instead of preserving its env/extra fields.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1185,6 +1194,35 @@ fn run_command(command: Commands) -> Result<()> {
             script,
         } => exec::sandbox::run_linux_worker(&cwd, &temp, mode, &script),
         Commands::Into(into) => match into.target {
+            IntoTarget::Buzz(args) => {
+                let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));
+                let result = editor::into::into_buzz(editor::into::BuzzIntoOptions {
+                    harness_path: None,
+                    agent_name: "yolop".to_string(),
+                    command,
+                    force: args.force,
+                })?;
+                match result.status {
+                    editor::into::IntoStatus::Unchanged => println!(
+                        "yolop: Buzz already has `{}` configured at {}",
+                        result.agent_name,
+                        result.harness_path.display()
+                    ),
+                    editor::into::IntoStatus::Created => println!(
+                        "yolop: added `{}` custom harness to {}",
+                        result.agent_name,
+                        result.harness_path.display()
+                    ),
+                    editor::into::IntoStatus::Updated => println!(
+                        "yolop: updated `{}` custom harness in {}",
+                        result.agent_name,
+                        result.harness_path.display()
+                    ),
+                }
+                println!("yolop: Buzz command: {} --acp", result.command);
+                println!("yolop: restart Buzz Desktop to reload this configuration");
+                Ok(())
+            }
             IntoTarget::Paseo(args) => {
                 let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));
                 let result = editor::into::into_paseo(editor::into::PaseoIntoOptions {

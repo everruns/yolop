@@ -8,7 +8,7 @@
 
 A terminal coding agent built on
 [`everruns-runtime`](https://crates.io/crates/everruns-runtime). One binary
-that plans, edits, runs, and verifies code in your repository — autonomous by
+that plans, edits, runs, and verifies code in your repository, autonomous by
 default, with persistent sessions, agent skills, MCP servers, and editor
 integration over the Agent Client Protocol.
 
@@ -55,24 +55,24 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 
 ### Agent core
 
-- **Unrestricted by default** — shell commands get full host access unless you
+- **Unrestricted by default**: shell commands get full host access unless you
   opt into `workspace-write` containment with `--sandbox` or the `sandbox_mode`
   setting. A standing write blocklist always rejects writes into `.git/`,
   `node_modules/`, `target/`, and similar build/dependency directories; reads
   inside the workspace stay unrestricted.
-- **Shell sandboxing** — sandboxed commands run under Seatbelt on macOS or
+- **Shell sandboxing**: sandboxed commands run under Seatbelt on macOS or
   Landlock + seccomp on Linux. Choose a sandbox mode (`read-only`,
   `workspace-write`, or `danger-full-access`, the default) and an approval
-  policy (`untrusted`, `on-failure`, `on-request` — the default — or `never`)
+  policy (`untrusted`, `on-failure`, `on-request`, the default, or `never`)
   independently. See
   [Shell sandboxing](./docs/features/sandboxing/sandboxing.md).
-- **Soft approval** — an optional spoken-consent layer: yolop batches safe work
+- **Soft approval**: an optional spoken-consent layer: yolop batches safe work
   and pauses, in plain chat, only before destructive or outward-facing steps;
   you approve by replying "yes". Set the level with
   `/setup approval <protective|normal|off>` or just tell yolop to be more or
   less careful. See [Soft approval](#soft-approval) and
   [Approvals](./docs/features/approvals.md).
-- **TUI chat** (ratatui) — scrolling transcript with tree-sitter syntax
+- **TUI chat** (ratatui), scrolling transcript with tree-sitter syntax
   highlighting of fenced code blocks, a multiline composer, a live status bar,
   slash commands (`/help`, `/tools`, `/mcp`, `/setup`, `/model`, `/goal`,
   `/shell`, `/background`, …), a `Ctrl+B` activity rail for agents, background
@@ -80,41 +80,41 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   `!<command>` as a direct shell shortcut,
   `@`-triggered file-path completion, and shell-style
   history recall (`↑`/`↓`, `Ctrl+R`) persisted across sessions.
-- **Side questions** — `/btw <question>` answers out-of-band using the current
+- **Side questions**: `/btw <question>` answers out-of-band using the current
   session context, with no tools and nothing added to conversation history.
-- **Goal loops** — `/goal <condition>` keeps working across turns until a
+- **Goal loops**: `/goal <condition>` keeps working across turns until a
   separate evaluator model confirms the condition; `/goal clear` stops early.
   Works in `--print` mode too.
-- **User-ask tracking** *(experimental, off by default)* — records the current
+- **User-ask tracking** *(experimental, off by default)*, records the current
   request across turns and applies bounded completion checks. Enable with
   `[[capabilities]] ref = "yolop_user_ask"` in `settings.toml`.
-- **Planning** — `write_todos` keeps multi-step tasks on track, and loop
+- **Planning**: `write_todos` keeps multi-step tasks on track, and loop
   detection stops the model from retrying the same failing tool call.
-- **One-shot mode** — `--print` runs a single prompt non-interactively, for
+- **One-shot mode**: `--print` runs a single prompt non-interactively, for
   scripts and CI.
 
 ### Tools
 
-- **Filesystem** — `read_file`, `write_file`, `edit_file`, `list_directory`,
+- **Filesystem**: `read_file`, `write_file`, `edit_file`, `list_directory`,
   `grep_files`, `delete_file`, `stat_file`, backed by the real workspace disk.
-- **Repo map** — `repo_map` and `repo_symbols` build an on-demand multi-language
+- **Repo map**: `repo_map` and `repo_symbols` build an on-demand multi-language
   symbol overview for orientation before targeted grep/read. See
   [Repo map](./docs/features/repo-map/repo-map.md).
-- **AST grep** — `ast_grep` runs read-only structural pattern search across
+- **AST grep**: `ast_grep` runs read-only structural pattern search across
   Rust, Python, TypeScript/TSX, JavaScript/JSX, C#, Go, CSS, HTML, and Bash.
-- **AST edit** *(optional, off by default)* — `ast_edit` applies pattern
+- **AST edit** *(optional, off by default)*, `ast_edit` applies pattern
   rewrites with a preview-first `dry_run` flow. Enable with
   `[[capabilities]] ref = "ast_edit"` in `settings.toml`.
-- **LSP** *(optional, off by default)* — real language servers (rust-analyzer,
+- **LSP** *(optional, off by default)*, real language servers (rust-analyzer,
   typescript-language-server, pyright, gopls, clangd, or any configured binary)
   behind `lsp_diagnostics`, `lsp_definition`, `lsp_references`, `lsp_hover`,
   `lsp_rename` (workspace-wide), `lsp_symbols`, and `lsp_code_actions`. Enable
   with `[[capabilities]] ref = "lsp"` in `settings.toml`.
-- **Shell** — `bash -lc` from the workspace root, with a 120 s timeout and a
+- **Shell**: `bash -lc` from the workspace root, with a 120 s timeout and a
   1 MiB per-stream output cap (overflow spills to the session folder and stays
   readable for tool calls). Run a command directly with `/shell <command>` or
   `!<command>`.
-- **Background tasks** — `spawn_background` runs a shell command detached from
+- **Background tasks**: `spawn_background` runs a shell command detached from
   the current turn (e.g. watching CI): it streams to a log, writes a
   `result.json`, and tracks a session task you inspect with `list_tasks`,
   `get_task`, and `cancel_task` (or the `/background` command and interactive
@@ -122,71 +122,71 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   survive a restart. `spawn_background` can also schedule one-shot or recurring
   monitors; when a schedule fires or a task finishes while the session is idle,
   yolop proactively wakes the agent (disable with `proactive_wake`).
-- **Sub-agents** — `spawn_agent` delegates independent work into child context
+- **Sub-agents**: `spawn_agent` delegates independent work into child context
   windows. A two-level hierarchy supports broad swarms without exceeding the
   per-session fan-out limit; `Ctrl+B` shows the live activity rail with branch
   token and cost rollups. See [Parallel sub-agents](./docs/features/subagents/subagents.md).
-- **Web** — `free_web_search`, `web_fetch` (HTTP GET/HEAD with markdown/text
+- **Web**: `free_web_search`, `web_fetch` (HTTP GET/HEAD with markdown/text
   conversion and DNS-pinned SSRF protection), and `duckduckgo_instant_answer`,
   all working without an API key. Set `EVERRUNS_SYSTEM_ALLOWLIST_ENABLED=true`
   to restrict `web_fetch` to a curated allowlist of well-known public resources.
 
 ### Context engineering
 
-- **`AGENTS.md`** — project instructions re-read every turn.
-- **Workspace context** — root, shell, local date/timezone, and Git
+- **`AGENTS.md`**: project instructions re-read every turn.
+- **Workspace context**: root, shell, local date/timezone, and Git
   identity/branch injected automatically.
-- **Memory** — a structured `MEMORY.md` of durable, cross-session memories,
+- **Memory**: a structured `MEMORY.md` of durable, cross-session memories,
   managed in natural language ("remember that I prefer terse answers") via the
   `remember` / `recall` / `forget` tools. Only titles are injected each turn;
   bodies are recalled on demand, so the prompt stays small however much you
   remember.
-- **Skills** — `SKILL.md` files discovered from workspace (`.agents/skills/`),
+- **Skills**: `SKILL.md` files discovered from workspace (`.agents/skills/`),
   global, ephemeral environment, and bundled scopes, exposed via `list_skills`,
   `read_skill`, `write_skill`, `activate_skill`, plus `search_skills` /
   `install_skill` for the public skills.sh registry and `delete_skill` for
   uninstall. Skills installed after startup are available immediately. See
   [Registry skills and Mermaid diagrams](./docs/features/show-me/show-me.md).
-- **OKF knowledge** — a bundled `okf` skill for the
+- **OKF knowledge**: a bundled `okf` skill for the
   [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md):
   read, author, convert to, and
   validate knowledge bundles. See [OKF](./docs/features/okf/okf.md).
-- **Herdr-aware sessions** — when launched in a Herdr pane, Yolop reports
+- **Herdr-aware sessions**: when launched in a Herdr pane, Yolop reports
   `working` / `idle` / `blocked` lifecycle states and exposes read-only Herdr
   guidance without installing a global skill.
-- **Infinity context** — older history is trimmed out of the live prompt but
+- **Infinity context**: older history is trimmed out of the live prompt but
   stays queryable via `query_history`, so long sessions don't hit the wall.
-- **Tool search** — core file/shell tools stay loaded while long-tail tools are
+- **Tool search**: core file/shell tools stay loaded while long-tail tools are
   hidden until the model pulls them in, saving input tokens on every provider.
-- **Compaction & caching** — at 85% of the model's context window, supported
+- **Compaction & caching**: at 85% of the model's context window, supported
   providers replace old input with a native compact checkpoint plus the new
   suffix (raw history stays lossless and searchable), and Anthropic
   prompt-caching markers are emitted out of the box.
 
 ### Extensibility
 
-- **Extensions** — installable capability packages that add tools, prompt
+- **Extensions**: installable capability packages that add tools, prompt
   guidance, MCP servers, and hooks without rebuilding yolop, over the yolop
   extension protocol (YEP). Install from crates.io with no Rust toolchain, a git
   URL, or a local path; author one with the
   [`yolop-yep`](./crates/yolop-yep) SDK. See
   [docs/extensions.md](./docs/extensions.md).
-- **MCP servers** — extra tools from local (stdio) or remote (HTTP)
+- **MCP servers**: extra tools from local (stdio) or remote (HTTP)
   [Model Context Protocol](https://modelcontextprotocol.io) servers. See
   [MCP servers](#mcp-servers).
-- **Hooks** — workspace and global hooks can block, mutate, or audit agent
+- **Hooks**: workspace and global hooks can block, mutate, or audit agent
   actions. Configure them by chatting with yolop or by editing `hooks.json`. See
   [docs/features/hooks.md](./docs/features/hooks.md).
-- **Editor integration** — `--acp` speaks the
+- **Editor integration**: `--acp` speaks the
   [Agent Client Protocol](https://agentclientprotocol.com) over stdio, so
   editors such as Zed can drive yolop. See
   [Editor integration](#editor-integration-acp).
-- **Sessions & rewind** — a durable per-session event log with auto-generated
+- **Sessions & rewind**: a durable per-session event log with auto-generated
   titles; resume any conversation with `--session <id>`. Every turn gets a
   checkpoint, and `/undo`, `/redo`, and `/rewind` restore conversation or
   workspace state without touching `HEAD` or the Git index. See
   [Session persistence](#session-persistence).
-- **Session search** — `search_sessions` finds recent local sessions by a
+- **Session search**: `search_sessions` finds recent local sessions by a
   distinctive phrase, keeping investigations grounded in the saved event log.
 
 ### Providers
@@ -200,9 +200,9 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 | OpenRouter | browser PKCE login or `OPENROUTER_API_KEY` | `openai/gpt-5.6-sol` |
 | Google     | `GEMINI_API_KEY` / `GOOGLE_API_KEY`   | `gemini-2.5-flash` |
 | Ollama     | `OLLAMA_BASE_URL` / `OLLAMA_API_KEY`  | `llama3.2`        |
-| Local (in-process) | none — downloads weights on first use | `Qwen/Qwen3-8B` |
-| Custom     | `CUSTOM_BASE_URL` (+ optional `CUSTOM_API_KEY`) | — (set via `/setup`) |
-| llmsim     | none (offline simulator)              | —                 |
+| Local (in-process) | none (weights pulled with `yolop models pull`) | `Qwen/Qwen3-8B` |
+| Custom     | `CUSTOM_BASE_URL` (+ optional `CUSTOM_API_KEY`) |, (set via `/setup`) |
+| llmsim     | none (offline simulator)              |, |
 
 Pick explicitly with `--provider`, override the model with `-m/--model`. **Codex
 subscription** signs in through ChatGPT and uses the Codex backend directly.
@@ -243,7 +243,7 @@ Soft approval is prompt-engineering, not a hard gate: yolop is told to batch
 safe work and pause for **spoken** consent only at critical moments. The model
 decides what is critical; you approve in plain language ("yes", "approved"); each
 grant is recorded to the session event log for audit. There is no separate
-approval UI — consent lives in the conversation.
+approval UI, consent lives in the conversation.
 
 A single `approval_mode` level tunes how cautious yolop is:
 
@@ -251,12 +251,12 @@ A single `approval_mode` level tunes how cautious yolop is:
 |--------------|------------------------------------------------------------------------|
 | `protective` | any state-changing action (writes, commits, pushes, installs)          |
 | `normal`     | only destructive/irreversible or outward-facing actions (the default)  |
-| `off`        | nothing — fully autonomous, no soft-approval prompt                     |
+| `off`        | nothing, fully autonomous, no soft-approval prompt                     |
 
 The current level shows in the status bar. Change it with
 `/setup approval <level>`, or just ask yolop to be more or less careful ("yolo
 mode"); the choice persists in `settings.toml`. Soft approval is judgement, not
-a guarantee — native shell sandboxing supplies the kernel boundary and hooks can
+a guarantee, native shell sandboxing supplies the kernel boundary and hooks can
 block specific operations. See
 [Shell sandboxing](./docs/features/sandboxing/sandboxing.md) and
 [Approvals](./docs/features/approvals.md).
@@ -288,10 +288,20 @@ That adds a custom ACP agent server to `~/.config/zed/settings.json` using the
 current yolop executable (preserving any existing `env` on re-run). Then pick
 **yolop** in Zed's agent panel.
 
+To set up Buzz Desktop:
+
+```bash
+yolop into buzz
+```
+
+That adds a custom harness under Buzz's application data directory using the
+current yolop executable and `--acp`. Re-running updates the managed fields while
+preserving any custom `env` values and extension fields.
+
 ## MCP servers
 
-Yolop pulls in extra tools from MCP servers — remote (Streamable **HTTP**) and
-local (**stdio**) — configured in the standard `.mcp.json` shape. Two scopes are
+Yolop pulls in extra tools from MCP servers, remote (Streamable **HTTP**) and
+local (**stdio**), configured in the standard `.mcp.json` shape. Two scopes are
 merged, workspace overriding global by name:
 
 - **workspace**: `<workspace_root>/.mcp.json`
@@ -361,6 +371,7 @@ act of consent. MCP tools run autonomously like the rest of yolop's tools.
 | ------------------ | ----------------------------------------------- |
 | `yolop version`    | Print yolop, commit, and runtime versions       |
 | `yolop into zed`   | Configure yolop as a custom ACP agent in Zed    |
+| `yolop into buzz`  | Configure yolop as a custom ACP harness in Buzz |
 | `yolop mcp …`      | Manage MCP servers (see [MCP servers](#mcp-servers)) |
 
 `RUST_LOG` is honored for the underlying tracing layer. Non-interactive modes
@@ -434,7 +445,7 @@ OpenRouter → Google → Ollama → Custom** (first with a matching env var or 
 credential), then a fall back to OpenAI's default with setup opened.
 
 The settings file is written `0o600` on Unix and token values are never echoed,
-but it is plain text on disk — treat it like `~/.aws/credentials`.
+but it is plain text on disk, treat it like `~/.aws/credentials`.
 
 ### Session persistence
 
@@ -448,7 +459,7 @@ directory:
 | Windows | `%APPDATA%\yolop\sessions\<session_id>\`                   |
 
 The folder holds the event log (`events.jsonl`), compaction checkpoints, the
-saved workspace root, and spilled tool output — everything needed to restore the
+saved workspace root, and spilled tool output, everything needed to restore the
 transcript and provider continuation state on resume. On Unix the folder is
 `0o700` and its files `0o600`. Resume a conversation with:
 
@@ -468,7 +479,7 @@ Yolop-owned worktree and never changes the branch, `HEAD`, commits, or index.
 
 > **Treat session logs as you would shell history.** They contain every prompt,
 > every string passed to `bash` / `write_file` / `web_fetch`, tool output, and
-> reasoning artifacts — deliberately unredacted, with no retention policy. If a
+> reasoning artifacts, deliberately unredacted, with no retention policy. If a
 > session should not be persisted, point `--session-dir` at a wipeable path (e.g.
 > a `tmpfs`) or delete the JSONL after the run.
 
@@ -511,4 +522,4 @@ version.
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+MIT, see [`LICENSE`](./LICENSE).
