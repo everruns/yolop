@@ -30,7 +30,7 @@ use crate::runtime::session_log::{legacy_session_log_path, session_dir_path, ses
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
 use agent_client_protocol::schema::v1::{AuthMethod, AuthMethodAgent};
 use everruns_core::ScopedMcpServers;
-use everruns_core::typed_id::SessionId as RuntimeSessionId;
+use everruns_provider::typed_id::SessionId as RuntimeSessionId;
 
 pub use server::{RuntimeFactory, serve};
 
@@ -137,7 +137,7 @@ mod tests {
     use agent_client_protocol::{
         Agent, ByteStreams, Client, ConnectionTo, JsonRpcRequest, SessionMessage,
     };
-    use everruns_core::llmsim_driver::{LlmSimConfig, SimToolCall, SimTurn};
+    use everruns_llmsim::{LlmSimConfig, SimToolCall, SimTurn};
     use futures::Future;
     use serde::{Deserialize, Serialize};
     use serde_json::{Value, json};
@@ -1559,7 +1559,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn provider_authentication_failure_has_actionable_recovery() {
-        use everruns_core::llmsim_driver::SimError;
+        use everruns_llmsim::SimError;
 
         let config = LlmSimConfig::scripted(vec![SimTurn::Error(SimError::Authentication)]);
         let run = with_sdk_client(config, |client| async move {
@@ -1722,7 +1722,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn opt_in_completion_gate_continues_tool_only_stop_to_one_final() {
-        use everruns_core::llmsim_driver::OnExhausted;
+        use everruns_llmsim::OnExhausted;
 
         let config = LlmSimConfig::scripted(vec![
             SimTurn::ToolCalls(vec![SimToolCall {
@@ -1748,7 +1748,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn trivial_exact_reply_uses_one_generation_and_no_evaluator() {
-        use everruns_core::llmsim_driver::OnExhausted;
+        use everruns_llmsim::OnExhausted;
 
         let config = LlmSimConfig::scripted(vec![SimTurn::Assistant("exact".to_string())])
             .with_on_exhausted(OnExhausted::Error);
@@ -1764,7 +1764,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tool_using_final_pays_one_bounded_semantic_evaluator_call() {
-        use everruns_core::llmsim_driver::OnExhausted;
+        use everruns_llmsim::OnExhausted;
 
         // Baseline trivial fixture above consumes one scripted generation.
         // This mutation fixture consumes two agent-loop generations plus
@@ -1792,7 +1792,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn permanent_provider_failure_is_failed_without_continuation() {
-        use everruns_core::llmsim_driver::{OnExhausted, SimError};
+        use everruns_llmsim::{OnExhausted, SimError};
 
         let config = LlmSimConfig::scripted(vec![SimTurn::Error(SimError::Other(
             "permanent provider failure".to_string(),
@@ -1811,7 +1811,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn clarification_is_blocked_and_not_auto_continued() {
-        use everruns_core::llmsim_driver::OnExhausted;
+        use everruns_llmsim::OnExhausted;
 
         let config = LlmSimConfig::scripted(vec![SimTurn::Assistant(
             "I need the target path. Which file should I edit?".to_string(),

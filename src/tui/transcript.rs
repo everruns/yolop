@@ -9,9 +9,10 @@
 //! pure over runtime types — no terminal I/O. Presentation concerns (colors)
 //! live in `crate::tui::render`.
 
-use everruns_core::events::{Event as RuntimeEvent, EventData, ToolCompletedData, ToolStartedData};
-use everruns_core::message::{ContentPart, Message, MessageRole};
-use everruns_core::tools::ToolExecutionResult;
+use everruns_core::ToolExecutionResult;
+use everruns_core::events::Event as RuntimeEvent;
+use everruns_core::{ContentPart, Message, MessageRole};
+use everruns_core::{EventData, ToolCompletedData, ToolStartedData};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -69,7 +70,7 @@ pub(crate) enum TurnEvent {
     /// Prompt tokens the latest LLM generation consumed — the current fill of
     /// the model's context window. Replaces (not accumulates) the prior value.
     ContextUsed(u32),
-    Done(Option<everruns_runtime::TurnResult>),
+    Done(Option<everruns_host::TurnResult>),
     Failed(String),
 }
 
@@ -78,7 +79,7 @@ pub(crate) enum TurnEvent {
 /// `DeltaRouter` per turn.
 #[derive(Default)]
 pub(crate) struct DeltaRouter {
-    last_assistant_turn: Option<everruns_core::typed_id::TurnId>,
+    last_assistant_turn: Option<everruns_provider::typed_id::TurnId>,
     last_tool_call: Option<String>,
     write_todos_args: HashMap<String, Value>,
 }
@@ -777,7 +778,8 @@ fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::{events::ToolStartedData, tool_types::ToolCall};
+    use everruns_core::events::ToolStartedData;
+    use everruns_provider::tool_types::ToolCall;
     use serde_json::json;
 
     fn started_tool(name: &str, arguments: serde_json::Value) -> ToolStartedData {
@@ -832,7 +834,7 @@ mod tests {
             None,
         );
         let event = RuntimeEvent::new(
-            everruns_core::typed_id::SessionId::new(),
+            everruns_provider::typed_id::SessionId::new(),
             everruns_core::events::EventContext::empty(),
             data,
         );
@@ -892,7 +894,7 @@ mod tests {
 
     fn event(data: impl Into<EventData>) -> RuntimeEvent {
         RuntimeEvent::new(
-            everruns_core::typed_id::SessionId::new(),
+            everruns_provider::typed_id::SessionId::new(),
             everruns_core::events::EventContext::empty(),
             data.into(),
         )
@@ -900,7 +902,7 @@ mod tests {
 
     #[test]
     fn context_compacted_renders_a_system_summary_line() {
-        use everruns_core::events::{CompactionStepData, ContextCompactedData};
+        use everruns_core::{CompactionStepData, ContextCompactedData};
 
         let event = event(ContextCompactedData {
             checkpoint_id: None,
@@ -935,7 +937,7 @@ mod tests {
 
     #[test]
     fn context_compacted_survives_replay() {
-        use everruns_core::events::ContextCompactedData;
+        use everruns_core::ContextCompactedData;
 
         let event = event(ContextCompactedData {
             checkpoint_id: Some("checkpoint-test".into()),
@@ -959,7 +961,7 @@ mod tests {
 
     #[test]
     fn context_compacting_reports_reason_as_activity() {
-        use everruns_core::events::{CompactionReason, ContextCompactingData};
+        use everruns_core::{CompactionReason, ContextCompactingData};
 
         let event = event(ContextCompactingData {
             reason: CompactionReason::ProactiveBudget,

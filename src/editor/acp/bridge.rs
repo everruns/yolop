@@ -10,8 +10,9 @@
 
 use std::collections::HashSet;
 
-use everruns_core::events::{Event as RuntimeEvent, EventData, ToolCompletedData};
-use everruns_core::message::{ContentPart, MessageRole};
+use everruns_core::events::Event as RuntimeEvent;
+use everruns_core::{ContentPart, MessageRole};
+use everruns_core::{EventData, ToolCompletedData};
 use serde_json::Value;
 
 use super::protocol::{
@@ -102,7 +103,7 @@ impl Translator {
                     return Vec::new();
                 }
                 let recovery_message = (data.error_code.as_deref()
-                    == Some(everruns_core::user_facing_error_codes::PROVIDER_MISCONFIGURED))
+                    == Some(everruns_provider::user_facing_error::codes::PROVIDER_MISCONFIGURED))
                 .then(|| provider_authentication_message(data.error_fields.as_ref()));
                 let mut updates = recovery_message
                     .or_else(|| data.message.text())
@@ -235,7 +236,7 @@ impl Translator {
 }
 
 fn provider_authentication_message(
-    fields: Option<&everruns_core::user_facing_error::UserFacingErrorFields>,
+    fields: Option<&everruns_provider::user_facing_error::UserFacingErrorFields>,
 ) -> &'static str {
     let provider = fields
         .and_then(|fields| fields.get("provider"))
@@ -350,13 +351,14 @@ fn non_null(value: Value) -> Option<Value> {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use everruns_core::events::{
+    use everruns_core::Message;
+    use everruns_core::{
         Event, EventContext, OutputMessageCompletedData, OutputMessageDeltaData, ReasonItemData,
         ReasonThinkingDeltaData, ToolCompletedData, ToolStartedData,
     };
-    use everruns_core::message::{ExecutionPhase, Message};
-    use everruns_core::tool_types::ToolCall;
-    use everruns_core::typed_id::{EventId, MessageId, SessionId, TurnId};
+    use everruns_provider::ExecutionPhase;
+    use everruns_provider::ToolCall;
+    use everruns_provider::typed_id::{EventId, MessageId, SessionId, TurnId};
     use serde_json::json;
 
     fn event(data: EventData) -> Event {
@@ -453,7 +455,7 @@ mod tests {
                 metadata: None,
                 usage: None,
                 error_code: Some(
-                    everruns_core::user_facing_error_codes::PROVIDER_MISCONFIGURED.to_string(),
+                    everruns_provider::user_facing_error::codes::PROVIDER_MISCONFIGURED.to_string(),
                 ),
                 error_fields: Some(std::collections::BTreeMap::from([(
                     "provider".to_string(),

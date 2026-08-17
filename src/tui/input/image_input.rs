@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
-use everruns_core::message::{ContentPart, ImageContentPart};
+use everruns_core::{ContentPart, ImageContentPart};
 use std::path::{Path, PathBuf};
 
 /// Conservative per-file cap — large enough for screenshots, small enough

@@ -2,13 +2,13 @@
 
 use crate::session_state::checkpoint::{CheckpointManager, RestoreMode, safe_display};
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
-use everruns_core::tool_types::{ToolCall, ToolHints};
-use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::{Capability, CapabilityStatus};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::{ToolCall, ToolHints};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -64,11 +64,13 @@ impl Capability for CheckpointCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_core::Result<CommandResult> {
+    ) -> everruns_provider::error::Result<CommandResult> {
         let result = execute_command(&self.manager, &request.name, request.arguments.as_deref())
             .await
             .map_err(|error| {
-                everruns_core::AgentLoopError::config(safe_display(&format!("{error:#}")))
+                everruns_provider::error::AgentLoopError::config(safe_display(&format!(
+                    "{error:#}"
+                )))
             })?;
         Ok(CommandResult {
             success: true,

@@ -5,10 +5,10 @@
 //! in progress. The default host completion gate may selectively continue it.
 
 use anyhow::{Context, Result, bail};
+use everruns_core::Message;
+use everruns_core::SessionCompletionRequest;
 use everruns_core::command::{CommandExecutionContext, ExecuteCommandRequest};
-use everruns_core::command_host::SessionCompletionRequest;
-use everruns_core::message::Message;
-use everruns_core::typed_id::SessionId;
+use everruns_provider::typed_id::SessionId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -388,7 +388,7 @@ Current user ask: {}\n\
 pub(crate) async fn evaluate_active_user_ask(
     ctx: &CommandExecutionContext,
     ask: &str,
-) -> everruns_core::Result<UserAskEvaluation> {
+) -> everruns_provider::error::Result<UserAskEvaluation> {
     let turn = ctx.host.turn_context().await?;
     let transcript = format_transcript(&turn.messages);
     let user_prompt = format!("User request:\n{ask}\n\nConversation transcript:\n{transcript}");
@@ -411,14 +411,16 @@ pub(crate) async fn evaluate_active_user_ask(
 
 fn map_completion_error(
     error: everruns_core::command_host::SessionCompletionError,
-) -> everruns_core::AgentLoopError {
+) -> everruns_provider::error::AgentLoopError {
     match error {
         everruns_core::command_host::SessionCompletionError::InvalidRequest(err) => err,
         everruns_core::command_host::SessionCompletionError::StreamingUnsupported => {
-            everruns_core::AgentLoopError::config("user ask evaluator does not support streaming")
+            everruns_provider::error::AgentLoopError::config(
+                "user ask evaluator does not support streaming",
+            )
         }
         everruns_core::command_host::SessionCompletionError::Completion { error, .. } => {
-            everruns_core::AgentLoopError::config(error)
+            everruns_provider::error::AgentLoopError::config(error)
         }
     }
 }
@@ -444,7 +446,9 @@ fn format_transcript(messages: &[Message]) -> String {
         .join("\n\n")
 }
 
-pub(crate) fn parse_evaluation_response(text: &str) -> everruns_core::Result<UserAskEvaluation> {
+pub(crate) fn parse_evaluation_response(
+    text: &str,
+) -> everruns_provider::error::Result<UserAskEvaluation> {
     let trimmed = text.trim();
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
         return parse_evaluation_value(&value);
@@ -463,17 +467,19 @@ pub(crate) fn parse_evaluation_response(text: &str) -> everruns_core::Result<Use
     })
 }
 
-fn parse_evaluation_value(value: &serde_json::Value) -> everruns_core::Result<UserAskEvaluation> {
+fn parse_evaluation_value(
+    value: &serde_json::Value,
+) -> everruns_provider::error::Result<UserAskEvaluation> {
     let outcome_raw = value
         .get("outcome")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            everruns_core::AgentLoopError::config(
+            everruns_provider::error::AgentLoopError::config(
                 "user ask evaluator returned JSON without `outcome`",
             )
         })?;
     let outcome = AskOutcome::parse_str(outcome_raw).ok_or_else(|| {
-        everruns_core::AgentLoopError::config(format!(
+        everruns_provider::error::AgentLoopError::config(format!(
             "user ask evaluator returned unknown outcome: {outcome_raw}"
         ))
     })?;

@@ -17,10 +17,10 @@ use crossterm::event::{
     self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
 };
+use everruns_core::ContentPart;
+use everruns_core::SessionTaskRegistry;
 use everruns_core::command::{CommandDescriptor, CommandSource};
-use everruns_core::message::ContentPart;
-use everruns_core::session_task::SessionTaskRegistry;
-use everruns_core::typed_id::SessionId;
+use everruns_provider::typed_id::SessionId;
 use futures::FutureExt;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -246,8 +246,8 @@ pub struct App {
     /// Everruns session-task registry used by `spawn_background`; the TUI reads
     /// it for the background status segment and panel.
     task_registry: Arc<dyn SessionTaskRegistry>,
-    task_schedule_store: Arc<dyn everruns_core::traits::SessionScheduleStore>,
-    session_store: Arc<dyn everruns_core::traits::SessionStore>,
+    task_schedule_store: Arc<dyn everruns_core::session_services::SessionScheduleStore>,
+    session_store: Arc<dyn everruns_core::execution_loading::SessionStore>,
     session_tasks: crate::tui::session_tasks_view::TaskTree,
     session_tasks_refresh:
         Option<tokio::task::JoinHandle<crate::tui::session_tasks_view::TaskTree>>,
@@ -1125,7 +1125,8 @@ impl App {
     fn context_window_tokens(&self) -> Option<u32> {
         let driver =
             crate::runtime::Provider::from_name(&self.model.provider_name())?.driver_id()?;
-        let profile = everruns_core::get_model_profile(&driver, &self.model.model_id())?;
+        let profile =
+            everruns_provider::model_profiles::get_model_profile(&driver, &self.model.model_id())?;
         u32::try_from(profile.limits?.context).ok()
     }
 
@@ -3404,7 +3405,7 @@ impl App {
         self.start_turn(prompt);
     }
 
-    async fn after_turn_user_ask_check(&mut self, result: Option<everruns_runtime::TurnResult>) {
+    async fn after_turn_user_ask_check(&mut self, result: Option<everruns_host::TurnResult>) {
         if !self.user_ask_enabled {
             return;
         }
@@ -3936,17 +3937,18 @@ mod tests {
 
     use super::*;
     use crate::capabilities::model_discovery::DiscoveredProviderModel;
-    use everruns_core::events::{
-        Event as RuntimeEvent, EventContext, InputMessageData, OutputMessageCompletedData,
-        OutputMessageStartedData, ReasonCompletedData, ToolCompletedData,
-    };
-    use everruns_core::message::Message;
-    use everruns_core::session_task::{
+    use everruns_core::Message;
+    use everruns_core::events::Event as RuntimeEvent;
+    use everruns_core::{
         CreateSessionTask, SessionTaskState, TASK_KIND_BACKGROUND_TOOL, TASK_KIND_MONITOR,
         TASK_KIND_SUBAGENT,
     };
-    use everruns_core::tool_types::ToolCall;
-    use everruns_core::{MessageId, SessionId, TurnId};
+    use everruns_core::{
+        EventContext, InputMessageData, OutputMessageCompletedData, OutputMessageStartedData,
+        ReasonCompletedData, ToolCompletedData,
+    };
+    use everruns_provider::ToolCall;
+    use everruns_provider::typed_id::{MessageId, SessionId, TurnId};
 
     use everruns_core::command::{CommandArg, CommandDescriptor, CommandSource};
 
@@ -3989,7 +3991,7 @@ mod tests {
     /// These now flow through the same registry as every other command, so
     /// suggestion tests source them the same way the running TUI does.
     fn client_command_descriptors() -> Vec<CommandDescriptor> {
-        use everruns_core::capabilities::Capability;
+        use everruns_core::Capability;
         struct NoopUi;
         impl crate::tui::host_ui::HostUi for NoopUi {
             fn send(&self, _: crate::tui::host_ui::UiCommand) {}
@@ -4637,7 +4639,7 @@ mod tests {
 
     #[test]
     fn lines_for_event_renders_reason_item_summary_segments() {
-        use everruns_core::events::ReasonItemData;
+        use everruns_core::ReasonItemData;
 
         let event = RuntimeEvent::new(
             SessionId::new(),
@@ -4766,8 +4768,8 @@ mod tests {
 
     #[test]
     fn handle_live_event_renders_write_todos_from_started_args_when_result_is_counts_only() {
-        use everruns_core::events::ToolStartedData;
-        use everruns_core::tool_types::ToolCall;
+        use everruns_core::ToolStartedData;
+        use everruns_provider::ToolCall;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
         let mut emitted = HashSet::new();
@@ -4982,8 +4984,8 @@ mod tests {
 
     #[test]
     fn handle_live_event_routes_assistant_delta_to_stream_preview() {
-        use everruns_core::events::{OutputMessageDeltaData, ToolOutputDeltaData};
-        use everruns_core::typed_id::TurnId;
+        use everruns_core::{OutputMessageDeltaData, ToolOutputDeltaData};
+        use everruns_provider::typed_id::TurnId;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
         let mut emitted = HashSet::new();
@@ -5077,8 +5079,8 @@ mod tests {
 
     #[test]
     fn handle_live_event_hides_thinking_delta_from_stream_preview() {
-        use everruns_core::events::ReasonThinkingDeltaData;
-        use everruns_core::typed_id::TurnId;
+        use everruns_core::ReasonThinkingDeltaData;
+        use everruns_provider::typed_id::TurnId;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
         let mut emitted = HashSet::new();
@@ -5129,7 +5131,7 @@ mod tests {
 
     #[test]
     fn handle_live_event_emits_known_token_counts() {
-        use everruns_core::events::ReasonItemData;
+        use everruns_core::ReasonItemData;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
         let mut emitted = HashSet::new();
@@ -6654,7 +6656,7 @@ mod tests {
     #[tokio::test]
     async fn blocked_completion_state_stops_without_presentation_status() {
         use everruns_core::turn::TurnStopReason;
-        use everruns_core::typed_id::TurnId;
+        use everruns_provider::typed_id::TurnId;
 
         let mut test = app_with_llmsim_and_user_ask().await;
         let session_id = test.app.session.session_id();
@@ -6663,7 +6665,7 @@ mod tests {
             .record_user_prompt(session_id, "edit the file")
             .expect("record ask");
         test.app
-            .after_turn_user_ask_check(Some(everruns_runtime::TurnResult {
+            .after_turn_user_ask_check(Some(everruns_host::TurnResult {
                 response: "I need the path. Which file should I edit?".to_string(),
                 iterations: 1,
                 tool_calls_count: 0,

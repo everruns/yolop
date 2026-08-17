@@ -1,10 +1,9 @@
 use async_trait::async_trait;
-use everruns_core::capabilities::{
-    Capability, CapabilityStatus, CompactionConfig, ModelViewContext, ModelViewProvider,
-    apply_cost_control_masking,
-};
-use everruns_core::message::Message;
-use everruns_core::message::MessageRole;
+use everruns_builtins::apply_cost_control_masking;
+use everruns_core::Message;
+use everruns_core::MessageRole;
+use everruns_core::capabilities::{ModelViewContext, ModelViewProvider};
+use everruns_core::{Capability, CapabilityStatus};
 use std::sync::Arc;
 
 use crate::runtime::background_wake::{HANDOFF_METADATA_KEY, WakeHandoff};
@@ -55,7 +54,7 @@ impl ModelViewProvider for ContextCostControlModelViewProvider {
         config: &serde_json::Value,
         context: &ModelViewContext<'_>,
     ) -> Vec<Message> {
-        let config = CompactionConfig::from_json(config);
+        let config = everruns_builtins::compaction::RuntimeCompactionConfig::from_json(config);
         let result = apply_cost_control_masking(&messages, &config, context.prior_usage);
         if result.masked_count > 0 {
             tracing::debug!(
@@ -212,8 +211,8 @@ fn escape_untrusted_json(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::tool_types::ToolCall;
-    use everruns_core::typed_id::SessionId;
+    use everruns_provider::ToolCall;
+    use everruns_provider::typed_id::SessionId;
     use serde_json::json;
 
     use crate::runtime::background_wake::TaskHandoff;

@@ -12,12 +12,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
+use everruns_core::ContentPart;
+use everruns_core::Event;
+use everruns_core::InputMessage;
+use everruns_core::Tool;
 use everruns_core::command::ExecuteCommandRequest;
-use everruns_core::events::Event;
-use everruns_core::message::ContentPart;
-use everruns_core::message_retriever::InputMessage;
-use everruns_core::tools::Tool;
-use everruns_core::typed_id::SessionId;
+use everruns_provider::typed_id::SessionId;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::exec::tools::{BashTool, Workspace};
@@ -65,7 +65,7 @@ impl Session {
         self.handles.report_herdr_state(state);
     }
 
-    pub(crate) async fn turn_tokens(&self, turn_id: everruns_core::typed_id::TurnId) -> u64 {
+    pub(crate) async fn turn_tokens(&self, turn_id: everruns_provider::typed_id::TurnId) -> u64 {
         self.handles.turn_tokens(turn_id).await
     }
 
@@ -95,7 +95,7 @@ impl Session {
     pub async fn activate_capability(
         &self,
         capability_id: &str,
-    ) -> Result<everruns_runtime::CapabilityDelta> {
+    ) -> Result<everruns_host::CapabilityDelta> {
         self.handles.activate_capability(capability_id).await
     }
 
@@ -104,7 +104,7 @@ impl Session {
     pub async fn deactivate_capability(
         &self,
         capability_id: &str,
-    ) -> Result<everruns_runtime::CapabilityDelta> {
+    ) -> Result<everruns_host::CapabilityDelta> {
         self.handles.deactivate_capability(capability_id).await
     }
 
@@ -448,11 +448,12 @@ fn route_catch_up_events(
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use everruns_core::driver_registry::{
+    use everruns_core::{EventContext, ToolCompletedData};
+    use everruns_provider::DriverId;
+    use everruns_provider::error::Result as EverrunsResult;
+    use everruns_provider::{
         ChatDriver, DiscoveredModel, LlmCallConfig, LlmMessage, LlmResponseStream,
     };
-    use everruns_core::events::{EventContext, ToolCompletedData};
-    use everruns_core::{DriverId, error::Result as EverrunsResult};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -505,6 +506,7 @@ mod tests {
         impl ChatDriver for ModelListingDriver {
             async fn chat_completion_stream(
                 &self,
+                _endpoint: &everruns_provider::runtime_provider::ProviderEndpoint,
                 _messages: Vec<LlmMessage>,
                 _config: &LlmCallConfig,
             ) -> EverrunsResult<LlmResponseStream> {
@@ -512,7 +514,10 @@ mod tests {
                 panic!("unavailable model must be rejected before provider send")
             }
 
-            async fn list_models(&self) -> EverrunsResult<Option<Vec<DiscoveredModel>>> {
+            async fn list_models(
+                &self,
+                _endpoint: &everruns_provider::runtime_provider::ProviderEndpoint,
+            ) -> EverrunsResult<Option<Vec<DiscoveredModel>>> {
                 Ok(Some(vec![DiscoveredModel {
                     model_id: "different-model".to_string(),
                     display_name: None,

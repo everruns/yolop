@@ -9,15 +9,15 @@ use crate::exec::tools::{BashTool, Workspace};
 use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS, resolve_for_settings};
 use async_trait::async_trait;
 use chrono::Local;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
-use everruns_core::tool_types::ToolCall;
-use everruns_core::tools::{Tool, ToolExecutionResult};
-use everruns_runtime::RuntimeProviderStore;
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_host::RuntimeProviderStore;
+use everruns_provider::ToolCall;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -419,9 +419,9 @@ impl Capability for CodingBashCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_core::Result<CommandResult> {
+    ) -> everruns_provider::error::Result<CommandResult> {
         if request.name != "shell" {
-            return Err(everruns_core::AgentLoopError::config(format!(
+            return Err(everruns_provider::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
@@ -432,7 +432,9 @@ impl Capability for CodingBashCapability {
             .as_deref()
             .map(str::trim)
             .filter(|command| !command.is_empty())
-            .ok_or_else(|| everruns_core::AgentLoopError::config("/shell requires: command"))?;
+            .ok_or_else(|| {
+                everruns_provider::error::AgentLoopError::config("/shell requires: command")
+            })?;
         let result = BashTool::with_policy(
             self.workspace.clone(),
             self.sandbox.clone(),
@@ -624,9 +626,9 @@ impl Capability for ModelsCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_core::Result<CommandResult> {
+    ) -> everruns_provider::error::Result<CommandResult> {
         if request.name != "setup" {
-            return Err(everruns_core::AgentLoopError::config(format!(
+            return Err(everruns_provider::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
@@ -755,7 +757,7 @@ impl SetupController {
     /// provider and model atomically — the wizard needs this for the custom
     /// provider, whose `/setup model` form would otherwise have no provider
     /// context to resolve against on first-time setup.
-    async fn change_provider(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+    async fn change_provider(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
         let mut parts = raw.splitn(2, char::is_whitespace);
         let name = parts.next().unwrap_or_default();
         let model_spec = parts.next().unwrap_or_default().trim();
@@ -794,7 +796,11 @@ impl SetupController {
             Ok(m) => m,
             Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
         };
-        if let Err(err) = self.provider_store.set_default_model(mw).await {
+        if let Err(err) = self
+            .provider_store
+            .set_default_model_spec(mw.model_spec())
+            .await
+        {
             return Ok(failed_result(format!("setup provider failed: {err}")));
         }
         let provider_name = next.provider_name().to_string();
@@ -830,7 +836,7 @@ impl SetupController {
         })
     }
 
-    async fn change_model(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+    async fn change_model(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
         if raw.is_empty() {
             let current = self
                 .provider
@@ -866,7 +872,11 @@ impl SetupController {
                 return Ok(failed_result(format!("setup model failed: {err}")));
             }
         };
-        if let Err(err) = self.provider_store.set_default_model(mw).await {
+        if let Err(err) = self
+            .provider_store
+            .set_default_model_spec(mw.model_spec())
+            .await
+        {
             return Ok(failed_result(format!("setup model failed: {err}")));
         }
         let label = next.label();
@@ -960,7 +970,7 @@ impl SetupController {
         )
     }
 
-    async fn change_effort(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+    async fn change_effort(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
         let current = self
             .provider
             .read()
@@ -999,7 +1009,7 @@ impl SetupController {
         })
     }
 
-    fn change_token(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+    fn change_token(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
         if raw.is_empty() {
             let snapshot = self.config.snapshot();
             let status: Vec<String> = TOKEN_PROVIDERS
@@ -1068,7 +1078,7 @@ impl SetupController {
         }
     }
 
-    fn change_base_url(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+    fn change_base_url(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
         let mut parts = raw.splitn(2, char::is_whitespace);
         let provider = parts.next().unwrap_or_default().to_ascii_lowercase();
         let rest = parts.next().unwrap_or_default().trim();
@@ -1130,7 +1140,7 @@ impl SetupController {
         }
     }
 
-    fn change_attribution(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+    fn change_attribution(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
         let trimmed = raw.trim();
         if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
             let enabled = self.config.attribution_enabled();
@@ -1167,7 +1177,7 @@ impl SetupController {
         }
     }
 
-    fn change_approval(&self, raw: &str) -> everruns_core::Result<CommandResult> {
+    fn change_approval(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
         let trimmed = raw.trim();
         if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
             return Ok(CommandResult {
@@ -1234,7 +1244,9 @@ fn failed_result(message: String) -> CommandResult {
 /// Map a `change_*` outcome onto a tool result: a failed (but non-erroring)
 /// `CommandResult` becomes a recoverable tool error carrying the same message
 /// (e.g. an unknown effort plus the valid set), so the model can correct itself.
-fn into_tool_result(outcome: everruns_core::Result<CommandResult>) -> ToolExecutionResult {
+fn into_tool_result(
+    outcome: everruns_provider::error::Result<CommandResult>,
+) -> ToolExecutionResult {
     match outcome {
         Ok(result) if result.success => ToolExecutionResult::success(json!({
             "success": true,
@@ -1553,25 +1565,36 @@ mod tests {
 
     #[async_trait::async_trait]
     impl everruns_core::ProviderStore for StubProviderStore {
-        async fn get_resolved_model(
+        async fn get_model_spec(
             &self,
-            _model_id: everruns_core::ModelId,
-        ) -> everruns_core::Result<Option<everruns_core::ResolvedModel>> {
+            _model_id: everruns_provider::typed_id::ModelId,
+        ) -> everruns_provider::error::Result<Option<everruns_provider::model_spec::ModelSpec>>
+        {
             Ok(None)
         }
-        async fn get_default_model(
+        async fn get_default_model_spec(
             &self,
-        ) -> everruns_core::Result<Option<everruns_core::ResolvedModel>> {
+        ) -> everruns_provider::error::Result<Option<everruns_provider::model_spec::ModelSpec>>
+        {
+            Ok(None)
+        }
+        async fn get_provider_config(
+            &self,
+            _provider: &everruns_provider::runtime_provider::ProviderKey,
+        ) -> everruns_provider::error::Result<
+            Option<everruns_provider::driver_registry::ProviderConfig>,
+        > {
+            // This stub owns no credentials.
             Ok(None)
         }
     }
 
     #[async_trait::async_trait]
     impl RuntimeProviderStore for StubProviderStore {
-        async fn set_default_model(
+        async fn set_default_model_spec(
             &self,
-            _model: everruns_core::ResolvedModel,
-        ) -> everruns_core::Result<()> {
+            _model: everruns_provider::model_spec::ModelSpec,
+        ) -> everruns_provider::error::Result<()> {
             Ok(())
         }
     }
@@ -1921,7 +1944,7 @@ mod tests {
             EnvironmentContextRegistry::default(),
         );
         let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
-            everruns_core::typed_id::SessionId::new(),
+            everruns_provider::typed_id::SessionId::new(),
         );
 
         let contribution = capability

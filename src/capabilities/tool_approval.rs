@@ -8,17 +8,16 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use everruns_core::atoms::{PreToolUseDecision, PreToolUseHook};
-use everruns_core::capabilities::{
-    Capability, CapabilityStatus, ToolApprovalCapability as UpstreamToolApprovalCapability,
-};
-use everruns_core::tool_types::{ToolCall, ToolDefinition};
-use everruns_core::traits::ToolContext;
+use everruns_builtins::tool_approval::ToolApprovalCapability as UpstreamToolApprovalCapability;
+use everruns_core::ToolContext;
+use everruns_core::tool_hooks::{PreToolUseDecision, PreToolUseHook};
+use everruns_core::{Capability, CapabilityStatus};
+use everruns_provider::{ToolCall, ToolDefinition};
 
 use crate::config::service::ConfigService;
 
-pub(crate) use everruns_core::capabilities::TOOL_APPROVAL_CAPABILITY_ID;
-pub(crate) use everruns_core::capabilities::{ApprovalDecision, ToolApprover};
+pub(crate) use everruns_builtins::TOOL_APPROVAL_CAPABILITY_ID;
+pub(crate) use everruns_builtins::{ApprovalDecision, ToolApprover};
 
 /// Delegates approval policy to everruns-core while resolving Yolop's live mode.
 pub struct ToolApprovalCapability {
@@ -97,8 +96,8 @@ impl PreToolUseHook for LiveApprovalHook {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use everruns_core::tool_types::{BuiltinTool, ToolHints};
-    use everruns_core::typed_id::SessionId;
+    use everruns_provider::typed_id::SessionId;
+    use everruns_provider::{BuiltinTool, ToolHints};
     use serde_json::json;
 
     use super::*;

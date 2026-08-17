@@ -21,8 +21,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use everruns_core::llmsim_driver::{LlmSimConfig, OnExhausted, SimError, SimToolCall, SimTurn};
-use everruns_core::session_task::SessionTaskState;
+use everruns_core::SessionTaskState;
+use everruns_llmsim::{LlmSimConfig, OnExhausted, SimError, SimToolCall, SimTurn};
 use serde_json::json;
 
 use crate::config::SettingsStore;
@@ -87,7 +87,7 @@ async fn build_scripted_runtime_with_workspace_and_options(
 
 /// Drive one user turn against the scripted runtime under a wall-clock
 /// timeout so a hung agent loop fails the test instead of hanging CI.
-async fn run_single_turn(runtime: &BuiltRuntime, user_text: &str) -> everruns_runtime::TurnResult {
+async fn run_single_turn(runtime: &BuiltRuntime, user_text: &str) -> everruns_host::TurnResult {
     let session_id = runtime.handles.session_id;
     let input = runtime.model.input_message(user_text.to_string());
     tokio::time::timeout(
@@ -214,7 +214,7 @@ async fn scripted_tool_call_executes_bash_then_assistant_completes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repeated_read_reuse_runs_through_real_file_tools_and_invalidates_on_write() {
-    use everruns_core::events::EventData;
+    use everruns_core::EventData;
 
     let original = "ORIGINAL-EVIDENCE\n".repeat(400);
     let changed = "CHANGED-EVIDENCE\n".repeat(400);

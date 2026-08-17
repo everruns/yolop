@@ -6,8 +6,8 @@
 
 use crate::capabilities::model_discovery::DiscoveredProviderModel;
 use crate::runtime::ProviderChoice;
-use everruns_core::DriverId;
-use everruns_core::get_model_profile;
+use everruns_provider::DriverId;
+use everruns_provider::model_profiles::get_model_profile;
 
 /// Models reordered for display plus how many leading rows belong in the
 /// recommended section (excluding the trailing "Custom..." picker entry).

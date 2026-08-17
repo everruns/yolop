@@ -5,10 +5,10 @@
 //! (no tools) after each turn, matching the Claude Code pattern.
 
 use anyhow::{Context, Result, bail};
+use everruns_core::Message;
+use everruns_core::SessionCompletionRequest;
 use everruns_core::command::{CommandExecutionContext, ExecuteCommandRequest};
-use everruns_core::command_host::SessionCompletionRequest;
-use everruns_core::message::Message;
-use everruns_core::typed_id::SessionId;
+use everruns_provider::typed_id::SessionId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -448,7 +448,7 @@ fn format_duration(duration: Duration) -> String {
 pub(crate) async fn evaluate_active_goal(
     ctx: &CommandExecutionContext,
     condition: &str,
-) -> everruns_core::Result<GoalEvaluation> {
+) -> everruns_provider::error::Result<GoalEvaluation> {
     let turn = ctx.host.turn_context().await?;
     let transcript = format_transcript(&turn.messages);
     let user_prompt =
@@ -472,14 +472,16 @@ pub(crate) async fn evaluate_active_goal(
 
 fn map_completion_error(
     error: everruns_core::command_host::SessionCompletionError,
-) -> everruns_core::AgentLoopError {
+) -> everruns_provider::error::AgentLoopError {
     match error {
         everruns_core::command_host::SessionCompletionError::InvalidRequest(err) => err,
         everruns_core::command_host::SessionCompletionError::StreamingUnsupported => {
-            everruns_core::AgentLoopError::config("goal evaluator does not support streaming")
+            everruns_provider::error::AgentLoopError::config(
+                "goal evaluator does not support streaming",
+            )
         }
         everruns_core::command_host::SessionCompletionError::Completion { error, .. } => {
-            everruns_core::AgentLoopError::config(error)
+            everruns_provider::error::AgentLoopError::config(error)
         }
     }
 }
@@ -505,7 +507,9 @@ fn format_transcript(messages: &[Message]) -> String {
         .join("\n\n")
 }
 
-pub(crate) fn parse_evaluation_response(text: &str) -> everruns_core::Result<GoalEvaluation> {
+pub(crate) fn parse_evaluation_response(
+    text: &str,
+) -> everruns_provider::error::Result<GoalEvaluation> {
     let trimmed = text.trim();
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
         return parse_evaluation_value(&value);
@@ -528,12 +532,16 @@ pub(crate) fn parse_evaluation_response(text: &str) -> everruns_core::Result<Goa
     })
 }
 
-fn parse_evaluation_value(value: &serde_json::Value) -> everruns_core::Result<GoalEvaluation> {
+fn parse_evaluation_value(
+    value: &serde_json::Value,
+) -> everruns_provider::error::Result<GoalEvaluation> {
     let met = value
         .get("met")
         .and_then(serde_json::Value::as_bool)
         .ok_or_else(|| {
-            everruns_core::AgentLoopError::config("goal evaluator returned JSON without `met`")
+            everruns_provider::error::AgentLoopError::config(
+                "goal evaluator returned JSON without `met`",
+            )
         })?;
     let reason = value
         .get("reason")

@@ -14,10 +14,10 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use everruns_core::events::EventData;
+use everruns_core::EventData;
 use tokio::sync::mpsc;
 
-use everruns_core::llmsim_driver::LlmSimConfig;
+use everruns_llmsim::LlmSimConfig;
 
 use std::sync::Arc;
 

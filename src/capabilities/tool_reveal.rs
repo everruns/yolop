@@ -20,11 +20,12 @@
 // model was actually shown.
 
 use async_trait::async_trait;
-use everruns_core::atoms::{PostToolExecHook, PostToolExecHookPriority};
-use everruns_core::capabilities::{Capability, CapabilityStatus, TOOL_SEARCH_TOOL_NAME};
-use everruns_core::tool_types::{ToolCall, ToolDefinition, ToolResult};
-use everruns_core::traits::ToolContext;
-use everruns_core::typed_id::SessionId;
+use everruns_builtins::TOOL_SEARCH_TOOL_NAME;
+use everruns_core::ToolContext;
+use everruns_core::tool_hooks::{PostToolExecHook, PostToolExecHookPriority};
+use everruns_core::{Capability, CapabilityStatus};
+use everruns_provider::typed_id::SessionId;
+use everruns_provider::{ToolCall, ToolDefinition, ToolResult};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -181,9 +182,7 @@ fn loaded_tool_names(result: Option<&Value>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::tool_types::{
-        BuiltinTool, DeferrablePolicy, ToolHints, ToolPolicy, ToolResult,
-    };
+    use everruns_provider::{BuiltinTool, DeferrablePolicy, ToolHints, ToolPolicy, ToolResult};
     use serde_json::json;
 
     fn tool_def(name: &str) -> ToolDefinition {

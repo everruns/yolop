@@ -19,10 +19,10 @@ use crate::capabilities::narration::stable_labeled;
 use crate::exec::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, basename, truncate};
-use everruns_core::tool_types::ToolCall;
-use everruns_core::tools::{Tool, ToolExecutionResult};
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::ToolCall;
 use manager::{
     DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_REQUEST_TIMEOUT_MS, LspManager, MAX_DIAGNOSTICS_WAIT_MS,
     MAX_REQUEST_TIMEOUT_MS, OpenedDocument, PositionEncoding, ServerSpec, apply_workspace_edit,

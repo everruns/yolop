@@ -3,11 +3,10 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
-use everruns_core::capabilities::{
-    Capability, CapabilityStatus, ModelViewContext, ModelViewProvider,
-};
-use everruns_core::message::{ContentPart, Message, MessageRole};
-use everruns_core::typed_id::MessageId;
+use everruns_core::capabilities::{ModelViewContext, ModelViewProvider};
+use everruns_core::{Capability, CapabilityStatus};
+use everruns_core::{ContentPart, Message, MessageRole};
+use everruns_provider::typed_id::MessageId;
 use serde_json::Value;
 
 use crate::runtime::ProviderChoice;
@@ -151,7 +150,7 @@ fn render(context: &ModelRuntimeContext) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::typed_id::SessionId;
+    use everruns_provider::typed_id::SessionId;
 
     fn markers(message: &Message) -> Vec<&str> {
         message

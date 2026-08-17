@@ -6,7 +6,7 @@
 //! integration never fetches instructions or writes a user skill directory.
 
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::{Event, EventData, TURN_CANCELLED, TURN_COMPLETED, TURN_FAILED, TURN_STARTED};
 use std::ffi::OsString;
 use std::process::Stdio;
@@ -317,7 +317,7 @@ impl HerdrReporter {
 
     pub(crate) fn start_monitor(
         &self,
-        session_id: everruns_core::typed_id::SessionId,
+        session_id: everruns_provider::typed_id::SessionId,
         mut events: broadcast::Receiver<Event>,
     ) {
         if self.context.is_none() {
@@ -396,7 +396,7 @@ impl Capability for HerdrCapability {
     }
 
     fn dependencies(&self) -> Vec<&'static str> {
-        vec![everruns_core::capabilities::SESSION_FILE_SYSTEM_CAPABILITY_ID]
+        vec![everruns_integrations_filesystem::SESSION_FILE_SYSTEM_CAPABILITY_ID]
     }
 }
 
@@ -542,10 +542,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn monitor_reports_turn_lifecycle_and_releases_the_agent() {
-        use everruns_core::events::{
+        use everruns_core::{
             EventContext, SessionTitleUpdatedData, TurnCompletedData, TurnStartedData,
         };
-        use everruns_core::typed_id::{MessageId, TurnId};
+        use everruns_provider::typed_id::{MessageId, TurnId};
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().expect("tempdir");
@@ -566,7 +566,7 @@ mod tests {
         let reporter = HerdrReporter::from_lookup_inner("session_test".into(), true, |key| {
             vars.get(key).cloned()
         });
-        let session_id = everruns_core::typed_id::SessionId::from_seed(91);
+        let session_id = everruns_provider::typed_id::SessionId::from_seed(91);
         let turn_id = TurnId::from_seed(92);
         let (events, receiver) = broadcast::channel(8);
         reporter.start_monitor(session_id, receiver);

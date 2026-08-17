@@ -1,6 +1,6 @@
 //! Generic connector (user connection) support for yolop.
 //!
-//! Connectors wrap upstream [`everruns_core::connector::Connector`]
+//! Connectors wrap upstream [`everruns_platform::connector::Connector`]
 //! implementations so sandbox and integration capabilities (Daytona today;
 //! E2B and others later) can resolve credentials lazily at tool time through
 //! [`YolopConnectionResolver`].

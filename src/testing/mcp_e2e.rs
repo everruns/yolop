@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use everruns_core::llmsim_driver::{LlmSimConfig, SimToolCall, SimTurn};
+use everruns_llmsim::{LlmSimConfig, SimToolCall, SimTurn};
 use serde_json::json;
 
 use crate::config::SettingsStore;
@@ -148,7 +148,7 @@ async fn build_runtime(config: LlmSimConfig, marker_dir: &Path, python: &Path) -
     build_runtime_with(config, &echo_mcp_json(python, marker_dir)).await
 }
 
-async fn run_turn(runtime: &BuiltRuntime, text: &str) -> everruns_runtime::TurnResult {
+async fn run_turn(runtime: &BuiltRuntime, text: &str) -> everruns_host::TurnResult {
     let session_id = runtime.handles.session_id;
     let input = runtime.model.input_message(text.to_string());
     tokio::time::timeout(

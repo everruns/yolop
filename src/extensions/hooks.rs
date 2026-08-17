@@ -8,10 +8,10 @@
 use super::manager::ExtensionProcess;
 use super::package::{HookEvent, HookOnError, HookSubscription};
 use async_trait::async_trait;
-use everruns_core::atoms::{PostToolExecHook, PostToolExecHookPriority};
-use everruns_core::atoms::{PreToolUseDecision, PreToolUseHook};
-use everruns_core::tool_types::{ToolCall, ToolDefinition, ToolResult};
-use everruns_core::traits::ToolContext;
+use everruns_core::ToolContext;
+use everruns_core::tool_hooks::{PostToolExecHook, PostToolExecHookPriority};
+use everruns_core::tool_hooks::{PreToolUseDecision, PreToolUseHook};
+use everruns_provider::{ToolCall, ToolDefinition, ToolResult};
 use std::sync::Arc;
 use std::time::Duration;
 

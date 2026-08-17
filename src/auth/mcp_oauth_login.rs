@@ -2,7 +2,7 @@
 
 use crate::auth::mcp_oauth::McpOAuthTokenSet;
 use anyhow::{Context, Result, anyhow};
-use everruns_core::oauth::RegisteredClient;
+use everruns_mcp::oauth::RegisteredClient;
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};

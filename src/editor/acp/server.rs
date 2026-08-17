@@ -24,13 +24,13 @@ use agent_client_protocol::{Agent, Client, ConnectionTo, Lines, Responder};
 use anyhow::Result;
 use async_trait::async_trait;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
-use everruns_core::mcp_server::{McpServerTransportType, ScopedMcpServer};
-use everruns_core::message::{ContentPart, ImageContentPart};
-use everruns_core::tool_types::{
+use everruns_core::{ContentPart, ImageContentPart};
+use everruns_core::{InputMessage, ScopedMcpServers};
+use everruns_core::{McpServerTransportType, ScopedMcpServer};
+use everruns_provider::tool_types::{
     ToolCall as RuntimeToolCall, ToolDefinition as RuntimeToolDefinition,
 };
-use everruns_core::typed_id::SessionId as RuntimeSessionId;
-use everruns_core::{InputMessage, ScopedMcpServers};
+use everruns_provider::typed_id::SessionId as RuntimeSessionId;
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -1424,7 +1424,7 @@ async fn run_prompt_once(
     session: Arc<Session>,
     prompt: String,
     input: InputMessage,
-) -> (StopReason, Option<everruns_runtime::TurnResult>) {
+) -> (StopReason, Option<everruns_host::TurnResult>) {
     let handles = session.handles.clone();
     let session_id = handles.session_id;
     let acp_id = session.acp_id.clone();
@@ -1526,7 +1526,7 @@ async fn run_prompt_once(
 async fn completion_followup(
     peer: &Arc<Peer>,
     session: &Arc<Session>,
-    result: &everruns_runtime::TurnResult,
+    result: &everruns_host::TurnResult,
 ) -> Option<String> {
     let session_id = session.handles.session_id;
     if !session.user_ask_enabled || !session.user_ask_store.is_active(session_id) {

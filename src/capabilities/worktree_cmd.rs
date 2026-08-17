@@ -2,11 +2,11 @@
 
 use crate::exec::worktree::WorktreeManager;
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus};
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
+use everruns_core::{Capability, CapabilityStatus};
 use std::sync::Arc;
 
 pub(crate) const WORKTREE_CAPABILITY_ID: &str = "yolop_worktree";
@@ -57,9 +57,9 @@ impl Capability for WorktreeCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_core::Result<CommandResult> {
+    ) -> everruns_provider::error::Result<CommandResult> {
         if request.name != WORKTREE_COMMAND_NAME {
-            return Err(everruns_core::AgentLoopError::config(format!(
+            return Err(everruns_provider::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
@@ -75,7 +75,7 @@ impl Capability for WorktreeCapability {
         } else if arg.is_empty() {
             self.manager.status_message()
         } else {
-            return Err(everruns_core::AgentLoopError::config(format!(
+            return Err(everruns_provider::error::AgentLoopError::config(format!(
                 "unknown /worktree argument `{arg}`; use `/worktree` or `/worktree off`"
             )));
         };

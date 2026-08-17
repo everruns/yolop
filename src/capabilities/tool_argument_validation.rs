@@ -6,10 +6,10 @@
 //! immediately before execution and returns a compact, value-free correction.
 
 use async_trait::async_trait;
-use everruns_core::atoms::{PreToolUseDecision, PreToolUseHook};
-use everruns_core::capabilities::{Capability, CapabilityStatus};
-use everruns_core::tool_types::{ToolCall, ToolDefinition};
-use everruns_core::traits::ToolContext;
+use everruns_core::ToolContext;
+use everruns_core::tool_hooks::{PreToolUseDecision, PreToolUseHook};
+use everruns_core::{Capability, CapabilityStatus};
+use everruns_provider::{ToolCall, ToolDefinition};
 use jsonschema::error::ValidationErrorKind;
 use jsonschema::{Draft, Validator};
 use serde_json::{Map, Value, json};
@@ -365,8 +365,8 @@ fn escape_pointer_segment(segment: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::tool_types::{BuiltinTool, DeferrablePolicy, ToolHints, ToolPolicy};
-    use everruns_core::typed_id::SessionId;
+    use everruns_provider::typed_id::SessionId;
+    use everruns_provider::{BuiltinTool, DeferrablePolicy, ToolHints, ToolPolicy};
 
     fn checkpoint_schema() -> Value {
         json!({

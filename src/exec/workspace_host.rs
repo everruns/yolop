@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result, bail};
 use everruns_core::session_path::to_session_path;
-use everruns_runtime::RealDiskFileStore;
+use everruns_host::RealDiskFileStore;
 use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -19,7 +19,10 @@ pub struct WorkspaceHost {
 }
 
 impl WorkspaceHost {
-    pub fn new(active_root: Arc<RwLock<PathBuf>>, initial: PathBuf) -> everruns_core::Result<Self> {
+    pub fn new(
+        active_root: Arc<RwLock<PathBuf>>,
+        initial: PathBuf,
+    ) -> everruns_provider::error::Result<Self> {
         Ok(Self {
             disk: Arc::new(RealDiskFileStore::new(initial.clone())?),
             applied_root: Mutex::new(initial),
@@ -32,8 +35,8 @@ impl WorkspaceHost {
     }
 
     /// Repoint the host disk when the worktree active root changed.
-    pub fn sync(&self) -> everruns_core::Result<()> {
-        use everruns_core::error::AgentLoopError;
+    pub fn sync(&self) -> everruns_provider::error::Result<()> {
+        use everruns_provider::AgentLoopError;
 
         let current = self
             .active_root
@@ -53,7 +56,7 @@ impl WorkspaceHost {
         Ok(())
     }
 
-    pub fn host_root(&self) -> everruns_core::Result<PathBuf> {
+    pub fn host_root(&self) -> everruns_provider::error::Result<PathBuf> {
         self.sync()?;
         Ok(self.disk.root())
     }

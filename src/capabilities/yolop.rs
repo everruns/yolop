@@ -8,7 +8,7 @@
 // See knowledge/specs/yolop.md.
 
 use async_trait::async_trait;
-use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 
 pub(crate) const YOLOP_CAPABILITY_ID: &str = "yolop";
 

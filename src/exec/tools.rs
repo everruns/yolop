@@ -14,12 +14,12 @@ use crate::sandbox_approval::{ApprovalGate, ApprovalRequest};
 use async_trait::async_trait;
 use everruns_core::exec_tool_result::ExecToolResultPayload;
 use everruns_core::tool_narration::ToolNarrationPhase;
-use everruns_core::tool_types::ToolHints;
-use everruns_core::tools::{Tool, ToolExecutionResult};
 use everruns_core::{
     BackgroundEventSink, BackgroundExecutableTool, BackgroundOutcome, BackgroundProgress,
     ToolContext,
 };
+use everruns_core::{Tool, ToolExecutionResult};
+use everruns_provider::ToolHints;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -365,7 +365,7 @@ fn trusted_command(command: &str) -> bool {
 impl Tool for BashTool {
     fn narrate(
         &self,
-        tool_call: &everruns_core::tool_types::ToolCall,
+        tool_call: &everruns_provider::tool_types::ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
         _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
@@ -595,10 +595,12 @@ impl BackgroundExecutableTool for BashTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::capabilities::{Capability, ToolOutputPersistenceCapability};
-    use everruns_core::typed_id::SessionId;
-    use everruns_core::{ToolCall, ToolContext};
-    use everruns_runtime::RealDiskFileStore;
+    use everruns_builtins::ToolOutputPersistenceCapability;
+    use everruns_core::Capability;
+    use everruns_core::ToolContext;
+    use everruns_host::RealDiskFileStore;
+    use everruns_provider::ToolCall;
+    use everruns_provider::typed_id::SessionId;
     use std::sync::Mutex;
 
     #[cfg(target_os = "macos")]
@@ -992,12 +994,16 @@ mod tests {
 
         #[async_trait]
         impl BackgroundEventSink for RecordingSink {
-            async fn status(&self, message: &str) -> everruns_core::Result<()> {
+            async fn status(&self, message: &str) -> everruns_provider::error::Result<()> {
                 self.statuses.lock().unwrap().push(message.to_string());
                 Ok(())
             }
 
-            async fn output(&self, stream: &str, delta: &str) -> everruns_core::Result<()> {
+            async fn output(
+                &self,
+                stream: &str,
+                delta: &str,
+            ) -> everruns_provider::error::Result<()> {
                 self.output
                     .lock()
                     .unwrap()
@@ -1005,7 +1011,10 @@ mod tests {
                 Ok(())
             }
 
-            async fn progress(&self, _progress: BackgroundProgress) -> everruns_core::Result<()> {
+            async fn progress(
+                &self,
+                _progress: BackgroundProgress,
+            ) -> everruns_provider::error::Result<()> {
                 Ok(())
             }
         }
@@ -1057,15 +1066,22 @@ mod tests {
 
         #[async_trait]
         impl BackgroundEventSink for NoopSink {
-            async fn status(&self, _message: &str) -> everruns_core::Result<()> {
+            async fn status(&self, _message: &str) -> everruns_provider::error::Result<()> {
                 Ok(())
             }
 
-            async fn output(&self, _stream: &str, _delta: &str) -> everruns_core::Result<()> {
+            async fn output(
+                &self,
+                _stream: &str,
+                _delta: &str,
+            ) -> everruns_provider::error::Result<()> {
                 Ok(())
             }
 
-            async fn progress(&self, _progress: BackgroundProgress) -> everruns_core::Result<()> {
+            async fn progress(
+                &self,
+                _progress: BackgroundProgress,
+            ) -> everruns_provider::error::Result<()> {
                 Ok(())
             }
         }
@@ -1100,11 +1116,15 @@ mod tests {
 
         #[async_trait]
         impl BackgroundEventSink for RecordingSink {
-            async fn status(&self, _message: &str) -> everruns_core::Result<()> {
+            async fn status(&self, _message: &str) -> everruns_provider::error::Result<()> {
                 Ok(())
             }
 
-            async fn output(&self, stream: &str, delta: &str) -> everruns_core::Result<()> {
+            async fn output(
+                &self,
+                stream: &str,
+                delta: &str,
+            ) -> everruns_provider::error::Result<()> {
                 self.output
                     .lock()
                     .unwrap()
@@ -1112,7 +1132,10 @@ mod tests {
                 Ok(())
             }
 
-            async fn progress(&self, _progress: BackgroundProgress) -> everruns_core::Result<()> {
+            async fn progress(
+                &self,
+                _progress: BackgroundProgress,
+            ) -> everruns_provider::error::Result<()> {
                 Ok(())
             }
         }

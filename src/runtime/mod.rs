@@ -46,52 +46,61 @@ use crate::session_state::user_ask::UserAskStore;
 use crate::tui::host_ui::{HostUi, TuiHandle, UiCommand, UiRequest};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use everruns_core::capabilities::{
+use everruns_builtins::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
-    BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, FileSystemCapability,
-    INFINITY_CONTEXT_CAPABILITY_ID, InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID,
-    LoopDetectionCapability, MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID,
-    PromptCachingCapability, SESSION_CAPABILITY_ID, SESSION_FILE_SYSTEM_CAPABILITY_ID,
-    SESSION_STORAGE_CAPABILITY_ID, SESSION_TASKS_CAPABILITY_ID, SKILLS_CAPABILITY_ID,
-    STATELESS_TODO_LIST_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, ScopedSkillsCapability,
-    SessionCapability, SessionStorageCapability, StatelessTodoListCapability, SubagentCapability,
-    TOOL_CALL_REPAIR_CAPABILITY_ID, TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID,
-    TOOL_SEARCH_CAPABILITY_ID, ToolCallRepairCapability, ToolOutputPersistenceCapability,
-    ToolSearchCapability, USER_HOOKS_CAPABILITY_ID, UserHooksCapability, WEB_FETCH_CAPABILITY_ID,
-    WebFetchCapability,
+    BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, INFINITY_CONTEXT_CAPABILITY_ID,
+    InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability,
+    MessageMetadataCapability, PROMPT_CACHING_CAPABILITY_ID, PromptCachingCapability,
+    SKILLS_CAPABILITY_ID, STATELESS_TODO_LIST_CAPABILITY_ID, ScopedSkillsCapability,
+    StatelessTodoListCapability, TOOL_CALL_REPAIR_CAPABILITY_ID,
+    TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID, ToolCallRepairCapability,
+    ToolOutputPersistenceCapability, ToolSearchCapability,
 };
+use everruns_session_services::{
+    SESSION_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SessionCapability,
+    SessionStorageCapability,
+};
+// #3111/#3119 moved the hosted and environment capability implementations out
+// of everruns-core into the platform and integration crates.
+use everruns_capability::CapabilityRef;
+use everruns_core::SessionStore;
+use everruns_core::SessionTaskRegistry;
 use everruns_core::command::CommandDescriptor;
-use everruns_core::driver_registry::{DriverRegistry, ProviderMetadata};
-use everruns_core::error::AgentLoopError;
-use everruns_core::get_model_profile;
-use everruns_core::in_memory::InMemoryMessageRetriever;
-use everruns_core::llmsim_driver::LlmSimConfig;
-use everruns_core::message::{ContentPart, MessageRole};
-use everruns_core::session_file::{
-    FileInfo, FileStat, GrepMatch, GrepOptions, GrepSearchResult, InitialFile, SessionFile,
-    build_grep_search_result,
-};
+use everruns_core::session_file::build_grep_search_result;
 use everruns_core::session_path::GrepPathPattern;
-use everruns_core::session_task::SessionTaskRegistry;
-use everruns_core::typed_id::SessionId;
 use everruns_core::{
-    AgentCapabilityConfig, CapabilityRegistry, Controls, InputMessage, MountFs, PlatformDefinition,
-    ReasoningConfig, ResolvedModel, ScopedMcpServers, SessionFileSystem, SessionFileSystemFactory,
-    SessionFileSystemFactoryContext,
+    CapabilityRegistry, Controls, InputMessage, MountFs, ReasoningConfig, ScopedMcpServers,
+    SessionFileSystem,
 };
+use everruns_core::{ContentPart, MessageRole};
 use everruns_core::{
-    DriverId, ModelProfile, ReasoningEffortConfig, ReasoningEffortValue, SessionStore,
+    FileInfo, FileStat, GrepMatch, GrepOptions, GrepSearchResult, InitialFile, SessionFile,
 };
-use everruns_integrations_daytona::DaytonaCapability;
-use everruns_integrations_duckduckgo::DuckDuckGoCapability;
-use everruns_local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
-use everruns_mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
-use everruns_runtime::RuntimeProviderStore;
-use everruns_runtime::{
-    AgentBuilder, CapabilityDelta, HarnessBuilder, InMemorySessionFileStore, InProcessRuntime,
-    InProcessRuntimeBuilder, RealDiskFileStore, RuntimeBackends, RuntimeSessionStore,
+use everruns_host::RuntimeProviderStore;
+use everruns_host::{
+    AgentBuilder, CapabilityDelta, HarnessBuilder, HostBackends, InMemorySessionFileStore,
+    InProcessRuntime, InProcessRuntimeBuilder, RealDiskFileStore, RuntimeSessionStore,
     SessionBuilder, WriteBlocklistFileStore,
 };
+use everruns_host::{SessionFileSystemFactory, SessionFileSystemFactoryContext};
+use everruns_integrations_daytona::DaytonaCapability;
+use everruns_integrations_duckduckgo::DuckDuckGoCapability;
+use everruns_integrations_filesystem::{FileSystemCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID};
+use everruns_integrations_web_fetch::{WEB_FETCH_CAPABILITY_ID, WebFetchCapability};
+use everruns_llmsim::LlmSimConfig;
+use everruns_llmsim::LlmSimRuntimeExt;
+use everruns_local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
+use everruns_mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
+use everruns_platform::capabilities::{
+    SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, SubagentCapability,
+    USER_HOOKS_CAPABILITY_ID, UserHooksCapability,
+};
+use everruns_provider::AgentLoopError;
+use everruns_provider::model_profiles::get_model_profile;
+use everruns_provider::typed_id::SessionId;
+use everruns_provider::{DriverId, ModelProfile, ReasoningEffortConfig, ReasoningEffortValue};
+use everruns_provider::{DriverRegistry, ProviderMetadata};
+use everruns_test_support::InMemoryMessageRetriever;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 
@@ -109,6 +118,28 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex, RwLock};
 use std::time::Duration;
 use tokio::sync::{RwLock as AsyncRwLock, mpsc};
 
+// TM-FS: upstream deprecated `DEFAULT_WRITE_BLOCKLIST` in favour of
+// `WorkspacePolicy`. Swapping yolop's write-protection over is a
+// security-relevant change that deserves its own review rather than riding
+// along with the 0.18 migration, so the legacy list stays for now behind a
+// single alias instead of an `allow` at every call site.
+#[cfg(test)]
+// Yolop's own traversal skip-list; upstream dropped its exported constant with
+// the WorkspacePolicy move. The agent's write guard is still
+// `WriteBlocklistFileStore` around the session file store.
+const WRITE_BLOCKLIST: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".venv",
+    "venv",
+    ".tox",
+    ".gradle",
+];
+
 /// Default no-output stream-liveness window. Matches everruns-core's Reason
 /// atom default and the provider reconnect first-item bound so silent HTTP 200
 /// responses fail at the same budget everywhere.
@@ -120,9 +151,9 @@ pub(crate) const PROVIDER_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// window — so a recovered attempt is clipped and usually stalls again
 /// immediately. Keep SDK-shaped retry counts/backoff, but give the elapsed
 /// budget enough room for `max_retries` full stall windows plus backoff.
-pub(crate) fn provider_recovery_config() -> everruns_core::LlmRetryConfig {
+pub(crate) fn provider_recovery_config() -> everruns_provider::llm_retry::LlmRetryConfig {
     let max_retries = 2;
-    everruns_core::LlmRetryConfig {
+    everruns_provider::llm_retry::LlmRetryConfig {
         max_retries,
         initial_backoff: Duration::from_secs(1),
         max_backoff: Duration::from_secs(60),
@@ -285,7 +316,7 @@ pub(crate) async fn discover_mcp_tool_names(
         return Vec::new();
     }
     let client = everruns_mcp::McpClient::new(
-        Arc::new(everruns_core::DirectEgressService::default()),
+        Arc::new(everruns_http::DirectEgressService::default()),
         Arc::new(StoredMcpAuthProvider::new(connections.clone())),
     );
     let mut names = Vec::new();
@@ -342,7 +373,7 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
     async fn create_session_file_system(
         &self,
         _context: SessionFileSystemFactoryContext,
-    ) -> everruns_core::Result<Arc<dyn SessionFileSystem>> {
+    ) -> everruns_provider::error::Result<Arc<dyn SessionFileSystem>> {
         // The writable global skills dir may not exist yet; create it so a skill
         // installed mid-session is discoverable. (System skills are already
         // materialized by `SkillDirs::resolve`.)
@@ -437,7 +468,7 @@ async fn grep_workspace_with_options(
     root: PathBuf,
     pattern: &str,
     options: &GrepOptions,
-) -> everruns_core::Result<GrepSearchResult> {
+) -> everruns_provider::error::Result<GrepSearchResult> {
     if pattern.len() > MAX_GREP_PATTERN_LEN {
         return Err(AgentLoopError::tool(format!(
             "Regex pattern too long (max {MAX_GREP_PATTERN_LEN} characters)"
@@ -464,98 +495,101 @@ async fn grep_workspace_with_options(
         .transpose()?;
     let options = options.clone();
 
-    tokio::task::spawn_blocking(move || -> everruns_core::Result<GrepSearchResult> {
-        let mut matches = Vec::new();
-        let mut blocks = Vec::new();
-        let mut total_matches = 0usize;
-        let mut returned_matches = 0usize;
-        let mut bytes_returned = 0usize;
-        let mut bytes_total = 0usize;
-        let mut remaining_offset = options.offset;
-        let mut remaining_limit = options.limit;
+    tokio::task::spawn_blocking(
+        move || -> everruns_provider::error::Result<GrepSearchResult> {
+            let mut matches = Vec::new();
+            let mut blocks = Vec::new();
+            let mut total_matches = 0usize;
+            let mut returned_matches = 0usize;
+            let mut bytes_returned = 0usize;
+            let mut bytes_total = 0usize;
+            let mut remaining_offset = options.offset;
+            let mut remaining_limit = options.limit;
 
-        let mut builder = WalkBuilder::new(&root);
-        builder
-            .hidden(false)
-            .git_ignore(true)
-            .git_global(false)
-            .git_exclude(true)
-            .sort_by_file_path(|left, right| left.cmp(right));
+            let mut builder = WalkBuilder::new(&root);
+            builder
+                .hidden(false)
+                .git_ignore(true)
+                .git_global(false)
+                .git_exclude(true)
+                .sort_by_file_path(|left, right| left.cmp(right));
 
-        for entry in builder.build().filter_map(std::result::Result::ok) {
-            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-                continue;
-            }
-            let Ok(relative) = entry.path().strip_prefix(&root) else {
-                continue;
-            };
-            let Some(relative) = relative.to_str() else {
-                continue;
-            };
-            let canonical_path = format!("/{}", relative.replace(std::path::MAIN_SEPARATOR, "/"));
-            if path_matcher
-                .as_ref()
-                .is_some_and(|matcher| !matcher.is_match(&canonical_path))
-            {
-                continue;
-            }
-            let Ok(metadata) = entry.metadata() else {
-                continue;
-            };
-            if metadata.len() > MAX_GREP_FILE_BYTES as u64 {
-                continue;
-            }
-            let Ok(bytes) = std::fs::read(entry.path()) else {
-                continue;
-            };
-            if !SessionFile::is_text_content(&bytes) {
-                continue;
-            }
-            let Ok(text) = String::from_utf8(bytes) else {
-                continue;
-            };
+            for entry in builder.build().filter_map(std::result::Result::ok) {
+                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                    continue;
+                }
+                let Ok(relative) = entry.path().strip_prefix(&root) else {
+                    continue;
+                };
+                let Some(relative) = relative.to_str() else {
+                    continue;
+                };
+                let canonical_path =
+                    format!("/{}", relative.replace(std::path::MAIN_SEPARATOR, "/"));
+                if path_matcher
+                    .as_ref()
+                    .is_some_and(|matcher| !matcher.is_match(&canonical_path))
+                {
+                    continue;
+                }
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                if metadata.len() > MAX_GREP_FILE_BYTES as u64 {
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(entry.path()) else {
+                    continue;
+                };
+                if !SessionFile::is_text_content(&bytes) {
+                    continue;
+                }
+                let Ok(text) = String::from_utf8(bytes) else {
+                    continue;
+                };
 
-            let file_matches = text.lines().filter(|line| regex.is_match(line)).count();
-            total_matches = total_matches.saturating_add(file_matches);
-            let skip = remaining_offset.min(file_matches);
-            remaining_offset -= skip;
-            let selected = file_matches.saturating_sub(skip).min(remaining_limit);
-            remaining_limit -= selected;
-            if selected == 0 {
-                continue;
+                let file_matches = text.lines().filter(|line| regex.is_match(line)).count();
+                total_matches = total_matches.saturating_add(file_matches);
+                let skip = remaining_offset.min(file_matches);
+                remaining_offset -= skip;
+                let selected = file_matches.saturating_sub(skip).min(remaining_limit);
+                remaining_limit -= selected;
+                if selected == 0 {
+                    continue;
+                }
+
+                let file_result = build_grep_search_result(
+                    vec![(canonical_path, text)],
+                    &regex,
+                    &GrepOptions {
+                        path_pattern: None,
+                        before_context: options.before_context,
+                        after_context: options.after_context,
+                        offset: skip,
+                        limit: selected,
+                        max_bytes: options.max_bytes.saturating_sub(bytes_returned),
+                    },
+                );
+                returned_matches = returned_matches.saturating_add(file_result.returned_matches);
+                bytes_returned = bytes_returned.saturating_add(file_result.bytes_returned);
+                bytes_total = bytes_total.saturating_add(file_result.bytes_total);
+                matches.extend(file_result.matches);
+                blocks.extend(file_result.blocks);
             }
 
-            let file_result = build_grep_search_result(
-                vec![(canonical_path, text)],
-                &regex,
-                &GrepOptions {
-                    path_pattern: None,
-                    before_context: options.before_context,
-                    after_context: options.after_context,
-                    offset: skip,
-                    limit: selected,
-                    max_bytes: options.max_bytes.saturating_sub(bytes_returned),
-                },
-            );
-            returned_matches = returned_matches.saturating_add(file_result.returned_matches);
-            bytes_returned = bytes_returned.saturating_add(file_result.bytes_returned);
-            bytes_total = bytes_total.saturating_add(file_result.bytes_total);
-            matches.extend(file_result.matches);
-            blocks.extend(file_result.blocks);
-        }
-
-        let next_offset = options.offset.saturating_add(returned_matches);
-        Ok(GrepSearchResult {
-            matches,
-            blocks,
-            total_matches,
-            returned_matches,
-            bytes_returned,
-            bytes_total,
-            next_offset: (next_offset < total_matches).then_some(next_offset),
-            byte_truncated: bytes_returned < bytes_total,
-        })
-    })
+            let next_offset = options.offset.saturating_add(returned_matches);
+            Ok(GrepSearchResult {
+                matches,
+                blocks,
+                total_matches,
+                returned_matches,
+                bytes_returned,
+                bytes_total,
+                next_offset: (next_offset < total_matches).then_some(next_offset),
+                byte_truncated: bytes_returned < bytes_total,
+            })
+        },
+    )
     .await
     .map_err(|error| AgentLoopError::tool(format!("grep walk join failed: {error}")))?
 }
@@ -591,7 +625,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_core::Result<Option<SessionFile>> {
+    ) -> everruns_provider::error::Result<Option<SessionFile>> {
         self.policy.read_file(session_id, path).await
     }
 
@@ -601,7 +635,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         path: &str,
         content: &str,
         encoding: &str,
-    ) -> everruns_core::Result<SessionFile> {
+    ) -> everruns_provider::error::Result<SessionFile> {
         self.policy
             .write_file(session_id, path, content, encoding)
             .await
@@ -615,7 +649,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         expected_encoding: &str,
         content: &str,
         encoding: &str,
-    ) -> everruns_core::Result<Option<SessionFile>> {
+    ) -> everruns_provider::error::Result<Option<SessionFile>> {
         self.policy
             .write_file_if_content_matches(
                 session_id,
@@ -633,7 +667,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         session_id: SessionId,
         path: &str,
         recursive: bool,
-    ) -> everruns_core::Result<bool> {
+    ) -> everruns_provider::error::Result<bool> {
         self.policy.delete_file(session_id, path, recursive).await
     }
 
@@ -641,7 +675,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_core::Result<Vec<FileInfo>> {
+    ) -> everruns_provider::error::Result<Vec<FileInfo>> {
         self.policy.list_directory(session_id, path).await
     }
 
@@ -649,7 +683,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_core::Result<Option<FileStat>> {
+    ) -> everruns_provider::error::Result<Option<FileStat>> {
         self.policy.stat_file(session_id, path).await
     }
 
@@ -658,7 +692,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         session_id: SessionId,
         pattern: &str,
         path_pattern: Option<&str>,
-    ) -> everruns_core::Result<Vec<GrepMatch>> {
+    ) -> everruns_provider::error::Result<Vec<GrepMatch>> {
         self.policy
             .grep_files(session_id, pattern, path_pattern)
             .await
@@ -669,7 +703,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         session_id: SessionId,
         pattern: &str,
         options: &GrepOptions,
-    ) -> everruns_core::Result<GrepSearchResult> {
+    ) -> everruns_provider::error::Result<GrepSearchResult> {
         self.grep_backend
             .grep_files_with_options(session_id, pattern, options)
             .await
@@ -679,7 +713,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_core::Result<FileInfo> {
+    ) -> everruns_provider::error::Result<FileInfo> {
         self.policy.create_directory(session_id, path).await
     }
 
@@ -687,7 +721,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         &self,
         session_id: SessionId,
         file: &InitialFile,
-    ) -> everruns_core::Result<()> {
+    ) -> everruns_provider::error::Result<()> {
         self.policy.seed_initial_file(session_id, file).await
     }
 }
@@ -699,7 +733,7 @@ async fn seed_readonly_dir(
     store: &InMemorySessionFileStore,
     session_id: SessionId,
     root: &std::path::Path,
-) -> everruns_core::Result<()> {
+) -> everruns_provider::error::Result<()> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let entries = std::fs::read_dir(&dir)
@@ -748,7 +782,7 @@ impl CodingCliSessionFileStore {
         session_dir: PathBuf,
         skill_global: Option<PathBuf>,
         skill_system: Option<PathBuf>,
-    ) -> everruns_core::Result<Self> {
+    ) -> everruns_provider::error::Result<Self> {
         let materializer = Arc::new(session_log::SessionMaterializer::new(
             session_dir.clone(),
             None,
@@ -768,9 +802,9 @@ impl CodingCliSessionFileStore {
         skill_global: Option<PathBuf>,
         skill_system: Option<PathBuf>,
         materializer: Arc<session_log::SessionMaterializer>,
-    ) -> everruns_core::Result<Self> {
+    ) -> everruns_provider::error::Result<Self> {
         let skill_store =
-            |dir: Option<PathBuf>| -> everruns_core::Result<Option<RealDiskFileStore>> {
+            |dir: Option<PathBuf>| -> everruns_provider::error::Result<Option<RealDiskFileStore>> {
                 dir.map(RealDiskFileStore::new).transpose()
             };
         Ok(Self {
@@ -786,7 +820,7 @@ impl CodingCliSessionFileStore {
 
     /// The shared workspace disk, repointed via `set_host_root` (EVE-660) when
     /// the active worktree changes.
-    fn workspace_store(&self) -> everruns_core::Result<&RealDiskFileStore> {
+    fn workspace_store(&self) -> everruns_provider::error::Result<&RealDiskFileStore> {
         self.workspace.sync()?;
         Ok(&self.workspace_disk)
     }
@@ -821,7 +855,7 @@ impl CodingCliSessionFileStore {
         }
     }
 
-    fn ensure_session_storage(&self) -> everruns_core::Result<()> {
+    fn ensure_session_storage(&self) -> everruns_provider::error::Result<()> {
         self.materializer.ensure()?;
         std::fs::create_dir_all(&self.session_dir).map_err(|e| {
             AgentLoopError::config(format!(
@@ -843,7 +877,10 @@ impl CodingCliSessionFileStore {
         Ok(())
     }
 
-    fn session_store(&self, create: bool) -> everruns_core::Result<Option<RealDiskFileStore>> {
+    fn session_store(
+        &self,
+        create: bool,
+    ) -> everruns_provider::error::Result<Option<RealDiskFileStore>> {
         let mut session = self
             .session
             .lock()
@@ -863,7 +900,7 @@ impl CodingCliSessionFileStore {
     }
 
     #[cfg(unix)]
-    fn secure_session_artifact_path(&self, path: &str) -> everruns_core::Result<()> {
+    fn secure_session_artifact_path(&self, path: &str) -> everruns_provider::error::Result<()> {
         use std::os::unix::fs::PermissionsExt;
 
         let absolute = self.session_dir.join(path.trim_start_matches('/'));
@@ -903,7 +940,7 @@ impl CodingCliSessionFileStore {
     }
 
     #[cfg(not(unix))]
-    fn secure_session_artifact_path(&self, _path: &str) -> everruns_core::Result<()> {
+    fn secure_session_artifact_path(&self, _path: &str) -> everruns_provider::error::Result<()> {
         Ok(())
     }
 }
@@ -933,7 +970,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_core::Result<Option<SessionFile>> {
+    ) -> everruns_provider::error::Result<Option<SessionFile>> {
         if let Some((store, path)) = self.skill_route(path) {
             return store.read_file(session_id, &path).await;
         }
@@ -952,7 +989,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         path: &str,
         content: &str,
         encoding: &str,
-    ) -> everruns_core::Result<SessionFile> {
+    ) -> everruns_provider::error::Result<SessionFile> {
         if let Some((store, path)) = self.skill_route(path) {
             return store.write_file(session_id, &path, content, encoding).await;
         }
@@ -980,7 +1017,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         expected_encoding: &str,
         content: &str,
         encoding: &str,
-    ) -> everruns_core::Result<Option<SessionFile>> {
+    ) -> everruns_provider::error::Result<Option<SessionFile>> {
         if let Some((store, path)) = self.skill_route(path) {
             return store
                 .write_file_if_content_matches(
@@ -1024,7 +1061,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         path: &str,
         recursive: bool,
-    ) -> everruns_core::Result<bool> {
+    ) -> everruns_provider::error::Result<bool> {
         if let Some((store, path)) = self.skill_route(path) {
             return store.delete_file(session_id, &path, recursive).await;
         }
@@ -1043,7 +1080,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_core::Result<Vec<FileInfo>> {
+    ) -> everruns_provider::error::Result<Vec<FileInfo>> {
         if let Some((store, path)) = self.skill_route(path) {
             return store.list_directory(session_id, &path).await;
         }
@@ -1062,7 +1099,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_core::Result<Option<FileStat>> {
+    ) -> everruns_provider::error::Result<Option<FileStat>> {
         if let Some((store, path)) = self.skill_route(path) {
             return store.stat_file(session_id, &path).await;
         }
@@ -1080,7 +1117,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         pattern: &str,
         path_pattern: Option<&str>,
-    ) -> everruns_core::Result<Vec<GrepMatch>> {
+    ) -> everruns_provider::error::Result<Vec<GrepMatch>> {
         if let Some(path) = path_pattern
             && let Some((store, path)) = self.skill_route(path)
         {
@@ -1103,7 +1140,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         pattern: &str,
         options: &GrepOptions,
-    ) -> everruns_core::Result<GrepSearchResult> {
+    ) -> everruns_provider::error::Result<GrepSearchResult> {
         if let Some(path) = options.path_pattern.as_deref()
             && let Some((store, path)) = self.skill_route(path)
         {
@@ -1143,7 +1180,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_core::Result<FileInfo> {
+    ) -> everruns_provider::error::Result<FileInfo> {
         if let Some((store, path)) = self.skill_route(path) {
             return store.create_directory(session_id, &path).await;
         }
@@ -1163,7 +1200,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         &self,
         session_id: SessionId,
         file: &InitialFile,
-    ) -> everruns_core::Result<()> {
+    ) -> everruns_provider::error::Result<()> {
         if let Some((store, path)) = self.skill_route(&file.path) {
             let mut routed = file.clone();
             routed.path = path;
@@ -1648,6 +1685,45 @@ pub fn resolve_for_settings(provider: &str, settings: &Settings) -> Result<Resol
         source: ModelResolutionSource::ProviderDefault,
         notes: vec![],
     })
+}
+
+/// A provider selection resolved against settings: which driver, which model,
+/// and the credentials to reach it.
+///
+/// Upstream removed its `ResolvedModel` when it split credentials from model
+/// selection — `ModelSpec` now names provider + model, and credentials travel
+/// separately through `ProviderStore::get_provider_config`. Yolop still needs
+/// the joined value while resolving settings, so it keeps its own and splits it
+/// at the everruns boundary.
+#[derive(Clone, Debug)]
+pub(crate) struct ResolvedModel {
+    pub model: String,
+    pub provider_type: DriverId,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub provider_metadata: Option<everruns_provider::driver_registry::ProviderMetadata>,
+}
+
+impl ResolvedModel {
+    pub(crate) fn provider_key(&self) -> everruns_provider::runtime_provider::ProviderKey {
+        self.provider_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.extra.as_ref())
+            .and_then(|extra| extra.get("provider_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(everruns_provider::runtime_provider::ProviderKey::new)
+            .unwrap_or_else(|| {
+                // `DriverId`'s canonical wire form is its `Display`; that is the
+                // string providers are registered under.
+                everruns_provider::runtime_provider::ProviderKey::new(
+                    self.provider_type.to_string(),
+                )
+            })
+    }
+
+    pub(crate) fn model_spec(&self) -> everruns_provider::model_spec::ModelSpec {
+        everruns_provider::model_spec::ModelSpec::on(self.provider_key(), self.model.clone())
+    }
 }
 
 impl ProviderChoice {
@@ -2331,7 +2407,7 @@ fn reasoning_effort_option(value: &ReasoningEffortValue) -> ReasoningEffortOptio
     }
 }
 
-fn reasoning_effort_value(value: &everruns_core::ReasoningEffort) -> Option<String> {
+fn reasoning_effort_value(value: &everruns_provider::model::ReasoningEffort) -> Option<String> {
     serde_json::to_value(value)
         .ok()
         .and_then(|value| value.as_str().map(str::to_string))
@@ -2345,37 +2421,37 @@ pub(crate) const DUCKDUCKGO_CAPABILITY_ID: &str = "duckduckgo";
 pub(crate) const DAYTONA_CAPABILITY_ID: &str = "daytona";
 pub(crate) const COMPACTION_BUDGET_PERCENT: u8 = 85;
 
-fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabilityConfig> {
+fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityRef> {
     let mut caps = Vec::new();
     // Terminal-side commands lead the registry so the most-typed commands
     // (/help, !shell, /clear, /quit, …) surface first in the palette. Enabled only
     // when the host registered the capability that backs them (the TUI);
     // enabling an unregistered id would have nothing to dispatch to.
     if client_commands {
-        caps.push(AgentCapabilityConfig::new(CLIENT_COMMANDS_CAPABILITY_ID));
+        caps.push(CapabilityRef::new(CLIENT_COMMANDS_CAPABILITY_ID));
     }
     caps.extend([
-        AgentCapabilityConfig::with_config(
+        CapabilityRef::with_config(
             SESSION_CAPABILITY_ID,
             serde_json::json!({ "auto_title": true }),
         ),
-        AgentCapabilityConfig::new(SESSION_FILE_SYSTEM_CAPABILITY_ID),
-        AgentCapabilityConfig::new(SKILLS_CAPABILITY_ID),
+        CapabilityRef::new(SESSION_FILE_SYSTEM_CAPABILITY_ID),
+        CapabilityRef::new(SKILLS_CAPABILITY_ID),
         // Registering `SkillManagementCapability` is not enough — a capability
         // the harness never enables contributes no tools, which left
         // `search_skills` / `install_skill` / `delete_skill` absent from the
         // session while the skill-management skill documented them.
-        AgentCapabilityConfig::new(crate::capabilities::skills::SKILL_MANAGEMENT_CAPABILITY_ID),
-        AgentCapabilityConfig::new(HERDR_CAPABILITY_ID),
-        AgentCapabilityConfig::new(REPO_MAP_CAPABILITY_ID),
-        AgentCapabilityConfig::new(SESSION_HISTORY_CAPABILITY_ID),
-        AgentCapabilityConfig::new(CHECKPOINT_CAPABILITY_ID),
-        AgentCapabilityConfig::new(AST_GREP_CAPABILITY_ID),
+        CapabilityRef::new(crate::capabilities::skills::SKILL_MANAGEMENT_CAPABILITY_ID),
+        CapabilityRef::new(HERDR_CAPABILITY_ID),
+        CapabilityRef::new(REPO_MAP_CAPABILITY_ID),
+        CapabilityRef::new(SESSION_HISTORY_CAPABILITY_ID),
+        CapabilityRef::new(CHECKPOINT_CAPABILITY_ID),
+        CapabilityRef::new(AST_GREP_CAPABILITY_ID),
         // Raw history stays searchable while the runtime persists a canonical
         // provider-native replacement plus the uncompacted suffix. Auto keeps
         // provider-neutral fallbacks for drivers without native compaction.
-        AgentCapabilityConfig::new(INFINITY_CONTEXT_CAPABILITY_ID),
-        AgentCapabilityConfig::with_config(
+        CapabilityRef::new(INFINITY_CONTEXT_CAPABILITY_ID),
+        CapabilityRef::with_config(
             COMPACTION_CAPABILITY_ID,
             serde_json::json!({
                 "strategy": "auto",
@@ -2383,74 +2459,74 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<AgentCapabi
                 "budget_percent": 0.85,
             }),
         ),
-        AgentCapabilityConfig::new(CONTEXT_COST_CONTROL_CAPABILITY_ID),
-        AgentCapabilityConfig::new(STATELESS_TODO_LIST_CAPABILITY_ID),
-        AgentCapabilityConfig::new(LOOP_DETECTION_CAPABILITY_ID),
-        AgentCapabilityConfig::new(TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID),
-        AgentCapabilityConfig::with_config(
+        CapabilityRef::new(CONTEXT_COST_CONTROL_CAPABILITY_ID),
+        CapabilityRef::new(STATELESS_TODO_LIST_CAPABILITY_ID),
+        CapabilityRef::new(LOOP_DETECTION_CAPABILITY_ID),
+        CapabilityRef::new(TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID),
+        CapabilityRef::with_config(
             TOOL_CALL_REPAIR_CAPABILITY_ID,
             serde_json::json!({ "max_reprompts": 1 }),
         ),
-        AgentCapabilityConfig::new(PROGRESS_GUARD_CAPABILITY_ID),
-        AgentCapabilityConfig::new(PROMPT_CACHING_CAPABILITY_ID),
+        CapabilityRef::new(PROGRESS_GUARD_CAPABILITY_ID),
+        CapabilityRef::new(PROMPT_CACHING_CAPABILITY_ID),
         // Provider-agnostic deferred tool loading. Core tools stay fully
         // loaded; the long tail is stubbed until the model loads it via the
         // `tool_search` tool. Works on every model. Default threshold is 15
         // tools (see DEFAULT_TOOL_SEARCH_THRESHOLD).
-        AgentCapabilityConfig::new(TOOL_SEARCH_CAPABILITY_ID),
+        CapabilityRef::new(TOOL_SEARCH_CAPABILITY_ID),
         // Records what `tool_search` loaded so reveal-gated prompt blocks
         // (`config`, `memory`) can stay silent until their tools are callable.
         // Pairs with TOOL_SEARCH_CAPABILITY_ID above — gating is meaningless
         // without deferral.
-        AgentCapabilityConfig::new(TOOL_REVEAL_CAPABILITY_ID),
-        AgentCapabilityConfig::new(TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID),
-        AgentCapabilityConfig::new(MODEL_RUNTIME_CONTEXT_CAPABILITY_ID),
-        AgentCapabilityConfig::new(SESSION_TASKS_CAPABILITY_ID),
+        CapabilityRef::new(TOOL_REVEAL_CAPABILITY_ID),
+        CapabilityRef::new(TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID),
+        CapabilityRef::new(MODEL_RUNTIME_CONTEXT_CAPABILITY_ID),
+        CapabilityRef::new(SESSION_TASKS_CAPABILITY_ID),
         // A two-level 4×4 swarm has 20 live descendants (four coordinators and
         // sixteen workers). Keep that useful topology inside the default bound
         // while the per-session fan-out and total-task ceilings remain intact.
-        AgentCapabilityConfig::with_config(
+        CapabilityRef::with_config(
             SUBAGENTS_CAPABILITY_ID,
             serde_json::json!({ "max_active_descendant_tasks": 32 }),
         ),
-        AgentCapabilityConfig::new(DUCKDUCKGO_CAPABILITY_ID),
-        AgentCapabilityConfig::new(ATTRIBUTION_CAPABILITY_ID),
+        CapabilityRef::new(DUCKDUCKGO_CAPABILITY_ID),
+        CapabilityRef::new(ATTRIBUTION_CAPABILITY_ID),
         // enable_file_download=true: saved responses land on disk through
         // the platform filesystem stack, so the write blocklist applies.
-        AgentCapabilityConfig::with_config(
+        CapabilityRef::with_config(
             WEB_FETCH_CAPABILITY_ID,
             serde_json::json!({ "enable_file_download": true }),
         ),
-        AgentCapabilityConfig::new(MODELS_CAPABILITY_ID),
-        AgentCapabilityConfig::new(CONFIG_CAPABILITY_ID),
-        AgentCapabilityConfig::new(CONNECTORS_CAPABILITY_ID),
-        AgentCapabilityConfig::new(crate::extensions::manage::EXTENSIONS_CAPABILITY_ID),
-        AgentCapabilityConfig::new(MEMORY_CAPABILITY_ID),
-        AgentCapabilityConfig::new(HOOKS_CAPABILITY_ID),
-        AgentCapabilityConfig::new(YOLOP_CAPABILITY_ID),
+        CapabilityRef::new(MODELS_CAPABILITY_ID),
+        CapabilityRef::new(CONFIG_CAPABILITY_ID),
+        CapabilityRef::new(CONNECTORS_CAPABILITY_ID),
+        CapabilityRef::new(crate::extensions::manage::EXTENSIONS_CAPABILITY_ID),
+        CapabilityRef::new(MEMORY_CAPABILITY_ID),
+        CapabilityRef::new(HOOKS_CAPABILITY_ID),
+        CapabilityRef::new(YOLOP_CAPABILITY_ID),
         // `/btw` — ephemeral side question, answered out-of-band with the
         // session's context (upstream `BtwCapability`).
-        AgentCapabilityConfig::new(BTW_CAPABILITY_ID),
+        CapabilityRef::new(BTW_CAPABILITY_ID),
         // `/goal` — keep working across turns until a model-evaluated condition holds.
-        AgentCapabilityConfig::new(GOAL_CAPABILITY_ID),
+        CapabilityRef::new(GOAL_CAPABILITY_ID),
         // Soft approval: injects spoken-consent guidance for critical actions,
         // tuned by the central `approval_mode` setting (off contributes nothing).
-        AgentCapabilityConfig::new(APPROVAL_CAPABILITY_ID),
-        AgentCapabilityConfig::new(CODING_BASH_CAPABILITY_ID),
-        AgentCapabilityConfig::new(BACKGROUND_CAPABILITY_ID),
+        CapabilityRef::new(APPROVAL_CAPABILITY_ID),
+        CapabilityRef::new(CODING_BASH_CAPABILITY_ID),
+        CapabilityRef::new(BACKGROUND_CAPABILITY_ID),
         // Project policy changes more often than tool-use guidance, so keep it
         // late in the prompt prefix for better cache reuse.
-        AgentCapabilityConfig::with_config(
+        CapabilityRef::with_config(
             AGENT_INSTRUCTIONS_CAPABILITY_ID,
             serde_json::json!({ "files": ["AGENTS.md"] }),
         ),
         // Per-turn facts are the most volatile prompt contribution.
-        AgentCapabilityConfig::new(ENVIRONMENT_CONTEXT_CAPABILITY_ID),
+        CapabilityRef::new(ENVIRONMENT_CONTEXT_CAPABILITY_ID),
     ]);
     caps
 }
 
-pub(crate) fn coding_harness_defaults(client_commands: bool) -> Vec<AgentCapabilityConfig> {
+pub(crate) fn coding_harness_defaults(client_commands: bool) -> Vec<CapabilityRef> {
     default_coding_harness_capabilities(client_commands)
 }
 
@@ -2465,7 +2541,7 @@ const HARNESS_CAPABILITY_DEPENDENCIES: &[(&str, &[&str])] =
 /// Append any capabilities that enabled ones depend on (e.g. `daytona` pulls in
 /// `session_storage`), closing the set against the production
 /// [`HARNESS_CAPABILITY_DEPENDENCIES`] table.
-fn ensure_harness_capability_dependencies(caps: &mut Vec<AgentCapabilityConfig>) {
+fn ensure_harness_capability_dependencies(caps: &mut Vec<CapabilityRef>) {
     resolve_capability_dependencies(caps, HARNESS_CAPABILITY_DEPENDENCIES);
 }
 
@@ -2474,10 +2550,7 @@ fn ensure_harness_capability_dependencies(caps: &mut Vec<AgentCapabilityConfig>)
 /// transitive chains are fully resolved. Already-present ids are never
 /// duplicated. Bounded by the number of edges — each pass adds at most the
 /// missing dependencies once, so the set stabilizes.
-fn resolve_capability_dependencies(
-    caps: &mut Vec<AgentCapabilityConfig>,
-    edges: &[(&str, &[&str])],
-) {
+fn resolve_capability_dependencies(caps: &mut Vec<CapabilityRef>, edges: &[(&str, &[&str])]) {
     loop {
         let mut added = false;
         for (capability, dependencies) in edges {
@@ -2486,7 +2559,7 @@ fn resolve_capability_dependencies(
             }
             for dependency in *dependencies {
                 if !caps.iter().any(|c| c.capability_id() == *dependency) {
-                    caps.push(AgentCapabilityConfig::new(*dependency));
+                    caps.push(CapabilityRef::new(*dependency));
                     added = true;
                 }
             }
@@ -2497,10 +2570,7 @@ fn resolve_capability_dependencies(
     }
 }
 
-fn push_before_environment_context(
-    caps: &mut Vec<AgentCapabilityConfig>,
-    cap: AgentCapabilityConfig,
-) {
+fn push_before_environment_context(caps: &mut Vec<CapabilityRef>, cap: CapabilityRef) {
     if let Some(index) = caps
         .iter()
         .position(|c| c.capability_id() == ENVIRONMENT_CONTEXT_CAPABILITY_ID)
@@ -2515,7 +2585,7 @@ fn coding_harness_capabilities(
     client_commands: bool,
     hook_config: Option<serde_json::Value>,
     settings: &Settings,
-) -> Vec<AgentCapabilityConfig> {
+) -> Vec<CapabilityRef> {
     let mut caps = apply_capability_settings(
         default_coding_harness_capabilities(client_commands),
         &settings.capabilities,
@@ -2524,7 +2594,7 @@ fn coding_harness_capabilities(
     if let Some(config) = hook_config {
         push_before_environment_context(
             &mut caps,
-            AgentCapabilityConfig::with_config(USER_HOOKS_CAPABILITY_ID, config),
+            CapabilityRef::with_config(USER_HOOKS_CAPABILITY_ID, config),
         );
     }
     caps
@@ -2574,7 +2644,7 @@ pub struct BuiltRuntime {
     pub task_registry: Arc<dyn SessionTaskRegistry>,
     /// Schedule store paired with the task registry. The TUI uses it to make
     /// monitor cancellation terminal by disarming the durable schedule.
-    pub task_schedule_store: Arc<dyn everruns_core::traits::SessionScheduleStore>,
+    pub task_schedule_store: Arc<dyn everruns_core::session_services::SessionScheduleStore>,
 }
 
 #[derive(Clone)]
@@ -2620,7 +2690,7 @@ impl RuntimeHandles {
         &self,
         prompt: &str,
         input: InputMessage,
-    ) -> anyhow::Result<everruns_runtime::TurnResult> {
+    ) -> anyhow::Result<everruns_host::TurnResult> {
         let checkpoint = self.checkpoints.start_turn(prompt)?;
         let result = self.runtime.run_turn(self.session_id, input).await;
         let success = result.as_ref().is_ok_and(|turn| turn.success);
@@ -2641,7 +2711,7 @@ impl RuntimeHandles {
     /// Provider-reported tokens consumed by one agent turn. Completion gates
     /// use the durable event stream so TUI, print, and ACP share one budget
     /// accounting rule.
-    pub(crate) async fn turn_tokens(&self, turn_id: everruns_core::typed_id::TurnId) -> u64 {
+    pub(crate) async fn turn_tokens(&self, turn_id: everruns_provider::typed_id::TurnId) -> u64 {
         self.runtime
             .events()
             .await
@@ -2708,7 +2778,7 @@ impl RuntimeHandles {
     ) -> anyhow::Result<CapabilityDelta> {
         Ok(self
             .runtime
-            .activate_capability(self.session_id, AgentCapabilityConfig::new(capability_id))
+            .activate_capability(self.session_id, CapabilityRef::new(capability_id))
             .await?)
     }
 
@@ -2823,11 +2893,23 @@ impl ModelState {
     /// models API remain supported, and successful checks are cached per
     /// process/model so tool continuations do not add network round trips.
     pub(crate) async fn validate_model_available(&self) -> Result<()> {
-        let resolved = self
+        // The provider store now holds only a credential-free `ModelSpec`, so
+        // this reads in two steps: the store still answers "is a model
+        // configured at all", and yolop resolves the credentials for it from
+        // settings. Keeping the store's `Option` is what distinguishes "not set
+        // up yet" from "set up but unreachable" — collapsing the two sends an
+        // unconfigured provider all the way to driver creation.
+        let _configured = self
             .provider_store
-            .get_default_model()
+            .get_default_model_spec()
             .await?
             .ok_or_else(|| anyhow!("no provider model is configured; run `/setup`"))?;
+        let selected = self
+            .provider
+            .read()
+            .expect("provider lock poisoned")
+            .clone();
+        let resolved = selected.model_with_provider(&self.settings.snapshot())?;
         let provider_name = resolved.provider_type.to_string();
         let model_id = resolved.model.clone();
         let cache_key = (provider_name.clone(), model_id.clone());
@@ -2841,9 +2923,29 @@ impl ModelState {
             return Ok(());
         }
 
-        let config = everruns_core::llm_conversions::provider_config_from_resolved_model(&resolved);
+        // Without a key there is nothing to ask the discovery API with, so treat
+        // it like a provider that does not support listing rather than letting
+        // the registry reject the driver.
+        if resolved.api_key.is_none() {
+            self.validated_models.write().await.insert(cache_key);
+            return Ok(());
+        }
+
+        // Upstream removed its ResolvedModel -> ProviderConfig helper when it
+        // split credentials from model selection; build the config here.
+        let mut config =
+            everruns_provider::driver_registry::ProviderConfig::new(resolved.provider_type.clone());
+        if let Some(key) = &resolved.api_key {
+            config = config.with_api_key(key);
+        }
+        if let Some(base_url) = &resolved.base_url {
+            config = config.with_base_url(base_url);
+        }
         let driver = self.driver_registry.create_chat_driver(&config)?;
-        let discovered = tokio::time::timeout(std::time::Duration::from_secs(10), driver.list_models())
+        let discovered = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            driver.list_models(&everruns_provider::runtime_provider::ProviderEndpoint::default()),
+        )
             .await
             .map_err(|_| anyhow!("{provider_name} model availability check timed out; the turn was not started and is safe to resume"))??;
 
@@ -2911,7 +3013,9 @@ impl ModelState {
         let selected =
             ProviderChoice::default_for_provider_name(provider)?.resolve_model_spec(model)?;
         let resolved = selected.model_with_provider(&self.settings.snapshot())?;
-        self.provider_store.set_default_model(resolved).await?;
+        self.provider_store
+            .set_default_model_spec(resolved.model_spec())
+            .await?;
         *self.provider.write().expect("provider lock poisoned") = selected;
         Ok(())
     }
@@ -2993,7 +3097,9 @@ impl ModelState {
             .clone();
         let selected = current.resolve_model_spec(&format!("{} {effort}", current.model_id()))?;
         let resolved = selected.model_with_provider(&self.settings.snapshot())?;
-        self.provider_store.set_default_model(resolved).await?;
+        self.provider_store
+            .set_default_model_spec(resolved.model_spec())
+            .await?;
         *self.provider.write().expect("provider lock poisoned") = selected;
         Ok(())
     }
@@ -3062,7 +3168,7 @@ pub struct BuildOptions {
     /// Override the bounded provider-recovery policy. Tests inject a short
     /// elapsed budget; production leaves this `None` and uses
     /// [`provider_recovery_config`].
-    pub provider_retry_config: Option<everruns_core::LlmRetryConfig>,
+    pub provider_retry_config: Option<everruns_provider::llm_retry::LlmRetryConfig>,
 }
 
 impl Default for BuildOptions {
@@ -3079,6 +3185,92 @@ impl Default for BuildOptions {
             provider_stall_timeout: None,
             provider_retry_config: None,
         }
+    }
+}
+
+/// Yolop's provider store.
+///
+/// 0.18 split model selection from credentials: the store answers "which
+/// provider and model" with a credential-free `ModelSpec`, and hands the
+/// driver its endpoint and key separately through `get_provider_config`. The
+/// built-in in-memory store returns `None` for that config, so a host that
+/// keeps its own credentials — as yolop does, in settings — has to own the
+/// store or every driver is constructed without a key.
+struct YolopProviderStore {
+    provider: Arc<std::sync::RwLock<ProviderChoice>>,
+    settings: Arc<SettingsStore>,
+}
+
+impl YolopProviderStore {
+    /// The selection, independent of whether credentials exist. Selection is
+    /// credential-free by contract, so a missing key must not read as "no model
+    /// configured" — that conflation is what the 0.18 split exists to remove.
+    fn selection(&self) -> Option<ResolvedModel> {
+        Some(self.provider.read().ok()?.model_without_stored_key())
+    }
+
+    /// The same selection with credentials resolved from settings. `None` here
+    /// means "not configured yet", which leaves the driver unconfigured rather
+    /// than mis-reporting the model as unset.
+    fn resolved(&self) -> Option<ResolvedModel> {
+        let choice = self.provider.read().ok()?.clone();
+        choice.model_with_provider(&self.settings.snapshot()).ok()
+    }
+}
+
+#[async_trait]
+impl everruns_core::ProviderStore for YolopProviderStore {
+    async fn get_model_spec(
+        &self,
+        _model_id: everruns_provider::typed_id::ModelId,
+    ) -> everruns_provider::error::Result<Option<everruns_provider::model_spec::ModelSpec>> {
+        Ok(self.selection().map(|selected| selected.model_spec()))
+    }
+
+    async fn get_default_model_spec(
+        &self,
+    ) -> everruns_provider::error::Result<Option<everruns_provider::model_spec::ModelSpec>> {
+        Ok(self.selection().map(|selected| selected.model_spec()))
+    }
+
+    async fn get_provider_config(
+        &self,
+        _provider: &everruns_provider::runtime_provider::ProviderKey,
+    ) -> everruns_provider::error::Result<Option<everruns_provider::driver_registry::ProviderConfig>>
+    {
+        // No stored credentials means there is nothing to configure the driver
+        // with. `None` is the documented signal for "selected but not configured
+        // yet": the provider stays constructible so configuration commands still
+        // run, and provider operations fail locally at the credential boundary
+        // instead of sending an empty key and surfacing a remote 401.
+        let Some(resolved) = self.resolved() else {
+            return Ok(None);
+        };
+        if resolved.provider_type == DriverId::LlmSim {
+            return Ok(None);
+        }
+        let mut config =
+            everruns_provider::driver_registry::ProviderConfig::new(resolved.provider_type.clone());
+        if let Some(key) = &resolved.api_key {
+            config = config.with_api_key(key);
+        }
+        if let Some(base_url) = &resolved.base_url {
+            config = config.with_base_url(base_url);
+        }
+        Ok(Some(config))
+    }
+}
+
+#[async_trait]
+impl everruns_host::RuntimeProviderStore for YolopProviderStore {
+    async fn set_default_model_spec(
+        &self,
+        model: everruns_provider::model_spec::ModelSpec,
+    ) -> everruns_provider::error::Result<()> {
+        // Yolop's selection lives in `ProviderChoice`; the callers that change
+        // it already update that value, so the spec write is a no-op here.
+        let _ = model;
+        Ok(())
     }
 }
 
@@ -3268,7 +3460,6 @@ pub async fn build_with_options(
         .iter()
         .filter(|event| matches!(&event.data, everruns_core::EventData::ToolCompleted(_)))
         .count();
-    let active_messages = crate::runtime::session_log::messages_from_events(&active_events);
     if let Some(title) = latest_session_title(&active_events) {
         update_session_workspace_title(&session_dir, &title)?;
     }
@@ -3276,17 +3467,28 @@ pub async fn build_with_options(
     // Only the selected timeline branch enters the live stores. Abandoned
     // suffixes remain in events.jsonl for redo and local history inspection.
     event_bus_typed.seed_replayed(active_events).await;
-    if !active_messages.is_empty() {
-        message_store.seed(session_id, active_messages).await;
-    }
-    let event_bus: Arc<dyn everruns_runtime::EventBus> = event_bus_typed.clone();
-
     // Start from the in-memory backend bundle, preserving Yolop's durable
-    // event bus and replay-seeded message store, then let everruns-local attach
-    // the SQLite-backed task registry and schedule store.
-    let base_backends = RuntimeBackends::in_memory()
-        .with_event_bus(event_bus)
-        .with_message_store(message_store)
+    // canonical event log, then let everruns-local attach the SQLite-backed
+    // task registry and schedule store.
+    //
+    // The same emitter fills both event slots, and they are different
+    // contracts: `event_log` is the durable, sole conversation write path,
+    // while `event_sink` is lossy post-commit observation feeding the TUI and
+    // ACP streams. There is no message store any more — messages are a
+    // projection of the canonical log, which is why the replayed branch is
+    // seeded into the emitter above rather than into a second store.
+    let event_log: Arc<dyn everruns_host::EventLog> = event_bus_typed.clone();
+    let event_sink: Arc<dyn everruns_host::EventSink> = event_bus_typed.clone();
+    let provider_state = Arc::new(std::sync::RwLock::new(provider.clone()));
+    let yolop_provider_store: Arc<dyn everruns_host::RuntimeProviderStore> =
+        Arc::new(YolopProviderStore {
+            provider: provider_state.clone(),
+            settings: settings.clone(),
+        });
+    let base_backends = HostBackends::in_memory()
+        .with_provider_store(yolop_provider_store)
+        .with_event_log(event_log)
+        .with_event_sink(event_sink)
         .with_compaction_checkpoint_store(compaction_checkpoints)
         .with_connection_resolver(connection_resolver);
     let local_profile = LocalProfile::new(sessions_dir.join("everruns-local"))
@@ -3294,11 +3496,12 @@ pub async fn build_with_options(
     let local_backends = LocalBackends::new(local_profile, base_backends)
         .context("initialize everruns-local backend stores")?;
     let task_registry: Arc<dyn SessionTaskRegistry> = local_backends.task_registry.clone();
-    let task_schedule_store: Arc<dyn everruns_core::traits::SessionScheduleStore> = Arc::new(
-        local_backends
-            .schedule_store()
-            .context("open local schedule store for task controls")?,
-    );
+    let task_schedule_store: Arc<dyn everruns_core::session_services::SessionScheduleStore> =
+        Arc::new(
+            local_backends
+                .schedule_store()
+                .context("open local schedule store for task controls")?,
+        );
     checkpoints.attach_task_registry(task_registry.clone());
     // Install the local platform seam. Host-session messages are queued onto
     // `background_wake`; child sub-agent messages run synchronously through the
@@ -3321,7 +3524,6 @@ pub async fn build_with_options(
     let backends = local_backends.runtime_backends;
     // Shared between `ModelState` (for banner labels) and
     // `ModelsCapability` (which mutates it on a successful `/setup`).
-    let provider_state = Arc::new(RwLock::new(provider.clone()));
     let provider_store = backends.provider_store.clone();
 
     // Register a curated set of built-in capabilities (no opinionated bundle
@@ -3654,7 +3856,7 @@ pub async fn build_with_options(
     // in tests isolates memory automatically. Only titles are disclosed each
     // turn; bodies are recalled on demand. Tuning (disclosed_titles,
     // recall_limit, soft_cap) flows through the generic capability-config
-    // system — see its `config_schema()` and the `AgentCapabilityConfig` for
+    // system — see its `config_schema()` and the `CapabilityRef` for
     // MEMORY_CAPABILITY_ID below.
     capabilities.register(GlobalMemoryCapability {
         memory: Arc::new(MemoryStore::beside_settings(&settings)),
@@ -3826,10 +4028,10 @@ pub async fn build_with_options(
     };
     let model_driver_registry = driver_registry.clone();
 
-    let platform = PlatformDefinition::builder()
+    // 0.18 replaced PlatformDefinition with HostComposition; same shape.
+    let platform = everruns_host::HostComposition::builder()
         .capability_registry(capabilities)
         .driver_registry(driver_registry)
-        .connector(everruns_integrations_daytona::connection::DaytonaConnector)
         .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
             workspace: workspace_host.clone(),
             session_dir: session_dir.clone(),
@@ -3856,8 +4058,8 @@ pub async fn build_with_options(
     // (ACP): registering it above is not enough — its pre-tool hook is collected
     // only from the *resolved* capability set.
     if options.tool_approver.is_some() {
-        harness_capabilities.push(AgentCapabilityConfig::new(
-            everruns_core::capabilities::TOOL_APPROVAL_CAPABILITY_ID,
+        harness_capabilities.push(CapabilityRef::new(
+            everruns_builtins::tool_approval::TOOL_APPROVAL_CAPABILITY_ID,
         ));
     }
     let user_ask_enabled = harness_capabilities
@@ -3872,14 +4074,10 @@ pub async fn build_with_options(
             "everruns_runtime_version",
             env!("YOLOP_EVERRUNS_RUNTIME_VERSION"),
         )
-        .display_name("Coding CLI")
-        .description("Embedded terminal coding agent.")
         // Attribute LLM calls routed through OpenRouter so they show up under
         // Yolop on OpenRouter's app dashboards. The driver forwards these as
         // the `HTTP-Referer` and `X-Title` headers (everruns 0.14+).
-        .openrouter_attribution("https://github.com/everruns/yolop", "Yolop")
-        .tag("example")
-        .tag("coding");
+        .openrouter_attribution("https://github.com/everruns/yolop", "Yolop");
     for cap in harness_capabilities {
         harness_builder = harness_builder.capability(cap);
     }
@@ -3891,9 +4089,8 @@ pub async fn build_with_options(
     let agent_builder = AgentBuilder::new("coding-agent", AGENT_PROMPT)
         .display_name("Coding Agent")
         .description("Reads, edits, and runs commands inside a project workspace.")
-        .parallel_tool_calls(true)
-        .tag("example")
-        .tag("coding");
+        // AgentBuilder dropped free-form tags in 0.18.
+        .parallel_tool_calls(true);
     let agent_id = agent_builder.agent_id();
 
     let session_builder = SessionBuilder::new(harness_id)
@@ -3912,8 +4109,9 @@ pub async fn build_with_options(
 
     let mut builder = InProcessRuntimeBuilder::new()
         .mcp_auth_provider(Arc::new(StoredMcpAuthProvider::new(connections.clone())))
-        .platform_definition(platform)
-        .default_model(default_model)
+        .host_composition(platform)
+        // The builder now takes a credential-free selection; credentials reach
+        // the driver through the provider store's config.
         .backends(backends)
         .harness(harness_builder.build())
         .agent(agent_builder.build())
@@ -3928,6 +4126,9 @@ pub async fn build_with_options(
         .with_model("llmsim-yolop")
     });
     builder = builder.llm_sim(llmsim_config);
+    // `llm_sim` only registers the driver; `llm_sim_as_default` is the variant
+    // that changes model selection. Yolop selects its own default explicitly.
+    builder = builder.default_model(default_model.model_spec());
     // EVE-806 / production stalls: everruns recovers silent streams when the
     // elapsed retry budget can absorb full stall windows. Yolop always installs
     // that aligned policy (tests may override both knobs via BuildOptions).
@@ -4163,6 +4364,67 @@ mod tests {
         assert_eq!(credential.authorization.as_deref(), Some("Bearer access-1"));
     }
 
+    /// The provider store is the seam 0.18 introduced: selection is
+    /// credential-free, credentials arrive separately, and `None` from
+    /// `get_provider_config` is the supported "selected but not configured yet"
+    /// state that keeps `/setup` usable. Drive the trait directly so a
+    /// regression cannot hide behind the runtime.
+    #[tokio::test]
+    async fn provider_store_separates_selection_from_credentials() {
+        use everruns_core::ProviderStore as _;
+
+        let dir = tempfile::tempdir().expect("dir");
+        let settings = Arc::new(SettingsStore::open(dir.path().join("settings.toml")));
+        let choice = ProviderChoice::OpenAi {
+            model: "gpt-5.4".to_string(),
+            reasoning_effort: None,
+        };
+        let store = YolopProviderStore {
+            provider: Arc::new(std::sync::RwLock::new(choice)),
+            settings: settings.clone(),
+        };
+        let key = everruns_provider::runtime_provider::ProviderKey::new("openai");
+
+        // Selection resolves without credentials, and stays resolvable while
+        // unconfigured so a configuration command can still run.
+        let spec = store
+            .get_default_model_spec()
+            .await
+            .expect("spec")
+            .expect("selected");
+        assert_eq!(spec.model, "gpt-5.4");
+        assert_eq!(spec.provider.to_string(), "openai");
+        assert!(
+            store
+                .get_provider_config(&key)
+                .await
+                .expect("config")
+                .is_none(),
+            "an unconfigured provider must report no credentials, not a keyless config"
+        );
+
+        // Storing a token turns the same selection into a usable config.
+        settings
+            .set_token("openai".to_string(), "sk-test".to_string())
+            .expect("store token");
+        let config = store
+            .get_provider_config(&key)
+            .await
+            .expect("config")
+            .expect("configured");
+        assert_eq!(config.api_key.as_deref(), Some("sk-test"));
+        assert_eq!(
+            store
+                .get_default_model_spec()
+                .await
+                .expect("spec")
+                .expect("selected")
+                .model,
+            "gpt-5.4",
+            "credentials must not change model selection"
+        );
+    }
+
     #[tokio::test]
     async fn stored_provider_without_token_or_env_returns_none() {
         // Uses a server name no env credential can match, so it needs no
@@ -4210,8 +4472,8 @@ mod tests {
         // AGENTS.md is the sole project-instructions file — CLAUDE.md and
         // .agents.md are intentionally no longer read.
         assert_eq!(
-            agent_instructions.config,
-            serde_json::json!({ "files": ["AGENTS.md"] })
+            agent_instructions.config_value(),
+            &serde_json::json!({ "files": ["AGENTS.md"] })
         );
     }
 
@@ -4223,7 +4485,10 @@ mod tests {
             .find(|capability| capability.capability_id() == SESSION_CAPABILITY_ID)
             .expect("session capability must be enabled");
 
-        assert_eq!(session.config, serde_json::json!({ "auto_title": true }));
+        assert_eq!(
+            session.config_value(),
+            &serde_json::json!({ "auto_title": true })
+        );
         assert!(YOLOP_NEVER_DEFER_TOOLS.contains(&"write_session_title"));
     }
 
@@ -4239,8 +4504,11 @@ mod tests {
             .find(|capability| capability.capability_id() == "tool_call_repair")
             .expect("upstream tool-call repair must be enabled");
 
-        assert_eq!(validation.config, serde_json::json!({}));
-        assert_eq!(repair.config, serde_json::json!({ "max_reprompts": 1 }));
+        assert_eq!(validation.config_value(), &serde_json::json!({}));
+        assert_eq!(
+            repair.config_value(),
+            &serde_json::json!({ "max_reprompts": 1 })
+        );
     }
 
     #[test]
@@ -4446,7 +4714,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn build_exposes_connector_tools_by_default() {
-        use everruns_runtime::RuntimeHostAdapter;
+        use everruns_host::RuntimeHostAdapter;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -4513,8 +4781,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scripted_title_tool_updates_runtime_event_log_and_metadata() {
-        use everruns_core::events::EventData;
-        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
+        use everruns_core::EventData;
+        use everruns_llmsim::{SimToolCall, SimTurn};
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -4582,8 +4850,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn real_turn_blocks_misshaped_arguments_then_accepts_one_correction() {
-        use everruns_core::events::EventData;
-        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
+        use everruns_core::EventData;
+        use everruns_llmsim::{SimToolCall, SimTurn};
 
         let workspace = tempfile::tempdir().expect("workspace");
         std::fs::write(workspace.path().join("evidence.txt"), "confirmed\n")
@@ -4664,7 +4932,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn provider_stream_stall_recovers_through_yolop_runtime_builder() {
-        use everruns_core::llmsim_driver::SimTurn;
+        use everruns_llmsim::SimTurn;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -4675,7 +4943,7 @@ mod tests {
                 SimTurn::Assistant("recovered after stall".to_string()),
             ])),
             provider_stall_timeout: Some(Duration::from_millis(50)),
-            provider_retry_config: Some(everruns_core::LlmRetryConfig {
+            provider_retry_config: Some(everruns_provider::llm_retry::LlmRetryConfig {
                 max_retries: 2,
                 initial_backoff: Duration::from_millis(10),
                 max_backoff: Duration::from_millis(40),
@@ -4714,7 +4982,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn misaligned_retry_budget_fails_a_recoverable_stream_stall() {
-        use everruns_core::llmsim_driver::SimTurn;
+        use everruns_llmsim::SimTurn;
 
         // Prove the production bug class: when max_retry_elapsed is shorter
         // than the stall window, the first recovery attempt is clipped and the
@@ -4729,7 +4997,7 @@ mod tests {
                 SimTurn::Assistant("should not run".to_string()),
             ])),
             provider_stall_timeout: Some(Duration::from_millis(80)),
-            provider_retry_config: Some(everruns_core::LlmRetryConfig {
+            provider_retry_config: Some(everruns_provider::llm_retry::LlmRetryConfig {
                 max_retries: 2,
                 initial_backoff: Duration::from_millis(10),
                 max_backoff: Duration::from_millis(40),
@@ -4785,8 +5053,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn real_turn_batches_independent_work_with_bookkeeping() {
-        use everruns_core::events::EventData;
-        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
+        use everruns_core::EventData;
+        use everruns_llmsim::{SimToolCall, SimTurn};
 
         let workspace = tempfile::tempdir().expect("workspace");
         std::fs::write(workspace.path().join("alpha.txt"), "ALPHA\n").expect("seed alpha");
@@ -4893,8 +5161,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn real_tool_hooks_compact_runaway_reads_and_enforce_one_checkpoint() {
-        use everruns_core::events::EventData;
-        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
+        use everruns_core::EventData;
+        use everruns_llmsim::{SimToolCall, SimTurn};
 
         let workspace = tempfile::tempdir().expect("workspace");
         std::fs::write(
@@ -5108,7 +5376,7 @@ mod tests {
                 .first()
                 .and_then(|call| {
                     call.iter().find(|message| {
-                        message.role == everruns_core::LlmMessageRole::User
+                        message.role == everruns_provider::driver_registry::LlmMessageRole::User
                             && message.content_as_text().contains("<runtime_context>")
                     })
                 })
@@ -5141,8 +5409,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scripted_subagent_runs_in_a_real_child_session() {
-        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
-        use everruns_core::session_task::{SessionTaskState, TASK_KIND_SUBAGENT};
+        use everruns_core::{SessionTaskState, TASK_KIND_SUBAGENT};
+        use everruns_llmsim::{SimToolCall, SimTurn};
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -5226,7 +5494,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn build_uses_everruns_local_backend_stores() {
-        use everruns_runtime::RuntimeHostAdapter;
+        use everruns_host::RuntimeHostAdapter;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -5255,7 +5523,7 @@ mod tests {
             built
                 .handles
                 .runtime
-                .schedule_store(everruns_runtime::in_process_internal_org_id(
+                .schedule_store(everruns_host::in_process_internal_org_id(
                     everruns_core::DEFAULT_ORG_PUBLIC_ID
                 ))
                 .is_some(),
@@ -5318,7 +5586,7 @@ mod tests {
             Some(env!("YOLOP_EVERRUNS_RUNTIME_VERSION"))
         );
         // OpenRouter attribution headers flow through embedder metadata.
-        use everruns_core::driver_registry::{
+        use everruns_provider::driver_registry::{
             OPENROUTER_HTTP_REFERER_METADATA_KEY, OPENROUTER_X_TITLE_METADATA_KEY,
         };
         assert_eq!(
@@ -5437,7 +5705,7 @@ mod tests {
         // that only declares a direct dependency must still get the
         // dependency's own dependencies (a -> b -> c).
         let edges: &[(&str, &[&str])] = &[("a", &["b"]), ("b", &["c"])];
-        let mut caps = vec![AgentCapabilityConfig::new("a")];
+        let mut caps = vec![CapabilityRef::new("a")];
         resolve_capability_dependencies(&mut caps, edges);
         let ids: Vec<&str> = caps.iter().map(|c| c.capability_id()).collect();
         assert!(ids.contains(&"b"), "direct dependency missing: {ids:?}");
@@ -5449,8 +5717,8 @@ mod tests {
         // Running the real resolver twice must not duplicate the injected
         // dependency, and an already-satisfied dependency is left untouched.
         let mut caps = vec![
-            AgentCapabilityConfig::new(DAYTONA_CAPABILITY_ID),
-            AgentCapabilityConfig::new(SESSION_STORAGE_CAPABILITY_ID),
+            CapabilityRef::new(DAYTONA_CAPABILITY_ID),
+            CapabilityRef::new(SESSION_STORAGE_CAPABILITY_ID),
         ];
         ensure_harness_capability_dependencies(&mut caps);
         ensure_harness_capability_dependencies(&mut caps);
@@ -5497,7 +5765,7 @@ mod tests {
     async fn build_merges_client_mcp_servers_over_dot_mcp_json() {
         // Client-supplied servers (ACP `session/new` `mcpServers`) join the
         // file-based config, and on a name collision the client's entry wins.
-        use everruns_core::mcp_server::{McpServerTransportType, ScopedMcpServer};
+        use everruns_core::{McpServerTransportType, ScopedMcpServer};
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         std::fs::write(
@@ -7240,7 +7508,7 @@ mod tests {
         assert_eq!(contextual.blocks[0].start_line, 1);
         assert_eq!(contextual.blocks[0].end_line, 3);
 
-        for blocked_dir in everruns_runtime::DEFAULT_WRITE_BLOCKLIST {
+        for blocked_dir in WRITE_BLOCKLIST {
             let path = format!("/nested/{blocked_dir}/blocked.txt");
             let result = store.write_file(session_id, &path, "blocked", "text").await;
             assert!(
@@ -7259,9 +7527,9 @@ mod tests {
 
     #[tokio::test]
     async fn grep_tool_searches_workspaces_larger_than_five_mib() {
+        use everruns_core::Capability;
         use everruns_core::ToolContext;
-        use everruns_core::capabilities::Capability;
-        use everruns_core::tools::ToolExecutionResult;
+        use everruns_core::ToolExecutionResult;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
@@ -7432,9 +7700,9 @@ mod tests {
         // driven against yolop's routed file store, discovers a system skill and
         // reports a real host path (so the agent's host `bash` can read it).
         use crate::capabilities::skills::{SkillDirs, skills_config};
+        use everruns_core::Capability;
         use everruns_core::ToolContext;
-        use everruns_core::capabilities::Capability;
-        use everruns_core::tools::ToolExecutionResult;
+        use everruns_core::ToolExecutionResult;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
@@ -7738,7 +8006,7 @@ mod tests {
     #[test]
     fn harness_applies_message_metadata_from_settings() {
         use crate::config::capability_settings::CapabilityOverride;
-        use everruns_core::capabilities::MESSAGE_METADATA_CAPABILITY_ID;
+        use everruns_builtins::MESSAGE_METADATA_CAPABILITY_ID;
 
         let mut settings = Settings::default();
         settings.capabilities.push(CapabilityOverride {
@@ -7772,7 +8040,7 @@ mod tests {
             .find(|cap| cap.capability_id() == SUBAGENTS_CAPABILITY_ID)
             .expect("subagents capability must be enabled");
 
-        assert_eq!(subagents.config["max_active_descendant_tasks"], 32);
+        assert_eq!(subagents.config_value()["max_active_descendant_tasks"], 32);
         assert!(!YOLOP_NEVER_DEFER_TOOLS.contains(&"spawn_agent"));
     }
 
@@ -7837,8 +8105,9 @@ mod tests {
 
     #[test]
     fn tool_search_keeps_only_first_turn_profile_schemas_loaded() {
-        use everruns_core::capabilities::{Capability, DEFAULT_TOOL_SEARCH_THRESHOLD};
-        use everruns_core::tool_types::{
+        use everruns_builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
+        use everruns_core::Capability;
+        use everruns_provider::{
             BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy,
         };
 
@@ -8040,7 +8309,7 @@ mod tests {
     /// helping and this test fails loudly so the threshold can be revisited.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tool_surface_exceeds_tool_search_threshold() {
-        use everruns_core::capabilities::DEFAULT_TOOL_SEARCH_THRESHOLD;
+        use everruns_builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -8165,7 +8434,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn real_turn_reveals_deferred_mutation_without_dropping_agent_policy() {
-        use everruns_core::llmsim_driver::{SimToolCall, SimTurn};
+        use everruns_llmsim::{SimToolCall, SimTurn};
 
         let workspace = tempfile::tempdir().expect("workspace");
         std::fs::write(
@@ -8301,11 +8570,15 @@ mod tests {
             .iter()
             .find(|cap| cap.capability_id() == COMPACTION_CAPABILITY_ID)
             .expect("durable compaction must be enabled");
-        assert_eq!(compaction.config["strategy"], "auto");
-        assert_eq!(compaction.config["proactive"], true);
-        assert_eq!(compaction.config["budget_percent"], serde_json::json!(0.85));
-        let config: everruns_core::capabilities::CompactionConfig =
-            serde_json::from_value(compaction.config.clone()).expect("valid compaction config");
+        assert_eq!(compaction.config_value()["strategy"], "auto");
+        assert_eq!(compaction.config_value()["proactive"], true);
+        assert_eq!(
+            compaction.config_value()["budget_percent"],
+            serde_json::json!(0.85)
+        );
+        let config: everruns_builtins::compaction::RuntimeCompactionConfig =
+            serde_json::from_value(compaction.config_value().clone())
+                .expect("valid compaction config");
         assert_eq!(
             config.cost_control.compact_after_tool_result_bytes,
             256 * 1024
@@ -8371,7 +8644,7 @@ mod tests {
             .find(|cap| cap.capability_id() == AGENT_INSTRUCTIONS_CAPABILITY_ID)
             .expect("agent instructions");
         assert_eq!(
-            agent_instructions.config["files"],
+            agent_instructions.config_value()["files"],
             serde_json::json!(["AGENTS.md"])
         );
     }
