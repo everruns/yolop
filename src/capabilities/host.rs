@@ -366,6 +366,7 @@ pub(crate) struct CodingBashCapability {
     pub(crate) expose_command: bool,
     pub(crate) approval_policy: crate::config::ApprovalPolicy,
     pub(crate) approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
+    pub(crate) control: Option<Arc<dyn crate::control::ControlService>>,
 }
 
 #[async_trait]
@@ -392,12 +393,15 @@ impl Capability for CodingBashCapability {
         None
     }
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![Box::new(BashTool::with_policy(
-            self.workspace.clone(),
-            self.sandbox.clone(),
-            self.approval_policy,
-            self.approval_gate.clone(),
-        ))]
+        vec![Box::new(
+            BashTool::with_policy(
+                self.workspace.clone(),
+                self.sandbox.clone(),
+                self.approval_policy,
+                self.approval_gate.clone(),
+            )
+            .with_control(self.control.clone()),
+        )]
     }
     fn commands(&self) -> Vec<CommandDescriptor> {
         if !self.expose_command {
@@ -441,6 +445,7 @@ impl Capability for CodingBashCapability {
             self.approval_policy,
             self.approval_gate.clone(),
         )
+        .with_control(self.control.clone())
         .execute(json!({ "command": command, "output": "normal" }))
         .await;
         Ok(shell_command_result(result))

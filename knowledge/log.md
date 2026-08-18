@@ -22,6 +22,23 @@ wording, formatting, and link fixes do not need entries.
   instructions are the one operator-owned prompt seam
   ([system prompt](specs/system-prompt.md)).
 
+## 2026-08-17, One-shot attached extension administration
+
+- Replaced model-visible extension management tools with the `yolop extensions`
+  CLI while retaining extension-contributed tools and commands.
+- Added a versioned, resource-tagged internal control plane over anonymous
+  one-request child pipes. Direct foreground commands can reconcile the current
+  session without publishing an endpoint or ambient shell capability.
+- Made attached administration an optional capability facet; the built-in
+  extension capability owns its CLI action grammar, `/extensions` command,
+  control execution, and rendering while contributing no model tools.
+- Made the top-level CLI itself capability-contributed: `CliCapability`
+  supplies the Clap command and typed decoder, and the root binary assembles
+  registered contributions without an extension-specific enum or dispatcher.
+- Seeded enabled extensions at the session layer so attached disable is
+  reversible; detached operations remain global and reload requires a live
+  session.
+
 ## 2026-08-16, In-process inference provider (experimental)
 
 - Added [Local inference](specs/local-inference.md): a `local` provider that

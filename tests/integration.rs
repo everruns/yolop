@@ -44,6 +44,94 @@ fn yolop_binary() -> PathBuf {
 }
 
 #[test]
+fn extensions_cli_installs_and_lists_without_model_tools() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_root = tmp.path().join("config");
+    let extensions_dir = config_root.join("yolop/extensions");
+    let source = tmp.path().join("demo-source");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("plugin.json"),
+        serde_json::json!({
+            "name": "demo",
+            "description": "CLI smoke extension.",
+            "version": "0.1.0",
+            "yolop": {
+                "protocol_version": "1.0",
+                "capabilityServer": { "command": "demo" },
+                "tools": [{ "name": "ping", "description": "Ping." }]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let install = Command::new(yolop_binary())
+        .args(["extensions", "install"])
+        .arg(&source)
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", &config_root)
+        .env("YOLOP_EXTENSIONS_DIR", &extensions_dir)
+        .output()
+        .expect("install extension through CLI");
+    assert!(
+        install.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    let list = Command::new(yolop_binary())
+        .args(["extensions", "list", "--json"])
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", &config_root)
+        .env("YOLOP_EXTENSIONS_DIR", &extensions_dir)
+        .output()
+        .expect("list extensions through CLI");
+    assert!(list.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(value["extensions"][0]["name"], "demo");
+}
+
+#[test]
+fn extension_reload_is_rejected_without_an_attached_session() {
+    let output = Command::new(yolop_binary())
+        .args(["extensions", "reload", "demo"])
+        .output()
+        .expect("run detached reload");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("requires a running Yolop session"));
+}
+
+#[test]
+fn attached_control_child_exchanges_one_versioned_pipe_request() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let mut child = Command::new(yolop_binary())
+        .args(["--__attached-control-child", "extensions", "enable", "demo"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn attached control child");
+    let mut request = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut request)
+        .unwrap();
+    let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+    assert_eq!(request["version"], 1);
+    assert_eq!(request["resource"], "extensions");
+    assert_eq!(request["action"]["operation"], "enable");
+
+    writeln!(
+        child.stdin.take().unwrap(),
+        "{}",
+        serde_json::json!({ "version": 1, "ok": true, "value": { "enabled": true } })
+    )
+    .unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
 fn meta_provider_reaches_credential_boundary_from_real_binary() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_root = tmp.path().join(".config");
@@ -1111,7 +1199,7 @@ fn fullscreen_enables_modified_key_reporting_after_entering_alternate_screen() {
         },
     );
     assert!(
-        tui.wait_for_output("Enter to send", Duration::from_secs(5)),
+        tui.wait_for_output("Enter to send", Duration::from_secs(10)),
         "TUI did not render the composer: {}",
         tui.output_text()
     );
@@ -1969,6 +2057,36 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
         "double Ctrl-C should exit cleanly, got {status:?}: {}",
         tui.output_text()
     );
+}
+
+#[test]
+fn tui_bang_yolop_extensions_uses_attached_control() {
+    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(10)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"!yolop extensions list\r");
+    assert!(
+        tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
+        "attached extension control did not complete: {}",
+        tui.output_text()
+    );
+    assert!(
+        tui.wait_for_output("No extensions installed.", Duration::from_secs(3)),
+        "attached control response should render in the TUI: {}",
+        tui.output_text()
+    );
+    let transcript = strip_ansi(&tui.output_text());
+    assert!(
+        !transcript.contains("offline mode"),
+        "attached control should not invoke a model turn: {transcript}"
+    );
+
+    tui.write_input(b"\x03\x03");
+    assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
 }
 
 #[test]

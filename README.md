@@ -168,7 +168,10 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 - **Extensions**: installable capability packages that add tools, prompt
   guidance, MCP servers, and hooks without rebuilding yolop, over the yolop
   extension protocol (YEP). Install from crates.io with no Rust toolchain, a git
-  URL, or a local path; author one with the
+  URL, or a local path with `yolop extensions`; direct foreground invocations
+  from a running Yolop session also update that session without exposing
+  management tools to the model. The built-in `/extensions` command uses the
+  same grammar inside interactive clients. Author one with the
   [`yolop-yep`](./crates/yolop-yep) SDK. See
   [docs/extensions.md](./docs/extensions.md).
 - **MCP servers**: extra tools from local (stdio) or remote (HTTP)

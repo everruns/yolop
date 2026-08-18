@@ -2618,6 +2618,19 @@ fn coding_harness_capabilities(
     caps
 }
 
+fn take_session_extension_capabilities(caps: &mut Vec<CapabilityRef>) -> Vec<CapabilityRef> {
+    let mut extensions = Vec::new();
+    caps.retain(|capability| {
+        if capability.capability_id().starts_with("ext:") {
+            extensions.push(capability.clone());
+            false
+        } else {
+            true
+        }
+    });
+    extensions
+}
+
 // ---------- runtime wiring result ----------
 
 pub struct BuiltRuntime {
@@ -2695,6 +2708,9 @@ pub struct RuntimeHandles {
     pub(crate) sandbox: Arc<dyn SandboxProvider>,
     pub(crate) sandbox_approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
     pub(crate) approval_policy: crate::config::ApprovalPolicy,
+    /// One-shot typed control service exposed only to conservative direct
+    /// foreground Yolop CLI invocations from this session's Bash surface.
+    pub(crate) control: Option<Arc<dyn crate::control::ControlService>>,
     /// Best-effort local lifecycle bridge when this process runs in Herdr.
     pub(crate) herdr: crate::capabilities::herdr::HerdrReporter,
 }
@@ -2801,10 +2817,9 @@ impl RuntimeHandles {
             .await?)
     }
 
-    /// Deactivate a capability from the live session overlay. Succeeds only for
-    /// one activated *this session*; an extension enabled at startup rides the
-    /// harness layer and cannot be removed by a session-scoped op (its disable
-    /// takes effect next session via settings).
+    /// Deactivate a capability from the live session overlay. Enabled
+    /// extensions are seeded into this layer at startup so attached disable is
+    /// reversible in the current session.
     pub async fn deactivate_capability(
         &self,
         capability_id: &str,
@@ -3696,11 +3711,13 @@ pub async fn build_with_options(
     // `reload_extension` can restart one in place mid-session (self-writing
     // iteration) without a yolop restart.
     let live_processes = crate::extensions::LiveProcessRegistry::default();
+    let mut session_control: Option<Arc<dyn crate::control::ControlService>> = None;
     // Per-extension secrets ride the shared credential store (`connections.toml`,
     // 0600), keyed `ext:<name>` — never `settings.toml`. Injected as env at
     // spawn; never surfaced to the agent.
     let extension_secrets = crate::extensions::ExtensionSecrets::new(connections.clone());
     let mut extension_never_defer: Vec<String> = Vec::new();
+    let mut extension_mcp_server_names: Vec<String> = Vec::new();
     // Trace-facet extensions, captured here and started once `session_id` and
     // the event broadcast exist (below). Observe-only agentic-trace export.
     let mut trace_forwarders: Vec<crate::extensions::trace::TraceForwarder> = Vec::new();
@@ -3708,9 +3725,9 @@ pub async fn build_with_options(
         let settings_snapshot = settings.snapshot();
         for package in crate::extensions::discover_extensions(&ext_dir) {
             // An extension's contributed MCP servers (D1) apply only when the
-            // extension is enabled in the harness — merged into scoped MCP
-            // config so the runtime's own client discovers them, exactly like
-            // `.mcp.json`. Workspace `.mcp.json` still overrides by name.
+            // extension is enabled. The runtime collects them from the live
+            // capability overlay, so attached disable removes them too;
+            // explicit workspace `.mcp.json` still overrides by name.
             let overrides = settings_snapshot.capability_overrides_for(
                 &crate::extensions::extension_capability_id(&package.manifest.name),
             );
@@ -3731,13 +3748,8 @@ pub async fn build_with_options(
                     .with_secrets(extension_secrets.clone())
                     .with_environment_context(environment_context.clone());
             if enabled {
-                let contributed = capability.contributed_mcp_servers();
-                if !contributed.is_empty() {
-                    mcp_servers = everruns_core::mcp_server::merge_scoped_mcp_servers(
-                        &contributed,
-                        &mcp_servers,
-                    );
-                }
+                extension_mcp_server_names
+                    .extend(capability.contributed_mcp_servers().keys().cloned());
                 // Forward the session event stream to an enabled `trace`
                 // extension (the process is shared with its other facets via
                 // `ext_config`); started below once the session id exists.
@@ -3751,11 +3763,11 @@ pub async fn build_with_options(
             extension_never_defer.extend(capability.never_defer_tools());
             capabilities.register(capability);
         }
-        // The always-on management surface (install/list/enable/remove/reload).
-        // Hand it the UI-command sink so enable/disable can activate the
-        // capability on the live session (TUI only); `None` elsewhere.
+        // Extension administration stays outside the model harness. Hand its
+        // shared service the UI-command sink so attached enable/disable can
+        // activate the capability live (TUI only); `None` elsewhere.
         let manage_ui_tx = matches!(options.client_ui, ClientUiContext::Tui).then(|| ui_tx.clone());
-        capabilities.register(
+        let management = Arc::new(
             crate::extensions::ExtensionsCapability::new(
                 ext_dir,
                 effective_root.clone(),
@@ -3768,11 +3780,17 @@ pub async fn build_with_options(
             // surface (TUI only); `None` elsewhere refuses interactive setup.
             .with_ask_sink(ask_sink.clone()),
         );
+        let mut control = crate::control::ControlRegistry::default();
+        control.register(management.clone())?;
+        session_control = Some(Arc::new(control));
+        capabilities.register_arc(management);
     }
     // Server name list for `/mcp` and StartupInfo, computed after extension
     // contributions are merged so provider-provenance entries show up too.
     let mut mcp_server_names: Vec<String> = mcp_servers.keys().cloned().collect();
+    mcp_server_names.extend(extension_mcp_server_names);
     mcp_server_names.sort();
+    mcp_server_names.dedup();
     capabilities.register(InfinityContextCapability);
     capabilities.register(CompactionCapability);
     capabilities.register(ContextCostControlCapability);
@@ -3923,6 +3941,7 @@ pub async fn build_with_options(
         expose_command: !options.client_commands,
         approval_policy,
         approval_gate: sandbox_approval_gate.clone(),
+        control: session_control.clone(),
     });
     // `background` — the `/background` command listing this session's everruns
     // tasks. Detached work runs through everruns `spawn_background` (which wraps
@@ -4079,6 +4098,13 @@ pub async fn build_with_options(
         hook_capability_config,
         &settings_snapshot,
     );
+    // Enabled extensions live at the session layer, not the harness layer.
+    // That makes the runtime's activate/deactivate overlay genuinely
+    // reversible for an attached `yolop extensions enable|disable` command.
+    // The capabilities are still registered above; only their ownership layer
+    // changes. Newly installed manifests require a new session to register.
+    let session_extension_capabilities =
+        take_session_extension_capabilities(&mut harness_capabilities);
     // Resolve the hard approval gate only when a host supplied an approver
     // (ACP): registering it above is not enough — its pre-tool hook is collected
     // only from the *resolved* capability set.
@@ -4129,6 +4155,7 @@ pub async fn build_with_options(
         .agent(agent_id)
         .id(session_id)
         .title(session_title)
+        .capabilities(session_extension_capabilities)
         .mcp_servers(session_mcp_servers)
         .tag("example")
         .tag("coding");
@@ -4212,6 +4239,7 @@ pub async fn build_with_options(
             sandbox: sandbox.clone(),
             sandbox_approval_gate,
             approval_policy,
+            control: session_control,
             herdr,
         },
         startup: StartupInfo {
@@ -4260,6 +4288,30 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn enabled_extensions_are_owned_by_the_reversible_session_layer() {
+        let mut harness = vec![
+            CapabilityRef::new("yolop_bash"),
+            CapabilityRef::new("ext:demo"),
+            CapabilityRef::new("ext:other"),
+        ];
+        let session = take_session_extension_capabilities(&mut harness);
+        assert_eq!(
+            harness
+                .iter()
+                .map(|capability| capability.capability_id())
+                .collect::<Vec<_>>(),
+            vec!["yolop_bash"]
+        );
+        assert_eq!(
+            session
+                .iter()
+                .map(|capability| capability.capability_id())
+                .collect::<Vec<_>>(),
+            vec!["ext:demo", "ext:other"]
+        );
+    }
 
     #[test]
     fn env_token_names_prefers_oauth_provider_then_server_specific_keys() {
@@ -4798,6 +4850,54 @@ mod tests {
             "retired DuckDuckGo tool name must not remain: {:?}",
             built.startup.tool_names
         );
+        for retired_management_tool in [
+            "scaffold_extension",
+            "list_extensions",
+            "install_extension",
+            "remove_extension",
+            "enable_extension",
+            "disable_extension",
+            "reload_extension",
+            "set_extension_secret",
+            "doctor_extension",
+        ] {
+            assert!(
+                !built
+                    .startup
+                    .tool_names
+                    .contains(&retired_management_tool.to_string()),
+                "extension administration belongs to the CLI, not model tools: {:?}",
+                built.startup.tool_names
+            );
+        }
+        assert!(
+            built
+                .startup
+                .capability_commands
+                .iter()
+                .any(|command| command.name == "extensions"),
+            "the extension capability must retain /extensions: {:?}",
+            built
+                .startup
+                .capability_commands
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        let extensions = built
+            .handles
+            .runtime
+            .execute_command(
+                built.handles.session_id,
+                ExecuteCommandRequest {
+                    name: "extensions".to_string(),
+                    arguments: None,
+                    controls: None,
+                },
+            )
+            .await
+            .expect("execute /extensions through the runtime registry");
+        assert!(extensions.success, "{}", extensions.message);
         assert!(
             built
                 .handles

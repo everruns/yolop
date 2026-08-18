@@ -23,6 +23,15 @@ Every shell entry point uses one shared `SandboxProvider` boundary:
 - the `/shell` command; and
 - the TUI `!shell` shortcut.
 
+A direct foreground `yolop extensions ...` invocation is a special typed host
+broker, not arbitrary shell execution. It passes the same shell approval policy
+first, then the host invokes its exact Yolop executable with anonymous pipes for
+one versioned control request. It receives no general shell environment
+capability and cannot be composed into a pipeline, redirection, substitution,
+or background job. The broker exposes no listener or persistent endpoint and
+closes both pipes after the response. All other commands, including composed
+Yolop commands, continue through `SandboxProvider` normally.
+
 Structured file tools remain in Yolop's trusted host broker. They are rooted at
 the active `WorkspaceHost` and retain the existing protected-path checks. System,
 global, workspace, and extension skills also keep their existing read-only
@@ -262,6 +271,8 @@ provider smoke.
 - structured file tools and trusted Git worktree/checkpoint operations use
   their own host-side boundaries;
 - hooks use Bashkit virtual execution rather than the native shell provider;
+- the one-shot attached Yolop administration broker is a typed host boundary,
+  not a sandbox escape available to arbitrary child processes;
 - LSP, MCP, and extension server processes are configured control-plane
   processes and are not automatically moved into this shell sandbox; and
 - resource controls are the existing wall-clock/output limits, not yet cgroup
