@@ -1488,7 +1488,7 @@ async fn run_tui(
     // In full-screen mode `tuika` owns the alternate screen + mouse capture via
     // an RAII guard that restores them on drop.
     let mut alt_screen = if screen_mode.is_alternate() {
-        Some(tuika::host::AltScreen::enter()?)
+        Some(tuika::host::AltScreen::enter_with_mouse_capture()?)
     } else {
         None
     };

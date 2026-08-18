@@ -91,7 +91,7 @@ textwrap = "0.16"
 # The TUI toolkit behind both renderers. It lives in its own repository
 # (everruns/tuika) and is consumed from crates.io like any other dependency;
 # yolop gets no special treatment there.
-tuika = "0.9.0"
+tuika = "0.10.0"
 # Optional structured-markdown renderers stay outside tuika core. Mermaid
 # fences become terminal diagrams; safe block HTML becomes styled text.
 tuika-mermaid = "0.3.0"
