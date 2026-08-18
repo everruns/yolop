@@ -142,6 +142,98 @@ impl TranscriptSelection {
     }
 }
 
+/// Reconstruct selected wrapped text using the transcript source. Terminal
+/// buffers expose visual rows only, so a soft wrap otherwise looks identical to
+/// a source newline when copied.
+pub(super) fn restore_source_breaks<'a>(
+    sources: impl IntoIterator<Item = &'a str>,
+    rendered: &str,
+) -> String {
+    let sources: Vec<&str> = sources.into_iter().collect();
+    let rows: Vec<&str> = rendered.split('\n').collect();
+    let Some(first) = rows.first() else {
+        return String::new();
+    };
+
+    let mut restored = (*first).to_string();
+    let mut matched_source = None;
+    let mut search_start = 0;
+    for pair in rows.windows(2) {
+        let matched = matched_source
+            .and_then(|index| source_separator(sources[index], search_start, pair[0], pair[1]))
+            .map(|(separator, next_start)| (matched_source.unwrap(), separator, next_start))
+            .or_else(|| {
+                sources.iter().enumerate().find_map(|(index, source)| {
+                    source_separator(source, 0, pair[0], pair[1])
+                        .map(|(separator, next_start)| (index, separator, next_start))
+                })
+            });
+        let separator = if let Some((index, separator, next_start)) = matched {
+            matched_source = Some(index);
+            search_start = next_start;
+            separator
+        } else {
+            matched_source = None;
+            search_start = 0;
+            "\n"
+        };
+        restored.push_str(separator);
+        restored.push_str(pair[1]);
+    }
+    restored
+}
+
+fn source_separator<'a>(
+    source: &'a str,
+    search_start: usize,
+    left: &str,
+    right: &str,
+) -> Option<(&'a str, usize)> {
+    let left = char_suffix(left.trim_end(), 32);
+    let right = char_prefix(right.trim_start(), 32);
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+
+    for (relative_start, _) in source[search_start..].match_indices(left) {
+        let gap_start = search_start + relative_start + left.len();
+        let tail = &source[gap_start..];
+        let gap_len = tail
+            .char_indices()
+            .take_while(|(_, ch)| ch.is_whitespace())
+            .map(|(index, ch)| index + ch.len_utf8())
+            .last()
+            .unwrap_or(0);
+        if tail[gap_len..].starts_with(right) {
+            let gap = &tail[..gap_len];
+            let separator = if gap.contains(['\n', '\r']) {
+                "\n"
+            } else {
+                gap
+            };
+            return Some((separator, gap_start + gap_len));
+        }
+    }
+    None
+}
+
+fn char_suffix(value: &str, max_chars: usize) -> &str {
+    let start = value
+        .char_indices()
+        .rev()
+        .nth(max_chars.saturating_sub(1))
+        .map_or(0, |(index, _)| index);
+    &value[start..]
+}
+
+fn char_prefix(value: &str, max_chars: usize) -> &str {
+    let end = value
+        .char_indices()
+        .nth(max_chars)
+        .map_or(value.len(), |(index, _)| index);
+    &value[..end]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +298,66 @@ mod tests {
         let range = sel.range().expect("word selection");
         assert_eq!(range.start, (7, 4));
         assert_eq!(range.end, (17, 4));
+    }
+
+    #[test]
+    fn copied_soft_wrap_uses_source_space() {
+        let sources = ["Send an Agent a request early on, then gather the result."];
+        let rendered = "Send an Agent a request early on, then\ngather the result.";
+        assert_eq!(
+            restore_source_breaks(sources, rendered),
+            "Send an Agent a request early on, then gather the result."
+        );
+    }
+
+    #[test]
+    fn copied_hard_break_stays_a_newline() {
+        let sources = ["first line\nsecond line"];
+        assert_eq!(
+            restore_source_breaks(sources, "first line\nsecond line"),
+            "first line\nsecond line"
+        );
+    }
+
+    #[test]
+    fn copied_wrap_inside_a_long_word_has_no_separator() {
+        let sources = ["supercalifragilistic"];
+        assert_eq!(
+            restore_source_breaks(sources, "supercali\nfragilistic"),
+            "supercalifragilistic"
+        );
+    }
+
+    #[test]
+    fn unmatched_rendered_rows_keep_their_newline() {
+        let sources = ["different source"];
+        assert_eq!(
+            restore_source_breaks(sources, "rendered heading\nrendered body"),
+            "rendered heading\nrendered body"
+        );
+    }
+
+    #[test]
+    fn source_break_matching_is_unicode_safe() {
+        let sources = ["🙂 café wraps here"];
+        assert_eq!(
+            restore_source_breaks(sources, "🙂 café\nwraps here"),
+            "🙂 café wraps here"
+        );
+    }
+
+    #[test]
+    fn repeated_text_matches_in_source_order() {
+        let sources = ["a b a\nb"];
+        assert_eq!(restore_source_breaks(sources, "a\nb\na\nb"), "a b a\nb");
+    }
+
+    #[test]
+    fn does_not_join_rows_across_transcript_entries() {
+        let sources = ["first entry ends here", "here second entry begins"];
+        assert_eq!(
+            restore_source_breaks(sources, "first entry ends here\nhere second entry begins"),
+            "first entry ends here\nhere second entry begins"
+        );
     }
 }

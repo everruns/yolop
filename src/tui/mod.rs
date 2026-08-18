@@ -933,7 +933,11 @@ impl App {
             start: (range.start.0.saturating_sub(base), 0),
             end: (range.end.0.saturating_sub(base), row_count as u16 - 1),
         };
-        selected_text(&buf, buf.area, sr)
+        let rendered = selected_text(&buf, buf.area, sr);
+        transcript_selection::restore_source_breaks(
+            self.lines.iter().rev().map(|line| line.text.as_str()),
+            &rendered,
+        )
     }
 
     /// Record the transcript's inner rect (the selectable region) from the draw.
