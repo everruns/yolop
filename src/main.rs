@@ -146,6 +146,14 @@ struct Cli {
     #[arg(long, conflicts_with = "print")]
     acp: bool,
 
+    /// Offer the loopback provider setup page to ACP clients for this run: an
+    /// extra authentication method, plus a link posted when a session opens
+    /// with no provider connected. ACP has no secure way to ask for an API key,
+    /// so the page is where one can be typed. Off unless this flag or the
+    /// `acp_setup_page` setting is on. See `knowledge/specs/acp.md`.
+    #[arg(long = "acp-setup-page", requires = "acp")]
+    acp_setup_page: bool,
+
     /// Resume an existing session. Reads the JSONL log for this id and
     /// seeds the message history; the new run continues appending to the
     /// same file. If no log exists, a new session starts with this id.
@@ -733,8 +741,18 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
         if cli.trajectory_out.is_some() {
             eprintln!("yolop: --trajectory-out is ignored in --acp mode");
         }
-        return editor::acp::run_stdio(provider, settings, sessions_dir, sandbox_mode_override)
-            .await;
+        // The flag turns the page on for one run; the setting turns it on for
+        // every editor launch, which is what matters when the editor owns the
+        // spawn arguments.
+        let setup_page = cli.acp_setup_page || settings.snapshot().acp_setup_page_enabled();
+        return editor::acp::run_stdio(
+            provider,
+            settings,
+            sessions_dir,
+            sandbox_mode_override,
+            setup_page,
+        )
+        .await;
     }
 
     // Only the interactive TUI can apply terminal-side commands (overlays,
@@ -2406,6 +2424,7 @@ mod tests {
             print: None,
             images: vec![],
             acp: false,
+            acp_setup_page: false,
             session: None,
             session_dir: None,
             trajectory_out: None,
@@ -2496,6 +2515,7 @@ mod tests {
             print: None,
             images: vec![],
             acp: false,
+            acp_setup_page: false,
             session: None,
             session_dir: None,
             trajectory_out: None,

@@ -50,6 +50,7 @@ const GLOBAL_ONLY_KEYS: &[&str] = &[
     "theme",
     "attribution",
     "proactive_wake",
+    "acp_setup_page",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -535,6 +536,13 @@ mod tests {
 
         let credentials: Table = toml::from_str("[tokens]\nopenai = 'secret'\n").unwrap();
         assert!(SettingsOverlay::from_table(&credentials, Path::new("/nonexistent")).is_err());
+
+        // Host-local settings are global-only too: the ACP setup page binds a
+        // listener on this machine, so it is not part of an agent's job.
+        let host_local: Table = toml::from_str("acp_setup_page = true\n").unwrap();
+        let error = SettingsOverlay::from_table(&host_local, Path::new("/nonexistent"))
+            .expect_err("acp_setup_page is global-only");
+        assert!(error.to_string().contains("acp_setup_page"), "got: {error}");
     }
 
     #[test]

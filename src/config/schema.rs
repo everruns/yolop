@@ -174,6 +174,19 @@ pub fn schema() -> &'static [ConfigField] {
             provider_scoped: false,
         },
         ConfigField {
+            key: "acp_setup_page",
+            aliases: &["setup_page"],
+            title: "ACP setup page",
+            description: "When on, `yolop --acp` offers a provider setup page served on \
+                          localhost: an extra ACP authentication method, plus a link posted when \
+                          a session opens with no provider connected. Lets an editor connect an \
+                          API-key provider, which ACP itself has no secure way to ask for.",
+            kind: ValueKind::Bool,
+            default: Some("off"),
+            examples: &["on", "off"],
+            provider_scoped: false,
+        },
+        ConfigField {
             key: "worktrees",
             aliases: &[],
             title: "Git worktree isolation",
@@ -262,6 +275,8 @@ pub enum KeyTarget {
     ApprovalMode,
     ApprovalPolicy,
     ProactiveWake,
+    /// Loopback provider setup page for ACP clients.
+    AcpSetupPage,
     Worktrees,
     Sandbox,
     /// Interactive TUI color theme.
@@ -289,6 +304,7 @@ impl KeyTarget {
             KeyTarget::ApprovalMode => "approval_mode",
             KeyTarget::ApprovalPolicy => "approval_policy",
             KeyTarget::ProactiveWake => "proactive_wake",
+            KeyTarget::AcpSetupPage => "acp_setup_page",
             KeyTarget::Worktrees => "worktrees",
             KeyTarget::Sandbox => "sandbox_mode",
             KeyTarget::Theme => "theme",
@@ -344,6 +360,7 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "approval_mode" | "approval" => scalar(KeyTarget::ApprovalMode),
         "approval_policy" | "sandbox_approval" => scalar(KeyTarget::ApprovalPolicy),
         "proactive_wake" | "background_wake" | "wake" => scalar(KeyTarget::ProactiveWake),
+        "acp_setup_page" | "setup_page" => scalar(KeyTarget::AcpSetupPage),
         "worktrees" | "worktree" => scalar(KeyTarget::Worktrees),
         "sandbox_mode" | "sandbox" | "containment" => scalar(KeyTarget::Sandbox),
         "theme" => scalar(KeyTarget::Theme),

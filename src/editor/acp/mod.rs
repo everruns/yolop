@@ -17,6 +17,7 @@ mod bridge;
 mod modes;
 mod protocol;
 mod server;
+mod setup_page;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,8 +35,16 @@ use everruns_provider::typed_id::SessionId as RuntimeSessionId;
 
 pub use server::{RuntimeFactory, serve};
 
-pub(crate) fn advertised_auth_methods() -> Vec<AuthMethod> {
-    vec![
+/// Id of the agent-handled method that opens the loopback setup page.
+/// Advertised only when the page is enabled; `server` then treats it as the
+/// generic fallback for providers with no browser login of their own.
+pub(crate) const SETUP_PAGE_AUTH_METHOD: &str = "local_setup_page";
+
+/// `setup_page` mirrors the `--acp-setup-page` flag and the `acp_setup_page`
+/// setting. With it off the method is never advertised and no listener is ever
+/// bound, so the default ACP surface is unchanged.
+pub(crate) fn advertised_auth_methods(setup_page: bool) -> Vec<AuthMethod> {
+    let mut methods = vec![
         AuthMethod::Agent(
             AuthMethodAgent::new("codex_browser", "Sign in with ChatGPT")
                 .description("Open a browser to connect the Codex provider."),
@@ -44,7 +53,16 @@ pub(crate) fn advertised_auth_methods() -> Vec<AuthMethod> {
             AuthMethodAgent::new("openrouter_browser", "Sign in with OpenRouter")
                 .description("Open a browser to create an OpenRouter API key."),
         ),
-    ]
+    ];
+    if setup_page {
+        methods.push(AuthMethod::Agent(
+            AuthMethodAgent::new(SETUP_PAGE_AUTH_METHOD, "Open the yolop setup page")
+                .description(
+                    "Open a page served on localhost to connect a provider with an API key, a custom endpoint, or a model.",
+                ),
+        ));
+    }
+    methods
 }
 
 /// Production [`RuntimeFactory`]: builds a real provider-backed runtime rooted
@@ -56,6 +74,8 @@ struct ConfigRuntimeFactory {
     settings: Arc<SettingsStore>,
     sessions_dir: PathBuf,
     sandbox_mode_override: Option<SandboxMode>,
+    /// `None` when the setup page is off, so nothing can bind a listener.
+    setup_page: Option<setup_page::SetupPageService>,
 }
 
 #[async_trait]
@@ -67,7 +87,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
     }
 
     fn auth_methods(&self) -> Vec<AuthMethod> {
-        advertised_auth_methods()
+        advertised_auth_methods(self.setup_page.is_some())
     }
 
     async fn authenticate(&self, method_id: &str) -> Result<()> {
@@ -80,7 +100,40 @@ impl RuntimeFactory for ConfigRuntimeFactory {
                 let key = crate::auth::openrouter::login_with_browser().await?;
                 self.settings.set_token("openrouter".to_string(), key)
             }
+            SETUP_PAGE_AUTH_METHOD if self.setup_page.is_some() => self
+                .setup_page
+                .as_ref()
+                .expect("checked by the guard")
+                .run_to_completion()
+                .await
+                .map(|_| ()),
             _ => anyhow::bail!("unknown authentication method `{method_id}`"),
+        }
+    }
+
+    async fn setup_page_url(&self) -> Option<String> {
+        match self.setup_page.as_ref()?.url().await {
+            Ok(url) => Some(url),
+            Err(err) => {
+                tracing::warn!(%err, "acp: could not start the setup page");
+                None
+            }
+        }
+    }
+
+    async fn wait_for_setup_page(&self) -> bool {
+        let Some(page) = self.setup_page.as_ref() else {
+            return false;
+        };
+        match page.wait().await {
+            Ok(summary) => {
+                tracing::info!(%summary, "acp: setup page connected a provider");
+                true
+            }
+            Err(err) => {
+                tracing::debug!(%err, "acp: setup page closed without saving");
+                false
+            }
         }
     }
 
@@ -117,9 +170,11 @@ pub async fn run_stdio(
     settings: Arc<SettingsStore>,
     sessions_dir: PathBuf,
     sandbox_mode_override: Option<SandboxMode>,
+    setup_page: bool,
 ) -> Result<()> {
     let factory = Arc::new(ConfigRuntimeFactory {
         provider,
+        setup_page: setup_page.then(|| setup_page::SetupPageService::new(settings.clone())),
         settings,
         sessions_dir,
         sandbox_mode_override,
@@ -262,6 +317,37 @@ mod tests {
         }
     }
 
+    /// Like [`ScriptedFactory`], but advertising a loopback setup page so the
+    /// no-provider hint has something to link to. Stands in for an
+    /// run with the page enabled without binding a real port.
+    struct SetupHintFactory {
+        inner: ScriptedFactory,
+        url: String,
+    }
+
+    #[async_trait]
+    impl RuntimeFactory for SetupHintFactory {
+        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+            self.inner.session_exists(session_id)
+        }
+
+        async fn setup_page_url(&self) -> Option<String> {
+            Some(self.url.clone())
+        }
+
+        async fn build(
+            &self,
+            cwd: PathBuf,
+            resume_session_id: Option<RuntimeSessionId>,
+            client_mcp_servers: ScopedMcpServers,
+            tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
+        ) -> Result<BuiltRuntime> {
+            self.inner
+                .build(cwd, resume_session_id, client_mcp_servers, tool_approver)
+                .await
+        }
+    }
+
     struct SdkClient {
         cx: ConnectionTo<Agent>,
         init: InitializeResponse,
@@ -334,8 +420,6 @@ mod tests {
         Fut: Future<Output = agent_client_protocol::Result<T>> + Send + 'static,
         T: Send + 'static,
     {
-        let (client_w, agent_r) = tokio::io::duplex(64 * 1024);
-        let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
         let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
         let settings = Arc::new(SettingsStore::open(sessions.join("settings.toml")));
         if completion_tracking {
@@ -351,6 +435,20 @@ mod tests {
             sessions_dir: sessions,
             settings,
         });
+        with_factory(factory, op).await
+    }
+
+    /// Drive `serve` over duplex pipes with an arbitrary factory. Shared by the
+    /// scripted-runtime fixtures and by tests that need a factory of their own.
+    async fn with_factory<T, Fa, F, Fut>(factory: Arc<Fa>, op: F) -> T
+    where
+        Fa: RuntimeFactory,
+        F: FnOnce(SdkClient) -> Fut + Send + 'static,
+        Fut: Future<Output = agent_client_protocol::Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (client_w, agent_r) = tokio::io::duplex(64 * 1024);
+        let (agent_w, client_r) = tokio::io::duplex(64 * 1024);
         tokio::spawn(async move {
             let _ = serve(agent_r, agent_w, factory).await;
         });
@@ -396,6 +494,42 @@ mod tests {
                     return Err(agent_client_protocol::Error::internal_error()
                         .data("timed out waiting for prompt update"));
                 }
+            }
+        }
+    }
+
+    /// Whether the session emits the no-provider setup link. Returns as soon as
+    /// the link arrives, or once the stream goes quiet.
+    async fn collect_setup_hint(
+        session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+        url: &str,
+    ) -> bool {
+        let deadline = Duration::from_secs(3);
+        loop {
+            let update = match tokio::time::timeout(deadline, session.read_update()).await {
+                Ok(Ok(SessionMessage::SessionMessage(dispatch))) => {
+                    let Ok(message) = dispatch.to_untyped_message() else {
+                        continue;
+                    };
+                    if message.method() != "session/update" {
+                        continue;
+                    }
+                    let Ok(notification) =
+                        serde_json::from_value::<SessionNotification>(message.params().clone())
+                    else {
+                        continue;
+                    };
+                    notification.update
+                }
+                Ok(Ok(_)) => continue,
+                Ok(Err(_)) | Err(_) => return false,
+            };
+            if let SessionUpdate::AgentMessageChunk(chunk) = update
+                && serde_json::to_value(&chunk)
+                    .map(|value| value.to_string().contains(url))
+                    .unwrap_or(false)
+            {
+                return true;
             }
         }
     }
@@ -1515,6 +1649,38 @@ mod tests {
             "slash command should not invoke the model"
         );
         assert!(!run.updates_of_kind("available_commands_update").is_empty());
+    }
+
+    /// The client cannot type an API key, so a session opened with nothing
+    /// connected would silently be an llmsim session. The expectation follows
+    /// the machine: a host with a provider key in its environment is already
+    /// connected and must not be nagged, one without it must get the link.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_with_no_connected_provider_is_offered_the_setup_page() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        let settings = Arc::new(SettingsStore::open(sessions.join("settings.toml")));
+        let expected =
+            !crate::capabilities::model_discovery::any_provider_connected(&settings.snapshot());
+        let url = "http://127.0.0.1:65000/setup?t=hint-test".to_string();
+        let factory = Arc::new(SetupHintFactory {
+            inner: ScriptedFactory {
+                config: LlmSimConfig::fixed("hi"),
+                sessions_dir: sessions,
+                settings,
+            },
+            url: url.clone(),
+        });
+
+        let offered = with_factory(factory, |client| async move {
+            let mut session = client.new_session().await?;
+            Ok(collect_setup_hint(&mut session, &url).await)
+        })
+        .await;
+
+        assert_eq!(
+            offered, expected,
+            "setup link should be offered exactly when no provider is connected"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -47,6 +47,7 @@ Keys are addressed the way a human would name them:
 | `approval_policy`         | text   | Hard shell approval policy (`untrusted` / `on-failure` / `on-request` / `never`). |
 | `attribution`             | bool   | Commit/PR attribution on/off.                                  |
 | `proactive_wake`          | bool   | Auto-start a turn when a background task finishes (TUI); on by default. |
+| `acp_setup_page`          | bool   | Offer the loopback provider setup page to ACP clients; off by default (see [ACP](acp.md)). |
 | `worktrees`               | text   | Worktree isolation (`auto` / `always` / `off`).             |
 | `sandbox_mode`            | text   | Shell containment (`read-only` / `workspace-write` / `danger-full-access`). |
 | `capabilities`            | list   | Ordered `[[capabilities]]` harness overrides; `capabilities.<ref>` for schema metadata. |
@@ -87,9 +88,10 @@ The profileable keys are `default_provider`, `models`, `base_urls`,
 `approval_mode`, `approval_policy`, `sandbox_mode`, `worktrees`,
 `capabilities`, `capabilities_mode`, `mcp`, `mcp_mode`, `instructions`,
 `instructions_file`, and `skills_dir`. Credentials (`tokens`, `codex_auth`) and
-personal settings (`theme`, `attribution`, `proactive_wake`) are global-only and
-make a selected profile fail validation. Invalid known values also fail startup;
-unknown keys produce a warning and are ignored for forward compatibility.
+personal settings (`theme`, `attribution`, `proactive_wake`, `acp_setup_page`)
+are global-only and make a selected profile fail validation. Invalid known
+values also fail startup; unknown keys produce a warning and are ignored for
+forward compatibility.
 
 ### A profile is the unit of a purpose-built agent
 
