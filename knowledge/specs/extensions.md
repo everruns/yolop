@@ -255,9 +255,16 @@ redirection, quoting, substitutions, and background execution receive no
 attachment and run as ordinary shell commands. Attached failure never falls
 back to detached global mutation.
 
-The Bash description provides the discovery hint; the capability-contributed
-Clap definition remains the canonical grammar and `yolop extensions --help`
-the detailed catalog. `/extensions` parses that same action grammar.
+Discovery is one shared system-prompt block owned by the control plane, not the
+Bash tool description and not a per-capability contribution: `ControlPlaneCapability`
+renders every route registered in the session from its `ControlRoute::summary`,
+states the direct-invocation rules once, and points at `yolop <subcommand> --help`.
+A session with no registered route contributes nothing, so the prompt never names
+a surface that session lacks. A capability contributing a CLI route therefore
+supplies one summary clause and no prompt prose of its own. The
+capability-contributed Clap definition remains the canonical grammar and
+`yolop extensions --help` the detailed catalog. `/extensions` parses that same
+action grammar.
 Model-visible extension management tools are
 intentionally absent, while the management command and commands contributed by
 enabled extension packages remain in the capability command registry.

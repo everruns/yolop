@@ -36,6 +36,15 @@ use tokio::sync::mpsc::UnboundedSender;
 pub const EXTENSIONS_CAPABILITY_ID: &str = "extensions";
 const EXTENSIONS_COMMAND_NAME: &str = "extensions";
 
+/// A constant so the shared control-plane prompt block can be measured against
+/// the always-on prompt budget without constructing a session.
+pub(crate) const EXTENSIONS_CONTROL_ROUTE: ControlRoute = ControlRoute {
+    resource: EXTENSIONS_CAPABILITY_ID,
+    cli_subcommand: EXTENSIONS_CAPABILITY_ID,
+    read_only_operations: &["list"],
+    summary: "install, enable, configure, reload, and scaffold extension packages",
+};
+
 #[derive(Subcommand, Debug)]
 enum ExtensionCommand {
     /// List installed extensions.
@@ -415,11 +424,7 @@ impl Capability for ExtensionsCapability {
 #[async_trait]
 impl ControlCapability for ExtensionsCapability {
     fn control_route(&self) -> ControlRoute {
-        ControlRoute {
-            resource: EXTENSIONS_CAPABILITY_ID,
-            cli_subcommand: EXTENSIONS_CAPABILITY_ID,
-            read_only_operations: &["list"],
-        }
+        EXTENSIONS_CONTROL_ROUTE
     }
 
     async fn execute_control(&self, action: &Value) -> ToolExecutionResult {

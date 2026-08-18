@@ -34,6 +34,15 @@ use std::time::Duration;
 pub(crate) const SESSION_COORDINATION_CAPABILITY_ID: &str = "session_coordination";
 pub(crate) const SESSION_DISPATCH_TASK_KIND: &str = "session_dispatch";
 const COORDINATION_COMMAND: &str = "coordination";
+
+/// See `EXTENSIONS_CONTROL_ROUTE`: a constant keeps the route measurable by the
+/// always-on prompt budget.
+pub(crate) const COORDINATION_CONTROL_ROUTE: ControlRoute = ControlRoute {
+    resource: SESSION_COORDINATION_CAPABILITY_ID,
+    cli_subcommand: COORDINATION_COMMAND,
+    read_only_operations: &["list", "status"],
+    summary: "inspect and steer coordination between local Yolop sessions",
+};
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 const INBOX_INTERVAL: Duration = Duration::from_millis(350);
 const PRESENCE_LEASE_MS: i64 = 15_000;
@@ -1381,11 +1390,7 @@ impl From<CoordinationCliCommand> for CoordinationAction {
 #[async_trait]
 impl ControlCapability for SessionCoordinationCapability {
     fn control_route(&self) -> ControlRoute {
-        ControlRoute {
-            resource: SESSION_COORDINATION_CAPABILITY_ID,
-            cli_subcommand: COORDINATION_COMMAND,
-            read_only_operations: &["list", "status"],
-        }
+        COORDINATION_CONTROL_ROUTE
     }
     async fn execute_control(&self, action: &Value) -> ToolExecutionResult {
         match serde_json::from_value::<CoordinationAction>(action.clone()) {

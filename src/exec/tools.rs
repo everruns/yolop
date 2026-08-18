@@ -450,8 +450,7 @@ impl Tool for BashTool {
              relative to it, or chain within one call (`cd sub; cmd`). Captures \
              stdout/stderr with configurable verbosity. 120s timeout; run commands \
              that wait on external events (CI runs, deploys) detached via \
-             `spawn_background` instead. Invoke `yolop extensions ...` directly \
-             (without shell composition) to administer the current session."
+             `spawn_background` instead."
         }
         #[cfg(not(windows))]
         {
@@ -462,8 +461,7 @@ impl Tool for BashTool {
              it, or chain within one call (`cd sub && cmd`). Captures stdout/stderr \
              with configurable verbosity. 120s timeout; run commands that wait on \
              external events (CI runs, deploys) detached via `spawn_background` \
-             instead. Invoke `yolop extensions ...` directly (without shell \
-             composition) to administer the current session."
+             instead."
         }
     }
     fn parameters_schema(&self) -> Value {
@@ -652,6 +650,18 @@ impl BackgroundExecutableTool for BashTool {
 
 #[cfg(test)]
 mod tests {
+
+    /// The Bash description must stay free of control-resource vocabulary: it
+    /// was hardcoded to `yolop extensions`, which named one of the session's
+    /// routes and advertised administration even where none is registered.
+    /// Discovery belongs to the shared control-plane prompt block.
+    #[test]
+    fn bash_description_does_not_name_control_resources() {
+        let tool = BashTool::new(Workspace::from_path(std::env::current_dir().unwrap()));
+        let description = Tool::description(&tool);
+        assert!(!description.contains("yolop extensions"));
+        assert!(!description.contains("administer"));
+    }
     use super::*;
     use everruns_builtins::ToolOutputPersistenceCapability;
     use everruns_core::Capability;
