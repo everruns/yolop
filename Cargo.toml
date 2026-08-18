@@ -139,7 +139,12 @@ everruns-core = "0.18.0"
 # The identity/platform family (PlatformStore and friends) moved out of
 # everruns-core into its own crate in 0.17.24; yolop implements PlatformStore
 # to route background-task wakes (src/runtime/background_wake.rs).
-everruns-platform = "0.18.0"
+# Pinned exactly: platform 0.18.1 requires everruns-host ^0.19.0, but
+# everruns-local 0.18.0 still pins host ^0.18.0 and has not been republished
+# for 0.19. Taking 0.18.1 resolves two copies of everruns-host, and
+# everruns-local then fails to compile against the newer session-store traits.
+# Drop the `=` once everruns-local is released against host 0.19.
+everruns-platform = "=0.18.0"
 everruns-openai = "0.18.0"
 everruns-meta = "0.18.0"
 # OpenRouter's first-class driver was split out of everruns-openai into its own
@@ -159,7 +164,7 @@ everruns-host = { version = "0.18.0", features = ["mcp-stdio"] }
 # #3182 completed the library boundary cleanup: driver/model/provider types
 # and the built-in capabilities left everruns-core for their own crates.
 everruns-provider = "0.18.0"
-everruns-builtins = "0.18.0"
+everruns-builtins = "0.18.1"
 everruns-capability = "0.18.0"
 everruns-session-services = "0.18.0"
 everruns-http = "0.18.0"
