@@ -76,6 +76,9 @@ hf-hub = { version = "0.4.3", default-features = false, features = [
 ], optional = true }
 rand = "0.10"
 ratatui = "0.30.2"
+# Already present through everruns-local. Yolop uses the same SQLite handle for
+# its capability-owned local session coordination tables.
+rusqlite = "0.39"
 # Already in the tree via the everruns driver crates; used directly only for
 # the OpenAI-compatible `GET <base>/models` discovery fallback.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
@@ -204,4 +207,3 @@ vt100 = "0.16"
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
-

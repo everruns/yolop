@@ -1,5 +1,15 @@
 # Knowledge Log
 
+## 2026-08-18, Local session coordination
+
+- Added [Session coordination](specs/session-coordination.md): an opt-in local
+  coordinator and worker protocol encapsulated in one capability.
+- Dispatches reuse the canonical session-task registry while leased presence,
+  atomic reservation, and durable assignment and completion inboxes share the
+  private `everruns-local` SQLite store.
+- Attached control from the extension CLI surface now also carries live
+  coordination status and availability operations.
+
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 

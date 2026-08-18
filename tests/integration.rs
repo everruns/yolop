@@ -44,6 +44,24 @@ fn yolop_binary() -> PathBuf {
 }
 
 #[test]
+fn coordination_cli_lists_workers_without_model_startup() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(yolop_binary())
+        .args(["coordination", "list", "--json"])
+        .env("HOME", tmp.path())
+        .env("XDG_DATA_HOME", tmp.path().join("data"))
+        .output()
+        .expect("list coordination workers through CLI");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["workers"], serde_json::json!([]));
+}
+
+#[test]
 fn extensions_cli_installs_and_lists_without_model_tools() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_root = tmp.path().join("config");

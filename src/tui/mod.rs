@@ -2712,13 +2712,13 @@ impl App {
         )
         .with_active_goal(self.goal_store.active_condition(self.session.session_id()))
         .with_active_ask(self.user_ask_store.active_text(self.session.session_id()));
-        if !self.settings.snapshot().proactive_wake_enabled() {
+        if !message.is_coordination() && !self.settings.snapshot().proactive_wake_enabled() {
             self.push_system(
                 "✓ background task finished — see /background (proactive wake off)".to_string(),
             );
             return false;
         }
-        self.push_system("↻ background task finished — waking agent to review".to_string());
+        self.push_system(message.notice().to_string());
         let prompt = crate::runtime::background_wake::frame_wake_prompt(&message);
         let input = crate::runtime::background_wake::input_for_wake(&message);
         self.start_turn_input(prompt, input);

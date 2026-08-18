@@ -25,6 +25,7 @@ pub(crate) mod model_runtime_context;
 pub(crate) mod narration;
 pub(crate) mod progress_guard;
 pub(crate) mod repo_map;
+pub(crate) mod session_coordination;
 pub(crate) mod session_history;
 pub(crate) mod session_tasks_override;
 pub(crate) mod skill_registry;
@@ -65,6 +66,10 @@ pub(crate) use model_runtime_context::{
 };
 pub(crate) use progress_guard::{PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability};
 pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
+pub(crate) use session_coordination::{
+    CoordinationConfig, CoordinationHost, CoordinationStore, SESSION_COORDINATION_CAPABILITY_ID,
+    SessionCoordinationCapability, coordination_project_id,
+};
 pub(crate) use session_history::{SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCapability};
 pub(crate) use tool_approval::{ApprovalDecision, ToolApprovalCapability, ToolApprover};
 pub(crate) use tool_argument_validation::{

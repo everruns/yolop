@@ -22,14 +22,15 @@ use crate::capabilities::{
     CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID, CONTEXT_COST_CONTROL_CAPABILITY_ID,
     CheckpointCapability, ClientCommandsCapability, ClientUiContext, CodingBashCapability,
     CodingCliEnvironmentCapability, ConfigCapability, ContextCostControlCapability,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry, GOAL_CAPABILITY_ID,
-    GoalCapability, HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability,
-    LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID,
-    ModelRuntimeContextCapability, ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID,
-    ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
-    SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCapability,
+    CoordinationConfig, CoordinationHost, CoordinationStore, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
+    EnvironmentContextRegistry, GOAL_CAPABILITY_ID, GoalCapability, HERDR_CAPABILITY_ID,
+    HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability, LspCapability,
+    MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID, ModelRuntimeContextCapability,
+    ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability,
+    REPO_MAP_CAPABILITY_ID, RepoMapCapability, SESSION_COORDINATION_CAPABILITY_ID,
+    SESSION_HISTORY_CAPABILITY_ID, SessionCoordinationCapability, SessionHistoryCapability,
     TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
-    USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability,
+    USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability, coordination_project_id,
 };
 use crate::config::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::config::mcp::McpConfigStore;
@@ -1270,6 +1271,12 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "grep_files",
     "write_todos",
     "write_session_title",
+    // Coordination messages are automatic turns. Their routing and explicit
+    // completion controls must be usable without a preliminary tool search.
+    "list_workers",
+    "dispatch_work",
+    "complete_assignment",
+    "set_worker_availability",
     // progress_guard can make this the only allowed transition, so the model
     // must never need tool_search to recover its argument shape.
     "progress_checkpoint",
@@ -2450,6 +2457,10 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
     }
     caps.extend([
         CapabilityRef::with_config(
+            SESSION_COORDINATION_CAPABILITY_ID,
+            serde_json::json!({ "role": "worker", "accept_work": false }),
+        ),
+        CapabilityRef::with_config(
             SESSION_CAPABILITY_ID,
             serde_json::json!({ "auto_title": true }),
         ),
@@ -2667,6 +2678,9 @@ pub struct BuiltRuntime {
     /// stops new schedule claims; due prompts share `background_wake` with
     /// ordinary background-task completion signals.
     pub schedule_runner: LocalScheduleRunnerHandle,
+    /// Owns this process's coordination lease and durable inbox poller.
+    /// Dropping the runtime marks the session offline and stops delivery.
+    _coordination_host: Option<CoordinationHost>,
     /// Shared repointable workspace disk for host-path tools (`bash`, `!shell`).
     pub workspace_host: Arc<WorkspaceHost>,
     /// Shared Everruns session task registry, backed by `everruns-local`. The
@@ -3452,6 +3466,18 @@ pub async fn build_with_options(
     let disabled_hook_contribution_count = effective_hooks.disabled_contributions.len();
     let hook_configured = !effective_hooks.is_empty();
     let hook_capability_config = hook_configured.then(|| effective_hooks.capability_config());
+    let settings_snapshot = settings.snapshot();
+    let mut harness_capabilities = coding_harness_capabilities(
+        options.client_commands,
+        hook_capability_config,
+        &settings_snapshot,
+    );
+    let coordination_config = harness_capabilities
+        .iter()
+        .find(|capability| capability.capability_id() == SESSION_COORDINATION_CAPABILITY_ID)
+        .map(|capability| CoordinationConfig::from_value(capability.config_value()))
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
     let connections_path =
         default_connections_path().unwrap_or_else(|| PathBuf::from("connections.toml"));
     let connections = Arc::new(ConnectionStore::open(connections_path));
@@ -3534,6 +3560,8 @@ pub async fn build_with_options(
         .with_workspace_root(effective_root.clone());
     let local_backends = LocalBackends::new(local_profile, base_backends)
         .context("initialize everruns-local backend stores")?;
+    let coordination_store = CoordinationStore::new(local_backends.db.clone())
+        .context("initialize session coordination store")?;
     let task_registry: Arc<dyn SessionTaskRegistry> = local_backends.task_registry.clone();
     let task_schedule_store: Arc<dyn everruns_core::session_services::SessionScheduleStore> =
         Arc::new(
@@ -3554,8 +3582,22 @@ pub async fn build_with_options(
         ),
         everruns_local::WakeRoutes::new(),
     ));
-    let background_wake_rx =
+    let (background_wake_tx, background_wake_rx) =
         crate::runtime::background_wake::register_host_route(wake_runner.clone(), session_id);
+    let project_id = coordination_project_id(&canonical_root);
+    let coordination_host = coordination_config
+        .map(|config| {
+            CoordinationHost::start(
+                coordination_store.clone(),
+                session_id,
+                config,
+                project_id.clone(),
+                effective_root.clone(),
+                background_wake_tx,
+            )
+        })
+        .transpose()
+        .context("start session coordination host")?;
     let schedule_runner = local_backends
         .start_schedule_runner(wake_runner.clone())
         .context("start everruns-local schedule runner")?;
@@ -3597,6 +3639,13 @@ pub async fn build_with_options(
     //   * user_hooks           — executes user-authored hook specs loaded from
     //                            global/workspace hook config
     let mut capabilities = CapabilityRegistry::new();
+    let coordination_capability = Arc::new(SessionCoordinationCapability::live(
+        coordination_store,
+        task_registry.clone(),
+        session_id,
+        project_id,
+    ));
+    capabilities.register_arc(coordination_capability.clone());
     // Shared across every reveal-gated capability: `tool_reveal` writes it from
     // `tool_search` results, `config` and `memory` read it when deciding whether
     // their how-to prose has earned its place this turn.
@@ -3711,7 +3760,8 @@ pub async fn build_with_options(
     // `reload_extension` can restart one in place mid-session (self-writing
     // iteration) without a yolop restart.
     let live_processes = crate::extensions::LiveProcessRegistry::default();
-    let mut session_control: Option<Arc<dyn crate::control::ControlService>> = None;
+    let mut session_control_registry = crate::control::ControlRegistry::default();
+    session_control_registry.register(coordination_capability)?;
     // Per-extension secrets ride the shared credential store (`connections.toml`,
     // 0600), keyed `ext:<name>` — never `settings.toml`. Injected as env at
     // spawn; never surfaced to the agent.
@@ -3780,11 +3830,11 @@ pub async fn build_with_options(
             // surface (TUI only); `None` elsewhere refuses interactive setup.
             .with_ask_sink(ask_sink.clone()),
         );
-        let mut control = crate::control::ControlRegistry::default();
-        control.register(management.clone())?;
-        session_control = Some(Arc::new(control));
+        session_control_registry.register(management.clone())?;
         capabilities.register_arc(management);
     }
+    let session_control: Option<Arc<dyn crate::control::ControlService>> =
+        Some(Arc::new(session_control_registry));
     // Server name list for `/mcp` and StartupInfo, computed after extension
     // contributions are merged so provider-provenance entries show up too.
     let mut mcp_server_names: Vec<String> = mcp_servers.keys().cloned().collect();
@@ -3983,7 +4033,6 @@ pub async fn build_with_options(
     crate::drivers::codex::register_driver(&mut driver_registry, settings.clone());
     #[cfg(feature = "local-inference")]
     crate::drivers::local::register_driver(&mut driver_registry);
-    let settings_snapshot = settings.snapshot();
     let mut setup_recommended = ModelsCapability::needs_onboarding(&settings_snapshot);
     let active_provider = provider_state
         .read()
@@ -4093,11 +4142,6 @@ pub async fn build_with_options(
     let session_title = read_session_workspace_metadata(&session_dir)?
         .and_then(|metadata| metadata.title)
         .unwrap_or_else(|| format!("yolop @ {}", effective_root.display()));
-    let mut harness_capabilities = coding_harness_capabilities(
-        options.client_commands,
-        hook_capability_config,
-        &settings_snapshot,
-    );
     // Enabled extensions live at the session layer, not the harness layer.
     // That makes the runtime's activate/deactivate overlay genuinely
     // reversible for an attached `yolop extensions enable|disable` command.
@@ -4269,6 +4313,7 @@ pub async fn build_with_options(
         sandbox_approval_rx,
         background_wake: background_wake_rx,
         schedule_runner,
+        _coordination_host: coordination_host,
         workspace_host,
         task_registry,
         task_schedule_store,
@@ -8282,6 +8327,10 @@ mod tests {
             "write_todos",
             "write_session_title",
             "progress_checkpoint",
+            "list_workers",
+            "dispatch_work",
+            "complete_assignment",
+            "set_worker_availability",
         ];
         let deferred = [
             "write_file",

@@ -33,8 +33,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 /// Sender half of a session's wake channel. The `LocalPlatformStore`'s
 /// `send_message` pushes a background-completion message here; the host drains
 /// the paired [`WakeReceiver`] and runs a turn.
-#[cfg(test)]
-pub type WakeSender = mpsc::UnboundedSender<WakeMessage>;
+pub(crate) type WakeSender = mpsc::UnboundedSender<WakeMessage>;
 /// Receiver half a host drains to react to finished background tasks.
 pub struct WakeReceiver {
     inner: mpsc::UnboundedReceiver<WakeMessage>,
@@ -111,6 +110,13 @@ pub(crate) struct WakeHandoff {
 pub struct WakeMessage {
     raw: String,
     handoff: Option<WakeHandoff>,
+    kind: WakeKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WakeKind {
+    Background,
+    Coordination,
 }
 
 impl WakeMessage {
@@ -119,6 +125,27 @@ impl WakeMessage {
         Self {
             raw: raw.into(),
             handoff: None,
+            kind: WakeKind::Background,
+        }
+    }
+
+    pub(crate) fn coordination(prompt: impl Into<String>) -> Self {
+        Self {
+            raw: prompt.into(),
+            handoff: None,
+            kind: WakeKind::Coordination,
+        }
+    }
+
+    pub(crate) fn is_coordination(&self) -> bool {
+        self.kind == WakeKind::Coordination
+    }
+
+    pub(crate) fn notice(&self) -> &'static str {
+        if self.is_coordination() {
+            "↻ coordination message received, waking agent"
+        } else {
+            "↻ background task finished, waking agent to review"
         }
     }
 
@@ -144,6 +171,12 @@ pub(crate) fn coalesce_pending_wakes(
     first: WakeMessage,
     receiver: &mut WakeReceiver,
 ) -> WakeMessage {
+    // Coordination messages are complete typed prompts. Keep their ordering
+    // and identity intact instead of blending them into a background-task
+    // burst; the next idle boundary drains the following message.
+    if first.kind == WakeKind::Coordination {
+        return first;
+    }
     let mut messages = vec![first];
     while messages.len() < MAX_WAKE_BATCH_MESSAGES
         && let Ok(message) = receiver.try_recv()
@@ -202,6 +235,7 @@ pub(crate) fn coalesce_pending_wakes(
             tasks,
             omitted_tasks,
         }),
+        kind: WakeKind::Background,
     }
 }
 
@@ -253,6 +287,7 @@ impl WakeRunner {
             return WakeMessage {
                 raw: truncate_bytes(content, MAX_WAKE_BATCH_BYTES),
                 handoff: None,
+                kind: WakeKind::Background,
             };
         };
         let task = if content.starts_with("Task \"") {
@@ -299,6 +334,7 @@ impl WakeRunner {
                 tasks: vec![task],
                 omitted_tasks: 0,
             }),
+            kind: WakeKind::Background,
         }
     }
 }
@@ -308,10 +344,11 @@ impl WakeRunner {
 pub fn register_host_route(
     runner: Arc<HostRoutedRunner<WakeRunner>>,
     session_id: SessionId,
-) -> WakeReceiver {
+) -> (WakeSender, WakeReceiver) {
     let routes = runner.routes().clone();
     let mut raw = routes.register(session_id);
     let (wake_tx, wake_rx) = mpsc::unbounded_channel();
+    let bridge_tx = wake_tx.clone();
     let bridge_runner = runner.clone();
     let bridge = tokio::spawn(async move {
         while let Some(content) = raw.recv().await {
@@ -319,25 +356,31 @@ pub fn register_host_route(
                 .inner()
                 .wake_message(session_id, &content)
                 .await;
-            if wake_tx.send(wake).is_err() {
+            if bridge_tx.send(wake).is_err() {
                 break;
             }
         }
     });
-    WakeReceiver {
-        inner: wake_rx,
-        _route: Some(HostWakeRoute {
-            routes,
-            session_id,
-            bridge,
-        }),
-    }
+    (
+        wake_tx,
+        WakeReceiver {
+            inner: wake_rx,
+            _route: Some(HostWakeRoute {
+                routes,
+                session_id,
+                bridge,
+            }),
+        },
+    )
 }
 
 /// Frame a raw everruns completion message as an `[automatic]` wake prompt,
 /// mirroring the yolop-native `wake_prompt` framing: make clear it is not a user
 /// message and point the model at the run's result before it continues.
 pub fn frame_wake_prompt(message: &WakeMessage) -> String {
+    if message.kind == WakeKind::Coordination {
+        return message.raw.clone();
+    }
     format!(
         "[automatic] Background work you started has finished:\n\n{}\n\nThis is not a \
          user message. Read the run's result if useful (its `result_path`/`log_path` are session \
@@ -351,6 +394,10 @@ pub fn frame_wake_prompt(message: &WakeMessage) -> String {
 /// provenance because hosts call this constructor only for routed wakes.
 pub fn input_for_wake(message: &WakeMessage) -> InputMessage {
     let mut input = InputMessage::user(frame_wake_prompt(message));
+    if message.kind == WakeKind::Coordination {
+        input.tags.push("automatic_coordination".to_string());
+        return input;
+    }
     if let Some(handoff) = &message.handoff
         && let Ok(value) = serde_json::to_value(handoff)
     {
@@ -606,7 +653,7 @@ mod tests {
     async fn upstream_router_delivers_an_enriched_host_wake() {
         let session_id = SessionId::from_seed(910_001);
         let runner = Arc::new(HostRoutedRunner::new(runner(), WakeRoutes::new()));
-        let mut wakes = register_host_route(runner.clone(), session_id);
+        let (_, mut wakes) = register_host_route(runner.clone(), session_id);
 
         runner
             .send_message(session_id, "for host")
@@ -637,8 +684,8 @@ mod tests {
         let session_a = SessionId::from_seed(910_005);
         let session_b = SessionId::from_seed(910_006);
         let runner = Arc::new(HostRoutedRunner::new(runner(), WakeRoutes::new()));
-        let rx_a = register_host_route(runner.clone(), session_a);
-        let rx_b = register_host_route(runner.clone(), session_b);
+        let (_, rx_a) = register_host_route(runner.clone(), session_a);
+        let (_, rx_b) = register_host_route(runner.clone(), session_b);
 
         let routable = runner
             .routable_session_ids()
@@ -687,6 +734,22 @@ mod tests {
             rx.try_recv().is_err(),
             "the burst must be drained exactly once"
         );
+    }
+
+    #[test]
+    fn coordination_wakes_keep_typed_framing_and_distinct_presentation() {
+        let wake = WakeMessage::coordination("[automatic] assigned task_dispatch");
+
+        assert!(wake.is_coordination());
+        assert_eq!(
+            frame_wake_prompt(&wake),
+            "[automatic] assigned task_dispatch"
+        );
+        assert_eq!(
+            wake.notice(),
+            "↻ coordination message received, waking agent"
+        );
+        assert_eq!(input_for_wake(&wake).tags, vec!["automatic_coordination"]);
     }
 
     fn terminal_task(id: &str, state: SessionTaskState, summary: Option<&str>) -> SessionTask {
@@ -767,6 +830,7 @@ mod tests {
                 tasks: vec![task],
                 omitted_tasks: 0,
             }),
+            kind: WakeKind::Background,
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let mut rx = WakeReceiver::unrouted(rx);

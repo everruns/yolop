@@ -29,6 +29,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 - [Hooks](specs/hooks.md), lifecycle automation.
 - [Memory](specs/memory.md), durable user personalization.
 - [Session history](specs/session-history.md), discovery of earlier sessions.
+- [Session coordination](specs/session-coordination.md), local coordinator and worker orchestration.
 - [Session titles](specs/session-titles.md), automatic conversation titles.
 - [Skills](specs/skills.md), reusable instruction packs.
 - [Tool calling](specs/tool-calling.md), argument shape enforcement and bounded repair.
