@@ -1,4 +1,4 @@
-use crate::config::{SettingsStore, default_settings_path};
+use crate::config::{Settings, SettingsStore, default_settings_path};
 use everruns_core::{ScopedMcpServer, ScopedMcpServers};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value as JsonValue;
@@ -224,10 +224,11 @@ pub(crate) fn global_mcp_config_path() -> Option<PathBuf> {
     default_settings_path().map(|path| path.with_file_name(MCP_CONFIG_FILE))
 }
 
-pub(crate) fn load_mcp_servers(workspace_root: &Path) -> ScopedMcpServers {
-    let mut servers = default_settings_path()
-        .map(|path| enabled_servers(SettingsStore::open(path).snapshot().mcp))
-        .unwrap_or_default();
+/// Merge the effective settings' MCP servers (global plus the active profile's
+/// overlay, already resolved in `settings`) with the legacy global `mcp.json`
+/// and the workspace `.mcp.json`, in that precedence order.
+pub(crate) fn load_mcp_servers(settings: &Settings, workspace_root: &Path) -> ScopedMcpServers {
+    let mut servers = enabled_servers(settings.mcp.clone());
 
     for (name, server) in load_global_mcp_legacy().into_iter() {
         servers.entry(name).or_insert(server);

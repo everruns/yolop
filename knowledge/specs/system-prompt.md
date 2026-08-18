@@ -243,6 +243,21 @@ Tool-round orchestration uses the four binary arms in the
 `orchestration-efficiency` preset: unchanged baseline, provider preference
 only, prompt policy only, and the combined candidate.
 
+### A profile may add a standing job
+
+A named profile's `instructions` / `instructions_file`
+([configuration](configuration.md)) are appended once, right after `system.md`,
+under a `## Profile instructions` heading and ahead of the capability blocks'
+per-turn contributions. That is the one seam where the operator, not a
+capability, adds prompt text: a profile exists to make yolop a particular agent
+for a run (triage, review, release duty), and that job cannot be expressed by
+any capability's own block. It stays subject to the same budget discipline as
+`system.md`, since it is paid on every turn of that profile's sessions.
+
+Project policy still belongs in `AGENTS.md` and durable user preference in
+memory. The distinguishing question is lifetime: an instruction that should
+apply whenever *this repository* is open is not a profile instruction.
+
 ## Non-goals
 
 - No per-model prompt variants. Composition is uniform across providers; when a

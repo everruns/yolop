@@ -432,7 +432,11 @@ contribution diff before anything runs.
 
 An enabled extension is one harness entry, `[[capabilities]]
 ref = "ext:<name>"`, so enable/disable/configure/validate ride the existing
-overrides, catalog, and `set_config` tools unchanged. The declared
+overrides, catalog, and `set_config` tools unchanged. Enablement is therefore
+per-layer for free: a named profile carrying `[[capabilities]]` decides which
+extensions its runs get, and `/extensions enable|disable` writes into the active
+profile when one is selected (see [configuration](configuration.md)).
+Installation stays global, one copy per user. The declared
 `config_schema` plugs into `CapabilityCatalog` validation exactly like a
 built-in's.
 

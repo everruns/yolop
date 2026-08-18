@@ -3,6 +3,25 @@
 Significant changes to Yolop's durable knowledge are recorded here. Routine
 wording, formatting, and link fixes do not need entries.
 
+## 2026-08-18, Profiles carry a whole agent, not just execution settings
+
+- [Configuration](specs/configuration.md): profiles gained `capabilities`,
+  `mcp`, `instructions` / `instructions_file`, and `skills_dir`, with
+  `capabilities_mode` / `mcp_mode` to replace the global set instead of layering
+  on it. Only credentials and personal settings (`tokens`, `codex_auth`,
+  `theme`, `attribution`, `proactive_wake`) stay global-only.
+- The reason for the change: v1 profiles could switch provider and paranoia
+  level but not define an agent with a job, so a purpose-built agent (triage,
+  review, release duty) meant a second config directory. Everything that decides
+  what an agent can do is now selectable per run.
+- Follow-on effects recorded in the neighbouring specs: extension enablement is
+  a `[[capabilities]]` entry, so it became per-profile for free
+  ([extensions](specs/extensions.md)); skills gained a profile scope between
+  workspace and global ([skills](specs/skills.md)); MCP gained a profile scope
+  between global and workspace ([mcp](specs/mcp.md)); and a profile's standing
+  instructions are the one operator-owned prompt seam
+  ([system prompt](specs/system-prompt.md)).
+
 ## 2026-08-17, One-shot attached extension administration
 
 - Replaced model-visible extension management tools with the `yolop extensions`

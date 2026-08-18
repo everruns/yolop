@@ -357,6 +357,7 @@ struct CodingCliSessionFileSystemFactory {
     session_id: SessionId,
     materializer: Arc<session_log::SessionMaterializer>,
     skill_global: Option<PathBuf>,
+    skill_profile: Option<PathBuf>,
     skill_system: Option<PathBuf>,
     environment_skill: Option<&'static str>,
     /// `(name, skills_dir)` for enabled extensions contributing skills; each is
@@ -377,9 +378,13 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
         // The writable global skills dir may not exist yet; create it so a skill
         // installed mid-session is discoverable. (System skills are already
         // materialized by `SkillDirs::resolve`.)
-        for dir in [self.skill_global.as_ref(), self.skill_system.as_ref()]
-            .into_iter()
-            .flatten()
+        for dir in [
+            self.skill_global.as_ref(),
+            self.skill_profile.as_ref(),
+            self.skill_system.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
         {
             std::fs::create_dir_all(dir).map_err(|e| {
                 AgentLoopError::config(format!("create skills dir {}: {e}", dir.display()))
@@ -390,6 +395,7 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
                 self.workspace.clone(),
                 self.session_dir.clone(),
                 self.skill_global.clone(),
+                self.skill_profile.clone(),
                 self.skill_system.clone(),
                 self.materializer.clone(),
             )?);
@@ -770,6 +776,7 @@ struct CodingCliSessionFileStore {
     // Backing stores for the global/system skill scope VFS roots, served from
     // real directories outside the workspace (see `capabilities::skills`).
     skill_global: Option<RealDiskFileStore>,
+    skill_profile: Option<RealDiskFileStore>,
     skill_system: Option<RealDiskFileStore>,
     session_dir: PathBuf,
     materializer: Arc<session_log::SessionMaterializer>,
@@ -781,6 +788,7 @@ impl CodingCliSessionFileStore {
         workspace: Arc<WorkspaceHost>,
         session_dir: PathBuf,
         skill_global: Option<PathBuf>,
+        skill_profile: Option<PathBuf>,
         skill_system: Option<PathBuf>,
     ) -> everruns_provider::error::Result<Self> {
         let materializer = Arc::new(session_log::SessionMaterializer::new(
@@ -791,6 +799,7 @@ impl CodingCliSessionFileStore {
             workspace,
             session_dir,
             skill_global,
+            skill_profile,
             skill_system,
             materializer,
         )
@@ -800,6 +809,7 @@ impl CodingCliSessionFileStore {
         workspace: Arc<WorkspaceHost>,
         session_dir: PathBuf,
         skill_global: Option<PathBuf>,
+        skill_profile: Option<PathBuf>,
         skill_system: Option<PathBuf>,
         materializer: Arc<session_log::SessionMaterializer>,
     ) -> everruns_provider::error::Result<Self> {
@@ -812,6 +822,7 @@ impl CodingCliSessionFileStore {
             workspace_disk: workspace.disk().as_ref().clone(),
             session: StdMutex::new(None),
             skill_global: skill_store(skill_global)?,
+            skill_profile: skill_store(skill_profile)?,
             skill_system: skill_store(skill_system)?,
             session_dir,
             materializer,
@@ -826,9 +837,16 @@ impl CodingCliSessionFileStore {
     }
 
     fn skill_route(&self, path: &str) -> Option<(&RealDiskFileStore, String)> {
-        use crate::capabilities::skills::{GLOBAL_SKILLS_VFS, SYSTEM_SKILLS_VFS, relative_under};
+        use crate::capabilities::skills::{
+            GLOBAL_SKILLS_VFS, PROFILE_SKILLS_VFS, SYSTEM_SKILLS_VFS, relative_under,
+        };
         if let Some(store) = &self.skill_global
             && let Some(rest) = relative_under(path, GLOBAL_SKILLS_VFS)
+        {
+            return Some((store, rest));
+        }
+        if let Some(store) = &self.skill_profile
+            && let Some(rest) = relative_under(path, PROFILE_SKILLS_VFS)
         {
             return Some((store, rest));
         }
@@ -2759,7 +2777,8 @@ impl RuntimeHandles {
     /// servers are discovered cold on the next turn and removed ones simply
     /// drop out of the tool set. Returns the sorted names now active.
     pub async fn reload_mcp_servers(&self) -> anyhow::Result<Vec<String>> {
-        let servers = crate::config::mcp::load_mcp_servers(&self.workspace_root);
+        let servers =
+            crate::config::mcp::load_mcp_servers(&self.settings.snapshot(), &self.workspace_root);
         let mut session = self
             .session_store
             .get_session(self.session_id)
@@ -3387,7 +3406,11 @@ pub async fn build_with_options(
     // (this also
     // materializes the embedded system skills). Shared by the skills capability
     // config and the file-store factory's scope routing.
-    let skill_dirs = crate::capabilities::skills::SkillDirs::resolve(&effective_root);
+    // The active profile may contribute a fourth, profile-scoped directory.
+    let skill_dirs = crate::capabilities::skills::SkillDirs::resolve(
+        &effective_root,
+        settings.snapshot().skills_dir.clone(),
+    );
 
     // Read-only skills contributed by enabled extensions (D4: only a declaring,
     // enabled extension's `skills/` loads). Computed here so it feeds both the
@@ -3408,7 +3431,8 @@ pub async fn build_with_options(
     // MCP servers from global settings and workspace `.mcp.json`, merged. Loading is
     // best-effort per scope: a malformed file is warned about and skipped, so
     // it never sinks the session or masks the other scope.
-    let mut mcp_servers: ScopedMcpServers = crate::config::mcp::load_mcp_servers(&canonical_root);
+    let mut mcp_servers: ScopedMcpServers =
+        crate::config::mcp::load_mcp_servers(&settings.snapshot(), &canonical_root);
     // Client-supplied servers (ACP `session/new` `mcpServers`) overlay the
     // file-based config: a name present in both resolves to the client's entry,
     // matching the "the editor configured this for the agent" expectation.
@@ -4057,6 +4081,7 @@ pub async fn build_with_options(
             session_id,
             materializer: materializer.clone(),
             skill_global: skill_dirs.global.clone(),
+            skill_profile: skill_dirs.profile.clone(),
             skill_system: skill_dirs.system.clone(),
             environment_skill: HerdrCapability::skill_content(herdr.is_active()),
             extension_skills: extension_skill_scopes.clone(),
@@ -4093,7 +4118,14 @@ pub async fn build_with_options(
         .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID);
     let session_mcp_servers = mcp_servers.clone();
 
-    let mut harness_builder = HarnessBuilder::new("yolop", SYSTEM_PROMPT)
+    // A profile's `instructions` ride after `system.md` so a profile can give
+    // the agent a standing job (triage, review, release duty) without editing
+    // the shipped prompt or the repository's AGENTS.md.
+    let harness_prompt = match settings_snapshot.instructions.as_deref() {
+        Some(extra) => format!("{SYSTEM_PROMPT}\n\n## Profile instructions\n\n{extra}\n"),
+        None => SYSTEM_PROMPT.to_string(),
+    };
+    let mut harness_builder = HarnessBuilder::new("yolop", harness_prompt)
         .metadata_entry("app", "yolop")
         .metadata_entry("yolop_version", env!("CARGO_PKG_VERSION"))
         .metadata_entry(
@@ -4506,7 +4538,8 @@ mod tests {
             .expect("workspace host"),
         );
         let composite: Arc<dyn SessionFileSystem> = Arc::new(
-            CodingCliSessionFileStore::new(host, session.to_path_buf(), None, None).expect("store"),
+            CodingCliSessionFileStore::new(host, session.to_path_buf(), None, None, None)
+                .expect("store"),
         );
         // Match production (`build`): backend-native display so tests exercise the
         // real host-path presentation (#258), not the `/workspace` alias.
@@ -7351,8 +7384,14 @@ mod tests {
         );
         let store: Arc<dyn SessionFileSystem> = Arc::new(
             MountFs::new(Arc::new(
-                CodingCliSessionFileStore::new(host, session.path().to_path_buf(), None, None)
-                    .expect("store"),
+                CodingCliSessionFileStore::new(
+                    host,
+                    session.path().to_path_buf(),
+                    None,
+                    None,
+                    None,
+                )
+                .expect("store"),
             ))
             .with_backend_display(),
         );
@@ -7570,6 +7609,7 @@ mod tests {
                 None,
             )),
             skill_global: None,
+            skill_profile: None,
             skill_system: None,
             environment_skill: None,
             extension_skills: Vec::new(),
@@ -7650,6 +7690,7 @@ mod tests {
                 None,
             )),
             skill_global: None,
+            skill_profile: None,
             skill_system: None,
             environment_skill: None,
             extension_skills: Vec::new(),
@@ -7757,6 +7798,7 @@ mod tests {
             host,
             session.path().to_path_buf(),
             Some(global.path().to_path_buf()),
+            None,
             Some(system.path().to_path_buf()),
         )
         .expect("store");
@@ -7817,6 +7859,7 @@ mod tests {
         let dirs = SkillDirs {
             workspace: workspace.path().join(".agents").join("skills"),
             global: None,
+            profile: None,
             system: Some(system.path().to_path_buf()),
         };
         let host = Arc::new(
@@ -7830,6 +7873,7 @@ mod tests {
             CodingCliSessionFileStore::new(
                 host,
                 session.path().to_path_buf(),
+                None,
                 None,
                 Some(system.path().to_path_buf()),
             )
@@ -7889,6 +7933,7 @@ mod tests {
                 None,
             )),
             skill_global: None,
+            skill_profile: None,
             skill_system: None,
             environment_skill: HerdrCapability::skill_content(true),
             extension_skills: Vec::new(),
@@ -7964,6 +8009,7 @@ mod tests {
                 None,
             )),
             skill_global: None,
+            skill_profile: None,
             skill_system: None,
             environment_skill: None,
             extension_skills: vec![("demo".to_string(), skills_dir.clone())],
@@ -8432,6 +8478,88 @@ mod tests {
              ({DEFAULT_TOOL_SEARCH_THRESHOLD}) for deferred loading to activate; \
              if the surface shrinks, lower the threshold via \
              ToolSearchCapability::with_threshold (or DEFAULT_TOOL_SEARCH_THRESHOLD)"
+        );
+    }
+
+    /// A profile is the unit that shapes a whole run: its instructions ride in
+    /// the system prompt, and its `[[capabilities]]` and `[mcp.servers]` entries
+    /// shape the tool set. That is what makes a purpose-built agent (triage,
+    /// review) a profile rather than a fork of settings.toml.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn profile_shapes_prompt_capabilities_skills_and_mcp() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let profiles = sessions.path().join("profiles");
+        std::fs::create_dir_all(&profiles).expect("profiles dir");
+        std::fs::write(
+            profiles.join("triage.toml"),
+            format!(
+                "instructions = 'Route incoming work to the right session.'\n\n\
+                 [mcp.servers.triage-inbox]\n\
+                 type = 'http'\n\
+                 url = 'https://inbox.example/mcp'\n\n\
+                 [[capabilities]]\n\
+                 ref = '{}'\n\
+                 enabled = false\n",
+                crate::capabilities::skills::SKILL_MANAGEMENT_CAPABILITY_ID
+            ),
+        )
+        .expect("write profile");
+        let skill = profiles.join("triage").join("skills").join("intake");
+        std::fs::create_dir_all(&skill).expect("skill dir");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: intake\ndescription: Classify incoming work.\n---\n\nClassify, then route.\n",
+        )
+        .expect("write skill");
+        let settings = Arc::new(
+            SettingsStore::open_with_profile(sessions.path().join("settings.toml"), "triage")
+                .expect("open profile"),
+        );
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let context = built
+            .handles
+            .runtime
+            .load_context(built.handles.session_id)
+            .await
+            .expect("assemble context");
+
+        assert!(
+            context
+                .runtime_agent
+                .system_prompt
+                .contains("Route incoming work to the right session."),
+            "profile instructions are part of the prompt"
+        );
+        assert!(
+            !context
+                .runtime_agent
+                .tools
+                .iter()
+                .any(|tool| tool.name() == "search_skills"),
+            "a profile `enabled = false` entry masks the capability's tools"
+        );
+        assert!(
+            context.runtime_agent.system_prompt.contains("intake"),
+            "the profile's skills directory is a discoverable scope"
+        );
+        assert!(
+            built
+                .startup
+                .mcp_server_names
+                .iter()
+                .any(|name| name == "triage-inbox"),
+            "profile MCP servers join the session: {:?}",
+            built.startup.mcp_server_names
         );
     }
 

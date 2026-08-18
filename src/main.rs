@@ -106,7 +106,10 @@ struct Cli {
     #[arg(long, value_enum)]
     provider: Option<ProviderArg>,
 
-    /// Load a named execution profile from `<config_dir>/yolop/profiles/<name>.toml`.
+    /// Load a named profile from `<config_dir>/yolop/profiles/<name>.toml`: an
+    /// overlay of provider, model, approval, sandbox, and worktree settings plus
+    /// the profile's own capabilities, extensions, MCP servers, skills, and
+    /// system-prompt instructions.
     #[arg(long, value_name = "NAME")]
     profile: Option<String>,
 

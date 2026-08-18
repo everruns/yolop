@@ -6,20 +6,21 @@
 // vendors it. This module keeps only the yolop-specific glue the core
 // capability cannot own:
 //
-//   * the three scopes and where each maps on the *host* disk,
+//   * the scope set and where each maps on the *host* disk,
 //   * a `SkillDirResolver` so `${SKILL_DIR}` expands to a real host path the
 //     `bash` tool can read (the core default keeps it in the VFS),
 //   * the system skills pre-packed in the binary and materialized once.
 //
 // The capability discovers/reads/writes strictly through the session
 // `SessionFileSystem`. yolop's file store (`CodingCliSessionFileStore`) maps the
-// three scope VFS roots onto the real directories below, so the capability never
+// disk-backed scope VFS roots onto the real directories below, so the capability never
 // touches a host path directly — the host mapping lives behind the file store,
 // not in the capability's configuration.
 //
-// Scopes (precedence: workspace > global > system; the core capability de-dups
-// by skill directory name, so a nearer scope shadows a farther one):
+// Scopes (precedence: workspace > profile > global > system; the core capability
+// de-dups by skill directory name, so a nearer scope shadows a farther one):
 //   * workspace — `<workspace>/.agents/skills`           (writable)
+//   * profile   — the active `--profile`'s skills dir    (writable; only while selected)
 //   * global    — `~/.agents/skills`                     (writable; override: YOLOP_GLOBAL_SKILLS_DIR)
 //   * system    — pre-packed, materialized once          (read-only; override: YOLOP_SYSTEM_SKILLS_DIR)
 
@@ -48,6 +49,9 @@ pub const WORKSPACE_SKILLS_VFS: &str = "/.agents/skills";
 /// Synthetic VFS root for the global scope, routed by the file store to the
 /// user's global skills directory (outside the workspace).
 pub const GLOBAL_SKILLS_VFS: &str = "/.yolop/global-skills";
+/// Synthetic VFS root for the active profile's skills directory, routed by the
+/// file store to `profiles/<name>/skills` (or the profile's `skills_dir`).
+pub const PROFILE_SKILLS_VFS: &str = "/.yolop/profile-skills";
 /// Synthetic VFS root for the system scope, routed by the file store to the
 /// materialized system skills directory.
 pub const SYSTEM_SKILLS_VFS: &str = "/.yolop/system-skills";
@@ -82,6 +86,8 @@ pub struct SkillDirs {
     pub workspace: PathBuf,
     /// Global skills directory, or `None` when no home directory exists.
     pub global: Option<PathBuf>,
+    /// The active profile's skills directory, when a profile contributes one.
+    pub profile: Option<PathBuf>,
     /// Materialized system skills directory, or `None` when unavailable.
     pub system: Option<PathBuf>,
 }
@@ -89,7 +95,7 @@ pub struct SkillDirs {
 impl SkillDirs {
     /// Resolve the workspace/global/system directories for `workspace_root`.
     /// Materializes the embedded system skills as a side effect (idempotent).
-    pub fn resolve(workspace_root: &Path) -> Self {
+    pub fn resolve(workspace_root: &Path, profile: Option<PathBuf>) -> Self {
         let global = global_skills_dir();
         if let (Some(primary), Some(legacy)) = (&global, legacy_global_skills_dir())
             && primary != &legacy
@@ -105,6 +111,7 @@ impl SkillDirs {
         Self {
             workspace: workspace_root.join(".agents").join("skills"),
             global,
+            profile,
             system: system_skills_dir(),
         }
     }
@@ -130,6 +137,11 @@ pub fn skills_config(
     extensions: &[(String, PathBuf)],
 ) -> SkillsConfig {
     let mut scopes = vec![SkillScope::new("workspace", WORKSPACE_SKILLS_VFS, true)];
+    // Between workspace and global: a profile is chosen per run, so its skills
+    // should win over the user's global set but never over the repo's own.
+    if dirs.profile.is_some() {
+        scopes.push(SkillScope::new("profile", PROFILE_SKILLS_VFS, true));
+    }
     if dirs.global.is_some() {
         scopes.push(SkillScope::new("global", GLOBAL_SKILLS_VFS, true));
     }
@@ -181,6 +193,7 @@ impl HostSkillDirResolver {
         }
         match label {
             "global" => self.dirs.global.clone(),
+            "profile" => self.dirs.profile.clone(),
             // Environment skills are VFS-only and contain no shell-side assets.
             // Keep their display/substitution path honest instead of pretending
             // they exist in a writable workspace or global directory.
@@ -617,6 +630,7 @@ mod tests {
         let dirs = SkillDirs {
             workspace: PathBuf::from("/ws/.agents/skills"),
             global: None,
+            profile: None,
             system: Some(PathBuf::from("/data/sys")),
         };
         let cfg = skills_config(&dirs, false, &[]);
@@ -641,10 +655,35 @@ mod tests {
     }
 
     #[test]
+    fn profile_scope_ranks_between_workspace_and_global() {
+        let dirs = SkillDirs {
+            workspace: PathBuf::from("/ws/.agents/skills"),
+            global: Some(PathBuf::from("/home/.agents/skills")),
+            profile: Some(PathBuf::from("/cfg/yolop/profiles/triage/skills")),
+            system: Some(PathBuf::from("/data/sys")),
+        };
+        let cfg = skills_config(&dirs, false, &[]);
+        let labels: Vec<&str> = cfg.scopes.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(labels, vec!["workspace", "profile", "global", "system"]);
+        let scope = cfg
+            .scopes
+            .iter()
+            .find(|s| s.label == "profile")
+            .expect("profile scope");
+        assert!(scope.writable, "a profile owns its skills");
+        assert_eq!(scope.vfs_root, PROFILE_SKILLS_VFS);
+        assert_eq!(
+            PathBuf::from(cfg.resolver.skill_dir(scope, "triage-intake")),
+            PathBuf::from("/cfg/yolop/profiles/triage/skills").join("triage-intake")
+        );
+    }
+
+    #[test]
     fn extension_scopes_are_read_only_and_routed() {
         let dirs = SkillDirs {
             workspace: PathBuf::from("/ws/.agents/skills"),
             global: None,
+            profile: None,
             system: None,
         };
         let ext = vec![(
@@ -671,6 +710,7 @@ mod tests {
         let dirs = SkillDirs {
             workspace: PathBuf::from("/ws/.agents/skills"),
             global: Some(PathBuf::from("/cfg/yolop/skills")),
+            profile: None,
             system: Some(PathBuf::from("/data/sys")),
         };
         let r = HostSkillDirResolver {
@@ -781,6 +821,7 @@ mod tests {
         let dirs = SkillDirs {
             workspace: PathBuf::from("/ws/.agents/skills"),
             global: None,
+            profile: None,
             system: None,
         };
         let capability = SkillManagementCapability::new(dirs);
@@ -821,6 +862,7 @@ mod tests {
             dirs: SkillDirs {
                 workspace: workspace.to_path_buf(),
                 global: global.map(Path::to_path_buf),
+                profile: None,
                 system: None,
             },
         }
