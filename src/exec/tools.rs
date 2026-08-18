@@ -51,6 +51,7 @@ pub struct BashTool {
     sandbox: Arc<dyn SandboxProvider>,
     approval_policy: ApprovalPolicy,
     approval_gate: Arc<ApprovalGate>,
+    control: Option<Arc<dyn crate::control::ControlService>>,
     foreground_timeout_secs: u64,
     background_timeout_secs: u64,
     max_output_bytes: usize,
@@ -113,10 +114,19 @@ impl BashTool {
             sandbox,
             approval_policy,
             approval_gate,
+            control: None,
             foreground_timeout_secs: 120,
             background_timeout_secs: 24 * 60 * 60,
             max_output_bytes: 1024 * 1024,
         }
+    }
+
+    pub(crate) fn with_control(
+        mut self,
+        control: Option<Arc<dyn crate::control::ControlService>>,
+    ) -> Self {
+        self.control = control;
+        self
     }
 
     fn timeout_secs(&self, background: bool) -> u64 {
@@ -143,6 +153,25 @@ impl BashTool {
         let timeout = Duration::from_secs(timeout_secs);
         let max_bytes = self.max_output_bytes;
         let sandbox_mode = sandbox.mode();
+
+        // Attached administration is deliberately foreground-only. The
+        // recognizer rejects shell composition, then the exact running Yolop
+        // executable exchanges one typed request over anonymous pipes. No
+        // endpoint or capability reaches the ordinary shell environment.
+        if sink.is_none()
+            && let Some(control) = &self.control
+            && let Some(output) = crate::control::invoke_attached(command, control.clone()).await
+        {
+            return Ok(BashRunOutput {
+                stdout_text: output.stdout,
+                stderr_text: output.stderr,
+                exit_code: output.exit_code,
+                out_truncated: false,
+                err_truncated: false,
+                duration: Duration::ZERO,
+                sandbox_mode,
+            });
+        }
 
         if let Some(sink) = &sink {
             let _ = sink.status("Running bash command").await;
@@ -270,6 +299,33 @@ impl BashTool {
         request_full_access: bool,
         justification: Option<&str>,
     ) -> Result<BashRunOutput, ToolExecutionResult> {
+        if sink.is_none()
+            && self.control.is_some()
+            && self.sandbox.mode() != SandboxMode::DangerFullAccess
+            && crate::control::requires_host_approval(
+                command,
+                self.control.as_ref().expect("checked above").as_ref(),
+            )
+        {
+            if self.approval_policy == ApprovalPolicy::Never {
+                return Err(ToolExecutionResult::tool_error(
+                    "approval_policy=never forbids attached administration outside the shell sandbox",
+                ));
+            }
+            self.request_approval(
+                command,
+                justification
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or(
+                        "typed Yolop administration writes or executes outside the arbitrary-shell sandbox",
+                    )
+                    .to_string(),
+                false,
+            )
+            .await?;
+            return self.run_command(command, sink, &self.sandbox).await;
+        }
+
         if self.sandbox.mode() == SandboxMode::DangerFullAccess {
             if self.approval_policy == ApprovalPolicy::Untrusted && !trusted_command(command) {
                 self.request_approval(
@@ -394,7 +450,8 @@ impl Tool for BashTool {
              relative to it, or chain within one call (`cd sub; cmd`). Captures \
              stdout/stderr with configurable verbosity. 120s timeout; run commands \
              that wait on external events (CI runs, deploys) detached via \
-             `spawn_background` instead."
+             `spawn_background` instead. Invoke `yolop extensions ...` directly \
+             (without shell composition) to administer the current session."
         }
         #[cfg(not(windows))]
         {
@@ -405,7 +462,8 @@ impl Tool for BashTool {
              it, or chain within one call (`cd sub && cmd`). Captures stdout/stderr \
              with configurable verbosity. 120s timeout; run commands that wait on \
              external events (CI runs, deploys) detached via `spawn_background` \
-             instead."
+             instead. Invoke `yolop extensions ...` directly (without shell \
+             composition) to administer the current session."
         }
     }
     fn parameters_schema(&self) -> Value {

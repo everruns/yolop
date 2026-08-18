@@ -19,6 +19,14 @@ The same policy covers every Yolop shell entry point:
 - the `/shell` command; and
 - the TUI `!shell` shortcut.
 
+One narrow exception is not an arbitrary shell command: a direct foreground
+`yolop extensions ...` invocation is recognized as typed administration of the
+current session. It still passes shell approval policy, then uses the exact
+running Yolop executable and anonymous one-request pipes. No endpoint or control
+environment variable is exported, and pipelines, redirects, substitutions,
+quoted commands, and background jobs are never attached. Those forms continue
+through the ordinary sandbox.
+
 The modes are:
 
 | Mode | Shell access |

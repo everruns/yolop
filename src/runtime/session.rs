@@ -356,6 +356,7 @@ impl Session {
         let sandbox = self.handles.sandbox.clone();
         let approval_gate = self.handles.sandbox_approval_gate.clone();
         let approval_policy = self.handles.approval_policy;
+        let control = self.handles.control.clone();
 
         tokio::spawn(async move {
             let tool = BashTool::with_policy(
@@ -363,7 +364,8 @@ impl Session {
                 sandbox,
                 approval_policy,
                 approval_gate,
-            );
+            )
+            .with_control(control);
             let run = tool.execute(serde_json::json!({
                 "command": command,
                 // Direct shell output is not persisted through a tool-call

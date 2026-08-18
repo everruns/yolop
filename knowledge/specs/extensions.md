@@ -10,10 +10,12 @@ Status: **phases 1–3 implemented** in `src/extensions/`.
 Phase 1: protocol core, transport-generic client, persistent process
 manager, package discovery, `ExtensionCapability` adapter,
 `[[capabilities]]` enablement, manifest clamp, never-defer wiring.
-Phase 2: the always-on `extensions` capability with
-`install`/`list`/`enable`/`disable`/`remove` tools, `extensions.lock`
+Phase 2: the `yolop extensions` CLI with
+`install`/`list`/`enable`/`disable`/`remove` operations, `extensions.lock`
 content-hash pinning, install from git URL and local path, and the
-`ext:<name>` enable/disable write path.
+`ext:<name>` enable/disable write path. Management is not exposed as model
+tools. The built-in `ExtensionsCapability` retains `/extensions`, while
+extension-contributed tools and commands are unchanged.
 Phase 3: contributed MCP servers, a `yolop.mcpServers` manifest facet
 (stdio/http), surfaced through `Capability::mcp_servers()` and merged into
 scoped MCP config for enabled extensions, name-prefixed `<ext>__<server>`
@@ -47,18 +49,18 @@ A `cargo test` drift guard (run under CI's `--all-features` coverage job) fails
 if either committed file is stale, so the wire surface can't change without the
 artifacts changing. A non-Rust author reads them to discover and validate the
 wire format.
-Conformance: `doctor_extension` (surfaced as `/extensions doctor`) spawns an
+Conformance: `yolop extensions doctor <name>` spawns an
 installed extension's server, runs the `initialize` handshake, and grades it
 against the manifest, protocol-version compatibility, the D4 tool clamp
 (a widened tool is a hard fail; an unserved manifest tool a warning), and
 prompt-facet consistency, returning per-check pass/warn/fail. It is the
 runtime dual of the CI schema/drift guards: authors validate a server before
 shipping without booting a whole session.
-Self-writing: `scaffold_extension` generates a ready-to-edit package, a
+Self-writing: `yolop extensions scaffold` generates a ready-to-edit package, a
 `plugin.json` declaring the requested facets (`tools`, `hooks`, `prompt`) plus
 a self-contained capability server whose only author-editable boundaries are the
 `handle_*` bodies. The skeleton is correct by construction: it installs via
-`install_extension source=<dir>` and passes `doctor_extension` before any logic
+`yolop extensions install <dir>` and passes `yolop extensions doctor <name>` before any logic
 is written, so authoring collapses to filling in handlers. The server is a
 single executable under the package `bin/` (resolved via the `bin/`-on-PATH
 rule the runtime already uses; the exec bit survives the install copy), so no
@@ -82,7 +84,7 @@ into a `SetExtensionStatus` `UiCommand`, then `App.extension_status`, then
 `PresentationState`. It renders in the inline TUI (`status_contributions` /
 `expanded_status_lines`) and the full-screen renderer (`app/fullscreen.rs`); it
 is a no-op in `--print`/ACP, where the sink is `None` and the push only logs.
-`scaffold_extension status=true` emits an `emit_status(text)` helper; the
+`yolop extensions scaffold --status` emits an `emit_status(text)` helper; the
 acceptance, a self-authored char-counter that pushes to the sink, is covered
 by `scaffolded_status_extension_pushes_to_the_sink`. ACP has no status surface
 today, so extension status is intentionally TUI-only for now.
@@ -94,7 +96,7 @@ declaring extension's `skills/` is seeded into a read-only in-memory mount at
 mutated through the VFS) and added as a read-only `SkillScope` (label
 `ext:<name>`) in `skills_config`. Loading follows the MCP-contribution rule
 (enabled extensions only) and is host-side, no server or wire involvement.
-`scaffold_extension skills=true` writes a starter `skills/<name>/SKILL.md`;
+`yolop extensions scaffold --skills` writes a starter `skills/<name>/SKILL.md`;
 `extension_contributed_skill_is_visible_and_read_only` covers the mount.
 Slash commands: an extension declares `commands` in its manifest; `ExtensionCapability`
 implements the `Capability` `commands()`/`execute_command()` boundaries, so the
@@ -102,7 +104,7 @@ commands flow into `runtime.list_commands` → the palette automatically. Each i
 registered namespaced (`<ext>:<name>`) so it can never shadow a built-in, and
 invoking it sends `command/execute` (host→server) with `{name, arguments}`; the
 server's `CommandExecuteResult { success, message }` becomes the `CommandResult`
-shown to the user. `scaffold_extension commands=[…]` generates a
+shown to the user. `yolop extensions scaffold --command <name>` generates a
 `handle_command` boundary in all three templates. Covered by
 `scaffolded_extension_serves_a_slash_command`.
 ui/ask: an extension that declares `ui_ask` (the D4 opt-in) may send a `ui/ask`
@@ -128,12 +130,12 @@ redacted, `ExtensionSecrets`, keyed `ext:<name>`), **never** in `settings.toml`,
 and reach the server as injected env only (`capability.rs` strips any `secret`
 key from `initialize.config`). The `secret` marker decouples the concept from the
 location: moving credentials to a keychain later changes only `secrets.rs`. Agent
-leak-protection is threefold: entry is out-of-band via `set_extension_secret`
+leak-protection is threefold: entry is out-of-band via `yolop extensions secret set`
 (and setup-on-enable), which prompts the *user* through the `ui/ask` surface,
 the agent triggers it but supplies no value and is refused if it passes one; all
-agent-facing reads (`list_extensions`) report a field's `set`/`unset` status,
+CLI reads (`yolop extensions list --json`) report a field's `set`/`unset` status,
 never its value; and a redacting `Secret` newtype keeps values out of logs. On
-`enable_extension`, every required field that is unset is prompted for (setup on
+`yolop extensions enable`, every required field that is unset is prompted for (setup on
 enable), dispatched by `ConfigField::kind`: `secret` → masked entry stored in the
 credential store; an `enum` field → a **selector**; otherwise free text, both
 persisted to capability config (`SettingsStore::set_capability_config`). The kind
@@ -172,7 +174,7 @@ configured by the same environment variables Logfire's onboarding checklist uses
 (`LOGFIRE_TOKEN`, `LOGFIRE_ENDPOINT`, `OTEL_SERVICE_NAME`). Covered by
 `trace_events_are_forwarded_to_a_declaring_server`; a non-declaring extension
 gets no forwarder (`non_declaring_extension_has_no_trace_process`).
-Live reload: `reload_extension name=<name>` restarts an already-enabled
+Live reload: `yolop extensions reload <name>` restarts an already-enabled
 extension's *server process* in place, so implementation edits take effect
 mid-session without a yolop restart, the self-writing inner loop. Each
 `ExtensionCapability` publishes its live `ExtensionProcess` into a shared
@@ -187,28 +189,28 @@ and can never widen it. A manifest change (a new tool, a changed schema) still
 requires a restart, the enabled-capability set is fixed for the session
 because `everruns-core` builds the harness once with no live-reconfigure boundary.
 Covered by `reload_respawns_the_server_with_edited_code`.
-Hot-enable: `everruns-runtime` grew a live-reconfigure boundary
+Attached control: `everruns-runtime` grew a live-reconfigure boundary
 (`InProcessRuntime::activate_capability`/`deactivate_capability` →
-`CapabilityDelta`, EVE-795), so enabling a *new* extension no longer waits for
-the next session. `enable_extension`/`disable_extension` still persist the
-`ext:<name>` override to settings, and in the TUI they also push a
+`CapabilityDelta`, EVE-795). `yolop extensions enable|disable` persists the
+`ext:<name>` override to settings, and when invoked directly through the TUI's
+foreground Bash it also pushes a
 `SetExtensionActive` `UiCommand`; the `App` answers it by calling
 `Session::activate_capability`/`deactivate_capability`, which mutate the
 session-scoped capability overlay. The runtime reassembles prompt, tools, hooks,
 commands, and contributed MCP servers from that overlay on the next reason/act
-boundary, so the extension is live on the **next turn**: no restart. The
-capability lands on the session overlay (distinct from the harness layer a
-startup-enabled extension rides), so it can be live-deactivated too; disabling
-one that was active from session start rides the harness layer and only settings
-can drop it (next session). Refused with no live session (`--print`/ACP), where
-enable/disable persist for the next run. Covered by
+boundary, so a registered extension is live on the **next turn**: no restart.
+Enabled extensions are seeded at the session layer, including at startup, so
+disable is reversible in the same session. Installing a new package remains a
+global operation and its manifest is registered on the next session. Detached
+enable/disable persist for the next run; reload is refused without an attached
+session. Covered by
 `enable_disable_emit_live_activation_when_wired`.
 Later, the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in),
 `workspace/changed`,
 providers, remain design-of-record below.
-Toolchain-free crates.io install is now wired: `install_extension
-source="crates.io:yolop-extension-<name>[@ver]"` (or the bare-`<name>`
+Toolchain-free crates.io install is now wired: `yolop extensions install
+crates.io:yolop-extension-<name>[@ver]` (or the bare-`<name>`
 shorthand) resolves the version through the crates.io **sparse index**
 (`index.crates.io`), downloads the `.crate` from the static CDN, verifies its
 SHA-256 against the index `cksum`, and unpacks the gzip'd tar, no cargo/rustc.
@@ -224,6 +226,41 @@ progress surfaces through the tracing layer until the TUI grows a live
 boundary.
 
 ## Why
+
+### Administration and the attached control plane
+
+Extension administration uses the ordinary `yolop extensions` CLI in both
+contexts. Outside a session it operates on global installed state and settings.
+Inside a running TUI, a conservative direct foreground invocation is attached
+to that session, so enable/disable reconcile the live session and reload can
+restart its process.
+
+The attachment is an internal `control/v1` plane, not YEP. YEP remains the
+host↔extension data plane. The control envelope is versioned and resource-tagged.
+An ordinary `Capability` may implement the optional `ControlCapability` facet,
+declaring its CLI route, read-only operations, typed action execution, and
+rendering. `ControlRegistry` routes only to registered facets, so MCP, skills,
+or configuration can opt in without growing transport branches. The same
+`ExtensionsCapability` instance owns `/extensions` and its attached control
+resource while returning no model tools. Its `CliCapability` facet contributes
+the complete top-level `clap::Command` and converts `ArgMatches` into that same
+typed control request. The binary assembles registered CLI facets into its root
+command and has no static `Extensions` command variant or dispatch branch.
+For each eligible command the parent launches its exact current
+executable and grants only anonymous stdin/stdout pipes. The child sends one
+bounded request and accepts one response; both ends close on completion,
+cancellation, or timeout. No listener, filesystem socket, port, token,
+`YOLOP_CONTROL_ENDPOINT`, or ambient shell environment is created. Pipelines,
+redirection, quoting, substitutions, and background execution receive no
+attachment and run as ordinary shell commands. Attached failure never falls
+back to detached global mutation.
+
+The Bash description provides the discovery hint; the capability-contributed
+Clap definition remains the canonical grammar and `yolop extensions --help`
+the detailed catalog. `/extensions` parses that same action grammar.
+Model-visible extension management tools are
+intentionally absent, while the management command and commands contributed by
+enabled extension packages remain in the capability command registry.
 
 Yolop's unit of functionality is the everruns **capability**: one `Capability`
 implementation contributes tools, system-prompt text, config schema, hooks,
@@ -560,7 +597,7 @@ shape:
   reaches the artifact (and a minor bump) only when promoted. Open
   vocabularies (capability tokens, `capability_params`, metadata maps)
   extend without any bump at all.
-- **Conformance harness in the product**: `/extensions doctor <cmd>` drives
+- **Conformance harness in the product**: `yolop extensions doctor <name>` drives
   a server through handshake, tool call, streaming, cancellation, and
   config push, validating every message against the committed schema, the
   runtime dual of the CI guards, pointed at third-party servers.
@@ -757,7 +794,7 @@ the protocol and the SDK.
    `tool/call` + `tool/update` + `cancel`, `shutdown`; wire types +
    schema-gen + `schema/yep/v1/` with CI `--check` and a conformance
    corpus; the `ExtensionCapability` adapter; the `yolop-extension`
-   reference crate; `/extensions doctor`. Exit: a hand-built server passes
+   reference crate; `yolop extensions doctor`. Exit: a hand-built server passes
    conformance and its tools stream in the TUI.
 2. **Packaging + trust.** Global-scope discovery, `extensions.lock`,
    `/extensions` verbs, manifest-clamps-handshake enforcement,

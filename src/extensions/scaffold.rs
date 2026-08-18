@@ -11,7 +11,7 @@
 //! JSON-RPC server:
 //! - **Python** / **Node.js** (`typescript`): single-file, dependency-free,
 //!   zero-build — the executable server lives directly in `bin/`, so the
-//!   package installs and passes `doctor_extension` immediately.
+//!   package installs and passes `yolop extensions doctor` immediately.
 //! - **Rust**: a `serde_json`-only crate. Compiled, so it carries a `build`
 //!   step ([`Scaffolded::build`]) that produces the binary into `bin/` before
 //!   install — the one difference from the zero-build path.
@@ -332,10 +332,10 @@ Speaks the yolop extension protocol: newline-delimited JSON-RPC over stdio.
 stdout carries ONLY protocol JSON — write any logs to stderr via log(). This
 file has no third-party dependencies.
 
-To author: edit the handle_* bodies below, then from yolop:
-  install_extension source=<this package directory>
-  doctor_extension  name={name}
-  enable_extension  name={name}    # takes effect on the next session
+To author: edit the handle_* bodies below, then run:
+  yolop extensions install <this package directory>
+  yolop extensions doctor {name}
+  yolop extensions enable {name}    # takes effect on the next session
 """
 
 import json
@@ -515,10 +515,10 @@ fn node_server(req: &ScaffoldRequest) -> String {
 // stdout carries ONLY protocol JSON — write any logs to stderr via log(). No
 // third-party dependencies.
 //
-// To author: edit the handle* bodies below, then from yolop:
-//   install_extension source=<this package directory>
-//   doctor_extension  name={name}
-//   enable_extension  name={name}    // takes effect on the next session
+// To author: edit the handle* bodies below, then run:
+//   yolop extensions install <this package directory>
+//   yolop extensions doctor {name}
+//   yolop extensions enable {name}    // takes effect on the next session
 
 const readline = require("readline");
 
@@ -680,12 +680,12 @@ fn readme(req: &ScaffoldRequest, server_name: &str, build: &Option<String>) -> S
          - `plugin.json` — the manifest: the contributions yolop approves at install.\n\
          {layout}\n\n\
          ## Author\n\n\
-         {edit}, then from yolop:\n\n\
+         {edit}, then run:\n\n\
          {build_block}\
          ```\n\
-         install_extension source=<this directory>\n\
-         doctor_extension  name={name}\n\
-         enable_extension  name={name}\n\
+         yolop extensions install <this directory>\n\
+         yolop extensions doctor {name}\n\
+         yolop extensions enable {name}\n\
          ```\n\n\
          Enabling takes effect on the next session.\n",
         name = req.name,
@@ -750,11 +750,11 @@ fn rust_main(req: &ScaffoldRequest) -> String {
 //! stdout carries ONLY protocol JSON — write any logs to stderr. Depends only
 //! on `serde_json`.
 //!
-//! To author: edit the handle_* bodies below, then from yolop:
+//! To author: edit the handle_* bodies below, then run:
 //!   cargo build --release   # then copy target/release/{name}-server to bin/
-//!   install_extension source=<this package directory>
-//!   doctor_extension  name={name}
-//!   enable_extension  name={name}    // takes effect on the next session
+//!   yolop extensions install <this package directory>
+//!   yolop extensions doctor {name}
+//!   yolop extensions enable {name}    // takes effect on the next session
 
 use serde_json::{{Value, json}};
 use std::io::{{BufRead, Write}};

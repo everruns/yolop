@@ -6,6 +6,7 @@ mod auth;
 mod capabilities;
 mod config;
 mod connectors;
+mod control;
 mod crash_report;
 mod drivers;
 mod editor;
@@ -28,7 +29,7 @@ use anyhow::{Context, Result};
 // LTO/dead-code elimination when we register capabilities explicitly.
 extern crate everruns_integrations_daytona;
 extern crate everruns_integrations_parallel;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use config::SettingsStore;
 use config::mcp::{McpConfigScope, McpConfigStore};
 use crossterm::event::{
@@ -91,6 +92,11 @@ impl Write for BoundedTraceWriter {
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+
+    /// Internal one-shot control-plane child. The parent supplies anonymous
+    /// pipes; this flag is never a public session-selection mechanism.
+    #[arg(long = "__attached-control-child", hide = true)]
+    attached_control_child: bool,
 
     /// Workspace root the agent operates inside (default: current dir)
     #[arg(short = 'C', long = "cwd")]
@@ -629,7 +635,23 @@ fn join_worker<T>(
 }
 
 async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> {
-    let cli = Cli::parse();
+    let cli_registry = detached_cli_registry()?;
+    let mut matches = cli_registry.augment(Cli::command())?.get_matches();
+    if let Some(invocation) = cli_registry.invocation(&matches)? {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
+            )
+            .with_ansi(true)
+            .with_writer(trace_writer(false))
+            .init();
+        if matches.get_flag("attached_control_child") {
+            return control::run_control_child(invocation.request).await;
+        }
+        return invocation.execute().await;
+    }
+    let cli = Cli::from_arg_matches_mut(&mut matches)?;
     let interactive = uses_interactive_renderer(&cli);
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -640,8 +662,12 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
         .with_writer(trace_writer(interactive))
         .init();
 
+    if cli.attached_control_child {
+        anyhow::bail!("attached control accepts only a contributed CLI capability command");
+    }
+
     if let Some(command) = cli.command {
-        return run_command(command);
+        return run_command(command).await;
     }
 
     // Fall back to an unwritable scratch path when no platform config dir
@@ -1176,7 +1202,7 @@ fn run_worktree_command(command: WorktreeCommand) -> Result<()> {
     }
 }
 
-fn run_command(command: Commands) -> Result<()> {
+async fn run_command(command: Commands) -> Result<()> {
     match command {
         Commands::Version => {
             println!("{}", version::VERSION_LINE);
@@ -1293,6 +1319,139 @@ fn run_command(command: Commands) -> Result<()> {
                 Ok(())
             }
         },
+    }
+}
+
+fn detached_cli_registry() -> Result<control::CliRegistry> {
+    // CLI metadata must remain available even in stripped-down environments
+    // with no platform config directory. Operations against these fallbacks
+    // still fail visibly if they need to persist state.
+    let fallback = PathBuf::from("/dev/null/yolop");
+    let settings_path =
+        config::default_settings_path().unwrap_or_else(|| fallback.join("settings.toml"));
+    let extensions_dir =
+        extensions::extensions_dir().unwrap_or_else(|| fallback.join("extensions"));
+    let connections_path =
+        connectors::default_connections_path().unwrap_or_else(|| fallback.join("connections.toml"));
+    let settings = Arc::new(SettingsStore::open(settings_path));
+    let secrets = extensions::ExtensionSecrets::new(Arc::new(connectors::ConnectionStore::open(
+        connections_path,
+    )));
+    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let capability = Arc::new(
+        extensions::ExtensionsCapability::new(
+            extensions_dir,
+            workspace,
+            settings,
+            extensions::LiveProcessRegistry::default(),
+            None,
+        )
+        .with_secrets(secrets)
+        .with_ask_sink(Some(terminal_extension_ask_sink())),
+    );
+    let mut registry = control::CliRegistry::default();
+    registry.register(capability)?;
+    Ok(registry)
+}
+
+fn terminal_extension_ask_sink() -> extensions::AskSink {
+    Arc::new(|params| {
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || terminal_extension_ask(params))
+                .await
+                .unwrap_or_else(|_| extensions::protocol::UiAskResult {
+                    answer: String::new(),
+                    cancelled: true,
+                })
+        })
+    })
+}
+
+fn terminal_extension_ask(
+    params: extensions::protocol::UiAskParams,
+) -> extensions::protocol::UiAskResult {
+    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, read};
+
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        eprintln!("yolop: interactive extension setup requires a terminal");
+        return extensions::protocol::UiAskResult {
+            answer: String::new(),
+            cancelled: true,
+        };
+    }
+    eprint!("{}", params.prompt);
+    if !params.options.is_empty() {
+        eprint!(" [{}]", params.options.join("/"));
+    }
+    eprint!(": ");
+    let _ = io::stderr().flush();
+
+    if !params.secret {
+        let mut answer = String::new();
+        let cancelled = io::stdin().read_line(&mut answer).is_err();
+        return extensions::protocol::UiAskResult {
+            answer: answer.trim().to_string(),
+            cancelled,
+        };
+    }
+
+    struct RawModeGuard;
+    impl Drop for RawModeGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+        }
+    }
+    if enable_raw_mode().is_err() {
+        eprintln!("could not enable masked terminal input");
+        return extensions::protocol::UiAskResult {
+            answer: String::new(),
+            cancelled: true,
+        };
+    }
+    let _guard = RawModeGuard;
+    let mut answer = String::new();
+    loop {
+        let Ok(Event::Key(key)) = read() else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match key.code {
+            KeyCode::Enter => {
+                eprintln!();
+                return extensions::protocol::UiAskResult {
+                    answer,
+                    cancelled: false,
+                };
+            }
+            KeyCode::Esc => {
+                eprintln!();
+                return extensions::protocol::UiAskResult {
+                    answer: String::new(),
+                    cancelled: true,
+                };
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                eprintln!();
+                return extensions::protocol::UiAskResult {
+                    answer: String::new(),
+                    cancelled: true,
+                };
+            }
+            KeyCode::Backspace => {
+                if answer.pop().is_some() {
+                    eprint!("\u{8} \u{8}");
+                    let _ = io::stderr().flush();
+                }
+            }
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                answer.push(ch);
+                eprint!("*");
+                let _ = io::stderr().flush();
+            }
+            _ => {}
+        }
     }
 }
 
@@ -2225,6 +2384,7 @@ mod tests {
     fn cli_with_reasoning_effort(reasoning_effort: Option<&str>) -> Cli {
         Cli {
             command: None,
+            attached_control_child: false,
             cwd: None,
             provider: Some(ProviderArg::Openrouter),
             profile: None,
@@ -2314,6 +2474,7 @@ mod tests {
         let settings = SettingsStore::open(path);
         let cli = Cli {
             command: None,
+            attached_control_child: false,
             cwd: None,
             provider: None,
             profile: None,

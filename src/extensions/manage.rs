@@ -1,8 +1,8 @@
-//! The `extensions` capability: the management surface for installing,
-//! listing, enabling, and removing extension packages. Distinct from the
-//! per-package `ext:<name>` capabilities — this one is always on the default
-//! harness (like `connectors`) and owns the verbs. Tools so both the user
-//! and the model can drive setup; a thin `/extensions` command mirrors them.
+//! Extension administration shared by the standalone CLI and the running host.
+//!
+//! Administration deliberately is not exposed as model tools. A direct
+//! foreground `yolop extensions ...` invocation can cross the attached control
+//! boundary, while ordinary CLI invocations mutate global state.
 
 use super::client::AskSink;
 use super::manager::LiveProcessRegistry;
@@ -13,18 +13,232 @@ use super::secrets::{ExtensionSecrets, Secret};
 use super::store::{self, CrateFetcher, GitRunner, Source, SystemCrateFetcher, SystemGit};
 use crate::capabilities::narration::stable_labeled;
 use crate::config::SettingsStore;
+use crate::control::{
+    CliCapability, ControlCapability, ControlRequest, ControlResponse, ControlRoute,
+};
 use crate::tui::host_ui::{UiCommand, UiRequest};
 use async_trait::async_trait;
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use everruns_core::Capability;
+use everruns_core::command::{
+    CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
+    ExecuteCommandRequest,
+};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::{Tool, ToolExecutionResult};
 use everruns_provider::ToolCall;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub const EXTENSIONS_CAPABILITY_ID: &str = "extensions";
+const EXTENSIONS_COMMAND_NAME: &str = "extensions";
+
+#[derive(Subcommand, Debug)]
+enum ExtensionCommand {
+    /// List installed extensions.
+    List {
+        /// Emit the full machine-readable result.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install an extension without enabling it.
+    Install { source: String },
+    /// Remove an installed extension and its persisted enablement/secrets.
+    Remove { name: String },
+    /// Persist enablement and apply it to the attached session when present.
+    Enable { name: String },
+    /// Persist disablement and apply it to the attached session when present.
+    Disable { name: String },
+    /// Restart an extension server in the attached session.
+    Reload { name: String },
+    /// Probe an installed extension's YEP conformance.
+    Doctor { name: String },
+    /// Prompt for and store an extension secret.
+    Secret(ExtensionSecretArgs),
+    /// Create a new extension package skeleton.
+    Scaffold {
+        name: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long, default_value = "python")]
+        language: String,
+        #[arg(long = "tool")]
+        tools: Vec<String>,
+        #[arg(long = "command")]
+        commands: Vec<String>,
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long)]
+        status: bool,
+        #[arg(long)]
+        skills: bool,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct ExtensionSecretArgs {
+    #[command(subcommand)]
+    command: ExtensionSecretCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum ExtensionSecretCommand {
+    /// Prompt for a secret field; the value is never accepted as an argument.
+    Set { name: String, field: String },
+}
+
+#[derive(Parser)]
+#[command(
+    name = "extensions",
+    about = "Manage Yolop extensions. A direct invocation from Yolop's foreground Bash updates the current session as well as persisted state",
+    disable_help_subcommand = true
+)]
+struct ExtensionCommandLine {
+    #[command(subcommand)]
+    command: ExtensionCommand,
+}
+
+/// Version-independent extension operations carried by the internal control
+/// plane. The wire envelope owns protocol versioning; this enum owns the
+/// extension domain vocabulary.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum ExtensionAction {
+    List {
+        json: bool,
+    },
+    Install {
+        source: String,
+    },
+    Remove {
+        name: String,
+    },
+    Enable {
+        name: String,
+    },
+    Disable {
+        name: String,
+    },
+    Reload {
+        name: String,
+    },
+    Doctor {
+        name: String,
+    },
+    SetSecret {
+        name: String,
+        field: String,
+    },
+    Scaffold {
+        name: String,
+        description: String,
+        language: String,
+        tools: Vec<String>,
+        commands: Vec<String>,
+        prompt: Option<String>,
+        status: bool,
+        skills: bool,
+        dir: Option<PathBuf>,
+    },
+}
+
+impl ExtensionAction {
+    fn from_command(command: ExtensionCommand) -> Self {
+        match command {
+            ExtensionCommand::List { json } => Self::List { json },
+            ExtensionCommand::Install { source } => Self::Install { source },
+            ExtensionCommand::Remove { name } => Self::Remove { name },
+            ExtensionCommand::Enable { name } => Self::Enable { name },
+            ExtensionCommand::Disable { name } => Self::Disable { name },
+            ExtensionCommand::Reload { name } => Self::Reload { name },
+            ExtensionCommand::Doctor { name } => Self::Doctor { name },
+            ExtensionCommand::Secret(args) => match args.command {
+                ExtensionSecretCommand::Set { name, field } => Self::SetSecret { name, field },
+            },
+            ExtensionCommand::Scaffold {
+                name,
+                description,
+                language,
+                tools,
+                commands,
+                prompt,
+                status,
+                skills,
+                dir,
+            } => Self::Scaffold {
+                name,
+                description,
+                language,
+                tools,
+                commands,
+                prompt,
+                status,
+                skills,
+                dir,
+            },
+        }
+    }
+
+    fn parse_command(arguments: Option<&str>) -> Result<Self, String> {
+        let arguments = arguments.unwrap_or("").trim();
+        if arguments.is_empty() {
+            return Ok(Self::List { json: false });
+        }
+        let argv = std::iter::once("extensions").chain(arguments.split_ascii_whitespace());
+        ExtensionCommandLine::try_parse_from(argv)
+            .map(|parsed| Self::from_command(parsed.command))
+            .map_err(|error| error.to_string())
+    }
+
+    fn control_request(self) -> ControlRequest {
+        ControlRequest::new(EXTENSIONS_CAPABILITY_ID, self)
+            .expect("extension control actions are serializable")
+    }
+
+    fn verb_and_arguments(&self) -> (Verb, Value) {
+        match self {
+            Self::List { .. } => (Verb::List, json!({})),
+            Self::Install { source } => (Verb::Install, json!({ "source": source })),
+            Self::Remove { name } => (Verb::Remove, json!({ "name": name })),
+            Self::Enable { name } => (Verb::Enable, json!({ "name": name })),
+            Self::Disable { name } => (Verb::Disable, json!({ "name": name })),
+            Self::Reload { name } => (Verb::Reload, json!({ "name": name })),
+            Self::Doctor { name } => (Verb::Doctor, json!({ "name": name })),
+            Self::SetSecret { name, field } => {
+                (Verb::SetSecret, json!({ "name": name, "field": field }))
+            }
+            Self::Scaffold {
+                name,
+                description,
+                language,
+                tools,
+                commands,
+                prompt,
+                status,
+                skills,
+                dir,
+            } => (
+                Verb::Scaffold,
+                json!({
+                    "name": name,
+                    "description": description,
+                    "language": language,
+                    "tools": tools.iter().map(|name| json!({ "name": name })).collect::<Vec<_>>(),
+                    "commands": commands,
+                    "prompt": prompt,
+                    "status": status,
+                    "skills": skills,
+                    "dir": dir,
+                }),
+            ),
+        }
+    }
+}
 
 pub struct ExtensionsCapability {
     extensions_dir: PathBuf,
@@ -32,14 +246,15 @@ pub struct ExtensionsCapability {
     settings: Arc<SettingsStore>,
     git: Arc<dyn GitRunner>,
     crates: Arc<dyn CrateFetcher>,
-    /// Live server processes, so `reload_extension` can restart one in place.
+    /// Live server processes, so `yolop extensions reload` can restart one in place.
     live_processes: LiveProcessRegistry,
     /// UI-command sink (the TUI's `ui_rx`) used to activate/deactivate an
     /// extension on the live session after enable/disable; `None` in
     /// `--print`/ACP, where enable/disable only persists for the next session.
     ui_tx: Option<UnboundedSender<UiRequest>>,
-    /// Per-extension secret store (for `set_extension_secret` and the redacted
-    /// config status in `list_extensions`). `None` in tests without secrets.
+    /// Per-extension secret store (for `yolop extensions secret set` and the
+    /// redacted config status in `yolop extensions list`). `None` in tests
+    /// without secrets.
     secrets: Option<ExtensionSecrets>,
     /// Prompt surface for interactive secret entry; `None` refuses it (headless).
     ask_sink: Option<AskSink>,
@@ -66,8 +281,8 @@ impl ExtensionsCapability {
         }
     }
 
-    /// Wire the secret store so `set_extension_secret` can persist credentials
-    /// and `list_extensions` can report their (redacted) set/unset status.
+    /// Wire the secret store so the CLI can persist credentials and report
+    /// their redacted set/unset status.
     pub fn with_secrets(mut self, secrets: ExtensionSecrets) -> Self {
         self.secrets = Some(secrets);
         self
@@ -77,6 +292,46 @@ impl ExtensionsCapability {
     pub fn with_ask_sink(mut self, ask_sink: Option<AskSink>) -> Self {
         self.ask_sink = ask_sink;
         self
+    }
+
+    fn context(&self) -> Arc<ManageCtx> {
+        Arc::new(ManageCtx {
+            extensions_dir: self.extensions_dir.clone(),
+            workspace_root: self.workspace_root.clone(),
+            settings: self.settings.clone(),
+            git: self.git.clone(),
+            crates: self.crates.clone(),
+            live_processes: self.live_processes.clone(),
+            ui_tx: self.ui_tx.clone(),
+            secrets: self.secrets.clone(),
+            ask_sink: self.ask_sink.clone(),
+        })
+    }
+
+    pub async fn execute_action(&self, action: &ExtensionAction) -> ToolExecutionResult {
+        let (verb, arguments) = action.verb_and_arguments();
+        ManageTool::new(self.context(), verb)
+            .execute(arguments)
+            .await
+    }
+
+    #[cfg(test)]
+    fn management_tools(&self) -> Vec<Box<dyn Tool>> {
+        let ctx = self.context();
+        [
+            Verb::Scaffold,
+            Verb::List,
+            Verb::Install,
+            Verb::Remove,
+            Verb::Enable,
+            Verb::Disable,
+            Verb::Reload,
+            Verb::SetSecret,
+            Verb::Doctor,
+        ]
+        .into_iter()
+        .map(|verb| Box::new(ManageTool::new(ctx.clone(), verb)) as Box<dyn Tool>)
+        .collect()
     }
 }
 
@@ -91,8 +346,8 @@ impl Capability for ExtensionsCapability {
     }
 
     fn description(&self) -> &str {
-        "Install, list, enable, and remove yolop extensions — capability-level \
-         packages served over the extension protocol."
+        "Extension packages served over the extension protocol. Administration is available \
+         through `yolop extensions ...`."
     }
 
     fn category(&self) -> Option<&str> {
@@ -108,29 +363,147 @@ impl Capability for ExtensionsCapability {
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        let ctx = Arc::new(ManageCtx {
-            extensions_dir: self.extensions_dir.clone(),
-            workspace_root: self.workspace_root.clone(),
-            settings: self.settings.clone(),
-            git: self.git.clone(),
-            crates: self.crates.clone(),
-            live_processes: self.live_processes.clone(),
-            ui_tx: self.ui_tx.clone(),
-            secrets: self.secrets.clone(),
-            ask_sink: self.ask_sink.clone(),
-        });
-        vec![
-            Box::new(ManageTool::new(ctx.clone(), Verb::Scaffold)),
-            Box::new(ManageTool::new(ctx.clone(), Verb::List)),
-            Box::new(ManageTool::new(ctx.clone(), Verb::Install)),
-            Box::new(ManageTool::new(ctx.clone(), Verb::Remove)),
-            Box::new(ManageTool::new(ctx.clone(), Verb::Enable)),
-            Box::new(ManageTool::new(ctx.clone(), Verb::Disable)),
-            Box::new(ManageTool::new(ctx.clone(), Verb::Reload)),
-            Box::new(ManageTool::new(ctx.clone(), Verb::SetSecret)),
-            Box::new(ManageTool::new(ctx, Verb::Doctor)),
-        ]
+        Vec::new()
     }
+
+    fn commands(&self) -> Vec<CommandDescriptor> {
+        vec![CommandDescriptor {
+            name: EXTENSIONS_COMMAND_NAME.to_string(),
+            description: "Manage extension packages using the `yolop extensions` grammar."
+                .to_string(),
+            source: CommandSource::System,
+            args: vec![CommandArg {
+                name: "operation".to_string(),
+                description: "CLI-style operation and arguments; omit to list extensions."
+                    .to_string(),
+                required: false,
+                suggestions: vec![
+                    "list".to_string(),
+                    "enable".to_string(),
+                    "disable".to_string(),
+                    "reload".to_string(),
+                    "doctor".to_string(),
+                ],
+            }],
+        }]
+    }
+
+    async fn execute_command(
+        &self,
+        request: &ExecuteCommandRequest,
+        _ctx: &CommandExecutionContext,
+    ) -> everruns_provider::error::Result<CommandResult> {
+        if request.name != EXTENSIONS_COMMAND_NAME {
+            return Err(everruns_provider::error::AgentLoopError::config(format!(
+                "{} cannot execute /{}",
+                self.id(),
+                request.name
+            )));
+        }
+        let action = ExtensionAction::parse_command(request.arguments.as_deref())
+            .map_err(everruns_provider::error::AgentLoopError::config)?;
+        let response = ControlResponse::from_tool_result(self.execute_action(&action).await);
+        Ok(CommandResult {
+            success: response.ok,
+            message: render_extension_response(&action, &response),
+            error_code: None,
+            error_fields: None,
+        })
+    }
+}
+
+#[async_trait]
+impl ControlCapability for ExtensionsCapability {
+    fn control_route(&self) -> ControlRoute {
+        ControlRoute {
+            resource: EXTENSIONS_CAPABILITY_ID,
+            cli_subcommand: EXTENSIONS_CAPABILITY_ID,
+            read_only_operations: &["list"],
+        }
+    }
+
+    async fn execute_control(&self, action: &Value) -> ToolExecutionResult {
+        let action = match serde_json::from_value::<ExtensionAction>(action.clone()) {
+            Ok(action) => action,
+            Err(error) => {
+                return ToolExecutionResult::ToolError(format!(
+                    "invalid extension control action: {error}"
+                ));
+            }
+        };
+        self.execute_action(&action).await
+    }
+
+    fn render_control(&self, action: &Value, response: &ControlResponse) -> String {
+        serde_json::from_value::<ExtensionAction>(action.clone())
+            .map(|action| render_extension_response(&action, response))
+            .unwrap_or_else(|_| response.render_default())
+    }
+}
+
+#[async_trait]
+impl CliCapability for ExtensionsCapability {
+    fn cli_command(&self) -> clap::Command {
+        ExtensionCommandLine::command()
+    }
+
+    fn control_request_from_cli(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> anyhow::Result<ControlRequest> {
+        let parsed = ExtensionCommandLine::from_arg_matches(matches)?;
+        Ok(ExtensionAction::from_command(parsed.command).control_request())
+    }
+
+    async fn execute_cli(&self, request: &ControlRequest) -> anyhow::Result<()> {
+        let action = serde_json::from_value::<ExtensionAction>(request.action.clone())?;
+        if matches!(action, ExtensionAction::Reload { .. }) {
+            anyhow::bail!(
+                "extension reload requires a running Yolop session; invoke it directly through that session's Bash"
+            );
+        }
+        let response = ControlResponse::from_tool_result(self.execute_action(&action).await);
+        let rendered = self.render_control(&request.action, &response);
+        if response.ok {
+            println!("{rendered}");
+            Ok(())
+        } else {
+            anyhow::bail!(rendered)
+        }
+    }
+}
+
+fn render_extension_response(action: &ExtensionAction, response: &ControlResponse) -> String {
+    if !response.ok {
+        return response.render_default();
+    }
+    let value = response.value.as_ref().unwrap_or(&Value::Null);
+    if !matches!(action, ExtensionAction::List { json: false }) {
+        return response.render_default();
+    }
+    let Some(items) = value.get("extensions").and_then(Value::as_array) else {
+        return response.render_default();
+    };
+    if items.is_empty() {
+        return "No extensions installed.".to_string();
+    }
+    let mut lines = Vec::with_capacity(items.len() + 1);
+    lines.push(format!("{:<24} {:<10} {}", "NAME", "STATE", "VERSION"));
+    for item in items {
+        let name = item.get("name").and_then(Value::as_str).unwrap_or("?");
+        let state = if item
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        let version = item.get("version").and_then(Value::as_str).unwrap_or("-");
+        lines.push(format!("{name:<24} {state:<10} {version}"));
+    }
+    lines.join("\n")
 }
 
 struct ManageCtx {
@@ -276,8 +649,8 @@ impl ManageTool {
                     "files": out.files,
                     "build": out.build,
                     "next": format!(
-                        "Edit the handler bodies in {}, then {build_step}install_extension \
-                         source={} → doctor_extension name={name} → enable_extension name={name} \
+                        "Edit the handler bodies in {}, then {build_step}`yolop extensions install \
+                         {}` → `yolop extensions doctor {name}` → `yolop extensions enable {name}` \
                          (next session).",
                         out.edit.display(),
                         out.dir.display(),
@@ -382,7 +755,7 @@ impl ManageTool {
                     "content_hash": installed.content_hash,
                     "grant_changed": installed.previous_hash.is_some(),
                     "note": format!(
-                        "Installed but not enabled. Run enable_extension name={} to add it to the harness.",
+                        "Installed but not enabled. Run `yolop extensions enable {}` to enable it.",
                         m.name
                     ),
                 }))
@@ -411,7 +784,7 @@ impl ManageTool {
         }
     }
 
-    fn toggle(&self, args: &Value, enable: bool) -> ToolExecutionResult {
+    async fn toggle(&self, args: &Value, enable: bool) -> ToolExecutionResult {
         let Some(name) = args.get("name").and_then(Value::as_str) else {
             return ToolExecutionResult::ToolError("`name` is required".into());
         };
@@ -421,7 +794,7 @@ impl ManageTool {
                 .any(|pkg| pkg.manifest.name == name)
         {
             return ToolExecutionResult::ToolError(format!(
-                "no extension named `{name}` is installed; install_extension first"
+                "no extension named `{name}` is installed; run `yolop extensions install` first"
             ));
         }
         let cap_id = extension_capability_id(name);
@@ -431,19 +804,41 @@ impl ManageTool {
                 // session to mutate (the TUI). The App answers on `ui_rx` by
                 // calling activate/deactivate_capability, so the extension's
                 // tools/prompt/hooks land on the next turn — no restart.
-                let live = self
-                    .ctx
-                    .ui_tx
-                    .as_ref()
-                    .map(|tx| {
-                        tx.send(UiRequest::fire(UiCommand::SetExtensionActive {
-                            capability_id: cap_id.clone(),
-                            name: name.to_string(),
-                            activate: enable,
-                        }))
-                        .is_ok()
-                    })
-                    .unwrap_or(false);
+                let live = if let Some(tx) = &self.ctx.ui_tx {
+                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                    if tx
+                        .send(UiRequest {
+                            command: UiCommand::SetExtensionActive {
+                                capability_id: cap_id.clone(),
+                                name: name.to_string(),
+                                activate: enable,
+                            },
+                            reply: Some(reply_tx),
+                        })
+                        .is_err()
+                    {
+                        false
+                    } else {
+                        // The TUI event loop replies only after the runtime
+                        // overlay mutation completes. This prevents a queued
+                        // request from being reported as live when activation
+                        // actually failed (for example, a package installed
+                        // after this session registered its manifests).
+                        tokio::time::timeout(std::time::Duration::from_secs(10), reply_rx)
+                            .await
+                            .ok()
+                            .and_then(Result::ok)
+                            .is_some_and(|messages| {
+                                messages.is_empty()
+                                    || messages.iter().any(|message| {
+                                        message.contains("for this session")
+                                            && message.contains("effective on the next turn")
+                                    })
+                            })
+                    }
+                } else {
+                    false
+                };
                 let note = if live {
                     "Applying to the running session now; effective on the next turn (and \
                      persisted for future sessions)."
@@ -603,7 +998,7 @@ impl ManageTool {
     /// text) that isn't set yet. Best-effort — with no prompt surface the
     /// extension still enables and stays inert until configured.
     async fn enable(&self, args: &Value) -> ToolExecutionResult {
-        let result = self.toggle(args, true);
+        let result = self.toggle(args, true).await;
         if !matches!(result, ToolExecutionResult::Success(_)) {
             return result;
         }
@@ -686,7 +1081,7 @@ impl ManageTool {
             })),
             None => ToolExecutionResult::ToolError(format!(
                 "extension `{name}` is not enabled this session, so it has no running server to \
-                 reload; enable_extension name={name} and restart yolop to load it"
+                 reload; run `yolop extensions enable {name}` and restart yolop to load it"
             )),
         }
     }
@@ -897,7 +1292,7 @@ impl Tool for ManageTool {
             Verb::Install => self.install(&arguments).await,
             Verb::Remove => self.remove(&arguments),
             Verb::Enable => self.enable(&arguments).await,
-            Verb::Disable => self.toggle(&arguments, false),
+            Verb::Disable => self.toggle(&arguments, false).await,
             Verb::Reload => self.reload(&arguments).await,
             Verb::SetSecret => self.set_secret(&arguments).await,
             Verb::Doctor => self.doctor(&arguments).await,
@@ -943,10 +1338,46 @@ mod tests {
     }
 
     #[test]
+    fn management_capability_contributes_command_but_no_model_tools() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (capability, _, _) = capability(tmp.path());
+        assert!(Capability::tools(&capability).is_empty());
+        let commands = Capability::commands(&capability);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "extensions");
+    }
+
+    #[test]
+    fn extension_command_uses_the_cli_action_grammar() {
+        assert_eq!(
+            ExtensionAction::parse_command(Some("enable demo")).unwrap(),
+            ExtensionAction::Enable {
+                name: "demo".to_string()
+            }
+        );
+        assert_eq!(
+            ExtensionAction::parse_command(None).unwrap(),
+            ExtensionAction::List { json: false }
+        );
+        assert!(ExtensionAction::parse_command(Some("unknown demo")).is_err());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (capability, _, _) = capability(tmp.path());
+        let matches = capability
+            .cli_command()
+            .try_get_matches_from(["extensions", "enable", "demo"])
+            .unwrap();
+        let request = capability.control_request_from_cli(&matches).unwrap();
+        assert_eq!(request.resource, "extensions");
+        assert_eq!(request.action["operation"], "enable");
+        assert_eq!(request.action["name"], "demo");
+    }
+
+    #[test]
     fn manage_tool_narration_names_action_and_extension() {
         let tmp = tempfile::tempdir().unwrap();
         let (cap, _, _) = capability(tmp.path());
-        let mut tools = cap.tools();
+        let mut tools = cap.management_tools();
         let tool = tools.remove(4);
         let call = ToolCall {
             id: "call-1".into(),
@@ -969,7 +1400,7 @@ mod tests {
     async fn scaffold_then_install_flow() {
         let tmp = tempfile::tempdir().unwrap();
         let (cap, _settings, _ext_dir) = capability(tmp.path());
-        let tools = cap.tools();
+        let tools = cap.management_tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
 
         // Scaffold a hook extension into an explicit parent dir.
@@ -1009,7 +1440,7 @@ mod tests {
     async fn scaffold_rejects_no_contributions() {
         let tmp = tempfile::tempdir().unwrap();
         let (cap, _s, _e) = capability(tmp.path());
-        let tools = cap.tools();
+        let tools = cap.management_tools();
         let scaffold = tools
             .iter()
             .find(|t| t.name() == "scaffold_extension")
@@ -1026,7 +1457,7 @@ mod tests {
         let src = tmp.path().join("src");
         seed_package(&src, "echo");
         let (cap, settings, _ext_dir) = capability(tmp.path());
-        let tools = cap.tools();
+        let tools = cap.management_tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
 
         // install
@@ -1113,7 +1544,7 @@ mod tests {
         let src = tmp.path().join("src");
         seed_secret_package(&src, "logfire");
         let (cap, _settings, _ext_dir) = capability(tmp.path());
-        let tools = cap.tools();
+        let tools = cap.management_tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
         get("install_extension")
             .execute(json!({ "source": src.to_str().unwrap() }))
@@ -1174,7 +1605,7 @@ mod tests {
             secrets: Some(secrets.clone()),
             ask_sink: None,
         };
-        let tools = cap.tools();
+        let tools = cap.management_tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
         get("install_extension")
             .execute(json!({ "source": src.to_str().unwrap() }))
@@ -1266,7 +1697,7 @@ mod tests {
             secrets: Some(secrets.clone()),
             ask_sink: Some(ask),
         };
-        let tools = cap.tools();
+        let tools = cap.management_tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
         get("install_extension")
             .execute(json!({ "source": src.to_str().unwrap() }))
@@ -1298,7 +1729,7 @@ mod tests {
         let src = tmp.path().join("src");
         seed_package(&src, "echo");
         let (cap, _settings, _ext_dir) = capability(tmp.path());
-        let tools = cap.tools();
+        let tools = cap.management_tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
         get("install_extension")
             .execute(json!({ "source": src.to_str().unwrap() }))
@@ -1344,13 +1775,29 @@ mod tests {
             secrets: None,
             ask_sink: None,
         };
-        let tools = cap.tools();
+        let tools = cap.management_tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
         get("install_extension")
             .execute(json!({ "source": src.to_str().unwrap() }))
             .await;
 
-        // enable persists AND signals live activation on the UI channel.
+        let ui = tokio::spawn(async move {
+            let mut commands = Vec::new();
+            for _ in 0..2 {
+                let request = ui_rx.recv().await.unwrap();
+                commands.push(request.command);
+                request
+                    .reply
+                    .unwrap()
+                    .send(vec![
+                        "extension applied for this session; effective on the next turn.".into(),
+                    ])
+                    .unwrap();
+            }
+            commands
+        });
+
+        // enable persists AND waits for confirmed live activation from the UI.
         match get("enable_extension")
             .execute(json!({"name": "echo"}))
             .await
@@ -1358,26 +1805,30 @@ mod tests {
             ToolExecutionResult::Success(v) => assert_eq!(v["live"], true),
             other => panic!("{other:?}"),
         }
-        assert_eq!(
-            ui_rx.try_recv().unwrap().command,
-            UiCommand::SetExtensionActive {
-                capability_id: "ext:echo".into(),
-                name: "echo".into(),
-                activate: true,
-            }
-        );
 
         // disable signals deactivation.
-        get("disable_extension")
+        match get("disable_extension")
             .execute(json!({"name": "echo"}))
-            .await;
+            .await
+        {
+            ToolExecutionResult::Success(v) => assert_eq!(v["live"], true),
+            other => panic!("{other:?}"),
+        }
+        let commands = ui.await.unwrap();
         assert_eq!(
-            ui_rx.try_recv().unwrap().command,
-            UiCommand::SetExtensionActive {
-                capability_id: "ext:echo".into(),
-                name: "echo".into(),
-                activate: false,
-            }
+            commands,
+            vec![
+                UiCommand::SetExtensionActive {
+                    capability_id: "ext:echo".into(),
+                    name: "echo".into(),
+                    activate: true,
+                },
+                UiCommand::SetExtensionActive {
+                    capability_id: "ext:echo".into(),
+                    name: "echo".into(),
+                    activate: false,
+                },
+            ]
         );
     }
 }

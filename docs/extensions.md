@@ -35,17 +35,24 @@ config dir, so a repository never carries agent-specific machinery:
 **1. Install**: the fastest way is from **crates.io**, toolchain-free (no
 cargo or rustc needed, yolop fetches and unpacks the `.crate` itself):
 
-```
-install_extension source="crates.io:yolop-extension-lsp"     # or a bare "lsp"
-install_extension source="crates.io:yolop-extension-lsp@0.2.0"  # pin a version
+```bash
+yolop extensions install crates.io:yolop-extension-lsp       # or a bare "lsp"
+yolop extensions install crates.io:yolop-extension-lsp@0.2.0 # pin a version
 ```
 
 You can also install from a **git URL** (`https://…[@rev]`) or a **local
-path**, or just drop the package directory in place by hand. yolop has
-`install_extension` / `list_extensions` / `enable_extension` /
-`doctor_extension` tools, so "install and enable `yolop-extension-lsp`" works
-conversationally. Installs are pinned in `extensions.lock` (source + resolved
-version + content hash) so a later reinstall can flag a changed grant.
+path**, or just drop the package directory in place by hand. Use `yolop
+extensions --help` to discover list/install/enable/disable/remove/reload/doctor,
+secret setup, and scaffolding. Extension administration is a CLI surface, not a
+set of model tools, so its schemas do not consume model context. Installs are
+pinned in `extensions.lock` (source + resolved version + content hash) so a
+later reinstall can flag a changed grant.
+
+In an interactive client, `/extensions` is the command form of the same
+capability: `/extensions` lists packages and `/extensions enable <name>` uses
+the same action implementation as `yolop extensions enable <name>`. The
+top-level `yolop extensions` command and its help are contributed by that
+capability as well, rather than maintained in a separate CLI command table.
 
 **2. Enable**: installing does not activate. Turn an extension on by adding it
 to your harness in `~/.config/yolop/settings.toml`:
@@ -55,7 +62,18 @@ to your harness in `~/.config/yolop/settings.toml`:
 ref = "ext:<name>"
 ```
 
-(or run `enable_extension`). Changes take effect on the next session.
+(or run `yolop extensions enable <name>`). A detached invocation persists the
+choice for sessions. When the command is invoked directly through a running
+Yolop session's foreground Bash, Yolop also applies enable/disable to that
+session for the next turn. `reload` is session-only and reports an error when
+run detached. Installing a new manifest still requires a new session before it
+can be enabled because the host registers extension packages at startup.
+
+The attached path is deliberately narrow: invoke `yolop extensions ...`
+directly, without a pipeline, redirection, command substitution, or background
+operator. Yolop spawns its exact executable with anonymous pipes for one typed
+request; it does not publish a socket, endpoint, token, or control environment
+variable to general shell commands.
 
 **3. Use**: start yolop; the extension's tools and prompt are available. To
 watch it connect:
@@ -153,8 +171,8 @@ extension can do.
 ### Naming & distribution
 
 Name a crate `yolop-extension-<name>` so it's discoverable on crates.io under a
-common prefix, and so the bare-name install shorthand (`install_extension
-source="lsp"` → `yolop-extension-lsp`) resolves it.
+common prefix, and so the bare-name install shorthand (`yolop extensions
+install lsp` → `yolop-extension-lsp`) resolves it.
 
 **Publishing to crates.io.** Include `plugin.json` in the published package so
 yolop can read it straight from the `.crate` tarball, no build step:
@@ -164,8 +182,8 @@ yolop can read it straight from the `.crate` tarball, no build step:
 include = ["src/**", "plugin.json", "README.md"]
 ```
 
-`cargo publish`, and users install with `install_extension
-source="crates.io:yolop-extension-<name>"`. yolop resolves the version through
+`cargo publish`, and users install with `yolop extensions install
+crates.io:yolop-extension-<name>`. yolop resolves the version through
 the crates.io **sparse index**, downloads the tarball from the CDN, verifies
 its SHA-256 against the index, and unpacks it, all without cargo or rustc.
 Because a published crate ships source, the manifest's
@@ -188,6 +206,6 @@ Both are generated from the `yolop-yep` types (`cargo run -p yolop-yep
 
 > **Status.** The mechanism is implemented through hooks, the `yolop-yep`
 > SDK ([published on crates.io](https://crates.io/crates/yolop-yep)), a
-> `doctor_extension` conformance check, toolchain-free **crates.io installs**
-> (`install_extension source="crates.io:yolop-extension-<name>"`), and
+> `yolop extensions doctor` conformance check, toolchain-free **crates.io installs**
+> (`yolop extensions install crates.io:yolop-extension-<name>`), and
 > language-neutral **`meta.json` + `schema.json`** wire artifacts.
