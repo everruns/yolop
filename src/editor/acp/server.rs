@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use agent_client_protocol::{Agent, Client, ConnectionTo, Lines, Responder};
@@ -70,6 +70,18 @@ const TURN_POLL_INTERVAL: Duration = Duration::from_millis(150);
 #[async_trait]
 pub trait RuntimeFactory: Send + Sync + 'static {
     fn session_exists(&self, session_id: RuntimeSessionId) -> bool;
+
+    /// URL of a live loopback setup page, when this build serves one (the
+    /// `acp-setup-page` feature). `None` disables the no-provider hint.
+    async fn setup_page_url(&self) -> Option<String> {
+        None
+    }
+
+    /// Resolve once the live setup page finishes; `true` when it connected a
+    /// provider, so open sessions should refresh their model options.
+    async fn wait_for_setup_page(&self) -> bool {
+        false
+    }
 
     fn auth_methods(&self) -> Vec<AuthMethod> {
         Vec::new()
@@ -298,6 +310,9 @@ struct Server<F: RuntimeFactory> {
     /// connection and hold the session open while a later `serve` loads the same
     /// session id from disk — a data race on the session's on-disk state.
     poller_handles: StdMutex<Vec<JoinHandle<()>>>,
+    /// Whether a task is already awaiting the loopback setup page, so several
+    /// sessions opened with nothing connected share one watcher.
+    setup_page_watch: AtomicBool,
 }
 
 impl<F: RuntimeFactory> Server<F> {
@@ -324,6 +339,7 @@ where
         sessions: StdMutex::new(HashMap::new()),
         shutdown: shutdown_rx,
         poller_handles: StdMutex::new(Vec::new()),
+        setup_page_watch: AtomicBool::new(false),
     });
     let next_tool_id = Arc::new(AtomicI64::new(1));
     let (eof_tx, eof_rx) = oneshot::channel::<()>();
@@ -417,6 +433,7 @@ where
                             if let Some(session) = server.session(&session_id) {
                                 let commands = session.commands.lock().unwrap().clone();
                                 notify_available_commands(&peer, &session_id, &commands);
+                                offer_setup_page(&server, &peer, &session).await;
                             }
                         }
                         Err(err) => responder.respond_with_error(err)?,
@@ -1100,11 +1117,19 @@ async fn run_slash_command<F: RuntimeFactory>(
         return stop_reason;
     }
     if name == "setup" && args.split_whitespace().next() == Some("token") {
+        let setup_page_offered = server
+            .factory
+            .auth_methods()
+            .iter()
+            .any(|method| method.id().to_string() == super::SETUP_PAGE_AUTH_METHOD);
+        let guidance = if setup_page_offered {
+            "API keys cannot be entered over ACP because the protocol does not provide secure secret input; run `/setup login` to open the local setup page instead"
+        } else {
+            "API keys cannot be entered over ACP because the protocol does not provide secure secret input; configure the provider key in the agent process environment"
+        };
         peer.session_update(
             &session.acp_id,
-            SessionUpdate::AgentMessageChunk(protocol::text_chunk(
-                "API keys cannot be entered over ACP because the protocol does not provide secure secret input; configure the provider key in the agent process environment",
-            )),
+            SessionUpdate::AgentMessageChunk(protocol::text_chunk(guidance)),
         );
         return StopReason::EndTurn;
     }
@@ -1241,6 +1266,14 @@ fn select_setup_auth_method(
     if available.contains(&active_method_id) {
         return Ok(Some(active_method_id));
     }
+    // The setup page covers every provider, so it is the right default once the
+    // active provider has no login of its own.
+    if available
+        .iter()
+        .any(|id| id == super::SETUP_PAGE_AUTH_METHOD)
+    {
+        return Ok(Some(super::SETUP_PAGE_AUTH_METHOD.to_string()));
+    }
     if let [method_id] = available.as_slice() {
         return Ok(Some(method_id.clone()));
     }
@@ -1333,6 +1366,56 @@ async fn run_setup_login<F: RuntimeFactory>(
         }
     }
     Some(StopReason::EndTurn)
+}
+
+/// With nothing connected, an ACP session can only run the offline `llmsim`
+/// model, and the protocol gives the client no way to type an API key. Post the
+/// local setup page so the conversation itself carries a way out. Builds without
+/// the `acp-setup-page` feature serve no page, so this is a no-op there.
+async fn offer_setup_page<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    peer: &Arc<Peer>,
+    session: &Arc<Session>,
+) {
+    if crate::capabilities::model_discovery::any_provider_connected(&session.settings.snapshot()) {
+        return;
+    }
+    let Some(url) = server.factory.setup_page_url().await else {
+        return;
+    };
+    peer.session_update(
+        &session.acp_id,
+        SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
+            "No AI provider is connected, so this session can only run the offline `llmsim` model. \
+             Open {url} to connect one, then pick its model in this client."
+        ))),
+    );
+    // One watcher per process, not per session: the page writes global settings,
+    // and every open session is refreshed when it saves.
+    if server.setup_page_watch.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    tokio::spawn({
+        let server = server.clone();
+        let peer = peer.clone();
+        let mut shutdown = server.shutdown.clone();
+        async move {
+            // The page outlives a turn by design (it waits on a human), so the
+            // watcher also drops out on teardown. Otherwise it would hold the
+            // session map open for the page's whole lifetime, and a later
+            // `serve` could load the same session id from disk underneath it.
+            let connected = tokio::select! {
+                connected = server.factory.wait_for_setup_page() => connected,
+                _ = shutdown.wait_for(|done| *done) => false,
+            };
+            server.setup_page_watch.store(false, Ordering::Relaxed);
+            if connected {
+                for session in server.sessions() {
+                    emit_config_options(&peer, &session).await;
+                }
+            }
+        }
+    });
 }
 
 fn command_title(prefix: &str, name: &str, args: &str) -> String {

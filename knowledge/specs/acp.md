@@ -86,6 +86,47 @@ support copy, while other API-key failures explain ACP's secure-input boundary
 and the environment/restart path. Invalid Codex credentials are cleared before
 reauthentication.
 
+### Local setup page (feature `acp-setup-page`, off by default)
+
+Stable ACP has no secure input surface: the client owns every field, and the
+only agent-initiated ask is `session/request_permission`, a fixed option list.
+Providers that need an API key, a base URL, or a custom model spec therefore
+have no in-conversation path. What ACP does have is agent-handled
+authentication, where `authenticate` hands control to the agent for an
+out-of-band flow. The `acp-setup-page` feature generalises that past OAuth.
+
+- `initialize.authMethods` gains `local_setup_page`, "Open the yolop setup
+  page". `authenticate` binds a loopback listener, opens the browser at
+  `http://127.0.0.1:<port>/setup?t=<token>`, and resolves once the form is
+  submitted, so the client's own authenticating state tracks the real flow.
+- The form writes provider, API key, base URL, and model into the same settings
+  the TUI overlay writes, then makes that provider the default. The credential
+  goes over loopback into the settings store, never through the ACP transcript
+  or the session log. A submission that leaves the provider still unusable keeps
+  what it wrote but does not become the default: the form says what is missing,
+  judged by the same predicate that builds the ACP model list.
+- Plain `/setup` and `/setup login` fall back to this method when the active
+  provider advertises no browser login of its own, and `/setup token` points at
+  it instead of at the environment.
+- Trust boundary, matching the OAuth callback listeners in `src/auth/`: loopback
+  bind only, an unguessable per-page token, a `Host` check so a hostile page
+  cannot drive it by DNS rebinding, and teardown once a provider is saved or
+  after ten minutes.
+
+When no provider is connected at all, `session/new` also posts the page URL as
+an `agent_message_chunk`. Without it, a client with no key in its environment
+gets a silently `llmsim`-only session and no way to fix it from the editor.
+Environment-provided keys count as connected, so a configured host is never
+nagged. When the page saves, open sessions receive `config_option_update` with
+the newly usable models.
+
+The feature is off in default builds: it opens a local HTTP listener and renders
+a credential form, a surface that should not ship by default until the flow has
+proven itself in real clients. Remote clients are the standing limit, the same
+one the OAuth flows have: if the editor is not on the machine running yolop, the
+browser opens in the wrong place, and the environment/restart path remains the
+answer.
+
 ### Prompt content
 
 `promptCapabilities` advertises `image: true` and `embeddedContext: true`
@@ -230,6 +271,7 @@ src/editor/acp/
   protocol.rs   # SDK-backed ACP schema shim plus yolop helpers
   bridge.rs     # pure runtime-event → session/update translation (Translator)
   server.rs     # SDK transport/dispatch wiring, session map, turn streaming
+  setup_page.rs # loopback provider form (feature `acp-setup-page`)
 ```
 
 Concurrency model in `server::serve`:

@@ -301,6 +301,15 @@ pub(crate) fn provider_is_usable(settings: &Settings, provider: &str) -> bool {
     }
 }
 
+/// Whether any real provider is connected. `llmsim` is excluded: it always
+/// answers, but it is the offline stand-in rather than a provider the user
+/// signed in to, so a workspace with nothing but `llmsim` still needs setup.
+pub(crate) fn any_provider_connected(settings: &Settings) -> bool {
+    crate::runtime::SUPPORTED_PROVIDERS
+        .iter()
+        .any(|provider| *provider != "llmsim" && provider_is_usable(settings, provider))
+}
+
 /// Whether the `local` spec this workspace would actually run is downloaded.
 ///
 /// Resolves through the same path the runtime uses, so a saved `[models].local`

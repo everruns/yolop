@@ -49,6 +49,17 @@ wording, formatting, and link fixes do not need entries.
   reversible; detached operations remain global and reload requires a live
   session.
 
+## 2026-08-18, Loopback setup page for ACP clients (experimental)
+
+- [ACP](specs/acp.md) gained a `local_setup_page` authentication method behind
+  the `acp-setup-page` feature: agent-handled auth is the one place the protocol
+  hands an agent control for an out-of-band flow, so a loopback browser form now
+  carries the credential input ACP cannot express. Off by default; the listener
+  is a surface the default build should not carry yet.
+- Records why the no-provider hint exists: without a link posted at
+  `session/new`, an editor with no key in its environment gets an llmsim-only
+  session and no way to fix it from the client.
+
 ## 2026-08-16, In-process inference provider (experimental)
 
 - Added [Local inference](specs/local-inference.md): a `local` provider that

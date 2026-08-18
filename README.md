@@ -286,6 +286,15 @@ Yolop's browser-based ChatGPT/Codex sign-in directly from the agent UI. API-key
 providers must receive their keys through the ACP process environment; Yolop
 does not accept secrets through ACP prompt text.
 
+An experimental build flag, `cargo install yolop --features acp-setup-page`,
+adds a second route for those providers: an extra ACP authentication method that
+opens a short-lived setup page on `127.0.0.1`, where an API key, a custom
+endpoint, or a model can be entered in the browser instead of the editor. The
+key goes straight into yolop's settings, never through the editor or the session
+log. Sessions started with nothing connected also get a link to that page. It is
+off in default builds, and it needs the editor to be on the same machine as
+yolop.
+
 To set up Zed:
 
 ```bash
