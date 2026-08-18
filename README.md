@@ -416,28 +416,53 @@ Unknown keys are ignored, so the format stays forward-compatible.
 
 Named profiles are sparse execution overlays stored under
 `<config_dir>/yolop/profiles/<name>.toml` and selected explicitly with
-`--profile <name>`. They can bundle provider/model choices, endpoint base URLs,
-soft and hard approval settings, sandbox mode, and worktree behavior without
-duplicating global settings:
+`--profile <name>`. A profile bundles provider/model choices, endpoint base
+URLs, approval and sandbox settings, worktree behavior, the harness capability
+set (which is also how extensions are enabled or disabled), MCP servers, extra
+skills, and standing instructions, so one profile can define a purpose-built
+agent without duplicating global settings:
 
 ```toml
-# profiles/deep-review.toml
+# profiles/triage.toml
 default_provider = "openai"
-approval_mode = "protective"
-approval_policy = "on-request"
-sandbox_mode = "workspace-write"
-worktrees = "always"
+approval_policy = "never"
+sandbox_mode = "read-only"
+instructions_file = "triage/INSTRUCTIONS.md"
 
 [models]
 openai = "gpt-5.6 xhigh"
+
+# Only these MCP servers, not the global set.
+mcp_mode = "replace"
+
+[mcp.servers.inbox]
+type = "http"
+url = "https://inbox.example/mcp"
+
+# Turn an extension on for this profile and a default capability off.
+[[capabilities]]
+ref = "ext:triage"
+
+[[capabilities]]
+ref = "yolop_skill_management"
+enabled = false
 ```
 
+Structural keys layer by default: `[[capabilities]]` entries run after the
+global ones and `[mcp.servers.<name>]` entries merge by name. Set
+`capabilities_mode = "replace"` or `mcp_mode = "replace"` when the profile
+should be the whole set. `instructions` (inline) and `instructions_file` are
+appended to the system prompt. Skills in `profiles/<name>/skills/` (or a
+`skills_dir` you name) become a scope ranked between the workspace and global
+ones. Paths resolve relative to the profiles directory.
+
 CLI and ACP live model choices override the selected profile; the profile
-overrides `settings.toml`. Credentials, MCP servers, capabilities, theme,
-attribution, and background-wake behavior remain global and are rejected in a
-profile. When a profile is active, `/setup` and `set_config` persist profileable
-changes back to that profile while credential changes still update the global
-settings file.
+overrides `settings.toml`. Credentials, theme, attribution, and background-wake
+behavior remain global and are rejected in a profile. When a profile is active,
+`/setup`, `set_config`, and extension enable/disable persist back to that
+profile while credential changes still update the global settings file.
+Workspace `.mcp.json` still overlays a profile's servers by name, and `yolop
+mcp` / `/mcp` writes stay scoped to global settings or the workspace file.
 
 **Provider resolution at startup:** `--provider` wins, then the saved
 profile `default_provider`, then the global `default_provider`, then auto-detect in the order **OpenAI → Codex → Anthropic → Meta →

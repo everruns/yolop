@@ -29,7 +29,14 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
 - **Configuration**: a `.mcp.json` file using the `mcpServers` object shape.
   Two scopes are read and merged (`merge_scoped_mcp_servers`):
   - **global**: `<config_dir>/yolop/mcp.json` (e.g. `~/.config/yolop/mcp.json`)
-  - **workspace**: `<workspace_root>/.mcp.json`, overrides global by name.
+    and `[mcp.servers.<name>]` in `settings.toml`
+  - **profile**: `[mcp.servers.<name>]` in the selected `--profile`, merged by
+    name over global, or the whole set under `mcp_mode = "replace"`. See
+    [configuration](configuration.md). `yolop mcp` and `/mcp` writes stay
+    scope-explicit (global or workspace); a profile's servers are edited in the
+    profile file.
+  - **workspace**: `<workspace_root>/.mcp.json`, overrides global and profile by
+    name.
   A malformed file warns and is skipped rather than failing startup.
   - **ACP client**: servers passed in `session/new` `mcpServers` (see
     `knowledge/specs/acp.md`) overlay both file scopes for that session, so a

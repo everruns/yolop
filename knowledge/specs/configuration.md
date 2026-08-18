@@ -83,13 +83,54 @@ precedence where read (credentials and `CUSTOM_BASE_URL`). ACP's standard
 `session/set_config_option` model and reasoning changes remain local to that ACP
 session.
 
-The profileable v1 keys are `default_provider`, `models`,
-`base_urls`, `approval_mode`, `approval_policy`, `sandbox_mode`, and
-`worktrees`. Credentials (`tokens`, `codex_auth`) and structural or personal
-settings (`mcp`, `capabilities`, `theme`, `attribution`, `proactive_wake`) are
-global-only and make a selected profile fail validation. Invalid known values
-also fail startup; unknown keys produce a warning and are ignored for forward
-compatibility.
+The profileable keys are `default_provider`, `models`, `base_urls`,
+`approval_mode`, `approval_policy`, `sandbox_mode`, `worktrees`,
+`capabilities`, `capabilities_mode`, `mcp`, `mcp_mode`, `instructions`,
+`instructions_file`, and `skills_dir`. Credentials (`tokens`, `codex_auth`) and
+personal settings (`theme`, `attribution`, `proactive_wake`) are global-only and
+make a selected profile fail validation. Invalid known values also fail startup;
+unknown keys produce a warning and are ignored for forward compatibility.
+
+### A profile is the unit of a purpose-built agent
+
+v1 profiles overlaid *execution* settings only, which was enough to switch
+provider or paranoia level but not to define an agent with a job. The keys above
+close that gap, because everything that decides what an agent can do is now
+selectable per run:
+
+- **`capabilities`**, the same ordered `[[capabilities]]` list global settings
+  carry, applied after the global entries. Since an installed extension's
+  enablement *is* a `[[capabilities]]` entry, this is also how a profile turns
+  extensions on and off. `capabilities_mode = "replace"` makes the profile's
+  list the whole set, for an agent whose tool surface must not drift with the
+  user's global preferences.
+- **`mcp`**, `[mcp.servers.<name>]` entries merged by name over the global ones,
+  or the whole set under `mcp_mode = "replace"`. Precedence is unchanged
+  otherwise: workspace `.mcp.json` still overlays the result, and an ACP
+  client's `session/new` servers still win over both.
+- **`instructions`** (inline) and **`instructions_file`**, appended to the
+  harness system prompt after `system.md` and the capability blocks. This is the
+  standing job of the profile, not a durable user preference; the boundary with
+  memory and `AGENTS.md` below still holds.
+- **`skills_dir`**, an extra skills scope, defaulting to
+  `profiles/<name>/skills/` when that directory exists. It ranks between the
+  workspace and global scopes: a profile is chosen per run, so it outranks the
+  user's global skills but never the repository's own. See
+  [skills](skills.md).
+
+Relative `instructions_file` and `skills_dir` paths resolve against the
+`profiles/` directory, so a profile is a `.toml` file plus an optional sibling
+directory of its assets. A named `instructions_file` that cannot be read fails
+startup rather than silently dropping the job it describes.
+
+Writes follow the same rule as the v1 keys: with a profile active, capability
+enable/disable and capability config land in the profile, and disabling
+something the global layer (or the harness default) turns on records an explicit
+`enabled = false` mask rather than editing global settings. `instructions_file`
+and `skills_dir` are pointers, so a write carries them through verbatim instead
+of rewriting the path or inlining the file. `yolop mcp` and `/mcp` remain
+scope-explicit (global settings or workspace `.mcp.json`); a profile's servers
+are edited in the profile file.
 
 `SettingsStore` retains the global document and sparse profile separately and
 only returns their merged effective `Settings` snapshot. It never serializes

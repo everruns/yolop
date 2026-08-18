@@ -987,6 +987,7 @@ mod tests {
             SkillDirs {
                 workspace: ws.path().to_path_buf(),
                 global: None,
+                profile: None,
                 system: None,
             },
             registry,
@@ -1016,6 +1017,7 @@ mod tests {
         let dirs = SkillDirs {
             workspace: PathBuf::from("/ws/.agents/skills"),
             global: None,
+            profile: None,
             system: None,
         };
         let registry = SkillRegistryClient::with_base_url("http://127.0.0.1:9".into());
@@ -1057,6 +1059,7 @@ mod tests {
             SkillDirs {
                 workspace: ws.path().to_path_buf(),
                 global: None,
+                profile: None,
                 system: None,
             },
             registry,
