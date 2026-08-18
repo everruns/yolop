@@ -71,7 +71,7 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 | Skills, install/update by content | `write_skill` (upstream) |, |
 | Skills, uninstall | `delete_skill` |, |
 | Settings (provider/model/tokens/urls/capabilities, next-run) | `get_config` / `set_config` | `/setup`, `yolop-config` skill |
-| Terminal/UI actions (help, tools, mcp, cwd, status, model, effort, clear, quit) | `run_command` (TUI only) | the slash commands themselves |
+| Any registered slash command (terminal ones plus `/setup`, `/background`, `/undo`, `/redo`, `/rewind`, `/goal`, …) | `run_command` (TUI only) | the slash commands themselves |
 
 Notes:
 
@@ -94,6 +94,10 @@ Notes:
   and control plane. Discoverability comes from the single control-plane prompt
   block described in [`extensions.md`](./extensions.md), not from per-capability
   prompt text.
+- `run_command` dispatches the whole registry, not a curated subset: terminal
+  commands via the host port, everything else via `runtime.execute_command`.
+  `Skill` commands stay prompt-activated and `/shell` stays typed-only (the
+  agent has `bash`).
 
 ## Known gap
 

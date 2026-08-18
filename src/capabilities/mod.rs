@@ -46,7 +46,9 @@ pub(crate) use background::{
     BACKGROUND_CAPABILITY_ID, BackgroundCapability, NarratedBackgroundExecutionCapability,
 };
 pub(crate) use checkpoint::{CHECKPOINT_CAPABILITY_ID, CheckpointCapability};
-pub(crate) use client_commands::{CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCapability};
+pub(crate) use client_commands::{
+    CLIENT_COMMANDS_CAPABILITY_ID, ClientCommandsCapability, CommandDispatch,
+};
 pub(crate) use config::{CONFIG_CAPABILITY_ID, ConfigCapability};
 pub(crate) use context_cost_control::{
     CONTEXT_COST_CONTROL_CAPABILITY_ID, ContextCostControlCapability,

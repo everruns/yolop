@@ -13,6 +13,17 @@
 - No registered route means no capability and no block, so the prompt never
   names a surface the session lacks.
 
+## 2026-08-18, run_command covers the whole command registry
+
+- [Commands](specs/commands.md): `run_command` no longer carries its own
+  allowlist of terminal commands. Client commands keep the `HostUi` path;
+  every other registered command is looked up in `runtime.list_commands` and
+  run through `runtime.execute_command`, so anything a user can type (for
+  example `/setup reauthenticate <provider>`) is reachable from a turn.
+- `Skill` commands stay prompt-activated and `/shell` stays typed-only.
+- [Conversational control](specs/conversational-control.md): the control-surface
+  inventory now names the whole registry rather than the terminal subset.
+
 ## 2026-08-18, Local session coordination
 
 - Added [Session coordination](specs/session-coordination.md): an opt-in local

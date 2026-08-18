@@ -21,14 +21,15 @@ use crate::capabilities::{
     BackgroundCapability, CHECKPOINT_CAPABILITY_ID, CLIENT_COMMANDS_CAPABILITY_ID,
     CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID, CONTEXT_COST_CONTROL_CAPABILITY_ID,
     CheckpointCapability, ClientCommandsCapability, ClientUiContext, CodingBashCapability,
-    CodingCliEnvironmentCapability, ConfigCapability, ContextCostControlCapability,
-    CoordinationConfig, CoordinationHost, CoordinationStore, ENVIRONMENT_CONTEXT_CAPABILITY_ID,
-    EnvironmentContextRegistry, GOAL_CAPABILITY_ID, GoalCapability, HERDR_CAPABILITY_ID,
-    HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability, LspCapability,
-    MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID, ModelRuntimeContextCapability,
-    ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability,
-    REPO_MAP_CAPABILITY_ID, RepoMapCapability, SESSION_COORDINATION_CAPABILITY_ID,
-    SESSION_HISTORY_CAPABILITY_ID, SessionCoordinationCapability, SessionHistoryCapability,
+    CodingCliEnvironmentCapability, CommandDispatch, ConfigCapability,
+    ContextCostControlCapability, CoordinationConfig, CoordinationHost, CoordinationStore,
+    ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry, GOAL_CAPABILITY_ID,
+    GoalCapability, HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability,
+    LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID,
+    ModelRuntimeContextCapability, ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID,
+    ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
+    SESSION_COORDINATION_CAPABILITY_ID, SESSION_HISTORY_CAPABILITY_ID,
+    SessionCoordinationCapability, SessionHistoryCapability,
     TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
     USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability, coordination_project_id,
 };
@@ -66,7 +67,7 @@ use everruns_session_services::{
 use everruns_capability::CapabilityRef;
 use everruns_core::SessionStore;
 use everruns_core::SessionTaskRegistry;
-use everruns_core::command::CommandDescriptor;
+use everruns_core::command::{CommandDescriptor, CommandResult, ExecuteCommandRequest};
 use everruns_core::session_file::build_grep_search_result;
 use everruns_core::session_path::GrepPathPattern;
 use everruns_core::{
@@ -3255,6 +3256,54 @@ impl Default for BuildOptions {
     }
 }
 
+/// Session command registry for the agent-facing `run_command` tool.
+///
+/// Holds the same late-bound `Weak<InProcessRuntime>` the wake seam uses: the
+/// capability is constructed while the runtime is still being built, and the
+/// cell is set once `build()` returns, long before a turn can call a tool.
+/// Listing and executing go through `runtime.list_commands` /
+/// `runtime.execute_command`, the single registry every host reads, so the
+/// agent can run whatever the user could type.
+struct RuntimeCommandDispatch {
+    runtime: Arc<std::sync::OnceLock<std::sync::Weak<InProcessRuntime>>>,
+    session_id: SessionId,
+}
+
+impl RuntimeCommandDispatch {
+    fn runtime(&self) -> everruns_provider::error::Result<Arc<InProcessRuntime>> {
+        self.runtime
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| {
+                everruns_provider::error::AgentLoopError::config("runtime is not available")
+            })
+    }
+}
+
+#[async_trait]
+impl CommandDispatch for RuntimeCommandDispatch {
+    async fn list(&self) -> everruns_provider::error::Result<Vec<CommandDescriptor>> {
+        self.runtime()?.list_commands(self.session_id).await
+    }
+
+    async fn execute(
+        &self,
+        name: &str,
+        arguments: Option<String>,
+    ) -> everruns_provider::error::Result<CommandResult> {
+        self.runtime()?
+            .execute_command(
+                self.session_id,
+                ExecuteCommandRequest {
+                    name: name.to_string(),
+                    arguments,
+                    controls: None,
+                },
+            )
+            .await
+    }
+}
+
 /// Yolop's provider store.
 ///
 /// 0.18 split model selection from credentials: the store answers "which
@@ -4041,9 +4090,16 @@ pub async fn build_with_options(
     // effort/clear/shell/quit and forwards each invocation as a `UiCommand` down
     // `ui_tx` (created above, shared with extension status); the `App` event
     // loop drains `ui_rx` and performs the effect.
+    // `run_command` additionally reaches every *other* registered command
+    // through `RuntimeCommandDispatch`, so the agent's command surface is the
+    // session registry rather than a second allowlist.
     if options.client_commands {
         let ui: Arc<dyn HostUi> = Arc::new(TuiHandle::new(ui_tx));
-        capabilities.register(ClientCommandsCapability::new(ui));
+        let dispatch: Arc<dyn CommandDispatch> = Arc::new(RuntimeCommandDispatch {
+            runtime: runtime_cell.clone(),
+            session_id,
+        });
+        capabilities.register(ClientCommandsCapability::new(ui, dispatch));
     }
 
     let mut catalog = CapabilityCatalog::new();
@@ -6314,6 +6370,72 @@ mod tests {
         assert!(
             ids.iter()
                 .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID)
+        );
+    }
+
+    /// The reported gap: `run_command` could only reach the commands the client
+    /// capability declared, so `/setup reauthenticate <provider>` was
+    /// unreachable from a turn. Its registry port must see, and run, every
+    /// command the session registers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_command_registry_port_reaches_commands_like_setup() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions {
+                client_ui: ClientUiContext::Tui,
+                client_commands: true,
+                ..BuildOptions::default()
+            },
+        )
+        .await
+        .expect("build runtime");
+
+        assert!(
+            built
+                .startup
+                .tool_names
+                .iter()
+                .any(|name| name == "run_command"),
+            "TUI sessions expose run_command: {:?}",
+            built.startup.tool_names
+        );
+
+        let cell = Arc::new(std::sync::OnceLock::new());
+        cell.set(Arc::downgrade(&built.handles.runtime))
+            .expect("seed runtime cell");
+        let dispatch = RuntimeCommandDispatch {
+            runtime: cell,
+            session_id: built.handles.session_id,
+        };
+
+        let names: Vec<String> = dispatch
+            .list()
+            .await
+            .expect("list commands")
+            .into_iter()
+            .map(|command| command.name)
+            .collect();
+        assert!(
+            names.iter().any(|name| name == "setup"),
+            "registry port sees non-client commands: {names:?}"
+        );
+
+        let result = dispatch
+            .execute("setup", Some("status".to_string()))
+            .await
+            .expect("execute /setup status");
+        assert!(result.success);
+        assert!(
+            result.message.starts_with("setup:"),
+            "run_command returns the runtime's own output: {}",
+            result.message
         );
     }
 

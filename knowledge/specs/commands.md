@@ -86,11 +86,18 @@ portable case ever arises.
    new on-screen effect is a host change, not a drop-in.
 4. **Natural-language dispatch.** In the interactive TUI, the same client
    capability exposes a model-facing `run_command` tool and a prompt
-   contribution listing the terminal commands. When the user asks for a
-   terminal-side action in ordinary prose (for example, "exit"), the model
-   invokes that tool; the tool emits the same `UiCommand` as the slash-command
-   path. The tool is TUI-gated with the capability and does not create a
-   second command registry.
+   contribution describing it. When the user asks for a command in ordinary
+   prose (for example, "exit" or "re-authenticate my provider"), the model
+   invokes that tool instead of telling the user to type the slash command.
+   `run_command` covers the **whole registry**, not a curated subset, and holds
+   no allowlist of its own: a client command emits the same `UiCommand` as the
+   slash-command path, and every other command is looked up in
+   `runtime.list_commands` and run through `runtime.execute_command`, exactly
+   as typing it would. An unknown name answers with the live command list.
+   Two commands stay out by design: `Skill` commands, which activate by prompt
+   rather than by a runtime effect, and `/shell`, which is typed-only because
+   the agent already has the `bash` tool. The tool is TUI-gated with the
+   capability and does not create a second command registry.
 5. **Host gating.** Client commands are enabled only for a host that can apply
    them. `BuildOptions::client_commands` registers `ClientCommandsCapability`
    and enables its harness id; the interactive TUI sets it, while ACP and
@@ -103,9 +110,11 @@ portable case ever arises.
 - `CommandDescriptor`, `CommandSource` (`System`/`Skill`), `CommandResult`, and
   `execute_command` are owned by `everruns-core`.
 - This spec owns yolop's command surface: the single-registry contract, the
-  client/terminal execution target, the `HostUi`/`UiCommand` port, and the host
-  gating. The terminal commands themselves live in
-  `src/capabilities/client_commands.rs`; the port lives in `src/tui/host_ui.rs`.
+  client/terminal execution target, the `HostUi`/`UiCommand` port, the
+  `CommandDispatch` registry port `run_command` uses, and the host gating. The
+  terminal commands themselves live in `src/capabilities/client_commands.rs`;
+  the host port lives in `src/tui/host_ui.rs` and the registry port is
+  implemented by `RuntimeCommandDispatch` in `src/runtime/mod.rs`.
 
 ## Related
 
