@@ -244,11 +244,6 @@ fn gallery_drives_altscreen_and_native_progress() {
         contains(out, b"\x1b[?25h"),
         "should restore the cursor on exit"
     );
-    assert!(contains(out, b"\x1b[?1000h"), "should enable mouse capture");
-    assert!(
-        contains(out, b"\x1b[?1000l"),
-        "should disable mouse capture on exit"
-    );
     // OSC 9;4: indeterminate on start, cleared on exit.
     assert!(
         contains(out, b"\x1b]9;4;3"),
