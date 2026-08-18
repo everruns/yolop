@@ -1,6 +1,6 @@
 //! Local coordination between independently hosted Yolop sessions.
 //!
-//! The capability owns policy, tools, CLI/control surfaces, presence, inbox
+//! The capability owns policy, CLI/control surfaces, presence, inbox
 //! interpretation, and assignment completion. The runtime contributes only a
 //! generic wake channel and the existing session-task registry.
 
@@ -18,10 +18,9 @@ use everruns_core::command::{
 use everruns_core::session_task::generate_task_id;
 use everruns_core::{
     Capability, CapabilityStatus, CreateSessionTask, SessionTaskRegistry, SessionTaskState,
-    SessionTaskUpdate, SystemPromptContext, TaskArtifact, TaskError, TaskLinks, TaskWakePolicy,
-    Tool, ToolExecutionResult,
+    SessionTaskUpdate, TaskArtifact, TaskError, TaskLinks, TaskWakePolicy, Tool,
+    ToolExecutionResult,
 };
-use everruns_provider::ToolHints;
 use everruns_provider::typed_id::SessionId;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -41,7 +40,7 @@ pub(crate) const COORDINATION_CONTROL_ROUTE: ControlRoute = ControlRoute {
     resource: SESSION_COORDINATION_CAPABILITY_ID,
     cli_subcommand: COORDINATION_COMMAND,
     read_only_operations: &["list", "status"],
-    summary: "inspect and steer coordination between local Yolop sessions",
+    summary: "coordinate work across local Yolop sessions",
 };
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 const INBOX_INTERVAL: Duration = Duration::from_millis(350);
@@ -161,8 +160,10 @@ impl CoordinationPayload {
                  Requested work:\n{request}\n\n\
                  This is an authenticated local assignment, not a user message. Work only inside \
                  this session's existing safety and workspace boundaries. When the assignment is \
-                 genuinely finished, call `complete_assignment` with the outcome, validation, and \
-                 artifact references. Do not treat an ordinary end of turn as completion."
+                 genuinely finished, run `yolop coordination complete --help`, then invoke the \
+                 appropriate completion command directly in foreground Bash with the outcome, \
+                 validation, and artifact references. Do not treat an ordinary end of turn as \
+                 completion."
             ),
             Self::Completion {
                 task_id,
@@ -697,6 +698,7 @@ pub(crate) struct SessionCoordinationCapability {
     tasks: Option<Arc<dyn SessionTaskRegistry>>,
     session_id: Option<SessionId>,
     project_id: Option<String>,
+    config: Option<CoordinationConfig>,
 }
 
 impl SessionCoordinationCapability {
@@ -705,12 +707,14 @@ impl SessionCoordinationCapability {
         tasks: Arc<dyn SessionTaskRegistry>,
         session_id: SessionId,
         project_id: String,
+        config: Option<CoordinationConfig>,
     ) -> Self {
         Self {
             store,
             tasks: Some(tasks),
             session_id: Some(session_id),
             project_id: Some(project_id),
+            config,
         }
     }
 
@@ -720,49 +724,18 @@ impl SessionCoordinationCapability {
             tasks: None,
             session_id: None,
             project_id: None,
+            config: None,
         }
-    }
-
-    fn build_tools(&self, config: CoordinationConfig) -> Vec<Box<dyn Tool>> {
-        let mut tools: Vec<Box<dyn Tool>> = Vec::new();
-        if config.role.coordinates() {
-            tools.push(Box::new(ListWorkersTool {
-                store: self.store.clone(),
-                project_id: self.project_id.clone(),
-            }));
-            if let (Some(session_id), Some(project_id), Some(tasks)) =
-                (self.session_id, self.project_id.clone(), self.tasks.clone())
-            {
-                tools.push(Box::new(DispatchWorkTool {
-                    store: self.store.clone(),
-                    tasks,
-                    session_id,
-                    project_id,
-                }));
-            }
-        }
-        if config.role.works()
-            && let (Some(session_id), Some(tasks)) = (self.session_id, self.tasks.clone())
-        {
-            tools.push(Box::new(CompleteAssignmentTool {
-                store: self.store.clone(),
-                tasks,
-                session_id,
-            }));
-            tools.push(Box::new(SetWorkerAvailabilityTool {
-                store: self.store.clone(),
-                session_id,
-            }));
-        }
-        tools
     }
 
     async fn execute_action(&self, action: &CoordinationAction) -> ToolExecutionResult {
         match action {
-            CoordinationAction::List { json: _ } => match self.store.workers(None) {
-                Ok(workers) => ToolExecutionResult::success(json!({ "workers": workers })),
-                Err(error) => ToolExecutionResult::tool_error(error.to_string()),
-            },
+            CoordinationAction::List { json: _ } => {
+                match self.store.workers(self.project_id.as_deref()) {
+                    Ok(workers) => ToolExecutionResult::success(json!({ "workers": workers })),
+                    Err(error) => ToolExecutionResult::tool_error(error.to_string()),
+                }
+            }
             CoordinationAction::Status => {
                 let Some(session_id) = self.session_id else {
                     return ToolExecutionResult::tool_error(
@@ -776,6 +749,17 @@ impl SessionCoordinationCapability {
                     Err(error) => ToolExecutionResult::tool_error(error.to_string()),
                 }
             }
+            CoordinationAction::Dispatch {
+                title,
+                request,
+                target_session_id,
+            } => self.dispatch(title, request, *target_session_id).await,
+            CoordinationAction::Complete {
+                status,
+                summary,
+                validation,
+                artifacts,
+            } => self.complete(status, summary, validation, artifacts).await,
             CoordinationAction::Accept | CoordinationAction::Drain => {
                 let Some(session_id) = self.session_id else {
                     return ToolExecutionResult::tool_error(
@@ -843,48 +827,26 @@ impl Capability for SessionCoordinationCapability {
         CoordinationConfig::from_value(config).map(|_| ())
     }
 
-    async fn system_prompt_contribution_with_config(
-        &self,
-        _ctx: &SystemPromptContext,
-        config: &Value,
-    ) -> Option<String> {
-        let config = CoordinationConfig::from_value(config).unwrap_or_default();
-        if config.role.coordinates() {
-            return Some(
-                "<capability id=\"session_coordination\">\nYou are a coordinator for local Yolop sessions. Decide whether incoming work needs action. For actionable repository work, call `list_workers`, then `dispatch_work`; never claim dispatched work is complete before its durable task reaches a terminal state. Workers are opt-in and isolated in their own session workspaces.\n</capability>"
-                    .to_string(),
-            );
-        }
-        if config.role.works()
-            && self
-                .session_id
-                .and_then(|id| self.store.active_assignment(id).ok().flatten())
-                .is_some()
-        {
-            return Some(
-                "<capability id=\"session_coordination\">\nThis session owns an active coordinator assignment. Finish it inside the current safety boundary and call `complete_assignment` exactly once with the outcome and validation evidence.\n</capability>"
-                    .to_string(),
-            );
-        }
-        None
-    }
-
-    fn tools_with_config(&self, config: &Value) -> Vec<Box<dyn Tool>> {
-        self.build_tools(CoordinationConfig::from_value(config).unwrap_or_default())
+    fn tools(&self) -> Vec<Box<dyn Tool>> {
+        Vec::new()
     }
 
     fn commands(&self) -> Vec<CommandDescriptor> {
         vec![CommandDescriptor {
             name: COORDINATION_COMMAND.to_string(),
-            description: "inspect or change this session's coordination availability".to_string(),
+            description: "Coordinate local Yolop sessions using the `yolop coordination` grammar."
+                .to_string(),
             source: CommandSource::System,
             args: vec![CommandArg {
                 name: "action".to_string(),
-                description: "list, status, accept, or drain".to_string(),
+                description: "CLI-style operation and arguments; omit to list sessions."
+                    .to_string(),
                 required: false,
                 suggestions: vec![
                     "list".into(),
                     "status".into(),
+                    "dispatch".into(),
+                    "complete".into(),
                     "accept".into(),
                     "drain".into(),
                 ],
@@ -916,94 +878,41 @@ impl Capability for SessionCoordinationCapability {
     }
 }
 
-struct ListWorkersTool {
-    store: CoordinationStore,
-    project_id: Option<String>,
-}
-
-#[async_trait]
-impl Tool for ListWorkersTool {
-    fn name(&self) -> &str {
-        "list_workers"
-    }
-    fn description(&self) -> &str {
-        "List live local Yolop sessions for this project, including whether each opted in and is idle."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({ "type": "object", "properties": {}, "additionalProperties": false })
-    }
-    async fn execute(&self, _arguments: Value) -> ToolExecutionResult {
-        match self.store.workers(self.project_id.as_deref()) {
-            Ok(workers) => ToolExecutionResult::success(json!({ "workers": workers })),
-            Err(error) => ToolExecutionResult::tool_error(error.to_string()),
-        }
-    }
-}
-
-struct DispatchWorkTool {
-    store: CoordinationStore,
-    tasks: Arc<dyn SessionTaskRegistry>,
-    session_id: SessionId,
-    project_id: String,
-}
-
-#[async_trait]
-impl Tool for DispatchWorkTool {
-    fn name(&self) -> &str {
-        "dispatch_work"
-    }
-    fn description(&self) -> &str {
-        "Assign work to one live, idle, opt-in Yolop worker in the same project. Omit target_session_id for deterministic automatic selection."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "title": { "type": "string", "maxLength": 200 },
-                "request": { "type": "string", "maxLength": MAX_REQUEST_BYTES },
-                "target_session_id": { "type": "string" }
-            },
-            "required": ["title", "request"],
-            "additionalProperties": false
-        })
-    }
-    fn hints(&self) -> ToolHints {
-        ToolHints {
-            readonly: Some(false),
-            ..Default::default()
-        }
-    }
-    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let Some(title) = bounded_nonblank(&arguments, "title", 200) else {
+impl SessionCoordinationCapability {
+    async fn dispatch(
+        &self,
+        title: &str,
+        request: &str,
+        target_session_id: Option<SessionId>,
+    ) -> ToolExecutionResult {
+        let (Some(session_id), Some(project_id), Some(tasks)) = (
+            self.session_id,
+            self.project_id.as_ref(),
+            self.tasks.as_ref(),
+        ) else {
+            return ToolExecutionResult::tool_error("dispatch requires an attached Yolop session");
+        };
+        if !self.config.is_some_and(|config| config.role.coordinates()) {
             return ToolExecutionResult::tool_error(
-                "dispatch_work requires a non-empty title up to 200 bytes",
+                "dispatch requires the session_coordination coordinator or both role",
             );
+        }
+        let title = match bounded_nonblank(title, "title", 200) {
+            Ok(value) => value,
+            Err(error) => return ToolExecutionResult::tool_error(error),
         };
-        let Some(request) = bounded_nonblank(&arguments, "request", MAX_REQUEST_BYTES) else {
-            return ToolExecutionResult::tool_error(format!(
-                "dispatch_work requires a non-empty request up to {MAX_REQUEST_BYTES} bytes"
-            ));
-        };
-        let target = match arguments.get("target_session_id").and_then(Value::as_str) {
-            Some(raw) => match raw.parse::<SessionId>() {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    return ToolExecutionResult::tool_error(format!(
-                        "invalid target_session_id: {error}"
-                    ));
-                }
-            },
-            None => None,
+        let request = match bounded_nonblank(request, "request", MAX_REQUEST_BYTES) {
+            Ok(value) => value,
+            Err(error) => return ToolExecutionResult::tool_error(error),
         };
         let task_id = generate_task_id();
-        let task = match self
-            .tasks
+        let task = match tasks
             .create(CreateSessionTask {
-                session_id: self.session_id,
+                session_id,
                 id: Some(task_id.clone()),
                 kind: SESSION_DISPATCH_TASK_KIND.to_string(),
                 display_name: title.to_string(),
-                spec: json!({ "request": request, "project_id": self.project_id }),
+                spec: json!({ "request": request, "project_id": project_id }),
                 state: SessionTaskState::Queued,
                 links: TaskLinks::default(),
                 wake_policy: TaskWakePolicy::OnActivity,
@@ -1016,14 +925,13 @@ impl Tool for DispatchWorkTool {
         let worker =
             match self
                 .store
-                .reserve_worker(self.session_id, &self.project_id, &task_id, target)
+                .reserve_worker(session_id, project_id, &task_id, target_session_id)
             {
                 Ok(Some(worker)) => worker,
                 Ok(None) => {
-                    let _ = self
-                        .tasks
+                    let _ = tasks
                         .update(
-                            self.session_id,
+                            session_id,
                             &task_id,
                             SessionTaskUpdate {
                                 state: Some(SessionTaskState::Failed),
@@ -1044,10 +952,9 @@ impl Tool for DispatchWorkTool {
                     );
                 }
                 Err(error) => {
-                    let _ = self
-                        .tasks
+                    let _ = tasks
                         .update(
-                            self.session_id,
+                            session_id,
                             &task_id,
                             SessionTaskUpdate {
                                 state: Some(SessionTaskState::Failed),
@@ -1063,15 +970,14 @@ impl Tool for DispatchWorkTool {
                     return ToolExecutionResult::tool_error(error.to_string());
                 }
             };
-        if let Err(error) =
-            self.store
-                .enqueue_assignment(self.session_id, worker, &task_id, title, request)
+        if let Err(error) = self
+            .store
+            .enqueue_assignment(session_id, worker, &task_id, title, request)
         {
             self.store.release_worker(worker, &task_id);
-            let _ = self
-                .tasks
+            let _ = tasks
                 .update(
-                    self.session_id,
+                    session_id,
                     &task_id,
                     SessionTaskUpdate {
                         state: Some(SessionTaskState::Failed),
@@ -1088,10 +994,9 @@ impl Tool for DispatchWorkTool {
                 "could not persist assignment delivery: {error}"
             ));
         }
-        let updated = self
-            .tasks
+        let updated = tasks
             .update(
-                self.session_id,
+                session_id,
                 &task_id,
                 SessionTaskUpdate {
                     state: Some(SessionTaskState::Running),
@@ -1121,63 +1026,40 @@ impl Tool for DispatchWorkTool {
             "worker_session_id": worker,
         }))
     }
-}
 
-struct CompleteAssignmentTool {
-    store: CoordinationStore,
-    tasks: Arc<dyn SessionTaskRegistry>,
-    session_id: SessionId,
-}
-
-#[async_trait]
-impl Tool for CompleteAssignmentTool {
-    fn name(&self) -> &str {
-        "complete_assignment"
-    }
-    fn description(&self) -> &str {
-        "Finish this session's active coordinator assignment and wake its coordinator. Call exactly once, only after work and validation are complete or definitively failed."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "status": { "type": "string", "enum": ["succeeded", "failed"] },
-                "summary": { "type": "string", "maxLength": MAX_SUMMARY_BYTES },
-                "validation": { "type": "string", "maxLength": MAX_SUMMARY_BYTES },
-                "artifacts": {
-                    "type": "array", "maxItems": MAX_ARTIFACTS,
-                    "items": { "type": "string", "maxLength": 4096 }
-                }
-            },
-            "required": ["status", "summary", "validation"],
-            "additionalProperties": false
-        })
-    }
-    fn hints(&self) -> ToolHints {
-        ToolHints {
-            readonly: Some(false),
-            ..Default::default()
+    async fn complete(
+        &self,
+        status: &str,
+        summary: &str,
+        validation: &str,
+        artifacts: &[String],
+    ) -> ToolExecutionResult {
+        let (Some(session_id), Some(tasks)) = (self.session_id, self.tasks.as_ref()) else {
+            return ToolExecutionResult::tool_error(
+                "completion requires an attached Yolop session",
+            );
+        };
+        if !self.config.is_some_and(|config| config.role.works()) {
+            return ToolExecutionResult::tool_error(
+                "completion requires the session_coordination worker or both role",
+            );
         }
-    }
-    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let status = arguments
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("");
         if !matches!(status, "succeeded" | "failed") {
             return ToolExecutionResult::tool_error("status must be `succeeded` or `failed`");
         }
-        let Some(summary) = bounded_nonblank(&arguments, "summary", MAX_SUMMARY_BYTES) else {
-            return ToolExecutionResult::tool_error("summary is required and must be bounded");
+        let summary = match bounded_nonblank(summary, "summary", MAX_SUMMARY_BYTES) {
+            Ok(value) => value,
+            Err(error) => return ToolExecutionResult::tool_error(error),
         };
-        let Some(validation) = bounded_nonblank(&arguments, "validation", MAX_SUMMARY_BYTES) else {
-            return ToolExecutionResult::tool_error("validation is required and must be bounded");
+        let validation = match bounded_nonblank(validation, "validation", MAX_SUMMARY_BYTES) {
+            Ok(value) => value,
+            Err(error) => return ToolExecutionResult::tool_error(error),
         };
-        let artifacts = match parse_artifacts(&arguments) {
+        let artifacts = match parse_artifacts(artifacts) {
             Ok(artifacts) => artifacts,
             Err(error) => return ToolExecutionResult::tool_error(error),
         };
-        let route = match self.store.active_assignment(self.session_id) {
+        let route = match self.store.active_assignment(session_id) {
             Ok(Some(route)) => route,
             Ok(None) => {
                 return ToolExecutionResult::tool_error(
@@ -1196,8 +1078,7 @@ impl Tool for CompleteAssignmentTool {
             kind: "worker_failed".into(),
             message: summary.to_string(),
         });
-        match self
-            .tasks
+        match tasks
             .update(
                 route.owner_session_id,
                 &route.task_id,
@@ -1234,62 +1115,18 @@ impl Tool for CompleteAssignmentTool {
     }
 }
 
-struct SetWorkerAvailabilityTool {
-    store: CoordinationStore,
-    session_id: SessionId,
+fn bounded_nonblank<'a>(value: &'a str, name: &str, max: usize) -> Result<&'a str, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{name} must not be empty"));
+    }
+    if value.len() > max {
+        return Err(format!("{name} must not exceed {max} bytes"));
+    }
+    Ok(value)
 }
 
-#[async_trait]
-impl Tool for SetWorkerAvailabilityTool {
-    fn name(&self) -> &str {
-        "set_worker_availability"
-    }
-    fn description(&self) -> &str {
-        "Opt this live Yolop session into or out of receiving coordinator assignments."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": { "accept_work": { "type": "boolean" } },
-            "required": ["accept_work"],
-            "additionalProperties": false
-        })
-    }
-    fn hints(&self) -> ToolHints {
-        ToolHints {
-            readonly: Some(false),
-            ..Default::default()
-        }
-    }
-    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let Some(accepting) = arguments.get("accept_work").and_then(Value::as_bool) else {
-            return ToolExecutionResult::tool_error("accept_work must be a boolean");
-        };
-        match self.store.set_accepting(self.session_id, accepting) {
-            Ok(true) => ToolExecutionResult::success(
-                json!({ "session_id": self.session_id, "accepting_work": accepting }),
-            ),
-            Ok(false) => ToolExecutionResult::tool_error("live coordination host not found"),
-            Err(error) => ToolExecutionResult::tool_error(error.to_string()),
-        }
-    }
-}
-
-fn bounded_nonblank<'a>(arguments: &'a Value, name: &str, max: usize) -> Option<&'a str> {
-    arguments
-        .get(name)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && value.len() <= max)
-}
-
-fn parse_artifacts(arguments: &Value) -> Result<Vec<TaskArtifact>, String> {
-    let Some(values) = arguments.get("artifacts") else {
-        return Ok(Vec::new());
-    };
-    let values = values
-        .as_array()
-        .ok_or_else(|| "artifacts must be an array".to_string())?;
+fn parse_artifacts(values: &[String]) -> Result<Vec<TaskArtifact>, String> {
     if values.len() > MAX_ARTIFACTS {
         return Err(format!(
             "artifacts may contain at most {MAX_ARTIFACTS} items"
@@ -1299,13 +1136,10 @@ fn parse_artifacts(arguments: &Value) -> Result<Vec<TaskArtifact>, String> {
         .iter()
         .enumerate()
         .map(|(index, value)| {
-            let reference = value
-                .as_str()
-                .map(str::trim)
-                .filter(|value| !value.is_empty() && value.len() <= 4096)
-                .ok_or_else(|| {
-                    "each artifact must be a non-empty string up to 4096 bytes".to_string()
-                })?;
+            let reference = value.as_str().trim();
+            if reference.is_empty() || reference.len() > 4096 {
+                return Err("each artifact must be a non-empty string up to 4096 bytes".to_string());
+            }
             let (path, url) =
                 if reference.starts_with("https://") || reference.starts_with("http://") {
                     (None, Some(reference.to_string()))
@@ -1330,22 +1164,32 @@ enum CoordinationAction {
         json: bool,
     },
     Status,
+    Dispatch {
+        title: String,
+        request: String,
+        target_session_id: Option<SessionId>,
+    },
+    Complete {
+        status: String,
+        summary: String,
+        validation: String,
+        #[serde(default)]
+        artifacts: Vec<String>,
+    },
     Accept,
     Drain,
 }
 
 impl CoordinationAction {
     fn parse(arguments: Option<&str>) -> Result<Self, String> {
-        let value = arguments.unwrap_or("list").trim();
-        match value {
-            "" | "list" => Ok(Self::List { json: false }),
-            "status" => Ok(Self::Status),
-            "accept" => Ok(Self::Accept),
-            "drain" => Ok(Self::Drain),
-            other => Err(format!(
-                "unknown coordination action `{other}`; use list, status, accept, or drain"
-            )),
+        let arguments = arguments.unwrap_or("").trim();
+        if arguments.is_empty() {
+            return Ok(Self::List { json: false });
         }
+        let argv = std::iter::once(COORDINATION_COMMAND).chain(arguments.split_ascii_whitespace());
+        CoordinationCommandLine::try_parse_from(argv)
+            .map(|parsed| Self::from(parsed.command))
+            .map_err(|error| error.to_string())
     }
 
     fn request(&self) -> ControlRequest {
@@ -1356,19 +1200,43 @@ impl CoordinationAction {
 
 #[derive(Subcommand, Debug)]
 enum CoordinationCliCommand {
+    /// List live sessions. Attached calls are scoped to the current project.
     List {
         #[arg(long)]
         json: bool,
     },
+    /// Show the attached session's role, availability, and assignment.
     Status,
+    /// Assign work to an eligible worker in the attached coordinator's project.
+    Dispatch {
+        #[arg(long, num_args = 1.., required = true)]
+        title: Vec<String>,
+        #[arg(long, num_args = 1.., required = true)]
+        request: Vec<String>,
+        #[arg(long)]
+        target_session_id: Option<SessionId>,
+    },
+    /// Settle the attached worker's active assignment and notify its coordinator.
+    Complete {
+        #[arg(long, value_parser = ["succeeded", "failed"])]
+        status: String,
+        #[arg(long, num_args = 1.., required = true)]
+        summary: Vec<String>,
+        #[arg(long, num_args = 1.., required = true)]
+        validation: Vec<String>,
+        #[arg(long = "artifact")]
+        artifacts: Vec<String>,
+    },
+    /// Allow the attached worker to receive new assignments.
     Accept,
+    /// Stop the attached worker from receiving new assignments.
     Drain,
 }
 
 #[derive(Parser)]
 #[command(
     name = "coordination",
-    about = "Inspect local Yolop workers and control the attached session's availability",
+    about = "Coordinate work across local Yolop sessions",
     disable_help_subcommand = true
 )]
 struct CoordinationCommandLine {
@@ -1381,6 +1249,26 @@ impl From<CoordinationCliCommand> for CoordinationAction {
         match value {
             CoordinationCliCommand::List { json } => Self::List { json },
             CoordinationCliCommand::Status => Self::Status,
+            CoordinationCliCommand::Dispatch {
+                title,
+                request,
+                target_session_id,
+            } => Self::Dispatch {
+                title: title.join(" "),
+                request: request.join(" "),
+                target_session_id,
+            },
+            CoordinationCliCommand::Complete {
+                status,
+                summary,
+                validation,
+                artifacts,
+            } => Self::Complete {
+                status,
+                summary: summary.join(" "),
+                validation: validation.join(" "),
+                artifacts,
+            },
             CoordinationCliCommand::Accept => Self::Accept,
             CoordinationCliCommand::Drain => Self::Drain,
         }
@@ -1423,7 +1311,7 @@ impl CliCapability for SessionCoordinationCapability {
         let action = serde_json::from_value::<CoordinationAction>(request.action.clone())?;
         if !matches!(action, CoordinationAction::List { .. }) {
             anyhow::bail!(
-                "coordination status and availability changes require a running Yolop session; invoke the command directly through that session's foreground Bash"
+                "this coordination operation requires a running Yolop session; invoke the command directly through that session's foreground Bash"
             );
         }
         let response = ControlResponse::from_tool_result(self.execute_action(&action).await);
@@ -1500,22 +1388,114 @@ mod tests {
             tasks,
             SessionId::new(),
             "file:/repo".into(),
+            Some(CoordinationConfig {
+                role: CoordinationRole::Coordinator,
+                accept_work: false,
+            }),
         );
-        let names = |config: Value| {
-            capability
-                .tools_with_config(&config)
-                .into_iter()
-                .map(|tool| tool.name().to_string())
-                .collect::<Vec<_>>()
+        assert!(capability.tools().is_empty());
+    }
+
+    #[tokio::test]
+    async fn control_actions_enforce_the_attached_session_role() {
+        let (store, tasks) = test_store();
+        let session_id = SessionId::new();
+        let worker = SessionCoordinationCapability::live(
+            store.clone(),
+            tasks.clone(),
+            session_id,
+            "file:/repo".into(),
+            Some(CoordinationConfig {
+                role: CoordinationRole::Worker,
+                accept_work: false,
+            }),
+        );
+        let dispatch = serde_json::to_value(CoordinationAction::Dispatch {
+            title: "Inspect parser".into(),
+            request: "Inspect the parser".into(),
+            target_session_id: None,
+        })
+        .unwrap();
+        let ToolExecutionResult::ToolError(error) = worker.execute_control(&dispatch).await else {
+            panic!("worker role unexpectedly dispatched work")
         };
+        assert!(error.contains("coordinator or both role"));
+
+        let coordinator = SessionCoordinationCapability::live(
+            store,
+            tasks,
+            session_id,
+            "file:/repo".into(),
+            Some(CoordinationConfig {
+                role: CoordinationRole::Coordinator,
+                accept_work: false,
+            }),
+        );
+        let complete = serde_json::to_value(CoordinationAction::Complete {
+            status: "succeeded".into(),
+            summary: "Done".into(),
+            validation: "Checked".into(),
+            artifacts: Vec::new(),
+        })
+        .unwrap();
+        let ToolExecutionResult::ToolError(error) = coordinator.execute_control(&complete).await
+        else {
+            panic!("coordinator role unexpectedly completed worker assignment")
+        };
+        assert!(error.contains("worker or both role"));
+    }
+
+    #[test]
+    fn slash_command_parser_uses_the_contributed_cli_grammar() {
         assert_eq!(
-            names(json!({ "role": "coordinator" })),
-            ["list_workers", "dispatch_work"]
+            CoordinationAction::parse(Some(
+                "dispatch --title Inspect parser --request Inspect the parser"
+            ))
+            .unwrap(),
+            CoordinationAction::Dispatch {
+                title: "Inspect parser".into(),
+                request: "Inspect the parser".into(),
+                target_session_id: None,
+            }
         );
         assert_eq!(
-            names(json!({ "role": "worker" })),
-            ["complete_assignment", "set_worker_availability"]
+            CoordinationAction::parse(Some(
+                "complete --status succeeded --summary Parser fixed --validation cargo test passed --artifact result.json"
+            ))
+            .unwrap(),
+            CoordinationAction::Complete {
+                status: "succeeded".into(),
+                summary: "Parser fixed".into(),
+                validation: "cargo test passed".into(),
+                artifacts: vec!["result.json".into()],
+            }
         );
+    }
+
+    #[tokio::test]
+    async fn typed_control_payloads_remain_bounded() {
+        let (store, tasks) = test_store();
+        let coordinator = SessionCoordinationCapability::live(
+            store,
+            tasks,
+            SessionId::new(),
+            "file:/repo".into(),
+            Some(CoordinationConfig {
+                role: CoordinationRole::Coordinator,
+                accept_work: false,
+            }),
+        );
+        let action = serde_json::to_value(CoordinationAction::Dispatch {
+            title: "Inspect".into(),
+            request: "x".repeat(MAX_REQUEST_BYTES + 1),
+            target_session_id: None,
+        })
+        .unwrap();
+        let ToolExecutionResult::ToolError(error) = coordinator.execute_control(&action).await
+        else {
+            panic!("oversized dispatch unexpectedly succeeded")
+        };
+        assert!(error.contains("request must not exceed"));
     }
 
     #[test]
@@ -1569,10 +1549,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_and_completion_use_the_real_task_registry_and_inbox() {
+    async fn cli_control_dispatch_and_completion_use_the_real_task_registry_and_inbox() {
         let (store, tasks) = test_store();
         let owner = SessionId::new();
         let worker = SessionId::new();
+        store
+            .register_host(
+                owner,
+                "owner-host",
+                CoordinationConfig {
+                    role: CoordinationRole::Coordinator,
+                    accept_work: false,
+                },
+                "file:/repo",
+                Path::new("/repo"),
+            )
+            .unwrap();
         store
             .register_host(
                 worker,
@@ -1586,28 +1578,80 @@ mod tests {
             )
             .unwrap();
 
-        let dispatch = DispatchWorkTool {
-            store: store.clone(),
-            tasks: tasks.clone(),
-            session_id: owner,
-            project_id: "file:/repo".into(),
-        };
-        let ToolExecutionResult::Success(dispatched) = dispatch
-            .execute(json!({ "title": "Inspect", "request": "Inspect the parser" }))
-            .await
+        let coordinator = SessionCoordinationCapability::live(
+            store.clone(),
+            tasks.clone(),
+            owner,
+            "file:/repo".into(),
+            Some(CoordinationConfig {
+                role: CoordinationRole::Coordinator,
+                accept_work: false,
+            }),
+        );
+        let dispatch_matches = coordinator
+            .cli_command()
+            .try_get_matches_from([
+                "coordination",
+                "dispatch",
+                "--title",
+                "Inspect",
+                "parser",
+                "--request",
+                "Inspect",
+                "the",
+                "parser",
+            ])
+            .unwrap();
+        let dispatch_request = coordinator
+            .control_request_from_cli(&dispatch_matches)
+            .unwrap();
+        let ToolExecutionResult::Success(dispatched) =
+            coordinator.execute_control(&dispatch_request.action).await
         else {
             panic!("dispatch failed")
         };
         let task_id = dispatched["task_id"].as_str().unwrap();
         let assignment = store.next_delivery(worker, "worker-host").unwrap().unwrap();
-        assert!(matches!(assignment, CoordinationPayload::Assignment { .. }));
+        assert!(matches!(
+            assignment,
+            CoordinationPayload::Assignment { title, request, .. }
+                if title == "Inspect parser" && request == "Inspect the parser"
+        ));
 
-        let complete = CompleteAssignmentTool {
-            store: store.clone(),
-            tasks: tasks.clone(),
-            session_id: worker,
-        };
-        let result = complete.execute(json!({ "status": "succeeded", "summary": "Parser inspected", "validation": "cargo test passed", "artifacts": ["https://example.test/pr/1"] })).await;
+        let worker_capability = SessionCoordinationCapability::live(
+            store.clone(),
+            tasks.clone(),
+            worker,
+            "file:/repo".into(),
+            Some(CoordinationConfig {
+                role: CoordinationRole::Worker,
+                accept_work: true,
+            }),
+        );
+        let complete_matches = worker_capability
+            .cli_command()
+            .try_get_matches_from([
+                "coordination",
+                "complete",
+                "--status",
+                "succeeded",
+                "--summary",
+                "Parser",
+                "inspected",
+                "--validation",
+                "cargo",
+                "test",
+                "passed",
+                "--artifact",
+                "https://example.test/pr/1",
+            ])
+            .unwrap();
+        let complete_request = worker_capability
+            .control_request_from_cli(&complete_matches)
+            .unwrap();
+        let result = worker_capability
+            .execute_control(&complete_request.action)
+            .await;
         assert!(
             matches!(result, ToolExecutionResult::Success(_)),
             "{result:?}"

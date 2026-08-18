@@ -128,8 +128,9 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   token and cost rollups. See [Parallel sub-agents](./docs/features/subagents/subagents.md).
 - **Session coordination**: a purpose-built coordinator profile can discover
   live, opt-in Yolop workers in separate Git worktrees, dispatch durable tasks,
-  and receive explicit completion wakes. Presence and delivery are local and
-  restart-safe; ordinary sessions start drained. See
+  and receive explicit completion wakes through the attached
+  `yolop coordination` CLI, without adding model-tool schemas. Presence and
+  delivery are local and restart-safe; ordinary sessions start drained. See
   [Session coordination](./docs/session-coordination.md).
 - **Web**: `free_web_search`, `web_fetch` (HTTP GET/HEAD with markdown/text
   conversion and DNS-pinned SSRF protection), and `duckduckgo_instant_answer`,
