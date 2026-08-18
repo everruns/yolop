@@ -303,8 +303,10 @@ impl ControlPlaneCapability {
         if routes.is_empty() {
             return None;
         }
-        let mut prompt = format!("<capability id=\"{CONTROL_PLANE_CAPABILITY_ID}\">\n");
-        prompt.push_str(
+        // No `<capability>` wrapper here: the default
+        // `Capability::system_prompt_contribution` wraps this text in
+        // `<capability id="control_plane">` when it assembles the prompt.
+        let mut prompt = String::from(
             "Administer this session by running `yolop <subcommand> ...` in the foreground bash \
              tool: it attaches to the running session and takes effect live. Run \
              `yolop <subcommand> --help` for the operations; there are no equivalent tools.\n",
@@ -317,7 +319,7 @@ impl ControlPlaneCapability {
         }
         prompt.push_str(
             "Invoke it directly: a pipeline, redirection, quoting, substitution, or `&` runs as \
-             ordinary shell and loses the attachment.\n</capability>",
+             ordinary shell and loses the attachment.",
         );
         Some(Self { prompt })
     }
@@ -683,6 +685,27 @@ mod tests {
     #[test]
     fn control_plane_prompt_is_absent_without_registered_routes() {
         assert!(ControlPlaneCapability::new(&[]).is_none());
+    }
+
+    /// Drives the real assembly entry point (`system_prompt_contribution`, what
+    /// the runtime calls when it builds the prompt), not just the constructor:
+    /// the default wraps the addition, so the block must not wrap itself.
+    #[tokio::test]
+    async fn control_plane_contribution_is_wrapped_exactly_once() {
+        let registry = service();
+        let capability = ControlPlaneCapability::new(&ControlService::routes(&registry))
+            .expect("a registered route contributes the block");
+        let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
+            everruns_provider::typed_id::SessionId::new(),
+        );
+        let contribution = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("the capability contributes to the assembled prompt");
+        assert_eq!(contribution.matches("<capability id=").count(), 1);
+        assert!(contribution.starts_with("<capability id=\"control_plane\">\n"));
+        assert!(contribution.ends_with("</capability>"));
+        assert!(contribution.contains("- `extensions`, administer extension packages"));
     }
 
     #[test]

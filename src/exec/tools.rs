@@ -650,6 +650,18 @@ impl BackgroundExecutableTool for BashTool {
 
 #[cfg(test)]
 mod tests {
+
+    /// The Bash description must stay free of control-resource vocabulary: it
+    /// was hardcoded to `yolop extensions`, which named one of the session's
+    /// routes and advertised administration even where none is registered.
+    /// Discovery belongs to the shared control-plane prompt block.
+    #[test]
+    fn bash_description_does_not_name_control_resources() {
+        let tool = BashTool::new(Workspace::from_path(std::env::current_dir().unwrap()));
+        let description = Tool::description(&tool);
+        assert!(!description.contains("yolop extensions"));
+        assert!(!description.contains("administer"));
+    }
     use super::*;
     use everruns_builtins::ToolOutputPersistenceCapability;
     use everruns_core::Capability;

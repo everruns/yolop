@@ -9043,11 +9043,11 @@ mod tests {
         use crate::extensions::EXTENSIONS_CONTROL_ROUTE;
         use everruns_core::Capability as _;
 
-        // Current total is 6,231; the headroom is deliberately thin. The
+        // Current total is 6,185; the headroom is deliberately thin. The
         // control-plane block is what a full session renders (both routes
         // registered): it replaces per-route prompt text, so adding a CLI route
         // costs one line here rather than a block.
-        const MAX_BYTES: usize = 6_400;
+        const MAX_BYTES: usize = 6_300;
 
         let approval = render_approval_block(ApprovalMode::Normal).expect("normal contributes");
         let blocks: Vec<(&str, usize)> = vec![
