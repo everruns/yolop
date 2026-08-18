@@ -303,12 +303,12 @@ pub(crate) async fn cancel_monitor_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns::local::{LocalScheduleStore, LocalSessionTaskRegistry, SqliteDb};
     use everruns_core::session_schedule::SessionSchedule;
     use everruns_core::session_services::SessionScheduleStore;
     use everruns_core::{
         CreateSessionTask, SessionTaskRegistry, SessionTaskState, TASK_KIND_MONITOR, TaskWakePolicy,
     };
-    use everruns_local::{LocalScheduleStore, LocalSessionTaskRegistry, SqliteDb};
     use everruns_provider::typed_id::{PrincipalId, ScheduleId, SessionId};
     use serde_json::json;
     use std::sync::Arc;

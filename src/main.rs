@@ -1377,7 +1377,7 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         .and_then(|dir| capabilities::CoordinationStore::open(&dir).ok())
     {
         Some(store) => store,
-        None => capabilities::CoordinationStore::new(everruns_local::SqliteDb::open_in_memory()?)?,
+        None => capabilities::CoordinationStore::new(everruns::local::SqliteDb::open_in_memory()?)?,
     };
     registry.register(Arc::new(
         capabilities::SessionCoordinationCapability::detached(coordination_store),
