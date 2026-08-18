@@ -10308,6 +10308,7 @@ dependencies = [
  "ratatui",
  "regex",
  "reqwest 0.13.4",
+ "rusqlite",
  "seccompiler",
  "serde",
  "serde_json",

@@ -748,7 +748,7 @@ fn spawn_background_wake_drain(
                         .user_ask_store
                         .active_text(session.handles.session_id),
                 );
-            if !session.settings.snapshot().proactive_wake_enabled() {
+            if !message.is_coordination() && !session.settings.snapshot().proactive_wake_enabled() {
                 peer.session_update(
                     &session.acp_id,
                     SessionUpdate::AgentMessageChunk(protocol::text_chunk(
@@ -759,9 +759,7 @@ fn spawn_background_wake_drain(
             }
             peer.session_update(
                 &session.acp_id,
-                SessionUpdate::AgentMessageChunk(protocol::text_chunk(
-                    "↻ background task finished — waking agent to review",
-                )),
+                SessionUpdate::AgentMessageChunk(protocol::text_chunk(message.notice())),
             );
             let prompt = frame_wake_prompt(&message);
             let input = crate::runtime::background_wake::input_for_wake(&message);

@@ -1354,6 +1354,16 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
     );
     let mut registry = control::CliRegistry::default();
     registry.register(capability)?;
+    let coordination_store = match runtime::session_log::default_sessions_dir()
+        .ok()
+        .and_then(|dir| capabilities::CoordinationStore::open(&dir).ok())
+    {
+        Some(store) => store,
+        None => capabilities::CoordinationStore::new(everruns_local::SqliteDb::open_in_memory()?)?,
+    };
+    registry.register(Arc::new(
+        capabilities::SessionCoordinationCapability::detached(coordination_store),
+    ))?;
     Ok(registry)
 }
 

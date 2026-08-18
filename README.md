@@ -126,6 +126,11 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   windows. A two-level hierarchy supports broad swarms without exceeding the
   per-session fan-out limit; `Ctrl+B` shows the live activity rail with branch
   token and cost rollups. See [Parallel sub-agents](./docs/features/subagents/subagents.md).
+- **Session coordination**: a purpose-built coordinator profile can discover
+  live, opt-in Yolop workers in separate Git worktrees, dispatch durable tasks,
+  and receive explicit completion wakes. Presence and delivery are local and
+  restart-safe; ordinary sessions start drained. See
+  [Session coordination](./docs/session-coordination.md).
 - **Web**: `free_web_search`, `web_fetch` (HTTP GET/HEAD with markdown/text
   conversion and DNS-pinned SSRF protection), and `duckduckgo_instant_answer`,
   all working without an API key. Set `EVERRUNS_SYSTEM_ALLOWLIST_ENABLED=true`
@@ -449,6 +454,12 @@ ref = "ext:triage"
 [[capabilities]]
 ref = "yolop_skill_management"
 enabled = false
+
+# Make this profile a coordinator for opt-in local Yolop workers.
+[[capabilities]]
+ref = "session_coordination"
+role = "coordinator"
+accept_work = false
 ```
 
 Structural keys layer by default: `[[capabilities]]` entries run after the
