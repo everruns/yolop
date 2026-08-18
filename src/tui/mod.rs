@@ -4011,10 +4011,9 @@ mod tests {
                 rx
             }
         }
-        crate::capabilities::client_commands::ClientCommandsCapability::new(
-            std::sync::Arc::new(NoopUi),
-            std::sync::Arc::new(crate::capabilities::client_commands::EmptyCommandDispatch),
-        )
+        crate::capabilities::client_commands::ClientCommandsCapability::new(std::sync::Arc::new(
+            NoopUi,
+        ))
         .commands()
     }
 

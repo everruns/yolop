@@ -16,11 +16,12 @@ use crate::capabilities::tool_reveal::{
 };
 use crate::capabilities::yolop::{YOLOP_CAPABILITY_ID, YolopCapability};
 use crate::capabilities::{
-    APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID, ApprovalCapability,
-    AstEditCapability, AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID,
-    BackgroundCapability, CHECKPOINT_CAPABILITY_ID, CLIENT_COMMANDS_CAPABILITY_ID,
-    CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID, CONTEXT_COST_CONTROL_CAPABILITY_ID,
-    CheckpointCapability, ClientCommandsCapability, ClientUiContext, CodingBashCapability,
+    AGENT_COMMANDS_CAPABILITY_ID, APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID,
+    ATTRIBUTION_CAPABILITY_ID, AgentCommandsCapability, ApprovalCapability, AstEditCapability,
+    AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID, BackgroundCapability,
+    CHECKPOINT_CAPABILITY_ID, CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID,
+    CONFIG_CAPABILITY_ID, CONTEXT_COST_CONTROL_CAPABILITY_ID, CheckpointCapability,
+    ClientCommandsCapability, ClientUiContext, CodingBashCapability,
     CodingCliEnvironmentCapability, CommandDispatch, ConfigCapability,
     ContextCostControlCapability, CoordinationConfig, CoordinationHost, CoordinationStore,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry, GOAL_CAPABILITY_ID,
@@ -2456,6 +2457,9 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
     if client_commands {
         caps.push(CapabilityRef::new(CLIENT_COMMANDS_CAPABILITY_ID));
     }
+    // `run_command` reaches whatever this host's registry holds, so it is on for
+    // every host, not just the terminal.
+    caps.push(CapabilityRef::new(AGENT_COMMANDS_CAPABILITY_ID));
     caps.extend([
         CapabilityRef::with_config(
             SESSION_COORDINATION_CAPABILITY_ID,
@@ -4090,17 +4094,23 @@ pub async fn build_with_options(
     // effort/clear/shell/quit and forwards each invocation as a `UiCommand` down
     // `ui_tx` (created above, shared with extension status); the `App` event
     // loop drains `ui_rx` and performs the effect.
-    // `run_command` additionally reaches every *other* registered command
-    // through `RuntimeCommandDispatch`, so the agent's command surface is the
-    // session registry rather than a second allowlist.
-    if options.client_commands {
-        let ui: Arc<dyn HostUi> = Arc::new(TuiHandle::new(ui_tx));
-        let dispatch: Arc<dyn CommandDispatch> = Arc::new(RuntimeCommandDispatch {
+    let host_ui: Option<Arc<dyn HostUi>> = options
+        .client_commands
+        .then(|| Arc::new(TuiHandle::new(ui_tx)) as Arc<dyn HostUi>);
+    if let Some(ui) = host_ui.clone() {
+        capabilities.register(ClientCommandsCapability::new(ui));
+    }
+    // `run_command` is host-neutral: it dispatches whatever this session's
+    // registry holds, so every host registers it. The terminal's `HostUi` rides
+    // along only so informational client commands (`/mcp`, `/tools`) can return
+    // the transcript lines the host printed.
+    capabilities.register(AgentCommandsCapability::new(
+        Arc::new(RuntimeCommandDispatch {
             runtime: runtime_cell.clone(),
             session_id,
-        });
-        capabilities.register(ClientCommandsCapability::new(ui, dispatch));
-    }
+        }) as Arc<dyn CommandDispatch>,
+        host_ui,
+    ));
 
     let mut catalog = CapabilityCatalog::new();
     for cap in capabilities.list() {
@@ -6370,6 +6380,64 @@ mod tests {
         assert!(
             ids.iter()
                 .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID)
+        );
+    }
+
+    /// `run_command` is not terminal-only: ACP and `--print` sessions get it
+    /// too, so they can run whatever their own registry holds.
+    #[test]
+    fn every_host_enables_run_command() {
+        for client_commands in [false, true] {
+            let ids = coding_harness_capabilities(client_commands, None, &Settings::default());
+            assert!(
+                ids.iter()
+                    .any(|cap| cap.capability_id() == AGENT_COMMANDS_CAPABILITY_ID),
+                "run_command must be enabled (client_commands={client_commands})"
+            );
+        }
+    }
+
+    /// A host without a terminal (ACP, `--print`) still exposes `run_command`,
+    /// and simply has no client commands in its registry to find.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn headless_host_exposes_run_command_without_terminal_commands() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+
+        assert!(
+            built
+                .startup
+                .tool_names
+                .iter()
+                .any(|name| name == "run_command"),
+            "run_command is host-neutral: {:?}",
+            built.startup.tool_names
+        );
+
+        let names: Vec<String> = built
+            .startup
+            .capability_commands
+            .iter()
+            .map(|command| command.name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|name| name == "setup"),
+            "registry still carries runtime commands: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name == "quit"),
+            "terminal commands stay out of a headless registry: {names:?}"
         );
     }
 
@@ -9218,6 +9286,7 @@ mod tests {
 
     #[test]
     fn always_on_capability_prompts_within_budget() {
+        use crate::capabilities::agent_commands::AGENT_COMMANDS_PROMPT;
         use crate::capabilities::approval::render_approval_block;
         use crate::capabilities::attribution::yolop_attribution_prompt;
         use crate::capabilities::background::BACKGROUND_SYSTEM_PROMPT;
@@ -9241,6 +9310,7 @@ mod tests {
             ("approval", approval.len()),
             ("background", BACKGROUND_SYSTEM_PROMPT.len()),
             ("client_commands", CLIENT_COMMANDS_PROMPT.len()),
+            ("agent_commands", AGENT_COMMANDS_PROMPT.len()),
             ("setup", MODELS_PROMPT.len()),
             ("attribution", yolop_attribution_prompt().len()),
             (

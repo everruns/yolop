@@ -134,3 +134,47 @@ impl HostUi for TuiHandle {
         reply_rx
     }
 }
+
+/// Recording [`HostUi`] for unit tests: captures queued commands and answers
+/// `request` with representative transcript lines, so capabilities that drive
+/// the host can be tested without a live `App`. Integration coverage for the
+/// real host text lives in the TUI suite.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct RecordingUi {
+    commands: std::sync::Mutex<Vec<UiCommand>>,
+}
+
+#[cfg(test)]
+impl RecordingUi {
+    pub(crate) fn take(&self) -> Vec<UiCommand> {
+        std::mem::take(&mut *self.commands.lock().expect("commands lock"))
+    }
+}
+
+#[cfg(test)]
+impl HostUi for RecordingUi {
+    fn send(&self, command: UiCommand) {
+        self.commands.lock().expect("commands lock").push(command);
+    }
+
+    fn request(&self, command: UiCommand) -> oneshot::Receiver<Vec<String>> {
+        self.send(command.clone());
+        let (tx, rx) = oneshot::channel();
+        let message = match &command {
+            UiCommand::ManageMcp { .. } => {
+                vec![
+                    "active MCP servers: none".into(),
+                    "usage: /mcp [reload | login <name> | enable|disable|remove <name> [global|workspace]]"
+                        .into(),
+                ]
+            }
+            UiCommand::ShowTools => vec!["tools: bash".into()],
+            UiCommand::ShowHelp => vec!["commands:".into()],
+            UiCommand::ShowCwd => vec!["workspace root: /tmp".into()],
+            _ => Vec::new(),
+        };
+        let _ = tx.send(message);
+        rx
+    }
+}
