@@ -17,7 +17,6 @@ mod bridge;
 mod modes;
 mod protocol;
 mod server;
-#[cfg(feature = "acp-setup-page")]
 mod setup_page;
 
 use std::path::PathBuf;
@@ -36,13 +35,15 @@ use everruns_provider::typed_id::SessionId as RuntimeSessionId;
 
 pub use server::{RuntimeFactory, serve};
 
-/// Id of the agent-handled method that opens the loopback setup page. Present
-/// only in `acp-setup-page` builds; `server` treats it as the generic fallback
-/// for providers with no browser login of their own.
+/// Id of the agent-handled method that opens the loopback setup page.
+/// Advertised only when the page is enabled; `server` then treats it as the
+/// generic fallback for providers with no browser login of their own.
 pub(crate) const SETUP_PAGE_AUTH_METHOD: &str = "local_setup_page";
 
-pub(crate) fn advertised_auth_methods() -> Vec<AuthMethod> {
-    #[allow(unused_mut)]
+/// `setup_page` mirrors the `--acp-setup-page` flag and the `acp_setup_page`
+/// setting. With it off the method is never advertised and no listener is ever
+/// bound, so the default ACP surface is unchanged.
+pub(crate) fn advertised_auth_methods(setup_page: bool) -> Vec<AuthMethod> {
     let mut methods = vec![
         AuthMethod::Agent(
             AuthMethodAgent::new("codex_browser", "Sign in with ChatGPT")
@@ -53,13 +54,14 @@ pub(crate) fn advertised_auth_methods() -> Vec<AuthMethod> {
                 .description("Open a browser to create an OpenRouter API key."),
         ),
     ];
-    #[cfg(feature = "acp-setup-page")]
-    methods.push(AuthMethod::Agent(
-        AuthMethodAgent::new(SETUP_PAGE_AUTH_METHOD, "Open the yolop setup page")
-            .description(
-                "Open a page served on localhost to connect a provider with an API key, a custom endpoint, or a model.",
-            ),
-    ));
+    if setup_page {
+        methods.push(AuthMethod::Agent(
+            AuthMethodAgent::new(SETUP_PAGE_AUTH_METHOD, "Open the yolop setup page")
+                .description(
+                    "Open a page served on localhost to connect a provider with an API key, a custom endpoint, or a model.",
+                ),
+        ));
+    }
     methods
 }
 
@@ -72,8 +74,8 @@ struct ConfigRuntimeFactory {
     settings: Arc<SettingsStore>,
     sessions_dir: PathBuf,
     sandbox_mode_override: Option<SandboxMode>,
-    #[cfg(feature = "acp-setup-page")]
-    setup_page: setup_page::SetupPageService,
+    /// `None` when the setup page is off, so nothing can bind a listener.
+    setup_page: Option<setup_page::SetupPageService>,
 }
 
 #[async_trait]
@@ -85,7 +87,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
     }
 
     fn auth_methods(&self) -> Vec<AuthMethod> {
-        advertised_auth_methods()
+        advertised_auth_methods(self.setup_page.is_some())
     }
 
     async fn authenticate(&self, method_id: &str) -> Result<()> {
@@ -98,46 +100,40 @@ impl RuntimeFactory for ConfigRuntimeFactory {
                 let key = crate::auth::openrouter::login_with_browser().await?;
                 self.settings.set_token("openrouter".to_string(), key)
             }
-            #[cfg(feature = "acp-setup-page")]
-            SETUP_PAGE_AUTH_METHOD => self.setup_page.run_to_completion().await.map(|_| ()),
+            SETUP_PAGE_AUTH_METHOD if self.setup_page.is_some() => self
+                .setup_page
+                .as_ref()
+                .expect("checked by the guard")
+                .run_to_completion()
+                .await
+                .map(|_| ()),
             _ => anyhow::bail!("unknown authentication method `{method_id}`"),
         }
     }
 
     async fn setup_page_url(&self) -> Option<String> {
-        #[cfg(feature = "acp-setup-page")]
-        {
-            match self.setup_page.url().await {
-                Ok(url) => Some(url),
-                Err(err) => {
-                    tracing::warn!(%err, "acp: could not start the setup page");
-                    None
-                }
+        match self.setup_page.as_ref()?.url().await {
+            Ok(url) => Some(url),
+            Err(err) => {
+                tracing::warn!(%err, "acp: could not start the setup page");
+                None
             }
-        }
-        #[cfg(not(feature = "acp-setup-page"))]
-        {
-            None
         }
     }
 
     async fn wait_for_setup_page(&self) -> bool {
-        #[cfg(feature = "acp-setup-page")]
-        {
-            match self.setup_page.wait().await {
-                Ok(summary) => {
-                    tracing::info!(%summary, "acp: setup page connected a provider");
-                    true
-                }
-                Err(err) => {
-                    tracing::debug!(%err, "acp: setup page closed without saving");
-                    false
-                }
+        let Some(page) = self.setup_page.as_ref() else {
+            return false;
+        };
+        match page.wait().await {
+            Ok(summary) => {
+                tracing::info!(%summary, "acp: setup page connected a provider");
+                true
             }
-        }
-        #[cfg(not(feature = "acp-setup-page"))]
-        {
-            false
+            Err(err) => {
+                tracing::debug!(%err, "acp: setup page closed without saving");
+                false
+            }
         }
     }
 
@@ -174,11 +170,11 @@ pub async fn run_stdio(
     settings: Arc<SettingsStore>,
     sessions_dir: PathBuf,
     sandbox_mode_override: Option<SandboxMode>,
+    setup_page: bool,
 ) -> Result<()> {
     let factory = Arc::new(ConfigRuntimeFactory {
         provider,
-        #[cfg(feature = "acp-setup-page")]
-        setup_page: setup_page::SetupPageService::new(settings.clone()),
+        setup_page: setup_page.then(|| setup_page::SetupPageService::new(settings.clone())),
         settings,
         sessions_dir,
         sandbox_mode_override,
@@ -323,7 +319,7 @@ mod tests {
 
     /// Like [`ScriptedFactory`], but advertising a loopback setup page so the
     /// no-provider hint has something to link to. Stands in for an
-    /// `acp-setup-page` build without binding a real port.
+    /// run with the page enabled without binding a real port.
     struct SetupHintFactory {
         inner: ScriptedFactory,
         url: String,

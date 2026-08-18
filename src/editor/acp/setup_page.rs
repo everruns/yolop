@@ -1,4 +1,5 @@
-//! Loopback setup page, behind the `acp-setup-page` feature.
+//! Loopback setup page, opt-in per run (`--acp-setup-page`) or per user (the
+//! `acp_setup_page` setting).
 //!
 //! ACP has no secure way for an agent to ask for free text, let alone a secret:
 //! the client owns every input surface, and the only agent-initiated ask is

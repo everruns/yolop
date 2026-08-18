@@ -86,7 +86,7 @@ support copy, while other API-key failures explain ACP's secure-input boundary
 and the environment/restart path. Invalid Codex credentials are cleared before
 reauthentication.
 
-### Local setup page (feature `acp-setup-page`, off by default)
+### Local setup page (opt-in, off by default)
 
 Stable ACP has no secure input surface: the client owns every field, and the
 only agent-initiated ask is `session/request_permission`, a fixed option list.
@@ -94,6 +94,13 @@ Providers that need an API key, a base URL, or a custom model spec therefore
 have no in-conversation path. What ACP does have is agent-handled
 authentication, where `authenticate` hands control to the agent for an
 out-of-band flow. The `acp-setup-page` feature generalises that past OAuth.
+
+Turn it on with `yolop --acp --acp-setup-page` for one run, or with the
+`acp_setup_page` setting (through `set_config`, see
+`knowledge/specs/configuration.md`) for every launch. The setting is what matters
+in practice: the editor owns the spawn arguments, so a flag means editing the
+client's agent config. With the page off, nothing binds
+a listener and the method is never advertised.
 
 - `initialize.authMethods` gains `local_setup_page`, "Open the yolop setup
   page". `authenticate` binds a loopback listener, opens the browser at
@@ -120,12 +127,12 @@ Environment-provided keys count as connected, so a configured host is never
 nagged. When the page saves, open sessions receive `config_option_update` with
 the newly usable models.
 
-The feature is off in default builds: it opens a local HTTP listener and renders
-a credential form, a surface that should not ship by default until the flow has
-proven itself in real clients. Remote clients are the standing limit, the same
-one the OAuth flows have: if the editor is not on the machine running yolop, the
-browser opens in the wrong place, and the environment/restart path remains the
-answer.
+The gate is runtime rather than a Cargo feature on purpose. The page adds no
+dependencies, so a compile-time gate would buy nothing but would keep it out of
+the release binaries, which is exactly the population whose feedback decides
+whether it ships on. Remote clients are the standing limit, the same one the
+OAuth flows have: if the editor is not on the machine running yolop, the browser
+opens in the wrong place, and the environment/restart path remains the answer.
 
 ### Prompt content
 
@@ -271,7 +278,7 @@ src/editor/acp/
   protocol.rs   # SDK-backed ACP schema shim plus yolop helpers
   bridge.rs     # pure runtime-event → session/update translation (Translator)
   server.rs     # SDK transport/dispatch wiring, session map, turn streaming
-  setup_page.rs # loopback provider form (feature `acp-setup-page`)
+  setup_page.rs # loopback provider form (opt-in, see above)
 ```
 
 Concurrency model in `server::serve`:

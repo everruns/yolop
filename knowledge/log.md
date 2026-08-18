@@ -51,11 +51,14 @@ wording, formatting, and link fixes do not need entries.
 
 ## 2026-08-18, Loopback setup page for ACP clients (experimental)
 
-- [ACP](specs/acp.md) gained a `local_setup_page` authentication method behind
-  the `acp-setup-page` feature: agent-handled auth is the one place the protocol
-  hands an agent control for an out-of-band flow, so a loopback browser form now
-  carries the credential input ACP cannot express. Off by default; the listener
-  is a surface the default build should not carry yet.
+- [ACP](specs/acp.md) gained an opt-in `local_setup_page` authentication method:
+  agent-handled auth is the one place the protocol hands an agent control for an
+  out-of-band flow, so a loopback browser form now carries the credential input
+  ACP cannot express. Off by default, enabled per run with `--acp-setup-page` or
+  per user with the `acp_setup_page` setting.
+- Records why the gate is runtime rather than a Cargo feature: the page pulls in
+  no dependencies, so a build flag would only keep it out of the release
+  binaries, which is where the feedback that decides its future would come from.
 - Records why the no-provider hint exists: without a link posted at
   `session/new`, an editor with no key in its environment gets an llmsim-only
   session and no way to fix it from the client.

@@ -240,6 +240,11 @@ pub struct Settings {
     /// Whether the TUI auto-starts a turn when a background task finishes while
     /// idle (proactive wake). On by default; disable for a quieter session.
     pub proactive_wake: bool,
+    /// Whether `--acp` offers the loopback provider setup page: an extra ACP
+    /// authentication method, and a link posted when a session opens with no
+    /// provider connected. Off by default; the page binds a local HTTP
+    /// listener, so it is opt-in per user rather than always live.
+    pub acp_setup_page: bool,
     /// Git worktree isolation for code changes (`auto`, `always`, `off`).
     pub worktrees: WorktreesMode,
     /// Sandbox boundary for arbitrary shell commands.
@@ -273,6 +278,7 @@ impl Default for Settings {
             approval_mode: ApprovalMode::Normal,
             approval_policy: ApprovalPolicy::OnRequest,
             proactive_wake: true,
+            acp_setup_page: false,
             worktrees: WorktreesMode::Auto,
             sandbox: SandboxMode::DangerFullAccess,
             theme: None,
@@ -311,6 +317,10 @@ impl Settings {
             .get("proactive_wake")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        let acp_setup_page = table
+            .get("acp_setup_page")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let worktrees = table
             .get("worktrees")
             .and_then(Value::as_str)
@@ -351,6 +361,7 @@ impl Settings {
             approval_mode,
             approval_policy,
             proactive_wake,
+            acp_setup_page,
             worktrees,
             sandbox,
             theme,
@@ -372,6 +383,10 @@ impl Settings {
         // Only persist when disabled so settings.toml stays sparse.
         if !self.proactive_wake {
             table.insert("proactive_wake".to_string(), Value::Boolean(false));
+        }
+        // Off by default, so only an opt-in is worth writing.
+        if self.acp_setup_page {
+            table.insert("acp_setup_page".to_string(), Value::Boolean(true));
         }
         // Only persist a non-default level so settings.toml stays sparse.
         if self.approval_mode != ApprovalMode::Normal {
@@ -479,6 +494,10 @@ impl Settings {
 
     pub fn proactive_wake_enabled(&self) -> bool {
         self.proactive_wake
+    }
+
+    pub fn acp_setup_page_enabled(&self) -> bool {
+        self.acp_setup_page
     }
 
     pub fn worktrees_mode(&self) -> WorktreesMode {
@@ -794,6 +813,12 @@ impl SettingsStore {
     pub fn set_proactive_wake(&self, enabled: bool) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         guard.base.proactive_wake = enabled;
+        save_to(&self.path, &guard.base)
+    }
+
+    pub fn set_acp_setup_page(&self, enabled: bool) -> Result<()> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.base.acp_setup_page = enabled;
         save_to(&self.path, &guard.base)
     }
 
@@ -1385,6 +1410,26 @@ mod tests {
             !SettingsStore::open(path)
                 .snapshot()
                 .proactive_wake_enabled()
+        );
+    }
+
+    #[test]
+    fn acp_setup_page_defaults_off_and_round_trips_when_enabled() {
+        let settings = Settings::from_table(&Table::new());
+        assert!(!settings.acp_setup_page_enabled());
+        // Default stays out of the file to keep it sparse.
+        assert!(!settings.to_table().contains_key("acp_setup_page"));
+
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store.set_acp_setup_page(true).expect("save");
+        assert!(store.snapshot().acp_setup_page_enabled());
+        // Survives a reopen.
+        assert!(
+            SettingsStore::open(path)
+                .snapshot()
+                .acp_setup_page_enabled()
         );
     }
 

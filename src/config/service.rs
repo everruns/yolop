@@ -69,6 +69,7 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
         KeyTarget::ApprovalMode => Value::String(settings.approval_mode().as_str().to_string()),
         KeyTarget::ApprovalPolicy => Value::String(settings.approval_policy().as_str().to_string()),
         KeyTarget::ProactiveWake => Value::Bool(settings.proactive_wake_enabled()),
+        KeyTarget::AcpSetupPage => Value::Bool(settings.acp_setup_page_enabled()),
         KeyTarget::Worktrees => Value::String(settings.worktrees_mode().as_str().to_string()),
         KeyTarget::Sandbox => Value::String(settings.sandbox_mode().as_str().to_string()),
         KeyTarget::Theme => settings

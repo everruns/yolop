@@ -47,6 +47,7 @@ Keys are addressed the way a human would name them:
 | `approval_policy`         | text   | Hard shell approval policy (`untrusted` / `on-failure` / `on-request` / `never`). |
 | `attribution`             | bool   | Commit/PR attribution on/off.                                  |
 | `proactive_wake`          | bool   | Auto-start a turn when a background task finishes (TUI); on by default. |
+| `acp_setup_page`          | bool   | Offer the loopback provider setup page to ACP clients; off by default (see [ACP](acp.md)). |
 | `worktrees`               | text   | Worktree isolation (`auto` / `always` / `off`).             |
 | `sandbox_mode`            | text   | Shell containment (`read-only` / `workspace-write` / `danger-full-access`). |
 | `capabilities`            | list   | Ordered `[[capabilities]]` harness overrides; `capabilities.<ref>` for schema metadata. |

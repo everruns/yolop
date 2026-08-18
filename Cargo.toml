@@ -31,11 +31,6 @@ default = []
 # artifacts turn it on instead — see .github/workflows/cli-binaries.yml, which
 # builds the release binaries (and therefore the Homebrew formula) with it.
 local-inference = ["dep:mistralrs", "dep:hf-hub"]
-# Experimental loopback setup page for ACP clients (`--acp`). Off by default:
-# it binds a local HTTP listener and renders a credential form in the browser,
-# a surface the default build should not carry until the flow has proven itself
-# in real editors. See knowledge/specs/acp.md.
-acp-setup-page = []
 
 [dependencies]
 agent-client-protocol = "2.0.0"

@@ -525,6 +525,18 @@ impl SetConfigTool {
                 self.settings.set_proactive_wake(enabled).map_err(map_err)?;
                 Ok(saved(format!("proactive_wake = {}", on_off(enabled))))
             }
+            KeyTarget::AcpSetupPage => {
+                // `clear` reverts to the default (off), keeping settings.toml sparse.
+                if clearing {
+                    self.settings.set_acp_setup_page(false).map_err(map_err)?;
+                    return Ok(saved("cleared acp_setup_page (default off)".to_string()));
+                }
+                let enabled = parse_on_off(value).ok_or_else(|| {
+                    "acp_setup_page expects on/off (true/false, yes/no)".to_string()
+                })?;
+                self.settings.set_acp_setup_page(enabled).map_err(map_err)?;
+                Ok(saved(format!("acp_setup_page = {}", on_off(enabled))))
+            }
             KeyTarget::ApprovalMode => {
                 if clearing {
                     self.settings.clear_approval_mode().map_err(map_err)?;

@@ -71,8 +71,9 @@ const TURN_POLL_INTERVAL: Duration = Duration::from_millis(150);
 pub trait RuntimeFactory: Send + Sync + 'static {
     fn session_exists(&self, session_id: RuntimeSessionId) -> bool;
 
-    /// URL of a live loopback setup page, when this build serves one (the
-    /// `acp-setup-page` feature). `None` disables the no-provider hint.
+    /// URL of a live loopback setup page, when this run serves one (the
+    /// `--acp-setup-page` flag or the `acp_setup_page` setting). `None`
+    /// disables the no-provider hint.
     async fn setup_page_url(&self) -> Option<String> {
         None
     }
@@ -1370,8 +1371,8 @@ async fn run_setup_login<F: RuntimeFactory>(
 
 /// With nothing connected, an ACP session can only run the offline `llmsim`
 /// model, and the protocol gives the client no way to type an API key. Post the
-/// local setup page so the conversation itself carries a way out. Builds without
-/// the `acp-setup-page` feature serve no page, so this is a no-op there.
+/// local setup page so the conversation itself carries a way out. A run with the
+/// page turned off serves no URL, so this is a no-op there.
 async fn offer_setup_page<F: RuntimeFactory>(
     server: &Arc<Server<F>>,
     peer: &Arc<Peer>,
@@ -1742,7 +1743,7 @@ mod tests {
     fn initialize_advertises_agent_handled_authentication() {
         let result = handle_initialize(
             InitializeParams::new(protocol::PROTOCOL_VERSION),
-            super::super::advertised_auth_methods(),
+            super::super::advertised_auth_methods(false),
         );
 
         let value = serde_json::to_value(result).expect("serialize initialize response");
@@ -1750,11 +1751,37 @@ mod tests {
         assert_eq!(value["authMethods"][0]["name"], "Sign in with ChatGPT");
         assert_eq!(value["authMethods"][1]["id"], "openrouter_browser");
         assert_eq!(value["authMethods"][1]["name"], "Sign in with OpenRouter");
+        assert_eq!(
+            value["authMethods"].as_array().map(Vec::len),
+            Some(2),
+            "the setup page must not be advertised when it is off"
+        );
+    }
+
+    /// The page covers every provider, so it is the fallback once the active
+    /// provider has no login of its own. It only exists when enabled.
+    #[test]
+    fn setup_page_is_the_fallback_method_only_when_enabled() {
+        let with_page = super::super::advertised_auth_methods(true);
+        assert_eq!(
+            select_setup_auth_method(&with_page, None, "openai").unwrap(),
+            Some(super::super::SETUP_PAGE_AUTH_METHOD.to_string())
+        );
+        assert_eq!(
+            select_setup_auth_method(&with_page, None, "codex").unwrap(),
+            Some("codex_browser".to_string())
+        );
+
+        let without_page = super::super::advertised_auth_methods(false);
+        assert_eq!(
+            select_setup_auth_method(&without_page, None, "openai").unwrap(),
+            None
+        );
     }
 
     #[test]
     fn setup_authentication_prefers_the_active_provider() {
-        let methods = super::super::advertised_auth_methods();
+        let methods = super::super::advertised_auth_methods(false);
 
         assert_eq!(
             select_setup_auth_method(&methods, None, "codex").unwrap(),
