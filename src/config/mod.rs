@@ -252,6 +252,13 @@ pub struct Settings {
     pub mcp: McpSettings,
     /// Ordered harness capability overrides (`[[capabilities]]` in settings.toml).
     pub capabilities: Vec<CapabilityOverride>,
+    /// Extra system-prompt text contributed by the active profile. Profile-only:
+    /// never parsed from, nor written to, `settings.toml`; standing instructions
+    /// for every session belong in memory or `AGENTS.md`, not global settings.
+    pub instructions: Option<String>,
+    /// Extra skills directory contributed by the active profile. Profile-only,
+    /// for the same reason.
+    pub skills_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -271,6 +278,8 @@ impl Default for Settings {
             theme: None,
             mcp: McpSettings::default(),
             capabilities: Vec::new(),
+            instructions: None,
+            skills_dir: None,
         }
     }
 }
@@ -347,6 +356,8 @@ impl Settings {
             theme,
             mcp: parse_mcp_settings(table),
             capabilities: parse_capabilities_table(table),
+            instructions: None,
+            skills_dir: None,
         }
     }
 
@@ -724,6 +735,8 @@ impl SettingsStore {
             schema::KeyTarget::Sandbox => overlay.sandbox.is_some(),
             schema::KeyTarget::Model(provider) => overlay.models.contains_key(provider),
             schema::KeyTarget::BaseUrl(provider) => overlay.base_urls.contains_key(provider),
+            schema::KeyTarget::Capabilities => !overlay.capabilities.is_empty(),
+            schema::KeyTarget::Mcp => !overlay.mcp.servers.is_empty(),
             _ => false,
         };
         if overridden {
@@ -942,18 +955,32 @@ impl SettingsStore {
         save_to(&self.path, &guard.base)
     }
 
-    /// Append a harness capability override to the ordered settings list.
+    /// Append a harness capability override to the ordered list of the active
+    /// layer: the profile when one is selected, global settings otherwise.
+    /// Returns the entry's index within that layer.
     pub fn append_capability_override(&self, entry: CapabilityOverride) -> Result<usize> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
+        if let Some(active) = &mut guard.profile {
+            active.overlay.capabilities.push(entry);
+            let index = active.overlay.capabilities.len() - 1;
+            save_profile_to(&active.path, &active.overlay)?;
+            return Ok(index);
+        }
         guard.base.capabilities.push(entry);
         let index = guard.base.capabilities.len() - 1;
         save_to(&self.path, &guard.base)?;
         Ok(index)
     }
 
-    /// Drop every stored `[[capabilities]]` override.
+    /// Drop every `[[capabilities]]` override stored in the active layer. With
+    /// a profile selected this clears the profile's list and reveals the global
+    /// one; it never edits global settings behind the profile's back.
     pub fn clear_capability_overrides(&self) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
+        if let Some(active) = &mut guard.profile {
+            active.overlay.capabilities.clear();
+            return save_profile_to(&active.path, &active.overlay);
+        }
         guard.base.capabilities.clear();
         save_to(&self.path, &guard.base)
     }
@@ -967,6 +994,9 @@ impl SettingsStore {
     /// override list.
     pub fn set_capability_enabled(&self, capability_ref: &str, enabled: bool) -> Result<bool> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
+        if guard.profile.is_some() {
+            return self.set_capability_enabled_in_profile(&mut guard, capability_ref, enabled);
+        }
         let already: Vec<usize> = guard
             .base
             .capabilities
@@ -1014,6 +1044,21 @@ impl SettingsStore {
         value: serde_json::Value,
     ) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
+        if let Some(active) = &mut guard.profile {
+            let overrides = &mut active.overlay.capabilities;
+            let index = overrides
+                .iter()
+                .rposition(|entry| entry.capability_ref == capability_ref && !entry.is_remove());
+            let entry = match index {
+                Some(i) => &mut overrides[i],
+                None => {
+                    overrides.push(CapabilityOverride::enable(capability_ref));
+                    overrides.last_mut().expect("just pushed")
+                }
+            };
+            set_config_key(entry, key, value);
+            return save_profile_to(&active.path, &active.overlay);
+        }
         // The active (last non-remove) override for this ref, or a fresh one.
         let index = guard
             .base
@@ -1030,13 +1075,70 @@ impl SettingsStore {
                 guard.base.capabilities.last_mut().expect("just pushed")
             }
         };
-        if !entry.config.is_object() {
-            entry.config = serde_json::Value::Object(serde_json::Map::new());
-        }
-        if let serde_json::Value::Object(map) = &mut entry.config {
-            map.insert(key.to_string(), value);
-        }
+        set_config_key(entry, key, value);
         save_to(&self.path, &guard.base)
+    }
+
+    /// Profile-layer counterpart of [`Self::set_capability_enabled`]. Enabling
+    /// adds an entry to the profile; disabling drops the profile's entries and,
+    /// unless the capability was enabled by this profile alone, records an
+    /// explicit `enabled = false` so the global entry (or the harness default)
+    /// is masked for this profile only.
+    fn set_capability_enabled_in_profile(
+        &self,
+        guard: &mut SettingsState,
+        capability_ref: &str,
+        enabled: bool,
+    ) -> Result<bool> {
+        let global_enables = guard
+            .base
+            .capabilities
+            .iter()
+            .any(|entry| entry.capability_ref == capability_ref && !entry.is_remove());
+        let active = guard.profile.as_mut().expect("profile layer");
+        let global_enables =
+            global_enables && active.overlay.capabilities_mode != profile::ListMode::Replace;
+        let overrides = &mut active.overlay.capabilities;
+        let profile_enables = overrides
+            .iter()
+            .any(|entry| entry.capability_ref == capability_ref && !entry.is_remove());
+        let profile_removes = overrides
+            .iter()
+            .any(|entry| entry.capability_ref == capability_ref && entry.is_remove());
+        let changed = if enabled {
+            if profile_enables && !profile_removes {
+                false
+            } else {
+                overrides.retain(|entry| entry.capability_ref != capability_ref);
+                overrides.push(CapabilityOverride::enable(capability_ref));
+                true
+            }
+        } else {
+            let had_entries = profile_enables || profile_removes;
+            overrides.retain(|entry| entry.capability_ref != capability_ref);
+            // Dropping a profile-local enable is enough only when nothing
+            // outside the profile turns the capability on.
+            let mask_needed = global_enables || !profile_enables;
+            if mask_needed && !profile_removes {
+                overrides.push(CapabilityOverride::remove(capability_ref));
+                true
+            } else {
+                had_entries
+            }
+        };
+        if changed {
+            save_profile_to(&active.path, &active.overlay)?;
+        }
+        Ok(changed)
+    }
+}
+
+fn set_config_key(entry: &mut CapabilityOverride, key: &str, value: serde_json::Value) {
+    if !entry.config.is_object() {
+        entry.config = serde_json::Value::Object(serde_json::Map::new());
+    }
+    if let serde_json::Value::Object(map) = &mut entry.config {
+        map.insert(key.to_string(), value);
     }
 }
 
@@ -1044,6 +1146,78 @@ impl SettingsStore {
 mod tests {
     use super::*;
     use everruns_core::McpServerAuthMode;
+
+    fn store_with_profile(dir: &Path, name: &str, body: &str) -> SettingsStore {
+        let profiles = dir.join("profiles");
+        std::fs::create_dir_all(&profiles).expect("profiles dir");
+        std::fs::write(profiles.join(format!("{name}.toml")), body).expect("profile");
+        SettingsStore::open_with_profile(dir.join("settings.toml"), name).expect("open")
+    }
+
+    #[test]
+    fn capability_writes_land_in_the_active_profile() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let dir = tmp.path();
+        // Global enables an extension; the profile turns it off for its runs.
+        let global = SettingsStore::open(dir.join("settings.toml"));
+        global
+            .set_capability_enabled("ext:notes", true)
+            .expect("enable globally");
+
+        let store = store_with_profile(dir, "triage", "approval_policy = 'never'\n");
+        assert!(
+            store
+                .set_capability_enabled("ext:notes", false)
+                .expect("disable")
+        );
+        assert!(
+            store
+                .set_capability_enabled("ext:triage", true)
+                .expect("enable")
+        );
+        let effective = store.snapshot();
+        let masked = effective
+            .capability_overrides_for("ext:notes")
+            .into_iter()
+            .map(|(_, entry)| entry.is_remove())
+            .collect::<Vec<_>>();
+        assert_eq!(masked, [false, true], "profile masks the global entry");
+        assert!(
+            effective
+                .capability_overrides_for("ext:triage")
+                .iter()
+                .any(|(_, entry)| !entry.is_remove())
+        );
+
+        // Global settings are untouched; the profile file carries both edits.
+        let global_only = SettingsStore::open(dir.join("settings.toml")).snapshot();
+        assert_eq!(global_only.capabilities.len(), 1);
+        assert!(!global_only.capabilities[0].is_remove());
+        let written = std::fs::read_to_string(dir.join("profiles").join("triage.toml"))
+            .expect("read profile");
+        assert!(written.contains("ext:triage"), "{written}");
+        assert!(written.contains("approval_policy"), "{written}");
+    }
+
+    #[test]
+    fn profile_capability_config_never_touches_global_settings() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let dir = tmp.path();
+        let store = store_with_profile(dir, "triage", "");
+        store
+            .set_capability_config("ext:triage", "queue", serde_json::json!("inbox"))
+            .expect("write config");
+        assert_eq!(
+            store.snapshot().capabilities[0].config["queue"],
+            serde_json::json!("inbox")
+        );
+        assert!(
+            SettingsStore::open(dir.join("settings.toml"))
+                .snapshot()
+                .capabilities
+                .is_empty()
+        );
+    }
 
     #[test]
     fn set_capability_config_creates_override_and_persists() {

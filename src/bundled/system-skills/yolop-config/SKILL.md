@@ -1,6 +1,6 @@
 ---
 name: yolop-config
-description: View and change yolop's own configuration, default provider and model, per-provider API tokens and models, endpoint base URLs, attribution, and harness capabilities. Use when the user asks to configure yolop, set a default provider/model, store an API key, point at a custom endpoint, enable/disable capabilities, or asks "what is your config / what can you configure".
+description: View and change yolop's own configuration, default provider and model, per-provider API tokens and models, endpoint base URLs, attribution, harness capabilities, and named --profile overlays. Use when the user asks to configure yolop, set a default provider/model, store an API key, point at a custom endpoint, enable/disable capabilities, set up a profile, or asks "what is your config / what can you configure".
 user-invocable: true
 ---
 
@@ -76,6 +76,25 @@ Tool equivalents:
 Provider and model edits are persisted and take effect on the **next run**. To
 switch the *live* model in the current session, use the interactive `/setup`
 command instead.
+
+## Named profiles
+
+`yolop --profile <name>` loads `profiles/<name>.toml` next to `settings.toml` as
+a sparse overlay for that run. Profiles are how one machine hosts several
+purpose-built agents: besides provider, model, approval, sandbox, and worktree
+settings, a profile can carry its own `[[capabilities]]` (which is also how
+extensions are enabled or disabled), `[mcp.servers.<name>]`, `instructions` /
+`instructions_file` appended to the system prompt, and a `skills_dir`
+(defaulting to `profiles/<name>/skills/`). Set `capabilities_mode = "replace"`
+or `mcp_mode = "replace"` when the profile's set should be the only one.
+
+Credentials and personal settings (`tokens`, `codex_auth`, `theme`,
+`attribution`, `proactive_wake`) are global-only and make a profile fail to
+load. While a profile is active, `set_config` and `/setup` write profileable
+keys into it and credentials into `settings.toml`; `get_config` reports which
+layer each value came from. Profiles are edited as files, so use the file tools
+for a profile's `instructions_file` or its skills, and `set_config` for its
+keys.
 
 ## Related surfaces
 

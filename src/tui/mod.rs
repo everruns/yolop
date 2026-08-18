@@ -2984,7 +2984,10 @@ impl App {
     /// invisible), best-effort opens the browser, and completes in the
     /// background — same pattern as Codex login.
     async fn mcp_login(&mut self, name: &str) {
-        let servers = crate::config::mcp::load_mcp_servers(&self.startup.workspace_root);
+        let servers = crate::config::mcp::load_mcp_servers(
+            &self.settings.snapshot(),
+            &self.startup.workspace_root,
+        );
         let Some(server) = servers.get(name) else {
             self.push_system(format!(
                 "MCP server `{name}` is not configured or is disabled; add it and run `/mcp reload` first"
