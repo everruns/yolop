@@ -88,9 +88,10 @@ The profileable keys are `default_provider`, `models`, `base_urls`,
 `approval_mode`, `approval_policy`, `sandbox_mode`, `worktrees`,
 `capabilities`, `capabilities_mode`, `mcp`, `mcp_mode`, `instructions`,
 `instructions_file`, and `skills_dir`. Credentials (`tokens`, `codex_auth`) and
-personal settings (`theme`, `attribution`, `proactive_wake`) are global-only and
-make a selected profile fail validation. Invalid known values also fail startup;
-unknown keys produce a warning and are ignored for forward compatibility.
+personal settings (`theme`, `attribution`, `proactive_wake`, `acp_setup_page`)
+are global-only and make a selected profile fail validation. Invalid known
+values also fail startup; unknown keys produce a warning and are ignored for
+forward compatibility.
 
 ### A profile is the unit of a purpose-built agent
 
