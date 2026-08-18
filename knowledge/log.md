@@ -1,5 +1,18 @@
 # Knowledge Log
 
+## 2026-08-18, Session coordination uses attached CLI actions
+
+- [Session coordination](specs/session-coordination.md): removed its four
+  model-visible tools and made `yolop coordination` the sole agent-facing
+  administration surface, consistent with extensions and the shared control
+  plane.
+- Added typed `dispatch` and `complete` CLI/control actions. Attached session
+  identity and configured role authorize them; detached execution remains
+  limited to presence listing.
+- Multiword work and completion fields use unquoted word sequences so direct
+  foreground commands stay eligible for conservative anonymous-pipe
+  attachment.
+
 ## 2026-08-18, Attached administration is discovered from one prompt block
 
 - [Extensions](specs/extensions.md): the discovery hint for attached

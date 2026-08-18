@@ -45,24 +45,38 @@ so it cannot receive work until it opts in.
 
 ## Operate the pool
 
-Inside a running session, `/coordination list`, `/coordination status`,
-`/coordination accept`, and `/coordination drain` inspect or change local
-availability. The contributed CLI has the same grammar:
+Coordination administration is CLI-first and contributes no model tools. Inside
+a running session, invoke `yolop coordination ...` directly through foreground
+Bash. The host recognizes that conservative command shape and carries a typed
+request to the live capability over the attached control channel.
+
+The CLI covers discovery, dispatch, completion, and worker availability:
 
 ```bash
 yolop coordination list
 yolop coordination list --json
+yolop coordination status
+yolop coordination dispatch --title Inspect parser --request Inspect parser behavior and add tests
+yolop coordination complete --status succeeded --summary Parser fixed --validation cargo test passed --artifact https://example.test/pr/1
+yolop coordination accept
+yolop coordination drain
 ```
 
-When invoked by a running Yolop session through foreground Bash, status and
-availability changes use the attached control channel. A detached shell may
-list live sessions, but it cannot mutate one by guessing a session ID.
+Multiword `--title`, `--request`, `--summary`, and `--validation` values consume
+words until the next option, so attached commands do not need shell quoting.
+Run `yolop coordination <operation> --help` for the canonical grammar. The
+built-in `/coordination` command accepts the same operation syntax.
 
-The coordinator receives `list_workers` and `dispatch_work`. Dispatch reserves
-one idle worker atomically and creates a `session_dispatch` task in the
-coordinator's existing task registry. The worker receives an authenticated
-automatic prompt and must call `complete_assignment`. Completion settles the
-task and wakes the coordinator with the durable result.
+An attached `list` is scoped to the current Git project. A detached shell may
+list all live sessions, but every other operation requires a running session
+and derives its identity and role from that attachment. A caller cannot mutate
+another session by supplying a session ID.
+
+`dispatch` requires a coordinator or combined role. It reserves one idle worker
+atomically and creates a `session_dispatch` task in the coordinator's existing
+task registry. The worker receives an authenticated automatic prompt and must
+invoke `yolop coordination complete` from its own attached session. Completion
+settles the task and wakes the coordinator with the durable result.
 
 If no eligible worker is live, dispatch fails visibly. This version does not
 launch a new operating-system process. Process supervision and pool sizing are

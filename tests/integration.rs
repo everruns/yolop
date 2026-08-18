@@ -62,6 +62,22 @@ fn coordination_cli_lists_workers_without_model_startup() {
 }
 
 #[test]
+fn coordination_cli_advertises_dispatch_and_completion() {
+    let output = Command::new(yolop_binary())
+        .args(["coordination", "--help"])
+        .output()
+        .expect("show coordination CLI help");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("dispatch"), "stdout={stdout}");
+    assert!(stdout.contains("complete"), "stdout={stdout}");
+}
+
+#[test]
 fn extensions_cli_installs_and_lists_without_model_tools() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_root = tmp.path().join("config");

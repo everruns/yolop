@@ -13,10 +13,9 @@ process supervision is not yet owned by Yolop.
 ## Ownership
 
 `session_coordination` is one capability boundary. It owns role policy,
-presence, worker selection, assignment tools, prompts, control and CLI
-surfaces, inbox interpretation, and completion. The host supplies the existing
-session-task registry, local SQLite handle, workspace identity, and generic
-wake channel.
+presence, worker selection, typed control and CLI actions, inbox prompts,
+interpretation, and completion. The host supplies the existing session-task
+registry, local SQLite handle, workspace identity, and generic wake channel.
 
 There is no second task system. Each dispatch is a `session_dispatch` task
 owned by the coordinator's ordinary `SessionTaskRegistry`. The coordination
@@ -33,12 +32,19 @@ The default harness enables `worker` with `accept_work = false`. This makes the
 surface available without silently enrolling interactive sessions. A named
 profile is the intended way to define a standing coordinator or worker.
 
-Coordinator tools are `list_workers` and `dispatch_work`. Worker tools are
-`complete_assignment` and `set_worker_availability`. The `/coordination`
-command and contributed `yolop coordination` CLI are capability-owned views of
-the same typed control requests. The attached CLI from the control capability
-is used for operations against a running session. Detached execution is
-read-only and may only list presence.
+The capability contributes no model tools. Coordinator and worker agents use
+the ordinary foreground Bash tool to invoke `yolop coordination ...`, matching
+extension administration and the shared attached-control contract. The
+contributed CLI covers `list`, `status`, `dispatch`, `complete`, `accept`, and
+`drain`; `/coordination` parses the same action grammar. Multiword payload
+fields consume unquoted words until the next option, preserving the control
+plane's conservative direct-invocation grammar.
+
+The attached host derives session identity and role. `dispatch` requires a
+coordinator or combined role, `complete` requires a worker or combined role and
+an active assignment, and availability changes operate only on the attached
+host. Detached execution is read-only and may only list presence. Attached
+lists are project-scoped; detached lists are an operator view across projects.
 
 ## Identity and selection
 
@@ -67,18 +73,18 @@ does not interrupt an active turn. The message carries the assignment ID,
 coordinator ID, title, and requested work. Ordinary user text cannot create
 this host-only wake provenance.
 
-The worker must call `complete_assignment` with a terminal status, summary,
-validation evidence, and bounded artifact references. The tool settles the
-coordinator's task, releases the worker, and persists a completion inbox
-message. The coordinator receives that message through the same generic wake
-channel and can inspect the authoritative task.
+The worker must invoke `yolop coordination complete` with a terminal status,
+summary, validation evidence, and bounded artifact references. The typed
+control action settles the coordinator's task, releases the worker, and
+persists a completion inbox message. The coordinator receives that message
+through the same generic wake channel and can inspect the authoritative task.
 
 An unfinished assignment is redelivered across host incarnations. A message
 records the host incarnation that claimed it, so the same host does not receive
 it twice and a restarted worker can continue. Once the assignment is terminal,
 its worker message is no longer eligible. Completion wakes are delivered once;
 after that, the coordinator's terminal task is the durable recovery source.
-Completion tools must therefore be explicit and terminal transitions must
+Completion actions must therefore be explicit and terminal transitions must
 remain idempotent or fail visibly.
 
 ## Lifecycle
@@ -90,8 +96,8 @@ the private WAL-mode `everruns-local` database under the sessions directory.
 The capability does not launch worker processes in this version. Starting a
 worker requires lifecycle ownership for process identity, profile selection,
 logs, restarts, worktree cleanup, and orphan recovery. Until that owner exists,
-`dispatch_work` fails when no eligible live worker is available instead of
-creating an untracked process.
+`yolop coordination dispatch` fails when no eligible live worker is available
+instead of creating an untracked process.
 
 ## Safety constraints
 
@@ -108,7 +114,8 @@ creating an untracked process.
 
 ## Verification bar
 
-Tests cover strict config parsing, same-project atomic reservation, real task
-registry transitions, assignment and completion inbox delivery, and restart
-redelivery. Runtime tests must also prove role-specific tools and automatic
-wake framing. The contributed CLI receives a binary smoke test.
+Tests cover strict config parsing, absence of model tools, role authorization,
+same-project atomic reservation, CLI decoding into typed control actions, real
+task registry transitions, assignment and completion inbox delivery, and
+restart redelivery. Runtime tests must also prove automatic wake framing. The
+contributed CLI receives a binary smoke test.

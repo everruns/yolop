@@ -1274,12 +1274,6 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "grep_files",
     "write_todos",
     "write_session_title",
-    // Coordination messages are automatic turns. Their routing and explicit
-    // completion controls must be usable without a preliminary tool search.
-    "list_workers",
-    "dispatch_work",
-    "complete_assignment",
-    "set_worker_availability",
     // progress_guard can make this the only allowed transition, so the model
     // must never need tool_search to recover its argument shape.
     "progress_checkpoint",
@@ -3715,6 +3709,7 @@ pub async fn build_with_options(
         task_registry.clone(),
         session_id,
         project_id,
+        coordination_config,
     ));
     capabilities.register_arc(coordination_capability.clone());
     // Shared across every reveal-gated capability: `tool_reveal` writes it from
@@ -8550,10 +8545,6 @@ mod tests {
             "write_todos",
             "write_session_title",
             "progress_checkpoint",
-            "list_workers",
-            "dispatch_work",
-            "complete_assignment",
-            "set_worker_availability",
         ];
         let deferred = [
             "write_file",
@@ -9297,7 +9288,7 @@ mod tests {
         use crate::extensions::EXTENSIONS_CONTROL_ROUTE;
         use everruns_core::Capability as _;
 
-        // Current total is 6,185; the headroom is deliberately thin. The
+        // Current total is 6,167; the headroom is deliberately thin. The
         // control-plane block is what a full session renders (both routes
         // registered): it replaces per-route prompt text, so adding a CLI route
         // costs one line here rather than a block.
