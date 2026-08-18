@@ -1,5 +1,18 @@
 # Knowledge Log
 
+## 2026-08-18, Attached administration is discovered from one prompt block
+
+- [Extensions](specs/extensions.md): the discovery hint for attached
+  `yolop <subcommand> ...` administration moved out of the Bash tool
+  description, which hardcoded `extensions` and advertised it even where no
+  control route was registered, and never mentioned `coordination`.
+- `ControlPlaneCapability` renders one system-prompt block from the routes
+  registered in the session. A capability contributing a CLI route supplies a
+  one-clause `ControlRoute::summary` and no prompt prose of its own, so routes
+  do not each grow a block.
+- No registered route means no capability and no block, so the prompt never
+  names a surface the session lacks.
+
 ## 2026-08-18, Local session coordination
 
 - Added [Session coordination](specs/session-coordination.md): an opt-in local

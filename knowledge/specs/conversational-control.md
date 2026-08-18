@@ -85,6 +85,15 @@ Notes:
   settings file. The *live* equivalents are the `set_*` tools above.
 - `run_command` is gated to the interactive TUI because its effects (clearing
   the transcript, quitting) only exist there; see [`commands.md`](./commands.md).
+- **Attached administration is the deliberate exception to "a model-facing tool".**
+  Extension and coordination administration is reachable conversationally by
+  running `yolop <subcommand> ...` in the foreground Bash tool, which the host
+  attaches to the live session, rather than by tool schemas that would cost
+  context every turn. It still meets the rest of this contract: live effect,
+  no confirmation overlay, one shared implementation behind the CLI, `/command`,
+  and control plane. Discoverability comes from the single control-plane prompt
+  block described in [`extensions.md`](./extensions.md), not from per-capability
+  prompt text.
 
 ## Known gap
 

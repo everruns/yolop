@@ -450,8 +450,7 @@ impl Tool for BashTool {
              relative to it, or chain within one call (`cd sub; cmd`). Captures \
              stdout/stderr with configurable verbosity. 120s timeout; run commands \
              that wait on external events (CI runs, deploys) detached via \
-             `spawn_background` instead. Invoke `yolop extensions ...` directly \
-             (without shell composition) to administer the current session."
+             `spawn_background` instead."
         }
         #[cfg(not(windows))]
         {
@@ -462,8 +461,7 @@ impl Tool for BashTool {
              it, or chain within one call (`cd sub && cmd`). Captures stdout/stderr \
              with configurable verbosity. 120s timeout; run commands that wait on \
              external events (CI runs, deploys) detached via `spawn_background` \
-             instead. Invoke `yolop extensions ...` directly (without shell \
-             composition) to administer the current session."
+             instead."
         }
     }
     fn parameters_schema(&self) -> Value {

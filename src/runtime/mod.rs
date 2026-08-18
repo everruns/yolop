@@ -3833,8 +3833,17 @@ pub async fn build_with_options(
         session_control_registry.register(management.clone())?;
         capabilities.register_arc(management);
     }
+    // One shared prompt block for every attached CLI route, derived from what is
+    // actually registered above. Capabilities describe their route via
+    // `ControlRoute::summary`; none of them contributes prompt prose of its own.
+    let control_plane = crate::control::ControlPlaneCapability::new(
+        &crate::control::ControlService::routes(&session_control_registry),
+    );
     let session_control: Option<Arc<dyn crate::control::ControlService>> =
         Some(Arc::new(session_control_registry));
+    if let Some(control_plane) = control_plane {
+        capabilities.register(control_plane);
+    }
     // Server name list for `/mcp` and StartupInfo, computed after extension
     // contributions are merged so provider-provenance entries show up too.
     let mut mcp_server_names: Vec<String> = mcp_servers.keys().cloned().collect();
@@ -9028,10 +9037,17 @@ mod tests {
         use crate::capabilities::background::BACKGROUND_SYSTEM_PROMPT;
         use crate::capabilities::client_commands::CLIENT_COMMANDS_PROMPT;
         use crate::capabilities::host::MODELS_PROMPT;
+        use crate::capabilities::session_coordination::COORDINATION_CONTROL_ROUTE;
         use crate::config::ApprovalMode;
+        use crate::control::ControlPlaneCapability;
+        use crate::extensions::EXTENSIONS_CONTROL_ROUTE;
+        use everruns_core::Capability as _;
 
-        // Current total is 5,657; the headroom is deliberately thin.
-        const MAX_BYTES: usize = 5_800;
+        // Current total is 6,231; the headroom is deliberately thin. The
+        // control-plane block is what a full session renders (both routes
+        // registered): it replaces per-route prompt text, so adding a CLI route
+        // costs one line here rather than a block.
+        const MAX_BYTES: usize = 6_400;
 
         let approval = render_approval_block(ApprovalMode::Normal).expect("normal contributes");
         let blocks: Vec<(&str, usize)> = vec![
@@ -9041,6 +9057,15 @@ mod tests {
             ("client_commands", CLIENT_COMMANDS_PROMPT.len()),
             ("setup", MODELS_PROMPT.len()),
             ("attribution", yolop_attribution_prompt().len()),
+            (
+                "control_plane",
+                ControlPlaneCapability::new(&[
+                    COORDINATION_CONTROL_ROUTE,
+                    EXTENSIONS_CONTROL_ROUTE,
+                ])
+                .and_then(|capability| capability.system_prompt_addition().map(str::len))
+                .expect("registered routes contribute the block"),
+            ),
         ];
 
         let total: usize = blocks.iter().map(|(_, bytes)| bytes).sum();
