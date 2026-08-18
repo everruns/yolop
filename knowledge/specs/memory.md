@@ -118,3 +118,16 @@ the warning.
 - Not a secret store, tokens stay in `settings.toml`.
 - Not project memory, repo-scoped guidance stays in `AGENTS.md`.
 - No automatic retention/rotation; `MEMORY.md` is a plain file the user owns.
+
+## Scopes
+
+Memory tools expose a `scope` argument with two values:
+
+- `global` (the default) preserves existing behavior and stores personal memory beside Yolop settings.
+- `repository` stores project-specific memory in `.yolop/memories.json` under the canonical repository root.
+
+The default remains `global` when `scope` is omitted, preserving existing callers and persisted global memory. Recall and deletion operate only within the selected scope, so equal titles or ids in different scopes remain isolated.
+
+For linked Git worktrees, repository memory resolves through the main checkout discovered from Git's common directory. It therefore follows the canonical repository rather than Yolop's transient session worktree.
+
+Prompt disclosure labels global and repository sections separately. Memory bodies remain excluded from automatic disclosure in both scopes; agents use `recall` with the matching scope to retrieve them.

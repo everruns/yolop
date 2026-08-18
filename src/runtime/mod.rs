@@ -3952,6 +3952,11 @@ pub async fn build_with_options(
     // MEMORY_CAPABILITY_ID below.
     capabilities.register(GlobalMemoryCapability {
         memory: Arc::new(MemoryStore::beside_settings(&settings)),
+        repository_memory: Arc::new(MemoryStore::open(
+            crate::exec::worktree::main_repo_for_worktree(&effective_root)
+                .unwrap_or_else(|| effective_root.to_path_buf())
+                .join(".yolop/memories.json"),
+        )),
         reveals: tool_reveals.clone(),
     });
     // `hooks` — global/workspace hook self-configuration tools. Runtime

@@ -789,7 +789,7 @@ pub fn list_worktree_paths_on_disk() -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn main_repo_for_worktree(worktree_path: &Path) -> Option<PathBuf> {
+pub(crate) fn main_repo_for_worktree(worktree_path: &Path) -> Option<PathBuf> {
     let git_common = git_output(worktree_path, &["rev-parse", "--git-common-dir"])?;
     let git_path = PathBuf::from(git_common);
     if git_path.is_absolute() {
