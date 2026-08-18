@@ -71,7 +71,7 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 | Skills, install/update by content | `write_skill` (upstream) |, |
 | Skills, uninstall | `delete_skill` |, |
 | Settings (provider/model/tokens/urls/capabilities, next-run) | `get_config` / `set_config` | `/setup`, `yolop-config` skill |
-| Terminal/UI actions (help, tools, mcp, cwd, status, model, effort, clear, quit) | `run_command` (TUI only) | the slash commands themselves |
+| Any slash command the host's registry holds (`/setup`, `/background`, `/undo`, `/redo`, `/rewind`, `/goal`, plus the terminal ones in the TUI) | `run_command` (every host) | the slash commands themselves |
 
 Notes:
 
@@ -83,8 +83,6 @@ Notes:
   matches discovered models but is not an exact ID for the current provider.
 - `set_config` is intentionally next-run for provider/model edits, it edits the
   settings file. The *live* equivalents are the `set_*` tools above.
-- `run_command` is gated to the interactive TUI because its effects (clearing
-  the transcript, quitting) only exist there; see [`commands.md`](./commands.md).
 - **Attached administration is the deliberate exception to "a model-facing tool".**
   Extension and coordination administration is reachable conversationally by
   running `yolop <subcommand> ...` in the foreground Bash tool, which the host
@@ -94,6 +92,12 @@ Notes:
   and control plane. Discoverability comes from the single control-plane prompt
   block described in [`extensions.md`](./extensions.md), not from per-capability
   prompt text.
+- `run_command` runs on every host and dispatches the whole registry, not a
+  curated subset, through `runtime.execute_command`. Hosts differ only in what
+  their registry holds: terminal commands exist in the TUI, where the host port
+  also returns `/mcp` and `/tools` transcript output. `Skill` commands stay
+  prompt-activated and `/shell` stays typed-only (the agent has `bash`). See
+  [`commands.md`](./commands.md).
 
 ## Known gap
 

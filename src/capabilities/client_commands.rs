@@ -11,6 +11,11 @@
 //! Because the effect lives entirely in the host, this capability is only
 //! registered for the TUI (see [`crate::runtime::BuildOptions`]); ACP and
 //! `--print` hosts, which have no overlay/transcript to drive, omit it.
+//!
+//! The model reaches these commands the same way it reaches every other one,
+//! through the `run_command` tool in
+//! [`crate::capabilities::agent_commands`], which resolves names against the
+//! live registry rather than any list kept here.
 
 use crate::capabilities::narration::stable_labeled;
 use crate::tui::host_ui::{HostUi, UiCommand};
@@ -29,20 +34,14 @@ use std::sync::Arc;
 pub(crate) const CLIENT_COMMANDS_CAPABILITY_ID: &str = "yolop_client_commands";
 
 pub(crate) const CLIENT_COMMANDS_PROMPT: &str = r#"<capability id="yolop_client_commands">
-For natural-language requests, `run_command` can perform these TUI client
-commands: `/help`, `/tools`, `/mcp`, `/cwd`, `/status [compact|expanded|toggle]`,
-`/model [id]`, `/effort [level]`, `/clear`, and `/quit` (`/exit` is an alias).
-The TUI may expose other slash commands, but only use `run_command` for this listed
-client-command set. When the user asks for one of these terminal
-actions — for example "exit", "clear the screen", "show tools", "switch model",
-"restart MCP", "reconnect MCP", or "refresh MCP" (`/mcp reload`), "log in to an MCP server"
-(`/mcp login <name>`), or "expand the status bar" —
-call `run_command` with the command and argument array; do not merely tell the
-user to type the slash command, and do not invent a manager window. The tool
-result includes the host's response text (server lists, tool lists, OAuth URLs).
-Use `set_status` for a concise live description of meaningful turn progress.
-The contribution is cleared automatically when the turn finishes; send an
-empty value to clear it earlier.
+Terminal commands, all runnable with `run_command`: `/help`, `/tools`, `/mcp`,
+`/cwd`, `/status [compact|expanded|toggle]`, `/model [id]`, `/effort [level]`,
+`/clear`, `/quit` (`/exit` alias). Run them on prose requests such as "exit",
+"clear the screen", "show tools", "switch model", "restart MCP", "reconnect MCP",
+or "refresh MCP" (`/mcp reload`), "log in to an MCP server" (`/mcp login <name>`);
+never invent a manager window. `/shell` is typed-only; use `bash`.
+`set_status` sets a concise live description of turn progress; it clears when the
+turn finishes, or send an empty value to clear it earlier.
 </capability>"#;
 
 pub(crate) struct ClientCommandsCapability {
@@ -81,14 +80,9 @@ impl Capability for ClientCommandsCapability {
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![
-            Box::new(RunCommandTool {
-                ui: self.ui.clone(),
-            }),
-            Box::new(SetStatusTool {
-                ui: self.ui.clone(),
-            }),
-        ]
+        vec![Box::new(SetStatusTool {
+            ui: self.ui.clone(),
+        })]
     }
 
     async fn execute_command(
@@ -150,7 +144,7 @@ fn command_descriptors() -> Vec<CommandDescriptor> {
     ]
 }
 
-fn ui_command_for(name: &str, arg: Option<String>) -> Option<UiCommand> {
+pub(crate) fn ui_command_for(name: &str, arg: Option<String>) -> Option<UiCommand> {
     match name {
         "help" => Some(UiCommand::ShowHelp),
         "tools" => Some(UiCommand::ShowTools),
@@ -168,8 +162,37 @@ fn ui_command_for(name: &str, arg: Option<String>) -> Option<UiCommand> {
     }
 }
 
-struct RunCommandTool {
-    ui: Arc<dyn HostUi>,
+fn cmd(name: &str, description: &str, args: &[CommandArg]) -> CommandDescriptor {
+    CommandDescriptor {
+        name: name.to_string(),
+        description: description.to_string(),
+        source: CommandSource::System,
+        args: args.to_vec(),
+    }
+}
+
+fn opt(name: &str) -> CommandArg {
+    arg(name, false)
+}
+
+fn opt_with_suggestions(name: &str, suggestions: &[&str]) -> CommandArg {
+    CommandArg {
+        suggestions: suggestions.iter().map(|s| (*s).to_string()).collect(),
+        ..arg(name, false)
+    }
+}
+
+fn required(name: &str) -> CommandArg {
+    arg(name, true)
+}
+
+fn arg(name: &str, required: bool) -> CommandArg {
+    CommandArg {
+        name: name.to_string(),
+        description: name.to_string(),
+        required,
+        suggestions: Vec::new(),
+    }
 }
 
 struct SetStatusTool {
@@ -238,221 +261,19 @@ impl Tool for SetStatusTool {
     }
 }
 
-#[async_trait]
-impl Tool for RunCommandTool {
-    fn narrate(
-        &self,
-        tool_call: &ToolCall,
-        phase: ToolNarrationPhase,
-        locale: Option<&str>,
-        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
-    ) -> Option<String> {
-        let _ = locale;
-        let command = arg_str(&tool_call.arguments, &["command"]).map(|value| truncate(value, 48));
-        Some(stable_labeled("Run command", command, phase))
-    }
-
-    fn name(&self) -> &str {
-        "run_command"
-    }
-
-    fn display_name(&self) -> Option<&str> {
-        Some("Yolop command")
-    }
-
-    fn description(&self) -> &str {
-        "Execute an interactive yolop slash command on behalf of a natural-language user request. \
-         Use this when the user asks to exit, clear the transcript, show help/tools/MCP/cwd, \
-         reload MCP servers (`command: mcp`, `args: [reload]`), show or change the status \
-         layout, or open/switch model or reasoning effort. Accepts command names with or without the leading \
-         slash; `exit` is accepted as an alias for `quit`."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Slash command name, with or without the leading slash.",
-                    "enum": [
-                        "help", "tools", "mcp", "cwd", "status", "model", "effort", "clear", "quit", "exit",
-                        "/help", "/tools", "/mcp", "/cwd", "/status", "/model", "/effort", "/clear", "/quit", "/exit"
-                    ]
-                },
-                "args": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Ordered command arguments, e.g. [`reload`] for /mcp or [`openai/gpt-5.4`] for /model."
-                }
-            },
-            "required": ["command"],
-            "additionalProperties": false
-        })
-    }
-
-    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let raw = match arguments.get("command").and_then(Value::as_str) {
-            Some(raw) if !raw.trim().is_empty() => raw.trim(),
-            _ => return ToolExecutionResult::tool_error("'command' is required"),
-        };
-        let stripped = raw.trim_start_matches('/');
-        let name = if stripped == "exit" { "quit" } else { stripped };
-        if name == "shell" {
-            return ToolExecutionResult::tool_error(
-                "shell commands must be typed directly as !shell <command> or /shell <command>",
-            );
-        }
-        let args = match arguments.get("args") {
-            None => Vec::new(),
-            Some(Value::Array(args)) => {
-                let mut parsed = Vec::with_capacity(args.len());
-                for value in args {
-                    let Some(value) = value.as_str() else {
-                        return ToolExecutionResult::tool_error("'args' must contain only strings");
-                    };
-                    parsed.push(value.to_string());
-                }
-                parsed
-            }
-            Some(_) => {
-                return ToolExecutionResult::tool_error("'args' must be an array of strings");
-            }
-        };
-        let arg = (!args.is_empty()).then(|| args.join(" "));
-
-        let Some(command) = ui_command_for(name, arg.clone()) else {
-            return ToolExecutionResult::tool_error(format!("unknown yolop command: /{stripped}"));
-        };
-
-        let rendered = match &arg {
-            Some(arg) => format!("/{name} {arg}"),
-            None => format!("/{name}"),
-        };
-
-        // Informational commands need the host's transcript lines back so the
-        // agent can act on `/mcp` / `/tools` conversationally. Side-effect
-        // commands (quit/clear/overlays) only need to be queued — awaiting a
-        // reply would hang any host that is not draining the UI channel
-        // (scripted tests, brief races at shutdown).
-        let message = if command_awaits_host_reply(name) {
-            let reply_rx = self.ui.request(command);
-            match tokio::time::timeout(std::time::Duration::from_secs(15), reply_rx).await {
-                Ok(Ok(messages)) if !messages.is_empty() => messages.join("\n"),
-                Ok(Ok(_)) => format!("command applied: {rendered}"),
-                Ok(Err(_)) => format!("command applied: {rendered}"),
-                Err(_) => format!(
-                    "command queued for the interactive terminal host ({rendered}); \
-                     host did not return output in time"
-                ),
-            }
-        } else {
-            self.ui.send(command);
-            format!("command applied: {rendered}")
-        };
-
-        ToolExecutionResult::success(json!({
-            "success": true,
-            "command": rendered,
-            "message": message
-        }))
-    }
-}
-
-/// Whether `run_command` should wait for host transcript lines.
-fn command_awaits_host_reply(name: &str) -> bool {
-    matches!(name, "mcp" | "tools" | "help" | "cwd")
-}
-
-fn cmd(name: &str, description: &str, args: &[CommandArg]) -> CommandDescriptor {
-    CommandDescriptor {
-        name: name.to_string(),
-        description: description.to_string(),
-        source: CommandSource::System,
-        args: args.to_vec(),
-    }
-}
-
-fn opt(name: &str) -> CommandArg {
-    arg(name, false)
-}
-
-fn opt_with_suggestions(name: &str, suggestions: &[&str]) -> CommandArg {
-    CommandArg {
-        suggestions: suggestions.iter().map(|s| (*s).to_string()).collect(),
-        ..arg(name, false)
-    }
-}
-
-fn required(name: &str) -> CommandArg {
-    arg(name, true)
-}
-
-fn arg(name: &str, required: bool) -> CommandArg {
-    CommandArg {
-        name: name.to_string(),
-        description: name.to_string(),
-        required,
-        suggestions: Vec::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::oneshot;
-
-    #[derive(Default)]
-    struct RecordingUi {
-        commands: Mutex<Vec<UiCommand>>,
-    }
-
-    impl RecordingUi {
-        fn take(&self) -> Vec<UiCommand> {
-            std::mem::take(&mut *self.commands.lock().expect("commands lock"))
-        }
-    }
-
-    impl HostUi for RecordingUi {
-        fn send(&self, command: UiCommand) {
-            self.commands.lock().expect("commands lock").push(command);
-        }
-
-        fn request(&self, command: UiCommand) -> oneshot::Receiver<Vec<String>> {
-            self.send(command.clone());
-            let (tx, rx) = oneshot::channel();
-            // Unit tests without a live App still need a non-blocking reply.
-            // Integration coverage for real host text lives in the TUI suite.
-            let message = match &command {
-                UiCommand::ManageMcp { .. } => {
-                    vec![
-                        "active MCP servers: none".into(),
-                        "usage: /mcp [reload | login <name> | enable|disable|remove <name> [global|workspace]]"
-                            .into(),
-                    ]
-                }
-                UiCommand::ShowTools => vec!["tools: bash".into()],
-                UiCommand::ShowHelp => vec!["commands:".into()],
-                UiCommand::ShowCwd => vec!["workspace root: /tmp".into()],
-                _ => Vec::new(),
-            };
-            let _ = tx.send(message);
-            rx
-        }
-    }
+    use crate::tui::host_ui::RecordingUi;
+    use everruns_provider::typed_id::SessionId;
 
     #[test]
-    fn prompt_tells_model_to_run_natural_language_commands() {
+    fn prompt_covers_the_terminal_commands_and_status() {
         let ui = Arc::new(RecordingUi::default());
         let capability = ClientCommandsCapability::new(ui);
         let prompt = capability.system_prompt_addition().expect("prompt");
 
         assert!(prompt.contains("run_command"));
-        assert!(prompt.contains("TUI client"));
-        // The prompt wraps this guidance across two lines — check each side.
-        assert!(prompt.contains("only use `run_command` for this listed"));
-        assert!(prompt.contains("client-command set"));
         assert!(prompt.contains("/quit"));
         assert!(prompt.contains("/exit"));
         assert!(prompt.contains("\"restart MCP\""));
@@ -461,29 +282,76 @@ mod tests {
         assert!(prompt.contains("set_status"));
     }
 
+    /// The terminal commands are ordinary registry entries; `run_command` finds
+    /// them there rather than in a list this capability hands the model.
     #[test]
-    fn run_command_narration_includes_command() {
-        use everruns_core::tool_narration::ToolNarrationPhase;
-        use everruns_provider::ToolCall;
+    fn capability_contributes_commands_and_only_the_status_tool() {
+        let capability = ClientCommandsCapability::new(Arc::new(RecordingUi::default()));
 
-        let tool = RunCommandTool {
-            ui: Arc::new(RecordingUi::default()),
-        };
-        let tool_call = ToolCall {
-            id: "call-1".to_string(),
-            name: "run_command".to_string(),
-            arguments: json!({ "command": "/model" }),
-        };
+        let commands: Vec<String> = capability
+            .commands()
+            .into_iter()
+            .map(|command| command.name)
+            .collect();
+        assert!(commands.contains(&"quit".to_string()), "{commands:?}");
+        assert!(commands.contains(&"mcp".to_string()), "{commands:?}");
 
+        let tools: Vec<String> = capability
+            .tools()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
+        assert_eq!(tools, vec!["set_status".to_string()]);
+    }
+
+    /// Executing a client command emits its `UiCommand` and returns an empty
+    /// result: the host, not the runtime, performs the effect.
+    #[tokio::test]
+    async fn execute_command_emits_the_ui_command() {
+        let ui = Arc::new(RecordingUi::default());
+        let capability = ClientCommandsCapability::new(ui.clone());
+
+        let result = capability
+            .execute_command(
+                &ExecuteCommandRequest {
+                    name: "model".to_string(),
+                    arguments: Some("openai/gpt-5.4".to_string()),
+                    controls: None,
+                },
+                &CommandExecutionContext::without_host(SessionId::new()),
+            )
+            .await
+            .expect("execute /model");
+
+        assert!(result.success);
+        assert!(result.message.is_empty());
         assert_eq!(
-            tool.narrate(
-                &tool_call,
-                ToolNarrationPhase::Started,
-                None,
-                everruns_core::tool_narration::ToolNarrationContext::default(),
-            ),
-            Some("Run command: /model".to_string())
+            ui.take(),
+            vec![UiCommand::OpenModelOverlay {
+                arg: Some("openai/gpt-5.4".to_string())
+            }]
         );
+    }
+
+    #[tokio::test]
+    async fn execute_command_rejects_names_this_capability_does_not_own() {
+        let ui = Arc::new(RecordingUi::default());
+        let capability = ClientCommandsCapability::new(ui.clone());
+
+        let error = capability
+            .execute_command(
+                &ExecuteCommandRequest {
+                    name: "setup".to_string(),
+                    arguments: None,
+                    controls: None,
+                },
+                &CommandExecutionContext::without_host(SessionId::new()),
+            )
+            .await
+            .expect_err("/setup belongs to another capability");
+
+        assert!(error.to_string().contains("setup"), "error: {error}");
+        assert!(ui.take().is_empty());
     }
 
     #[test]
@@ -509,33 +377,6 @@ mod tests {
             ),
             Some("Update status: Auditing tool narration".to_string())
         );
-    }
-
-    #[test]
-    fn run_command_schema_accepts_slashed_aliases() {
-        let tool = RunCommandTool {
-            ui: Arc::new(RecordingUi::default()),
-        };
-        let schema = tool.parameters_schema();
-        let variants = schema["properties"]["command"]["enum"]
-            .as_array()
-            .expect("command enum");
-
-        assert!(variants.contains(&json!("exit")));
-        assert!(variants.contains(&json!("/exit")));
-        assert!(variants.contains(&json!("quit")));
-        assert!(variants.contains(&json!("/quit")));
-    }
-
-    #[tokio::test]
-    async fn run_command_exit_alias_queues_quit() {
-        let ui = Arc::new(RecordingUi::default());
-        let tool = RunCommandTool { ui: ui.clone() };
-
-        let result = tool.execute(json!({ "command": "/exit" })).await;
-
-        assert!(result.is_success(), "tool result: {result:?}");
-        assert_eq!(ui.take(), vec![UiCommand::Quit]);
     }
 
     #[tokio::test]
@@ -574,115 +415,5 @@ mod tests {
 
         assert!(result.is_error(), "tool result: {result:?}");
         assert!(ui.take().is_empty());
-    }
-
-    #[tokio::test]
-    async fn run_command_rejects_shell_dispatch() {
-        let ui = Arc::new(RecordingUi::default());
-        let tool = RunCommandTool { ui: ui.clone() };
-
-        let result = tool
-            .execute(json!({
-                "command": "shell",
-                "args": ["echo", "should-not-run"]
-            }))
-            .await;
-
-        assert!(result.is_error(), "tool result: {result:?}");
-        assert_eq!(ui.take(), Vec::<UiCommand>::new());
-    }
-
-    #[tokio::test]
-    async fn run_command_preserves_model_argument() {
-        let ui = Arc::new(RecordingUi::default());
-        let tool = RunCommandTool { ui: ui.clone() };
-
-        let result = tool
-            .execute(json!({
-                "command": "model",
-                "args": ["openai/gpt-5.4"]
-            }))
-            .await;
-
-        assert!(result.is_success(), "tool result: {result:?}");
-        assert_eq!(
-            ui.take(),
-            vec![UiCommand::OpenModelOverlay {
-                arg: Some("openai/gpt-5.4".to_string())
-            }]
-        );
-    }
-
-    #[tokio::test]
-    async fn run_command_preserves_status_layout_argument() {
-        let ui = Arc::new(RecordingUi::default());
-        let tool = RunCommandTool { ui: ui.clone() };
-
-        let result = tool
-            .execute(json!({
-                "command": "status",
-                "args": ["expanded"]
-            }))
-            .await;
-
-        assert!(result.is_success(), "tool result: {result:?}");
-        assert_eq!(
-            ui.take(),
-            vec![UiCommand::SetStatusLayout {
-                arg: Some("expanded".to_string())
-            }]
-        );
-    }
-
-    /// MCP reload is directly callable from conversation; the host receives the
-    /// same typed command as interactive `/mcp reload` and returns its report.
-    #[tokio::test]
-    async fn run_command_dispatches_mcp_reload() {
-        let ui = Arc::new(RecordingUi::default());
-        let tool = RunCommandTool { ui: ui.clone() };
-
-        let result = tool
-            .execute(json!({ "command": "mcp", "args": ["reload"] }))
-            .await;
-
-        assert!(result.is_success(), "tool should succeed: {result:?}");
-        assert_eq!(
-            ui.take(),
-            vec![UiCommand::ManageMcp {
-                arg: Some("reload".into()),
-            }]
-        );
-    }
-
-    /// `run_command` for `/mcp` returns the host listing so the agent
-    /// can act conversationally (login/reload) without inventing a manager window.
-    #[tokio::test]
-    async fn repro_run_command_mcp_returns_host_output() {
-        let ui = Arc::new(RecordingUi::default());
-        let tool = RunCommandTool { ui: ui.clone() };
-
-        let result = tool.execute(json!({ "command": "mcp", "args": [] })).await;
-        assert!(result.is_success(), "tool should succeed: {result:?}");
-
-        let payload = match result {
-            ToolExecutionResult::Success(value) => value,
-            other => panic!("expected Success, got {other:?}"),
-        };
-        let message = payload
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
-        assert!(
-            !message.contains("queued for the interactive terminal host"),
-            "agent must receive the real /mcp listing, not a fire-and-forget queue ack.\n\
-             got message={message:?}; queued={:?}",
-            ui.take()
-        );
-        assert!(
-            message.contains("MCP") || message.contains("mcp") || message.contains("usage"),
-            "tool result should carry the host /mcp response for conversational control.\n\
-             got message={message:?}"
-        );
     }
 }

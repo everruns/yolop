@@ -84,28 +84,48 @@ portable case ever arises.
    every queued `UiCommand` before the next render. The `UiCommand` vocabulary
    is the shared contract between client capabilities and the host, a genuinely
    new on-screen effect is a host change, not a drop-in.
-4. **Natural-language dispatch.** In the interactive TUI, the same client
-   capability exposes a model-facing `run_command` tool and a prompt
-   contribution listing the terminal commands. When the user asks for a
-   terminal-side action in ordinary prose (for example, "exit"), the model
-   invokes that tool; the tool emits the same `UiCommand` as the slash-command
-   path. The tool is TUI-gated with the capability and does not create a
-   second command registry.
+4. **Natural-language dispatch.** The `agent_commands` capability exposes a
+   model-facing `run_command` tool and a prompt contribution describing it.
+   When the user asks for a command in ordinary prose (for example, "exit" or
+   "re-authenticate my provider"), the model invokes that tool instead of
+   telling the user to type the slash command. `run_command` covers the
+   **whole registry** of the host it runs on, not a curated subset, and holds no
+   allowlist of its own: a name is resolved against `runtime.list_commands` and
+   run through `runtime.execute_command`, exactly as typing it would, so client
+   commands reach their capability and emit the same `UiCommand` as the typed
+   path. `command: help` returns the live list, and an unknown name answers with
+   it too. Two commands stay out by design: `Skill` commands, which activate by
+   prompt rather than by a runtime effect, and `/shell`, which is typed-only
+   because the agent already has the `bash` tool.
+
+   The tool is registered on **every host**, because every host has a registry;
+   what differs is what that registry holds (host gating below). The only
+   host-specific detail is read-back: where a `HostUi` exists, the
+   informational client commands (`/mcp`, `/tools`, `/help`, `/cwd`) are
+   dispatched through it so the tool result carries the transcript lines the
+   host printed instead of the empty `CommandResult` they return by design.
+   `run_command` does not create a second command registry.
 5. **Host gating.** Client commands are enabled only for a host that can apply
    them. `BuildOptions::client_commands` registers `ClientCommandsCapability`
    and enables its harness id; the interactive TUI sets it, while ACP and
    `--print` leave it off and therefore neither advertise nor dispatch terminal
-   commands. See [`acp.md`](./acp.md) for how the remaining `System`/`Skill`
-   commands surface over ACP.
+   commands. `AgentCommandsCapability` is not gated that way: it is registered
+   and enabled everywhere, so a `--print` or ACP session can run the commands
+   its own registry holds (`/setup`, `/background`, `/undo`, …) and simply has
+   no terminal commands to find. See [`acp.md`](./acp.md) for how the remaining
+   `System`/`Skill` commands surface over ACP.
 
 ## Ownership boundary
 
 - `CommandDescriptor`, `CommandSource` (`System`/`Skill`), `CommandResult`, and
   `execute_command` are owned by `everruns-core`.
 - This spec owns yolop's command surface: the single-registry contract, the
-  client/terminal execution target, the `HostUi`/`UiCommand` port, and the host
-  gating. The terminal commands themselves live in
-  `src/capabilities/client_commands.rs`; the port lives in `src/tui/host_ui.rs`.
+  client/terminal execution target, the `HostUi`/`UiCommand` port, the
+  `CommandDispatch` registry port `run_command` uses, and the host gating. The
+  terminal commands live in `src/capabilities/client_commands.rs`; `run_command`
+  and its registry port live in `src/capabilities/agent_commands.rs`; the host
+  port lives in `src/tui/host_ui.rs` and the registry port is implemented by
+  `RuntimeCommandDispatch` in `src/runtime/mod.rs`.
 
 ## Related
 
