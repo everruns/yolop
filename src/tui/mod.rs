@@ -242,7 +242,7 @@ pub struct App {
     /// knowledge/specs/background.md.
     background_wake: crate::runtime::background_wake::WakeReceiver,
     /// Retained for the TUI lifetime so due local schedules keep polling.
-    _schedule_runner: everruns_local::LocalScheduleRunnerHandle,
+    _schedule_runner: everruns::local::LocalScheduleRunnerHandle,
     /// Everruns session-task registry used by `spawn_background`; the TUI reads
     /// it for the background status segment and panel.
     task_registry: Arc<dyn SessionTaskRegistry>,

@@ -6,15 +6,12 @@
 //! user's branch, HEAD, or index.
 
 use crate::exec::worktree::WorktreeManager;
-use crate::runtime::session_log::{
-    JsonlEventEmitter, SessionMaterializer, messages_from_events, replay,
-};
+use crate::runtime::session_log::{JsonlEventEmitter, SessionMaterializer, replay};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use everruns_core::Event;
 use everruns_core::SessionTaskRegistry;
 use everruns_provider::typed_id::SessionId;
-use everruns_test_support::InMemoryMessageRetriever;
 // TM-FS: upstream deprecated `WRITE_BLOCKLIST` in favour of
 // `WorkspacePolicy`. Swapping yolop's write-protection over is a
 // security-relevant change that deserves its own review rather than riding
@@ -217,7 +214,6 @@ pub struct CheckpointManager {
     worktree: Arc<WorktreeManager>,
     events: Arc<JsonlEventEmitter>,
     materializer: Arc<SessionMaterializer>,
-    messages: Arc<InMemoryMessageRetriever>,
     state: Mutex<TimelineState>,
     prepared: Mutex<Option<PreparedRestore>>,
     queued_confirmation: Mutex<Option<String>>,
@@ -258,7 +254,6 @@ impl CheckpointManager {
         log_path: PathBuf,
         worktree: Arc<WorktreeManager>,
         events: Arc<JsonlEventEmitter>,
-        messages: Arc<InMemoryMessageRetriever>,
         max_sequence: i32,
     ) -> Result<Self> {
         let timeline_path = session_dir.join(TIMELINE_FILE);
@@ -284,7 +279,6 @@ impl CheckpointManager {
             worktree,
             materializer: events.materializer(),
             events,
-            messages,
             state: Mutex::new(state),
             prepared: Mutex::new(None),
             queued_confirmation: Mutex::new(None),
@@ -685,9 +679,7 @@ impl CheckpointManager {
     async fn reseed_active_conversation(&self) -> Result<()> {
         let replayed = replay(&self.log_path, self.session_id)?;
         let active = self.filter_active_events(replayed.events);
-        let messages = messages_from_events(&active);
         self.events.replace_collected_events(active).await;
-        self.messages.seed(self.session_id, messages).await;
         Ok(())
     }
 
@@ -1228,7 +1220,7 @@ pub(crate) fn safe_display(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::WorktreesMode;
-    use crate::runtime::session_log::{JsonlEventEmitter, session_log_path};
+    use crate::runtime::session_log::{JsonlEventEmitter, messages_from_events, session_log_path};
     use everruns_core::EventEmitter;
     use everruns_core::Message;
     use everruns_core::{EventContext, EventRequest, InputMessageData};
@@ -1263,7 +1255,6 @@ mod tests {
         let session_dir = session.path().to_path_buf();
         let log_path = session_log_path(&session_dir);
         let events = Arc::new(JsonlEventEmitter::open(&log_path, 1).expect("event emitter"));
-        let messages = Arc::new(InMemoryMessageRetriever::new());
         let info = crate::exec::worktree::WorktreeInfo {
             path: root.path().to_path_buf(),
             branch: "master".to_string(),
@@ -1279,16 +1270,8 @@ mod tests {
             Some(info),
         ));
         let manager = Arc::new(
-            CheckpointManager::open(
-                session_id,
-                session_dir,
-                log_path,
-                worktree,
-                events,
-                messages,
-                0,
-            )
-            .expect("checkpoint manager"),
+            CheckpointManager::open(session_id, session_dir, log_path, worktree, events, 0)
+                .expect("checkpoint manager"),
         );
         (root, session, manager)
     }

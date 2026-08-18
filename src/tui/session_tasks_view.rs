@@ -598,6 +598,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use chrono::Utc;
+    use everruns::local::{LocalSessionTaskRegistry, SqliteDb};
     use everruns_core::session_task::new_session_task;
     use everruns_core::{CreateSessionTask, ExecutionSession};
     use everruns_core::{
@@ -605,7 +606,6 @@ mod tests {
         TaskLinks,
     };
     use everruns_host::SessionBuilder;
-    use everruns_local::{LocalSessionTaskRegistry, SqliteDb};
     use everruns_provider::typed_id::{HarnessId, SessionId};
     use serde_json::json;
     use std::collections::HashMap;

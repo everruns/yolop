@@ -972,6 +972,9 @@ fn message_from_event(data: &EventData) -> Option<Message> {
     }
 }
 
+// Only checkpoint tests project messages from events now: the runtime reads the
+// conversation back through the event log itself.
+#[cfg(test)]
 pub(crate) fn messages_from_events(events: &[Event]) -> Vec<Message> {
     events
         .iter()

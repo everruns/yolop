@@ -273,7 +273,7 @@ struct Session {
     /// `current_mode_update` instead of silently drifting from the picker.
     last_mode: StdMutex<ApprovalMode>,
     /// Retained for the ACP session lifetime so due local schedules keep polling.
-    _schedule_runner: everruns_local::LocalScheduleRunnerHandle,
+    _schedule_runner: everruns::local::LocalScheduleRunnerHandle,
     user_ask_store: Arc<UserAskStore>,
     user_ask_enabled: bool,
     task_registry: Arc<dyn everruns_core::session_task::SessionTaskRegistry>,

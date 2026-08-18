@@ -57,12 +57,15 @@ use everruns_builtins::{
     TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID, TOOL_SEARCH_CAPABILITY_ID, ToolCallRepairCapability,
     ToolOutputPersistenceCapability, ToolSearchCapability,
 };
-use everruns_session_services::{
+// host 0.19 absorbed the session services; the standalone crate's copy writes to
+// a store this runtime no longer reads.
+use everruns_host::{
     SESSION_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SessionCapability,
     SessionStorageCapability,
 };
 // #3111/#3119 moved the hosted and environment capability implementations out
 // of everruns-core into the platform and integration crates.
+use everruns::local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
 use everruns_capability::CapabilityRef;
 use everruns_core::SessionStore;
 use everruns_core::SessionTaskRegistry;
@@ -90,7 +93,6 @@ use everruns_integrations_filesystem::{FileSystemCapability, SESSION_FILE_SYSTEM
 use everruns_integrations_web_fetch::{WEB_FETCH_CAPABILITY_ID, WebFetchCapability};
 use everruns_llmsim::LlmSimConfig;
 use everruns_llmsim::LlmSimRuntimeExt;
-use everruns_local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
 use everruns_mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
 use everruns_platform::capabilities::{
     SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, SubagentCapability,
@@ -101,7 +103,6 @@ use everruns_provider::model_profiles::get_model_profile;
 use everruns_provider::typed_id::SessionId;
 use everruns_provider::{DriverId, ModelProfile, ReasoningEffortConfig, ReasoningEffortValue};
 use everruns_provider::{DriverRegistry, ProviderMetadata};
-use everruns_test_support::InMemoryMessageRetriever;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 
@@ -3522,14 +3523,12 @@ pub async fn build_with_options(
         next_sequence,
         materializer.clone(),
     )?);
-    let message_store = Arc::new(InMemoryMessageRetriever::new());
     let checkpoints = Arc::new(CheckpointManager::open(
         session_id,
         session_dir.clone(),
         log_path.clone(),
         worktree.clone(),
         event_bus_typed.clone(),
-        message_store.clone(),
         replayed.max_sequence.unwrap_or(0),
     )?);
     let compaction_checkpoints =
@@ -3593,13 +3592,13 @@ pub async fn build_with_options(
     // `background_wake`; child sub-agent messages run synchronously through the
     // in-process runtime once it has been built below.
     let runtime_cell = Arc::new(std::sync::OnceLock::new());
-    let wake_runner = Arc::new(everruns_local::HostRoutedRunner::new(
+    let wake_runner = Arc::new(everruns::local::HostRoutedRunner::new(
         crate::runtime::background_wake::WakeRunner::new(
             runtime_cell.clone(),
             local_backends.runtime_backends.session_store.clone(),
             Some(task_registry.clone()),
         ),
-        everruns_local::WakeRoutes::new(),
+        everruns::local::WakeRoutes::new(),
     ));
     let (background_wake_tx, background_wake_rx) =
         crate::runtime::background_wake::register_host_route(wake_runner.clone(), session_id);

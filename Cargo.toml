@@ -139,26 +139,27 @@ everruns-core = "0.18.0"
 # The identity/platform family (PlatformStore and friends) moved out of
 # everruns-core into its own crate in 0.17.24; yolop implements PlatformStore
 # to route background-task wakes (src/runtime/background_wake.rs).
-# Pinned exactly: platform 0.18.1 requires everruns-host ^0.19.0, but
-# everruns-local 0.18.0 still pins host ^0.18.0 and has not been republished
-# for 0.19. Taking 0.18.1 resolves two copies of everruns-host, and
-# everruns-local then fails to compile against the newer session-store traits.
-# Drop the `=` once everruns-local is released against host 0.19.
-everruns-platform = "=0.18.0"
+everruns-platform = "0.18.1"
 everruns-openai = "0.18.0"
 everruns-meta = "0.18.0"
 # OpenRouter's first-class driver was split out of everruns-openai into its own
 # crate in 0.13.0; register it alongside openai to keep DriverId::OpenRouter.
 everruns-openrouter = "0.18.0"
-everruns-local = "0.18.0"
-everruns-mcp = { version = "0.18.0", features = ["stdio"] }
+# Filesystem persistence comes from the `everruns` facade's `local` feature, not
+# the standalone `everruns-local` crate: same SQLite, git-workspace, and durable
+# log backend, re-exported under `everruns::local`. `everruns-local` is published
+# only against host ^0.18.0, so depending on it pinned yolop off the 0.19 line.
+# Only the `local` feature is wanted; the facade's provider and capability
+# re-exports would duplicate the direct dependencies below.
+everruns = { version = "0.18.1", default-features = false, features = ["local"] }
+everruns-mcp = { version = "0.19.0", features = ["stdio"] }
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
 # everruns server/worker never enable it (knowledge/specs/mcp.md, upstream runtime-mcp.md D2).
 #
 # everruns-host replaces everruns-runtime, which upstream deleted in #3101 as a
 # 0.18 breaking change. Every host symbol yolop used moved here unchanged except
 # EventBus, which the canonical event log replaces.
-everruns-host = { version = "0.18.0", features = ["mcp-stdio"] }
+everruns-host = { version = "0.19.0", features = ["mcp-stdio"] }
 # The direct egress implementation moved out of everruns-core into its own
 # crate; yolop uses it for MCP OAuth discovery.
 # #3182 completed the library boundary cleanup: driver/model/provider types
@@ -166,17 +167,13 @@ everruns-host = { version = "0.18.0", features = ["mcp-stdio"] }
 everruns-provider = "0.18.0"
 everruns-builtins = "0.18.1"
 everruns-capability = "0.18.0"
-everruns-session-services = "0.18.0"
 everruns-http = "0.18.0"
 # Yolop ships `--provider llmsim` as a user-facing offline mode, not just a test
 # fixture, so the simulator is a production dependency. 0.18 split it into the
 # production-safe `everruns-llmsim`; `everruns-test-support` documents itself as
 # test-only and must not be used from production code. The `host` feature carries
 # the runtime-builder extension trait.
-everruns-llmsim = { version = "0.18.0", features = ["host"] }
-# Still required for `InMemoryMessageRetriever`, which has no home outside
-# test-support yet.
-everruns-test-support = "0.18.0"
+everruns-llmsim = { version = "0.18.1", features = ["host"] }
 # Filesystem and web-fetch capability implementations moved out of
 # everruns-core into their own integration crates (#3119).
 everruns-integrations-filesystem = "0.18.0"

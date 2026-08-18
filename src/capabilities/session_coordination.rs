@@ -10,6 +10,7 @@ use crate::control::{
 use crate::runtime::background_wake::{WakeMessage, WakeSender};
 use async_trait::async_trait;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use everruns::local::SqliteDb;
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
@@ -20,7 +21,6 @@ use everruns_core::{
     SessionTaskUpdate, SystemPromptContext, TaskArtifact, TaskError, TaskLinks, TaskWakePolicy,
     Tool, ToolExecutionResult,
 };
-use everruns_local::SqliteDb;
 use everruns_provider::ToolHints;
 use everruns_provider::typed_id::SessionId;
 use rusqlite::{OptionalExtension, params};
@@ -196,7 +196,7 @@ impl CoordinationStore {
     }
 
     pub(crate) fn open(sessions_dir: &Path) -> anyhow::Result<Self> {
-        let profile = everruns_local::LocalProfile::new(sessions_dir.join("everruns-local"));
+        let profile = everruns::local::LocalProfile::new(sessions_dir.join("everruns-local"));
         profile.ensure_dirs()?;
         Self::new(SqliteDb::open(profile.db_path())?)
     }
@@ -1470,7 +1470,7 @@ fn render_coordination_response(action: &CoordinationAction, response: &ControlR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_local::LocalSessionTaskRegistry;
+    use everruns::local::LocalSessionTaskRegistry;
 
     fn test_store() -> (CoordinationStore, Arc<LocalSessionTaskRegistry>) {
         let db = SqliteDb::open_in_memory().unwrap();

@@ -180,6 +180,28 @@ wording, formatting, and link fixes do not need entries.
   and with an active selection `Ctrl+C` re-arms OSC 52 copy instead of
   interrupting. Typing still clears the selection.
 
+## 2026-08-17, Local persistence moves to the everruns facade
+
+- Filesystem persistence now comes from `everruns = { default-features = false,
+  features = ["local"] }` rather than the standalone `everruns-local` crate. The
+  facade re-exports the same backend under `everruns::local`, so every type yolop
+  used, `LocalBackends`, `LocalProfile`, `SqliteDb`, `LocalPlatformStore`,
+  `LocalSessionRunner`, `LocalScheduleStore`, `LocalScheduleRunnerHandle`,
+  `LocalSessionTaskRegistry`, `HostRoutedRunner`, and `WakeRoutes`, keeps its name
+  and shape. Same SQLite, git-workspace, and durable-log backend, verified by a
+  session that persists across two processes.
+- This is what unblocked `everruns-host` 0.19.0. `everruns-local` is published only
+  against host ^0.18.0, so depending on it resolved two copies of `everruns-host`
+  and held yolop on the 0.18 line. The facade depends on host ^0.19.0 and does not
+  use `everruns-local` at all.
+- **host 0.19 absorbed the session services.** `everruns-host::session_services`
+  now carries `SessionCapability`, `SessionStorageCapability`, and the
+  `write_session_title` tool. Registering the standalone
+  `everruns-session-services` copy against a 0.19 runtime compiles cleanly but
+  silently does nothing: the capability writes to a store the runtime no longer
+  reads, so session titles never update. Yolop takes the capability from
+  `everruns-host` and no longer depends on the standalone crate.
+
 ## 2026-08-17, Everruns 0.18.0 adoption; credentials leave model selection
 
 - Yolop is on the published Everruns 0.18.0 family, with no git dependency. The

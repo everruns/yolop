@@ -7,13 +7,14 @@
 //! store that call is a silent no-op, which is why background completions never
 //! reached the yolop agent.
 //!
-//! yolop installs a [`LocalPlatformStore`](everruns_local::LocalPlatformStore)
-//! backed by Everruns' [`HostRoutedRunner`](everruns_local::HostRoutedRunner).
+//! yolop installs a [`LocalPlatformStore`](everruns::local::LocalPlatformStore)
+//! backed by Everruns' [`HostRoutedRunner`](everruns::local::HostRoutedRunner).
 //! Its inner [`WakeRunner`] enriches host wakes with Yolop's authenticated task
 //! handoff and drives child sessions synchronously through the in-process
 //! runtime.
 
 use async_trait::async_trait;
+use everruns::local::{HostRoutedRunner, LocalSessionRunner, WakeRoutes};
 use everruns_core::ExecutionSession;
 use everruns_core::InputMessage;
 use everruns_core::MessageRole;
@@ -21,7 +22,6 @@ use everruns_core::{PlatformCreateSessionRequest, PlatformMessage};
 use everruns_core::{SessionTask, SessionTaskRegistry};
 use everruns_core::{TaskTransition, wake_text_for};
 use everruns_host::{InProcessRuntime, RuntimeSessionStore, SessionBuilder};
-use everruns_local::{HostRoutedRunner, LocalSessionRunner, WakeRoutes};
 use everruns_provider::typed_id::{AgentId, HarnessId, SessionId};
 use everruns_provider::{AgentLoopError, Result};
 use serde::{Deserialize, Serialize};
