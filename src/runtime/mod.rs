@@ -2610,6 +2610,25 @@ fn push_before_environment_context(caps: &mut Vec<CapabilityRef>, cap: Capabilit
     }
 }
 
+/// Register-and-enable the shared control-plane block as one step.
+///
+/// Registering a capability is not enough: one the harness never enables
+/// contributes nothing (see the `SkillManagementCapability` note in
+/// `default_coding_harness_capabilities`). Keeping both halves here means the
+/// block cannot be registered without being enabled, and cannot claim routes
+/// the session does not have.
+fn enable_control_plane(
+    caps: &mut Vec<CapabilityRef>,
+    routes: &[crate::control::ControlRoute],
+) -> Option<crate::control::ControlPlaneCapability> {
+    let capability = crate::control::ControlPlaneCapability::new(routes)?;
+    push_before_environment_context(
+        caps,
+        CapabilityRef::new(crate::control::CONTROL_PLANE_CAPABILITY_ID),
+    );
+    Some(capability)
+}
+
 fn coding_harness_capabilities(
     client_commands: bool,
     hook_config: Option<serde_json::Value>,
@@ -3836,7 +3855,8 @@ pub async fn build_with_options(
     // One shared prompt block for every attached CLI route, derived from what is
     // actually registered above. Capabilities describe their route via
     // `ControlRoute::summary`; none of them contributes prompt prose of its own.
-    let control_plane = crate::control::ControlPlaneCapability::new(
+    let control_plane = enable_control_plane(
+        &mut harness_capabilities,
         &crate::control::ControlService::routes(&session_control_registry),
     );
     let session_control: Option<Arc<dyn crate::control::ControlService>> =
@@ -9030,6 +9050,50 @@ mod tests {
     /// not a silent side effect.
     ///
     /// Before the Claude-5-generation prompt pass this totalled ~9,000 bytes.
+    /// The block only reaches the model if the harness *enables* it; being
+    /// registered is not enough. A live smoke caught exactly this: the block was
+    /// registered, the session still knew nothing about `yolop extensions`.
+    #[test]
+    fn control_plane_is_enabled_on_the_harness_when_routes_exist() {
+        use crate::capabilities::session_coordination::COORDINATION_CONTROL_ROUTE;
+        use crate::control::CONTROL_PLANE_CAPABILITY_ID;
+        use crate::extensions::EXTENSIONS_CONTROL_ROUTE;
+
+        let mut caps = coding_harness_capabilities(false, None, &Settings::default());
+        let capability = enable_control_plane(
+            &mut caps,
+            &[COORDINATION_CONTROL_ROUTE, EXTENSIONS_CONTROL_ROUTE],
+        );
+        assert!(
+            capability.is_some(),
+            "routes must contribute the capability"
+        );
+        let position = caps
+            .iter()
+            .position(|cap| cap.capability_id() == CONTROL_PLANE_CAPABILITY_ID)
+            .expect("the harness must enable the control plane, not just register it");
+        // Environment context stays last so the prompt prefix remains cacheable.
+        if let Some(environment) = caps
+            .iter()
+            .position(|cap| cap.capability_id() == ENVIRONMENT_CONTEXT_CAPABILITY_ID)
+        {
+            assert!(position < environment);
+        }
+    }
+
+    #[test]
+    fn control_plane_is_not_enabled_without_routes() {
+        use crate::control::CONTROL_PLANE_CAPABILITY_ID;
+
+        let mut caps = coding_harness_capabilities(false, None, &Settings::default());
+        assert!(enable_control_plane(&mut caps, &[]).is_none());
+        assert!(
+            !caps
+                .iter()
+                .any(|cap| cap.capability_id() == CONTROL_PLANE_CAPABILITY_ID)
+        );
+    }
+
     #[test]
     fn always_on_capability_prompts_within_budget() {
         use crate::capabilities::approval::render_approval_block;
