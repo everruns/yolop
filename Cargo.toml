@@ -209,3 +209,14 @@ vt100 = "0.16"
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+# Dependency debuginfo dominated `target/`: a plain `cargo build --tests` left
+# 6.3 GB behind, most of it DWARF for ~600 crates nobody sets a breakpoint in.
+# Workspace crates keep full debuginfo (the code being debugged); dependencies
+# keep line tables only, which is what a backtrace through a dependency frame
+# actually reads. Build scripts and proc macros drop it entirely.
+[profile.dev.package."*"]
+debug = "line-tables-only"
+
+[profile.dev.build-override]
+debug = false

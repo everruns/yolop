@@ -1,5 +1,26 @@
 # Knowledge Log
 
+## 2026-08-19, Debug target size: one feature set, thin dependency debuginfo
+
+- The routine checks ran `--all-features` while `cargo build`/`cargo run` ran
+  the default set. Two feature sets in one `target/` are two graphs: 248 crates
+  were compiled under both, and a directory carrying both reached 16 GB.
+- [Local inference](specs/local-inference.md): records the debug-build cost the
+  release table did not cover, and that no test is gated on `local-inference`,
+  so running the suite with the engine on adds ~220 crates for no coverage.
+- Routine commands now share `--features yolop-yep/schema`, which resolves to
+  the same 519 crates as a default build.
+- They also gained `--workspace`. Root `cargo test` covers the root package
+  only, so the wire-schema drift guard in `yolop-yep` had never run outside
+  CI's coverage job; the root commands now match what AGENTS.md claims of
+  them, and run 1273 tests instead of 70.
+- CI's `lint`, `test`, and `live-smoke` jobs share the `debug` cache and now
+  agree on that set; `local-inference` became a clippy-only gate with its own
+  cache key.
+- `[profile.dev.package."*"]` drops dependency debuginfo to line tables and
+  build scripts lose it entirely. A clean `cargo build --tests` went 6.3 GB to
+  5.0 GB, with dependency rlibs down from 2136 MiB to 1227 MiB.
+
 ## 2026-08-18, Session coordination uses attached CLI actions
 
 - [Session coordination](specs/session-coordination.md): removed its four
