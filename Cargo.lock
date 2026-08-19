@@ -3612,6 +3612,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "hf-hub"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aef3982638978efa195ff11b305f51f1f22f4f0a6cabee7af79b383ebee6a213"
+dependencies = [
+ "dirs",
+ "futures",
+ "indicatif 0.18.6",
+ "libc",
+ "log",
+ "num_cpus",
+ "rand 0.9.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "hound"
 version = "3.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4840,7 +4861,7 @@ dependencies = [
  "galil-seiferas",
  "half",
  "hashbrown 0.16.1",
- "hf-hub",
+ "hf-hub 0.4.3",
  "hound",
  "html2text",
  "http",
@@ -4971,7 +4992,7 @@ dependencies = [
  "dispatch2",
  "float8",
  "half",
- "hf-hub",
+ "hf-hub 0.4.3",
  "lazy_static",
  "memmap2",
  "objc2-foundation",
@@ -10727,7 +10748,7 @@ dependencies = [
  "everruns-provider",
  "flate2",
  "futures",
- "hf-hub",
+ "hf-hub 0.5.0",
  "html-escape",
  "ignore",
  "image",

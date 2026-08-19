@@ -87,7 +87,7 @@ mistralrs = { version = "0.8.1", optional = true }
 # Weight downloads. Already in the tree via mistralrs; depended on directly so
 # yolop owns the fetch (and its progress reporting) instead of the engine doing
 # it invisibly inside the first inference call.
-hf-hub = { version = "0.4.3", default-features = false, features = [
+hf-hub = { version = "0.5.0", default-features = false, features = [
     "tokio",
     "rustls-tls",
 ], optional = true }
