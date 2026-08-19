@@ -24,6 +24,18 @@
 - Together: a clean `cargo build --tests --workspace` went from 6.3 GB to
   3.7 GB, dependency rlibs from 2136 MiB to 1238 MiB, and the mixed-feature
   directory no longer happens at all.
+## 2026-08-18, Attached administration reports what it did
+
+- [Extensions](specs/extensions.md): `yolop <subcommand> --help` failed inside a
+  session, the parent parsed clap's help text as a control frame. A child that
+  answers as an ordinary CLI is now relayed verbatim, which also covers
+  `--version` and usage errors.
+- A composed administration command (`... | cat`, redirection, quoting, `&`)
+  now carries a notice that it ran detached and changed only global state. The
+  attached and detached forms differ only by punctuation and their output was
+  identical, so neither the agent nor the user could tell them apart.
+- The notice rides the tool result, so one implementation serves the agent and
+  the client transcript.
 
 ## 2026-08-18, Session coordination uses attached CLI actions
 
