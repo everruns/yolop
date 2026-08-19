@@ -37,7 +37,7 @@ its split-footer mode. See [Tuika](#tuika).
   repository secret.
 
   ```bash
-  doppler run -- cargo test --all-features
+  doppler run -- cargo test --workspace --features yolop-yep/schema
   doppler run -- cargo run -- --provider openai -p "hi"
   ```
 
@@ -62,13 +62,33 @@ its split-footer mode. See [Tuika](#tuika).
 `RUST_LOG` is honored for the tracing layer: stderr outside the interactive TUI,
 private rotating files under `<data_dir>/yolop/logs/` inside it.
 
+The `dev` profile carries line tables, not full DWARF, so backtraces keep
+file and line while `target/` stays a few gigabytes smaller. A debugger that
+needs variable inspection wants `cargo build --profile dev-debuginfo`.
+
 ## Checks
+
+`--features yolop-yep/schema`, not `--all-features`: the schema feature resolves
+to the same crates a default build does, while `--all-features` also turns on
+`local-inference` and its ~220-crate engine. Mixing the two feature sets in one
+`target/` compiles the whole graph twice; keep every routine command on the same
+one. `--workspace` is what makes the root commands cover both packages, and with
+it the wire-schema drift guard in `yolop-yep`.
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+cargo clippy --workspace --all-targets --features yolop-yep/schema -- -D warnings
+cargo test --workspace --features yolop-yep/schema
 python3 scripts/validate_okf.py knowledge --check-links   # when knowledge/ changed
+```
+
+Touching anything behind `local-inference` (`src/drivers/local.rs`,
+`src/models/`) needs the engine compiled too. Give it its own target directory
+so it stays out of the routine one:
+
+```bash
+CARGO_TARGET_DIR=target-local-inference \
+  cargo clippy --workspace --all-targets --features local-inference -- -D warnings
 ```
 
 ## Where things live

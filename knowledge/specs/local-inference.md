@@ -63,6 +63,18 @@ probe lockfile against this one.
 | Release tarball (`.tar.gz`) | 27.8 MiB | not measured | — |
 | Native-toolchain deps | none | none | — |
 
+Debug builds pay a separate, larger price. `mistralrs-core` alone links an
+844 MiB debug rlib, and because a feature set defines a whole graph, a `target/`
+holding both the routine set and `--all-features` compiled 248 crates twice and
+reached 16 GB.
+
+No test is gated on `local-inference`, so running the suite with the feature on
+buys no coverage for that cost. CI gates it with clippy in a job holding its own
+cache ([`ci.yml`](../../.github/workflows/ci.yml)), and every routine command
+stays on `--features yolop-yep/schema`, which resolves to the same 519 crates as
+a default build. Locally, use a separate `CARGO_TARGET_DIR` when you need the
+engine compiled.
+
 Absolute times are machine-specific; the ratios are the durable part.
 [`local-inference-cost.yml`](../../.github/workflows/local-inference-cost.yml)
 reproduces this on a runner.

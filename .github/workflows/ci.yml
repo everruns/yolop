@@ -132,6 +132,12 @@ jobs:
           PYTHONPATH: .
         run: uv run --python 3.12 --with mira-eval --with harbor -m unittest discover -s tests -v
 
+  # `lint` and `test` share the "debug" cache, so they must agree on the feature
+  # set: two feature sets in one target directory compile the whole graph twice
+  # (248 crates were being built under both, at 70 MB per copy for the larger
+  # ones). The shared set is `yolop-yep/schema` — it resolves to exactly the
+  # default 519 crates and carries the wire-schema drift guard.
+  # `local-inference` is the odd one out and gets its own job and cache below.
   lint:
     name: Format + Clippy
     needs: changes
@@ -155,7 +161,35 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --features yolop-yep/schema -- -D warnings
+
+  # The shipped binaries are built with `local-inference` on
+  # (cli-binaries.yml), so the engine-enabled configuration still needs a gate.
+  # It is a compile gate only: no test is behind the feature, so running the
+  # suite again with it on would add ~220 crates and an 844 MB rlib for zero
+  # extra coverage. Its own cache key keeps that tree out of the "debug" cache
+  # every other Rust job restores.
+  local-inference:
+    name: Clippy (local-inference)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: clippy
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "local-inference"
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --features local-inference -- -D warnings
 
   test:
     name: Build + Tests + Offline Smoke
@@ -180,7 +214,7 @@ jobs:
           tool: cargo-llvm-cov
 
       - name: Build
-        run: cargo build --locked --all-targets
+        run: cargo build --locked --workspace --all-targets --features yolop-yep/schema
 
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
@@ -211,7 +245,7 @@ jobs:
         # The live provider tests skip themselves here (no API keys and
         # YOLOP_REQUIRE_LIVE_TESTS unset); they run in the `live-smoke` job below.
         run: |
-          cargo llvm-cov --no-report --all-features --workspace
+          cargo llvm-cov --no-report --features yolop-yep/schema --workspace
           cargo llvm-cov report --lcov --output-path lcov.info
           cargo llvm-cov report --summary-only
 
@@ -266,12 +300,12 @@ jobs:
           shared-key: "debug"
 
       - name: Build the test binary (offline)
-        run: cargo test --no-run --test integration
+        run: cargo test --no-run --features yolop-yep/schema --test integration
 
       - name: Live provider smoke tests
         env:
           YOLOP_REQUIRE_LIVE_TESTS: "1"
-        run: doppler run -- cargo test --test integration -- --nocapture
+        run: doppler run -- cargo test --features yolop-yep/schema --test integration -- --nocapture
 
   sandbox-contract:
     name: Sandbox Contract (${{ matrix.os }})
