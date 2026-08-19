@@ -108,8 +108,11 @@ enum ExtensionSecretCommand {
     disable_help_subcommand = true
 )]
 struct ExtensionCommandLine {
+    /// Optional so a bare `yolop extensions` lists, the way `/extensions` does.
+    /// Clap would otherwise treat it as a usage error: help text on stderr with
+    /// exit 2, which reads as a failure for what is really a request to look.
     #[command(subcommand)]
-    command: ExtensionCommand,
+    command: Option<ExtensionCommand>,
 }
 
 /// Version-independent extension operations carried by the internal control
@@ -200,7 +203,11 @@ impl ExtensionAction {
         }
         let argv = std::iter::once("extensions").chain(arguments.split_ascii_whitespace());
         ExtensionCommandLine::try_parse_from(argv)
-            .map(|parsed| Self::from_command(parsed.command))
+            .map(|parsed| {
+                parsed
+                    .command
+                    .map_or(Self::List { json: false }, Self::from_command)
+            })
             .map_err(|error| error.to_string())
     }
 
@@ -457,7 +464,13 @@ impl CliCapability for ExtensionsCapability {
         matches: &clap::ArgMatches,
     ) -> anyhow::Result<ControlRequest> {
         let parsed = ExtensionCommandLine::from_arg_matches(matches)?;
-        Ok(ExtensionAction::from_command(parsed.command).control_request())
+        Ok(parsed
+            .command
+            .map_or(
+                ExtensionAction::List { json: false },
+                ExtensionAction::from_command,
+            )
+            .control_request())
     }
 
     async fn execute_cli(&self, request: &ControlRequest) -> anyhow::Result<()> {
@@ -1003,10 +1016,14 @@ impl ManageTool {
     /// text) that isn't set yet. Best-effort — with no prompt surface the
     /// extension still enables and stays inert until configured.
     async fn enable(&self, args: &Value) -> ToolExecutionResult {
-        let result = self.toggle(args, true).await;
+        let mut result = self.toggle(args, true).await;
         if !matches!(result, ToolExecutionResult::Success(_)) {
             return result;
         }
+        // Required fields the user did not supply. Enable still applies, but an
+        // extension missing a required token is inert, and reporting a bare
+        // success for that reads as "it works now" when it does not.
+        let mut unconfigured: Vec<String> = Vec::new();
         if let Some(name) = args.get("name").and_then(Value::as_str)
             && self.ctx.ask_sink.is_some()
             && let Some(pkg) = discover_extensions(&self.ctx.extensions_dir)
@@ -1041,8 +1058,9 @@ impl ManageTool {
                     continue;
                 }
                 // Dispatch by field kind (secret → store; text/select → config).
-                // Ignore prompt failures/cancellations: enable already applied.
-                let _ = match field.kind() {
+                // A cancelled or failed prompt leaves enable applied, so record
+                // the field rather than dropping the outcome.
+                let stored = match field.kind() {
                     super::package::ConfigFieldKind::Secret => {
                         self.prompt_and_store_secret(&pkg.manifest, &field).await
                     }
@@ -1051,7 +1069,29 @@ impl ManageTool {
                         self.prompt_and_store_config(&pkg.manifest, &field).await
                     }
                 };
+                // `Ok(false)` is a cancelled prompt and `Err` a failed one;
+                // only a stored value counts as configured.
+                if !matches!(stored, Ok(true)) {
+                    unconfigured.push(field.name.clone());
+                }
             }
+        }
+        if !unconfigured.is_empty()
+            && let ToolExecutionResult::Success(value) = &mut result
+            && let Some(object) = value.as_object_mut()
+        {
+            let name = args.get("name").and_then(Value::as_str).unwrap_or("<name>");
+            object.insert("setup_incomplete".to_string(), json!(unconfigured.clone()));
+            object.insert(
+                "note".to_string(),
+                json!(format!(
+                    "Enabled, but required setup is missing ({}), so the extension stays inert \
+                     until it is provided. Ask the user to run `yolop extensions secret set \
+                     {name} <field>` for a secret, or set the field with `yolop extensions \
+                     enable {name}` again.",
+                    unconfigured.join(", ")
+                )),
+            );
         }
         result
     }

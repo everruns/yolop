@@ -1291,21 +1291,16 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "grep_files",
     "write_todos",
     "write_session_title",
+    // The most-called tool in the harness, and the one a deferred stub hurts
+    // most: the stub names no parameters while declaring
+    // `additionalProperties: true`, so a model fills the gap from other
+    // harnesses' shell schemas (`timeout`, `max_output_chars`). The real schema
+    // is `additionalProperties: false`, so argument validation rejects the call
+    // and the turn is spent on a correction round trip instead of the work.
+    "bash",
     // progress_guard can make this the only allowed transition, so the model
     // must never need tool_search to recover its argument shape.
     "progress_checkpoint",
-    // LSP tools exist only when the optional `lsp` capability is enabled
-    // (absent names are ignored by the allowlist). Enabling that host profile
-    // is an explicit task-shaped signal, and the LSP adoption eval showed that
-    // stubbing its schemas makes models fall back to grep, so those opt-in
-    // schemas stay eager.
-    "lsp_definition",
-    "lsp_references",
-    "lsp_hover",
-    "lsp_diagnostics",
-    "lsp_rename",
-    "lsp_symbols",
-    "lsp_code_actions",
 ];
 #[derive(Clone, Debug)]
 pub enum ProviderChoice {
@@ -8483,6 +8478,34 @@ mod tests {
         );
     }
 
+    /// A deferred stub names no parameters while allowing extras, so a model
+    /// fills the gap from other harnesses' shell schemas and argument
+    /// validation rejects the call against the real
+    /// `additionalProperties: false` schema. Bash is called too often to spend
+    /// a correction round trip on that.
+    #[test]
+    fn bash_keeps_its_schema_eager_so_arguments_are_never_guessed() {
+        assert!(YOLOP_NEVER_DEFER_TOOLS.contains(&"bash"));
+    }
+
+    /// LSP schemas defer with every other opt-in surface. This reverses the
+    /// earlier eager profile; the LSP adoption eval measured lower adoption
+    /// with stubbed schemas, so re-measure before treating this as settled.
+    #[test]
+    fn lsp_tools_defer_like_other_opt_in_surfaces() {
+        for tool in [
+            "lsp_definition",
+            "lsp_references",
+            "lsp_hover",
+            "lsp_diagnostics",
+            "lsp_rename",
+            "lsp_symbols",
+            "lsp_code_actions",
+        ] {
+            assert!(!YOLOP_NEVER_DEFER_TOOLS.contains(&tool), "{tool}");
+        }
+    }
+
     #[test]
     fn coding_harness_enables_bounded_subagent_swarms() {
         let caps = coding_harness_capabilities(false, None, &Settings::default());
@@ -8587,11 +8610,16 @@ mod tests {
             "write_todos",
             "write_session_title",
             "progress_checkpoint",
+            // The shell is eager: a stub costs a correction round trip on the
+            // most-called tool in the harness.
+            "bash",
         ];
         let deferred = [
             "write_file",
             "edit_file",
-            "bash",
+            // Opt-in surfaces defer, LSP included.
+            "lsp_definition",
+            "lsp_hover",
             "spawn_background",
             "spawn_agent",
             "search_sessions",
@@ -8959,9 +8987,13 @@ mod tests {
             tool_definition_bytes * 100 <= BASELINE_TOOL_DEFINITION_BYTES * 76,
             "provider-visible tool bytes must fall by at least 24%: {tool_definition_bytes} vs {BASELINE_TOOL_DEFINITION_BYTES}"
         );
+        // Was 50%. Keeping `bash` eager costs ~993 bytes of schema and buys back
+        // the correction round trip a stubbed shell schema provoked, so the
+        // floor moved once, deliberately. Deferring more tools is the way to
+        // win it back; raising this bound again is not.
         assert!(
-            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 50,
-            "schema bytes must fall by at least 50%: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
+            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 55,
+            "schema bytes must fall by at least 45%: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
         );
     }
 
