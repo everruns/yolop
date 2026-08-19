@@ -10,6 +10,52 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.16.0] - 2026-08-19
+
+### Highlights
+
+- Sessions can hand work to each other: the built-in `session_coordination` capability discovers opt-in local sessions in the same project, reserves one, dispatches a durable task, and wakes the coordinator on completion, all through `yolop coordination`.
+- Extension and coordination administration moved from model tools to an attached CLI. `yolop extensions ...` and `yolop coordination ...` run against the live session over one-shot anonymous pipes, so enable, disable, and reload affect the session you are in without spending model context on tool schemas.
+- Profiles now define a whole agent, not just execution settings: `capabilities`, `mcp`, `skills_dir`, and standing `instructions` are all selectable per run.
+- `run_command` covers the entire command registry on every host. The nine-command allowlist is gone, and ACP and `--print` sessions get command dispatch for the first time.
+- An experimental in-process `local` provider runs a model inside the binary, with `yolop models pull` owning the weights. Off in default features so source builds stay fast; the release binaries carry it.
+- Memory is scoped: `remember`, `recall`, and `forget` take `global` (the default) or `repository`, with repository memory shared across linked worktrees.
+- Editor integration widens: `yolop into buzz` writes a Buzz Desktop harness, and ACP clients can be handed an opt-in loopback setup page (`--acp-setup-page`) so API-key providers have an in-conversation path.
+- Copying wrapped text out of the transcript no longer inserts newlines that were never there, on tuika 0.10.
+
+### Breaking Changes
+
+- **Extension administration is CLI-only**: the model-callable extension management tools are removed. Use `yolop extensions list|install|remove|enable|disable|reload|doctor|secret|scaffold`; `/extensions` and extension-contributed commands and tools are unchanged.
+  - Before: model tools for install/enable/disable/reload
+  - After: `yolop extensions <command>`, attached to the running session
+- **Coordination is CLI-only**: `list_workers`, `dispatch_work`, `complete_assignment`, and `set_worker_availability` never shipped as a stable surface and are replaced by `yolop coordination list|status|dispatch|complete|accept|drain`.
+- **`everruns-test-support` is no longer a runtime dependency**, and local persistence comes from the `everruns` facade (`everruns::local`). Same SQLite, git-workspace, and durable-log backend; the change unblocks the `everruns-host` 0.19 line.
+
+### What's Changed
+
+* chore(deps): track the tuika 0.10 companion releases ([#595](https://github.com/everruns/yolop/pull/595)) by @chaliy
+* refactor(coordination): use attached CLI actions ([#594](https://github.com/everruns/yolop/pull/594)) by @chaliy
+* feat(commands): run_command covers the whole registry, on every host ([#593](https://github.com/everruns/yolop/pull/593)) by @chaliy
+* refactor(deps): move local persistence to the everruns facade ([#592](https://github.com/everruns/yolop/pull/592)) by @chaliy
+* refactor(control): derive the attached-administration hint from registered routes ([#591](https://github.com/everruns/yolop/pull/591)) by @chaliy
+* feat(acp): opt-in loopback setup page for editor clients ([#590](https://github.com/everruns/yolop/pull/590)) by @chaliy
+* chore(deps): take everruns-builtins 0.18.1 and pin platform to 0.18.0 ([#589](https://github.com/everruns/yolop/pull/589)) by @chaliy
+* feat(coordination): dispatch work across local sessions ([#588](https://github.com/everruns/yolop/pull/588)) by @chaliy
+* feat(extensions): add attached control CLI ([#587](https://github.com/everruns/yolop/pull/587)) by @chaliy
+* feat(config): let a profile carry capabilities, MCP, skills, and instructions ([#586](https://github.com/everruns/yolop/pull/586)) by @chaliy
+* fix(tui): support Tuika 0.10 wrapped copy ([#585](https://github.com/everruns/yolop/pull/585)) by @chaliy
+* feat: add repository-scoped memory ([#584](https://github.com/everruns/yolop/pull/584)) by @chaliy
+* chore(agents): record the no-em-dash prose convention ([#583](https://github.com/everruns/yolop/pull/583)) by @chaliy
+* feat(deps): adopt the published everruns 0.18.0 family ([#582](https://github.com/everruns/yolop/pull/582)) by @chaliy
+* feat(providers): experimental in-process inference provider ([#581](https://github.com/everruns/yolop/pull/581)) by @chaliy
+* fix(tui): preserve soft wraps when copying text ([#580](https://github.com/everruns/yolop/pull/580)) by @chaliy
+* feat(editor): add Buzz ACP harness setup ([#579](https://github.com/everruns/yolop/pull/579)) by @chaliy
+* chore(brand): add PNG renders of the logo ([#578](https://github.com/everruns/yolop/pull/578)) by @chaliy
+* docs: remove em-dashes and AI-tell wording from prose ([#577](https://github.com/everruns/yolop/pull/577)) by @chaliy
+* docs(changelog): record #575 in the 0.15.2 section ([#576](https://github.com/everruns/yolop/pull/576)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.15.2...v0.16.0
+
 ## [0.15.2] - 2026-08-15
 
 ### Highlights
