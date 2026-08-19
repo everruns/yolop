@@ -32,6 +32,23 @@ default = []
 # builds the release binaries (and therefore the Homebrew formula) with it.
 local-inference = ["dep:mistralrs", "dep:hf-hub"]
 
+# GPU acceleration for `local-inference`. The engine runs on CPU unless one of
+# these is on, and an 8B model on CPU is slow enough to read as "local models
+# are useless" when the real finding is "this was never accelerated" — so the
+# switch has to exist and be discoverable, not just be described in prose.
+#
+# Both are separate from `local-inference` because they need a vendor toolchain
+# the plain feature does not: `metal` only builds on macOS, and `cuda` needs the
+# CUDA toolkit installed. Enabling either implies `local-inference`.
+#
+# Their existence is why the checks say `--features local-inference` and not
+# `--all-features`: the latter enables both, and on a Linux CI runner both fail
+# to build — `cuda` needs `nvcc`, `metal` pulls `objc2`, which is Apple-only.
+# Cargo has no way to exclude a feature from `--all-features`, so the feature
+# list has to be spelled out.
+metal = ["local-inference", "mistralrs/metal"]
+cuda = ["local-inference", "mistralrs/cuda"]
+
 [dependencies]
 agent-client-protocol = "2.0.0"
 anyhow = "1.0"

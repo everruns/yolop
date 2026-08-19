@@ -165,12 +165,17 @@ jobs:
 
   # The shipped binaries are built with `local-inference` on
   # (cli-binaries.yml), so the engine-enabled configuration still needs a gate.
-  # It is a compile gate only: no test is behind the feature, so running the
-  # suite again with it on would add ~220 crates and an 844 MB rlib for zero
-  # extra coverage. Its own cache key keeps that tree out of the "debug" cache
-  # every other Rust job restores.
+  # The coverage job cannot be it: that job stays on the default feature graph
+  # to avoid a second ~220-crate tree with an 844 MB rlib, so anything behind
+  # the feature is invisible to it. Its own cache key keeps that tree out of the
+  # "debug" cache every other Rust job restores.
+  #
+  # Ten tests *are* behind the feature (the driver's tool-call conversion and
+  # the downloader's progress accounting), so this job runs them as well as
+  # linting. Clippy has already compiled the test targets by then, which is the
+  # expensive part; executing them costs seconds.
   local-inference:
-    name: Clippy (local-inference)
+    name: Clippy + Tests (local-inference)
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
@@ -190,6 +195,13 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --features local-inference -- -D warnings
+
+      # Only the feature-gated modules: everything else already ran, at the
+      # default feature set, in the coverage job.
+      - name: Feature-gated tests
+        run: |
+          cargo test --features local-inference --bin yolop -- \
+            drivers::local models::download
 
   test:
     name: Build + Tests + Offline Smoke

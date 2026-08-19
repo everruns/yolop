@@ -1,0 +1,68 @@
+# Proves the `metal` feature compiles for both macOS release targets.
+#
+# `cli-binaries.yml` only ever runs at release time, dispatched by
+# `release.yml`. A `metal` build that fails there surfaces mid-release as a
+# missing artifact, and because that matrix sets `fail-fast: false` the other
+# targets still upload — a partial release, which is worse than a clean
+# failure. This job moves that discovery to review time.
+#
+# It also guards against bitrot: the accelerated backends are compiled nowhere
+# else in CI, so a dependency bump can break them silently. The `pull_request`
+# trigger is filtered to the files that can plausibly do it, because macOS
+# runner minutes bill at a multiple of Linux.
+#
+# Debug, not release: the failures this is built to catch are the compile and
+# link steps (`objc2` is Apple-only, and the Metal frameworks have to resolve),
+# and those behave the same in either profile. A release build would multiply
+# the runner time for no extra signal.
+name: Metal Build Check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/metal-build-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build with metal (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          # Native on the arm64 runner; this is the target that actually has an
+          # Apple GPU behind the backend.
+          - aarch64-apple-darwin
+          # Cross-compiled from the same runner. Kept in the matrix because
+          # `cli-binaries.yml` ships this target too, so a break here is a
+          # break in the release.
+          - x86_64-apple-darwin
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "metal-${{ matrix.target }}"
+
+      - name: Build
+        run: |
+          cargo build --locked -p yolop \
+            --target ${{ matrix.target }} \
+            --features metal

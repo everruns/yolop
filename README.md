@@ -209,7 +209,7 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 | OpenRouter | browser PKCE login or `OPENROUTER_API_KEY` | `openai/gpt-5.6-sol` |
 | Google     | `GEMINI_API_KEY` / `GOOGLE_API_KEY`   | `gemini-2.5-flash` |
 | Ollama     | `OLLAMA_BASE_URL` / `OLLAMA_API_KEY`  | `llama3.2`        |
-| Local (in-process) | none (weights pulled with `yolop models pull`) | `Qwen/Qwen3-8B` |
+| Local (in-process) | none (weights pulled with `yolop models pull`) | `Qwen3-30B-A3B-Instruct` Q4 GGUF |
 | Custom     | `CUSTOM_BASE_URL` (+ optional `CUSTOM_API_KEY`) |, (set via `/setup`) |
 | llmsim     | none (offline simulator)              |, |
 
@@ -227,17 +227,37 @@ inference engine is linked into yolop. Model specs are Hugging Face repos
 a turn never blocks on a download:
 
 ```bash
-yolop models pull Qwen/Qwen3-8B    # several GB, with progress
-yolop models list                  # what is on disk, and how much
-yolop models rm Qwen/Qwen3-8B      # reclaim it
-yolop --provider local
+M=unsloth/Qwen3-8B-GGUF::Qwen3-8B-Q4_K_M.gguf
+yolop models pull "$M"      # several GB, with progress
+yolop models list           # what is on disk, and how much
+yolop models rm "$M"        # reclaim it
+yolop --provider local -m "$M"
 ```
+
+The default is `Qwen3-30B-A3B-Instruct` at Q4 (~19 GB): a mixture of experts
+with only ~3B parameters active per token, so it runs at roughly small-model
+speed on Apple Silicon, where memory bandwidth rather than compute is the
+limit. Budget 32 GB of RAM. `/setup` also lists an 8B at ~5 GB, which is
+quicker to pull and quicker to load when you are iterating.
+
+`Qwen3-Coder-30B-A3B` is deliberately *not* the default despite being the
+better-aimed model: its chat template emits tool calls as
+`<tool_call><function=…>` XML, and the engine only parses JSON inside
+`<tool_call>`, so none of its tool calls would be understood.
 
 Weights live under `<data_dir>/yolop/models/`. The engine is compiled into the
 Homebrew and GitHub release binaries; a build from source needs `cargo install
 yolop --features local-inference`, which is much slower to compile. How well a
 local model actually drives the agent loop is the open question this is here to
 answer.
+
+Those builds run on the CPU. GPU acceleration needs a vendor toolchain, so it is
+a separate feature that implies `local-inference`:
+
+```bash
+cargo install yolop --features metal   # macOS
+cargo install yolop --features cuda    # NVIDIA, needs the CUDA toolkit
+```
 
 ### Git attribution
 

@@ -663,3 +663,20 @@ wording, formatting, and link fixes do not need entries.
   artifact exists.
 - Non-discoverable owner-private coordination locks preserve fail-fast
   simultaneous-open safety before the event log is materialized.
+
+## 2026-08-19, Local inference gains GPU backends
+
+- [Local inference](specs/local-inference.md) now defines `metal` and `cuda` as
+  first-class features implying `local-inference`, replacing the earlier claim
+  that accelerated backends were already opt-in; release binaries remain
+  CPU-only.
+- `--all-features` is now unusable on Linux at all, since it turns on both
+  accelerated backends; every check names the features it wants.
+- A macOS job compiles `metal` for both release targets so the accelerated
+  backend cannot bitrot unnoticed; `cuda` has no runner and stays unbuilt.
+- The engine's own CI job runs the ten feature-gated tests, which the coverage
+  job cannot see because it never enables the feature.
+- The default local model is a pre-quantized MoE GGUF. A default must be GGUF
+  rather than safetensors, and its chat template must emit JSON tool calls
+  inside `<tool_call>`; the engine cannot parse the `<function=…>` XML variant,
+  which disqualifies Qwen3-Coder.

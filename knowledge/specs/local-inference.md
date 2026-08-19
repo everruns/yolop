@@ -32,6 +32,15 @@ provider exists to answer that question with evidence rather than argument.
 - Provider name `local`; a model spec is a Hugging Face repo (`Qwen/Qwen3-8B`),
   or `repo::file.gguf` to select one GGUF inside a repo. Safetensors repos are
   quantized in-situ on load.
+- The default model must be a `repo::file.gguf` spec, and its chat template must
+  emit tool calls as JSON inside `<tool_call>`. Both are hard constraints, not
+  preferences. A safetensors default means downloading full-precision weights to
+  quantize them locally, several times the bytes for the same result. The
+  template shape is narrower still: mistralrs 0.8.1 strips the `<tool_call>`
+  wrapper and JSON-parses what is inside, so a model whose template emits the
+  `<function=…><parameter=…>` XML variant, Qwen3-Coder among them, produces tool
+  calls that never parse. A local model that cannot call tools cannot drive the
+  agent loop, so this disqualifies a model no matter how well it codes.
 - No base URL and no credential: `Provider::Local` carries neither, because
   there is no endpoint to address and nothing to authenticate against.
 - Reasoning effort is rejected rather than ignored. A repo id is not an entry in
@@ -68,12 +77,14 @@ Debug builds pay a separate, larger price. `mistralrs-core` alone links an
 holding both the routine set and `--all-features` compiled 248 crates twice and
 reached 16 GB.
 
-No test is gated on `local-inference`, so running the suite with the feature on
-buys no coverage for that cost. CI gates it with clippy in a job holding its own
-cache ([`ci.yml`](../../.github/workflows/ci.yml)), and every routine command
-stays on `--features yolop-yep/schema`, which resolves to the same 519 crates as
-a default build. Locally, use a separate `CARGO_TARGET_DIR` when you need the
-engine compiled.
+So the routine commands stay on `--features yolop-yep/schema`, which resolves to
+the same 519 crates as a default build, and the engine gets one job of its own
+with its own cache ([`ci.yml`](../../.github/workflows/ci.yml)). That job both
+lints and tests: ten tests are behind the feature (the driver's tool-call
+conversion, the downloader's progress accounting), and they are invisible to the
+coverage job because it never enables the feature. Running them there is nearly
+free, since linting `--all-targets` has already compiled them. Locally, use a
+separate `CARGO_TARGET_DIR` when you need the engine compiled.
 
 Absolute times are machine-specific; the ratios are the durable part.
 [`local-inference-cost.yml`](../../.github/workflows/local-inference-cost.yml)
@@ -113,8 +124,40 @@ is compiled out. Such a build reports the provider unusable so it stays out of
 automatic provider fallback, and fails loudly if selected explicitly, rather
 than silently disappearing from the picker.
 
-Accelerated backends (`metal`, `cuda`) do require vendor toolchains and stay
-opt-in on top of `local-inference`.
+## Acceleration
+
+The engine runs on **CPU** unless a GPU backend is compiled in, and the
+difference is not a detail: an 8B model on CPU is slow enough to read as "local
+models are useless" when the real finding is "this was never accelerated".
+Evaluating the experiment on an unaccelerated build measures the wrong thing.
+
+Two features turn a backend on. Each implies `local-inference`, and each needs a
+vendor toolchain the plain feature does not, which is why they are separate:
+
+```bash
+cargo build --release --features metal   # Apple Silicon; macOS only
+cargo build --release --features cuda    # NVIDIA; needs the CUDA toolkit
+```
+
+Their existence is a second reason no check can use `--all-features`, on top of
+the build-cost one above: `--all-features` turns both on, and on a Linux runner
+both fail outright. `cuda` pulls `cudarc`, whose build script panics when `nvcc`
+is absent; `metal` pulls `objc2`, which refuses to compile off Apple platforms.
+Cargo cannot exclude a feature from `--all-features`, so every check names the
+features it wants.
+
+`metal` is compiled for both macOS release targets by
+[`metal-build-check.yml`](../../.github/workflows/metal-build-check.yml), on
+pull requests that touch the manifests. Without it the accelerated backends
+would be compiled nowhere in CI, so a dependency bump could break them and only
+a release would find out. `cuda` has no equivalent: no CI runner has the toolkit,
+so it stays unbuilt and its first real evidence has to come from a CUDA host.
+
+**The release binaries are built with `local-inference` alone, so they are
+CPU-only** ([`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml)).
+A Homebrew install therefore runs local models on the CPU; accelerating the
+shipped macOS binaries is a separate decision, not something the feature flag
+settles.
 
 ## The model store
 
