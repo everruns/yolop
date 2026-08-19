@@ -2758,7 +2758,21 @@ pub struct RuntimeHandles {
     pub(crate) control: Option<Arc<dyn crate::control::ControlService>>,
     /// Best-effort local lifecycle bridge when this process runs in Herdr.
     pub(crate) herdr: crate::capabilities::herdr::HerdrReporter,
+    /// Builds an [`ExtensionCapability`] for a package discovered after startup,
+    /// wired to the same sinks the startup path uses.
+    ///
+    /// Extensions installed mid-session are absent from the registry the
+    /// runtime composed, so enabling them used to require a restart. The
+    /// closure keeps the wiring in one place: the App registers the result on
+    /// the live runtime and activates it like any other capability. `None`
+    /// where there is no extensions dir.
+    pub(crate) extension_factory: Option<ExtensionFactory>,
 }
+
+/// Builds a capability for an installed extension by name; `Err` when no such
+/// package is on disk.
+pub(crate) type ExtensionFactory =
+    Arc<dyn Fn(&str) -> Result<Arc<dyn everruns_core::Capability>, String> + Send + Sync>;
 
 impl RuntimeHandles {
     pub(crate) fn report_herdr_state(&self, state: crate::capabilities::herdr::HerdrState) {
@@ -3241,6 +3255,11 @@ pub struct BuildOptions {
     /// registered and enforces the current approval level; hosts without an
     /// interactive prompt (the TUI, `--print`) leave it `None`.
     pub tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
+    /// Override the global extensions directory for this build. Tests inject a
+    /// temp dir instead of setting `YOLOP_EXTENSIONS_DIR`, which is process-wide
+    /// and would hand another concurrently building session these packages.
+    /// Production leaves this `None` and resolves the platform dir.
+    pub extensions_dir_override: Option<PathBuf>,
     /// Override the provider stream-stall liveness window. Tests inject a short
     /// bound; production leaves this `None` and uses [`PROVIDER_STALL_TIMEOUT`].
     pub provider_stall_timeout: Option<Duration>,
@@ -3257,6 +3276,7 @@ impl Default for BuildOptions {
             session_kind: SessionKind::Interactive,
             initial_prompt: None,
             sandbox_mode_override: None,
+            extensions_dir_override: None,
             client_commands: false,
             client_ui: ClientUiContext::None,
             client_mcp_servers: ScopedMcpServers::new(),
@@ -3508,7 +3528,12 @@ pub async fn build_with_options(
     // Read-only skills contributed by enabled extensions (D4: only a declaring,
     // enabled extension's `skills/` loads). Computed here so it feeds both the
     // skills capability config and the file-store mounts below.
-    let extension_skill_scopes = crate::extensions::extensions_dir()
+    let extensions_dir = options
+        .extensions_dir_override
+        .clone()
+        .or_else(crate::extensions::extensions_dir);
+    let extension_skill_scopes = extensions_dir
+        .clone()
         .map(|ext_dir| {
             let snapshot = settings.snapshot();
             let packages = crate::extensions::discover_extensions(&ext_dir);
@@ -3844,12 +3869,13 @@ pub async fn build_with_options(
     // 0600), keyed `ext:<name>` — never `settings.toml`. Injected as env at
     // spawn; never surfaced to the agent.
     let extension_secrets = crate::extensions::ExtensionSecrets::new(connections.clone());
+    let mut extension_factory: Option<ExtensionFactory> = None;
     let mut extension_never_defer: Vec<String> = Vec::new();
     let mut extension_mcp_server_names: Vec<String> = Vec::new();
     // Trace-facet extensions, captured here and started once `session_id` and
     // the event broadcast exist (below). Observe-only agentic-trace export.
     let mut trace_forwarders: Vec<crate::extensions::trace::TraceForwarder> = Vec::new();
-    if let Some(ext_dir) = crate::extensions::extensions_dir() {
+    if let Some(ext_dir) = extensions_dir.clone() {
         let settings_snapshot = settings.snapshot();
         for package in crate::extensions::discover_extensions(&ext_dir) {
             // An extension's contributed MCP servers (D1) apply only when the
@@ -3891,6 +3917,31 @@ pub async fn build_with_options(
             extension_never_defer.extend(capability.never_defer_tools());
             capabilities.register(capability);
         }
+        // Same wiring as the loop above, deferred: an extension installed after
+        // startup is built on demand and registered on the live runtime, so
+        // enabling it does not need a restart.
+        let factory_root = effective_root.clone();
+        let factory_status = status_sink.clone();
+        let factory_ask = ask_sink.clone();
+        let factory_processes = live_processes.clone();
+        let factory_secrets = extension_secrets.clone();
+        let factory_environment = environment_context.clone();
+        let factory_dir = ext_dir.clone();
+        extension_factory = Some(Arc::new(move |name: &str| {
+            let package = crate::extensions::discover_extensions(&factory_dir)
+                .into_iter()
+                .find(|package| package.manifest.name == name)
+                .ok_or_else(|| format!("no extension named `{name}` is installed"))?;
+            Ok(Arc::new(
+                crate::extensions::ExtensionCapability::new(package, factory_root.clone())
+                    .with_status_sink(factory_status.clone())
+                    .with_ask_sink(factory_ask.clone())
+                    .with_process_registry(factory_processes.clone())
+                    .with_secrets(factory_secrets.clone())
+                    .with_environment_context(factory_environment.clone()),
+            ) as Arc<dyn everruns_core::Capability>)
+        }) as ExtensionFactory);
+
         // Extension administration stays outside the model harness. Hand its
         // shared service the UI-command sink so attached enable/disable can
         // activate the capability live (TUI only); `None` elsewhere.
@@ -4391,6 +4442,7 @@ pub async fn build_with_options(
             approval_policy,
             control: session_control,
             herdr,
+            extension_factory,
         },
         startup: StartupInfo {
             workspace_root: effective_root,
@@ -8995,6 +9047,150 @@ mod tests {
             schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 55,
             "schema bytes must fall by at least 45%: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
         );
+    }
+
+    /// An extension installed after the session started used to need a restart:
+    /// the runtime composed its capability registry once, so `ext:<name>` was
+    /// unknown and activation failed. everruns EVE-917 added registration on a
+    /// running runtime; this drives the real path (register, activate, run a
+    /// turn) and asserts the extension's tool is actually callable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn extension_installed_after_startup_becomes_usable_without_a_restart() {
+        use everruns_llmsim::{SimToolCall, SimTurn};
+
+        // The scaffolded server is Python; skip rather than fail where the
+        // environment lacks it (never `#[ignore]`, which nothing ever runs).
+        let has_python = ["python3", "python"].iter().any(|candidate| {
+            std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+                .is_ok_and(|out| out.status.success())
+        });
+        if !has_python {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let extensions = tempfile::tempdir().expect("extensions");
+
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "say".to_string(),
+                    arguments: serde_json::json!({ "text": "hi" }),
+                    id: None,
+                }]),
+                SimTurn::Assistant("DONE".to_string()),
+            ])),
+            // Injected, not exported: `YOLOP_EXTENSIONS_DIR` is process-wide
+            // and would hand a concurrently building test these packages.
+            // The session starts with this dir empty: nothing to register.
+            extensions_dir_override: Some(extensions.path().to_path_buf()),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+
+        let capability_id = crate::extensions::extension_capability_id("echo");
+        assert!(
+            !built
+                .handles
+                .runtime
+                .is_capability_registered(&capability_id),
+            "the package is not installed yet, so nothing should be registered"
+        );
+        let before = built
+            .handles
+            .runtime
+            .load_context(built.handles.session_id)
+            .await
+            .expect("context before install");
+        assert!(
+            !before.runtime_agent.tools.iter().any(|t| t.name() == "say"),
+            "the extension's tool must be absent before it is installed"
+        );
+
+        // Install after startup, the way `yolop extensions install` does. The
+        // scaffold emits a real, protocol-conformant server so this exercises
+        // the extension end to end rather than a stub.
+        let scaffolded =
+            crate::extensions::scaffold::scaffold(&crate::extensions::scaffold::ScaffoldRequest {
+                name: "echo".into(),
+                description: "Echoes.".into(),
+                language: crate::extensions::scaffold::Language::Python,
+                tools: vec![crate::extensions::scaffold::ToolSpec {
+                    name: "say".into(),
+                    description: "Say something.".into(),
+                }],
+                hooks: vec![],
+                commands: vec![],
+                prompt: None,
+                status: false,
+                skills: false,
+                dir: extensions.path().join("echo"),
+            })
+            .expect("scaffold the package straight into the extensions dir");
+        assert!(scaffolded.dir.join("plugin.json").is_file());
+
+        // The App's path: register on the live runtime, then activate.
+        let session =
+            crate::runtime::session::Session::new(built.handles.clone(), built.model.clone());
+        let registered = session
+            .register_installed_extension("echo")
+            .expect("register the freshly installed package");
+        assert!(registered, "a package absent at startup must register now");
+        assert!(
+            built
+                .handles
+                .runtime
+                .is_capability_registered(&capability_id)
+        );
+        let delta = session
+            .activate_capability(&capability_id)
+            .await
+            .expect("activation must succeed once registered");
+        assert!(delta.changed && delta.active);
+
+        // The extension's tool is on the next turn's surface...
+        let context = built
+            .handles
+            .runtime
+            .load_context(built.handles.session_id)
+            .await
+            .expect("context after activation");
+        assert!(
+            context
+                .runtime_agent
+                .tools
+                .iter()
+                .any(|t| t.name() == "say"),
+            "the extension's tool must be present without a restart: {:?}",
+            context
+                .runtime_agent
+                .tools
+                .iter()
+                .map(|tool| tool.name().to_string())
+                .collect::<Vec<_>>()
+        );
+
+        // ...and a real turn calls it, so the server is actually spawned and
+        // answering rather than merely advertised.
+        let turn = built
+            .handles
+            .run_checkpointed_turn("say hi", built.model.input_message("say hi"))
+            .await
+            .expect("run a turn that calls the extension's tool");
+        assert!(turn.success, "turn calling the extension tool failed");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

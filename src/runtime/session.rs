@@ -92,6 +92,30 @@ impl Session {
     /// Activate a registered `ext:<name>` capability on the live session so its
     /// tools/prompt/hooks/commands/MCP appear on the next turn (hot-enable). See
     /// [`RuntimeHandles::activate_capability`](crate::runtime::RuntimeHandles::activate_capability).
+    /// Make an extension installed after startup resolvable on this runtime.
+    ///
+    /// Returns whether a registration happened; `Ok(false)` means the id was
+    /// already registered (the ordinary case, for packages present at startup).
+    /// Registration is not activation: the caller still activates the id.
+    pub fn register_installed_extension(&self, name: &str) -> Result<bool> {
+        let capability_id = crate::extensions::extension_capability_id(name);
+        if self
+            .handles
+            .runtime
+            .is_capability_registered(&capability_id)
+        {
+            return Ok(false);
+        }
+        let factory = self
+            .handles
+            .extension_factory
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("this session has no extensions directory"))?;
+        let capability = factory(name).map_err(|error| anyhow::anyhow!(error))?;
+        self.handles.runtime.register_capability(capability)?;
+        Ok(true)
+    }
+
     pub async fn activate_capability(
         &self,
         capability_id: &str,
