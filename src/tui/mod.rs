@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use tuika::InputOutcome;
-use tuika::components::{ScrollState, TextInputState};
+use tuika::components::{ScrollState, SingleLineInputState, TextInputState};
 use tuika::keymap::Dispatch;
 use tuika::mouse::{SelectionRange, selected_text, word_at};
 use tuika::term::hyperlink::BufferLink;
@@ -444,7 +444,10 @@ struct PendingMcpLogin {
 pub(crate) struct PendingAsk {
     prompt: String,
     placeholder: Option<String>,
-    value: String,
+    /// The answer being typed, edited by tuika's single-line input state: the
+    /// overlay gets paste, word deletion, and cursor movement from the toolkit
+    /// instead of a hand-rolled `Char`/`Backspace` match.
+    value: SingleLineInputState,
     /// Mask the input and never echo the answer (credentials).
     secret: bool,
     /// Selector options; when non-empty the overlay is a picker, not a field.
@@ -1639,7 +1642,7 @@ impl App {
             self.pending_ask = Some(PendingAsk {
                 prompt: request.prompt,
                 placeholder: request.placeholder,
-                value: String::new(),
+                value: SingleLineInputState::new(),
                 secret: request.secret,
                 options: request.options,
                 selected: 0,
@@ -2347,17 +2350,21 @@ impl App {
             .clamp(1, MAX_INPUT_HEIGHT)
     }
 
+    /// Route pasted text, from a bracketed paste or from Ctrl+V.
+    ///
+    /// The precedence mirrors [`handle_key`](Self::handle_key) deliberately:
+    /// whichever surface owns the keyboard owns pasted text too. Without that,
+    /// a paste aimed at an overlay lands in the composer behind it — which is
+    /// how a pasted credential ended up sitting in the input once an extension
+    /// prompt closed.
     fn handle_paste(&mut self, pasted: String) {
-        if self.setup.is_some() || self.background_panel_focused {
-            return;
-        }
-        self.esc_pending_cancel = false;
-
+        // Normalization and the size cap apply to every target: a single-line
+        // overlay field has no placeholder machinery to fall back on, so an
+        // oversized paste is refused before any surface stores or renders it.
         let pasted = crate::tui::input::paste_attachment::normalize_pasted_text(&pasted);
         if pasted.is_empty() {
             return;
         }
-
         if pasted.len() > crate::tui::input::paste_attachment::MAX_PASTE_ATTACHMENT_BYTES {
             self.push_system(format!(
                 "paste too large (max {} KiB)",
@@ -2365,6 +2372,19 @@ impl App {
             ));
             return;
         }
+
+        if self.history_search.is_some() {
+            self.handle_search_paste(&pasted);
+            return;
+        }
+        if self.pending_ask.is_some() {
+            self.handle_ask_paste(&pasted);
+            return;
+        }
+        if self.setup.is_some() || self.background_panel_focused {
+            return;
+        }
+        self.esc_pending_cancel = false;
 
         if crate::tui::input::paste_attachment::is_large_paste(&pasted) {
             let char_count = pasted.chars().count();
@@ -2385,6 +2405,18 @@ impl App {
     }
 
     fn try_paste_clipboard(&mut self) {
+        // The ask overlay is a plain text field: Ctrl+V fills it from the
+        // clipboard's *text*, an image attachment has nowhere to go there.
+        if self.pending_ask.is_some() {
+            match crate::tui::input::clipboard_paste::paste_clipboard_text() {
+                Ok(text) => self.handle_ask_paste(&text),
+                Err(err) => {
+                    tracing::debug!("clipboard text paste failed: {err}");
+                    self.push_system(format!("clipboard paste failed: {err}"));
+                }
+            }
+            return;
+        }
         if self.setup.is_some() || self.background_panel_focused {
             return;
         }
@@ -2407,6 +2439,30 @@ impl App {
                 self.push_system(format!("clipboard image paste failed: {err}"));
             }
         }
+    }
+
+    /// Insert pasted text into the open `ui/ask` answer, through the same
+    /// [`SingleLineInputState`] that handles its keys — so line boundaries
+    /// normalize the toolkit's way and the answer is trimmed on submit. A
+    /// selector prompt has no field to fill, so the paste is ignored.
+    fn handle_ask_paste(&mut self, pasted: &str) {
+        let Some(ask) = self.pending_ask.as_mut() else {
+            return;
+        };
+        if !ask.options.is_empty() {
+            return;
+        }
+        let _ = ask.value.handle(&tuika::Event::Paste(pasted.to_string()));
+    }
+
+    /// Insert pasted text into the reverse-history search query and re-match.
+    /// The query is one line, so line boundaries become spaces.
+    fn handle_search_paste(&mut self, pasted: &str) {
+        let Some(search) = self.history_search.as_mut() else {
+            return;
+        };
+        search.query.push_str(&pasted.replace('\n', " "));
+        self.history_search_refresh();
     }
 
     /// Keyboard handling while an extension `ui/ask` prompt is open: edit the
@@ -2443,7 +2499,10 @@ impl App {
         }
         match key.code {
             KeyCode::Enter => {
-                let answer = ask.value.clone();
+                // Trimmed: a credential pasted with a trailing newline (which
+                // the single-line state normalizes to a space) must still
+                // answer as the token itself.
+                let answer = ask.value.text().trim().to_string();
                 self.resolve_ask(crate::tui::host_ui::AskAnswer {
                     answer,
                     cancelled: false,
@@ -2455,13 +2514,14 @@ impl App {
                     cancelled: true,
                 });
             }
-            KeyCode::Backspace => {
-                ask.value.pop();
+            // Everything else is editing: hand the translated event to the
+            // toolkit's input state, which is what gives the prompt cursor
+            // movement, word deletion, and kill-to-end for free.
+            _ => {
+                if let Some(event) = tuika::translate_event(CrosstermEvent::Key(key)) {
+                    let _ = ask.value.handle(&event);
+                }
             }
-            KeyCode::Char(c) => {
-                ask.value.push(c);
-            }
-            _ => {}
         }
     }
 
@@ -7766,6 +7826,203 @@ mod tests {
             app.repo_pulse_rx.is_none(),
             "inline mode must not start repository inspection"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paste_fills_the_open_ask_prompt_not_the_composer() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let (reply, mut answer_rx) = oneshot::channel();
+        app.pending_ask = Some(PendingAsk {
+            prompt: "Logfire write token".to_string(),
+            placeholder: None,
+            value: SingleLineInputState::new(),
+            secret: true,
+            options: Vec::new(),
+            selected: 0,
+            reply: Some(reply),
+        });
+
+        app.handle_paste("pylf_v1_us_TOKEN\n".to_string());
+
+        assert_eq!(
+            app.pending_ask.as_ref().expect("prompt open").value.text(),
+            "pylf_v1_us_TOKEN ",
+            "paste belongs to the open prompt (the trailing newline normalizes to a space)"
+        );
+        assert!(
+            app.input_text().is_empty(),
+            "the composer behind the overlay must stay untouched: {:?}",
+            app.input_text()
+        );
+
+        app.handle_ask_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+        let answered = answer_rx.try_recv().expect("answer delivered");
+        assert!(!answered.cancelled);
+        assert_eq!(answered.answer, "pylf_v1_us_TOKEN");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ask_prompt_edits_through_the_toolkit_input_state() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let (reply, mut answer_rx) = oneshot::channel();
+        app.pending_ask = Some(PendingAsk {
+            prompt: "token".to_string(),
+            placeholder: None,
+            value: SingleLineInputState::new(),
+            secret: true,
+            options: Vec::new(),
+            selected: 0,
+            reply: Some(reply),
+        });
+
+        for c in "abcd".chars() {
+            app.handle_ask_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+        }
+        // Cursor movement and mid-string deletion come from the toolkit, not
+        // from a hand-rolled push/pop on a String.
+        app.handle_ask_key(KeyEvent::new(KeyCode::Left, KeyModifiers::empty()));
+        app.handle_ask_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()));
+        let ask = app.pending_ask.as_ref().expect("prompt open");
+        assert_eq!(ask.value.text(), "abd");
+        assert_eq!(
+            ask.value.cursor(),
+            2,
+            "caret stays before the last character"
+        );
+
+        app.handle_ask_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+        assert_eq!(
+            answer_rx.try_recv().expect("answer delivered").answer,
+            "abd"
+        );
+    }
+
+    #[test]
+    fn ask_overlay_masks_a_pasted_secret_and_tracks_the_caret() {
+        let (reply, _answer_rx) = oneshot::channel();
+        let mut ask = PendingAsk {
+            prompt: "Logfire write token".to_string(),
+            placeholder: Some("stored securely, not shown to the agent".to_string()),
+            value: SingleLineInputState::new(),
+            secret: true,
+            options: Vec::new(),
+            selected: 0,
+            reply: Some(reply),
+        };
+        let _ = ask
+            .value
+            .handle(&tuika::Event::Paste("pylf_v1".to_string()));
+
+        let (lines, cursor) = crate::tui::render::ask_overlay_content(&ask);
+        let field = line_text(&lines[4]);
+        assert_eq!(
+            field, "> •••••••",
+            "a secret answer is masked, never echoed"
+        );
+        assert_eq!(
+            cursor,
+            (4, "> ".len() + 7),
+            "caret sits after the pasted text"
+        );
+
+        // The caret follows the input state rather than the text length, so
+        // arrow keys move the cell the terminal draws the cursor in.
+        let _ = ask.value.handle(&tuika::Event::Key(tuika::event::Key::new(
+            tuika::event::KeyCode::Left,
+        )));
+        let (_, cursor) = crate::tui::render::ask_overlay_content(&ask);
+        assert_eq!(cursor, (4, "> ".len() + 6));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn oversized_paste_is_refused_before_it_reaches_an_overlay() {
+        use crate::tui::input::paste_attachment::MAX_PASTE_ATTACHMENT_BYTES;
+
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        let (reply, _answer_rx) = oneshot::channel();
+        app.pending_ask = Some(PendingAsk {
+            prompt: "token".to_string(),
+            placeholder: None,
+            value: SingleLineInputState::new(),
+            secret: true,
+            options: Vec::new(),
+            selected: 0,
+            reply: Some(reply),
+        });
+
+        app.handle_paste("x".repeat(MAX_PASTE_ATTACHMENT_BYTES + 1));
+
+        assert!(
+            app.pending_ask
+                .as_ref()
+                .expect("prompt open")
+                .value
+                .is_empty(),
+            "the single-line field must not store an oversized paste"
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("paste too large")),
+            "the refusal is reported: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paste_during_reverse_search_fills_the_query() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.history.record("an earlier prompt");
+        app.history_search_start();
+
+        app.handle_paste("needle".to_string());
+
+        assert_eq!(
+            app.history_search.as_ref().expect("search open").query,
+            "needle"
+        );
+        assert!(
+            !app.input_text().contains("needle"),
+            "the search query must not be typed into the composer: {:?}",
+            app.input_text()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paste_into_a_selector_prompt_is_ignored() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let (reply, _answer_rx) = oneshot::channel();
+        app.pending_ask = Some(PendingAsk {
+            prompt: "pick one".to_string(),
+            placeholder: None,
+            value: SingleLineInputState::new(),
+            secret: false,
+            options: vec!["a".to_string(), "b".to_string()],
+            selected: 0,
+            reply: Some(reply),
+        });
+
+        app.handle_paste("pasted".to_string());
+
+        assert!(
+            app.pending_ask
+                .as_ref()
+                .expect("prompt open")
+                .value
+                .is_empty()
+        );
+        assert!(app.input_text().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
