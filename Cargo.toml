@@ -156,7 +156,7 @@ everruns-core = "0.18.0"
 # The identity/platform family (PlatformStore and friends) moved out of
 # everruns-core into its own crate in 0.17.24; yolop implements PlatformStore
 # to route background-task wakes (src/runtime/background_wake.rs).
-everruns-platform = "0.18.1"
+everruns-platform = "0.18.2"
 everruns-openai = "0.18.0"
 everruns-meta = "0.18.0"
 # OpenRouter's first-class driver was split out of everruns-openai into its own
@@ -168,7 +168,7 @@ everruns-openrouter = "0.18.0"
 # only against host ^0.18.0, so depending on it pinned yolop off the 0.19 line.
 # Only the `local` feature is wanted; the facade's provider and capability
 # re-exports would duplicate the direct dependencies below.
-everruns = { version = "0.18.1", default-features = false, features = ["local"] }
+everruns = { version = "0.18.2", default-features = false, features = ["local"] }
 everruns-mcp = { version = "0.19.0", features = ["stdio"] }
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
 # everruns server/worker never enable it (knowledge/specs/mcp.md, upstream runtime-mcp.md D2).
@@ -176,7 +176,7 @@ everruns-mcp = { version = "0.19.0", features = ["stdio"] }
 # everruns-host replaces everruns-runtime, which upstream deleted in #3101 as a
 # 0.18 breaking change. Every host symbol yolop used moved here unchanged except
 # EventBus, which the canonical event log replaces.
-everruns-host = { version = "0.19.0", features = ["mcp-stdio"] }
+everruns-host = { version = "0.20.1", features = ["mcp-stdio"] }
 # The direct egress implementation moved out of everruns-core into its own
 # crate; yolop uses it for MCP OAuth discovery.
 # #3182 completed the library boundary cleanup: driver/model/provider types
@@ -190,7 +190,7 @@ everruns-http = "0.18.0"
 # production-safe `everruns-llmsim`; `everruns-test-support` documents itself as
 # test-only and must not be used from production code. The `host` feature carries
 # the runtime-builder extension trait.
-everruns-llmsim = { version = "0.18.1", features = ["host"] }
+everruns-llmsim = { version = "0.18.2", features = ["host"] }
 # Filesystem and web-fetch capability implementations moved out of
 # everruns-core into their own integration crates (#3119).
 everruns-integrations-filesystem = "0.18.0"

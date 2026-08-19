@@ -120,6 +120,13 @@ MCP OAuth resources, and 0.18.0 moved credentials out of model selection so a
 host that keeps its own keys gets keyless drivers from the built-in provider
 store. None of these showed up as a compile error.
 
+Upstream also moves capability behind Cargo features, so read each cycle's
+feature notes before assuming a default build still carries what it used to.
+Host 0.20 made outbound A2A delegation opt-in behind the `everruns` crate's
+`a2a` feature: yolop does not delegate to remote A2A agents, so it stays off and
+the default build no longer pulls a second HTTP/TLS stack. Enable it only if
+yolop grows an outbound A2A path.
+
 ## Release Readiness Standard
 
 Before tagging a release:
