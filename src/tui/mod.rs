@@ -2348,6 +2348,14 @@ impl App {
     }
 
     fn handle_paste(&mut self, pasted: String) {
+        // An open `ui/ask` prompt owns the keyboard (see `handle_key`), so it
+        // owns pasted text too — otherwise a bracketed paste meant for the
+        // prompt lands in the composer behind the overlay, where a secret
+        // answer would sit in plain sight once the prompt closes.
+        if self.pending_ask.is_some() {
+            self.handle_ask_paste(&pasted);
+            return;
+        }
         if self.setup.is_some() || self.background_panel_focused {
             return;
         }
@@ -2385,6 +2393,18 @@ impl App {
     }
 
     fn try_paste_clipboard(&mut self) {
+        // The ask overlay is a plain text field: Ctrl+V fills it from the
+        // clipboard's *text*, an image attachment has nowhere to go there.
+        if self.pending_ask.is_some() {
+            match crate::tui::input::clipboard_paste::paste_clipboard_text() {
+                Ok(text) => self.handle_ask_paste(&text),
+                Err(err) => {
+                    tracing::debug!("clipboard text paste failed: {err}");
+                    self.push_system(format!("clipboard paste failed: {err}"));
+                }
+            }
+            return;
+        }
         if self.setup.is_some() || self.background_panel_focused {
             return;
         }
@@ -2407,6 +2427,22 @@ impl App {
                 self.push_system(format!("clipboard image paste failed: {err}"));
             }
         }
+    }
+
+    /// Insert pasted text into the open `ui/ask` answer. The overlay is a
+    /// single-line field, so line breaks and other control characters are
+    /// dropped rather than pasted: a token copied with a trailing newline
+    /// answers the prompt as typed. A selector prompt has no field to fill, so
+    /// the paste is ignored.
+    fn handle_ask_paste(&mut self, pasted: &str) {
+        let Some(ask) = self.pending_ask.as_mut() else {
+            return;
+        };
+        if !ask.options.is_empty() {
+            return;
+        }
+        let text = crate::tui::input::paste_attachment::normalize_pasted_text(pasted);
+        ask.value.extend(text.chars().filter(|c| !c.is_control()));
     }
 
     /// Keyboard handling while an extension `ui/ask` prompt is open: edit the
@@ -7766,6 +7802,69 @@ mod tests {
             app.repo_pulse_rx.is_none(),
             "inline mode must not start repository inspection"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paste_fills_the_open_ask_prompt_not_the_composer() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let (reply, mut answer_rx) = oneshot::channel();
+        app.pending_ask = Some(PendingAsk {
+            prompt: "Logfire write token".to_string(),
+            placeholder: None,
+            value: String::new(),
+            secret: true,
+            options: Vec::new(),
+            selected: 0,
+            reply: Some(reply),
+        });
+
+        app.handle_paste("pylf_v1_us_TOKEN\n".to_string());
+
+        assert_eq!(
+            app.pending_ask.as_ref().expect("prompt open").value,
+            "pylf_v1_us_TOKEN",
+            "paste belongs to the open prompt, with the trailing newline dropped"
+        );
+        assert!(
+            app.input_text().is_empty(),
+            "the composer behind the overlay must stay untouched: {:?}",
+            app.input_text()
+        );
+
+        app.handle_ask_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+        let answered = answer_rx.try_recv().expect("answer delivered");
+        assert!(!answered.cancelled);
+        assert_eq!(answered.answer, "pylf_v1_us_TOKEN");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paste_into_a_selector_prompt_is_ignored() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let (reply, _answer_rx) = oneshot::channel();
+        app.pending_ask = Some(PendingAsk {
+            prompt: "pick one".to_string(),
+            placeholder: None,
+            value: String::new(),
+            secret: false,
+            options: vec!["a".to_string(), "b".to_string()],
+            selected: 0,
+            reply: Some(reply),
+        });
+
+        app.handle_paste("pasted".to_string());
+
+        assert!(
+            app.pending_ask
+                .as_ref()
+                .expect("prompt open")
+                .value
+                .is_empty()
+        );
+        assert!(app.input_text().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

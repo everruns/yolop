@@ -115,7 +115,11 @@ with `UiAskResult { answer, cancelled }`. The client routes the request to an
 `AskRequest` onto a dedicated channel; `App` shows a single-line overlay
 (`draw_ask_overlay`) that captures keys *before* the busy check so it works
 mid-turn, then resolves the request's oneshot with the typed answer (or
-`cancelled` on Esc). Only one prompt is live at a time; a request arriving while
+`cancelled` on Esc). The prompt owns pasted text as well as
+keys: a bracketed paste and Ctrl+V both fill the answer field (control
+characters dropped, since it is single-line) instead of the composer behind the
+overlay, which is what keeps a pasted credential out of the composer.
+Only one prompt is live at a time; a request arriving while
 another is pending is answered `cancelled`. Refused (`cancelled`) with no sink,
 so `--print`/ACP never blocks on it. Covered by
 `ui_ask_reverse_request_is_answered_by_the_sink`.
