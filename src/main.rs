@@ -919,7 +919,7 @@ fn resolve_workspace_root(
     std::env::current_dir().context("resolve current workspace directory")
 }
 
-fn run_models_command(command: ModelsCommand) -> Result<()> {
+async fn run_models_command(command: ModelsCommand) -> Result<()> {
     match command {
         ModelsCommand::List => {
             let models = models::installed()?;
@@ -946,12 +946,18 @@ fn run_models_command(command: ModelsCommand) -> Result<()> {
             );
             Ok(())
         }
-        ModelsCommand::Pull { spec } => run_models_pull(&spec),
+        ModelsCommand::Pull { spec } => run_models_pull(&spec).await,
     }
 }
 
+/// Download `spec`, awaiting on the caller's runtime.
+///
+/// This must not build a runtime of its own. `run_command` is reached from
+/// `#[tokio::main]`, so a nested `Runtime::new().block_on(..)` panics with
+/// "Cannot start a runtime from within a runtime" before a single byte is
+/// fetched — which is exactly what shipped in 0.16.0.
 #[cfg(feature = "local-inference")]
-fn run_models_pull(spec: &str) -> Result<()> {
+async fn run_models_pull(spec: &str) -> Result<()> {
     use std::sync::{Arc, Mutex};
 
     if models::is_installed(spec) {
@@ -962,7 +968,7 @@ fn run_models_pull(spec: &str) -> Result<()> {
     println!("Pulling {spec}…");
     let sink: Arc<Mutex<dyn models::download::ProgressSink>> =
         Arc::new(Mutex::new(models::download::StderrProgress::new()));
-    let summary = tokio::runtime::Runtime::new()?.block_on(models::download::pull(spec, sink))?;
+    let summary = models::download::pull(spec, sink).await?;
 
     if summary.files.is_empty() {
         println!("Nothing to fetch — {spec} was already complete.");
@@ -980,7 +986,7 @@ fn run_models_pull(spec: &str) -> Result<()> {
 /// would only waste the disk. List and remove still work, so a build that drops
 /// the feature can still clean up what an earlier build downloaded.
 #[cfg(not(feature = "local-inference"))]
-fn run_models_pull(_spec: &str) -> Result<()> {
+async fn run_models_pull(_spec: &str) -> Result<()> {
     Err(anyhow::anyhow!(
         "this build has no local inference engine, so downloaded weights could not be run. \
          Install a release build (Homebrew) or build with `--features local-inference`."
@@ -1231,7 +1237,7 @@ async fn run_command(command: Commands) -> Result<()> {
         }
         Commands::Worktree(args) => run_worktree_command(args.command),
         Commands::Mcp(args) => run_mcp_command(args.command),
-        Commands::Models(args) => run_models_command(args.command),
+        Commands::Models(args) => run_models_command(args.command).await,
         Commands::TuikaGallery => run_tuika_gallery(),
         #[cfg(target_os = "linux")]
         Commands::SandboxExec {
