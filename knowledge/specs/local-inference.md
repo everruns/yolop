@@ -32,6 +32,15 @@ provider exists to answer that question with evidence rather than argument.
 - Provider name `local`; a model spec is a Hugging Face repo (`Qwen/Qwen3-8B`),
   or `repo::file.gguf` to select one GGUF inside a repo. Safetensors repos are
   quantized in-situ on load.
+- The default model must be a `repo::file.gguf` spec, and its chat template must
+  emit tool calls as JSON inside `<tool_call>`. Both are hard constraints, not
+  preferences. A safetensors default means downloading full-precision weights to
+  quantize them locally, several times the bytes for the same result. The
+  template shape is narrower still: mistralrs 0.8.1 strips the `<tool_call>`
+  wrapper and JSON-parses what is inside, so a model whose template emits the
+  `<function=…><parameter=…>` XML variant, Qwen3-Coder among them, produces tool
+  calls that never parse. A local model that cannot call tools cannot drive the
+  agent loop, so this disqualifies a model no matter how well it codes.
 - No base URL and no credential: `Provider::Local` carries neither, because
   there is no endpoint to address and nothing to authenticate against.
 - Reasoning effort is rejected rather than ignored. A repo id is not an entry in

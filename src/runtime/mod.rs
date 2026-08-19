@@ -1259,12 +1259,28 @@ const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
 const DEFAULT_OLLAMA_API_KEY: &str = "ollama";
-// Weights are fetched from Hugging Face on first use, so the default is a repo
-// id rather than a served model name; the engine quantizes it in-situ on load.
-// Qwen3-8B is a starting point picked for having a tool-calling chat template
-// at a size that fits consumer hardware — how well it actually drives the agent
-// loop is exactly what this experiment is meant to measure.
-const DEFAULT_LOCAL_MODEL: &str = "Qwen/Qwen3-8B";
+// Weights are fetched from Hugging Face on first use, so the default names a
+// repo rather than a served model name.
+//
+// Three properties pick this one. It is a mixture of experts: 30B of weights
+// but ~3B active per token, so on unified memory (where bandwidth, not compute,
+// is the wall) it runs at roughly small-model speed. It is pre-quantized GGUF
+// rather than a bf16 repo, which matters twice over — a bf16 30B would be a
+// ~60 GB download, and the safetensors path quantizes in-situ on load instead
+// of arriving ready. And its chat template emits tool calls as JSON inside
+// `<tool_call>`, which is the shape the engine's Qwen parser understands.
+//
+// That last one is a real constraint, not a preference. Qwen3-Coder-30B-A3B is
+// the obvious pick for a coding agent and cannot be used here: its template
+// emits `<tool_call><function=name><parameter=k>` XML, and mistralrs 0.8.1
+// strips the `<tool_call>` wrapper and JSON-parses the inside, so every tool
+// call from it fails to parse. Revisit if the engine learns that format.
+//
+// ~19 GB on disk and in memory, so this wants a 32 GB machine. Smaller boxes
+// should pick the 8B entry in `/setup`; how well either drives the agent loop
+// is exactly what this experiment is meant to measure.
+pub(crate) const DEFAULT_LOCAL_MODEL: &str =
+    "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF::Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf";
 // Generic OpenAI-compatible servers usually ignore the bearer token, but the
 // OpenAI client requires one — same trick as Ollama's placeholder key.
 const DEFAULT_CUSTOM_API_KEY: &str = "unused";
@@ -4427,6 +4443,31 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    // Guards the two properties that make the local default usable at all. A
+    // safetensors default would download full-precision weights only to
+    // quantize them locally, and the engine's Qwen tool-call parser reads JSON
+    // inside `<tool_call>` — a model whose template emits the `<function=…>`
+    // XML variant cannot call tools, which is disqualifying for an agent. See
+    // the comment on the constant.
+    #[test]
+    fn the_default_local_model_is_a_prequantized_gguf() {
+        let (repo, file) = DEFAULT_LOCAL_MODEL
+            .split_once(crate::models::GGUF_SEPARATOR)
+            .unwrap_or_else(|| {
+                panic!("the default local model must name a GGUF file: {DEFAULT_LOCAL_MODEL}")
+            });
+
+        assert!(!repo.is_empty(), "the GGUF spec must name a repo");
+        assert!(
+            file.ends_with(".gguf"),
+            "the GGUF spec must name a .gguf file, got {file}"
+        );
+        assert!(
+            !DEFAULT_LOCAL_MODEL.contains("Coder"),
+            "Qwen3-Coder emits `<function=…>` XML tool calls the engine cannot parse"
+        );
+    }
 
     #[test]
     fn enabled_extensions_are_owned_by_the_reversible_session_layer() {

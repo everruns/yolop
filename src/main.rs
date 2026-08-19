@@ -42,7 +42,9 @@ use everruns_core::command::ExecuteCommandRequest;
 use everruns_core::{ContentPart, MessageRole};
 use everruns_provider::typed_id::SessionId;
 use ratatui::{Terminal, TerminalOptions};
-use runtime::{BuiltRuntime, ProviderChoice, ResolvedProviderChoice, resolve_for_settings};
+use runtime::{
+    BuiltRuntime, DEFAULT_LOCAL_MODEL, ProviderChoice, ResolvedProviderChoice, resolve_for_settings,
+};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -928,7 +930,7 @@ async fn run_models_command(command: ModelsCommand) -> Result<()> {
                     .map(|root| root.display().to_string())
                     .unwrap_or_else(|| "<no data directory>".to_string());
                 println!("No models downloaded. Store: {location}");
-                println!("Pull one with `yolop models pull Qwen/Qwen3-8B`.");
+                println!("Pull one with `yolop models pull {DEFAULT_LOCAL_MODEL}`.");
                 return Ok(());
             }
             let total: u64 = models.iter().map(|model| model.bytes).sum();
