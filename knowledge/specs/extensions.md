@@ -262,16 +262,18 @@ redirection, quoting, substitutions, and background execution receive no
 attachment and run as ordinary shell commands. Attached failure never falls
 back to detached global mutation.
 
-Enablement applies to the running session only for packages present when it
-started. The runtime composes its capability registry once, at startup, and
-`everruns-host` exposes no way to register a capability afterwards
-(`CapabilityRegistry` is owned by value behind an `Arc<InProcessRuntime>` and
-mutated only through `&mut` at composition), so an extension installed mid-session
-has nothing to activate. That case is reported as what it is, a restart, in both
-the transcript and the `enable_extension` result, rather than as an internal
-"unknown capability" or a misleading "next session". Making it genuinely live
-requires a dynamic-registration API upstream; until that exists the honest
-message is the contract.
+Enablement applies to the running session for any installed package, including
+one installed mid-conversation. The runtime composes its capability registry at
+startup, so a package that arrives later is unknown to it; the host registers it
+on the live runtime first (`InProcessRuntime::register_capability`, upstream
+EVE-917) and then activates it exactly like a package present at startup. The
+wiring lives in one place: a factory built at startup captures the same sinks
+the startup path uses (status, `ui/ask`, live processes, secrets, environment
+context), so a deferred build cannot drift from the eager one. Registration is
+not activation; enablement still decides per-session. Where registration is
+impossible (no extensions directory, or the package is not on disk) the
+transcript says so and names a restart rather than reporting an internal
+"unknown capability".
 
 Two consequences of that boundary are handled rather than left implicit. A child
 that answers as an ordinary CLI, `--help`, `--version`, or a usage error, never

@@ -1,5 +1,17 @@
 # Knowledge Log
 
+## 2026-08-19, Extensions installed mid-session load without a restart
+
+- [Extensions](specs/extensions.md): enabling a package installed during the
+  session now registers it on the live runtime and activates it, so its tools,
+  prompt, and hooks are usable on the next turn.
+- Unblocked by upstream EVE-917 (`InProcessRuntime::register_capability` /
+  `is_capability_registered`), which yolop requested after establishing that no
+  host-side workaround existed.
+- `BuildOptions::extensions_dir_override` lets a test inject an extensions
+  directory instead of setting the process-wide `YOLOP_EXTENSIONS_DIR`, which a
+  concurrently building session would otherwise pick up.
+
 ## 2026-08-19, Debug target size: one feature set, thin dependency debuginfo
 
 - The routine checks ran `--all-features` while `cargo build`/`cargo run` ran
