@@ -633,3 +633,5 @@ wording, formatting, and link fixes do not need entries.
 - Repository checks run `--features local-inference` instead of
   `--all-features`, which now fails to build on Linux because it enables both
   accelerated backends.
+- A macOS job compiles `metal` for both release targets so the accelerated
+  backend cannot bitrot unnoticed; `cuda` has no runner and stays unbuilt.

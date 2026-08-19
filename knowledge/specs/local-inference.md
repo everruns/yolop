@@ -125,6 +125,13 @@ compile off Apple platforms. Cargo cannot exclude a feature from
 `--all-features`, so the list is spelled out instead; the workspace coverage run
 adds `yolop-yep/schema` to keep the YEP drift guard in the same job.
 
+`metal` is compiled for both macOS release targets by
+[`metal-build-check.yml`](../../.github/workflows/metal-build-check.yml), on
+pull requests that touch the manifests. Without it the accelerated backends
+would be compiled nowhere in CI, so a dependency bump could break them and only
+a release would find out. `cuda` has no equivalent: no CI runner has the toolkit,
+so it stays unbuilt and its first real evidence has to come from a CUDA host.
+
 **The release binaries are built with `local-inference` alone, so they are
 CPU-only** ([`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml)).
 A Homebrew install therefore runs local models on the CPU; accelerating the
