@@ -545,15 +545,16 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
     }
     // Text / secret input. Secret input is masked; the placeholder (shown when
     // empty) is never masked.
-    let field = if ask.value.is_empty() {
+    let value = ask.value.text();
+    let field = if value.is_empty() {
         ask.placeholder
             .as_ref()
             .map(|p| format!("({p})"))
             .unwrap_or_default()
     } else if ask.secret {
-        "•".repeat(ask.value.chars().count())
+        "•".repeat(value.chars().count())
     } else {
-        ask.value.clone()
+        value.to_string()
     };
     lines.push(Line::from(format!("> {field}")));
     lines.push(Line::from(""));
@@ -561,8 +562,9 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
         "Enter to answer · Esc to cancel",
         Style::default().add_modifier(Modifier::DIM),
     )));
-    // The typed answer is on row 4, after the "> " prompt.
-    let cursor = (4, "> ".len() + ask.value.chars().count());
+    // The typed answer is on row 4, after the "> " prompt. The column follows
+    // the input state's cursor, so arrow keys move the caret the user sees.
+    let cursor = (4, "> ".len() + ask.value.cursor());
     (lines, cursor)
 }
 

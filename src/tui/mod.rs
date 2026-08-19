@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use tuika::InputOutcome;
-use tuika::components::{ScrollState, TextInputState};
+use tuika::components::{ScrollState, SingleLineInputState, TextInputState};
 use tuika::keymap::Dispatch;
 use tuika::mouse::{SelectionRange, selected_text, word_at};
 use tuika::term::hyperlink::BufferLink;
@@ -444,7 +444,10 @@ struct PendingMcpLogin {
 pub(crate) struct PendingAsk {
     prompt: String,
     placeholder: Option<String>,
-    value: String,
+    /// The answer being typed, edited by tuika's single-line input state: the
+    /// overlay gets paste, word deletion, and cursor movement from the toolkit
+    /// instead of a hand-rolled `Char`/`Backspace` match.
+    value: SingleLineInputState,
     /// Mask the input and never echo the answer (credentials).
     secret: bool,
     /// Selector options; when non-empty the overlay is a picker, not a field.
@@ -1639,7 +1642,7 @@ impl App {
             self.pending_ask = Some(PendingAsk {
                 prompt: request.prompt,
                 placeholder: request.placeholder,
-                value: String::new(),
+                value: SingleLineInputState::new(),
                 secret: request.secret,
                 options: request.options,
                 selected: 0,
@@ -2347,11 +2350,18 @@ impl App {
             .clamp(1, MAX_INPUT_HEIGHT)
     }
 
+    /// Route pasted text, from a bracketed paste or from Ctrl+V.
+    ///
+    /// The precedence mirrors [`handle_key`](Self::handle_key) deliberately:
+    /// whichever surface owns the keyboard owns pasted text too. Without that,
+    /// a paste aimed at an overlay lands in the composer behind it — which is
+    /// how a pasted credential ended up sitting in the input once an extension
+    /// prompt closed.
     fn handle_paste(&mut self, pasted: String) {
-        // An open `ui/ask` prompt owns the keyboard (see `handle_key`), so it
-        // owns pasted text too — otherwise a bracketed paste meant for the
-        // prompt lands in the composer behind the overlay, where a secret
-        // answer would sit in plain sight once the prompt closes.
+        if self.history_search.is_some() {
+            self.handle_search_paste(&pasted);
+            return;
+        }
         if self.pending_ask.is_some() {
             self.handle_ask_paste(&pasted);
             return;
@@ -2429,11 +2439,10 @@ impl App {
         }
     }
 
-    /// Insert pasted text into the open `ui/ask` answer. The overlay is a
-    /// single-line field, so line breaks and other control characters are
-    /// dropped rather than pasted: a token copied with a trailing newline
-    /// answers the prompt as typed. A selector prompt has no field to fill, so
-    /// the paste is ignored.
+    /// Insert pasted text into the open `ui/ask` answer, through the same
+    /// [`SingleLineInputState`] that handles its keys — so line boundaries
+    /// normalize the toolkit's way and the answer is trimmed on submit. A
+    /// selector prompt has no field to fill, so the paste is ignored.
     fn handle_ask_paste(&mut self, pasted: &str) {
         let Some(ask) = self.pending_ask.as_mut() else {
             return;
@@ -2441,8 +2450,18 @@ impl App {
         if !ask.options.is_empty() {
             return;
         }
+        let _ = ask.value.handle(&tuika::Event::Paste(pasted.to_string()));
+    }
+
+    /// Insert pasted text into the reverse-history search query and re-match.
+    /// The query is one line, so line boundaries become spaces.
+    fn handle_search_paste(&mut self, pasted: &str) {
+        let Some(search) = self.history_search.as_mut() else {
+            return;
+        };
         let text = crate::tui::input::paste_attachment::normalize_pasted_text(pasted);
-        ask.value.extend(text.chars().filter(|c| !c.is_control()));
+        search.query.push_str(&text.replace('\n', " "));
+        self.history_search_refresh();
     }
 
     /// Keyboard handling while an extension `ui/ask` prompt is open: edit the
@@ -2479,7 +2498,10 @@ impl App {
         }
         match key.code {
             KeyCode::Enter => {
-                let answer = ask.value.clone();
+                // Trimmed: a credential pasted with a trailing newline (which
+                // the single-line state normalizes to a space) must still
+                // answer as the token itself.
+                let answer = ask.value.text().trim().to_string();
                 self.resolve_ask(crate::tui::host_ui::AskAnswer {
                     answer,
                     cancelled: false,
@@ -2491,13 +2513,14 @@ impl App {
                     cancelled: true,
                 });
             }
-            KeyCode::Backspace => {
-                ask.value.pop();
+            // Everything else is editing: hand the translated event to the
+            // toolkit's input state, which is what gives the prompt cursor
+            // movement, word deletion, and kill-to-end for free.
+            _ => {
+                if let Some(event) = tuika::translate_event(CrosstermEvent::Key(key)) {
+                    let _ = ask.value.handle(&event);
+                }
             }
-            KeyCode::Char(c) => {
-                ask.value.push(c);
-            }
-            _ => {}
         }
     }
 
@@ -7813,7 +7836,7 @@ mod tests {
         app.pending_ask = Some(PendingAsk {
             prompt: "Logfire write token".to_string(),
             placeholder: None,
-            value: String::new(),
+            value: SingleLineInputState::new(),
             secret: true,
             options: Vec::new(),
             selected: 0,
@@ -7823,9 +7846,9 @@ mod tests {
         app.handle_paste("pylf_v1_us_TOKEN\n".to_string());
 
         assert_eq!(
-            app.pending_ask.as_ref().expect("prompt open").value,
-            "pylf_v1_us_TOKEN",
-            "paste belongs to the open prompt, with the trailing newline dropped"
+            app.pending_ask.as_ref().expect("prompt open").value.text(),
+            "pylf_v1_us_TOKEN ",
+            "paste belongs to the open prompt (the trailing newline normalizes to a space)"
         );
         assert!(
             app.input_text().is_empty(),
@@ -7840,6 +7863,65 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ask_prompt_edits_through_the_toolkit_input_state() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let (reply, mut answer_rx) = oneshot::channel();
+        app.pending_ask = Some(PendingAsk {
+            prompt: "token".to_string(),
+            placeholder: None,
+            value: SingleLineInputState::new(),
+            secret: true,
+            options: Vec::new(),
+            selected: 0,
+            reply: Some(reply),
+        });
+
+        for c in "abcd".chars() {
+            app.handle_ask_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+        }
+        // Cursor movement and mid-string deletion come from the toolkit, not
+        // from a hand-rolled push/pop on a String.
+        app.handle_ask_key(KeyEvent::new(KeyCode::Left, KeyModifiers::empty()));
+        app.handle_ask_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()));
+        let ask = app.pending_ask.as_ref().expect("prompt open");
+        assert_eq!(ask.value.text(), "abd");
+        assert_eq!(
+            ask.value.cursor(),
+            2,
+            "caret stays before the last character"
+        );
+
+        app.handle_ask_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+        assert_eq!(
+            answer_rx.try_recv().expect("answer delivered").answer,
+            "abd"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paste_during_reverse_search_fills_the_query() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.history.record("an earlier prompt");
+        app.history_search_start();
+
+        app.handle_paste("needle".to_string());
+
+        assert_eq!(
+            app.history_search.as_ref().expect("search open").query,
+            "needle"
+        );
+        assert!(
+            !app.input_text().contains("needle"),
+            "the search query must not be typed into the composer: {:?}",
+            app.input_text()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn paste_into_a_selector_prompt_is_ignored() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
@@ -7848,7 +7930,7 @@ mod tests {
         app.pending_ask = Some(PendingAsk {
             prompt: "pick one".to_string(),
             placeholder: None,
-            value: String::new(),
+            value: SingleLineInputState::new(),
             secret: false,
             options: vec!["a".to_string(), "b".to_string()],
             selected: 0,
