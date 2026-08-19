@@ -740,6 +740,12 @@ fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
             }
         }
     }
+    if let Some(notice) = value.get("detached_control").and_then(Value::as_str) {
+        out.push(ChatLine {
+            author: Author::System,
+            text: notice.to_string(),
+        });
+    }
     if value.get("sandbox_denial").and_then(Value::as_str) == Some("likely") {
         out.push(ChatLine {
             author: Author::Sandbox,
@@ -778,6 +784,25 @@ fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The client half of the detached-administration warning: the user reading
+    /// the transcript must see it too, not only the agent in its tool result.
+    #[test]
+    fn shell_lines_render_the_detached_control_notice() {
+        let lines = shell_success_lines(&serde_json::json!({
+            "exit_code": 0,
+            "success": true,
+            "stdout": "NAME  STATE  VERSION",
+            "detached_control": "`yolop extensions` ran as an ordinary shell command.",
+        }));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.text.contains("ran as an ordinary shell command")),
+            "expected the notice in the transcript: {lines:?}"
+        );
+    }
+
     use everruns_core::events::ToolStartedData;
     use everruns_provider::tool_types::ToolCall;
     use serde_json::json;

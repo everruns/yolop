@@ -24,6 +24,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 pub const CONTROL_VERSION: u32 = 1;
 const MAX_CONTROL_FRAME_BYTES: usize = 64 * 1024;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(120);
+/// Cap for output relayed from a child that ran as an ordinary CLI (help,
+/// version, usage errors) rather than speaking the protocol.
+const MAX_RELAY_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ControlRequest {
@@ -384,6 +387,76 @@ fn direct_control_args(
     ))
 }
 
+/// Relay a child that answered as an ordinary CLI rather than a control client.
+///
+/// Its stdout, stderr, and exit code become the command's, so `yolop extensions
+/// --help` prints help and exits 0 the way it would outside a session. Output is
+/// bounded like every other frame on this transport.
+async fn relay_plain_cli_child(
+    mut child: tokio::process::Child,
+    first_line: Vec<u8>,
+    reader: tokio::io::Take<BufReader<tokio::process::ChildStdout>>,
+) -> anyhow::Result<AttachedCommandOutput> {
+    let mut stdout = first_line;
+    let mut reader = reader.into_inner().take(MAX_RELAY_BYTES as u64);
+    reader.read_to_end(&mut stdout).await?;
+    let mut stderr = Vec::new();
+    if let Some(handle) = child.stderr.take() {
+        let mut handle = BufReader::new(handle).take(MAX_RELAY_BYTES as u64);
+        handle.read_to_end(&mut stderr).await?;
+    }
+    // The child never asked for a response; closing stdin lets it exit.
+    drop(child.stdin.take());
+    let status = child.wait().await?;
+    Ok(AttachedCommandOutput {
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        exit_code: status.code().unwrap_or(1),
+    })
+}
+
+/// Warn when a `yolop` administration command was written in a form the
+/// attached recognizer rejects.
+///
+/// The two forms differ only by punctuation, and the difference is invisible in
+/// the output: `yolop extensions enable x` mutates this session, while
+/// `yolop extensions enable x | cat` is ordinary shell that touches only
+/// persisted global state. Without this notice the agent (and the user reading
+/// the transcript) sees a success either way and cannot tell which happened.
+///
+/// `None` for anything that is genuinely attached, and for `yolop` commands that
+/// name no registered control route (`yolop --version | cat` administers
+/// nothing).
+pub fn detached_control_notice(command: &str, service: &dyn ControlService) -> Option<String> {
+    if direct_control_args(command, service).is_some() {
+        return None;
+    }
+    let words = command.split_ascii_whitespace().collect::<Vec<_>>();
+    // Help and version administer nothing, so a composed one is not a mistake.
+    if words
+        .iter()
+        .any(|word| matches!(*word, "--help" | "-h" | "--version" | "-V"))
+    {
+        return None;
+    }
+    // Scan every token, not just argv[0]: `... | yolop extensions list` runs
+    // detached just as surely as `yolop extensions list | ...`.
+    let subcommand = words.windows(2).find_map(|pair| {
+        let is_yolop = Path::new(pair[0].trim_matches(['"', '\'']))
+            .file_name()
+            .and_then(|value| value.to_str())
+            == Some("yolop");
+        let route = service.route(pair[1].trim_matches(['"', '\'']))?;
+        is_yolop.then_some(route.cli_subcommand)
+    })?;
+    Some(format!(
+        "`yolop {subcommand}` ran as an ordinary shell command. Shell composition (a pipeline, \
+         redirection, quoting, substitution, or `&`) is never attached to this session, so this \
+         changed only persisted global state and left the running session untouched. Re-run it \
+         directly, without composition, to administer this session."
+    ))
+}
+
 /// Typed administration other than a list crosses the arbitrary-shell
 /// sandbox boundary into a host broker and therefore needs an explicit shell
 /// approval whenever containment is enabled.
@@ -445,15 +518,14 @@ async fn invoke_attached_inner(
     if frame.len() > MAX_CONTROL_FRAME_BYTES {
         anyhow::bail!("control request exceeded {MAX_CONTROL_FRAME_BYTES} bytes");
     }
-    if frame.is_empty() {
-        let stderr = child.stderr.take().expect("piped stderr");
-        let stderr = BufReader::new(stderr);
-        let mut stderr = stderr.take((MAX_CONTROL_FRAME_BYTES + 1) as u64);
-        let mut message = String::new();
-        stderr.read_to_string(&mut message).await?;
-        anyhow::bail!("child produced no control request: {}", message.trim());
-    }
-    let request: ControlRequest = serde_json::from_slice(&frame)?;
+    // `--help`, `--version`, and usage errors never reach the protocol: clap
+    // prints and exits inside the child. Relaying its own output keeps those
+    // invocations working exactly like an ordinary CLI run (and keeps them on
+    // this binary), instead of failing to parse help text as a control frame.
+    let request = match serde_json::from_slice::<ControlRequest>(&frame) {
+        Ok(request) => request,
+        Err(_) => return relay_plain_cli_child(child, frame, reader).await,
+    };
     let response = service.execute(request.clone()).await;
 
     let mut stdin = child.stdin.take().expect("piped stdin");
@@ -773,5 +845,47 @@ mod tests {
         fn render_control(&self, _action: &Value, response: &ControlResponse) -> String {
             response.render_default()
         }
+    }
+
+    #[test]
+    fn attached_administration_gets_no_detached_notice() {
+        let service = service();
+        assert!(detached_control_notice("yolop extensions enable demo", &service).is_none());
+        assert!(detached_control_notice("yolop extensions list", &service).is_none());
+    }
+
+    #[test]
+    fn composed_administration_is_reported_as_detached() {
+        let service = service();
+        // Each of these is rejected by the recognizer and silently runs as
+        // ordinary shell, which is exactly what the agent cannot otherwise see.
+        for command in [
+            "yolop extensions enable demo | cat",
+            "yolop extensions enable demo > out.txt",
+            "yolop extensions enable 'demo'",
+            "yolop extensions enable demo &",
+            "/usr/local/bin/yolop extensions list | grep demo",
+            // Not argv[0]: still a detached administration attempt.
+            "echo hi | yolop extensions list",
+        ] {
+            let notice = detached_control_notice(command, &service)
+                .unwrap_or_else(|| panic!("expected a detached notice for `{command}`"));
+            assert!(notice.contains("`yolop extensions`"), "{command}: {notice}");
+            assert!(
+                notice.contains("left the running session untouched"),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_and_non_administration_commands_are_quiet() {
+        let service = service();
+        // No registered route named, so nothing about the session is at stake.
+        assert!(detached_control_notice("yolop --version | cat", &service).is_none());
+        assert!(detached_control_notice("yolop worktree list | cat", &service).is_none());
+        assert!(detached_control_notice("cargo test | tee log", &service).is_none());
+        // A bare word that happens to match a route is not a yolop invocation.
+        assert!(detached_control_notice("git extensions list", &service).is_none());
     }
 }
