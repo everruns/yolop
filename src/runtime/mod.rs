@@ -1276,9 +1276,10 @@ const DEFAULT_OLLAMA_API_KEY: &str = "ollama";
 // strips the `<tool_call>` wrapper and JSON-parses the inside, so every tool
 // call from it fails to parse. Revisit if the engine learns that format.
 //
-// ~19 GB on disk and in memory, so this wants a 32 GB machine. Smaller boxes
-// should pick the 8B entry in `/setup`; how well either drives the agent loop
-// is exactly what this experiment is meant to measure.
+// ~19 GB on disk and in memory. The default is sized for the machine the
+// experiment is meant to run on, not for the smallest one that could load
+// something; `/setup` carries a smaller entry for quick iteration. How well
+// either drives the agent loop is exactly what this is meant to measure.
 pub(crate) const DEFAULT_LOCAL_MODEL: &str =
     "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF::Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf";
 // Generic OpenAI-compatible servers usually ignore the bearer token, but the

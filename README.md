@@ -237,8 +237,8 @@ yolop --provider local -m "$M"
 The default is `Qwen3-30B-A3B-Instruct` at Q4 (~19 GB): a mixture of experts
 with only ~3B parameters active per token, so it runs at roughly small-model
 speed on Apple Silicon, where memory bandwidth rather than compute is the
-limit. It wants a 32 GB machine. On 16 GB, pick the 8B entry in `/setup` or
-pass it with `-m` as above.
+limit. Budget 32 GB of RAM. `/setup` also lists an 8B at ~5 GB, which is
+quicker to pull and quicker to load when you are iterating.
 
 `Qwen3-Coder-30B-A3B` is deliberately *not* the default despite being the
 better-aimed model: its chat template emits tool calls as

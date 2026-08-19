@@ -497,12 +497,12 @@ impl App {
                 ModelOption {
                     spec: Some("unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF::Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf".to_string()),
                     label: "Qwen3-30B-A3B-Instruct (Q4)".to_string(),
-                    hint: "~19 GB; MoE, 3B active, wants 32 GB RAM".to_string(),
+                    hint: "~19 GB; MoE, 3B active; budget 32 GB RAM".to_string(),
                 },
                 ModelOption {
                     spec: Some("unsloth/Qwen3-8B-GGUF::Qwen3-8B-Q4_K_M.gguf".to_string()),
                     label: "Qwen3-8B (Q4)".to_string(),
-                    hint: "~5 GB; fits a 16 GB machine".to_string(),
+                    hint: "~5 GB; quicker to pull and load".to_string(),
                 },
             ],
             // No preset list exists for an arbitrary endpoint; only the
